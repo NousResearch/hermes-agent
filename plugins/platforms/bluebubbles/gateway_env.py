@@ -1,7 +1,7 @@
 """BlueBubbles (iMessage) env -> gateway config bridge (``PlatformEntry.env_overrides``)."""
 
-from gateway.config import Platform
-from gateway.platform_env import EnvCred, home_step, int_or, mention_patterns, strip_slash, truthy_token
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platform_env import EnvCred, home_step, int_or, mention_patterns, strip_slash, truthy_token
 from utils import is_truthy_value
 
 ENV_ENABLE_CREDENTIALS = ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD")

@@ -191,7 +191,7 @@ class _LivenessPatches:
         )
         self._stack.enter_context(
             patch(
-                "gateway.status.is_gateway_runtime_lock_active",
+                "hermes_agent.gateway.status.is_gateway_runtime_lock_active",
                 return_value=self._lock_active,
             )
         )
@@ -232,7 +232,7 @@ class TestRuntimeLockFirstLiveness:
 
         with (
             patch("hermes_cli.cron._active_cron_provider_name", return_value="builtin"),
-            patch("gateway.status.is_gateway_runtime_lock_active", return_value=False),
+            patch("hermes_agent.gateway.status.is_gateway_runtime_lock_active", return_value=False),
             patch("hermes_cli.gateway.find_gateway_pids", return_value=[424242]),
         ):
             assert cron_cli._builtin_gateway_liveness() is True
@@ -244,7 +244,7 @@ class TestRuntimeLockFirstLiveness:
 
         with (
             patch("hermes_cli.cron._active_cron_provider_name", return_value="builtin"),
-            patch("gateway.status.is_gateway_runtime_lock_active", return_value=False),
+            patch("hermes_agent.gateway.status.is_gateway_runtime_lock_active", return_value=False),
             patch("hermes_cli.gateway.find_gateway_pids", return_value=[]),
             patch(
                 "hermes_cli.gateway.named_profile_served_by_running_multiplexer",
@@ -264,7 +264,7 @@ class TestRuntimeLockFirstLiveness:
         with (
             patch("hermes_cli.cron._active_cron_provider_name", return_value="builtin"),
             patch(
-                "gateway.status.is_gateway_runtime_lock_active",
+                "hermes_agent.gateway.status.is_gateway_runtime_lock_active",
                 side_effect=OSError("lock probe failed"),
             ),
             patch("hermes_cli.gateway.find_gateway_pids", return_value=[424242]),
@@ -281,7 +281,7 @@ class TestRuntimeLockFirstLiveness:
         record_ticker_heartbeat(success=True)
         with (
             patch("hermes_cli.cron._active_cron_provider_name", return_value="builtin"),
-            patch("gateway.status.is_gateway_runtime_lock_active", return_value=False),
+            patch("hermes_agent.gateway.status.is_gateway_runtime_lock_active", return_value=False),
             patch("hermes_cli.gateway.find_gateway_pids", return_value=[]),
             patch(
                 "hermes_cli.gateway.named_profile_served_by_running_multiplexer",

@@ -185,7 +185,7 @@ def _is_wildcard(host: str) -> bool:
 def dial_host(bind_host: str) -> str:
     """The loopback address native clients dial for a listener bound to the address *bind_host*. A
     name (``localhost``) comes back as is, which suits a browser only: native clients get the
-    address the socket bound (``gateway.run_api.start_gateway_api``)."""
+    address the socket bound (``hermes_agent.gateway.run_api.start_gateway_api``)."""
     if _is_loopback(bind_host):
         return bind_host
     return "::1" if bind_host == "::" else "127.0.0.1"

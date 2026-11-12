@@ -247,7 +247,7 @@ def _(rid, params: dict) -> dict:
 
 def _path_completion_items(word: str, root: str, session_key: str | None, local: bool) -> list[dict]:
     """``complete.path``'s items for ``word`` resolved against ``root``; the shared gateway serves the
-    same listing against a local session's own folder (``gateway/session_complete_path.py``)."""
+    same listing against a local session's own folder (``hermes_agent/gateway/session_complete_path.py``)."""
     is_context = word.startswith("@")
     query = word[1:] if is_context else word
     if is_context and not query:
@@ -304,7 +304,7 @@ def _model_skew_err(rid) -> dict | None:
     stale cached modules (the reporter's agent_init_failed). Mirrors the dashboard's
     ``_dashboard_code_skew_guard`` and the gateway's ``_model_switch_skew_guard``;
     never a false positive (non-git installs detect nothing)."""
-    from gateway.code_skew import detect_code_skew
+    from hermes_agent.gateway.code_skew import detect_code_skew
 
     skew = detect_code_skew()
     if not skew:

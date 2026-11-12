@@ -1,6 +1,6 @@
 """Which runtime records name the gateway that holds ``gateway.lock`` right now.
 
-``gateway.status.get_running_pid_identity_strict`` validates the PID file and the
+``hermes_agent.gateway.status.get_running_pid_identity_strict`` validates the PID file and the
 lock record against one live process. The PID file is advisory beside a HELD
 lock: a launch-service gateway keeps serving after ``gateway.pid`` was unlinked
 (#110166), and ``gateway run --replace`` rewrites the lock but can leave the
@@ -23,7 +23,7 @@ from typing import Any, Optional
 def strict_identity_records(pid_path: Path, lock_record: Optional[dict[str, Any]],
                             pid_exists: bool) -> tuple:
     """Records the strict identity check must agree on; a previous gateway's PID file drops out."""
-    from gateway import status
+    from hermes_agent.gateway import status
 
     if not pid_exists:
         return (lock_record,)
@@ -35,7 +35,7 @@ def strict_identity_records(pid_path: Path, lock_record: Optional[dict[str, Any]
 
 def names_a_previous_gateway(pid_record: dict[str, Any], lock_record: dict[str, Any]) -> bool:
     """True when *pid_record* is another instance than the lock holder and that instance is gone."""
-    from gateway import status
+    from hermes_agent.gateway import status
 
     pid = status._pid_from_record(pid_record)
     recorded, held = pid_record.get("start_time"), lock_record.get("start_time")

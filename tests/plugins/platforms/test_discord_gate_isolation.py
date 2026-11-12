@@ -21,7 +21,7 @@ import os
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.config import Platform, PlatformConfig
 from plugins.platforms.discord.adapter import DiscordAdapter, _GATE_ENV_KEYS
 
 
@@ -429,7 +429,7 @@ class TestTelegramGateIsolation:
             secret_scope.reset_secret_scope(token)
 
         # allowed_chats reaches PlatformConfig.extra via the shared-key loop
-        # in gateway/config.py (type-preserving); _apply_yaml_config must not
+        # in hermes_agent/gateway/config.py (type-preserving); _apply_yaml_config must not
         # write either gate into the process-global env for a scoped profile.
         assert extras is None or "allowed_chats" not in extras
         assert os.getenv("TELEGRAM_ALLOWED_CHATS") is None

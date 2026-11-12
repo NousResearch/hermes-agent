@@ -6,7 +6,7 @@ text is either text the user already saw, or stale inspected/tool content —
 it is NOT an attachment request. Only explicit ``MEDIA:`` directives may
 trigger post-stream uploads.
 
-The non-streaming path (``gateway/platforms/base.py``) keeps its bare-path
+The non-streaming path (``hermes_agent/gateway/platforms/base.py``) keeps its bare-path
 auto-detect (``extract_local_files``) — that path controls what text is sent
 and can strip the path from the visible reply, so auto-attach is intentional
 there. This file pins the asymmetry.
@@ -18,11 +18,11 @@ from urllib.parse import unquote
 
 import pytest
 
-from gateway.config import Platform
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource
 
 
 def _event():
@@ -67,7 +67,7 @@ def _allowed_media_path(tmp_path, monkeypatch, name):
     media_file.parent.mkdir(parents=True, exist_ok=True)
     media_file.write_bytes(b"media")
     monkeypatch.setattr(
-        "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+        "hermes_agent.gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
         (root,),
     )
     return media_file.resolve()

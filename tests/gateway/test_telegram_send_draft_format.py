@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 import plugins.platforms.telegram.adapter as tg_mod
 from plugins.platforms.telegram.adapter import TelegramAdapter
 

@@ -14,10 +14,10 @@ import pytest
 
 
 async def _owner(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
@@ -30,7 +30,7 @@ async def _owner(tmp_path, monkeypatch):
 
 
 def _viewer(authority, tmp_path, user='native'):
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     return AuthorityConnection(authority, SimpleNamespace(write=lambda frame: None), {
         'provider': 'local', 'user_id': user, 'profile_id': str(tmp_path), 'instance_id': 'owner'})
 
@@ -84,7 +84,7 @@ async def test_the_release_detaches_by_the_id_the_read_resolved_to(tmp_path, mon
     """A compressed session: the picker's history row names a segment (or a legacy root), and the
     owner's read resolves it elsewhere and subscribes under the RESOLVED id. The clients release by
     ``snapshot.session_id``; a detach by the id they sent is a no-op that leaves the viewer attached."""
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     from tests.gateway.test_local_resume_compression_child import _compressed
     compressed = await _compressed(tmp_path, monkeypatch)
     authority = compressed.warm
@@ -104,7 +104,7 @@ async def test_the_release_detaches_by_the_id_the_read_resolved_to(tmp_path, mon
 async def test_releasing_a_refused_deletes_read_leaves_a_live_messaging_chat_unfenced(tmp_path, monkeypatch):
     """The release is a plain detach: an ``end_reason`` from the last viewer runs the viewer close,
     which fences the chat's route against new async delegations until a viewer attaches again."""
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     from tests.gateway.test_authority_cold_route_recovery import _cold, _seed, _source
     from tools import async_delegation
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))

@@ -65,7 +65,7 @@ def _profile_count() -> int:
 
 
 def _messaging_platform_count() -> int:
-    from gateway.config import load_gateway_config
+    from hermes_agent.gateway.config import load_gateway_config
 
     return len(load_gateway_config().get_connected_platforms())
 

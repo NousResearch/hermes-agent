@@ -119,7 +119,7 @@ def test_where_no_peer_check_exists_a_launch_ticket_is_never_spent(platform):
     cannot tell who owns a loopback connection there. So the launcher prints a link for the user to
     open by hand rather than passing a launch ticket to a browser launcher, and a launch ticket is
     never spent. The platform is passed in as data; the marked tests below run each host's own path."""
-    from gateway import webapp_listener
+    from hermes_agent.gateway import webapp_listener
     from hermes_cli.web_routers import webapp
 
     assert webapp._peer_is_server_user(_loopback_request(), platform=platform) is False
@@ -131,7 +131,7 @@ def test_windows_spends_a_launch_ticket_without_a_peer_check():
     handle the process's DACL grants only its own user, SYSTEM and elevated administrators), so the
     ticket in the browser launcher's argv stays the user's own, as the stored credential does. The
     platform is passed in as data; the platforms("windows") test below runs the real path."""
-    from gateway import webapp_listener
+    from hermes_agent.gateway import webapp_listener
     from hermes_cli.web_routers import webapp
 
     assert webapp._peer_is_server_user(_loopback_request(), platform="win32") is True
@@ -210,8 +210,8 @@ def _launch_link(tmp_path, monkeypatch):
 
     from fastapi.testclient import TestClient
 
-    from gateway.control_socket import GatewayControlServer
-    from gateway.webapp_listener import register_control_verbs
+    from hermes_agent.gateway.control_socket import GatewayControlServer
+    from hermes_agent.gateway.webapp_listener import register_control_verbs
     from hermes_cli import web_server as server
 
     home = tmp_path / ".hermes"

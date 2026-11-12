@@ -23,11 +23,11 @@ from typing import Any, Dict
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.relay.adapter import RelayAdapter
-from gateway.relay.command_manifest import build_relay_command_manifest
-from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
-from gateway.relay.ws_transport import _event_from_wire
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.relay.adapter import RelayAdapter
+from hermes_agent.gateway.relay.command_manifest import build_relay_command_manifest
+from hermes_agent.gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+from hermes_agent.gateway.relay.ws_transport import _event_from_wire
 
 from tests.gateway.relay.stub_connector import StubConnector
 
@@ -345,7 +345,7 @@ async def test_auto_thread_feedback_is_bounded():
 def _mk_runner_stub():
     """Minimal object carrying the three GatewayRunner methods under test."""
     import asyncio as _asyncio
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     class _Stub:
         _is_relay_discord_channel_lane = GatewayRunner._is_relay_discord_channel_lane
@@ -382,7 +382,7 @@ def _relay_channel_source():
 
 def test_relay_channel_lane_shape_gate():
     from types import SimpleNamespace
-    from gateway.config import Platform as P
+    from hermes_agent.gateway.config import Platform as P
 
     stub = _mk_runner_stub()(adapter=None)
     src = _relay_channel_source()

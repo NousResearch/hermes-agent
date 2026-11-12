@@ -10,7 +10,7 @@ from hermes_agent.hermes_state import SessionDB
 def test_worker_create_keeps_durable_origin(tmp_path, monkeypatch, linked, explicit):
     from hermes_cli import kanban_db as kb, kanban_db_connect as kbc, kanban_db_notify as kn
     from tools import kanban_tools as kt, async_delegation
-    from gateway.session_context import set_session_vars, clear_session_vars
+    from hermes_agent.gateway.session_context import set_session_vars, clear_session_vars
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
@@ -49,7 +49,7 @@ def test_worker_create_keeps_durable_origin(tmp_path, monkeypatch, linked, expli
 def test_tool_subscription_captures_conversation_anchors(tmp_path, monkeypatch):
     from hermes_cli import kanban_db as kb, kanban_db_connect as kbc, kanban_db_notify as kn
     from tools import kanban_tools as kt
-    from gateway.session_context import set_session_vars, clear_session_vars
+    from hermes_agent.gateway.session_context import set_session_vars, clear_session_vars
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
@@ -75,7 +75,7 @@ def test_tool_create_only_stamps_persisted_ambient_session(tmp_path, monkeypatch
     """Ambient worker ids are provenance only after their state.db row exists."""
     from hermes_cli import kanban_db as kb, kanban_db_connect as kbc
     from tools import kanban_tools as kt
-    from gateway.session_context import scoped_current_session_id
+    from hermes_agent.gateway.session_context import scoped_current_session_id
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
@@ -101,7 +101,7 @@ def test_tool_create_stamps_request_scoped_session_over_process_env(tmp_path, mo
     binding names the conversation that actually ordered the card."""
     from hermes_cli import kanban_db as kb, kanban_db_connect as kbc
     from tools import kanban_tools as kt
-    from gateway.session_context import scoped_current_session_id
+    from hermes_agent.gateway.session_context import scoped_current_session_id
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)

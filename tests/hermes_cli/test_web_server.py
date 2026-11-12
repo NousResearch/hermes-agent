@@ -20,7 +20,7 @@ from hermes_cli.config import (
     redact_key,
     OPTIONAL_ENV_VARS,
 )
-import gateway.status as _gw_status
+import hermes_agent.gateway.status as _gw_status
 import hermes_cli.config as _cfg_mod
 import hermes_cli.web_routers.chat_ws as _rt_chat_ws
 import hermes_cli.web_server_chat as _web_server_chat
@@ -224,7 +224,7 @@ class TestRedactKey:
 
 @pytest.fixture
 def mutation_owner(monkeypatch, _isolate_hermes_home):
-    from gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_authority import SessionAuthority
     from hermes_constants import get_hermes_home
     from hermes_cli.web_server import app
     from hermes_agent.hermes_state import SessionDB
@@ -1241,8 +1241,8 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         metadata, so bundled plugin platforms (irc, ntfy, photon, …) rendered
         as nameless "Irc"/"Ntfy" cards with empty descriptions.
         """
-        from gateway.config import Platform
-        from gateway.platform_registry import PlatformEntry, platform_registry
+        from hermes_agent.gateway.config import Platform
+        from hermes_agent.gateway.platform_registry import PlatformEntry, platform_registry
 
         entry = PlatformEntry(
             name="pseudofake",
@@ -3160,7 +3160,7 @@ class TestDesktopHostRendezvousIsolation:
         it publishes under its OWN role, which the attach ladder never reads."""
         import io
         import urllib.request
-        from gateway import host_rendezvous as hr
+        from hermes_agent.gateway import host_rendezvous as hr
         from hermes_cli import web_server
         from hermes_cli.main_dashboard import _host_backend_attachment
         from hermes_cli.plugins_activation import notify_serve_backend
@@ -3201,7 +3201,7 @@ class TestDesktopHostRendezvousIsolation:
     def test_standalone_backend_still_claims_the_host_serve_record(self, monkeypatch):
         """The Desktop exclusion must not alter standalone dashboard discovery — including a
         supervised service whose shell merely inherited HERMES_DESKTOP=1 without the token."""
-        from gateway import host_rendezvous as hr
+        from hermes_agent.gateway import host_rendezvous as hr
         from hermes_cli import web_server
 
         monkeypatch.setenv("HERMES_DESKTOP", "1")
@@ -3232,7 +3232,7 @@ class TestOrphanedOwnerReclaim:
     """
 
     def _owner_record(self, pid=555, create_time=55.0):
-        from gateway import host_rendezvous as hr
+        from hermes_agent.gateway import host_rendezvous as hr
 
         return hr.HostRecord(
             role=hr.ROLE_SERVE, pid=pid, create_time=create_time, host="0.0.0.0", port=9119,
@@ -3257,7 +3257,7 @@ class TestOrphanedOwnerReclaim:
         ``(claimed, published, fake_procs)``.
         """
         import types
-        from gateway import host_rendezvous as hr
+        from hermes_agent.gateway import host_rendezvous as hr
         from hermes_cli import web_server
         from hermes_cli import process_identity as pi
 
@@ -3774,7 +3774,7 @@ class TestStatusMemoryBlock:
     def test_memory_block_degrades_when_collector_raises(self, monkeypatch):
         """A broken collector must never take down the status endpoint —
         the block degrades to pressure=unknown."""
-        import gateway.memory_status as ms
+        import hermes_agent.gateway.memory_status as ms
 
         def _boom(*_a, **_k):
             raise RuntimeError("collector exploded")
@@ -3788,7 +3788,7 @@ class TestStatusMemoryBlock:
     def test_disk_block_degrades_when_collector_raises(self, monkeypatch):
         """Same contract as the memory block: a broken collector must never
         take down the status endpoint."""
-        import gateway.disk_status as ds
+        import hermes_agent.gateway.disk_status as ds
 
         def _boom(*_a, **_k):
             raise RuntimeError("collector exploded")
@@ -4113,7 +4113,7 @@ class TestDeleteSessionEndpoint:
 
 
     def test_delete_absent_session_is_idempotent(self, mutation_owner):
-        from gateway.session_authority import LiveSession
+        from hermes_agent.gateway.session_authority import LiveSession
         self._seed(['delete-retry'])
         mutation_owner.sessions['delete-retry'] = LiveSession(None, 'route')
         row = mutation_owner.db.get_session('delete-retry')
@@ -4127,7 +4127,7 @@ class TestDeleteSessionEndpoint:
         assert retry.json() == first.json()
 
     def _canonical_delete(self, owner, sid, **query):
-        from gateway.session_authority import LiveSession
+        from hermes_agent.gateway.session_authority import LiveSession
         owner.sessions[sid] = LiveSession(None, 'route')
         row = owner.db.get_session(sid)
         params = dict(request_id=f'scrub-{sid}', expected_revision=row['runtime_revision'],
@@ -4163,7 +4163,7 @@ class TestDeleteSessionEndpoint:
 
     def test_delete_named_profile_session_scrubs_profile_disk(self, monkeypatch):
         from types import SimpleNamespace
-        from gateway.session_authority import SessionAuthority
+        from hermes_agent.gateway.session_authority import SessionAuthority
         from hermes_cli import profiles as profiles_mod
         from hermes_cli.web_server import app
         from hermes_agent.hermes_state import SessionDB
@@ -5403,7 +5403,7 @@ class TestSessionPatchUnread:
 
     def _patch(self, payload):
         from uuid import uuid4
-        from gateway.session_authority import LiveSession
+        from hermes_agent.gateway.session_authority import LiveSession
         self.owner.sessions.setdefault('s1', LiveSession(None, 'route'))
         row = self.owner.db.get_session('s1')
         return self.auth_client.patch('/api/sessions/s1', json={

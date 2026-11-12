@@ -6,7 +6,7 @@ The bug had two sequential gates both rejecting bot messages:
   check BEFORE the bot filter, so bot senders were dropped with a warning
   before the DISCORD_ALLOW_BOTS policy was ever evaluated.
 
-  Gate 2 — `_is_user_authorized` in gateway/run.py rejected bots at the
+  Gate 2 — `_is_user_authorized` in hermes_agent/gateway/run.py rejected bots at the
   gateway level even if they somehow reached that layer.
 
 These tests assert both gates now pass a bot message through when
@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session import Platform, SessionSource
+from hermes_agent.gateway.session import Platform, SessionSource
 
 
 @pytest.fixture(autouse=True)
@@ -49,7 +49,7 @@ def _make_bare_runner():
     Uses ``object.__new__`` to skip the heavy __init__ — many gateway tests
     use this pattern (see AGENTS.md pitfall #17).
     """
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
     runner = object.__new__(GatewayRunner)
     # _is_user_authorized reads self.pairing_store.is_approved(...) before
     # any allowlist check succeeds; stub it to never approve so we exercise

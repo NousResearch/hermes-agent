@@ -15,13 +15,13 @@ tests/gateway/test_telegram_noise_filter.py pins that suite unchanged.
 
 import pytest
 
-import gateway.run as gateway_run
+import hermes_agent.gateway.run as gateway_run
 from agent.conversation_compression import (
     COMPACTION_DONE_STATUS,
     COMPRESSION_REFUSED_WOULD_GROW_WARNING,
     ROUTINE_COMPRESSION_STATUS_SAMPLES,
 )
-from gateway.run import _prepare_gateway_status_message
+from hermes_agent.gateway.run import _prepare_gateway_status_message
 
 # Chat surfaces the opt-in must deliver to (subset of the noise-filter
 # suite's CHAT_PLATFORMS; telegram + discord are the required anchors).

@@ -4,19 +4,19 @@ import json
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.run import GatewayRunner
-from gateway.session_authority import initialize_session_authority
-from gateway.session_results import execution_result
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session_authority import initialize_session_authority
+from hermes_agent.gateway.session_results import execution_result
 from tests.waiting import async_wait_until
 
 
 @pytest.mark.asyncio
 async def test_refused_relay_frame_is_acked_and_the_reader_keeps_serving(tmp_path, monkeypatch, caplog):
     websockets = pytest.importorskip('websockets')
-    from gateway.relay.adapter import RelayAdapter
-    from gateway.relay.descriptor import CapabilityDescriptor
-    from gateway.relay.ws_transport import WebSocketRelayTransport
+    from hermes_agent.gateway.relay.adapter import RelayAdapter
+    from hermes_agent.gateway.relay.descriptor import CapabilityDescriptor
+    from hermes_agent.gateway.relay.ws_transport import WebSocketRelayTransport
 
     sockets, outgoing, ready = [], [], asyncio.Queue()
     descriptor = CapabilityDescriptor(1, 'telegram', 'Fixture', 4096, False, True, False, 'plain', 'chars')

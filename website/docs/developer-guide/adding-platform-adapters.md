@@ -18,7 +18,7 @@ There are two ways to add a platform:
 User ↔ Messaging Platform ↔ Platform Adapter ↔ Gateway Runner ↔ AIAgent
 ```
 
-Every adapter extends `BasePlatformAdapter` from `gateway/platforms/base.py` and implements:
+Every adapter extends `BasePlatformAdapter` from `hermes_agent/gateway/platforms/base.py` and implements:
 
 - **`connect()`** — Establish connection (WebSocket, long-poll, HTTP server, etc.) *(abstract)*
 - **`disconnect()`** — Clean shutdown *(abstract)*
@@ -92,10 +92,10 @@ be granted its own outbound tools.
 ### adapter.py
 
 ```python
-from gateway.platforms._shared import extra_or_secret, get_scoped_secret, seed_extra_from_env
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms._shared import extra_or_secret, get_scoped_secret, seed_extra_from_env
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.config import Platform, PlatformConfig
 
 
 class MyPlatformAdapter(BasePlatformAdapter):
@@ -256,7 +256,7 @@ def register(ctx):
         check_fn=check_requirements,
     )
     # Feature-detect: older cores reject unknown register_platform kwargs.
-    from gateway.platform_registry import PlatformEntry
+    from hermes_agent.gateway.platform_registry import PlatformEntry
     known = {f.name for f in dataclasses.fields(PlatformEntry)}
     for key, value in (
         ("trusted_inbound", True),
@@ -302,17 +302,17 @@ lists each import of it.
 | Need | Import |
 |---|---|
 | Adapter base class, send results, media cache helpers | `gateway.platforms.base` (public names) |
-| SSRF-safe HTTP client: connect-time IP validation, per-redirect re-check, shared keepalive limits | `from gateway.platforms.helpers import platform_http_client` |
+| SSRF-safe HTTP client: connect-time IP validation, per-redirect re-check, shared keepalive limits | `from hermes_agent.gateway.platforms.helpers import platform_http_client` |
 | The pieces of that client, to build your own | `gateway.platforms.base.ssrf_redirect_guard` (httpx `response` hook), `tools.url_safety.create_ssrf_safe_async_client`, `tools.url_safety.is_safe_url`, `gateway.platforms._http_client_limits.platform_httpx_limits` |
-| Own DM/group policy (`dm_policy` / `group_policy` / allowlists) | `from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin` |
+| Own DM/group policy (`dm_policy` / `group_policy` / allowlists) | `from hermes_agent.gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin` |
 | Resolve an approval from a native button | `from tools.approval import resolve_gateway_approval_card` (pass the card's request id; a call without one resolves nothing. Every request starts Deny-only: render through `_send_exec_approval_prompt` so the base `send_exec_approval` can lift the mark once the card shows the whole command. `resolve_gateway_approval` answers the oldest pending request) |
-| Refuse a click from someone who may not answer the approval (not its requester when `approvals.approvers` is narrowed; not allowed `/approve` / `/deny` when the chat sets `allow_admin_from`) | `from gateway.approval_actor import approval_refusal, refusal_text`: call `approval_refusal(session_key, clicker_id, extra=self.config.extra, request_id=..., choice=choice)` before resolving (the `choice` lets the chat's slash admin gate check the answer's own `/approve` or `/deny`); a non-`None` result is the requester's name, reply privately with `refusal_text(name)` and leave the approval pending. Then settle with `resolve_gateway_approval_card(session_key, choice, request_id, actor_id=clicker_id, extra=self.config.extra)`, which rechecks the clicker against the entry it settles in the same critical section. Slash-confirm and clarify taps use `slash_confirm_refusal(session_key, confirm_id, clicker_id, extra=...)` and `clarify_refusal(clarify_id, clicker_id, extra=...)` the same way, before `slash_confirm.resolve` / `resolve_gateway_clarify` / `mark_awaiting_text` |
-| Refuse a picker-card (`send_model_picker` / `send_choice_picker`) or `/update` prompt click from someone other than its opener | `from gateway.approval_actor import picker_refusal, update_prompt_refusal, refusal_text`: `picker_refusal(on_selected, clicker_id, extra=self.config.extra)` with the callback the picker was sent with, or `update_prompt_refusal(clicker_id, extra=self.config.extra)`; a non-`None` result is the opener's name: reply privately with `refusal_text(name)` and leave the card open. The opener and the chat scope's admins always pass |
+| Refuse a click from someone who may not answer the approval (not its requester when `approvals.approvers` is narrowed; not allowed `/approve` / `/deny` when the chat sets `allow_admin_from`) | `from hermes_agent.gateway.approval_actor import approval_refusal, refusal_text`: call `approval_refusal(session_key, clicker_id, extra=self.config.extra, request_id=..., choice=choice)` before resolving (the `choice` lets the chat's slash admin gate check the answer's own `/approve` or `/deny`); a non-`None` result is the requester's name, reply privately with `refusal_text(name)` and leave the approval pending. Then settle with `resolve_gateway_approval_card(session_key, choice, request_id, actor_id=clicker_id, extra=self.config.extra)`, which rechecks the clicker against the entry it settles in the same critical section. Slash-confirm and clarify taps use `slash_confirm_refusal(session_key, confirm_id, clicker_id, extra=...)` and `clarify_refusal(clarify_id, clicker_id, extra=...)` the same way, before `slash_confirm.resolve` / `resolve_gateway_clarify` / `mark_awaiting_text` |
+| Refuse a picker-card (`send_model_picker` / `send_choice_picker`) or `/update` prompt click from someone other than its opener | `from hermes_agent.gateway.approval_actor import picker_refusal, update_prompt_refusal, refusal_text`: `picker_refusal(on_selected, clicker_id, extra=self.config.extra)` with the callback the picker was sent with, or `update_prompt_refusal(clicker_id, extra=self.config.extra)`; a non-`None` result is the opener's name: reply privately with `refusal_text(name)` and leave the card open. The opener and the chat scope's admins always pass |
 | Native clarify buttons | `tools.clarify_gateway`: `get_pending(clarify_id)` (the pending entry or `None`; read `session_key`, `choices`, `multi_select`), `resolve_gateway_clarify(clarify_id, text)`, `mark_awaiting_text(clarify_id)`, `SKIPPED` |
 | `setup_fn` wizard steps | `hermes_cli.gateway_setup_wizard`: `print_setup_header(title)`, `confirm_reconfigure(label, *env_vars)`, `offer_home_channel(home_var, user_id, what)`, `save_env_values(**values)`, `prompt_csv(text, default)`; prompts from `hermes_cli.setup` (`prompt`, `prompt_choice`, `prompt_yes_no`); output from `hermes_cli.cli_output` (`print_info`, `print_success`, `print_warning`, `print_error`); `.env` access through `hermes_cli.config` (`save_env_value`, `get_env_value`) |
 
 ```python
-from gateway.platforms.helpers import platform_http_client
+from hermes_agent.gateway.platforms.helpers import platform_http_client
 
 async def connect(self) -> bool:
     # timeout=30.0 and follow_redirects=True by default; any other httpx.AsyncClient kwarg passes through.
@@ -345,7 +345,7 @@ if settings is not None:
 ```
 
 The result is a fresh `SessionModelSettings` dictionary (type import:
-`from gateway.platforms.session_model import SessionModelSettings`) with exactly
+`from hermes_agent.gateway.platforms.session_model import SessionModelSettings`) with exactly
 `session_key`, `model`, `provider`, and `base_url`, all strings. It is detached in both
 directions: editing it cannot change the conversation, and later model switches cannot
 change a previously returned result. An unattached adapter or rejected profile route
@@ -395,7 +395,7 @@ off the event loop**. `max_models` is the catalog's per-provider hint, not a har
 curated/aggregator providers may be uncapped. `include_moa` includes the synthetic MoA row.
 
 The return value is a detached list of fresh `SessionModelPickerProvider` dictionaries
-(type import: `from gateway.platforms.session_model import SessionModelPickerProvider`),
+(type import: `from hermes_agent.gateway.platforms.session_model import SessionModelPickerProvider`),
 with exactly these allowlisted fields:
 
 | Field | Type | Inline use |
@@ -493,7 +493,7 @@ Most users set up a platform by dropping env vars into `~/.hermes/.env` rather t
 Read env through `gateway.platforms._shared.get_scoped_secret` — never `os.getenv`. Under `gateway.multiplex_profiles` the process env holds the DEFAULT profile's values; a secondary profile's `.env` exists only in its secret scope, and a raw read would enable your platform for the wrong profile with the wrong credentials. `seed_extra_from_env` builds the seed dict from a `(ENV_VAR, extra_key, conv)` table through that reader.
 
 ```python
-from gateway.platforms._shared import get_scoped_secret, seed_extra_from_env
+from hermes_agent.gateway.platforms._shared import get_scoped_secret, seed_extra_from_env
 
 
 def _env_enablement() -> dict | None:
@@ -532,10 +532,10 @@ def register(ctx):
 
 ## YAML→env Config Bridge
 
-Some users prefer setting `config.yaml` keys (`my_platform.require_mention`, `my_platform.allowed_channels`, etc.) over env vars. The `apply_yaml_config_fn` hook lets your plugin own this translation instead of forcing core `gateway/config.py` to know your platform's YAML schema.
+Some users prefer setting `config.yaml` keys (`my_platform.require_mention`, `my_platform.allowed_channels`, etc.) over env vars. The `apply_yaml_config_fn` hook lets your plugin own this translation instead of forcing core `hermes_agent/gateway/config.py` to know your platform's YAML schema.
 
 ```python
-from gateway.platforms._shared import apply_yaml_bridge
+from hermes_agent.gateway.platforms._shared import apply_yaml_bridge
 
 # (yaml key, ENV_VAR, kind). "lower" bridges whenever the key is present
 # (booleans become "true"/"false"); "str" skips null/blank; "csv" comma-joins
@@ -759,7 +759,7 @@ This checklist is for adding a platform directly to the Hermes core codebase —
 
 ### 1. Platform Enum
 
-Add your platform to the `Platform` enum in `gateway/config.py`:
+Add your platform to the `Platform` enum in `hermes_agent/gateway/config.py`:
 
 ```python
 class Platform(Enum):
@@ -772,10 +772,10 @@ class Platform(Enum):
 Create `plugins/platforms/newplat/adapter.py`:
 
 ```python
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms._shared import extra_or_secret
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms._shared import extra_or_secret
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 
 def check_newplat_requirements() -> bool:
     """Return True if dependencies are available."""
@@ -824,7 +824,7 @@ event = MessageEvent(
 await self.handle_message(event)
 ```
 
-### 3. Gateway Config (`gateway/config.py`)
+### 3. Gateway Config (`hermes_agent/gateway/config.py`)
 
 Three touchpoints:
 
@@ -832,20 +832,20 @@ Three touchpoints:
 2. **`load_gateway_config()`** — Add token env map entry: `Platform.NEWPLAT: "NEWPLAT_TOKEN"`
 3. **`_apply_env_overrides()`** — Map all `NEWPLAT_*` env vars to config
 
-### 4. Gateway Runner (`gateway/run.py` + `gateway/run_*.py` siblings)
+### 4. Gateway Runner (`hermes_agent/gateway/run.py` + `hermes_agent/gateway/run_*.py` siblings)
 
 Six touchpoints:
 
-1. **`_BUILTIN_ADAPTERS` table** (`gateway/run.py`) — Add a `Platform.NEWPLAT: (module, class, check_fn, error_msg)` entry; `_instantiate_adapter()` (`gateway/run_adapters.py`) consults the plugin registry, then this table — there is no `elif` chain to extend. The `_create_adapter()` wrapper binds every successful adapter to its gateway runner.
+1. **`_BUILTIN_ADAPTERS` table** (`hermes_agent/gateway/run.py`) — Add a `Platform.NEWPLAT: (module, class, check_fn, error_msg)` entry; `_instantiate_adapter()` (`hermes_agent/gateway/run_adapters.py`) consults the plugin registry, then this table — there is no `elif` chain to extend. The `_create_adapter()` wrapper binds every successful adapter to its gateway runner.
 2. **`_is_user_authorized()` allowed_users map** — `Platform.NEWPLAT: "NEWPLAT_ALLOWED_USERS"`
 3. **`_is_user_authorized()` allow_all map** — `Platform.NEWPLAT: "NEWPLAT_ALLOW_ALL_USERS"`
-4. **Startup access-policy check** (`gateway/run_startup.py`) — Add `"NEWPLAT"` to `_ALLOWLIST_ENV_PLATFORMS` (derives both `NEWPLAT_ALLOWED_USERS` and `NEWPLAT_ALLOW_ALL_USERS`)
-5. **Startup `_BUILTIN_ALLOW_ALL_VARS`** (`gateway/run_startup.py`) — derived from the same `_ALLOWLIST_ENV_PLATFORMS` tuple; nothing extra to add
+4. **Startup access-policy check** (`hermes_agent/gateway/run_startup.py`) — Add `"NEWPLAT"` to `_ALLOWLIST_ENV_PLATFORMS` (derives both `NEWPLAT_ALLOWED_USERS` and `NEWPLAT_ALLOW_ALL_USERS`)
+5. **Startup `_BUILTIN_ALLOW_ALL_VARS`** (`hermes_agent/gateway/run_startup.py`) — derived from the same `_ALLOWLIST_ENV_PLATFORMS` tuple; nothing extra to add
 6. **`_UPDATE_ALLOWED_PLATFORMS` frozenset** — Add `Platform.NEWPLAT`
 
 ### 5. Cross-Platform Delivery
 
-1. **`gateway/platforms/webhook.py`** — Add `"newplat"` to the delivery type tuple
+1. **`hermes_agent/gateway/platforms/webhook.py`** — Add `"newplat"` to the delivery type tuple
 2. **`hermes_agent/cron/scheduler_delivery.py`** — Add to `_KNOWN_DELIVERY_PLATFORMS` frozenset and `_deliver_result()` platform map
 
 ### 6. CLI Integration
@@ -960,7 +960,7 @@ For platforms with tight response deadlines (e.g., WeCom's 5-second limit), alwa
 Platforms redeliver: websocket resumes replay recent events, webhooks retry, and an unacknowledged poll batch comes back. Drop repeats with the shared helper, keyed on the platform's message ID:
 
 ```python
-from gateway.platforms.helpers import MessageDeduplicator
+from hermes_agent.gateway.platforms.helpers import MessageDeduplicator
 
 self._dedup = MessageDeduplicator(ttl_seconds=600)  # in __init__
 
@@ -975,7 +975,7 @@ When the gateway's reconnect watcher replaces a failed adapter with a new instan
 If the adapter holds a persistent connection with a unique credential, add a scoped lock to prevent two profiles from using the same credential:
 
 ```python
-from gateway.status import acquire_scoped_lock, release_scoped_lock
+from hermes_agent.gateway.status import acquire_scoped_lock, release_scoped_lock
 
 async def connect(self, *, is_reconnect: bool = False):
     acquired, _existing = acquire_scoped_lock("newplat", self._token)

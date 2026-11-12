@@ -12,11 +12,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import hosted_room_driver as driver
-from gateway import hosted_room_discussion as discussion
-from gateway import hosted_rooms
-from gateway.hosted_room_policy_checkpoint import MAX_ACTIVE_POLICY_EVENTS
-from gateway.hosted_room_peer import (
+from hermes_agent.gateway import hosted_room_driver as driver
+from hermes_agent.gateway import hosted_room_discussion as discussion
+from hermes_agent.gateway import hosted_rooms
+from hermes_agent.gateway.hosted_room_policy_checkpoint import MAX_ACTIVE_POLICY_EVENTS
+from hermes_agent.gateway.hosted_room_peer import (
     GatewayRoomCatalog,
     HostedMemberDispatch,
     PROTOCOL_VERSION,
@@ -1288,7 +1288,7 @@ def test_registration_disk_failure_does_not_publish_live_route(
         grant="signed.room.grant",
     )
     monkeypatch.setattr(
-        "gateway.hosted_room_links.save_room_link",
+        "hermes_agent.gateway.hosted_room_links.save_room_link",
         lambda *args, **kwargs: (_ for _ in ()).throw(OSError("disk full")),
     )
     with pytest.raises(OSError, match="disk full"):
@@ -1307,7 +1307,7 @@ def test_registration_disk_failure_does_not_publish_live_route(
 def test_room_route_revocation_is_remote_first_and_removes_local_state(
     tmp_path: Path,
 ):
-    from gateway import hosted_room_links
+    from hermes_agent.gateway import hosted_room_links
 
     db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(
@@ -1341,7 +1341,7 @@ def test_room_route_revocation_is_remote_first_and_removes_local_state(
 
 
 def test_failed_remote_revocation_preserves_route_for_retry(tmp_path: Path):
-    from gateway import hosted_room_links
+    from hermes_agent.gateway import hosted_room_links
 
     db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(
@@ -1374,7 +1374,7 @@ def test_failed_remote_revocation_preserves_route_for_retry(tmp_path: Path):
 
 
 def test_expired_remote_grant_no_longer_blocks_room_cleanup(tmp_path: Path):
-    from gateway import hosted_room_links
+    from hermes_agent.gateway import hosted_room_links
 
     db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(
@@ -1726,7 +1726,7 @@ def test_dispatch_refresh_marks_route_for_reauthorization_on_drift(
     capability_changed,
     policy_changed,
 ):
-    from gateway.hosted_room_execution_policy import execution_policy_mapping
+    from hermes_agent.gateway.hosted_room_execution_policy import execution_policy_mapping
 
     base_policy = execution_policy_mapping(
         target_profile="reviewer",

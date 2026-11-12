@@ -238,7 +238,7 @@ else:
 def test_library_imports_of_dual_use_entry_modules_stay_side_effect_free(tmp_path):
     # The codex hermes-tools MCP server and the compute host are ``python -m`` entry points
     # that agent/gateway code and tests also import; there the bootstrap exported TMPDIR and
-    # HERMES_SCRATCH_DIR into every importer (gateway.relay's read-only routing included).
+    # HERMES_SCRATCH_DIR into every importer (hermes_agent.gateway.relay's read-only routing included).
     code = textwrap.dedent("""
         import json, os, sys
         before = dict(os.environ)

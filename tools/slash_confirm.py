@@ -29,7 +29,7 @@ DEFAULT_TIMEOUT_SECONDS = 300
 def register(session_key: str, confirm_id: str, command: str,
              handler: Callable[[str], Awaitable[Optional[str]]], authority: Optional[dict] = None) -> None:
     """Register a pending confirm, superseding any prior one for the session. *authority* says who
-    may answer it (``gateway.approval_actor.slash_confirm_refusal``); default: the current turn's."""
+    may answer it (``hermes_agent.gateway.approval_actor.slash_confirm_refusal``); default: the current turn's."""
     if authority is None:
         from tools.approval_context import prompt_authority
         authority = prompt_authority()

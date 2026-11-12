@@ -14,9 +14,9 @@ from pathlib import Path
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.pairing import PairingStore
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.pairing import PairingStore
+from hermes_agent.gateway.session import SessionSource
 
 
 @pytest.fixture
@@ -39,7 +39,7 @@ def mux_home(tmp_path, monkeypatch):
 
 
 def _runner(home):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(multiplex_profiles=True)
@@ -52,7 +52,7 @@ def _runner(home):
 
 
 def _feishu_event(user_id):
-    from gateway.platforms.base import MessageEvent, MessageType
+    from hermes_agent.gateway.platforms.base import MessageEvent, MessageType
 
     source = SessionSource(
         platform=Platform.FEISHU,
@@ -72,7 +72,7 @@ async def test_busy_handler_authorizes_against_secondary_profile_allowlist(mux_h
     runner = _runner(mux_home)
 
     # Isolate exactly the authorization decision the busy path gates on
-    # (see gateway/run_busy.py::_handle_active_session_busy_message's first
+    # (see hermes_agent/gateway/run_busy.py::_handle_active_session_busy_message's first
     # check) without pulling in queueing/steer machinery unrelated to the bug.
     async def _stub_busy_message(event, session_key):
         return runner._is_user_authorized(event.source)

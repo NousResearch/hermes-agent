@@ -5,8 +5,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.session_api_turn import admit_api_turn, recover_api_turns
-from gateway.session_ingress_media import _media_root
+from hermes_agent.gateway.session_api_turn import admit_api_turn, recover_api_turns
+from hermes_agent.gateway.session_ingress_media import _media_root
 from hermes_agent.hermes_state_runtime import claim_session_input, settle_session_input
 
 
@@ -85,7 +85,7 @@ async def test_a_cleanup_failure_after_the_delete_committed_is_not_a_500(api, ow
     files stay for the next sweep, but the finished delete answers 200."""
     _settle_text(api, owner, 'chat')
     planted = _plant(1)
-    monkeypatch.setattr('gateway.session_ingress_media._history_mentions', _exploding(error))
+    monkeypatch.setattr('hermes_agent.gateway.session_ingress_media._history_mentions', _exploding(error))
     status, body = await _delete(api, 'chat')
     assert status == 200, body
     assert owner.db.get_session('chat') is None
@@ -115,7 +115,7 @@ def test_startup_recovery_continues_when_image_collection_fails(api, owner, monk
         api, session_id='queued', request_id='queued-turn',
         user_message='pending', conversation_history=[])
     _plant(1)
-    monkeypatch.setattr('gateway.session_ingress_media._history_mentions', _exploding(error))
+    monkeypatch.setattr('hermes_agent.gateway.session_ingress_media._history_mentions', _exploding(error))
     scheduled = []
     monkeypatch.setattr(owner, '_schedule', lambda ref: scheduled.append(ref.session_id))
     recover_api_turns(api)

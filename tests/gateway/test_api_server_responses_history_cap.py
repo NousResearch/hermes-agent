@@ -9,8 +9,8 @@ history is what the model is replayed on the next chained turn.
 import json
 from unittest.mock import patch
 
-from gateway.platforms.api_server import APIServerAdapter
-from gateway.platforms.base import PlatformConfig
+from hermes_agent.gateway.platforms.api_server import APIServerAdapter
+from hermes_agent.gateway.platforms.base import PlatformConfig
 
 BIG = "x" * 20_000
 PRIOR = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]

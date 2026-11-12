@@ -830,7 +830,7 @@ description: Acme Inference — OpenAI-compatible direct API
 
 ```python
 # plugins/platforms/myplatform/adapter.py
-from gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
 class MyPlatformAdapter(BasePlatformAdapter):
     async def connect(self): ...

@@ -146,10 +146,10 @@ _RESULT_PASSTHROUGH = ('pre_transform_response', 'billing_block', 'last_reasonin
 def classic_cli_turn(turn):
     """A local-viewer turn on a classic-CLI surface session (``cli`` / ``oneshot`` / ``tool``): the
     viewer is main's HermesCLI, which reads the run_conversation-shaped result itself."""
-    from gateway.run_turn_progress import local_viewer_turn
+    from hermes_agent.gateway.run_turn_progress import local_viewer_turn
     if not local_viewer_turn(turn):
         return False
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_policy import policy_for_source
     try:
         policy = policy_for_source(turn._runner, turn._ctx.source)
     except RuntimeStoreError:  # a route whose frozen policy is not restored: not a CLI viewer turn
@@ -162,7 +162,7 @@ def clarify_batch_turn(turn):
     submitter declared it answers the whole set (``clarify_batch`` committed with its admission).
     Main's classic CLI, Ink TUI and Desktop all showed every question at once (TUI-18); a viewer that
     never asks (an ACP editor, a raw WebSocket client) keeps one ``clarify.request`` card per question."""
-    from gateway.run_turn_progress import local_viewer_turn
+    from hermes_agent.gateway.run_turn_progress import local_viewer_turn
     return local_viewer_turn(turn) and bool(
         cli_turn(getattr(turn._ctx, 'inbound_message_id', None)).get('clarify_batch'))
 
@@ -193,7 +193,7 @@ def one_turn_route(turn, policy, model, runtime_kwargs):
     override = cli_turn(turn._ctx.inbound_message_id).get('model_override')
     if not override:
         return model, runtime_kwargs
-    from gateway.session_authorities import active_authority
+    from hermes_agent.gateway.session_authorities import active_authority
     config = policy.config(active_authority(turn._runner)) if policy else turn._ctx.user_config
     return one_turn_runtime(override, model, runtime_kwargs, config)
 
@@ -213,7 +213,7 @@ def run_classic_cli_turn(turn, run):
     fields are taken from its raw result and kept on ``turn`` for the committed receipt."""
     if not classic_cli_turn(turn):
         return run()
-    from gateway.session_finite import finite_turn_required
+    from hermes_agent.gateway.session_finite import finite_turn_required
     aux_before = cli_db = None
     if finite_turn_required() is True:
         # `chat -q --usage-file` / stream-json: this turn's auxiliary spend, as oneshot.py read it.

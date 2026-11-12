@@ -12,8 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from gateway.hosted_room_driver import TaskIdentity
-from gateway.hosted_room_peer import HostedMemberDispatch, PROTOCOL_VERSION
+from hermes_agent.gateway.hosted_room_driver import TaskIdentity
+from hermes_agent.gateway.hosted_room_peer import HostedMemberDispatch, PROTOCOL_VERSION
 from hermes_agent.tui_gateway.hosted_room_driver import (
     ROOM_SESSION_SOURCE, HostedRoomBinding, InternalSessionRPC, room_session_title)
 
@@ -127,7 +127,7 @@ def route_identity(
     for that room and member (a route registered before the pair was derived keeps its random
     trace). A new route derives it: the trace from home, room and member, and the cancellation
     scope from the room, as ``hermes serve`` has always named it."""
-    from gateway import hosted_rooms
+    from hermes_agent.gateway import hosted_rooms
     stored = next((row for row in hosted_rooms.list_room_link_records(db_path)
                    if (row["room_id"], row["member_id"]) == (room_id, member_id)), None)
     if stored is not None and stored["cancellation_scope_id"] and stored["trace_id"]:

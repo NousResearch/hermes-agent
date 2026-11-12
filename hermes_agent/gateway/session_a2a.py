@@ -8,7 +8,7 @@ import json
 import logging
 from pathlib import Path
 
-from gateway.session_contract import SessionRef, Submission
+from hermes_agent.gateway.session_contract import SessionRef, Submission
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
@@ -17,7 +17,7 @@ _forward_identity = ContextVar('a2a_forward_identity', default=None)
 
 def build_forward_policy(params, config, *, private_secrets):
     """Only the forwarding handler can mint this policy, never session.create JSON."""
-    from gateway.session_policy import build_policy
+    from hermes_agent.gateway.session_policy import build_policy
     identity = _forward_identity.get()
     if identity is None or set(params) != {'source', 'request_id'}:
         raise RuntimeStoreError('invalid_params')
@@ -49,7 +49,7 @@ def forward_author(policy):
 
 def storage_source(db, source, session_id, fallback):
     """Retain the owner's creation label when its LOCAL transport refreshes peer metadata."""
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     if source.platform != Platform.LOCAL:
         return fallback
     if not str(source.chat_id).startswith('local-'):
@@ -73,7 +73,7 @@ def storage_source(db, source, session_id, fallback):
     if 'legacy_session_id' in receipt:
         root = db.get_session(receipt['legacy_session_id'])
         return (root or {}).get('source') or label
-    from gateway.session_policy import STORED_AS_LOCAL
+    from hermes_agent.gateway.session_policy import STORED_AS_LOCAL
     return fallback if label in STORED_AS_LOCAL else label
 
 
@@ -91,9 +91,9 @@ async def forward(connection, params):
         raise RuntimeStoreError('invalid_params')
     identity = [params[k] for k in ('agent', 'tenant', 'peer', 'context_id')]
     key = 'a2a:' + hashlib.sha256(json.dumps(identity, separators=(',', ':')).encode()).hexdigest()
-    from gateway.session_local_recovery import local_identity, restore_local_session
-    from gateway.session_local import stage_local_session
-    from gateway.session_runtime_workers import tracked_write
+    from hermes_agent.gateway.session_local_recovery import local_identity, restore_local_session
+    from hermes_agent.gateway.session_local import stage_local_session
+    from hermes_agent.gateway.session_runtime_workers import tracked_write
     from hermes_agent.hermes_state_local import commit_local_session, local_receipt
     from hermes_agent.hermes_state_mutation_retirement import first_generation
     from hermes_agent.hermes_state_terminal import identity_key
@@ -136,7 +136,7 @@ async def forward(connection, params):
     if ref.session_id not in connection.subscriptions:
         await connection.resume(ref, {})
     receipt = await authority.submit(actor, Submission(params['input_id'], ref, {'text': params['text']}, 'queue'))
-    from gateway.session_results import admission_result
+    from hermes_agent.gateway.session_results import admission_result
     saved = admission_result(authority.db, receipt.admission_id)
     return dict(asdict(receipt), session_id=ref.session_id,
                 result=saved['result'] if saved is not None else None)

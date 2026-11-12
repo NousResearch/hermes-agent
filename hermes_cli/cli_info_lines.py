@@ -1,7 +1,7 @@
 """The classic CLI's `/toolsets` and `/platforms` reports as plain lines.
 
 Shared by the classic CLI (`CLIInfoMixin.show_toolsets` / `_show_gateway_status`) and the shared
-gateway, which runs the same report for a local session's `slash.exec` (gateway/session_info_reads.py):
+gateway, which runs the same report for a local session's `slash.exec` (hermes_agent/gateway/session_info_reads.py):
 one text on every surface, read where the state lives (the session's toolsets, the gateway's
 platform config).
 """
@@ -32,7 +32,7 @@ def toolsets_lines(enabled) -> list[str]:
 def platforms_lines() -> list[str]:
     """``/platforms``: the messaging platforms the profile's gateway config enables."""
     from hermes_constants import display_hermes_home
-    from gateway.config import load_gateway_config, Platform
+    from hermes_agent.gateway.config import load_gateway_config, Platform
     out = ["", *_box(t("cli.gateway_status.header"), 60), ""]
     config_file = f"{display_hermes_home()}/config.yaml"
     try:

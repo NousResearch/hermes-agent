@@ -980,7 +980,7 @@ def test_fs_reads_translate_after_binding_profile_terminal_scope(client, tmp_pat
         return None
 
     monkeypatch.setattr(
-        "gateway.platforms.base._translate_docker_container_media_path", translate,
+        "hermes_agent.gateway.platforms.base._translate_docker_container_media_path", translate,
     )
     monkeypatch.setattr("tools.terminal_scope.build_profile_terminal_scope", _no_scope_builder)
     monkeypatch.setenv("TERMINAL_ENV", "docker")
@@ -1126,7 +1126,7 @@ def test_fs_download_maps_workspace_container_to_its_sandbox(client, monkeypatch
             "/api/fs/download", params={"path": "/workspace/note.txt", "session_id": "sess-live"},
         )
     finally:
-        from gateway.session_policy import unbind_turn_workspace
+        from hermes_agent.gateway.session_policy import unbind_turn_workspace
         unbind_turn_workspace("sess-live")
     assert live.status_code == 200
     assert live.content == b"session-file"
@@ -1188,7 +1188,7 @@ def test_agent_fs_path_translates_before_host_normalization(monkeypatch, tmp_pat
         return mapped
 
     monkeypatch.setenv("TERMINAL_ENV", "docker")
-    monkeypatch.setattr("gateway.platforms.base._translate_docker_container_media_path", translate)
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base._translate_docker_container_media_path", translate)
 
     def boom(*_a, **_k):
         raise AssertionError("_fs_path must not run when translation succeeds")
@@ -1371,7 +1371,7 @@ def test_fs_read_plain_host_path_logs_no_docker_media_warning(client, docker_vol
     """fs routes see ordinary host paths constantly; misses are not MEDIA warnings."""
     plain = tmp_path / "plain.txt"
     plain.write_text("x", encoding="utf-8")
-    with caplog.at_level("WARNING", logger="gateway.platforms.base"):
+    with caplog.at_level("WARNING", logger="hermes_agent.gateway.platforms.base"):
         client.get("/api/fs/read-text", params={"path": str(plain)})
         client.get("/api/fs/read-text", params={"path": str(tmp_path / "missing.txt")})
         client.get("/api/fs/list", params={"path": str(tmp_path)})
@@ -1384,7 +1384,7 @@ def test_agent_fs_path_leaves_host_paths_to_fs_path(monkeypatch, tmp_path):
     def translate(*_a, **_k):
         raise AssertionError("relative/UNC/drive paths are not container paths")
 
-    monkeypatch.setattr("gateway.platforms.base._translate_docker_container_media_path", translate)
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base._translate_docker_container_media_path", translate)
     target = tmp_path / "note.txt"
     target.write_text("x")
 

@@ -21,8 +21,8 @@ import time
 
 import pytest
 
-from gateway import scale_to_zero as s2z
-from gateway.run import GatewayRunner
+from hermes_agent.gateway import scale_to_zero as s2z
+from hermes_agent.gateway.run import GatewayRunner
 
 
 @pytest.fixture
@@ -402,7 +402,7 @@ def test_secondary_profile_socket_keeps_a_multiplexed_gateway_awake(hermes_home,
     profile (``chat_ws.gateway_ws``). Its pings must keep the multiplexed gateway awake."""
     from types import SimpleNamespace
 
-    from gateway.session_authorities import owner_scope
+    from hermes_agent.gateway.session_authorities import owner_scope
     from hermes_agent.tui_gateway import ws as ws_mod
 
     _stub_ws_server(monkeypatch, ws_mod)

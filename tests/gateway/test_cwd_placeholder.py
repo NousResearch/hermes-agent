@@ -1,6 +1,6 @@
-"""Unit tests for gateway.cwd_placeholder.resolve_placeholder_terminal_cwd."""
+"""Unit tests for hermes_agent.gateway.cwd_placeholder.resolve_placeholder_terminal_cwd."""
 
-from gateway.cwd_placeholder import resolve_placeholder_terminal_cwd
+from hermes_agent.gateway.cwd_placeholder import resolve_placeholder_terminal_cwd
 
 
 class TestResolvePlaceholderTerminalCwd:

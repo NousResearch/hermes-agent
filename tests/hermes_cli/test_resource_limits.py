@@ -177,8 +177,8 @@ def test_never_lowers_an_unlimited_soft_limit(monkeypatch):
 
 @pytest.mark.anyio
 async def test_gateway_startup_applies_limit_before_gateway_initialization(monkeypatch):
-    import gateway.code_skew
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.code_skew
+    import hermes_agent.gateway.run as gateway_run
 
     calls: list[str] = []
 
@@ -195,7 +195,7 @@ async def test_gateway_startup_applies_limit_before_gateway_initialization(monke
         calls.append("gateway-init")
         raise _StopStartup
 
-    monkeypatch.setattr(gateway.code_skew, "record_boot_fingerprint", stop_after_limit)
+    monkeypatch.setattr(hermes_agent.gateway.code_skew, "record_boot_fingerprint", stop_after_limit)
 
     with pytest.raises(_StopStartup):
         await gateway_run.start_gateway()

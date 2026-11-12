@@ -15,20 +15,20 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from agent.i18n import t
 from agent.interrupt_compat import _accepts_keyword
 from agent.replay_cleanup import strip_stale_dangerous_confirmations
-from gateway.config import Platform
-from gateway.media_repair import repair_explicit_computer_use_media_paths
-from gateway.platforms.base import BasePlatformAdapter
-from gateway.platforms.helpers import typing_metadata_for_turn
-from gateway.turn_context import TurnContext
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.media_repair import repair_explicit_computer_use_media_paths
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.platforms.helpers import typing_metadata_for_turn
+from hermes_agent.gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
 from utils import is_truthy_value
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner
-    from gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 
 def _append_progress_repeat_count(message: str, occurrences: int) -> str:
@@ -46,7 +46,7 @@ def _note_flood(st, result) -> bool:
     """True when a failed progress edit was refused by flood control; arms ``st.flood_until`` from
     the result's ``retry_after``, else the wait stated in its error text (default 30s), so no
     progress call fires into the open window. The edit is owed: ``st.flood_pending`` is set."""
-    from gateway.delivery_ledger import flood_wait_seconds, is_flood_error
+    from hermes_agent.gateway.delivery_ledger import flood_wait_seconds, is_flood_error
     error = getattr(result, "error", "") or ""
     if not (is_flood_error(error) or "flood" in error.lower() or "retry after" in error.lower()):
         return False
@@ -100,7 +100,7 @@ def _tool_lifecycle_payload(call_id, tool_name, args) -> dict:
     from agent.display import build_tool_preview, tool_labels_for_call
     name = str(tool_name or "tool")
     args = args if isinstance(args, dict) else {}
-    from gateway.session_tool_events import bounded_args
+    from hermes_agent.gateway.session_tool_events import bounded_args
     payload = {"tool_id": str(call_id or ""), "name": name, "context": build_tool_preview(name, args, max_len=80) or "",
                "tool_call_id": str(call_id or ""), "tool_name": name, "args": bounded_args(args)}
     if labels := [label.as_payload() for label in tool_labels_for_call(name, args)]:
@@ -111,7 +111,7 @@ def _tool_lifecycle_payload(call_id, tool_name, args) -> dict:
 def _tool_complete_payload(call_id, tool_name, args, result, *, is_error=None, verbose=False) -> dict:
     """``tool.complete`` as every viewer reads it: the start contract plus the executor's verdict and
     the result (ACP renders paths/output and failure from it), and ``result_text`` under /verbose."""
-    from gateway.session_tool_events import bounded_result
+    from hermes_agent.gateway.session_tool_events import bounded_result
     if is_error is None:
         from agent.display import _detect_tool_failure
         is_error = _detect_tool_failure(tool_name, result)[0]
@@ -140,7 +140,7 @@ def publish_worker_tool_event(authority, session_id, generation, frame) -> bool:
         verbose = getattr(authority.sessions[session_id], "tool_progress_mode", None) == "verbose"
         payload = _tool_complete_payload(call_id, name, args, result, is_error=frame["is_error"], verbose=verbose)
     authority.publish_execution(session_id, generation, kind, payload)
-    from gateway.session_api_turn import publish_api_tool_event, publish_api_tool_progress
+    from hermes_agent.gateway.session_api_turn import publish_api_tool_event, publish_api_tool_progress
     publish_api_tool_event(authority, session_id, generation, kind, call_id, name, args, result)
     # A worker sends no progress events: progress-only observers get the executor's preview of its
     # args and the frame's own verdict, taken before the result was bounded.
@@ -159,7 +159,7 @@ class GatewayTurnProgressMixin:
 
     def _schedule(self, coro, log_message: str, loop=None):
         """Hop a coroutine from the agent's sync worker thread onto the gateway loop."""
-        from gateway.run import safe_schedule_threadsafe
+        from hermes_agent.gateway.run import safe_schedule_threadsafe
         return safe_schedule_threadsafe(
             coro, self._ctx._loop_for_step if loop is None else loop, logger=logger, log_message=log_message,
         )
@@ -202,7 +202,7 @@ class GatewayTurnProgressMixin:
         ctx = self._ctx
         if local_viewer_turn(self):
             try:
-                from gateway import local_viewer_events
+                from hermes_agent.gateway import local_viewer_events
                 local_viewer_events.publish_progress(self, event_type, tool_name, preview, kwargs)
             except Exception:
                 # Best-effort: a viewer frame never blocks the failure notice below, but a lost one is logged.
@@ -262,7 +262,7 @@ class GatewayTurnProgressMixin:
     def _progress_subagent_notice(self, preview, kwargs: dict) -> None:
         """Only terminal failure statuses render (same notice rail as credit warnings)."""
         ctx = self._ctx
-        from gateway.warning_notifications import render_notification
+        from hermes_agent.gateway.warning_notifications import render_notification
         status = kwargs.get("status")
         try:
             from tools.delegate_tool import SUBAGENT_FAILURE_STATUSES, format_subagent_failure_line
@@ -297,7 +297,7 @@ class GatewayTurnProgressMixin:
     def _progress_onboarding_hint(self, kwargs: dict) -> None:
         """First-touch onboarding: the first time a tool exceeds _LONG_TOOL_THRESHOLD_S while
         streaming every tool (progress_mode == "all"), append a one-time /verbose hint."""
-        from gateway.run import _hermes_home, _load_gateway_config
+        from hermes_agent.gateway.run import _hermes_home, _load_gateway_config
         ctx = self._ctx
         try:
             if (kwargs.get("duration") or 0) >= ctx._LONG_TOOL_THRESHOLD_S and ctx.progress_mode == "all":
@@ -463,7 +463,7 @@ class GatewayTurnProgressMixin:
     async def _task_card_send_or_edit_fallback(self, st) -> None:
         ctx = self._ctx
         text = st.fallback_text()
-        from gateway.relay.egress import declined_send
+        from hermes_agent.gateway.relay.egress import declined_send
 
         if st.publication_suppressed:
             return
@@ -519,7 +519,7 @@ class GatewayTurnProgressMixin:
             # fallback below sends the same task text to the same chat, which
             # turns a refused card into delivered plain text. Stop the lane
             # without re-delivering; the refusal is already logged.
-            from gateway.relay.egress import declined_send
+            from hermes_agent.gateway.relay.egress import declined_send
 
             if declined_send(result):
                 # TERMINAL, and stored SEPARATELY from native_failed. Reusing
@@ -536,7 +536,7 @@ class GatewayTurnProgressMixin:
                 )
                 return
             st.native_failed = True
-            from gateway.run_turn_runner import _CARD_DESTINATION_REFUSALS
+            from hermes_agent.gateway.run_turn_runner import _CARD_DESTINATION_REFUSALS
             if getattr(result, "error", None) in _CARD_DESTINATION_REFUSALS:
                 self._task_card_uncardable_destination(st, getattr(result, "error", "unknown error"))
                 if st.publication_suppressed:
@@ -1052,7 +1052,7 @@ class GatewayTurnProgressMixin:
     def combined_tool_start_callback(self, call_id, tool_name, args):
         """Compose the voice ack + native task-card start consumers."""
         if local_viewer_turn(self):
-            from gateway import local_viewer_events
+            from hermes_agent.gateway import local_viewer_events
             local_viewer_events.note_tool_start(self, call_id, tool_name, args)
         self._publish_execution("tool.start", _tool_lifecycle_payload(call_id, tool_name, args))
         self._publish_api_tool("tool.start", call_id, tool_name, args)
@@ -1066,11 +1066,11 @@ class GatewayTurnProgressMixin:
         is_error, _ = _detect_tool_failure(tool_name, result)
         owner = self._approval_owner
         live = owner[0].sessions.get(owner[1]) if owner is not None else None
-        # A session's /verbose (gateway/session_busy_controls.py) ships the Result block text.
+        # A session's /verbose (hermes_agent/gateway/session_busy_controls.py) ships the Result block text.
         verbose = live is not None and (getattr(live, "tool_progress_mode", None) or self._ctx.progress_mode) == "verbose"
         payload = _tool_complete_payload(call_id, tool_name, args, result, is_error=is_error, verbose=verbose)
         if local_viewer_turn(self):
-            from gateway import local_viewer_events
+            from hermes_agent.gateway import local_viewer_events
             payload.update(local_viewer_events.complete_fields(self, call_id, tool_name, args, result, is_error=is_error))
         self._publish_execution("tool.complete", payload)
         if local_viewer_turn(self) and isinstance(payload.get("todos"), list):
@@ -1078,7 +1078,7 @@ class GatewayTurnProgressMixin:
             self._publish_execution("todo.updated", {"todos": payload["todos"], "revision": payload.get("revision", 0)})
         self._publish_api_tool("tool.complete", call_id, tool_name, args, result)
         if local_viewer_turn(self):
-            from gateway import local_viewer_events
+            from hermes_agent.gateway import local_viewer_events
             local_viewer_events.publish_control_if_changed(self)
         if self._ctx._native_slack_task_cards:
             self.native_tool_complete_callback(call_id, tool_name, args, result)
@@ -1093,7 +1093,7 @@ class GatewayTurnProgressMixin:
         if iteration > 1 and local_viewer_turn(self):
             # Each step after the first follows a finished API call: main's CLI repainted its status
             # bar from the agent's counters right then (the last call is covered at turn end).
-            from gateway.session_usage import publish_usage
+            from hermes_agent.gateway.session_usage import publish_usage
             publish_usage(self, ctx.agent_holder[0])
         if not ctx._hooks_ref.loaded_hooks:
             return
@@ -1118,7 +1118,7 @@ class GatewayTurnProgressMixin:
 
     def _local_notice_callback_sync(self, notice) -> None:
         """``AgentNotice`` -> ``notification.show`` for local viewers (the TUI's payload)."""
-        from gateway.warning_notifications import is_diagnostic_notice, render_notification
+        from hermes_agent.gateway.warning_notifications import is_diagnostic_notice, render_notification
         ctx = self._ctx
         if ctx.mute_notification_reply or not self._status_live() or not str(notice.text or "").strip():
             return
@@ -1137,7 +1137,7 @@ class GatewayTurnProgressMixin:
         return bool(self._ctx._status_adapter) and self._ctx._run_still_current()
 
     def _send_status_text(self, text: str, metadata, log_message: str) -> None:
-        from gateway.bot_peer_notices import automatic_notices_allowed
+        from hermes_agent.gateway.bot_peer_notices import automatic_notices_allowed
         ctx = self._ctx
         if not automatic_notices_allowed(ctx.source):
             return
@@ -1160,8 +1160,8 @@ class GatewayTurnProgressMixin:
                 authority, canonical_id, _generation = self._approval_owner
 
                 def republish(title, title_source):
-                    from gateway.session_contract import SessionRef
-                    from gateway.session_local import local_session_info
+                    from hermes_agent.gateway.session_contract import SessionRef
+                    from hermes_agent.gateway.session_local import local_session_info
                     ref = SessionRef(getattr(authority, "profile_id", ""), canonical_id)
                     authority.sessions[canonical_id].event_stream.publish(
                         canonical_id, local_session_info(authority, ref), event_type="session.info")
@@ -1187,15 +1187,15 @@ class GatewayTurnProgressMixin:
             logger.debug("Failed to attach session title callback", exc_info=True)
 
     def _status_callback_sync(self, event_type: str, message: str) -> None:
-        from gateway.run import _prepare_gateway_status_message, _redact_gateway_user_facing_secrets, _send_or_update_status_coro
-        from gateway.run_status_filter import status_chat_type
-        from gateway.warning_notifications import is_warning_status, render_notification
+        from hermes_agent.gateway.run import _prepare_gateway_status_message, _redact_gateway_user_facing_secrets, _send_or_update_status_coro
+        from hermes_agent.gateway.run_status_filter import status_chat_type
+        from hermes_agent.gateway.warning_notifications import is_warning_status, render_notification
         ctx = self._ctx
         if ctx.mute_notification_reply or not self._status_live():
             return
         # Lifecycle diagnostics (including provider fallback notices) are UI affordances for a
         # human caller. Sending them to a known bot peer can create a new inbound turn and a loop.
-        from gateway.bot_peer_notices import automatic_notices_allowed
+        from hermes_agent.gateway.bot_peer_notices import automatic_notices_allowed
         if not automatic_notices_allowed(ctx.source):
             logger.debug("status_callback suppressed for bot-authored message: %s", event_type)
             return
@@ -1230,9 +1230,9 @@ class GatewayTurnProgressMixin:
 def local_viewer_turn(runner) -> bool:
     """A local route's viewers read the canonical event stream; ``LocalSessionAdapter.send``
     publishes nothing, so status and notices go to that stream instead. So does a conversation its
-    chat moved past (gateway/session_detached.py): it delivers through that same adapter."""
+    chat moved past (hermes_agent/gateway/session_detached.py): it delivers through that same adapter."""
     source = getattr(runner._ctx, "source", None) if getattr(runner, "_approval_owner", None) is not None else None
-    from gateway.session_detached import detached_route_of
+    from hermes_agent.gateway.session_detached import detached_route_of
     return getattr(source, "platform", None) == Platform.LOCAL or detached_route_of(source) is not None
 
 

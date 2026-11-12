@@ -68,10 +68,10 @@ async def rig(tmp_path, monkeypatch):
     """Default and ``alpha`` served, ``beta`` held mid-start; ``connect`` opens a ticketed socket."""
     from types import SimpleNamespace
 
-    from gateway import session_authority
-    from gateway.run_runtime import initialize_gateway_runtime, serve_profile_runtime
-    from gateway.runtime_ownership import process_ownership
-    from gateway.session_authorities import authority_for_profile_id
+    from hermes_agent.gateway import session_authority
+    from hermes_agent.gateway.run_runtime import initialize_gateway_runtime, serve_profile_runtime
+    from hermes_agent.gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.session_authorities import authority_for_profile_id
     from hermes_agent.tui_gateway import server
     from hermes_agent.tui_gateway import ws as ws_mod
 

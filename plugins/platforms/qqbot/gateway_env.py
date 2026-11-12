@@ -2,11 +2,11 @@
 
 import logging
 
-from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
-from gateway.platform_env import EnvCred, getenv
+from hermes_agent.gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+from hermes_agent.gateway.platform_env import EnvCred, getenv
 
-# Logger name parity with the origin module (gateway.config_env): records stay under "gateway.config".
-logger = logging.getLogger("gateway.config")
+# Logger name parity with the origin module (hermes_agent.gateway.config_env): records stay under "hermes_agent.gateway.config".
+logger = logging.getLogger("hermes_agent.gateway.config")
 
 
 def _home(config: GatewayConfig, qq_config: PlatformConfig) -> None:

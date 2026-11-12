@@ -5,7 +5,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from gateway.session_authority import SessionAuthority
+from hermes_agent.gateway.session_authority import SessionAuthority
 from hermes_cli.web_routers.sessions import manage_router
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import begin_runtime_epoch

@@ -297,7 +297,7 @@ def _is_lightpanda_process(pid: int, port, start_time) -> bool:
         if "serve" not in cmdline or str(port) not in cmdline:
             return False
         if start_time:
-            from gateway.status import get_process_start_time
+            from hermes_agent.gateway.status import get_process_start_time
             return get_process_start_time(pid) == start_time
     except Exception:
         return False
@@ -313,7 +313,7 @@ def reap_orphaned_lightpanda() -> int:
         logger.debug("lightpanda state dir unavailable: %s", e)
         return 0
     try:
-        from gateway.status import _pid_exists
+        from hermes_agent.gateway.status import _pid_exists
     except Exception:  # pragma: no cover - defensive
         return 0
 

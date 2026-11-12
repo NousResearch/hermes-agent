@@ -6,7 +6,7 @@ subprocesses) before giving up. Without a defensive disconnect() call
 these leak and surface as "Unclosed client session" warnings at
 process exit (seen on the 2026-04-18 18:08:16 gateway restart).
 
-The fix: gateway/run.py wraps each adapter connect() with a safety-net
+The fix: hermes_agent/gateway/run.py wraps each adapter connect() with a safety-net
 call to _safe_adapter_disconnect() in the failure branches.
 """
 
@@ -16,8 +16,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import Platform
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.run import GatewayRunner
 
 
 @pytest.fixture
@@ -37,7 +37,7 @@ async def test_safe_disconnect_times_out_and_continues(bare_runner, monkeypatch,
 
     adapter.disconnect = AsyncMock(side_effect=hang)
 
-    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.run"):
         await bare_runner._safe_adapter_disconnect(adapter, Platform.FEISHU)
 
     adapter.disconnect.assert_awaited_once()

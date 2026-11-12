@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 
 # ---------------------------------------------------------------------------
@@ -185,7 +185,7 @@ def _stub_pairing_store(monkeypatch, approved_ids):
         def is_approved(self, platform, user_id):
             return platform == "discord" and str(user_id) in approved
 
-    from gateway import pairing
+    from hermes_agent.gateway import pairing
 
     monkeypatch.setattr(pairing, "PairingStore", _FakePairingStore)
 
@@ -245,7 +245,7 @@ async def test_role_member_passes(adapter):
 
 def _gateway_authorizes(source):
     """The real gateway authz verdict for a runner with no allowlist and no pairing store."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     return object.__new__(GatewayRunner)._is_user_authorized(source)
 
@@ -306,7 +306,7 @@ async def test_channel_not_in_allowlist_rejected(adapter, monkeypatch, caplog):
 
 @pytest.mark.asyncio
 async def test_unauthorized_attempt_notifies_telegram(adapter):
-    from gateway.session import Platform
+    from hermes_agent.gateway.session import Platform
 
     telegram_adapter = SimpleNamespace(send=AsyncMock())
     home = SimpleNamespace(chat_id="987654321")
@@ -420,7 +420,7 @@ async def test_notify_falls_back_to_slack_on_telegram_soft_fail(adapter):
     """adapter.send returning SendResult(success=False) must NOT short-
     circuit the fallback chain. Treating a soft failure as delivered
     means a Telegram outage swallows alerts silently."""
-    from gateway.session import Platform
+    from hermes_agent.gateway.session import Platform
 
     soft_fail = SimpleNamespace(success=False, error="rate limited")
     telegram_adapter = SimpleNamespace(send=AsyncMock(return_value=soft_fail))

@@ -20,10 +20,10 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
-from gateway.platforms.event import MessageEvent, MessageType, clean_attachment_filename
-from gateway.session import SessionSource
-from gateway.relay.descriptor import CapabilityDescriptor
-from gateway.relay.transport import InboundHandler
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType, clean_attachment_filename
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.relay.descriptor import CapabilityDescriptor
+from hermes_agent.gateway.relay.transport import InboundHandler
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +77,7 @@ def _disconnect_drain_grace_s(budget_s: Optional[float] = None) -> float:
 
 def _env_disconnect_budget_s() -> float:
     """The runner's adapter-disconnect budget (same env var + default as
-    gateway/run.py:_adapter_disconnect_timeout_secs), apportioned by callers
+    hermes_agent/gateway/run.py:_adapter_disconnect_timeout_secs), apportioned by callers
     across go_idle / monitor teardown / drain."""
     budget = 5.0
     raw = os.getenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "").strip()
@@ -199,7 +199,7 @@ def _event_from_wire(raw: dict[str, Any]) -> MessageEvent:
     """Rebuild a MessageEvent from the connector's normalized inbound payload (§3).
     Unknown platforms fall back to RELAY, unknown message types to TEXT."""
     src = raw.get("source", {}) or {}
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
 
     try:
         platform_enum = Platform(src.get("platform", "relay"))
@@ -480,7 +480,7 @@ class WebSocketRelayTransport:
             # field ignores it. Only Discord has an app-command registry.
             if platform == "discord":
                 try:
-                    from gateway.relay.command_manifest import build_relay_command_manifest
+                    from hermes_agent.gateway.relay.command_manifest import build_relay_command_manifest
 
                     hello["command_manifest"] = build_relay_command_manifest()
                 except Exception:
@@ -498,7 +498,7 @@ class WebSocketRelayTransport:
         no secret is configured (the connector closes 4401 on a bad/missing one)."""
         if not (self._upgrade_secret and self._gateway_id):
             return {}
-        from gateway.relay.auth import make_upgrade_token
+        from hermes_agent.gateway.relay.auth import make_upgrade_token
 
         return {"Authorization": f"Bearer {make_upgrade_token(self._gateway_id, self._upgrade_secret)}"}
 
@@ -971,7 +971,7 @@ class WebSocketRelayTransport:
     async def _on_inbound(self, frame: dict[str, Any]) -> None:
         if self._inbound is None:
             return
-        from gateway.session_ingress_context import relay_callback
+        from hermes_agent.gateway.session_ingress_context import relay_callback
         event = _event_from_wire(frame.get("event", {}))
         try:
             with relay_callback(self, event):
@@ -1020,7 +1020,7 @@ class WebSocketRelayTransport:
         # Edge-ACKed passthrough request riding the same WS (no public inbound
         # port needed); bufferId (§5.3) is passed through for ack.
         if self._passthrough_handler is not None:
-            from gateway.session_ingress_context import relay_callback
+            from hermes_agent.gateway.session_ingress_context import relay_callback
             fwd = _passthrough_from_wire(frame.get("forward", {}))
             # Same authenticated-reader proof as _on_inbound, bound to the forward; the
             # adapter moves it onto the event it decodes from this forward.

@@ -32,7 +32,7 @@ from unittest.mock import MagicMock
 
 import httpx
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.telegram import adapter as tg_adapter
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from plugins.platforms.telegram.telegram_network import TelegramFallbackTransport

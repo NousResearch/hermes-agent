@@ -93,7 +93,7 @@ def _write_block_cache(writer: str, what: str, skip_label: str, *args,
     marker)``. Fail-open so one bad block never kills the tool result: gateway deps missing
     (cron without gateway) → ``unavailable``; any other cache error → warning + ``failed``."""
     try:
-        import gateway.platforms.base as _base
+        import hermes_agent.gateway.platforms.base as _base
         return getattr(_base, writer)(*args, **kwargs), ""
     except ImportError:
         logger.debug("MCP %s caching skipped — gateway.platforms.base unavailable", skip_label)

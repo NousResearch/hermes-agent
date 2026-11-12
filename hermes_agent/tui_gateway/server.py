@@ -516,7 +516,7 @@ def _profile_scoped(handler):
 
 
 # Placeholder ``terminal.cwd`` values (resolved to the home dir at runtime) — never an explicit
-# workspace (mirrors gateway/run.py's config bridge).
+# workspace (mirrors hermes_agent/gateway/run.py's config bridge).
 _CWD_PLACEHOLDERS = {".", "auto", "cwd"}
 
 
@@ -659,7 +659,7 @@ def _approval_request_payload(data: dict | None) -> dict:
             if payload.get("allow_permanent") is not False:
                 choices.append("always")
         payload["choices"] = choices + ["deny"]
-    from gateway.run import _redact_approval_command  # description too: consent prompts carry MCP/vault text
+    from hermes_agent.gateway.run import _redact_approval_command  # description too: consent prompts carry MCP/vault text
     payload.update({k: _redact_approval_command(payload[k]) for k in ("command", "description") if k in payload})
     return payload
 
@@ -931,7 +931,7 @@ def _session_for_key(session_key: str) -> dict | None:
 
 def _set_session_context(session_key: str, cwd: str | None = None, *, ui_session_id: str = "") -> list:
     with contextlib.suppress(Exception):
-        from gateway.session_context import set_session_vars
+        from hermes_agent.gateway.session_context import set_session_vars
         sess = _session_for_key(session_key) if session_key else None
         # Ephemeral task ids aren't in `_sessions` (reverse-map → "" would clear the cwd override);
         # callers that know the workspace pass it.
@@ -955,7 +955,7 @@ def _set_session_context(session_key: str, cwd: str | None = None, *, ui_session
 def _clear_session_context(tokens: list) -> None:
     if tokens:
         with contextlib.suppress(Exception):
-            from gateway.session_context import clear_session_vars
+            from hermes_agent.gateway.session_context import clear_session_vars
             clear_session_vars(tokens)
 
 
@@ -1319,7 +1319,7 @@ def _get_usage(agent) -> dict:
                 if _val is not None and _val == _val and 0 < _val < 1e6:  # guard NaN/negative/absurd provider timings
                     usage[_key] = round(float(_val), 1)
     # Window plans only: the desktop status bar's allowance (the canonical feed carries the same one).
-    from gateway.session_usage import plan_gauge
+    from hermes_agent.gateway.session_usage import plan_gauge
     if (gauge := plan_gauge(agent)) is not None:
         usage["plan_gauge"] = gauge
     # Live count of background/async subagents (CLI status bar ⛓ parity, same async_delegation registry).

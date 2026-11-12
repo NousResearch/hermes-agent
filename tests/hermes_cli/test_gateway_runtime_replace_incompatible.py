@@ -109,7 +109,7 @@ def owner(home, monkeypatch):
     """A live process standing in for the old daemon; the replacement must SIGTERM exactly it."""
     import subprocess
     import sys
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway.status import get_process_start_time
     proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     monkeypatch.setattr(replace, "_identify", lambda h, timeout: (home, _owner_payload(
         home, proc.pid, get_process_start_time(proc.pid))))
@@ -155,7 +155,7 @@ def test_replacement_refuses_another_installs_owner(tmp_path, home, owner, monke
 @pytest.mark.platforms("linux")
 def test_replacement_refuses_an_owner_serving_another_home(tmp_path, home, owner, monkeypatch):
     import time
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway.status import get_process_start_time
     elsewhere = (tmp_path / "elsewhere").resolve()
     monkeypatch.setattr(replace, "_install_root", lambda: home)
     monkeypatch.setattr(replace, "_identify", lambda h, timeout: (home, _owner_payload(

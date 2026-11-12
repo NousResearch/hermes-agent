@@ -109,9 +109,9 @@ def test_tui_session_close_returns_finalize_message(finalize_hook, monkeypatch):
 
 
 def _gateway_runner():
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.run import GatewayRunner
-    from gateway.session import SessionEntry, SessionSource, build_session_key
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import SessionEntry, SessionSource, build_session_key
 
     source = SessionSource(platform=Platform.TELEGRAM, user_id="u1", chat_id="c1", user_name="t", chat_type="dm")
     runner = object.__new__(GatewayRunner)
@@ -145,7 +145,7 @@ def _sent_texts(adapter) -> list[str]:
 
 @pytest.mark.asyncio
 async def test_gateway_new_sends_finalize_message_to_owning_chat(finalize_hook):
-    from gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.platforms.event import MessageEvent
 
     runner, adapter, source, _key = _gateway_runner()
 

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform
+from hermes_agent.gateway.config import Platform
 
 
 class _Peer:
@@ -23,7 +23,7 @@ class _Peer:
 
 
 def _events():
-    from gateway.session_events import SessionEvents
+    from hermes_agent.gateway.session_events import SessionEvents
     events, peer = SessionEvents(), _Peer()
     events.fanout.attach(peer)
     return events, peer
@@ -37,8 +37,8 @@ def _wait_for(predicate, timeout=5.0):
 
 
 def test_sudo_request_reaches_the_viewer_and_its_answer_returns():
-    from gateway.session_server_requests import is_response_frame, resolve
-    from gateway.session_sudo_prompt import ask_sudo
+    from hermes_agent.gateway.session_server_requests import is_response_frame, resolve
+    from hermes_agent.gateway.session_sudo_prompt import ask_sudo
     events, peer = _events()
     out = {}
     worker = threading.Thread(target=lambda: out.setdefault('value', ask_sudo(events, 's1', 'sudo true')))
@@ -57,7 +57,7 @@ def test_sudo_request_reaches_the_viewer_and_its_answer_returns():
 
 
 def test_interrupt_withdraws_the_card():
-    from gateway.session_sudo_prompt import ask_sudo
+    from hermes_agent.gateway.session_sudo_prompt import ask_sudo
     events, peer = _events()
     flag = threading.Event()
     out = {}
@@ -72,14 +72,14 @@ def test_interrupt_withdraws_the_card():
 
 
 def test_no_attached_viewer_is_headless():
-    from gateway.session_events import SessionEvents
-    from gateway.session_sudo_prompt import ask_sudo
+    from hermes_agent.gateway.session_events import SessionEvents
+    from hermes_agent.gateway.session_sudo_prompt import ask_sudo
     assert ask_sudo(SessionEvents(), 's1', 'sudo true', timeout=0.1) == ''
 
 
 @pytest.mark.parametrize(('platform', 'installed'), [(Platform.LOCAL, True), (Platform.TELEGRAM, False)])
 def test_scope_installs_the_callback_only_for_local_viewer_turns(platform, installed):
-    from gateway.session_sudo_prompt import sudo_prompt_scope
+    from hermes_agent.gateway.session_sudo_prompt import sudo_prompt_scope
     from tools.terminal_tool import _get_sudo_password_callback
     events, _ = _events()
     authority = SimpleNamespace(sessions={'s1': SimpleNamespace(event_stream=events)})
@@ -93,8 +93,8 @@ def test_scope_installs_the_callback_only_for_local_viewer_turns(platform, insta
 
 @pytest.mark.asyncio
 async def test_the_viewer_response_frame_is_routed_by_the_authority_connection(tmp_path, monkeypatch):
-    from gateway import session_server_requests
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway import session_server_requests
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     from tests.gateway.test_surface_admission import _authority
 
     async def answer(event):

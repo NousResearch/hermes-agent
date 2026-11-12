@@ -18,12 +18,12 @@ from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_gateway import _display_system_platform
 from starlette.concurrency import run_in_threadpool
 from fastapi import HTTPException, Request
-from gateway.status import (
+from hermes_agent.gateway.status import (
     derive_gateway_busy, derive_gateway_drainable, normalize_updated_at, parse_active_agents,
     profile_platforms_from_multiplexer, resolve_gateway_liveness,
     retained_gateway_state,
     runtime_status_heartbeat_age_s, runtime_status_is_stale)
-from gateway.status_served import local_liveness_pid
+from hermes_agent.gateway.status_served import local_liveness_pid
 from hermes_cli import __release_date__
 from hermes_cli.config import get_config_path, get_env_path
 from hermes_cli.version_info import get_version_info
@@ -54,11 +54,11 @@ check_config_version = late("check_config_version", "hermes_cli.config")
 get_hermes_home = late("get_hermes_home", "hermes_cli.config")
 _profile_cli_args = late("_profile_cli_args", "hermes_cli.web_server_profiles")
 get_install_id = late("get_install_id")
-get_running_pid_cached = late("get_running_pid_cached", "gateway.status")
-get_runtime_status_running_pid = late("get_runtime_status_running_pid", "gateway.status")
-served_profile_runtime = late("served_profile_runtime", "gateway.status_served")
+get_running_pid_cached = late("get_running_pid_cached", "hermes_agent.gateway.status")
+get_runtime_status_running_pid = late("get_runtime_status_running_pid", "hermes_agent.gateway.status")
+served_profile_runtime = late("served_profile_runtime", "hermes_agent.gateway.status_served")
 load_config = late("load_config", "hermes_cli.config")
-read_runtime_status = late("read_runtime_status", "gateway.status")
+read_runtime_status = late("read_runtime_status", "hermes_agent.gateway.status")
 _open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.web_server_sessions")
 
 
@@ -141,7 +141,7 @@ async def get_host_identity(request: Request):
     headless ``serve``, so a `hermes dashboard` user is never routed to a backend with no UI.
     """
     _require_token(request)
-    # ``role`` is the host ROLE this process published (gateway/host_rendezvous.ROLE_SERVE, or
+    # ``role`` is the host ROLE this process published (hermes_agent/gateway/host_rendezvous.ROLE_SERVE, or
     # ROLE_DESKTOP_SERVE for a Desktop-owned child), not the launch mode: `hermes serve` and
     # `hermes dashboard` are one host role that differ in SPA.
     return {"ok": True, "protocolVersion": 1, "pid": os.getpid(),
@@ -151,7 +151,7 @@ async def get_host_identity(request: Request):
 
 # The idle proof and retirement fence cover a standalone ``hermes serve`` child's ledgers only. On
 # the gateway's listener the agent work lives on the runner, which retires through its own idle exit
-# (``gateway/run_idle_exit.py``); there this route never proves idle nor takes the fence.
+# (``hermes_agent/gateway/run_idle_exit.py``); there this route never proves idle nor takes the fence.
 _GATEWAY_OWNS_LIFECYCLE = "gateway_owns_lifecycle"
 
 
@@ -215,7 +215,7 @@ def _status_platform_key_allowed(key: object, configured: set[str] | None) -> bo
     return configured is None or key in configured
 
 
-# Per-entry writer-identity stamps (added by gateway.status.write_runtime_status for the
+# Per-entry writer-identity stamps (added by hermes_agent.gateway.status.write_runtime_status for the
 # aggregation ownership check) are process recon — the same class of detail as the
 # auth-gated top-level ``gateway_pid`` — and must not project onto the public endpoint.
 _PRIVATE_PLATFORM_ENTRY_KEYS = frozenset({"writer_pid", "writer_start_time"})
@@ -253,14 +253,14 @@ def _merge_profile_gateway_platforms(gateway_platforms: dict, profile_platforms:
     return merged
 
 
-# --- Gateway liveness detection --- Delegated to the single shared ladder in gateway.status so this
+# --- Gateway liveness detection --- Delegated to the single shared ladder in hermes_agent.gateway.status so this
 # endpoint and /api/messaging/platforms can never disagree about whether the gateway is up (they used to:
 # sidebar "running" while the Channels page rendered "The gateway is not running"). When ?profile=<name> was
 # given, scope PID and state reads to that profile's directory — gateway identity files (PID, lock, runtime
 # status) are written to the per-profile home, not the process-level HERMES_HOME (see issue #69143). Plain
 # /api/status keeps the exact zero-arg call so its behavior (and cache signature) is unchanged. The
 # module-level probe references are handed to the resolver so the long-standing
-# `monkeypatch.setattr(gateway.status, "get_running_pid_cached", ...)` seam used across the test-suite still
+# `monkeypatch.setattr(hermes_agent.gateway.status, "get_running_pid_cached", ...)` seam used across the test-suite still
 # intercepts them.
 def _bounded_health_probe():
     """Health probe with the route's blocking-call budget preserved. The resolver only
@@ -300,12 +300,12 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> di
     """Liveness + runtime-state readout (running/pid/state/platforms/exit_reason/updated_at
     plus the raw ``runtime`` document).
 
-    Liveness is delegated to the shared ladder in gateway.status so this endpoint and
+    Liveness is delegated to the shared ladder in hermes_agent.gateway.status so this endpoint and
     /api/messaging/platforms can never disagree. With ``?profile=<name>`` PID/state reads are
     scoped to that profile's directory (gateway identity files live in the per-profile
     home); plain /api/status keeps the exact zero-arg call so its cache signature is
     unchanged. The module-level probe references are handed to the resolver so the
-    ``monkeypatch.setattr(gateway.status, "get_running_pid_cached", ...)`` seam still intercepts.
+    ``monkeypatch.setattr(hermes_agent.gateway.status, "get_running_pid_cached", ...)`` seam still intercepts.
     """
     local_runtime = (read_runtime_status(path=profile_dir / "gateway_state.json")
                      if profile_dir else read_runtime_status())
@@ -450,7 +450,7 @@ async def _component_health(gateway: dict[str, Any]) -> dict[str, Any]:
             "state": gateway_state or ("running" if gateway_running else "stopped")},
         "dashboard": DASHBOARD_HEALTH.snapshot()}
     try:
-        from gateway.readiness import _probe_state_db
+        from hermes_agent.gateway.readiness import _probe_state_db
         storage_check = await run_in_threadpool(_probe_state_db, get_hermes_home())
         components["storage"] = {"status": storage_check.get("status", "degraded")}
         # The one reason enum consumers key off; same latch as readiness and the session lists.
@@ -582,7 +582,7 @@ async def get_status(profile: Optional[str] = None,
         active_sessions = await _status_active_sessions()
 
         # Busy/drainable (NAS lifecycle-safety gate) derive from the persisted in-flight turn
-        # count + liveness via gateway.status. Liveness keys off gateway_running, NEVER
+        # count + liveness via hermes_agent.gateway.status. Liveness keys off gateway_running, NEVER
         # gateway_updated_at — a stale heartbeat is reported separately, not treated as death.
         active_agents = parse_active_agents((gateway["runtime"] or {}).get("active_agents", 0))
         # Off-loop: on a cold Windows install the first import of hermes_cli.gateway blocks

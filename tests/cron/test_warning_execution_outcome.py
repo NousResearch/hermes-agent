@@ -2,7 +2,7 @@
 import pytest
 
 from hermes_agent.cron import executions, incidents, jobs, scheduler
-from gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 
 
 def delivery_queue_rows():
@@ -25,7 +25,7 @@ def test_real_run_ledger_and_incident_match_actual_presentation(tmp_path, monkey
     )
     config = GatewayConfig()
     config.platforms[Platform.TELEGRAM] = PlatformConfig(enabled=True)
-    monkeypatch.setattr("gateway.config.load_gateway_config", lambda: config)
+    monkeypatch.setattr("hermes_agent.gateway.config.load_gateway_config", lambda: config)
     sent = []
 
     async def send(platform, pconfig, chat_id, text, **kwargs):

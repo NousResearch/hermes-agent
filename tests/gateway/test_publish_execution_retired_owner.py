@@ -1,6 +1,6 @@
 """A late execution callback whose owning live session was retired is dropped, not raised.
 
-``publish_execution`` is the one sink every local-viewer callback reaches: ``gateway.local_viewer_events.wire``
+``publish_execution`` is the one sink every local-viewer callback reaches: ``hermes_agent.gateway.local_viewer_events.wire``
 installs the parent turn's closures on the agent, and ``tools/delegate_tool`` copies the parent's ``_print_fn``
 onto a background child by reference. Once the parent's turn ends and ``session_retirement.retire_idle`` drops
 the live entry, the child's next status print (the first one after the parent goes idle is usually the
@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from typing import cast
 
 from agent.status_output import StatusOutputMixin
-from gateway import local_viewer_events
+from hermes_agent.gateway import local_viewer_events
 from tests.gateway.test_session_authority_cancel_settlement import _authority
 
 PARENT = 's'

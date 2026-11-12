@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import gateway.run as gateway_run
+import hermes_agent.gateway.run as gateway_run
 
 
 class _Ticks:

@@ -13,10 +13,10 @@ from types import SimpleNamespace
 import pytest
 
 from agent import session_activity
-import gateway.run as gateway_run
-from gateway.run import GatewayRunner, _watch_gateway_turn_inactivity
-from gateway.session_state import TurnState
-from gateway.turn_context import TurnContext
+import hermes_agent.gateway.run as gateway_run
+from hermes_agent.gateway.run import GatewayRunner, _watch_gateway_turn_inactivity
+from hermes_agent.gateway.session_state import TurnState
+from hermes_agent.gateway.turn_context import TurnContext
 
 TIMEOUT_S = 1800.0
 SLEEP_S = 2000.0

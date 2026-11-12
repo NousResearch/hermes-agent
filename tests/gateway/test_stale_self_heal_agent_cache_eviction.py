@@ -7,7 +7,7 @@ routing key pointing at a session that state.db already marked ended, drops
 the stale ``sessions.json`` entry, and recovers/recreates a fresh session_id
 under the SAME session_key.
 
-The #54947 fix (``gateway/run.py`` agent-cache cache-hit guard) treats "cached
+The #54947 fix (``hermes_agent/gateway/run.py`` agent-cache cache-hit guard) treats "cached
 agent's snapshot session_id differs from the current session_id, same
 session_key" as an intentional ``/resume``/``/branch``-style switch between
 two live sibling conversations, and reuses the cached agent unchanged so the
@@ -36,7 +36,7 @@ self-heal artifact — evict and rebuild fresh, exactly like a genuine
 cross-process write — instead of reusing it.
 
 This mirrors the production decision block added in
-``GatewayRunner._handle_message_with_agent`` (gateway/run.py, "Peek at the
+``GatewayRunner._handle_message_with_agent`` (hermes_agent/gateway/run.py, "Peek at the
 cached entry's snapshot session_id..." / ``_stale_dead_sid_reuse``).
 """
 
@@ -51,7 +51,7 @@ def _make_runner_with_db(tmp_path):
     ``test_session_id_cache_coherence.py`` but adding the session_store
     handle the new guard needs.
     """
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = GatewayRunner.__new__(GatewayRunner)
     runner._agent_cache = {}
@@ -77,7 +77,7 @@ def _make_runner_with_db(tmp_path):
 
 def _guard_would_reuse_after_fix(runner, session_key, session_id, current_mc=None):
     """Faithful mirror of the production decision block in
-    ``gateway/run.py`` AFTER the #54878 x #54947 fix:
+    ``hermes_agent/gateway/run.py`` AFTER the #54878 x #54947 fix:
 
     1. Peek the cached entry's snapshot session_id outside the lock.
     2. If it differs from the current session_id, check whether THAT

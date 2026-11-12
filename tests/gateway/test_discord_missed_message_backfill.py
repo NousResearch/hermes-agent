@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
 
 def _ensure_discord_mock():
@@ -472,7 +472,7 @@ async def test_iter_candidates_keeps_latest_messages_when_window_exceeds_limit(a
 async def test_iter_candidates_skips_obfuscated_channel_on_explicit_ids(adapter, monkeypatch):
     """A channel the bot lost VIEW_CHANNEL on (Discord obfuscation) is dropped even when
     listed by explicit id — history reads on it always fail (#90154)."""
-    from gateway.platforms.helpers import DISCORD_CHANNEL_OBFUSCATED_FLAG
+    from hermes_agent.gateway.platforms.helpers import DISCORD_CHANNEL_OBFUSCATED_FLAG
 
     visible = FakeChannel(channel_id=1, history_messages=[make_message(message_id=11)])
     hidden = FakeChannel(channel_id=2, history_messages=[make_message(message_id=22)])

@@ -26,7 +26,7 @@ def _limit(section, key):
 def delegation_limits(authority, execution_id, session_id):
     """``(max_concurrent_children, max_spawn_depth)`` from the root conversation's frozen policy
     (the profile's config for a session with no local policy), never from the asking worker."""
-    from gateway.session_policy import policy_for_source, profile_config
+    from hermes_agent.gateway.session_policy import policy_for_source, profile_config
     root = execution_id.split(CHILD_SEPARATOR, 1)[0]
     if root != execution_id:
         with authority.db._read_ctx() as conn:
@@ -72,7 +72,7 @@ def reserve_child_execution(db, conn, session_id, payload, *, epoch, execution_i
 async def worker_child_request(connection, ref, params):
     """worker.persist ``child.reserve``: the parent's full claim and assignment are verified first."""
     import asyncio
-    from gateway.session_worker import _SCOPE, _claim, _verify
+    from hermes_agent.gateway.session_worker import _SCOPE, _claim, _verify
     if set(params) != _SCOPE | {'epoch', 'sequence', 'operation', 'payload'}:
         raise RuntimeStoreError('invalid_params')
     claim = _claim(connection, ref, params)

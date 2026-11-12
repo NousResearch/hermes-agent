@@ -27,12 +27,12 @@ _AUTH = {'Authorization': 'Bearer ' + _KEY}
 @asynccontextmanager
 async def _served(tmp_path, monkeypatch):
     """A multiplexed gateway: the default (launch) profile serving ``alpha``, real state.db files."""
-    from gateway import run
-    from gateway.config import PlatformConfig
-    from gateway.platforms.api_server import APIServerAdapter
-    from gateway.run_runtime import initialize_gateway_runtime
-    from gateway.runtime_ownership import process_ownership
-    from gateway.session_contract import SessionActor
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import PlatformConfig
+    from hermes_agent.gateway.platforms.api_server import APIServerAdapter
+    from hermes_agent.gateway.run_runtime import initialize_gateway_runtime
+    from hermes_agent.gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.session_contract import SessionActor
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     root, homes = _reserve_homes(tmp_path, monkeypatch, names=('alpha',))
@@ -61,20 +61,20 @@ async def _served(tmp_path, monkeypatch):
 
 
 async def _delete(served, ref):
-    from gateway.session_mutations import mutate_session
+    from hermes_agent.gateway.session_mutations import mutate_session
     await mutate_session(served.alpha, served.actor, ref, dict(
         session_id=ref.session_id, request_id='delete', expected_revision=0,
         expected_generation=0, operation='delete', payload={}))
 
 
 async def _prune(served, ref):
-    from gateway.session_prune import _apply
+    from hermes_agent.gateway.session_prune import _apply
     served.alpha.db.end_session(ref.session_id, 'test')
     await _apply(served.alpha, {'older_than_days': None}, None)  # the owner-run `hermes sessions prune`
 
 
 def _entry(key, sid):
-    from gateway.session import SessionEntry
+    from hermes_agent.gateway.session import SessionEntry
     now = datetime.now(UTC)
     return SessionEntry(session_key=key, session_id=sid, created_at=now, updated_at=now)
 
@@ -119,9 +119,9 @@ async def _create(served, sid):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('retire', [_delete, _prune], ids=['delete', 'prune'])
 async def test_a_secondary_retirement_leaves_the_id_free_in_the_launch_profile(tmp_path, monkeypatch, retire):
-    from gateway.run import _profile_runtime_scope
-    from gateway.session_api import bind_api_session
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.session_api import bind_api_session
+    from hermes_agent.gateway.session_local import create_local_session
 
     async with _served(tmp_path, monkeypatch) as served:
         store = served.store
@@ -221,8 +221,8 @@ def _restart(store):
 async def _pruned_alpha_route(served, tmp_path):
     """``(key, sid, stale)``: alpha's routed session, pruned through the owner path after a
     worker took a whole-index snapshot that still names its route."""
-    from gateway.run import _profile_runtime_scope
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.session_local import create_local_session
     store, key = served.store, 'agent:alpha:telegram:333'
     with _profile_runtime_scope(served.home, {}):
         ref = create_local_session(served.alpha, served.actor, {
@@ -286,8 +286,8 @@ async def test_the_owners_next_prune_reclaims_its_expired_shared_fences(tmp_path
     """An owner's prune that fences new ids in the shared index also reclaims the fences there that
     aged out, so the index does not grow with every prune while the launch profile never sweeps.
     A delete's fence stays."""
-    from gateway.run import _profile_runtime_scope
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.session_local import create_local_session
     async with _served(tmp_path, monkeypatch) as served:
         _key, sid, _stale = await _pruned_alpha_route(served, tmp_path)
         with _profile_runtime_scope(served.home, {}):
@@ -311,8 +311,8 @@ async def test_a_secondary_delete_fence_outlives_the_horizon_while_a_prune_fence
     """A delete's shared fence has no ``expires``: 8 days later, with no sweep run, it still refuses
     alpha's route and the launch-keyed one, both to a per-entry save and to the sessions.json import
     on the next start (#138826). A prune's fence aged the same way no longer fences."""
-    from gateway.run import _profile_runtime_scope
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.session_local import create_local_session
     async with _served(tmp_path, monkeypatch) as served:
         store = served.store
         pruned_key, pruned, _stale = await _pruned_alpha_route(served, tmp_path)
@@ -362,8 +362,8 @@ async def test_a_start_within_the_horizon_strips_a_pruned_route_from_an_older_mi
 
 def _routed_entry(key, sid, chat):
     """A routing entry with the origin native recovery binds a session's route by."""
-    from gateway.config import Platform
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session import SessionSource
     entry = _entry(key, sid)
     entry.origin = SessionSource(platform=Platform.TELEGRAM, chat_id=chat, chat_type='dm', user_id='u' + chat)
     return entry
@@ -377,8 +377,8 @@ async def test_a_pruned_route_stays_out_of_the_mirror_and_a_reused_id_keeps_one_
     ``gateway.write_sessions_json: false`` and the mirror a full save left earlier, the next start
     imported the route back. When the launch profile then reused the id, two routes named it and
     native recovery refused both with ``admission_conflict``, leaving a queued turn queued."""
-    from gateway.run import _profile_runtime_scope
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.session_local import create_local_session
     async with _served(tmp_path, monkeypatch) as served:
         store, key, launch_key = served.store, 'agent:alpha:telegram:333', 'agent:main:telegram:444'
         with _profile_runtime_scope(served.home, {}):

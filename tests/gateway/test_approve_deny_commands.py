@@ -16,9 +16,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionSource
 
 
 def _make_source() -> SessionSource:
@@ -40,7 +40,7 @@ def _make_event(text: str) -> MessageEvent:
 
 
 def _make_runner():
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
@@ -505,7 +505,7 @@ class TestCrossSessionApprovalIsolation:
         gateway that value would be another live session's key; here we assert
         the resolver never surfaces it.
         """
-        from gateway.session_context import clear_session_vars, set_session_vars
+        from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
         from tools.approval import get_current_session_key
 
         # Simulate: concurrent session B was the last to clobber os.environ

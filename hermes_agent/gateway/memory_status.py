@@ -63,8 +63,8 @@ def classify_pressure(available_kib: Any, total_kib: Any) -> str:
 def _read_state_files(home: Optional[Path]) -> tuple:
     """``(heartbeat, sentinel)`` dicts, each ``None`` when unreadable."""
     try:
-        from gateway.lifecycle_ledger import _read_json, get_lifecycle_sentinel_path
-        from gateway.shutdown_watchdog import get_loop_heartbeat_path
+        from hermes_agent.gateway.lifecycle_ledger import _read_json, get_lifecycle_sentinel_path
+        from hermes_agent.gateway.shutdown_watchdog import get_loop_heartbeat_path
 
         return _read_json(get_loop_heartbeat_path(home)), _read_json(get_lifecycle_sentinel_path(home))
     except Exception:

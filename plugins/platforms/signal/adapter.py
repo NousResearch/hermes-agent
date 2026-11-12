@@ -23,23 +23,23 @@ from urllib.parse import quote, unquote
 
 import httpx
 
-from gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.config import Platform, PlatformConfig
 from agent.i18n import t
-from gateway.platforms.base import (
+from hermes_agent.gateway.platforms.base import (
     BasePlatformAdapter, SendResult, cache_image_from_bytes_async,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_url, utf16_len,
 )
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
-from gateway.platforms.helpers import redact_phone
-from gateway.platforms.helpers import cancel_task
-from gateway.platforms.media_cache import mime_for_ext
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from hermes_agent.gateway.platforms.helpers import redact_phone
+from hermes_agent.gateway.platforms.helpers import cancel_task
+from hermes_agent.gateway.platforms.media_cache import mime_for_ext
 from tools.audio_container import CONTAINER_TO_EXT, sniff_container
 from plugins.platforms.signal.signal_format import markdown_to_signal
 from plugins.platforms.signal.signal_rate_limit import (
     SIGNAL_BATCH_PACING_NOTICE_THRESHOLD, SIGNAL_MAX_ATTACHMENTS_PER_MSG, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
     SignalRateLimitError, _extract_retry_after_seconds, _format_wait, _is_signal_rate_limit_error,
     _signal_send_timeout, get_scheduler)
-from gateway.platforms._shared import get_scoped_secret as _sig_secret
+from hermes_agent.gateway.platforms._shared import get_scoped_secret as _sig_secret
 from utils import TRUTHY_STRINGS
 
 logger = logging.getLogger(__name__)
@@ -239,7 +239,7 @@ class SignalAdapter(BasePlatformAdapter):
             logger.warning("Signal: Could not acquire phone lock (non-fatal): %s", e)
         # Tighter keepalive so idle CLOSE_WAIT drains promptly.
         # See #18451.
-        from gateway.platforms._http_client_limits import platform_httpx_limits
+        from hermes_agent.gateway.platforms._http_client_limits import platform_httpx_limits
         self.client = httpx.AsyncClient(timeout=30.0, limits=platform_httpx_limits())
         try:
             try:

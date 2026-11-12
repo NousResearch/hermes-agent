@@ -94,8 +94,8 @@ def _route_namespaces(profile_home):
     """Session-key namespaces (the ``agent:<ns>`` segment) a route of the requested profile can carry.
     Multiplexed routes are namespaced per profile; ``agent:main`` is also every unmultiplexed and legacy
     route, so it is trusted for a named profile only when that profile is the sole one this process hosts."""
-    from gateway.session import _session_key_namespace
-    from gateway.session_authorities import served_profile_name
+    from hermes_agent.gateway.session import _session_key_namespace
+    from hermes_agent.gateway.session_authorities import served_profile_name
 
     own = _session_key_namespace(served_profile_name(profile_home or _hermes_home)).split(":", 1)[1]
     sole = profile_home is None and not _served_profile_homes

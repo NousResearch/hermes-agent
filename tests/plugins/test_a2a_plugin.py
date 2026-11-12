@@ -634,7 +634,7 @@ class TestRegistryDispatchConvention:
 
 def _bare_adapter():
     from plugins.platforms.a2a.adapter import A2AAdapter
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
     return A2AAdapter(PlatformConfig(enabled=True))
 
 
@@ -688,7 +688,7 @@ class TestReplyCapture:
 
     def test_on_processing_complete_resolves_failure(self):
         """A failed run must resolve the future promptly (no reply timeout wait)."""
-        from gateway.platforms.event import ProcessingOutcome
+        from hermes_agent.gateway.platforms.event import ProcessingOutcome
 
         adapter = _bare_adapter()
         fut = adapter._add_pending("task-fail", "ctx-fail")
@@ -705,7 +705,7 @@ class TestReplyCapture:
             adapter._pop_pending("task-fail")
 
     def test_on_processing_complete_does_not_clobber_reply(self):
-        from gateway.platforms.event import ProcessingOutcome
+        from hermes_agent.gateway.platforms.event import ProcessingOutcome
 
         adapter = _bare_adapter()
         fut = adapter._add_pending("task-ok", "ctx-ok")
@@ -726,7 +726,7 @@ class TestReplyCapture:
         already delivered the body, send() is never called with notify=True and the future
         is resolved here instead. It must carry the reply text the gateway stashed on the
         event, not resolve TASK_STATE_COMPLETED with an empty string."""
-        from gateway.platforms.event import ProcessingOutcome
+        from hermes_agent.gateway.platforms.event import ProcessingOutcome
 
         adapter = _bare_adapter()
         fut = adapter._add_pending("task-streamed", "ctx-streamed")
@@ -901,7 +901,7 @@ def _make_live_adapter(monkeypatch, reply_fn=None):
     never reply). Returns (adapter, base_url).
     """
     from plugins.platforms.a2a.adapter import A2AAdapter
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
 
     port = _free_port()
     monkeypatch.setenv("A2A_PORT", str(port))
@@ -1469,7 +1469,7 @@ class TestPushNotificationEndToEnd:
 class TestMultiAgentRouting:
     def test_path_routed_agent_card_uses_prefix_and_canonical_path(self, monkeypatch):
         from plugins.platforms.a2a.adapter import A2AAdapter
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
             "agents": {
@@ -1494,7 +1494,7 @@ class TestMultiAgentRouting:
 
     def test_tenant_routing_selects_agent_without_path_prefix(self):
         from plugins.platforms.a2a.adapter import A2AAdapter
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
             "agents": {
@@ -1506,7 +1506,7 @@ class TestMultiAgentRouting:
 
     def test_tenant_mismatch_is_rejected(self):
         from plugins.platforms.a2a.adapter import A2AAdapter
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
             "agents": {"dev": {"profile": "dev", "tenant": "dev-team"}}
@@ -1518,7 +1518,7 @@ class TestMultiAgentRouting:
         """A peer that resends after a timeout repeats its messageId; the forwarded input id must
         repeat with it so the owner answers from the accepted work instead of queueing a second turn."""
         from plugins.platforms.a2a.adapter import A2AAdapter
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
             "agents": {"dev": {"profile": "dev", "tenant": "dev"}}
@@ -1550,7 +1550,7 @@ class TestMultiAgentRouting:
         """A first send is retried with the same messageId and no contextId, because the peer never
         received one. It must land in the same context and admission as the first attempt."""
         from plugins.platforms.a2a.adapter import A2AAdapter
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
             "agents": {"dev": {"profile": "dev", "tenant": "dev"}}
@@ -1585,7 +1585,7 @@ class TestMultiAgentRouting:
         """The owner answers a resend from the accepted admission, so the anti-loop counter and the
         conversation log see the message once. Distinct messages in the context still count."""
         from plugins.platforms.a2a.adapter import A2AAdapter
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         monkeypatch.setenv("A2A_MAX_PINGPONG_TURNS", "2")
         persisted = []
@@ -1616,7 +1616,7 @@ class TestMultiAgentRouting:
 
     def test_forwarded_profile_task_completes_in_task_store(self, monkeypatch):
         from plugins.platforms.a2a.adapter import A2AAdapter
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
             "agents": {"dev": {"profile": "dev", "tenant": "dev"}}
@@ -1744,7 +1744,7 @@ class TestV1SpecRegressionFixes:
 
     def test_cross_tenant_task_access_is_hidden(self):
         from plugins.platforms.a2a.adapter import A2AAdapter
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
             "agents": {
@@ -1764,7 +1764,7 @@ class TestV1SpecRegressionFixes:
 
     def test_push_config_is_tenant_scoped(self):
         from plugins.platforms.a2a.adapter import A2AAdapter
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
             "agents": {
@@ -1815,7 +1815,7 @@ class TestV1SpecRegressionFixes:
 
     def test_reserved_paths_and_duplicate_tenants_are_ignored(self):
         from plugins.platforms.a2a.adapter import A2AAdapter
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
             "agents": {
@@ -1830,8 +1830,8 @@ class TestV1SpecRegressionFixes:
 
     def test_forward_to_profile_uses_receipted_owner_not_local_writer(self, monkeypatch, tmp_path):
         from plugins.platforms.a2a.adapter import A2AAdapter
-        from gateway.config import PlatformConfig
-        from gateway import session_a2a
+        from hermes_agent.gateway.config import PlatformConfig
+        from hermes_agent.gateway import session_a2a
 
         calls = []
         async def owner(home, **params):
@@ -1924,7 +1924,7 @@ class TestMultiplexConstructionScope:
         from it fall to the module defaults, never to the default profile's
         bridged A2A_* env values."""
         from plugins.platforms.a2a.adapter import A2AAdapter, _DEFAULT_PORT
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         multiplex_scope()
         assert A2AAdapter(PlatformConfig(enabled=True, extra={"port": 9222})).port == 9222
@@ -1945,7 +1945,7 @@ class TestMultiplexConstructionScope:
         unscoped): env is its own bridge output and still wins."""
         from agent.secret_scope import set_multiplex_active
         from plugins.platforms.a2a.adapter import A2AAdapter
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         set_multiplex_active(True)
         try:

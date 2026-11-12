@@ -4,8 +4,8 @@ import pytest
 from tests.gateway.test_compression_failure_session_sync import (
     _CompressionThenFailureAgent, _install_compression_failure_agent, _run_compression_failure_turn, _runner,
     _SessionStore)
-from gateway.config import Platform
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.session import SessionSource
 
 
 class _CompressingAgent(_CompressionThenFailureAgent):

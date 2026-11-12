@@ -25,7 +25,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.background import BackgroundTask
 
-from gateway.platforms.api_server_profile_prefix import DEFAULT_PROFILE_HANDLE, UNKNOWN_PROFILE_ERROR
+from hermes_agent.gateway.platforms.api_server_profile_prefix import DEFAULT_PROFILE_HANDLE, UNKNOWN_PROFILE_ERROR
 from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
 from hermes_cli.dashboard_auth.peer_pass import PEER_PREFIX
 from hermes_cli.dashboard_auth.request_utils import client_ip

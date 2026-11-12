@@ -1,6 +1,6 @@
 """Telegram forum-topic and Discord auto-thread binding/rename methods for GatewayRunner (MRO mixin).
-``gateway.run`` internals are imported lazily inside method bodies (import cycle), so
-``patch("gateway.run.X")`` keeps intercepting them at call time."""
+``hermes_agent.gateway.run`` internals are imported lazily inside method bodies (import cycle), so
+``patch("hermes_agent.gateway.run.X")`` keeps intercepting them at call time."""
 
 from __future__ import annotations
 
@@ -16,19 +16,19 @@ from typing import TYPE_CHECKING, Optional, Tuple
 
 from agent.compaction_display import project_compaction_message_for_display
 from agent.i18n import t
-from gateway.config import Platform
-from gateway.platforms.base import _prefix_within_utf16_limit, utf16_len
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionSource
-from gateway.session_identity import replace_source
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.base import _prefix_within_utf16_limit, utf16_len
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.session_identity import replace_source
 from utils import is_truthy_value
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner
-    from gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 # Serializes a command's "route still mine?" check with its topic-binding write (process-wide: the
 # critical section is one sqlite upsert).
 _TOPIC_SWITCH_BIND_LOCK = threading.Lock()
@@ -95,9 +95,9 @@ class GatewayTopicThreadsMixin:
 
     def _is_telegram_topic_lane(self, source: SessionSource) -> bool:
         """True for a user-created Telegram private-chat topic lane. Never a conversation its chat
-        moved past (gateway/session_detached.py): its turns neither heal nor rewrite the topic's
+        moved past (hermes_agent/gateway/session_detached.py): its turns neither heal nor rewrite the topic's
         binding, nor rename the topic, which belong to the chat's current conversation."""
-        from gateway.session_detached import detached_route_of
+        from hermes_agent.gateway.session_detached import detached_route_of
         tid = str(source.thread_id or "")
         return (
             detached_route_of(source) is None
@@ -243,7 +243,7 @@ class GatewayTopicThreadsMixin:
         rename would otherwise land its title after a newer switch renamed the topic."""
         if not title or not await asyncio.to_thread(self._is_telegram_topic_lane, source):
             return
-        from gateway.session_authority import keyed_turn
+        from hermes_agent.gateway.session_authority import keyed_turn
         locks = self.__dict__.setdefault("_topic_switch_locks", {})
         async with keyed_turn(locks, self._telegram_topic_key(source)):
             route = await asyncio.to_thread(self.session_store.peek_session_id, session_entry.session_key)
@@ -304,7 +304,7 @@ class GatewayTopicThreadsMixin:
         session_id = row["id"]
         if self._session_db is None or str(row.get("handoff_platform") or "").strip().lower() != "telegram":
             return session_id
-        from gateway.session_route_recovery import conversation_head
+        from hermes_agent.gateway.session_route_recovery import conversation_head
         _authority, _local_owner, head = await conversation_head(self, session_id)
         bound = await self._session_db.get_telegram_topic_binding_by_session(session_id=head)
         if bound and str(bound.get("profile_name") or "default") != (profile_name or "default"):
@@ -514,7 +514,7 @@ class GatewayTopicThreadsMixin:
         the connector's created-name guard enforces no-clobber. Fallback: the per-chat send-result
         cache (older connectors), which only ever renamed the FIRST thread.
         """
-        from gateway.run import _as_thread_info
+        from hermes_agent.gateway.run import _as_thread_info
         if (
             source.platform != Platform.DISCORD or not source.chat_id
             or not getattr(source, "delivered_via_upstream_relay", False)
@@ -536,7 +536,7 @@ class GatewayTopicThreadsMixin:
         """``_relay_auto_thread_info``, waited out until this turn delivers (the legacy send-result
         path can only answer once the reply is sent; the caller asks at title time, one turn early).
         The timeout is only a backstop for a turn that never sends: the turn's own inactivity limit."""
-        from gateway.run import _as_thread_info, _float_env
+        from hermes_agent.gateway.run import _as_thread_info, _float_env
         # The connector-stamped prospective id is known at ingest, so most sessions answer here.
         known = self._relay_auto_thread_info(source)
         if known is not None:
@@ -602,7 +602,7 @@ class GatewayTopicThreadsMixin:
         """Schedule a best-effort rename coroutine onto the gateway loop from the auto-title thread.
         The source is copied so the thread never shares the live dataclass with the loop; failures
         are logged at debug and never propagate."""
-        from gateway.run import safe_schedule_threadsafe
+        from hermes_agent.gateway.run import safe_schedule_threadsafe
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -613,7 +613,7 @@ class GatewayTopicThreadsMixin:
         with suppress(Exception):
             # Keep the live transport owner and identity; multiplex routes may run under a
             # profile that does not own the Discord adapter/token.
-            from gateway.session_identity import replace_source
+            from hermes_agent.gateway.session_identity import replace_source
             copied_source = replace_source(source)
         future = safe_schedule_threadsafe(
             make_coro(copied_source), loop, logger=logger, log_message=f"{label} failed to schedule",

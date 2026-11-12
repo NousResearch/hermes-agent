@@ -14,7 +14,7 @@ import time
 import psutil
 import pytest
 
-from gateway.session_managed_worker import WORKER_POPEN, ManagedWorker
+from hermes_agent.gateway.session_managed_worker import WORKER_POPEN, ManagedWorker
 
 _WORKER = (
     "import subprocess, sys, time\n"

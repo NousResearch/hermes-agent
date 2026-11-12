@@ -3,7 +3,7 @@ import json
 from unittest.mock import AsyncMock
 
 import pytest
-from gateway.platforms.base import SendResult
+from hermes_agent.gateway.platforms.base import SendResult
 from tests.gateway.test_session_hygiene import HygieneCaptureAdapter
 
 

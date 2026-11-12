@@ -27,9 +27,9 @@ def test_model_commit_republishes_session_info(monkeypatch):
     """A canonical picker switch must repaint the intro/header from its committed policy."""
     from types import SimpleNamespace
 
-    from gateway.session_contract import SessionRef
-    from gateway.session_mutations import _project_committed
-    from gateway import session_local
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_mutations import _project_committed
+    from hermes_agent.gateway import session_local
 
     published = []
     authority = SimpleNamespace(
@@ -253,13 +253,13 @@ async def test_input_queued_while_a_model_receipt_commits_still_runs(tmp_path, m
     the old live one and pauses; publishing the policy must wake it, or the input stays queued
     until another submit or a restart."""
     from types import SimpleNamespace
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import SessionAuthority
-    from gateway.session_contract import Submission
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_contract import Submission
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_local import create_local_session
     from hermes_cli import model_switch
     import hermes_agent.hermes_state_runtime as rt
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {})
@@ -317,8 +317,8 @@ async def test_provider_change_drops_the_launch_key_and_keeps_config_secrets(tmp
     the launch key must not cross providers, the frozen config secrets stay bound."""
     from dataclasses import asdict
     from types import SimpleNamespace
-    from gateway.session_mutation_model import prepare_model
-    from gateway.session_policy import bind_launch_key, build_policy, restore_policy
+    from hermes_agent.gateway.session_mutation_model import prepare_model
+    from hermes_agent.gateway.session_policy import bind_launch_key, build_policy, restore_policy
     from hermes_agent.hermes_state import SessionDB
     from hermes_cli import model_switch
     monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(
@@ -345,9 +345,9 @@ async def test_model_pick_reads_current_provider_config_when_legacy_policy_lacks
     """Regression for #139740: a Desktop pick can outlive a policy written without ``providers``."""
     from dataclasses import asdict
     from types import SimpleNamespace
-    from gateway.run_turn_prepare import _resolve_policy_agent_runtime
-    from gateway.session_mutation_model import prepare_model
-    from gateway.session_policy import build_policy, restore_policy
+    from hermes_agent.gateway.run_turn_prepare import _resolve_policy_agent_runtime
+    from hermes_agent.gateway.session_mutation_model import prepare_model
+    from hermes_agent.gateway.session_policy import build_policy, restore_policy
     from hermes_agent.hermes_state import SessionDB
     from hermes_cli import model_switch
 
@@ -395,9 +395,9 @@ async def test_model_pick_freezes_legacy_custom_provider_for_the_next_runtime(tm
     """A legacy ``custom_providers`` declaration must also survive a Desktop model pick."""
     from dataclasses import asdict
     from types import SimpleNamespace
-    from gateway.run_turn_prepare import _resolve_policy_agent_runtime
-    from gateway.session_mutation_model import prepare_model
-    from gateway.session_policy import build_policy, restore_policy
+    from hermes_agent.gateway.run_turn_prepare import _resolve_policy_agent_runtime
+    from hermes_agent.gateway.session_mutation_model import prepare_model
+    from hermes_agent.gateway.session_policy import build_policy, restore_policy
     from hermes_agent.hermes_state import SessionDB
     from hermes_cli import model_switch
 
@@ -440,9 +440,9 @@ async def test_picked_legacy_custom_provider_survives_a_profile_reorder_on_cold_
     entry's own key; a deleted entry refuses by name and never borrows the entry now at that index."""
     from dataclasses import asdict
     from types import SimpleNamespace
-    from gateway.run_turn_prepare import _resolve_policy_agent_runtime
-    from gateway.session_mutation_model import prepare_model
-    from gateway.session_policy import build_policy, restore_policy
+    from hermes_agent.gateway.run_turn_prepare import _resolve_policy_agent_runtime
+    from hermes_agent.gateway.session_mutation_model import prepare_model
+    from hermes_agent.gateway.session_policy import build_policy, restore_policy
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     from hermes_cli import model_switch
@@ -490,9 +490,9 @@ async def test_probe_rename_keep_url_key(tmp_path, monkeypatch):
     key) still runs on a cold start, as on main. Renamed AND moved to another index still refuses."""
     from dataclasses import asdict
     from types import SimpleNamespace
-    from gateway.run_turn_prepare import _resolve_policy_agent_runtime
-    from gateway.session_mutation_model import prepare_model
-    from gateway.session_policy import build_policy, restore_policy
+    from hermes_agent.gateway.run_turn_prepare import _resolve_policy_agent_runtime
+    from hermes_agent.gateway.session_mutation_model import prepare_model
+    from hermes_agent.gateway.session_policy import build_policy, restore_policy
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     from hermes_cli import model_switch
@@ -534,9 +534,9 @@ async def test_model_pick_resolves_the_profiles_current_entry_over_a_frozen_one(
     the profile no longer declares stays as it was."""
     from dataclasses import asdict
     from types import SimpleNamespace
-    from gateway.run_turn_prepare import _resolve_policy_agent_runtime
-    from gateway.session_mutation_model import prepare_model
-    from gateway.session_policy import build_policy, restore_policy
+    from hermes_agent.gateway.run_turn_prepare import _resolve_policy_agent_runtime
+    from hermes_agent.gateway.session_mutation_model import prepare_model
+    from hermes_agent.gateway.session_policy import build_policy, restore_policy
     from hermes_agent.hermes_state import SessionDB
     from hermes_cli import model_switch
 
@@ -587,9 +587,9 @@ async def test_committed_model_selection_is_the_next_resolved_runtime(tmp_path, 
     key, its key_env pointer, api_mode and context pin must not survive; a same-route re-pick keeps them."""
     from dataclasses import asdict
     from types import SimpleNamespace
-    from gateway.run_turn_prepare import _resolve_policy_agent_runtime
-    from gateway.session_mutation_model import prepare_model
-    from gateway.session_policy import bind_launch_key, build_policy, restore_policy
+    from hermes_agent.gateway.run_turn_prepare import _resolve_policy_agent_runtime
+    from hermes_agent.gateway.session_mutation_model import prepare_model
+    from hermes_agent.gateway.session_policy import bind_launch_key, build_policy, restore_policy
     from hermes_agent.hermes_state import SessionDB
     from hermes_cli import model_switch
     old_url, new_url = 'http://127.0.0.1:9/v1', 'http://127.0.0.2:9/v1'
@@ -631,12 +631,12 @@ async def test_guarded_model_target_commits_only_with_its_confirmation_token(tmp
     guarded target writes nothing; its own token applies it exactly once; a token for another
     target or a superseded selection gets a fresh decision."""
     from types import SimpleNamespace
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import SessionAuthority
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_local import create_local_session
     from hermes_cli import model_cost_guard, model_switch
     import hermes_agent.hermes_state_runtime as rt
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {})
@@ -699,12 +699,12 @@ async def test_large_context_guard_reads_the_persisted_anchor_with_no_resident_a
     agent let the switch right after another one apply with no prompt."""
     from types import SimpleNamespace
     from agent.usage_anchor import USAGE_ANCHOR_MODEL_CONFIG_KEY, capture_usage_anchor
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import SessionAuthority
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_local import create_local_session
     from hermes_cli import model_selection_guards, model_switch
     import hermes_agent.hermes_state_runtime as rt
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {})

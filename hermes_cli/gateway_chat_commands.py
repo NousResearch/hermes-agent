@@ -228,7 +228,7 @@ async def run_command(view, command, rest):
 
 
 def help_text():
-    from gateway.session_commands import _READ_COMMANDS
+    from hermes_agent.gateway.session_commands import _READ_COMMANDS
     reports = " ".join(f"/{name}" for name in sorted(_READ_COMMANDS - {"help"}))
     return ("/stop, /approve <id> <choice>, /answer <id> <text>, /discard <admission_id> (turn lost during "
             "restart), /yolo [on|off], /quit (detach). /branch [title], /model <model> [--provider name], "

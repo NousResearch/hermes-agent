@@ -18,7 +18,7 @@ def control(home, verb, params=None):
     """Bootstrap control channel: private named pipe on Windows, AF_UNIX elsewhere."""
     request = json.dumps({'protocol': 1, 'id': 1, 'verb': verb, 'params': params or {}}).encode() + b'\n'
     if os.name == 'nt':
-        from gateway.runtime_bootstrap_windows import query_runtime_control
+        from hermes_agent.gateway.runtime_bootstrap_windows import query_runtime_control
         raw = query_runtime_control(home, request, 2)
     else:
         pointer = home / 'gateway.sock.path'
@@ -143,7 +143,7 @@ def test_normal_entrypoint_earns_authenticated_authority_readiness(tmp_path, mod
                PYTHONPATH=str(root), PYTHONUNBUFFERED='1',
                OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=model_url)
     with (tmp_path / 'gateway.log').open('w+') as log:
-        process = subprocess.Popen([sys.executable, '-m', 'gateway.run'], cwd=root, env=env,
+        process = subprocess.Popen([sys.executable, '-m', 'hermes_agent.gateway.run'], cwd=root, env=env,
                                    stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
         descriptor = {}
         try:
@@ -186,10 +186,10 @@ def test_normal_entrypoint_earns_authenticated_authority_readiness(tmp_path, mod
 @pytest.mark.asyncio
 async def test_api_bind_failure_unwinds_control_db_and_reservation(tmp_path, monkeypatch):
     from functools import partial
-    from gateway import run_api
-    from gateway.run import start_gateway
-    from gateway.config import GatewayConfig
-    from gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway import run_api
+    from hermes_agent.gateway.run import start_gateway
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.runtime_ownership import process_ownership
     from hermes_cli import web_server as web
     from hermes_constants import get_hermes_home
 

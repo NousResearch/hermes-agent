@@ -15,7 +15,7 @@ import logging
 from typing import Any, Optional
 
 from agent.i18n import t
-from gateway.platforms.base import SendResult, describe_proxy_error, env_proxy_for_redaction
+from hermes_agent.gateway.platforms.base import SendResult, describe_proxy_error, env_proxy_for_redaction
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +103,7 @@ class FeishuChoiceCardsMixin:
         if checked is None:
             return self._card_response()
         open_id, _chat_id, user_name, user_id, _union_id = checked
-        from gateway.approval_actor import clarify_refusal, refusal_text
+        from hermes_agent.gateway.approval_actor import clarify_refusal, refusal_text
         # SessionSource.user_id is the tenant user_id when the app can see it, else the open_id.
         if requester := clarify_refusal(clarify_id, user_id or open_id, extra=self.config.extra):
             return self._card_toast(refusal_text(requester))  # only the clicker sees it; card unchanged
@@ -198,7 +198,7 @@ class FeishuChoiceCardsMixin:
         checked = self._validate_card_action(event=event, state=state, label="choice picker", ident=picker_id)
         if checked is None:
             return self._card_response()
-        from gateway.approval_actor import picker_refusal, refusal_text
+        from hermes_agent.gateway.approval_actor import picker_refusal, refusal_text
         if requester := picker_refusal(state["on_choice_selected"], checked[3] or checked[0], extra=self.config.extra):
             return self._card_toast(refusal_text(requester))  # another member's tap: only they see it, card stays open
         token = str(action_value.get("hermes_choice_picker_action") or "")

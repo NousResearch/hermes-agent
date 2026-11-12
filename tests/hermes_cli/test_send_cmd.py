@@ -66,7 +66,7 @@ def whatsapp_bridge(monkeypatch):
 
     import aiohttp
 
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     from hermes_cli.plugins import discover_plugins
 
     calls = []
@@ -112,7 +112,7 @@ def whatsapp_bridge(monkeypatch):
         get_home_channel=lambda _platform: None,
     )
     monkeypatch.setattr(send_cmd, "_load_hermes_env", lambda: None)
-    monkeypatch.setattr("gateway.config.load_gateway_config", lambda: config)
+    monkeypatch.setattr("hermes_agent.gateway.config.load_gateway_config", lambda: config)
     monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
     monkeypatch.setattr("model_tools._run_async", lambda coro: asyncio.run(coro))
     monkeypatch.setattr("tools.send_message_tool._mirror_sent_message", lambda *_args: False)
@@ -191,11 +191,11 @@ def test_list_includes_configured_platform_without_discovered_channels(
         def get_connected_platforms(self):
             return [_FakePlatform("simplex")]
 
-    fake_gw_config = types.ModuleType("gateway.config")
+    fake_gw_config = types.ModuleType("hermes_agent.gateway.config")
     fake_gw_config.load_gateway_config = lambda: _FakeGwConfig()
-    monkeypatch.setitem(sys.modules, "gateway.config", fake_gw_config)
+    monkeypatch.setitem(sys.modules, "hermes_agent.gateway.config", fake_gw_config)
 
-    fake_dir = types.ModuleType("gateway.channel_directory")
+    fake_dir = types.ModuleType("hermes_agent.gateway.channel_directory")
     fake_dir.load_directory = lambda: {"updated_at": None, "platforms": {}}
 
     def _format(platforms=None):
@@ -207,7 +207,7 @@ def test_list_includes_configured_platform_without_discovered_channels(
         return "\n".join(lines)
 
     fake_dir.format_directory_for_display = _format
-    monkeypatch.setitem(sys.modules, "gateway.channel_directory", fake_dir)
+    monkeypatch.setitem(sys.modules, "hermes_agent.gateway.channel_directory", fake_dir)
 
     rc = send_cmd._list_targets(None, json_mode=False)
     out = capsys.readouterr().out
@@ -227,17 +227,17 @@ def test_list_json_includes_configured_platform(monkeypatch, capsys):
         def get_connected_platforms(self):
             return [_FakePlatform("simplex"), _FakePlatform("local")]
 
-    fake_gw_config = types.ModuleType("gateway.config")
+    fake_gw_config = types.ModuleType("hermes_agent.gateway.config")
     fake_gw_config.load_gateway_config = lambda: _FakeGwConfig()
-    monkeypatch.setitem(sys.modules, "gateway.config", fake_gw_config)
+    monkeypatch.setitem(sys.modules, "hermes_agent.gateway.config", fake_gw_config)
 
-    fake_dir = types.ModuleType("gateway.channel_directory")
+    fake_dir = types.ModuleType("hermes_agent.gateway.channel_directory")
     fake_dir.load_directory = lambda: {
         "updated_at": None,
         "platforms": {"telegram": [{"id": "1", "name": "home"}]},
     }
     fake_dir.format_directory_for_display = lambda platforms=None: ""
-    monkeypatch.setitem(sys.modules, "gateway.channel_directory", fake_dir)
+    monkeypatch.setitem(sys.modules, "hermes_agent.gateway.channel_directory", fake_dir)
 
     rc = send_cmd._list_targets(None, json_mode=True)
     payload = json.loads(capsys.readouterr().out)
@@ -257,7 +257,7 @@ def test_list_json_includes_configured_platform(monkeypatch, capsys):
 def test_load_hermes_env_bridges_config_yaml_scalars(tmp_path, monkeypatch):
     """Top-level config.yaml scalars should be bridged into os.environ.
 
-    This mirrors the gateway/run.py bootstrap behavior: without this, running
+    This mirrors the hermes_agent/gateway/run.py bootstrap behavior: without this, running
     ``hermes send`` from a fresh shell cannot resolve the home channel
     because ``TELEGRAM_HOME_CHANNEL`` (saved by ``hermes config set``) lives
     in config.yaml, not in .env — and the gateway's config loader reads via
@@ -447,13 +447,13 @@ def test_help_and_empty_list_hint_name_the_resolved_home(tmp_path, monkeypatch, 
     assert str(home / ".env") in help_text and str(home / "config.yaml") in help_text
     assert "~/.hermes" not in help_text
 
-    fake_gw_config = types.ModuleType("gateway.config")
+    fake_gw_config = types.ModuleType("hermes_agent.gateway.config")
     fake_gw_config.load_gateway_config = lambda: types.SimpleNamespace(get_connected_platforms=list)
-    monkeypatch.setitem(sys.modules, "gateway.config", fake_gw_config)
-    fake_dir = types.ModuleType("gateway.channel_directory")
+    monkeypatch.setitem(sys.modules, "hermes_agent.gateway.config", fake_gw_config)
+    fake_dir = types.ModuleType("hermes_agent.gateway.channel_directory")
     fake_dir.load_directory = lambda: {"updated_at": None, "platforms": {}}
     fake_dir.format_directory_for_display = lambda platforms=None: ""
-    monkeypatch.setitem(sys.modules, "gateway.channel_directory", fake_dir)
+    monkeypatch.setitem(sys.modules, "hermes_agent.gateway.channel_directory", fake_dir)
 
     assert send_cmd._list_targets(None, json_mode=False) == 0
     out = capsys.readouterr().out

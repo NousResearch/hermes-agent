@@ -14,7 +14,7 @@ from urllib.parse import unquote
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 
 PASSWORD = "p{a}ss|w0rd^99"
 # Scheme-less (yarl re-quotes it into InvalidURL), '#' (httpx/aiohttp "Invalid port: '<pw>'"),
@@ -92,8 +92,8 @@ ADAPTERS = {Platform.DISCORD: _discord, Platform.QQBOT: _qqbot, Platform.WECOM: 
 @pytest.mark.parametrize("platform", list(ADAPTERS), ids=lambda p: p.value)
 def test_connect_failure_keeps_proxy_secret_out_of_fatal_status_and_retry(
         monkeypatch, tmp_path, caplog, platform, shape):
-    from gateway.run import GatewayRunner
-    from gateway.status import read_runtime_status
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.status import read_runtime_status
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     proxy = shape.format(pw=PASSWORD)
@@ -118,7 +118,7 @@ def test_connect_failure_keeps_proxy_secret_out_of_fatal_status_and_retry(
         await runner._reconnect_failed_platform(platform, now=float("inf"))
         await runner.stop()
 
-    with caplog.at_level(logging.DEBUG), patch("gateway.platforms.base.gateway_trust_env", return_value=True):
+    with caplog.at_level(logging.DEBUG), patch("hermes_agent.gateway.platforms.base.gateway_trust_env", return_value=True):
         asyncio.run(_start_then_reconnect())
 
     assert len(built) == 2 and all(a.fatal_error_message for a in built)

@@ -8,9 +8,9 @@ import types
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from gateway.run_turn import GatewayTurnMixin
-from gateway.session import Platform, SessionSource
-from gateway.turn_context import TurnContext
+from hermes_agent.gateway.run_turn import GatewayTurnMixin
+from hermes_agent.gateway.session import Platform, SessionSource
+from hermes_agent.gateway.turn_context import TurnContext
 from hermes_cli.auth import AuthError
 
 
@@ -62,7 +62,7 @@ def _runner_with_real_runtime_resolution():
 
 
 def test_credential_resolution_fallback_reaches_agent_notice_not_agent_kwargs():
-    from gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
 
     fb = {"provider": "anthropic", "model": "claude-sonnet-5", "api_key": "k", "base_url": "u"}
     runner = _runner_with_real_runtime_resolution()
@@ -80,10 +80,10 @@ def test_credential_resolution_fallback_reaches_agent_notice_not_agent_kwargs():
     with patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=primary_auth_fails), \
          patch("hermes_cli.runtime_provider._get_model_config",
                return_value={"provider": "openai-codex", "default": "gpt-5.6-sol"}), \
-         patch("gateway.run._load_gateway_config",
+         patch("hermes_agent.gateway.run._load_gateway_config",
                return_value={"fallback_providers": [{"provider": "anthropic", "model": "claude-sonnet-5"}]}), \
-         patch("gateway.run._resolve_gateway_model", return_value="gpt-5.6-sol"), \
-         patch("gateway.run._get_channel_override", return_value=None):
+         patch("hermes_agent.gateway.run._resolve_gateway_model", return_value="gpt-5.6-sol"), \
+         patch("hermes_agent.gateway.run._get_channel_override", return_value=None):
         result = TurnRunner(runner, ctx).run_sync()
 
     assert result["final_response"] == "ok"
@@ -102,8 +102,8 @@ def test_model_override_fast_path_clears_stale_notice():
     runner._pre_agent_fallback_notice = "⚠️ Provider fallback: stale"
     override = {"model": "claude-sonnet-5", "provider": "anthropic", "api_key": "k", "base_url": "u"}
     runner._peek_session_state.return_value = SimpleNamespace(conversation=SimpleNamespace(model_override=override))
-    with patch("gateway.run._resolve_gateway_model", return_value="gpt-5.6-sol"), \
-         patch("gateway.run._credential_pool_for_provider", return_value=None):
+    with patch("hermes_agent.gateway.run._resolve_gateway_model", return_value="gpt-5.6-sol"), \
+         patch("hermes_agent.gateway.run._credential_pool_for_provider", return_value=None):
         model, runtime = runner._resolve_session_agent_runtime(session_key="test-session-key")
     assert (model, runtime["provider"]) == ("claude-sonnet-5", "anthropic")
     assert runner._pre_agent_fallback_notice is None

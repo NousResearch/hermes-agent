@@ -29,10 +29,10 @@ class _Transport:
 
 
 async def _connect(tmp_path, monkeypatch, *, native=True, config=None):
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     from hermes_agent.tui_gateway import server
 
     home = tmp_path / ".hermes"
@@ -43,7 +43,7 @@ async def _connect(tmp_path, monkeypatch, *, native=True, config=None):
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(server, "_hermes_home", str(home))
     monkeypatch.setattr(server, "_db", None)
-    monkeypatch.setattr("gateway.run._hermes_home", home)
+    monkeypatch.setattr("hermes_agent.gateway.run._hermes_home", home)
     for name in ("HERMES_DESKTOP", "HERMES_DASHBOARD_SESSION_TOKEN"):
         monkeypatch.delenv(name, raising=False)
     store = SessionStore(home / "sessions", GatewayConfig())
@@ -57,7 +57,7 @@ async def _connect(tmp_path, monkeypatch, *, native=True, config=None):
         identity["native_bootstrap"] = True
     transport = _Transport(identity)
     connection = AuthorityConnection(authority, transport, identity)
-    from gateway.session_local_migration import bind_native_transport
+    from hermes_agent.gateway.session_local_migration import bind_native_transport
     bind_native_transport(authority, connection.actor, identity)
     return SimpleNamespace(authority=authority, connection=connection, transport=transport, runner=runner, home=home)
 
@@ -111,8 +111,8 @@ async def test_a_desktop_chat_runs_its_turns_as_work_for_the_local_desktop(tmp_p
     """The trial's free inference is resolved inside the turn, away from any request: the chat carries
     the fact from its creation, and only a Desktop chat created on a declared connection does."""
     from contextlib import nullcontext
-    from gateway.session_local_recovery import local_source
-    from gateway.session_policy import local_desktop_turn
+    from hermes_agent.gateway.session_local_recovery import local_source
+    from hermes_agent.gateway.session_policy import local_desktop_turn
     from hermes_cli.anon_auth import on_local_desktop_backend
 
     conn = await _connect(tmp_path, monkeypatch,
@@ -240,8 +240,8 @@ async def test_an_exact_create_retry_from_a_socket_not_yet_declared_local_resume
     declaration may not have landed on the new socket yet. The retry carries the same request, so it
     gets the same chat, which still runs as the local Desktop's; no viewer sees the stamp."""
     from contextlib import nullcontext
-    from gateway.session_local_recovery import local_source
-    from gateway.session_policy import local_desktop_turn
+    from hermes_agent.gateway.session_local_recovery import local_source
+    from hermes_agent.gateway.session_policy import local_desktop_turn
     from hermes_cli.anon_auth import on_local_desktop_backend
 
     conn = await _connect(tmp_path, monkeypatch,
@@ -259,8 +259,8 @@ async def test_an_exact_create_retry_from_a_socket_not_yet_declared_local_resume
         source = local_source(conn.authority, stored, conn.connection.actor.subject)
         with local_desktop_turn(conn.runner, source, nullcontext()):
             assert on_local_desktop_backend() is True
-        from gateway.session_local import local_session_info
-        from gateway.session_contract import SessionRef
+        from hermes_agent.gateway.session_local import local_session_info
+        from hermes_agent.gateway.session_contract import SessionRef
         info = local_session_info(conn.authority, SessionRef(conn.authority.profile_id, stored))
         assert "desktop_local" not in info["launch_request"]
     finally:
@@ -273,7 +273,7 @@ async def test_a_chat_opened_on_the_trial_moves_to_the_provider_the_user_connect
     chat's next turn runs on that provider's model instead of asking a paid route for nous/welcome."""
     from hermes_cli import anon_auth
     from hermes_agent.hermes_state_local import local_receipt
-    from gateway.session_policy import restore_policy
+    from hermes_agent.gateway.session_policy import restore_policy
     guest = {"auth_method": anon_auth.ANON_AUTH_METHOD, anon_auth.WELCOME_CLAIM_FLAG: True}
     monkeypatch.setattr(anon_auth, "current_nous_state", lambda *a, **k: guest)
     conn = await _connect(tmp_path, monkeypatch)
@@ -330,9 +330,9 @@ async def test_a_desktop_chat_saved_before_the_mark_moved_still_resumes_and_runs
     work for the local Desktop."""
     import json
     from contextlib import nullcontext
-    from gateway.session_local import publish_local_policy
-    from gateway.session_local_recovery import local_source
-    from gateway.session_policy import local_desktop_turn
+    from hermes_agent.gateway.session_local import publish_local_policy
+    from hermes_agent.gateway.session_local_recovery import local_source
+    from hermes_agent.gateway.session_policy import local_desktop_turn
     from hermes_cli.anon_auth import on_local_desktop_backend
     from hermes_agent.hermes_state_local import POLICY_PREFIX
 

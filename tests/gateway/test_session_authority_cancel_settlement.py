@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_authority import LiveSession, SessionAuthority
-from gateway.session_contract import SessionActor, SessionRef, Submission
+from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+from hermes_agent.gateway.session_contract import SessionActor, SessionRef, Submission
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import RuntimeStoreError, begin_runtime_epoch, list_session_admissions
 
@@ -61,8 +61,8 @@ async def test_cancel_queued_settles_native_waiter_and_publishes_terminal_comple
 
 @pytest.mark.asyncio
 async def test_cancelling_the_head_of_a_paused_fifo_resumes_its_successor(tmp_path, monkeypatch):
-    from gateway.config import Platform
-    from gateway import session_api_turn, session_finite
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway import session_api_turn, session_finite
 
     db, authority = _authority(tmp_path, monkeypatch, platform=Platform.API_SERVER)
     executed = []
@@ -100,8 +100,8 @@ async def test_cancelling_the_head_of_a_paused_fifo_resumes_its_successor(tmp_pa
 @pytest.mark.asyncio
 async def test_hosted_head_cancelled_during_preclaim_does_not_let_successor_skip_its_check(tmp_path, monkeypatch):
     import threading
-    from gateway import session_finite, session_hosted_transport, session_local_recovery
-    from gateway.config import Platform
+    from hermes_agent.gateway import session_finite, session_hosted_transport, session_local_recovery
+    from hermes_agent.gateway.config import Platform
 
     db, authority = _authority(tmp_path, monkeypatch, platform=Platform.LOCAL)
     monkeypatch.setattr(session_local_recovery, 'restore_local_session', lambda authority, sid: None)
@@ -149,8 +149,8 @@ async def test_head_cancelled_after_its_last_preclaim_check_does_not_hand_the_cl
     check (and was re-read as queued) while the off-loop claim waits for the writer: the claim takes
     the validated head or nothing, never the successor."""
     import threading
-    from gateway import session_authority, session_finite, session_hosted_transport, session_local_recovery
-    from gateway.config import Platform
+    from hermes_agent.gateway import session_authority, session_finite, session_hosted_transport, session_local_recovery
+    from hermes_agent.gateway.config import Platform
 
     db, authority = _authority(tmp_path, monkeypatch, platform=Platform.LOCAL)
     monkeypatch.setattr(session_local_recovery, 'restore_local_session', lambda authority, sid: None)
@@ -197,7 +197,7 @@ async def test_head_cancelled_after_its_last_preclaim_check_does_not_hand_the_cl
 
 def _wire_turn_agent(authority, generation, agent):
     """Run the real per-turn agent wiring with this authority as the turn's approval owner."""
-    from gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
     ctx = SimpleNamespace(
         source=SimpleNamespace(platform=None),  # notification presentation reads ctx.source.platform
         mute_notification_reply=False,
@@ -220,7 +220,7 @@ def _wire_turn_agent(authority, generation, agent):
 
 @pytest.mark.asyncio
 async def test_stop_before_the_turn_agent_exists_reaches_the_agent_once_it_is_wired(tmp_path, monkeypatch):
-    from gateway import session_finite
+    from hermes_agent.gateway import session_finite
 
     db, authority = _authority(tmp_path, monkeypatch)
     cache = {}
@@ -267,7 +267,7 @@ async def test_settlement_failure_is_logged_and_does_not_kill_the_drain(tmp_path
     drain task ends without an unretrieved exception so the FIFO can be re-armed.
     """
     import logging
-    from gateway import session_finite
+    from hermes_agent.gateway import session_finite
 
     db, authority = _authority(tmp_path, monkeypatch)
 
@@ -279,7 +279,7 @@ async def test_settlement_failure_is_logged_and_does_not_kill_the_drain(tmp_path
         return 'done'
     monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
 
-    with db, caplog.at_level(logging.ERROR, logger='gateway.session_authority'):
+    with db, caplog.at_level(logging.ERROR, logger='hermes_agent.gateway.session_authority'):
         head = await _submit(authority, 'moved-under-us')
         task = authority.sessions['s'].task
         await asyncio.wait_for(task, 5)
@@ -299,10 +299,10 @@ async def test_storage_lock_during_claim_retries_in_place_and_keeps_waiters(tmp_
     event-driven, so nothing would re-arm it. It retries in place and runs the head once."""
     import logging
     import sqlite3
-    from gateway import session_authority, session_finite
+    from hermes_agent.gateway import session_authority, session_finite
     from tests.waiting import async_wait_until
 
-    caplog.set_level(logging.WARNING, logger='gateway.session_authority')
+    caplog.set_level(logging.WARNING, logger='hermes_agent.gateway.session_authority')
     db, authority = _authority(tmp_path, monkeypatch)
     monkeypatch.setattr(db, '_WRITE_PATIENCE_S', 0.2)
     monkeypatch.setattr(session_authority, '_CLAIM_RETRY_MIN_S', 0.05, raising=False)
@@ -342,7 +342,7 @@ async def test_cancel_committed_before_a_failed_media_cleanup_still_settles_obse
     """Media collection is a separate write after the cancellation commits. Its failure must not
     withhold observer settlement, and an exact retry (which collects again) must neither leave the
     waiter parked nor publish a second completion."""
-    from gateway import session_ingress_media
+    from hermes_agent.gateway import session_ingress_media
 
     db, authority = _authority(tmp_path, monkeypatch)
     scheduled, frames = [], []

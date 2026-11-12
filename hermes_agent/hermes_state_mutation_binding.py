@@ -22,9 +22,9 @@ def _owner_user(row):
 
 def _login_label(subject):
     """The ``<provider>:<user>`` label Desktop stamps on its rows (hermes_agent/tui_gateway/session_transports.py) when it
-    names exactly the dashboard subject ``auth:v1:[provider, "", user]`` (gateway/session_identity.py).
+    names exactly the dashboard subject ``auth:v1:[provider, "", user]`` (hermes_agent/gateway/session_identity.py).
     Only an issuer-less login maps: the label drops the issuer, so an issuer-bearing subject must not claim it."""
-    from gateway.session_identity import parse_authenticated_subject
+    from hermes_agent.gateway.session_identity import parse_authenticated_subject
     parts = parse_authenticated_subject(subject)
     if parts is None:
         return None
@@ -50,9 +50,9 @@ def _binding_owner(saved):
 
 def binding_names(saved, subject):
     """Whether a stored binding names *subject*: the same owner (a binding a Webapp login stored
-    belongs to the machine owner, gateway.owner_identity.same_owner). Every reader of a binding asks
+    belongs to the machine owner, hermes_agent.gateway.owner_identity.same_owner). Every reader of a binding asks
     this, never a string compare."""
-    from gateway.owner_identity import same_owner
+    from hermes_agent.gateway.owner_identity import same_owner
     owner = _binding_owner(saved)
     return owner is not None and same_owner(owner, subject)
 
@@ -61,7 +61,7 @@ def bindings_agree(first, second):
     """Two stored bindings name the same owner (both absent agrees; one absent does not)."""
     if first == second or first is None or second is None:
         return first == second
-    from gateway.owner_identity import owners_agree
+    from hermes_agent.gateway.owner_identity import owners_agree
     first_owner, second_owner = _binding_owner(first), _binding_owner(second)
     return first_owner is not None and second_owner is not None and owners_agree(first_owner, second_owner)
 
@@ -90,7 +90,7 @@ def authorize_history(conn, actor, session_id, *, claim=False):
         return True
     if not _history_row(row):
         return False
-    from gateway.owner_identity import same_owner
+    from hermes_agent.gateway.owner_identity import same_owner
     if _owner_user(row) and not same_owner(row['user_id'], actor.subject):
         raise RuntimeStoreError('permission_denied')
     if 'session:create' not in actor.capabilities:
@@ -126,7 +126,7 @@ def same_history_owner(conn, anchor_id, session_id):
     if not bindings_agree(binding, history_binding(conn, anchor_id)):
         return False
     routeless_peer = row['source'] == anchor['source'] and not any(tuple(anchor)[2:5])
-    from gateway.owner_identity import owners_agree
+    from hermes_agent.gateway.owner_identity import owners_agree
     return binding is not None or (
         (_history_row(row) or routeless_peer)
         and (_owner_user(row) in (None, '') or owners_agree(_owner_user(row), anchor['user_id'])))

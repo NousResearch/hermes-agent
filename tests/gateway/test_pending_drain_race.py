@@ -1,7 +1,7 @@
 """Regression tests: pending-drain + finally-cleanup races must not spawn
 duplicate agents OR silently drop messages that arrived during cleanup.
 
-Two related races in gateway/platforms/base.py:_process_message_background:
+Two related races in hermes_agent/gateway/platforms/base.py:_process_message_background:
 
 1. Pending-drain path (previous line 1931):
    ``del self._active_sessions[session_key]`` opened a window where a
@@ -26,12 +26,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import (
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import (
     BasePlatformAdapter,
 )
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource, build_session_key
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.session import SessionSource, build_session_key
 
 
 class _StubAdapter(BasePlatformAdapter):

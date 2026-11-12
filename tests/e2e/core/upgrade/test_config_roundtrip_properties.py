@@ -1204,7 +1204,7 @@ def _p6_setup(section: str, monkeypatch) -> tuple[str, dict, Path, int]:
 def test_p6_null_section_survives_every_surface(section, web_app, home, monkeypatch):
     """No crash and no clobber of any OTHER section on load, effective resolution, gateway display
     resolvers, save, CLI set, TUI RPC and Desktop PUT (the #105674 `display: null` class)."""
-    from gateway.display_config import resolve_display_setting, resolve_tool_progress
+    from hermes_agent.gateway.display_config import resolve_display_setting, resolve_tool_progress
     from hermes_cli.config_effective import load_user_config_effective
     from hermes_agent.tui_gateway import server
 
@@ -1258,7 +1258,7 @@ def test_p6_all_sections_null_at_once_through_gateway_loader_and_migration(home,
     """Every top-level key null simultaneously: the real gateway config loader, the effective
     resolver and a migration from the previous schema version run without crashing; the
     migration stamps the latest version and keeps the file's comments."""
-    from gateway.config import load_gateway_config
+    from hermes_agent.gateway.config import load_gateway_config
     from hermes_cli.config_effective import load_user_config_effective
 
     text = "# every section null\n" + "".join(f"{k}: null\n" for k in _TOP_LEVEL) + f"_config_version: {LATEST - 1}\n"

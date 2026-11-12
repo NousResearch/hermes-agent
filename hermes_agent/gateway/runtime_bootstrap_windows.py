@@ -267,7 +267,7 @@ _PIPE_CLIENT_SQOS = 0x00100000 | 0x00010000
 
 
 def query_runtime_control(home: Path, request: bytes, timeout: float) -> bytes:
-    from gateway.control_socket import windows_pipe_name
+    from hermes_agent.gateway.control_socket import windows_pipe_name
     win = _native()
     deadline = time.monotonic() + timeout
     name = windows_pipe_name(home)
@@ -338,7 +338,7 @@ class NativeControlServer:
             raise TimeoutError('runtime control pipe did not stop')
 
     def _create_pipe(self, first=True):
-        from gateway.control_socket import windows_pipe_name
+        from hermes_agent.gateway.control_socket import windows_pipe_name
         win = _native()
         class SecurityAttributes(ctypes.Structure):
             _fields_ = [('length', wintypes.DWORD), ('descriptor', ctypes.c_void_p), ('inherit', wintypes.BOOL)]

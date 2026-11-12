@@ -367,7 +367,7 @@ def test_a_timed_out_child_never_waits_on_a_grandchild_holding_its_pipes(monkeyp
     from hermes_cli import update_custody
 
     # Only update_custody sees win32: patching sys.platform itself would send every lazy import
-    # in this window (the suite's Popen guard imports gateway.status) down its Windows branch.
+    # in this window (the suite's Popen guard imports hermes_agent.gateway.status) down its Windows branch.
     monkeypatch.setattr(update_custody, "sys", _Win32Sys())
     monkeypatch.setattr(update_custody, "_held", lambda: {"fd": None})
     monkeypatch.setattr(update_custody, "popen", lambda argv, **kw: subprocess.Popen(list(argv), **kw))

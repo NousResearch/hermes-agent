@@ -8,9 +8,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_authority import SessionAuthority
-from gateway.session_controls import AuthorityConnection
-from gateway.session_local import create_local_session
+from hermes_agent.gateway.session_authority import SessionAuthority
+from hermes_agent.gateway.session_controls import AuthorityConnection
+from hermes_agent.gateway.session_local import create_local_session
 from hermes_cli.gateway_client import GatewayClientError
 from hermes_cli.gateway_mutations import slash_mutation
 import hermes_agent.hermes_state_runtime as rt
@@ -27,9 +27,9 @@ def test_slash_mutation_parses_compress_through_the_shared_parser():
 
 @pytest.mark.asyncio
 async def test_preview_mutation_reports_without_summarizing_or_writing(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
     from agent.context_compressor import ContextCompressor
 
     monkeypatch.setattr(run, '_load_gateway_config', dict)
@@ -79,9 +79,9 @@ async def test_preview_mutation_reports_without_summarizing_or_writing(tmp_path,
 async def test_canonical_compress_runs_the_live_agents_pre_compress_memory_hook(tmp_path, monkeypatch):
     """Canonical ``/compress`` gives the session's memory providers the same ``on_pre_compress``
     turn the in-process compressor does, and their insight reaches the summarizer."""
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
     from agent.context_compressor import ContextCompressor
 
     monkeypatch.setattr(run, '_load_gateway_config', dict)
@@ -130,10 +130,10 @@ async def test_input_is_admitted_while_compress_summarizes_but_not_claimed_until
     FIFO claim still waits for the fenced compress commit."""
     import asyncio
     import threading
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_contract import Submission
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_contract import Submission
     from agent.context_compressor import ContextCompressor
 
     monkeypatch.setattr(run, '_load_gateway_config', dict)
@@ -187,9 +187,9 @@ async def test_a_compress_that_removes_nothing_reports_mains_no_changes_without_
     """A short session's ``/compress`` (the summarizer protects every message) is main's
     ``No changes from compression: N messages`` report, read-only like a preview: no receipt, no
     revision bump, no ``nothing_to_compress`` error on the wire (FINDINGS row 25)."""
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
     from agent.context_compressor import ContextCompressor
 
     monkeypatch.setattr(run, '_load_gateway_config', dict)
@@ -229,9 +229,9 @@ async def test_no_op_compress_without_a_resident_agent_estimates_the_stored_prom
     /compress: messages plus the system prompt and tool schemas the session sends (its stored prompt
     and tools[] pin), not the messages alone."""
     import json
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
     from agent.context_compressor import ContextCompressor
     from agent.model_metadata import estimate_request_tokens_rough
 
@@ -274,7 +274,7 @@ def test_cold_estimate_resolves_a_legacy_name_list_pin_like_the_restored_agent()
     """T15 review: a legacy pin (a bare name list) is restored to each tool's current definition, so the
     cold estimate must price those definitions too, not the prompt alone (260 vs 1,714)."""
     import json
-    from gateway.session_mutation_compress import _request_tokens
+    from hermes_agent.gateway.session_mutation_compress import _request_tokens
     from tools.mcp_tool_agent import restore_agent_tool_prefix
     from tools.registry import registry
 

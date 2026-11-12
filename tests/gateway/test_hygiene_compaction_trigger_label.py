@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.run import GatewayRunner, run_codex_hygiene_compaction
+from hermes_agent.gateway.run import GatewayRunner, run_codex_hygiene_compaction
 
 
 def _recording_agent(labels: list) -> SimpleNamespace:

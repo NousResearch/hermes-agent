@@ -8,8 +8,8 @@ cold row's stored owner — while an unverified peer, or a malformed subject, st
 
 import json
 
-from gateway.control_socket import GatewayControlServer
-from gateway.runtime_bootstrap import TicketStore
+from hermes_agent.gateway.control_socket import GatewayControlServer
+from hermes_agent.gateway.runtime_bootstrap import TicketStore
 
 FORWARDED = 'auth:v1:["basic","","wweic"]'
 
@@ -87,7 +87,7 @@ def test_a_bare_forwarded_label_fails_closed(tmp_path):
 def test_a_forwarded_subject_matching_the_row_owner_takes_the_mutation(tmp_path):
     """The reviewer-repro shape: a stored ``desktop`` row owned by a dashboard account is
     deletable by a forwarded actor acting as that account, and refused for any other."""
-    from gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_contract import SessionActor
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_mutation_binding import authorize_history
 

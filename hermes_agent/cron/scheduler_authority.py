@@ -53,7 +53,7 @@ def _lift_pause(job_id, pause):
 
 
 def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id=None):
-    from gateway.session_cron import owner_for_home, operation
+    from hermes_agent.gateway.session_cron import owner_for_home, operation
     from hermes_cli.gateway_client import connect_gateway
     from hermes_constants import get_hermes_home
     from utils import atomic_json_write
@@ -152,7 +152,7 @@ def reconcile_pending(*, allow_connect=True):
     With allow_connect=False, a headless tick leaves durable receipts for the next
     live owner instead of ensuring or spawning a gateway.
     """
-    from gateway.session_cron import owner_for_home, operation
+    from hermes_agent.gateway.session_cron import owner_for_home, operation
     from hermes_constants import get_hermes_home
     from hermes_cli.gateway_client import connect_gateway
     from hermes_agent.cron.executions import FIRER_FINISHED_STATES, execution_owner_live, get_execution

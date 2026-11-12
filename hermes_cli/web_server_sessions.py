@@ -85,7 +85,7 @@ def _session_latest_descendant(session_id: str, db):
 def _session_mutation_context(request, profile):
     """Use the same principal and profile boundary for prepare and apply."""
     from fastapi import HTTPException
-    from gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_contract import SessionActor
     from hermes_cli.web_server import _has_valid_session_token
     from hermes_cli.web_server_cron import _cron_profile_home
     from hermes_agent.hermes_state import _default_db_path
@@ -95,11 +95,11 @@ def _session_mutation_context(request, profile):
     if native is not None:
         subject = native['subject']
     elif session is not None:
-        from gateway.owner_identity import principal_subject
+        from hermes_agent.gateway.owner_identity import principal_subject
         subject = principal_subject({"user_id": session.user_id,
             "provider": session.provider, "issuer": session.issuer})
     elif not getattr(request.app.state, 'auth_required', False) and _has_valid_session_token(request):
-        from gateway.owner_identity import host_owner_subject
+        from hermes_agent.gateway.owner_identity import host_owner_subject
         subject = host_owner_subject()
     else:
         raise HTTPException(status_code=401, detail='Unauthorized')
@@ -114,7 +114,7 @@ def _session_mutation_context(request, profile):
         # (``str(home)``), so import bindings written offline stay valid once one starts.
         return None, SessionActor(subject, str(home.resolve()), capabilities, 'http')
     # ``?profile=`` selects a served home; its own authority (not the launch one) owns the mutation.
-    from gateway.session_authorities import authority_for_home
+    from hermes_agent.gateway.session_authorities import authority_for_home
     runner = getattr(request.app.state, 'gateway_runner', None)
     owner = authority_for_home(runner, home) if runner is not None else None
     if owner is None and home.resolve() == Path(authority.db.db_path).parent.resolve():
@@ -142,7 +142,7 @@ def _native_history_transport(request, authority, actor):
     if native is None:
         yield
         return
-    from gateway.session_local_migration import bind_native_transport, unbind_native_transport
+    from hermes_agent.gateway.session_local_migration import bind_native_transport, unbind_native_transport
     bind_native_transport(authority, actor, {'provider': 'local', 'profile_id': authority.profile_id,
                                              'instance_id': native['instance_id']})
     try:
@@ -212,7 +212,7 @@ async def _mutate_via_gateway_owner(profile, actor, params):
     the mutation when the forward acts as that account.
     """
     from fastapi import HTTPException
-    from gateway.runtime_ownership import OwnershipConflict
+    from hermes_agent.gateway.runtime_ownership import OwnershipConflict
     from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError, connect_gateway
     from hermes_cli.gateway_runtime import discover_gateway_endpoint
     from hermes_cli.gateway_runtime_discovery import DiscoveryError
@@ -246,7 +246,7 @@ async def _mutate_via_gateway_owner(profile, actor, params):
     # A sign-in is the machine owner (owner_identity), which is this same-user socket's own peer
     # subject: let the socket mint it natively. The verifier lets a peer NAME only a structured
     # login subject, so forwarding the owner's OS subject explicitly would be refused.
-    from gateway.owner_identity import host_owner_subject
+    from hermes_agent.gateway.owner_identity import host_owner_subject
     subject = None if actor.subject == host_owner_subject() else actor.subject
     try:
         async with connect_gateway(endpoint=endpoint, subject=subject) as client:
@@ -273,8 +273,8 @@ async def _mutate_session_request(request, profile, session_id, *, request_id,
     """Resolve the authenticated principal and owner; never open a second writer."""
     import sqlite3
     from fastapi import HTTPException
-    from gateway.session_contract import SessionRef
-    from gateway.session_mutations import mutate_session
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_mutations import mutate_session
     from hermes_cli.gateway_client import GatewayClientError
     from hermes_agent.hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
@@ -321,7 +321,7 @@ async def _mutate_session_request(request, profile, session_id, *, request_id,
 def _with_session_maintenance(profile, operation, *args):
     """Offline bulk actions reserve the exact owner lock through final DB close."""
     from fastapi import HTTPException
-    from gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
+    from hermes_agent.gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
     from hermes_cli.web_server_cron import _cron_profile_home
     from hermes_agent.hermes_state import _default_db_path
 
@@ -477,7 +477,7 @@ def _maybe_auto_archive_for_profile(profile: Optional[str]) -> None:
         from hermes_cli.profiles import _check_gateway_running
 
         # A live gateway owns this profile's store and runs the same sweep on its own
-        # housekeeping tick ("state.db maintenance tick" in gateway/run.py, profile-scoped so a
+        # housekeeping tick ("state.db maintenance tick" in hermes_agent/gateway/run.py, profile-scoped so a
         # multiplexed secondary's store is swept too). Opening it WRITABLE from `hermes
         # serve` adds a second writer to a database another process is already archiving,
         # for zero extra coverage (#110405). `_check_gateway_running` is the canonical

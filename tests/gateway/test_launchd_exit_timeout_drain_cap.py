@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.restart import (
+from hermes_agent.gateway.restart import (
     LAUNCHD_LABEL_ENV,
     LAUNCHD_STOP_CLEANUP_RESERVE_S,
     effective_stop_drain_timeout,
@@ -27,7 +27,7 @@ from gateway.restart import (
     read_launchd_exit_timeout_s,
     resolve_launchd_capped_drain,
 )
-from gateway.shutdown_watchdog import resolve_shutdown_watchdog_delay
+from hermes_agent.gateway.shutdown_watchdog import resolve_shutdown_watchdog_delay
 
 _CAPPED = 60.0 - LAUNCHD_STOP_CLEANUP_RESERVE_S
 
@@ -109,9 +109,9 @@ def test_effective_drain_capped_only_for_signal_stops_under_launchd():
 
 @pytest.mark.parametrize("takeover", [False, True])
 def test_sigterm_handler_marks_stop_as_signal_driven_unless_planned_takeover(monkeypatch, takeover):
-    import gateway.run as run_mod
-    import gateway.shutdown_forensics as forensics
-    from gateway import status
+    import hermes_agent.gateway.run as run_mod
+    import hermes_agent.gateway.shutdown_forensics as forensics
+    from hermes_agent.gateway import status
 
     monkeypatch.setattr(status, "consume_takeover_marker_for_self", lambda: takeover)
     monkeypatch.setattr(status, "consume_planned_stop_marker_for_self", lambda: False)

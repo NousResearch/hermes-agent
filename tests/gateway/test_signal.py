@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch, AsyncMock
 from urllib.parse import quote
 
-from gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.config import Platform, PlatformConfig
 
 
 @pytest.fixture(autouse=True)
@@ -57,7 +57,7 @@ class TestSignalConfigLoading:
         monkeypatch.setenv("SIGNAL_HTTP_URL", "http://localhost:9090")
         monkeypatch.setenv("SIGNAL_ACCOUNT", "+15551234567")
 
-        from gateway.config import GatewayConfig, _apply_env_overrides
+        from hermes_agent.gateway.config import GatewayConfig, _apply_env_overrides
         config = GatewayConfig()
         _apply_env_overrides(config)
 
@@ -92,8 +92,8 @@ class TestSignalConnectCleanup:
         mock_client.aclose = AsyncMock()
 
         with patch("plugins.platforms.signal.adapter.httpx.AsyncClient", return_value=mock_client), \
-             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
-             patch("gateway.status_scoped_locks.release_scoped_lock") as mock_release:
+             patch("hermes_agent.gateway.status.acquire_scoped_lock", return_value=(True, None)), \
+             patch("hermes_agent.gateway.status_scoped_locks.release_scoped_lock") as mock_release:
             result = await adapter.connect()
 
         assert result is False
@@ -106,7 +106,7 @@ class TestSignalConnectCleanup:
 class TestSignalHelpers:
 
     def test_redact_phone_short(self):
-        from gateway.platforms.helpers import redact_phone
+        from hermes_agent.gateway.platforms.helpers import redact_phone
         assert redact_phone("+12345") == "+1****45"
 
 
@@ -279,7 +279,7 @@ class TestSignalAttachmentFetch:
 class TestSignalSessionSource:
 
     def test_session_source_roundtrip(self):
-        from gateway.session import SessionSource
+        from hermes_agent.gateway.session import SessionSource
         source = SessionSource(
             platform=Platform.SIGNAL,
             chat_id="group:xyz",
@@ -325,8 +325,8 @@ class TestSignalPhoneRedaction:
 class TestSignalAuthorization:
     def test_signal_in_allowlist_maps(self):
         """Signal should be in the platform auth maps."""
-        from gateway.run import GatewayRunner
-        from gateway.config import GatewayConfig
+        from hermes_agent.gateway.run import GatewayRunner
+        from hermes_agent.gateway.config import GatewayConfig
 
         gw = GatewayRunner.__new__(GatewayRunner)
         gw.config = GatewayConfig()
@@ -573,7 +573,7 @@ class TestSignalInboundMessageTypeClassification:
     @pytest.mark.asyncio
     async def test_pdf_attachment_sets_document_type(self, monkeypatch):
         """A PDF attachment (application/pdf) must produce MessageType.DOCUMENT, not TEXT."""
-        from gateway.platforms.event import MessageType
+        from hermes_agent.gateway.platforms.event import MessageType
 
         event = await self._dispatch_single_attachment(
             monkeypatch,
@@ -592,7 +592,7 @@ class TestSignalInboundMessageTypeClassification:
     @pytest.mark.asyncio
     async def test_text_plain_attachment_sets_document_type(self, monkeypatch):
         """A text/plain attachment must produce MessageType.DOCUMENT, not TEXT."""
-        from gateway.platforms.event import MessageType
+        from hermes_agent.gateway.platforms.event import MessageType
 
         event = await self._dispatch_single_attachment(
             monkeypatch,

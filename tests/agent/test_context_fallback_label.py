@@ -142,13 +142,13 @@ class TestFallbackIsLabelledOnSurfaces:
     """Every surface that shows the window says when it is the fallback, not a known/detected limit."""
 
     def test_gateway_session_info_says_fallback_not_detected(self, tmp_path):
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
         runner = GatewayRunner.__new__(GatewayRunner)
         (tmp_path / "config.yaml").write_text("model:\n  default: acme.unknown-model-v1\n  provider: bedrock\n")
         runtime = {"provider": "bedrock", "base_url": RUNTIME_URL, "api_key": "aws-sdk"}
-        with patch("gateway.run._hermes_home", tmp_path), \
-                patch("gateway.run._resolve_gateway_model", return_value="acme.unknown-model-v1"), \
-                patch("gateway.run._resolve_runtime_agent_kwargs", return_value=runtime):
+        with patch("hermes_agent.gateway.run._hermes_home", tmp_path), \
+                patch("hermes_agent.gateway.run._resolve_gateway_model", return_value="acme.unknown-model-v1"), \
+                patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", return_value=runtime):
             info = runner._format_session_info()
         line = next(x for x in info.splitlines() if "128K" in x)
         assert "(fallback" in line and "(detected)" not in line
@@ -204,7 +204,7 @@ class TestFallbackIsLabelledOnSurfaces:
         agent.get_rate_limit_state.return_value = None
         agent.context_compressor = SimpleNamespace(last_prompt_tokens=9_000, context_length=128_000,
                                                    compression_count=0, _config_context_length=None)
-        from gateway.slash_commands_status import _usage_agent_stats_lines
+        from hermes_agent.gateway.slash_commands_status import _usage_agent_stats_lines
         line = next(x for x in _usage_agent_stats_lines(agent) if "128,000" in x)
         assert "(fallback)" in line
 

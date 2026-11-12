@@ -16,8 +16,8 @@ from types import SimpleNamespace
 import pytest
 
 import hermes_agent.hermes_state_runtime as rt
-from gateway.session_authority import LiveSession, SessionAuthority
-from gateway.session_controls import AuthorityConnection
+from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+from hermes_agent.gateway.session_controls import AuthorityConnection
 from hermes_cli import sessions_cmd
 from hermes_agent.hermes_state import SessionDB
 from tests.hermes_state.test_target_advance_fence import _local_session, _mutate

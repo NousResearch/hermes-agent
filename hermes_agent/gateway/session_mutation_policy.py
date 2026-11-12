@@ -11,8 +11,8 @@ from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
 def _rebind(authority, prepared, old, policy, **extra):
-    from gateway.session_policy import bind_launch_key, launch_key
-    from gateway.session_policy_credentials import recover_config_secrets
+    from hermes_agent.gateway.session_policy import bind_launch_key, launch_key
+    from hermes_agent.gateway.session_policy_credentials import recover_config_secrets
     secrets = recover_config_secrets(authority, old) if old.config_secret_ref else {}
     policy = bind_launch_key(authority, prepared['snapshot']['receipt']['session_id'], policy,
                              launch_key(authority, old), config_secrets=secrets)
@@ -22,7 +22,7 @@ def _rebind(authority, prepared, old, policy, **extra):
 async def prepare_reasoning(authority, live, payload, prepared):
     """``/reasoning <level>`` for this session: the level ``build_policy`` freezes at creation. ``None``
     (``/reasoning reset``) gives the level back to the profile."""
-    from gateway.session_policy import pin_reasoning_effort, profile_config, restore_policy, unpin_reasoning
+    from hermes_agent.gateway.session_policy import pin_reasoning_effort, profile_config, restore_policy, unpin_reasoning
     old = restore_policy(prepared['snapshot']['receipt']['policy'])
     frozen = old.config()
     if payload['effort'] is not None:
@@ -37,7 +37,7 @@ async def prepare_reasoning(authority, live, payload, prepared):
 async def prepare_workspace(authority, live, payload, prepared):
     """Move to project: execution cwd and TERMINAL_CWD move together (restore_policy's invariant)."""
     import os
-    from gateway.session_policy import restore_policy
+    from hermes_agent.gateway.session_policy import restore_policy
     from hermes_constants import translate_cwd_for_wsl_backend
     from hermes_agent.tui_gateway import git_probe
     old = restore_policy(prepared['snapshot']['receipt']['policy'])
@@ -58,7 +58,7 @@ async def prepare_workspace(authority, live, payload, prepared):
 async def prepare_edit_policy(authority, live, payload, prepared):
     """Main's ACP modes (Default / Accept Edits / Don't Ask) as the session's frozen edit approval
     policy. Only an ACP session's edits ask an editor; selecting the current policy writes nothing."""
-    from gateway.session_policy import restore_policy
+    from hermes_agent.gateway.session_policy import restore_policy
     old = restore_policy(prepared['snapshot']['receipt']['policy'])
     if old.source != 'acp':
         raise RuntimeStoreError('invalid_params', field='payload.policy',

@@ -3,7 +3,7 @@
 import pytest
 from fastapi import HTTPException
 
-from gateway.platform_registry import PlatformEntry, platform_registry
+from hermes_agent.gateway.platform_registry import PlatformEntry, platform_registry
 
 
 def test_plugin_entry_declares_card_metadata_and_env_value_rules():

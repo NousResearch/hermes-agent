@@ -16,16 +16,16 @@ from urllib.parse import parse_qs, quote
 
 import httpx
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms._shared import extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret
-from gateway.platforms._shared import config_connected_extra
-from gateway.platforms.base import (
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms._shared import extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret
+from hermes_agent.gateway.platforms._shared import config_connected_extra
+from hermes_agent.gateway.platforms.base import (
     BasePlatformAdapter, SendResult, describe_proxy_error, env_proxy_for_redaction,
     cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_document_from_bytes_async,
 )
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms.media_cache import ext_for_mime
-from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.platforms.media_cache import ext_for_mime
+from hermes_agent.gateway.platforms.helpers import compile_mention_patterns, strip_markdown
 from utils import TRUTHY_STRINGS
 
 # Historical BlueBubbles mime→ext maps, preserved verbatim as overrides for the shared dispatch in
@@ -200,7 +200,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         from aiohttp import web
         # Tighter keepalive so idle CLOSE_WAIT drains promptly.
         # See #18451.
-        from gateway.platforms._http_client_limits import platform_httpx_limits
+        from hermes_agent.gateway.platforms._http_client_limits import platform_httpx_limits
         self.client = httpx.AsyncClient(timeout=30.0, limits=platform_httpx_limits())
         try:
             await self._api_get("/api/v1/ping")
@@ -225,7 +225,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         # The webhook auth value rides in the query string (BlueBubbles cannot send custom headers)
         # — keep it out of aiohttp access logs.
         # Shared-listener mode (multiplex secondary): no bind; served at /p/<profile>/<webhook_path>.
-        from gateway.platforms.shared_ingress import bind_listener
+        from hermes_agent.gateway.platforms.shared_ingress import bind_listener
         self._runner = await bind_listener(
             self, app, self.webhook_host, self.webhook_port, self.webhook_path, access_log=None)
         self._mark_connected()
@@ -420,7 +420,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None,
                          reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> SendResult:
         try:
-            from gateway.platforms.base import cache_image_from_url
+            from hermes_agent.gateway.platforms.base import cache_image_from_url
             return await self._send_attachment(chat_id, await cache_image_from_url(image_url), caption=caption)
         except Exception:
             return await super().send_image(chat_id, image_url, caption, reply_to)
@@ -632,7 +632,7 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
     """Out-of-process send (cron without a co-resident gateway): one-shot adapter connect → send →
     disconnect against the BlueBubbles REST API. Text only; ``thread_id``/``media_files``/
     ``force_document`` are signature parity (send_message drops media with a warning)."""
-    from gateway.platforms._shared import send_error
+    from hermes_agent.gateway.platforms._shared import send_error
     if not check_bluebubbles_requirements():
         return send_error("BlueBubbles requirements not met (need aiohttp + httpx).")
     try:
@@ -702,7 +702,7 @@ _PLATFORM_HINT = (
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
-    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
+    from . import gateway_env  # env -> GatewayConfig bridge (hermes_agent.gateway.config_env)
     ctx.register_platform(
         name="bluebubbles", label="BlueBubbles (iMessage)", adapter_factory=BlueBubblesAdapter,
         dashboard_description="Use Hermes through iMessage via a BlueBubbles server.",

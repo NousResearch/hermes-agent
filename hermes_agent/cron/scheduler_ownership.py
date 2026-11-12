@@ -1,7 +1,7 @@
 """Which profile homes THIS process ticks, and who owns the cron tick for a given home.
 
 One gateway process per host multiplexes every profile, so "does a gateway own cron for profile
-X" stopped being answerable from the launch home alone: ``gateway.status.owns_gateway_runtime_lock``
+X" stopped being answerable from the launch home alone: ``hermes_agent.gateway.status.owns_gateway_runtime_lock``
 is a process-global boolean set once at boot, and every path resolver behind
 ``is_gateway_runtime_lock_active`` goes through ``get_process_hermes_home()``, which ignores the
 per-tick ``_profile_cron_scope`` override. Both therefore answer about the LAUNCH home while the
@@ -83,7 +83,7 @@ def owns_cron_tick_for(home: Optional[Path | str] = None) -> bool:
     not that its ticker visits the profile whose store is being ticked right now.
     """
     try:
-        from gateway import status as gateway_status
+        from hermes_agent.gateway import status as gateway_status
 
         if not gateway_status.owns_gateway_runtime_lock():
             return False
@@ -101,7 +101,7 @@ def record_serves_profile(record: Any, home: Optional[Path | str] = None) -> boo
     """
     if not isinstance(record, dict):
         return False
-    from gateway.status import (
+    from hermes_agent.gateway.status import (
         _get_process_hermes_home, _profile_label_for_home, _same_hermes_home)
 
     try:
@@ -128,7 +128,7 @@ def live_gateway_ticking(home: Optional[Path | str] = None) -> Optional[dict]:
     set does not name ``home``.
     """
     try:
-        from gateway import status as gateway_status
+        from hermes_agent.gateway import status as gateway_status
 
         if gateway_status.owns_gateway_runtime_lock():
             return None
@@ -159,7 +159,7 @@ def _claim_owner_is_dead(claim: dict[str, Any]) -> bool:
         import socket
         if parts[0] != socket.gethostname():
             return False
-        from gateway.status import _pid_exists
+        from hermes_agent.gateway.status import _pid_exists
         return not _pid_exists(int(parts[1]))
     except Exception:
         return False

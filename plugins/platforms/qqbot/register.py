@@ -7,9 +7,9 @@ connection.
 
 from __future__ import annotations
 
-from gateway.platforms._shared import env_is_connected
-from gateway.platforms._shared import config_connected_extra
-from gateway.platforms.send_targets import StandaloneSendPolicy
+from hermes_agent.gateway.platforms._shared import env_is_connected
+from hermes_agent.gateway.platforms._shared import config_connected_extra
+from hermes_agent.gateway.platforms.send_targets import StandaloneSendPolicy
 
 from .adapter import QQAdapter, check_qq_requirements
 
@@ -133,7 +133,7 @@ _PLATFORM_HINT = (
 
 
 def register(ctx) -> None:
-    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
+    from . import gateway_env  # env -> GatewayConfig bridge (hermes_agent.gateway.config_env)
     ctx.register_platform(
         standalone_send=StandaloneSendPolicy(label="QQ Bot", media=True, captionable=True, text_direct=True),
         name="qqbot",

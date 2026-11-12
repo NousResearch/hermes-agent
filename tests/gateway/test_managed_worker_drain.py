@@ -9,8 +9,8 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_reserved_worker_persists_while_runtime_drains(tmp_path):
-    from gateway.session_worker import worker_request
-    from gateway.session_worker_reservation import reserve_admission_worker
+    from hermes_agent.gateway.session_worker import worker_request
+    from hermes_agent.gateway.session_worker_reservation import reserve_admission_worker
     from tests.gateway.test_worker_admission_reservation import hello
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input, RuntimeStoreError
@@ -48,8 +48,8 @@ async def test_reserved_worker_persists_while_runtime_drains(tmp_path):
 @pytest.mark.parametrize('purpose', ['worker-adoption', 'interactive'])
 @pytest.mark.parametrize('state', ['ready', 'draining'])
 async def test_draining_ws_redeems_only_worker_ticket(tmp_path, monkeypatch, purpose, state):
-    from gateway.run_api import GatewayRuntimeAPI
-    from gateway.runtime_bootstrap import TicketStore
+    from hermes_agent.gateway.run_api import GatewayRuntimeAPI
+    from hermes_agent.gateway.runtime_bootstrap import TicketStore
     from hermes_cli import web_server as web
     from hermes_cli import web_server_chat
     tickets = TicketStore('owner', [str(tmp_path)])
@@ -83,15 +83,15 @@ async def test_draining_ws_redeems_only_worker_ticket(tmp_path, monkeypatch, pur
 
 @pytest.mark.asyncio
 async def test_listener_and_tickets_live_until_settlement(tmp_path, monkeypatch):
-    from gateway.run_runtime import drain_gateway_runtime, settle_gateway_runtime
-    from gateway.runtime_bootstrap import TicketStore
+    from hermes_agent.gateway.run_runtime import drain_gateway_runtime, settle_gateway_runtime
+    from hermes_agent.gateway.runtime_bootstrap import TicketStore
     tickets = TicketStore('owner', [str(tmp_path)])
     ticket = tickets.mint(profile_id=str(tmp_path), subject='human', purpose='worker-adoption')
     closed = []
     async def stop_api(handle): closed.append(handle)
     async def stop_service(runner): pass
-    monkeypatch.setattr('gateway.run_api.stop_gateway_api', stop_api)
-    monkeypatch.setattr('gateway.session_hosted_service.stop_hosted_service', stop_service)
+    monkeypatch.setattr('hermes_agent.gateway.run_api.stop_gateway_api', stop_api)
+    monkeypatch.setattr('hermes_agent.gateway.session_hosted_service.stop_hosted_service', stop_service)
     runner = SimpleNamespace(_draining=False, adapters={}, session_runtime_descriptor={'state': 'ready'},
         session_ticket_store=tickets, session_api='listener')
     await drain_gateway_runtime(runner)

@@ -9,7 +9,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from gateway import delivery_ledger as dl
+from hermes_agent.gateway import delivery_ledger as dl
 
 
 def test_recording_a_reply_does_not_open_a_second_connection(tmp_path, monkeypatch):

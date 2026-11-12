@@ -7,7 +7,7 @@ Verifies:
     human-readable diff
   * when any skills changed, a one-shot note is queued on
     ``runner._pending_skills_reload_notes[session_key]`` (the agent loop
-    consumes and clears it on the next user turn — see ``gateway/run.py``
+    consumes and clears it on the next user turn — see ``hermes_agent/gateway/run.py``
     near the ``_has_fresh_tool_tail`` block)
   * the handler does NOT append to the session transcript out-of-band —
     message alternation must not be broken by a phantom user turn
@@ -19,9 +19,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionEntry, SessionSource, build_session_key
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionEntry, SessionSource, build_session_key
 
 
 def _make_source() -> SessionSource:
@@ -39,7 +39,7 @@ def _make_event(text: str) -> MessageEvent:
 
 
 def _make_runner():
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
@@ -82,7 +82,7 @@ def _make_runner():
     runner._should_send_voice_reply = lambda *_args, **_kwargs: False
     # Use the real _session_key_for_source binding so the key matches what
     # the agent-loop consumer will look up later.
-    from gateway.run import GatewayRunner as _GR
+    from hermes_agent.gateway.run import GatewayRunner as _GR
     runner._session_key_for_source = _GR._session_key_for_source.__get__(runner, _GR)
     return runner
 

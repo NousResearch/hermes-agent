@@ -5001,7 +5001,7 @@
       },
       "AdmissionStatus": {
         "additionalProperties": false,
-        "description": "``gateway/session_contract.py::AdmissionReceipt`` as ``dataclasses.asdict`` sends it.",
+        "description": "``hermes_agent/gateway/session_contract.py::AdmissionReceipt`` as ``dataclasses.asdict`` sends it.",
         "properties": {
           "admission_id": {
             "title": "Admission Id",
@@ -7932,7 +7932,7 @@
       },
       "CanonicalBotCancelResult": {
         "additionalProperties": false,
-        "description": "``gateway/session_bot_cancel.py``: ``cancelled`` (withdrawn before it ran, or its pending\nautomatic retry withdrawn), ``stopping`` (its running turn was told to stop), or ``finished``\n(nothing left to cancel); ``receipt_status`` is the delivery receipt's status after it.",
+        "description": "``hermes_agent/gateway/session_bot_cancel.py``: ``cancelled`` (withdrawn before it ran, or its pending\nautomatic retry withdrawn), ``stopping`` (its running turn was told to stop), or ``finished``\n(nothing left to cancel); ``receipt_status`` is the delivery receipt's status after it.",
         "properties": {
           "delivery_id": {
             "title": "Delivery Id",
@@ -8030,7 +8030,7 @@
       },
       "CanonicalBotDeliverResult": {
         "additionalProperties": false,
-        "description": "A delivery's receipt. It names its admission, unless ``refused``: the FIFO refused the\ndelivery before anything was committed (``gateway/session_bot.py``), a terminal ``failed``\nreceipt with no admission that the relay settles as the sender's answer.",
+        "description": "A delivery's receipt. It names its admission, unless ``refused``: the FIFO refused the\ndelivery before anything was committed (``hermes_agent/gateway/session_bot.py``), a terminal ``failed``\nreceipt with no admission that the relay settles as the sender's answer.",
         "properties": {
           "status": {
             "title": "Status",
@@ -8424,7 +8424,7 @@
       },
       "CanonicalConfigSetParams": {
         "additionalProperties": false,
-        "description": "Session controls (``busy`` / ``verbose`` / ``yolo`` / ``show_reasoning`` / ``service_tier``, which\nneed ``session_id``) and the TUI's profile preferences (``gateway/session_tui_config.py``;\n``session_id`` optional). ``model`` is recognised only to be refused with\n``use_session_mutation_model``: a model pick is the revision-fenced ``session.mutate`` operation,\nnever a config write.",
+        "description": "Session controls (``busy`` / ``verbose`` / ``yolo`` / ``show_reasoning`` / ``service_tier``, which\nneed ``session_id``) and the TUI's profile preferences (``hermes_agent/gateway/session_tui_config.py``;\n``session_id`` optional). ``model`` is recognised only to be refused with\n``use_session_mutation_model``: a model pick is the revision-fenced ``session.mutate`` operation,\nnever a config write.",
         "properties": {
           "profile": {
             "anyOf": [
@@ -10170,7 +10170,7 @@
       },
       "CanonicalSessionInfo": {
         "additionalProperties": true,
-        "description": "``gateway/session_local_inventory.py::snapshot_info``: ``local_session_info`` + the inventory.",
+        "description": "``hermes_agent/gateway/session_local_inventory.py::snapshot_info``: ``local_session_info`` + the inventory.",
         "properties": {
           "provider": {
             "anyOf": [
@@ -20274,7 +20274,7 @@
       },
       "GroupsLogResult": {
         "additionalProperties": false,
-        "description": "``gateway/hosted_rooms.py::read_events`` page \u2014 also the ``page`` ``groups.replicate`` ingests.",
+        "description": "``hermes_agent/gateway/hosted_rooms.py::read_events`` page \u2014 also the ``page`` ``groups.replicate`` ingests.",
         "properties": {
           "events": {
             "items": {
@@ -24803,7 +24803,7 @@
       },
       "MessageStartPayload": {
         "additionalProperties": false,
-        "description": "``message.start``. Empty from the TUI gateway's emitters and for an ordinary admission;\n``gateway/session_authority._stamp_claim`` adds an automation admission's async-result card\n(``session_automation.admission_display``: a background-process completion) and its model\ntext, so a viewer that did not submit the turn paints the same header the submitter would.",
+        "description": "``message.start``. Empty from the TUI gateway's emitters and for an ordinary admission;\n``hermes_agent/gateway/session_authority._stamp_claim`` adds an automation admission's async-result card\n(``session_automation.admission_display``: a background-process completion) and its model\ntext, so a viewer that did not submit the turn paints the same header the submitter would.",
         "properties": {
           "display_kind": {
             "anyOf": [
@@ -28098,7 +28098,7 @@
       },
       "PlanGauge": {
         "additionalProperties": false,
-        "description": "``gateway/session_usage.py::plan_gauge``: a window plan's allowance for the status bar.",
+        "description": "``hermes_agent/gateway/session_usage.py::plan_gauge``: a window plan's allowance for the status bar.",
         "properties": {
           "id": {
             "title": "Id",
@@ -34943,7 +34943,7 @@
       },
       "RollbackSessionDiffResult": {
         "additionalProperties": false,
-        "description": "``gateway/session_tui_ops.py::_session_diff``: ``CheckpointManager.session_diff`` under the\nsession's frozen checkpoint policy (``enabled: false`` when that policy does not checkpoint).\n``diff`` is bounded to fit one frame; ``diff_lines`` counts the whole body.",
+        "description": "``hermes_agent/gateway/session_tui_ops.py::_session_diff``: ``CheckpointManager.session_diff`` under the\nsession's frozen checkpoint policy (``enabled: false`` when that policy does not checkpoint).\n``diff`` is bounded to fit one frame; ``diff_lines`` counts the whole body.",
         "properties": {
           "enabled": {
             "title": "Enabled",
@@ -34995,7 +34995,7 @@
       },
       "Room": {
         "additionalProperties": false,
-        "description": "``gateway/hosted_rooms.py::_room_from_row`` plus the branch-only keys ``create`` (legacy\nadoption), ``state`` (``authority_claim``) and ``rename`` (``event``) add.",
+        "description": "``hermes_agent/gateway/hosted_rooms.py::_room_from_row`` plus the branch-only keys ``create`` (legacy\nadoption), ``state`` (``authority_claim``) and ``rename`` (``event``) add.",
         "properties": {
           "room_id": {
             "title": "Room Id",
@@ -35334,7 +35334,7 @@
       },
       "RoomContext": {
         "additionalProperties": false,
-        "description": "``gateway/hosted_room_context.py::room_context``: the purpose and shared notes every member's turn\nprompt carries (inside the user-role message).",
+        "description": "``hermes_agent/gateway/hosted_room_context.py::room_context``: the purpose and shared notes every member's turn\nprompt carries (inside the user-role message).",
         "properties": {
           "purpose": {
             "title": "Purpose",
@@ -35477,7 +35477,7 @@
       },
       "RoomEvent": {
         "additionalProperties": false,
-        "description": "``gateway/hosted_rooms.py::_event_from_row``.",
+        "description": "``hermes_agent/gateway/hosted_rooms.py::_event_from_row``.",
         "properties": {
           "room_id": {
             "title": "Room Id",
@@ -35539,7 +35539,7 @@
       },
       "RoomExecutionPolicy": {
         "additionalProperties": false,
-        "description": "``gateway/hosted_room_execution_policy.py::execution_policy_mapping``.",
+        "description": "``hermes_agent/gateway/hosted_room_execution_policy.py::execution_policy_mapping``.",
         "properties": {
           "version": {
             "title": "Version",
@@ -35582,7 +35582,7 @@
       },
       "RoomLinkCatalog": {
         "additionalProperties": false,
-        "description": "``gateway/hosted_room_peer.py::GatewayRoomCatalog.as_mapping``.",
+        "description": "``hermes_agent/gateway/hosted_room_peer.py::GatewayRoomCatalog.as_mapping``.",
         "properties": {
           "installation_id": {
             "title": "Installation Id",
@@ -36715,7 +36715,7 @@
       },
       "SessionAutomationResult": {
         "additionalProperties": false,
-        "description": "``gateway/session_viewer_automation.py``: the manager's persisted state after the call (its own\nJSON, ``null`` when none) and the call's value, or the refusal main's manager raised.",
+        "description": "``hermes_agent/gateway/session_viewer_automation.py``: the manager's persisted state after the call (its own\nJSON, ``null`` when none) and the call's value, or the refusal main's manager raised.",
         "properties": {
           "state": {
             "anyOf": [
@@ -38565,7 +38565,7 @@
       },
       "SessionExportResult": {
         "additionalProperties": false,
-        "description": "``gateway/session_tui_ops.py::export_session``: the rendered ``/save`` body and its default\nfile name. The client writes it (the gateway may be remote); nothing is written on the host.",
+        "description": "``hermes_agent/gateway/session_tui_ops.py::export_session``: the rendered ``/save`` body and its default\nfile name. The client writes it (the gateway may be remote); nothing is written on the host.",
         "properties": {
           "format": {
             "title": "Format",
@@ -40026,7 +40026,7 @@
       },
       "SessionStats": {
         "additionalProperties": false,
-        "description": "``gateway/session_usage.py::usage_stats``: session-cumulative counters (the agent's ``session_*``),\ncontext / compressor figures, rolling latency and throughput, rate-limit state, live subagents.",
+        "description": "``hermes_agent/gateway/session_usage.py::usage_stats``: session-cumulative counters (the agent's ``session_*``),\ncontext / compressor figures, rolling latency and throughput, rate-limit state, live subagents.",
         "properties": {
           "input_tokens": {
             "title": "Input Tokens",
@@ -40450,7 +40450,7 @@
       },
       "SessionUsagePayload": {
         "additionalProperties": false,
-        "description": "``usage``: the status-bar view (``server._get_usage``), sent by the embedded backend's ticker\n(``server._start_usage_ticker``) and by a canonical local viewer's gateway after every API call\nand at turn end (``gateway/session_usage.py::usage_frame``). Read this.\n\nDeprecated: the top-level session-cumulative counters (``usage_stats``, the ``session.stats``\ndict) that the gateway frame also carries. They are kept for existing readers; new readers use\n``usage``, or ``session.stats`` for the raw counters. The embedded ticker never sends them.",
+        "description": "``usage``: the status-bar view (``server._get_usage``), sent by the embedded backend's ticker\n(``server._start_usage_ticker``) and by a canonical local viewer's gateway after every API call\nand at turn end (``hermes_agent/gateway/session_usage.py::usage_frame``). Read this.\n\nDeprecated: the top-level session-cumulative counters (``usage_stats``, the ``session.stats``\ndict) that the gateway frame also carries. They are kept for existing readers; new readers use\n``usage``, or ``session.stats`` for the raw counters. The embedded ticker never sends them.",
         "properties": {
           "usage": {
             "anyOf": [
@@ -49591,7 +49591,7 @@
       },
       "WorkerScopeParams": {
         "additionalProperties": false,
-        "description": "The producer claim every worker verb proves (``gateway/session_worker.py::_SCOPE``).",
+        "description": "The producer claim every worker verb proves (``hermes_agent/gateway/session_worker.py::_SCOPE``).",
         "properties": {
           "profile_id": {
             "title": "Profile Id",

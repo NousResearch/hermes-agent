@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import Platform
+from hermes_agent.gateway.config import Platform
 from hermes_cli.platform_actions import PlatformActions
 
 
@@ -35,18 +35,18 @@ def _grant(granted: bool):
 
 def _runner_with(adapters: dict):
     runner = SimpleNamespace(adapters=adapters)
-    return patch("gateway.run._gateway_runner_ref", lambda: runner)
+    return patch("hermes_agent.gateway.run._gateway_runner_ref", lambda: runner)
 
 
 def _multiplex_runner_with(*, default: dict, profiles: dict, active_profile: str = "default"):
     """A runner using the REAL GatewayAuthorizationMixin resolution ladder."""
-    from gateway.authz_mixin import GatewayAuthorizationMixin
+    from hermes_agent.gateway.authz_mixin import GatewayAuthorizationMixin
 
     runner = GatewayAuthorizationMixin.__new__(GatewayAuthorizationMixin)
     runner.adapters = default
     runner._profile_adapters = profiles
     runner._active_profile_name = lambda: active_profile
-    return patch("gateway.run._gateway_runner_ref", lambda: runner)
+    return patch("hermes_agent.gateway.run._gateway_runner_ref", lambda: runner)
 
 
 def _telegram_adapter(connected=True):
@@ -134,7 +134,7 @@ class TestGateDefaultOff:
 class TestStructuredErrors:
     def test_no_gateway_runner(self):
         actions = PlatformActions("p")
-        with _grant(True), patch("gateway.run._gateway_runner_ref", lambda: None):
+        with _grant(True), patch("hermes_agent.gateway.run._gateway_runner_ref", lambda: None):
             result = asyncio.run(actions.add_reaction("telegram", "1", "2", "x"))
         assert result["error"] == "gateway_unavailable"
 

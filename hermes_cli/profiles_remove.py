@@ -16,7 +16,7 @@ OWNER_RELEASE_WAIT_SECONDS = 60.0
 def wait_profile_unowned(profile_dir: Path, *, timeout: float | None = None) -> bool:
     """True once no gateway runtime holds ``profile_dir``'s ``gateway.lock`` (taken and released
     through ``exclusive_maintenance``); False when it is still held after ``timeout`` seconds."""
-    from gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
+    from hermes_agent.gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
     deadline = time.monotonic() + (OWNER_RELEASE_WAIT_SECONDS if timeout is None else timeout)
     while True:
         try:

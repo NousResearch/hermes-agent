@@ -38,7 +38,7 @@ def _observe(routed_home: Path) -> tuple:
 
 @pytest.fixture
 def routed_scope(tmp_path):
-    """Enter a secondary profile's scope the way gateway/run.py::_profile_runtime_scope does."""
+    """Enter a secondary profile's scope the way hermes_agent/gateway/run.py::_profile_runtime_scope does."""
     routed_home = tmp_path / "profiles" / "b"
     routed_home.mkdir(parents=True)
     set_multiplex_active(True)

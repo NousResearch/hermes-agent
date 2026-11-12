@@ -9,7 +9,7 @@ import asyncio
 import logging
 from typing import Any, Awaitable, Callable, Optional
 
-logger = logging.getLogger("gateway.platforms.base")
+logger = logging.getLogger("hermes_agent.gateway.platforms.base")
 
 
 async def ledger_bracket(adapter: Any, event: Any, session_key: str, text_content: str,
@@ -35,7 +35,7 @@ async def record_final_obligation(adapter: Any, event: Any, session_key: str, te
         ("/", adapter.typed_command_prefix or "!")):
         return None
     try:
-        from gateway.delivery_ledger import (
+        from hermes_agent.gateway.delivery_ledger import (
             compute_obligation_id, ledger_enabled, mark_attempting, record_obligation)
         if not await asyncio.to_thread(ledger_enabled):
             return None
@@ -68,8 +68,8 @@ async def finalize_final_obligation(adapter: Any, obligation_id: str, result: An
     the runner's timed redelivery, so the reply goes out once the flood penalty or the retry
     backoff has passed instead of waiting for the next restart (#91653)."""
     try:
-        from gateway.dead_targets import classify_dead_error
-        from gateway.delivery_ledger import is_reconnect_only, mark_delivered, mark_failed
+        from hermes_agent.gateway.dead_targets import classify_dead_error
+        from hermes_agent.gateway.delivery_ledger import is_reconnect_only, mark_delivered, mark_failed
         if getattr(result, "success", False):
             await asyncio.to_thread(mark_delivered, obligation_id)
             return

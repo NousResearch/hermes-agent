@@ -7,21 +7,21 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import run_runtime
-from gateway.runtime_bootstrap import TicketStore
-from gateway.session_authorities import SessionAuthorities
-from gateway.session_contract import Submission
+from hermes_agent.gateway import run_runtime
+from hermes_agent.gateway.runtime_bootstrap import TicketStore
+from hermes_agent.gateway.session_authorities import SessionAuthorities
+from hermes_agent.gateway.session_contract import Submission
 from tests.gateway.test_profile_retire_stops_turns import ACTOR, REF, _Agent, _authority
 from tests.waiting import async_wait_until
 
 
 @pytest.mark.asyncio
 async def test_still_retiring_profile_leaves_the_served_set(tmp_path, monkeypatch):
-    from gateway import session_finite
+    from hermes_agent.gateway import session_finite
     agent = _Agent(honours_stop=False)
     db, authority, execute, returned = _authority(tmp_path, agent)
     monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
-    monkeypatch.setattr('gateway.session_cron.unbind_owner', lambda authority: None)
+    monkeypatch.setattr('hermes_agent.gateway.session_cron.unbind_owner', lambda authority: None)
     launch = SimpleNamespace(profile_id=str(tmp_path / 'launch'), retiring=False)
     registry = SessionAuthorities(launch.profile_id)
     registry.add(launch.profile_id, launch)

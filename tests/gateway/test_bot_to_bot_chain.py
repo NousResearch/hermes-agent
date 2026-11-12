@@ -10,8 +10,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.bot_loop_guard import BotLoopGuard, BotLoopGuardSettings, configured_bot_user, settings_from_config
-from gateway.session import Platform, SessionSource
+from hermes_agent.gateway.bot_loop_guard import BotLoopGuard, BotLoopGuardSettings, configured_bot_user, settings_from_config
+from hermes_agent.gateway.session import Platform, SessionSource
 
 CHAT = "dm_peer"
 PEER = "peer_bot"
@@ -78,8 +78,8 @@ def test_chain_rules_follow_enabled_and_config(clock):
 
 @pytest.mark.asyncio
 async def test_ingress_drops_the_bot_reply_and_still_admits_the_human(monkeypatch, clock):
-    from gateway.platforms.base import MessageEvent
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.platforms.base import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner._scale_to_zero_note_real_inbound = lambda: None
@@ -95,7 +95,7 @@ async def test_ingress_drops_the_bot_reply_and_still_admits_the_human(monkeypatc
         source = SessionSource(platform=Platform.MATTERMOST, chat_id=CHAT, chat_type="dm", user_id=user, is_bot=is_bot)
         return MessageEvent(text=text, message_id=text, source=source)
 
-    from gateway.session_ingress import executing_admission
+    from hermes_agent.gateway.session_ingress import executing_admission
 
     first = _event(PEER, "question", True)
     assert await runner._hm_admit_event(first) is not None

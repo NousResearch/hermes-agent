@@ -9,8 +9,8 @@ import asyncio
 from pathlib import Path
 from unittest import mock
 
-from gateway.config import GatewayConfig
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.config import GatewayConfig
+from hermes_agent.gateway.run import GatewayRunner
 
 
 def _make_runner(multiplex: bool) -> GatewayRunner:
@@ -34,7 +34,7 @@ class TestBackgroundTaskProfileScope:
             GatewayRunner,
             "_resolve_profile_home_for_source",
             return_value=Path("/fake/profile"),
-        ), mock.patch("gateway.run._profile_runtime_scope") as scope:
+        ), mock.patch("hermes_agent.gateway.run._profile_runtime_scope") as scope:
             scope.return_value.__enter__ = mock.MagicMock()
             scope.return_value.__exit__ = mock.MagicMock(return_value=False)
             asyncio.run(

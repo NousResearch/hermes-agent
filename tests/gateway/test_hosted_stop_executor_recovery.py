@@ -9,10 +9,10 @@ pytest_plugins = ('tests.gateway.test_hosted_mux_runtime',)
 
 
 def _seed_old_stopping_cross_profile_task(mux, room_id='room'):
-    from gateway import hosted_room_driver as tasks, hosted_rooms
-    from gateway.session_authorities import owner_scope
-    from gateway.session_hosted_service import CanonicalHostedRoomService
-    from gateway.session_hosted_transport import install_hosted_transport
+    from hermes_agent.gateway import hosted_room_driver as tasks, hosted_rooms
+    from hermes_agent.gateway.session_authorities import owner_scope
+    from hermes_agent.gateway.session_hosted_service import CanonicalHostedRoomService
+    from hermes_agent.gateway.session_hosted_transport import install_hosted_transport
     from hermes_agent.tui_gateway.hosted_room_driver import HostedRoomBinding
 
     runner, homes, loop, _ = mux
@@ -55,7 +55,7 @@ def _seed_old_stopping_cross_profile_task(mux, room_id='room'):
 
 @pytest.mark.parametrize('admission_state', ['queued', 'unknown'])
 def test_cross_profile_stopping_recovery(mux, admission_state):
-    from gateway import hosted_room_driver as tasks
+    from hermes_agent.gateway import hosted_room_driver as tasks
     from hermes_agent.hermes_state_runtime import (
         begin_runtime_epoch, claim_session_input, list_session_admissions, recover_session_inputs,
     )
@@ -92,8 +92,8 @@ def test_cross_profile_stopping_recovery(mux, admission_state):
 
 @pytest.mark.platforms('linux')
 def test_recovered_group_loads_and_answers_the_next_message_without_replaying_old_work(mux, monkeypatch):
-    from gateway import hosted_room_driver as tasks, hosted_rooms, session_finite
-    from gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway import hosted_room_driver as tasks, hosted_rooms, session_finite
+    from hermes_agent.gateway.session_authority import SessionAuthority
     from hermes_agent.hermes_state_runtime import begin_runtime_epoch, claim_session_input, recover_session_inputs
     from tests.waiting import wait_until
 
@@ -138,7 +138,7 @@ def test_recovered_group_loads_and_answers_the_next_message_without_replaying_ol
 
 @pytest.mark.platforms('linux')
 def test_saved_stop_finishes_before_slow_preparation_of_its_own_room(mux, monkeypatch):
-    from gateway import hosted_room_driver as tasks
+    from hermes_agent.gateway import hosted_room_driver as tasks
 
     service, binding, identity, _, _ = _seed_old_stopping_cross_profile_task(mux)
     entered, release = threading.Event(), threading.Event()
@@ -164,7 +164,7 @@ def test_saved_stop_finishes_before_slow_preparation_of_its_own_room(mux, monkey
 @pytest.mark.platforms('linux')
 @pytest.mark.parametrize('mismatch', ['task', 'generation', 'active'])
 def test_recovered_stop_does_not_discard_a_different_canonical_attempt(mux, monkeypatch, mismatch):
-    from gateway import hosted_room_driver as tasks
+    from hermes_agent.gateway import hosted_room_driver as tasks
     from hermes_agent.hermes_state_runtime import begin_runtime_epoch, claim_session_input, list_session_admissions, recover_session_inputs
 
     service, binding, identity, rpc, sid = _seed_old_stopping_cross_profile_task(mux)
@@ -201,8 +201,8 @@ def test_recovered_stop_does_not_discard_a_different_canonical_attempt(mux, monk
 
 @pytest.mark.platforms('linux')
 def test_cross_profile_stopping_recovery_with_one_default_worker(mux, monkeypatch):
-    from gateway import hosted_room_driver as tasks
-    from gateway import session_hosted_transport as transport
+    from hermes_agent.gateway import hosted_room_driver as tasks
+    from hermes_agent.gateway import session_hosted_transport as transport
 
     service, binding, identity, rpc, _sid = _seed_old_stopping_cross_profile_task(mux)
     _, _, loop, call = mux
@@ -236,7 +236,7 @@ def test_cross_profile_stopping_recovery_with_one_default_worker(mux, monkeypatc
 
 @pytest.mark.platforms('linux')
 def test_two_rooms_recover_stops_concurrently(mux):
-    from gateway import hosted_room_driver as tasks
+    from hermes_agent.gateway import hosted_room_driver as tasks
 
     seeded = [_seed_old_stopping_cross_profile_task(mux, room_id) for room_id in ('first', 'second')]
 
@@ -253,7 +253,7 @@ def test_two_rooms_recover_stops_concurrently(mux):
 
 @pytest.mark.platforms('linux')
 def test_unavailable_member_leaves_stop_pending_until_control_recovers(mux, monkeypatch):
-    from gateway import hosted_room_driver as tasks
+    from hermes_agent.gateway import hosted_room_driver as tasks
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     service, binding, identity, rpc, _sid = _seed_old_stopping_cross_profile_task(mux)
@@ -276,8 +276,8 @@ def test_unavailable_member_leaves_stop_pending_until_control_recovers(mux, monk
 def test_saved_stop_publishes_a_retained_completed_answer_once_not_cancelled(mux):
     """A lost attempt whose answer this owner still holds (its settlement write failed) is
     resolved as that answer by Stop recovery: the room publishes it once, never a cancel."""
-    from gateway import hosted_room_driver as tasks, hosted_rooms
-    from gateway.session_settlement_recovery import _mark_unknown
+    from hermes_agent.gateway import hosted_room_driver as tasks, hosted_rooms
+    from hermes_agent.gateway.session_settlement_recovery import _mark_unknown
     from hermes_agent.hermes_state_runtime import claim_session_input, list_session_admissions
 
     service, binding, identity, rpc, sid = _seed_old_stopping_cross_profile_task(mux)
@@ -309,7 +309,7 @@ def test_saved_stop_publishes_a_retained_completed_answer_once_not_cancelled(mux
 def test_replayed_discard_returns_the_committed_answer(mux):
     """An exact Discard replay after the first committed a recovered answer gets that answer back
     (an operator Discard that timed out after the commit can still finish)."""
-    from gateway.session_settlement_recovery import _mark_unknown
+    from hermes_agent.gateway.session_settlement_recovery import _mark_unknown
     from hermes_agent.hermes_state_runtime import claim_session_input
 
     _, _, identity, rpc, sid = _seed_old_stopping_cross_profile_task(mux)

@@ -499,7 +499,7 @@ def test_a_failed_webapp_rebuild_in_update_marks_the_served_bundle_out_of_date(t
     import hermes_cli.left_core_migration as left_core
     import hermes_cli.main_install_repair as install_repair
     import hermes_cli.memory_provider_migration as memory_migration
-    from gateway.webapp_listener import NOT_BUILT, bundle_missing_reason
+    from hermes_agent.gateway.webapp_listener import NOT_BUILT, bundle_missing_reason
     from hermes_cli import update_stage, webapp
     from hermes_cli.source_build import ProductBuildError, build_update_products
     from pm import plugins_state

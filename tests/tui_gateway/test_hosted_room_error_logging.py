@@ -39,7 +39,7 @@ def test_submit_error_log_contains_task_and_safe_reason_only(db, monkeypatch, ca
 @pytest.mark.parametrize('waiting_for_approval', [False, True])
 def test_legal_long_wait_can_complete_without_stop_or_resubmit(db, monkeypatch, waiting_for_approval):
     """Simulated monotonic elapsed time, not a paid/real hour-long model run."""
-    from gateway import hosted_room_driver as state
+    from hermes_agent.gateway import hosted_room_driver as state
     from hermes_agent.tui_gateway import hosted_room_driver as driver
     elapsed = [0.0]
     monkeypatch.setattr(driver, 'time', SimpleNamespace(monotonic=lambda: elapsed[0]))

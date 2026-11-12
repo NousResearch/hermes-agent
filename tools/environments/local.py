@@ -253,7 +253,7 @@ def _inject_session_context_env(env: dict) -> None:
     every name :func:`_scrub_credentials` strips (Tier 1, incl. backend ``strip_env_keys``, and
     Tier 2), so a value never puts back a credential the scrub removed; ``None`` unsets a name."""
     try:
-        from gateway.session_context import (
+        from hermes_agent.gateway.session_context import (
             _UNSET, _VAR_MAP, _bound_session_value, session_context_engaged)
     except Exception:
         return
@@ -954,7 +954,7 @@ def _leader_is_ours(pgid, expected_start) -> bool:
         return False
     if expected_start is None:
         return True
-    from gateway.status import get_process_start_time, start_time_fingerprints_match
+    from hermes_agent.gateway.status import get_process_start_time, start_time_fingerprints_match
     try:
         current = get_process_start_time(pgid)
     except Exception:
@@ -1040,7 +1040,7 @@ def _kill_known_pids(proc, descendants) -> None:
 def _kill_process_windows(proc) -> None:
     """Identity-checked terminate (start time guards against PID reuse), else kill."""
     try:
-        from gateway.status import get_process_start_time, terminate_pid
+        from hermes_agent.gateway.status import get_process_start_time, terminate_pid
         terminate_pid(proc.pid, force=True, expected_start_time=get_process_start_time(proc.pid))
     except Exception:
         proc.kill()
@@ -1179,7 +1179,7 @@ class LocalEnvironment(BaseEnvironment):
                 # detect PID/PGID recycling before signalling the group (#43044). The
                 # psutil fallback in get_process_start_time captures a baseline on every
                 # platform, macOS included.
-                from gateway.status import get_process_start_time
+                from hermes_agent.gateway.status import get_process_start_time
                 proc._hermes_pgid_start = get_process_start_time(proc.pid)
         if stdin_data is not None:
             _pipe_stdin(proc, stdin_data)

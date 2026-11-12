@@ -5,7 +5,7 @@ Opt-in per server (``mcp_servers.<name>.events: true``): the SDK drops the serve
 capability while parsing, so it cannot gate these tools the way ``resources``/``prompts`` do. Each
 subscription is a dynamic webhook route (``webhook_subscriptions.json``) with an ``mcp_event`` block
 (server, event name, arguments); its grant and replay cursor live in ``mcp_event_subscriptions.json``.
-The gateway's webhook adapter receives the deliveries (``gateway/platforms/webhook_mcp_events.py``) and
+The gateway's webhook adapter receives the deliveries (``hermes_agent/gateway/platforms/webhook_mcp_events.py``) and
 the server task keeps every route's subscription alive with :func:`run_refresh_loop`. Delivery modes
 ``poll`` and ``push`` are not implemented.
 """

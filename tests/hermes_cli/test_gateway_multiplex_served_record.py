@@ -37,7 +37,7 @@ def served_root(tmp_path, monkeypatch):
     (tmp_path / "locks").mkdir()
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
     import hermes_constants
-    from gateway import status
+    from hermes_agent.gateway import status
     monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
     # Liveness is a VERIFIED identity: this pytest process stands in for the default gateway only
     # because its command line reads as one; any other PID keeps its real command line.
@@ -135,7 +135,7 @@ def test_recycled_pid_does_not_lend_a_stale_record_its_served_profiles(served_ro
     line is not a gateway's) must not make its ``served_profiles`` authoritative: bare PID existence
     once did, so `hermes -p coder gateway start` exited 78 for a multiplexer that was long gone."""
     import subprocess
-    from gateway import status
+    from hermes_agent.gateway import status
     from hermes_cli.gateway import named_profile_served_by_running_multiplexer
     from hermes_cli.gateway_multiplex_served import live_default_gateway_pid, recorded_served_profiles
     child = subprocess.Popen(["sleep", "60"])
@@ -167,7 +167,7 @@ def test_service_verbs_do_not_start_a_second_gateway(served_root, monkeypatch, v
     fn = getattr(gw, f"_cmd_{verb}")
     ns = argparse.Namespace(system=False, all=False, force=False, run_as_user=None)
     if verb == "restart":
-        from gateway import control_socket
+        from hermes_agent.gateway import control_socket
         lifecycle = []
         monkeypatch.setattr(control_socket, "request_unserve_profile",
                             lambda home, name: lifecycle.append("unserve") or {"unserved": name})
@@ -220,7 +220,7 @@ def test_dashboard_liveness_ladder_reports_served_profile_running(served_root):
     """`/api/status?profile=X` and `/api/messaging/platforms?profile=X` share this ladder: a served
     profile has no gateway.pid/gateway_state.json, so without the multiplexer rung the dashboard said
     "stopped" while `hermes -p X status` said running. Alpha's `<X>:<platform>` entries project as its own."""
-    from gateway.status import profile_platforms_from_multiplexer, resolve_gateway_liveness
+    from hermes_agent.gateway.status import profile_platforms_from_multiplexer, resolve_gateway_liveness
     (served_root / "gateway_state.json").write_text(json.dumps({
         "pid": os.getpid(), "hermes_home": str(served_root), "gateway_state": "running",
         "served_profiles": ["default", "coder"],
@@ -263,7 +263,7 @@ def test_dashboard_lifecycle_verbs_target_the_multiplexer(served_root, monkeypat
 
 def test_cli_stop_parks_when_host_control_socket_is_unavailable(served_root, monkeypatch):
     import hermes_cli.gateway as gw
-    from gateway import control_socket
+    from hermes_agent.gateway import control_socket
     monkeypatch.setattr(gw, "find_gateway_pids", lambda *a, **k: [])
     monkeypatch.setattr(gw, "_refuse_from_inside_gateway", lambda *a, **k: None)
     monkeypatch.setattr(control_socket, "request_unserve_profile", lambda home, name: None)

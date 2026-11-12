@@ -1735,7 +1735,7 @@ def test_model_switch_masks_inherited_endpoint_credentials(plane, monkeypatch):
 def test_poll_between_read_and_atomic_config_write_sends_only_the_callers_edit(plane, monkeypatch):
     """Same schedule through ``atomic_config_write`` (``/verbose``, ``/footer``): its no-omission
     guard read must not become the base the caller's stale document is diffed against."""
-    from gateway import slash_commands as sc
+    from hermes_agent.gateway import slash_commands as sc
     plane.profile("default").update(values={"display": {"personality": "concise", "compact": False}}, version=1)
     backend = get_config_backend()
     orig = sc.atomic_config_write

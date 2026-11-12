@@ -100,7 +100,7 @@ finally:
 
     log_path = tmp_path / "gateway.log"
     with log_path.open("w") as log:
-        daemon = subprocess.Popen([sys.executable, "-m", "gateway.run"], cwd=gateway_root,
+        daemon = subprocess.Popen([sys.executable, "-m", "hermes_agent.gateway.run"], cwd=gateway_root,
                                   env={**env, "PYTHONPATH": str(gateway_root)},
                                   stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
         try:

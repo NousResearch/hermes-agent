@@ -4,21 +4,21 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_contract import SessionActor, Submission
-from gateway.session_controls import AuthorityConnection
+from hermes_agent.gateway.session_contract import SessionActor, Submission
+from hermes_agent.gateway.session_controls import AuthorityConnection
 from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions
 
 
 @pytest.mark.asyncio
 async def test_operators_share_local_sessions_without_reassigning_receipts(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_local import create_local_session
-    from gateway.session_local_title import resolve_titled_session
-    from gateway.session_mutations import mutate_session
-    from gateway.session_group_controls import _profiles
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_local_title import resolve_titled_session
+    from hermes_agent.gateway.session_mutations import mutate_session
+    from hermes_agent.gateway.session_group_controls import _profiles
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
@@ -33,7 +33,7 @@ async def test_operators_share_local_sessions_without_reassigning_receipts(tmp_p
         executed.append((row['principal_id'], row['payload']['text']))
         return 'fixture result'
 
-    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    monkeypatch.setattr('hermes_agent.gateway.session_finite.execute_finite_admission', execute)
     for owner, peer in ((native, remote), (remote, native)):
         ref = create_local_session(authority, owner, {'request_id': owner.subject, 'source': 'gui',
             'cwd': str(tmp_path), 'model': 'fixture', 'toolsets': []})
@@ -78,11 +78,11 @@ async def test_operators_share_local_sessions_without_reassigning_receipts(tmp_p
 
 @pytest.mark.asyncio
 async def test_identity_fields_cannot_grant_operator_or_first_claim(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_local import create_local_session
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
@@ -101,7 +101,7 @@ async def test_identity_fields_cannot_grant_operator_or_first_claim(tmp_path, mo
         await authority.attach(connection.actor, ref)
     authority.db.create_session('unowned', source='cli')
     operator = replace(connection.actor, capabilities=connection.actor.capabilities | {'session:operator'})
-    from gateway.session_local_migration import resolve_local_target
+    from hermes_agent.gateway.session_local_migration import resolve_local_target
     with pytest.raises(RuntimeStoreError):
         resolve_local_target(authority, operator, 'unowned')
     trusted = AuthorityConnection(authority, object(), {'user_id': 'verified'}, operator=True)

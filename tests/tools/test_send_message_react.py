@@ -31,7 +31,7 @@ class _NoReactionAdapter:
 
 
 def _runner_with(adapter):
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
 
     return SimpleNamespace(adapters={Platform("photon"): adapter})
 
@@ -42,7 +42,7 @@ def _call(args):
 
 def test_react_dispatches_to_add_reaction():
     adapter = _FakePhotonAdapter()
-    with patch("gateway.run._gateway_runner_ref", lambda: _runner_with(adapter)):
+    with patch("hermes_agent.gateway.run._gateway_runner_ref", lambda: _runner_with(adapter)):
         result = _call(
             {"action": "react", "target": "photon:+15551234567", "emoji": "❤️"}
         )
@@ -51,7 +51,7 @@ def test_react_dispatches_to_add_reaction():
 
 
 def test_react_without_live_gateway():
-    with patch("gateway.run._gateway_runner_ref", lambda: None):
+    with patch("hermes_agent.gateway.run._gateway_runner_ref", lambda: None):
         result = _call(
             {"action": "react", "target": "photon:+15551234567", "emoji": "👍"}
         )

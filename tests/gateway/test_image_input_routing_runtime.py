@@ -1,9 +1,9 @@
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource
 
 
 def _make_runner() -> GatewayRunner:
@@ -106,7 +106,7 @@ async def test_prepare_route_identity_check_keeps_event_loop_responsive(monkeypa
             "context_length": 128000,
         }
     }
-    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: cfg)
+    monkeypatch.setattr("hermes_agent.gateway.run._load_gateway_config", lambda: cfg)
     monkeypatch.setattr(
         runner,
         "_resolve_session_agent_runtime",

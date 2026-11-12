@@ -60,7 +60,7 @@ def _resolve_tool_target(target: str, *, pass_unresolved_references: bool = Fals
 
 def _handle_list():
     try:
-        from gateway.channel_directory import format_directory_for_display
+        from hermes_agent.gateway.channel_directory import format_directory_for_display
         return json.dumps({"targets": format_directory_for_display()})
     except Exception as e:
         return json.dumps(_error(f"Failed to load channel directory: {e}"))
@@ -73,7 +73,7 @@ def _authorize_relay_target(platform_name: str, chat_id, thread_id=None, *,
                             native_token=_TOKEN_UNSET) -> str | None:
     """Relay egress-authorization guard (P5a); None when the send may proceed.
 
-    Thin delegate to ``gateway.relay.egress`` so the tool keeps working in
+    Thin delegate to ``hermes_agent.gateway.relay.egress`` so the tool keeps working in
     environments where the gateway package can't be imported.
 
     THE TWO FAILURES ARE NOT THE SAME, and conflating them disabled the
@@ -88,18 +88,18 @@ def _authorize_relay_target(platform_name: str, chat_id, thread_id=None, *,
     refuses, which is the only safe polarity for an authorization check.
     """
     try:
-        from gateway.relay.egress import authorize_relay_target
+        from hermes_agent.gateway.relay.egress import authorize_relay_target
     except ImportError as exc:
         # ABSENCE ONLY, and absence means the gateway relay module ITSELF is
         # missing — `exc.name` says which module was not found. An ImportError
         # naming a NESTED dependency is a broken installation, i.e. a fault,
         # and returning None here means "authorized". Review probed exactly
-        # that (`ImportError.name = "gateway.relay.dependency"`) and got an
+        # that (`ImportError.name = "hermes_agent.gateway.relay.dependency"`) and got an
         # authorized verdict, so `except ImportError` alone was still fail-open.
         # ABSENCE has one shape and it is checkable: a genuinely missing module
         # raises ModuleNotFoundError with `.name` set to the module that was not
-        # found (verified: `import gateway.relay.x` -> ModuleNotFoundError,
-        # name="gateway.relay.x"). So a plain ImportError, or a nameless one, is
+        # found (verified: `import hermes_agent.gateway.relay.x` -> ModuleNotFoundError,
+        # name="hermes_agent.gateway.relay.x"). So a plain ImportError, or a nameless one, is
         # an unattributable FAULT — never proof that there is no relay here.
         # I previously admitted the nameless case to protect the CLI/cron path;
         # that reasoning was wrong, because that path does not produce one.
@@ -172,7 +172,7 @@ def _handle_react(args, remove=False):
         return tool_error(err)
     if not chat_id:
         try:
-            from gateway.config import load_gateway_config
+            from hermes_agent.gateway.config import load_gateway_config
             chat_id = load_gateway_config().get_home_channel(platform).chat_id
         except Exception:
             return tool_error(f"No chat specified and no home channel set for {platform_name}. "
@@ -212,7 +212,7 @@ def _handle_send(args):
     # call, `hermes send`, dashboard console) enters here, so scrub once before the
     # media extraction, the session mirror and the platform sender see the text.
     # Model output delivered by the gateway/cron is already scrubbed upstream
-    # (``agent/turn_finalizer.py::finalize_turn``, ``gateway/run.py``).
+    # (``agent/turn_finalizer.py::finalize_turn``, ``hermes_agent/gateway/run.py``).
     from agent.message_sanitization import _sanitize_surrogates
     message = _sanitize_surrogates(message)
     platform_name, chat_id, thread_id, resolution_error = _resolve_tool_target(target)
@@ -222,14 +222,14 @@ def _handle_send(args):
     if is_interrupted():
         return tool_error("Interrupted")
     try:
-        from gateway.config import load_gateway_config
+        from hermes_agent.gateway.config import load_gateway_config
         config = load_gateway_config()
     except Exception as e:
         return json.dumps(_error(f"Failed to load gateway config: {e}"))
     platform, pconfig, entry, err = _resolve_platform_config(platform_name, config)
     if err:
         return tool_error(err)
-    from gateway.platforms.base import BasePlatformAdapter
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter
     # Capture [[as_document]] before extract_media strips it (images keep original bytes via send_document).
     force_document_attachments = "[[as_document]]" in message
     media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
@@ -301,7 +301,7 @@ def _handle_send(args):
 
 def _platform_enum(platform_name):
     """``(Platform, None)`` or ``(None, error)`` for a platform name."""
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     try:
         return Platform(platform_name), None
     except (ValueError, KeyError):
@@ -311,8 +311,8 @@ def _platform_enum(platform_name):
 def _resolve_platform_config(platform_name, config):
     """``(platform, pconfig, registry_entry, error)``. Plugin platforms must be registered;
     disabled/missing platforms error, except Weixin, which may be configured purely via .env."""
-    from gateway.config import Platform
-    from gateway.platform_registry import platform_registry
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.platform_registry import platform_registry
     entry = platform_registry.get(platform_name)
     if entry is None and platform_name not in {member.value for member in Platform}:
         return None, None, None, unknown_platform_error(platform_name)
@@ -331,8 +331,8 @@ def _not_configured_error(platform_name, platform, entry):
     """Name the resolved home and what each credential source held, so the user edits the file this
     process actually read (a hardcoded ``~/.hermes`` does not exist on a Windows or profile home)."""
     from agent.secret_scope import load_env_file
-    from gateway.config import _getenv
-    from gateway.config_env import _ENV_ENABLE_CREDENTIALS
+    from hermes_agent.gateway.config import _getenv
+    from hermes_agent.gateway.config_env import _ENV_ENABLE_CREDENTIALS
     from hermes_constants import get_hermes_home
     from hermes_cli.config_backend import config_exists
     home = get_hermes_home()
@@ -364,7 +364,7 @@ def _not_configured_error(platform_name, platform, entry):
     # gateway started from the default root (the reporter's shell had HERMES_HOME=<root>/profiles/<p>)
     # never reads this profile's .env at all.
     try:
-        from gateway.status import read_runtime_status, runtime_status_pid_is_live
+        from hermes_agent.gateway.status import read_runtime_status, runtime_status_pid_is_live
         from hermes_constants import get_default_hermes_root, hermes_home_key
         root = get_default_hermes_root()
         gateways = [(home, read_runtime_status())]
@@ -426,8 +426,8 @@ def _slack_dm_chat_id(pconfig, chat_id):
 def _mirror_sent_message(platform_name, chat_id, mirror_text, thread_id):
     """Best-effort mirror of the sent message into the target's gateway session."""
     try:
-        from gateway.mirror import mirror_to_session
-        from gateway.session_context import get_session_env
+        from hermes_agent.gateway.mirror import mirror_to_session
+        from hermes_agent.gateway.session_context import get_session_env
         return bool(mirror_to_session(
             platform_name, chat_id, mirror_text, thread_id=thread_id,
             source_label=get_session_env("HERMES_SESSION_PLATFORM", "cli"),
@@ -442,7 +442,7 @@ def _weixin_env_pconfig():
     wx_account = get_secret("WEIXIN_ACCOUNT_ID", "").strip()
     if not (wx_token and wx_account):
         return None
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
     return PlatformConfig(enabled=True, token=wx_token, extra={
         "account_id": wx_account, "base_url": get_secret("WEIXIN_BASE_URL", "").strip(),
         "cdn_base_url": get_secret("WEIXIN_CDN_BASE_URL", "").strip()})
@@ -465,7 +465,7 @@ def _describe_media_for_mirror(media_files):
 
 def _maybe_skip_cron_duplicate_send(platform_name: str, chat_id: str, thread_id: str | None):
     """Skip redundant cron send_message calls when the scheduler will auto-deliver there."""
-    from gateway.session_context import get_session_env
+    from hermes_agent.gateway.session_context import get_session_env
     auto_platform = get_session_env("HERMES_CRON_AUTO_DELIVER_PLATFORM", "").strip().lower()
     auto_chat_id = get_session_env("HERMES_CRON_AUTO_DELIVER_CHAT_ID", "").strip()
     if not (auto_platform and auto_chat_id and auto_platform == platform_name and auto_chat_id == str(chat_id)
@@ -494,7 +494,7 @@ async def _send_live_adapter_media(adapter, chat_id, message, media_files, *, th
         last_result = await adapter.send(chat_id=chat_id, content=separate_text, metadata=metadata)
         if not last_result.success:
             return {"error": f"Adapter send failed: {_bounded_send_error(last_result.error)}"}
-    from gateway.platforms.base import BasePlatformAdapter
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter
     total = len(media_files)
     unconfirmed = []
     for index, descriptor in enumerate(media_files):
@@ -620,7 +620,7 @@ async def _send_chunks(chunks, send_one):
 def _platform_max_length(platform):
     """Chunking limit: the registry's ``max_message_length`` for plugins, else None (no chunking)."""
     try:
-        from gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.platform_registry import platform_registry
         entry = platform_registry.get(platform.value)
         return entry.max_message_length if entry and entry.max_message_length > 0 else None
     except Exception:
@@ -631,7 +631,7 @@ def _standalone_send_policy(platform_name):
     """The plugin's ``StandaloneSendPolicy`` (None = generic routing). Cron calls
     ``_send_to_platform`` directly, so discover first when the name is not yet registered
     (idempotent manifest scan; only this platform's adapter is materialized)."""
-    from gateway.platform_registry import platform_registry
+    from hermes_agent.gateway.platform_registry import platform_registry
     if not platform_registry.is_registered(platform_name):
         from hermes_cli.plugins import discover_plugins
         discover_plugins()
@@ -644,7 +644,7 @@ async def _send_plugin_standalone(platform_name, pconfig, chat_id, message, chun
     """Chunked send through a plugin's standalone_sender_fn; one captionable file + short text
     rides as the media caption. WhatsApp re-pings recipients on every message that carries
     ``mentions``, so only the first payload of a logical send gets them."""
-    from gateway.platforms.send_targets import StandaloneSendPolicy
+    from hermes_agent.gateway.platforms.send_targets import StandaloneSendPolicy
     policy = _standalone_send_policy(platform_name) or StandaloneSendPolicy()
     sender, err = _plugin_standalone_sender(platform_name, label=policy.label or None)
     if err:
@@ -690,7 +690,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     """Route to the platform sender, chunking long text with the adapters' splitter. Order matters:
     Weixin first (its native helper must not be blocked by unrelated optional imports such as
     lark-oapi), Telegram (chunks itself), plugin standalone media, native chunked, generic text."""
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     platform_name = platform.value if hasattr(platform, "value") else str(platform)
     media_files = media_files or []
     if platform_name == "weixin":  # plugin standalone sender only: no other plugin's import can block it
@@ -701,7 +701,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         sender, err = _plugin_standalone_sender(platform_name)
         return err or await sender(pconfig, chat_id, message, thread_id=thread_id, media_files=media_files,
                                    force_document=force_document, **_optional_sender_kwargs(sender, notify=notify))
-    from gateway.platforms.base import BasePlatformAdapter
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter
     max_len = _platform_max_length(platform)
     chunks = BasePlatformAdapter.truncate_message(message, max_len) if max_len else [message]
     policy = _standalone_send_policy(platform_name)
@@ -727,7 +727,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         # Text-only straight to the plugin's standalone sender (media dropped with the warning above).
         send_one = lambda chunk, is_last: _registry_standalone_send(platform_name, pconfig, chat_id, chunk, thread_id)
     else:
-        from gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.platform_registry import platform_registry
         entry = platform_registry.get(platform_name)
         if entry is not None and entry.send_message_handler is not None:
             # Custom handler receives the full typed request once (not per chunk).

@@ -8,10 +8,10 @@ import contextlib
 import logging
 from typing import Any, Callable, Optional
 
-from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
-from gateway.stream_consumer_fences import ensure_closed_code_fences, open_code_fence_span
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
+from hermes_agent.gateway.stream_consumer_fences import ensure_closed_code_fences, open_code_fence_span
 
-logger = logging.getLogger("gateway.stream_consumer")
+logger = logging.getLogger("hermes_agent.gateway.stream_consumer")
 
 
 class StreamFallbackMixin:
@@ -108,7 +108,7 @@ class StreamFallbackMixin:
     def _split_text_chunks(text: str, limit: int, len_fn: Callable[[str], int] = len,
                            ) -> list[str]:
         """Split text for fallback sends: newline-preferred, fence-balanced across chunks."""
-        from gateway.platforms.helpers import split_text_fence_aware
+        from hermes_agent.gateway.platforms.helpers import split_text_fence_aware
         return split_text_fence_aware(text, limit, len_fn, prefer_paragraphs=False,
                                       balance_fences=True)
 

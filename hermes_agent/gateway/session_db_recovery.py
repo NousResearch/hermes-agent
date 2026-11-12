@@ -38,7 +38,7 @@ def _publish_health(source: _HealthSource, path: Path, state: str) -> None:
         all_states = {value for item in _health_states.values() for value in item.values()}
         aggregate = next((s for s in ("retrying", "unavailable") if s in all_states), "ok")
     try:
-        from gateway.status import publish_runtime_status
+        from hermes_agent.gateway.status import publish_runtime_status
         publish_runtime_status(session_store={"status": aggregate})
     except Exception:
         pass  # Runtime health is diagnostic only; persistence must not depend on it.

@@ -15,9 +15,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway import run_notifications
-from gateway.config import Platform
-from gateway.run import GatewayRunner
+from hermes_agent.gateway import run_notifications
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.run import GatewayRunner
 from tests.module_clock import install_module_clock
 from tools.process_registry import ProcessRegistry, ProcessSession
 
@@ -631,7 +631,7 @@ def test_shutdown_cancels_batch_during_window_and_settles_waiter_for_retry():
         assert runner._completion_notification_batches == {}
         assert runner._completion_notification_batch_tasks == {}
 
-    with patch("gateway.run.asyncio.sleep", new=_controlled_sleep):
+    with patch("hermes_agent.gateway.run.asyncio.sleep", new=_controlled_sleep):
         asyncio.run(_exercise())
     adapter.handle_message.assert_not_awaited()
 

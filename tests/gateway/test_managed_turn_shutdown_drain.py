@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_contract import SessionRef
+from hermes_agent.gateway.session_contract import SessionRef
 from tests.gateway.restart_test_helpers import make_restart_runner
 from tests.waiting import async_wait_until
 
@@ -18,7 +18,7 @@ from tests.waiting import async_wait_until
 @pytest.mark.platforms("linux")
 @pytest.mark.asyncio
 async def test_drain_counts_managed_turns_and_the_timeout_path_stops_them(tmp_path):
-    from gateway.session_managed_worker import ManagedWorker
+    from hermes_agent.gateway.session_managed_worker import ManagedWorker
     seen = tmp_path / 'controls'
     child = subprocess.Popen([sys.executable, '-c', 'import sys; open(sys.argv[1], "wb").write(sys.stdin.buffer.readline())',  # noqa: ASYNC220 -- Popen returns immediately; the test drives the child through its handle
                               str(seen)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
@@ -42,8 +42,8 @@ async def test_drain_counts_managed_turns_and_the_timeout_path_stops_them(tmp_pa
 def test_settlement_stops_a_silent_managed_worker_instead_of_waiting_unbounded(monkeypatch):
     """The reviewer's probe: a started managed admission whose child never answers. Settlement sends
     Stop, the turn settles interrupted through its own path, and nothing waits on HELLO_SECONDS."""
-    from gateway import run_runtime
-    from gateway import session_managed_worker as managed
+    from hermes_agent.gateway import run_runtime
+    from hermes_agent.gateway import session_managed_worker as managed
     original = subprocess.Popen
 
     def silent_child(args, **kwargs):

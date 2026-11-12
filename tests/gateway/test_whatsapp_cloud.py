@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import Platform
+from hermes_agent.gateway.config import Platform
 
 
 @pytest.fixture(autouse=True)
@@ -391,7 +391,7 @@ class TestWebhookSignature:
         adapter._dispatch_payload.assert_not_called()
 
     def test_null_yaml_app_secret_is_unset_not_the_string_none(self):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.whatsapp_cloud.adapter import WhatsAppCloudAdapter
 
         adapter = WhatsAppCloudAdapter(PlatformConfig(enabled=True, extra={"app_secret": None, "verify_token": None}))
@@ -1413,7 +1413,7 @@ class TestBoundedInteractiveState:
     def test_bounded_put_evicts_oldest(self):
         from collections import OrderedDict
 
-        from gateway.platforms.helpers import bounded_put
+        from hermes_agent.gateway.platforms.helpers import bounded_put
         from plugins.platforms.whatsapp_cloud.adapter import INTERACTIVE_STATE_CACHE_SIZE
 
         cache: OrderedDict = OrderedDict()
@@ -1529,6 +1529,6 @@ def test_plugin_register_shape():
     assert captured["allow_all_env"] == "WHATSAPP_CLOUD_ALLOW_ALL_USERS"
     assert captured["cron_deliver_env_var"] == "WHATSAPP_CLOUD_HOME_CHANNEL"
     assert callable(captured["setup_fn"]) and callable(run_whatsapp_cloud_setup)
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
     is_connected = captured["is_connected"]
     assert is_connected(PlatformConfig(enabled=True, extra={"phone_number_id": "1", "access_token": "t"}))

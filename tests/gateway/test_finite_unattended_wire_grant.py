@@ -12,7 +12,7 @@ CAPS = ['session:create', 'session:read', 'session:submit', 'session:control', '
 
 
 def _native(authority, user):
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     return AuthorityConnection(authority, object(), {
         'user_id': user, 'provider': 'local', 'profile_id': authority.profile_id,
         'instance_id': authority.instance_id, 'capabilities': CAPS, 'native_bootstrap': True})
@@ -24,8 +24,8 @@ async def _rpc(connection, method, **params):
 
 @pytest.mark.asyncio
 async def test_only_the_local_cli_owner_may_submit_an_unattended_turn(monkeypatch):
-    from gateway import run
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     from hermes_constants import get_hermes_home
     from hermes_agent.hermes_state_runtime import list_session_admissions
     home = get_hermes_home()

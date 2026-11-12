@@ -20,8 +20,8 @@ _AUTH = {'Authorization': 'Bearer ' + _API_KEY}
     ('/v1/runs', 'previous_response_id'),
 ])
 async def test_a_deleted_chain_continues_on_a_new_generation(api, owner, path, continuation):
-    from gateway.session_authority import SessionAuthority
-    from gateway.session_results import execution_result
+    from hermes_agent.gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_results import execution_result
     from hermes_agent.hermes_state_mutation_retirement import prune_retired_tombstones
     from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 
@@ -60,8 +60,8 @@ async def test_a_deleted_chain_continues_on_a_new_generation(api, owner, path, c
 async def test_a_busy_store_during_the_chain_lookup_is_retryable(api, owner, monkeypatch, path):
     """The chain's generation lookup reads the owning store before the response starts: a busy
     store is the retryable JSON 503 ``storage_unavailable``, not aiohttp's plain-text 500."""
-    from gateway import session_api
-    from gateway.session_results import execution_result
+    from hermes_agent.gateway import session_api
+    from hermes_agent.gateway.session_results import execution_result
 
     async def handle(event):
         execution_result.get()['result'] = {'final_response': 'ok', 'messages': []}

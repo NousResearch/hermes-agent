@@ -15,28 +15,28 @@ from agent.i18n import t
 from agent.session_activity import format_iteration_progress
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
-from gateway.config import Platform
-from gateway.media_repair import repair_explicit_computer_use_media_paths
-from gateway.platforms.base import BasePlatformAdapter
-from gateway.platforms.event import MessageEvent
-from gateway.session import (
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.media_repair import repair_explicit_computer_use_media_paths
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
     build_session_context,
 )
-from gateway.session_transcript import TranscriptReadError
-from gateway.turn_context import TurnContext
-from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
+from hermes_agent.gateway.session_transcript import TranscriptReadError
+from hermes_agent.gateway.turn_context import TurnContext
+from hermes_agent.gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
 from hermes_constants import get_hermes_home_override
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from utils import base_url_hostname
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner
-    from gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 
 class GatewayTurnHygieneMixin:
@@ -97,7 +97,7 @@ class GatewayTurnHygieneMixin:
         The 0.85 threshold is deliberately HIGHER than the agent's compressor (0.50): a safety net
         for sessions that grew between turns. ``max_turn_hold_seconds`` bounds the TURN wait
         (compressor keeps running detached, commit fenced); kept below transport idle-timeouts."""
-        from gateway.run import _load_gateway_config
+        from hermes_agent.gateway.run import _load_gateway_config
         hs = self._HygieneSettings(
             model="anthropic/claude-sonnet-4.6", threshold_pct=0.85, compression_enabled=True,
             hard_msg_limit=5000, timeout_seconds=30.0, total_ceiling_seconds=600.0,
@@ -233,7 +233,7 @@ class GatewayTurnHygieneMixin:
         ``asyncio.TimeoutError`` (idle/ceiling/fence cancel) for the caller's handlers. Idle timeout
         (fence ticks per streamed token) + hard ceiling (moved back by prompt reading) + turn-hold cap."""
         from agent.conversation_compression_deadline import effective_ceiling
-        from gateway.run import HygieneTurnHoldExceeded, hygiene_wait_should_extend
+        from hermes_agent.gateway.run import HygieneTurnHoldExceeded, hygiene_wait_should_extend
         fence = attempt.commit_fence
         while True:
             if fence.is_cancelled:
@@ -313,12 +313,12 @@ class GatewayTurnHygieneMixin:
     @staticmethod
     def _hmwa_hygiene_stamp(agent, desc, provenance_name, debug_label):
         from agent.session_activity import ActivityProvenance
-        from gateway.run import _stamp_hygiene_compression_provenance
+        from hermes_agent.gateway.run import _stamp_hygiene_compression_provenance
         _stamp_hygiene_compression_provenance(agent, desc, getattr(ActivityProvenance, provenance_name), debug_label)
 
     async def _hmwa_hygiene_notify(self, source, meta, message, what):
         """Best-effort user notice on the hygiene thread; failure is logged, never raised."""
-        from gateway.bot_peer_notices import automatic_notices_allowed
+        from hermes_agent.gateway.bot_peer_notices import automatic_notices_allowed
         try:
             _adapter = self._delivery_adapter_for(source) if automatic_notices_allowed(source) else None
             if _adapter and source.chat_id:
@@ -329,7 +329,7 @@ class GatewayTurnHygieneMixin:
 
     async def _hmwa_hygiene_record_failure_cooldown(self, hs, session_key, session_id, reason):
         """Escalate the failure streak (off-loop) and persist the cooldown, when enabled."""
-        from gateway.run import _hygiene_cooldown_for_failure, _record_hygiene_cooldown
+        from hermes_agent.gateway.run import _hygiene_cooldown_for_failure, _record_hygiene_cooldown
         if hs.failure_cooldown_seconds < 0:
             return
         _hyg_cooldown = await asyncio.to_thread(
@@ -348,7 +348,7 @@ class GatewayTurnHygieneMixin:
         now and the summary is adopted at the worker's fenced commit — always cancelling burned
         every attempt for thinking summary models. Without the fence a late commit could clobber
         newer turns, so cancel."""
-        from gateway.run import (
+        from hermes_agent.gateway.run import (
             _HYGIENE_TURNHOLD_RETRY_SECONDS, _record_hygiene_cooldown, _reset_hygiene_failure_streak
         )
         fence = attempt.commit_fence
@@ -423,7 +423,7 @@ class GatewayTurnHygieneMixin:
         """``except asyncio.TimeoutError`` body: cancel at the commit fence, record the failure
         cooldown, warn the user, and re-raise; returns the compressed transcript only when the
         worker crossed the commit boundary first."""
-        from gateway.run import _hygiene_compression_timeout_message
+        from hermes_agent.gateway.run import _hygiene_compression_timeout_message
         fence = attempt.commit_fence
         _hyg_total_exhausted = fence.deadline_exceeded  # armed with the ceiling before the wait began
         if _hyg_total_exhausted:
@@ -482,7 +482,7 @@ class GatewayTurnHygieneMixin:
         """``except BaseException`` body (caller re-raises): revoke commit admission BEFORE the host
         unwinds so the detached worker can never commit later, and record a cooldown — otherwise
         the next turn re-arms hygiene and waits up to 600s behind a fence that refuses again."""
-        from gateway.run import _hygiene_cooldown_for_failure, _record_hygiene_cooldown
+        from hermes_agent.gateway.run import _hygiene_cooldown_for_failure, _record_hygiene_cooldown
         attempt.commit_fence.revoke_commit_admission()
         if not attempt.cleanup_deferred:
             self._hmwa_hygiene_defer_cleanup(attempt, "session hygiene unwind")
@@ -506,7 +506,7 @@ class GatewayTurnHygieneMixin:
         old rows and rewrite_transcript() would DELETE them; neither rotation nor in-place signals
         FAILURE and an unconditional rewrite would leave only the summary. Write-before-repoint:
         a repoint-then-failed-rewrite would point the live entry at an empty session."""
-        from gateway.run_turn import hygiene_no_commit_reason
+        from hermes_agent.gateway.run_turn import hygiene_no_commit_reason
         from agent.model_metadata import estimate_messages_tokens_rough
         _hyg_agent = attempt.agent
         # _compress_context rotates to a NEW session_id so the old transcript stays intact/searchable.
@@ -589,7 +589,7 @@ class GatewayTurnHygieneMixin:
     ):
         """Adopt a finished hygiene compression, rebind the session + turn lease, record
         streak/cooldown, and warn the user on abort."""
-        from gateway.run import _reset_hygiene_failure_streak, hygiene_compaction_recovered
+        from hermes_agent.gateway.run import _reset_hygiene_failure_streak, hygiene_compaction_recovered
         _hyg_rotated, _hyg_in_place, _new_count, _new_tokens = await self._hmwa_hygiene_adopt_transcript(
             attempt, _compressed, history, plan, session_entry=session_entry, source=source,
             _quick_key=_quick_key, run_generation=run_generation,
@@ -645,7 +645,7 @@ class GatewayTurnHygieneMixin:
         mirror. The detached-agent path would only rewrite the mirror and its finally-eviction
         would destroy the live thread (next turn starts blank), so use the cached agent's
         thread/compact/start and KEEP it cached."""
-        from gateway.run import run_codex_hygiene_compaction
+        from hermes_agent.gateway.run import run_codex_hygiene_compaction
         # codex app-server runtime: the model's real context is the app-server's server-side thread, not the
         # transcript mirror. See #73503.
         _hyg_codex_auto = "native"
@@ -665,7 +665,7 @@ class GatewayTurnHygieneMixin:
     async def _hmwa_hygiene_build_agent(self, _hyg_model, _hyg_runtime, session_entry):
         """Build the detached hygiene ``AIAgent`` with the live session's system prompt. Returns
         ``(agent, sync_session_db)``."""
-        from gateway.run import _GATEWAY_HYGIENE_PLATFORM, _seed_hygiene_system_prompt
+        from hermes_agent.gateway.run import _GATEWAY_HYGIENE_PLATFORM, _seed_hygiene_system_prompt
         from run_agent import AIAgent
         try:
             _hyg_session_row = await self._session_db.get_session(session_entry.session_id)
@@ -703,7 +703,7 @@ class GatewayTurnHygieneMixin:
     ):
         """Run one detached hygiene compression attempt end to end; publishes the transcript to
         continue with (compressed or original) on ``attempt.history``."""
-        from gateway.run import HygieneTurnHoldExceeded
+        from hermes_agent.gateway.run import HygieneTurnHoldExceeded
         from agent.conversation_compression import CompressionCommitFence
         _hyg_agent, _hyg_session_db = await self._hmwa_hygiene_build_agent(_hyg_model, _hyg_runtime, session_entry)
         attempt.agent = _hyg_agent
@@ -769,7 +769,7 @@ class GatewayTurnHygieneMixin:
         """Auto-compress pathologically large transcripts before the agent starts so oversized
         histories don't cause repeated truncation/context failures. Token source: the API's
         prompt_tokens from the last turn, else a char/4 estimate."""
-        from gateway.run import HygieneTurnHoldExceeded
+        from hermes_agent.gateway.run import HygieneTurnHoldExceeded
         if not history or len(history) < 4:
             return history
 
@@ -818,7 +818,7 @@ class GatewayTurnHygieneMixin:
     def _bound_hygiene_payload(history, hs, session_entry):
         """``bound_model_input_without_hygiene`` over ``hs.hard_msg_limit``, with one INFO line when the
         cut is real. Below the limit this is the identity — no allocation, no behaviour change."""
-        from gateway.run_turn import bound_model_input_without_hygiene
+        from hermes_agent.gateway.run_turn import bound_model_input_without_hygiene
         bounded = bound_model_input_without_hygiene(history, hs.hard_msg_limit)
         if bounded is not history:
             logger.info(

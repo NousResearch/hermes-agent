@@ -134,7 +134,7 @@ def _session_provider(view, config=None):
 def session_inventory(authority, policy, agent, cwd):
     """Main's banner/status fields for one session. Each section degrades to main's empty value on
     its own, so one failing builder never blanks the others (main wrapped each in ``suppress``)."""
-    from gateway.session_authorities import owner_scope
+    from hermes_agent.gateway.session_authorities import owner_scope
     from hermes_agent.tui_gateway import git_probe
     info: dict = {"tools": {}, "skills": {}, "mcp_servers": [], "version": "", "release_date": "",
                   "update_behind": None, "update_command": "",
@@ -191,8 +191,8 @@ def session_inventory(authority, policy, agent, cwd):
 
 async def snapshot_info(authority, ref):
     """``local_session_info`` plus main's inventory, the builders run off the owner loop."""
-    from gateway.session_local import local_session_info
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_local import local_session_info
+    from hermes_agent.gateway.session_policy import policy_for_source
     info = local_session_info(authority, ref)
     policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
     agent = authority.agent(ref)
@@ -200,7 +200,7 @@ async def snapshot_info(authority, ref):
     if info.get('tool_count') is None:
         # A lazy session: the tools its first turn loads (the banner's own count).
         info['tool_count'] = sum(len(names) for names in (inventory.get('tools') or {}).values())
-    from gateway.session_usage import snapshot_usage
+    from hermes_agent.gateway.session_usage import snapshot_usage
     if (usage := await asyncio.to_thread(snapshot_usage, authority, ref, agent)) is not None:
         info['usage'] = usage
     return {**inventory, **info}
@@ -235,10 +235,10 @@ def publish_settled_info(turn, agent) -> None:
     if agent is None:
         return
     with contextlib.suppress(Exception):
-        from gateway.session_cli_turn import cli_turn
-        from gateway.session_contract import SessionRef
-        from gateway.session_local import local_session_info
-        from gateway.session_policy import policy_for_source
+        from hermes_agent.gateway.session_cli_turn import cli_turn
+        from hermes_agent.gateway.session_contract import SessionRef
+        from hermes_agent.gateway.session_local import local_session_info
+        from hermes_agent.gateway.session_policy import policy_for_source
         authority, session_id, _generation = turn._approval_owner
         message_id = getattr(getattr(turn, "_ctx", None), "inbound_message_id", None)
         one_turn = bool(cli_turn(message_id).get("model_override"))

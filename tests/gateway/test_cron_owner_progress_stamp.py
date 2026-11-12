@@ -16,12 +16,12 @@ def test_owner_progress_reaches_the_firers_ledger_row(tmp_path, monkeypatch):
     from hermes_agent.cron import jobs, scheduler, scheduler_liveness
     from hermes_agent.cron.executions import _transaction, create_execution, mark_execution_running
     from hermes_agent.cron.scheduler_authority import run_canonical_job
-    from gateway import run, session_cron
-    from gateway.config import GatewayConfig, Platform
-    from gateway.session import SessionStore
-    from gateway.session_authority import SessionAuthority
-    from gateway.session_contract import SessionRef
-    from gateway.session_local_recovery import local_adapter_map
+    from hermes_agent.gateway import run, session_cron
+    from hermes_agent.gateway.config import GatewayConfig, Platform
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_local_recovery import local_adapter_map
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import begin_runtime_epoch, claim_session_input, settle_session_input
 

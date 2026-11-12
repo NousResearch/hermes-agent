@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 
-from gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 
 
 def apply_group_observe_attribution(adapter, event: MessageEvent) -> MessageEvent:

@@ -16,14 +16,14 @@ from functools import partial
 from typing import Any, Literal
 
 from agent.prompt_builder import CONTROL_FRAME_OPENERS
-from gateway import hosted_room_driver as driver
-from gateway import hosted_room_lead as lead_routing
-from gateway import hosted_room_router as router
-from gateway import hosted_rooms
-from gateway import hosted_rooms_common as common
-from gateway.hosted_room_context import scheduled_post_kind, validate_context
-from gateway.hosted_room_task_input import validate_task_input
-from gateway.hosted_rooms_common import compact_json
+from hermes_agent.gateway import hosted_room_driver as driver
+from hermes_agent.gateway import hosted_room_lead as lead_routing
+from hermes_agent.gateway import hosted_room_router as router
+from hermes_agent.gateway import hosted_rooms
+from hermes_agent.gateway import hosted_rooms_common as common
+from hermes_agent.gateway.hosted_room_context import scheduled_post_kind, validate_context
+from hermes_agent.gateway.hosted_room_task_input import validate_task_input
+from hermes_agent.gateway.hosted_rooms_common import compact_json
 
 
 MAX_DISCUSSION_MEMBERS = 6
@@ -156,7 +156,7 @@ class DiscussionDecision:
 
 @dataclass(frozen=True)
 class EventPlan:
-    """One idempotent append for :func:`gateway.hosted_rooms.append_event`."""
+    """One idempotent append for :func:`hermes_agent.gateway.hosted_rooms.append_event`."""
     event_id: str
     kind: str
     actor: Mapping[str, str]
@@ -237,7 +237,7 @@ def validate_user_payload(value: Any) -> dict[str, Any]:
 
 
 def _message_manifest(value: Any) -> list[dict[str, Any]]:
-    from gateway.hosted_room_attachments import validate_manifest
+    from hermes_agent.gateway.hosted_room_attachments import validate_manifest
 
     try:
         return validate_manifest(value)
@@ -749,7 +749,7 @@ def _event_attachments(event: _ValidatedEvent, member: DiscussionMember) -> list
 
 def _bounded_task_delta(messages: Sequence[_ValidatedEvent], *, watermark: int,
                         member: DiscussionMember) -> tuple[list[_ValidatedEvent], list[dict[str, Any]]]:
-    from gateway.hosted_room_attachments import MAX_TASK_ATTACHMENTS, MAX_TASK_ATTACHMENT_BYTES
+    from hermes_agent.gateway.hosted_room_attachments import MAX_TASK_ATTACHMENTS, MAX_TASK_ATTACHMENT_BYTES
 
     selected: list[_ValidatedEvent] = []
     attachments: list[dict[str, Any]] = []

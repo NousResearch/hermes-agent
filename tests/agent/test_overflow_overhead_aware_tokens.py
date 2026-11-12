@@ -126,7 +126,7 @@ def _make_long_context_tier_error():
 
 @pytest.mark.parametrize("muted", [False, True])
 def test_long_context_retry_carrier_survives_failure_flush(agent, muted, monkeypatch):
-    from gateway.warning_notifications import DiagnosticText
+    from hermes_agent.gateway.warning_notifications import DiagnosticText
     agent._notification_config = {"display": {"suppress_warning_notifications": muted}}
     err = _make_long_context_tier_error()
     agent.client.chat.completions.create.side_effect = [err, _mock_response(content="Recovered")]

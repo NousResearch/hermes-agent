@@ -34,7 +34,7 @@ def _resolve_connector_url(override: Optional[str]) -> Optional[str]:
     raw = (override or os.environ.get("GATEWAY_RELAY_URL", "")).strip()
     if not raw:
         try:
-            from gateway.run import _load_gateway_config  # late import to avoid cycle
+            from hermes_agent.gateway.run import _load_gateway_config  # late import to avoid cycle
 
             raw = str((_load_gateway_config().get("gateway") or {}).get("relay_url", "") or "").strip()
         except Exception:
@@ -136,11 +136,11 @@ def cmd_gateway_enroll(args) -> None:
 
     gateway_id = (getattr(args, "gateway_id", None) or _default_gateway_id()).strip()
 
-    # Caller-identity token (proves the tenant). ``gateway.relay`` owns the ONE resolver shared with
+    # Caller-identity token (proves the tenant). ``hermes_agent.gateway.relay`` owns the ONE resolver shared with
     # the runtime self-provision path: generic OIDC client-credentials when ``gateway.idp.token_url``
     # is set (air-gapped / self-hosted IdP), otherwise Nous Portal.
     try:
-        from gateway.relay import _resolve_relay_identity_token
+        from hermes_agent.gateway.relay import _resolve_relay_identity_token
 
         access_token = _resolve_relay_identity_token()
     except AuthError as exc:

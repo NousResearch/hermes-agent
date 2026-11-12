@@ -161,7 +161,7 @@ def _registry_adapter_secret_env() -> frozenset:
     Tier 2 only: ``required_env`` is an unchecked setup list, so a plugin naming OPENAI_API_KEY
     must not strip it from credentialed children. No blanket fallback: a registry error surfaces
     instead of an empty (fail-open) set."""
-    from gateway.platform_registry import platform_registry
+    from hermes_agent.gateway.platform_registry import platform_registry
     from hermes_cli.config import PLATFORM_SECRET_ENV_SUFFIXES
     return frozenset(n.upper() for n in platform_registry.required_env_names()
                      if n.upper().endswith(PLATFORM_SECRET_ENV_SUFFIXES))
@@ -245,7 +245,7 @@ def _buzz_terminal_context_active() -> bool:
     if os.environ.get("BUZZ_MANAGED_AGENT"):
         return True
     try:
-        from gateway.session_context import get_session_env
+        from hermes_agent.gateway.session_context import get_session_env
 
         return get_session_env("HERMES_SESSION_PLATFORM", "").strip().lower() == "buzz"
     except Exception:
@@ -352,7 +352,7 @@ def _static_gate_env_prefixes() -> frozenset:
     aliases) — fixed for the life of the process, so scanned once."""
     names = set(_EXTRA_GATE_ENV_PREFIXES)
     try:
-        from gateway.config import Platform
+        from hermes_agent.gateway.config import Platform
         names.update(m.value for m in Platform.__members__.values())
         bundled, aliases = Platform._scan_bundled_plugin_platforms()
         names.update(bundled)
@@ -368,7 +368,7 @@ def _platform_gate_env_prefixes() -> frozenset:
     union under the registry lock)."""
     names = set(_static_gate_env_prefixes())
     try:
-        from gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.platform_registry import platform_registry
         names.update(str(n).upper().replace("-", "_") for n in platform_registry.registered_names() if n)
     except Exception:
         pass

@@ -1,5 +1,5 @@
 """Producer-hook tests: _process_message_background records delivery
-obligations around the final send (gateway/platforms/base.py).
+obligations around the final send (hermes_agent/gateway/platforms/base.py).
 
 Contract: obligation recorded (pending→attempting) BEFORE the send await,
 delivered/failed by SendResult afterward; slash commands, ephemeral
@@ -13,11 +13,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway import delivery_ledger as dl
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource
+from hermes_agent.gateway import delivery_ledger as dl
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.session import SessionSource
 
 
 @pytest.fixture(autouse=True)
@@ -158,9 +158,9 @@ class TestProducerHook:
         slow_record, event_loop_witness, blocked_event_loop = _blocking_probe()
 
         with patch(
-            "gateway.delivery_ledger.record_obligation",
+            "hermes_agent.gateway.delivery_ledger.record_obligation",
             side_effect=slow_record,
-        ), patch("gateway.delivery_ledger.mark_attempting"):
+        ), patch("hermes_agent.gateway.delivery_ledger.mark_attempting"):
             await asyncio.gather(_run(adapter, _event()), event_loop_witness())
 
         assert blocked_event_loop == []
@@ -171,10 +171,10 @@ class TestProducerHook:
         adapter = _Adapter()
         slow_delivered, event_loop_witness, blocked_event_loop = _blocking_probe()
 
-        with patch("gateway.delivery_ledger.record_obligation"), patch(
-            "gateway.delivery_ledger.mark_attempting"
+        with patch("hermes_agent.gateway.delivery_ledger.record_obligation"), patch(
+            "hermes_agent.gateway.delivery_ledger.mark_attempting"
         ), patch(
-            "gateway.delivery_ledger.mark_delivered",
+            "hermes_agent.gateway.delivery_ledger.mark_delivered",
             side_effect=slow_delivered,
         ):
             await asyncio.gather(_run(adapter, _event()), event_loop_witness())

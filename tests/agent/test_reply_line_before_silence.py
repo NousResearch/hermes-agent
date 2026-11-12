@@ -60,9 +60,9 @@ def test_marker_after_a_written_reply_ends_the_turn_on_that_reply(real_loop):
 
 def test_a_crash_left_turn_recovers_the_reply_not_the_warning(real_loop):
     # Crash recovery judges the persisted final row as live delivery would have.
-    from gateway.config import Platform
-    from gateway.run import GatewayRunner
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import SessionSource
 
     _register_todo(real_loop.agent)
     real_loop.agent._silence_marker_needs_reply = True

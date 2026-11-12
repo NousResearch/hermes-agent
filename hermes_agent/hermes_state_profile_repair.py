@@ -299,7 +299,7 @@ class SessionProfileRepairMixin:
         """``agent:main:…`` → ``agent:<profile>:…`` (+ ``profile_name``) for rows a standalone
         gateway wrote before this store's profile was multiplexed (#113884). Only rows still under
         the legacy namespace change; a ``main``-named profile is written in its marked form."""
-        from gateway.session import _session_key_namespace
+        from hermes_agent.gateway.session import _session_key_namespace
         wanted = list(ids)
         if not wanted:
             return 0

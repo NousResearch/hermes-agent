@@ -58,7 +58,7 @@ _BUNDLE_FIRST_SKILL_BLOCK = "\n\n[Loaded as part of the "
 # the single-skill and the bundle header ("work" / "/clean /work").
 _SKILL_NAME_RE = re.compile(re.escape(_SKILL_INVOCATION_PREFIX) + r'"([^"]*)"')
 
-# Gateway auto-load scaffold (gateway/run_turn.py ``_hmwa_auto_load_skills``): a channel-bound
+# Gateway auto-load scaffold (hermes_agent/gateway/run_turn.py ``_hmwa_auto_load_skills``): a channel-bound
 # skill prepended to the user's text on a NEW session. Unlike the invocation scaffolds above it
 # carries no instruction marker — the user's text simply follows the payload blocks — so the
 # describer strips the header + body and renders the typed request (session previews, titles).
@@ -220,7 +220,7 @@ def _resolve_skill_commands_platform() -> Optional[str]:
     that was populated for a different platform's ``skills.platform_disabled`` view (#14536).
     """
     try:
-        from gateway.session_context import get_session_env
+        from hermes_agent.gateway.session_context import get_session_env
         resolved_platform = os.getenv("HERMES_PLATFORM") or get_session_env("HERMES_SESSION_PLATFORM")
     except Exception:
         resolved_platform = os.getenv("HERMES_PLATFORM")

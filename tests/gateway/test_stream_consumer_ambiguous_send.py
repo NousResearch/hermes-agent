@@ -13,8 +13,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import DEFAULT_STREAMING_CURSOR
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from hermes_agent.gateway.config import DEFAULT_STREAMING_CURSOR
+from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from tests.waiting import async_wait_until
 
 _TIMED_OUT = SimpleNamespace(success=False, message_id=None, error="Timed out", retryable=False)
@@ -217,7 +217,7 @@ def _timing_out_telegram(delivered: list, *, outcomes: tuple = (), then=None) ->
     on) to a bot whose every send reaches Telegram and then times out. ``outcomes`` scripts the
     first bot calls (``None`` times out after landing) and ``then`` every later one; an exception
     outcome is a refusal: nothing lands."""
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
     from plugins.platforms.telegram.adapter import TelegramAdapter
     from telegram.error import TimedOut
 
@@ -374,7 +374,7 @@ async def test_timed_out_send_in_a_code_block_shows_only_what_the_model_wrote(ch
     """Telegram (finalize edit required): a timed-out send whose code fence the display closed
     counts as shown, so the gateway does not resend the whole answer unlabelled, and a
     continuation never invents a code line out of a split fence tag."""
-    from gateway.run_turn import GatewayTurnMixin
+    from hermes_agent.gateway.run_turn import GatewayTurnMixin
 
     delivered: list = []
     adapter = _telegram_flagged(_landing_adapter(delivered))

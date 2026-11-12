@@ -17,8 +17,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.platforms.base import AudioFormat, StreamingTTSHandle
-from gateway.streaming_tts_consumer import StreamingTTSConsumer
+from hermes_agent.gateway.platforms.base import AudioFormat, StreamingTTSHandle
+from hermes_agent.gateway.streaming_tts_consumer import StreamingTTSConsumer
 from tools.tts_streaming import SentenceChunker
 
 
@@ -153,10 +153,10 @@ def gateway_tts_turn(monkeypatch, tmp_path):
     """Real agent delivery + real TurnRunner callback wiring; only the speech provider and PCM sink are fake."""
     from agent.agent_runtime_helpers import strip_think_blocks
     from agent.stream_delivery import StreamDeliveryMixin
-    from gateway.config import StreamingConfig
-    from gateway.run_turn_runner import TurnRunner
-    from gateway.stream_consumer import StreamConsumerConfig
-    from gateway.turn_context import TurnContext
+    from hermes_agent.gateway.config import StreamingConfig
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.stream_consumer import StreamConsumerConfig
+    from hermes_agent.gateway.turn_context import TurnContext
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
@@ -267,7 +267,7 @@ def test_completed_commentary_is_spoken_exactly_once(gateway_tts_turn):
 
 def _make_minimal_adapter():
     """Create a minimal concrete BasePlatformAdapter for testing defaults."""
-    from gateway.platforms.base import BasePlatformAdapter
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
     class _Minimal(BasePlatformAdapter):
         async def send(self, chat_id, content, **kw):
@@ -372,7 +372,7 @@ class TestGatewayIntegrationSeam:
     """The actual adapter seam is per-turn, not chat-only."""
 
     def test_duplicate_suppression_is_per_turn(self):
-        from gateway.platforms.base import streaming_tts_should_skip_whole_file
+        from hermes_agent.gateway.platforms.base import streaming_tts_should_skip_whole_file
 
         adapter = _make_minimal_adapter()
         turn_one = adapter._streaming_tts_turn_key("chat-1", 101)

@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gateway.platform_registry import platform_registry
+from hermes_agent.gateway.platform_registry import platform_registry
 from hermes_cli.tools_config import tools_disable_enable_command
 
 

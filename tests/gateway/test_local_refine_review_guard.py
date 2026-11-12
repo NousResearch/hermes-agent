@@ -16,7 +16,7 @@ from tests.waiting import wait_until
 
 
 def _stub_refine(monkeypatch, refine, live, sid, review):
-    from gateway import session_tui_side, session_policy, session_local_recovery
+    from hermes_agent.gateway import session_tui_side, session_policy, session_local_recovery
     from agent import background_review
     from run_agent import AIAgent
     authority = SimpleNamespace(profile_id='p', sessions={sid: live},
@@ -47,9 +47,9 @@ def _stub_refine(monkeypatch, refine, live, sid, review):
 
 @pytest.mark.asyncio
 async def test_second_cold_refine_while_one_runs_is_refused(monkeypatch):
-    refine = pytest.importorskip('gateway.session_refine')
+    refine = pytest.importorskip('hermes_agent.gateway.session_refine')
     from agent.background_review import finish_background_review_run
-    from gateway.session_authority import LiveSession
+    from hermes_agent.gateway.session_authority import LiveSession
     sid = 'refine-guard-dup'
     live = LiveSession(SimpleNamespace(chat_id=sid), 'route')
     release, started = threading.Event(), []
@@ -74,11 +74,11 @@ async def test_second_cold_refine_while_one_runs_is_refused(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_new_turn_cancels_the_cold_refine_review(monkeypatch):
-    refine = pytest.importorskip('gateway.session_refine')
+    refine = pytest.importorskip('hermes_agent.gateway.session_refine')
     from agent.background_review import finish_background_review_run
-    from gateway import session_finite
-    from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway import session_finite
+    from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_agent.gateway.session_contract import SessionRef
     sid = 'refine-guard-turn'
     live = LiveSession(SimpleNamespace(chat_id=sid), 'route')
     started, outcome = [], {}

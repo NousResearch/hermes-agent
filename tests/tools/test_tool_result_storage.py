@@ -519,7 +519,7 @@ class TestSpillover:
         import time as _time
 
         import tools.tool_result_storage as trs
-        from gateway.run_housekeeping_disk import housekeeping_media_caches
+        from hermes_agent.gateway.run_housekeeping_disk import housekeeping_media_caches
         spill_dir = get_spillover_dir()
         spill_dir.mkdir(parents=True, exist_ok=True)
         recent, orphan = spill_dir / "recent.txt", spill_dir / "orphan.txt"

@@ -1,4 +1,4 @@
-"""Adapter-driven dispatch of structured stream events (gateway/stream_events.py).
+"""Adapter-driven dispatch of structured stream events (hermes_agent/gateway/stream_events.py).
 
 Message events flow into the consumer; tool events are formatted by the adapter (None
 = eat it on platforms without tool chrome) and enqueued onto the same tool-progress
@@ -11,11 +11,11 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Optional
 
-from gateway.stream_events import (
+from hermes_agent.gateway.stream_events import (
     Commentary, GatewayNotice, LongToolHint, MessageChunk, MessageStop, StreamEvent, ToolCallChunk,
 )
 
-logger = logging.getLogger("gateway.stream_events")
+logger = logging.getLogger("hermes_agent.gateway.stream_events")
 
 
 class GatewayEventDispatcher:

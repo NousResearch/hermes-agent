@@ -10,13 +10,13 @@ import os
 
 
 def _active_policy():
-    from gateway.session_policy import active_policy
+    from hermes_agent.gateway.session_policy import active_policy
     return active_policy()
 
 
 def session_key() -> str:
     """Route key of the session whose turn is running in this context, ``""`` outside one."""
-    from gateway.session_context import get_session_env
+    from hermes_agent.gateway.session_context import get_session_env
     return get_session_env("HERMES_SESSION_KEY", "")
 
 
@@ -26,7 +26,7 @@ def session_surface() -> str:
     policy = _active_policy()
     if policy is not None:
         return policy.platform
-    from gateway.session_context import get_session_env
+    from hermes_agent.gateway.session_context import get_session_env
     return get_session_env("HERMES_SESSION_PLATFORM", "")
 
 
@@ -37,7 +37,7 @@ def session_client() -> dict | None:
     ACP today). A label the client chose, not an authentication: never grant anything on it.
     Under ``plugins.isolation: host`` the plugin's own process has no session context; read
     ``info["client"]`` in a prompt section there."""
-    from gateway.session_client import policy_client
+    from hermes_agent.gateway.session_client import policy_client
     return policy_client(_active_policy())
 
 

@@ -143,7 +143,7 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
     return (evt.get("session_id", ""), evt_type, *(evt.get(f, 0 if f == "suppressed" else "") for f in extra))
 
 
-# Mirror gateway/kanban_watchers.py TERMINAL_KINDS: claim silent kinds (archived/unblocked) too so the cursor advances
+# Mirror hermes_agent/gateway/kanban_watchers.py TERMINAL_KINDS: claim silent kinds (archived/unblocked) too so the cursor advances
 # past them and they can't wedge a later completed/blocked event behind an unclaimed row.
 _KANBAN_NOTIFY_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked")
 # kanban, /loop + /heartbeat and the bot mailbox share one idle-poll cadence; probing the lease registry on
@@ -268,7 +268,7 @@ def _notif_gateway_owns_heartbeat(session: dict, session_key: str) -> bool:
 
     Desktop/TUI can attach to a messaging conversation, but its session-owner poller has no adapter
     route for the reply. Ownership is the gateway's LIVE routing index, not the row's immutable
-    ``source``: ``gateway/run_heartbeat_restore.py`` only registers watches for a non-suspended,
+    ``source``: ``hermes_agent/gateway/run_heartbeat_restore.py`` only registers watches for a non-suspended,
     origin-bearing key whose current ``session_id`` is this one, so a row archived by /reset,
     auto-reset or compression rotation belongs to nobody there and must keep firing here. The index
     lives in the gateway's home store (the launch handle for a multiplexed gateway, the profile's
@@ -323,7 +323,7 @@ def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
 
 def _loop_route_is_gateway_chat(state) -> bool:
     """A /loop set from a messaging chat carries the gateway's ``route`` (platform + chat_id); its wakeup scanner
-    (``gateway/run_goals.py::_loop_wakeup_fire_one``) fires those and skips route-less CLI/TUI loops. Mirror it here
+    (``hermes_agent/gateway/run_goals.py::_loop_wakeup_fire_one``) fires those and skips route-less CLI/TUI loops. Mirror it here
     so a Desktop viewer of the same session never consumes the tick and strands the reply off the chat."""
     route = getattr(state, "route", None) or {}
     return bool(route.get("platform") and route.get("chat_id"))
@@ -437,7 +437,7 @@ _KANBAN_EVENT_FORMATTERS = {
 
 
 def _format_kanban_event_text(sub: dict, task, ev, board_slug: str) -> Optional[str]:
-    """Single-line notification text for one kanban event; wording mirrors gateway/kanban_watchers.py (reads the same
+    """Single-line notification text for one kanban event; wording mirrors hermes_agent/gateway/kanban_watchers.py (reads the same
     as on Telegram). None for silent kinds."""
     if (entry := _KANBAN_EVENT_FORMATTERS.get(getattr(ev, "kind", ""))) is None:
         return None
@@ -525,8 +525,8 @@ def _kb_poll_board(_kb, slug: str, session_key: str, stray: tuple = (), unreclai
             if not events:
                 continue
             task = _kb.get_task(conn, sub["task_id"])
-            from gateway.kanban_watchers_notifier import diagnostic_event
-            from gateway.warning_notifications import DiagnosticText
+            from hermes_agent.gateway.kanban_watchers_notifier import diagnostic_event
+            from hermes_agent.gateway.warning_notifications import DiagnosticText
             for ev in events:
                 text = _format_kanban_event_text(sub, task, ev, slug)
                 if text:
@@ -585,7 +585,7 @@ def _notif_poll_kanban_scoped(sid: str, session: dict) -> None:
         _notif_log_failure("kanban notification poll failed", exc)
         texts = []
     for text in texts:
-        from gateway.warning_notifications import DiagnosticText, render_notification
+        from hermes_agent.gateway.warning_notifications import DiagnosticText, render_notification
         render_notification(lambda: _emit("status.update", sid, {"kind": "process", "text": text}),
                             platform="tui", diagnostic=isinstance(text, DiagnosticText))
     if texts:
@@ -594,7 +594,7 @@ def _notif_poll_kanban_scoped(sid: str, session: dict) -> None:
         return
     with session["history_lock"]:
         pending = session.get("_kanban_pending") or []
-        from gateway.warning_notifications import DiagnosticText, warning_notifications_enabled
+        from hermes_agent.gateway.warning_notifications import DiagnosticText, warning_notifications_enabled
         split = not warning_notifications_enabled("tui")
         diagnostic = split and isinstance(pending[0], DiagnosticText)
         batch = [text for text in pending if not split or isinstance(text, DiagnosticText) == diagnostic]
@@ -693,7 +693,7 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
         display_text = (async_delegation_display_text(evt) if is_delegation
                         else process_completion_display_text([evt]) if evt_type == "completion" else text)
         from agent.notification_presentation import diagnostic_process_event
-        from gateway.warning_notifications import render_notification
+        from hermes_agent.gateway.warning_notifications import render_notification
         render_notification(lambda: _emit("status.update", sid, {"kind": "process", "text": display_text}),
                             platform="tui", diagnostic=diagnostic_process_event(evt))
         emitted.add(dedup_key)
@@ -924,7 +924,7 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
 def _hud_surface_note(session: dict) -> str:
     """The per-surface note for this turn ("" for the plain app window): HUD -> the read-the-window-below
     prior; voice-live -> the spoken-delegation contract with the recent transcript."""
-    from gateway.session_surface import surface_note
+    from hermes_agent.gateway.session_surface import surface_note
     surface, agent = session.get("client_surface"), session.get("agent")
     direct = getattr(agent, "valid_tool_names", None) or set()
     if surface == "hud":

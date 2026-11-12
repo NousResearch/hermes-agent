@@ -13,7 +13,7 @@ _SIGUSR2_CHILD = """
 import os, signal, sys, time
 from types import SimpleNamespace
 sys.path.insert(0, sys.argv[2])
-from gateway.run_startup import GatewayStartupMixin
+from hermes_agent.gateway.run_startup import GatewayStartupMixin
 runner = object.__new__(GatewayStartupMixin)
 runner.config = SimpleNamespace(log_dir=sys.argv[1])
 runner._start_install_faulthandler()

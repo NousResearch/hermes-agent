@@ -24,11 +24,11 @@ def _local_reset(db, epoch, logical, child):
     differs from the logical owner (the managed-worker layout after ``/new``)."""
     from hermes_agent.hermes_state_local import commit_local_session
     from hermes_agent.hermes_state_local_lineage import reset_local_target
-    from gateway.config import Platform
-    from gateway.session import SessionEntry, SessionSource
-    from gateway.session_lifecycle import _now
-    from gateway.session_local_recovery import local_identity
-    from gateway.session_policy import build_policy
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session import SessionEntry, SessionSource
+    from hermes_agent.gateway.session_lifecycle import _now
+    from hermes_agent.gateway.session_local_recovery import local_identity
+    from hermes_agent.gateway.session_policy import build_policy
     from dataclasses import asdict
     sid = local_identity('profile', 'human', 'r')
     source = SessionSource(platform=Platform.LOCAL, chat_id=sid, user_id='human', chat_type='dm')
@@ -45,7 +45,7 @@ def _local_reset(db, epoch, logical, child):
 
 
 def test_resolve_unknown_retires_the_physical_worker_row(tmp_path):
-    from gateway.session_worker_reservation import reserve_admission_worker
+    from hermes_agent.gateway.session_worker_reservation import reserve_admission_worker
     with closing(SessionDB(tmp_path / 'state.db')) as db:
         epoch = rt.begin_runtime_epoch(db, instance_id='owner')
         logical = _local_reset(db, epoch, 'logical', 'physical')

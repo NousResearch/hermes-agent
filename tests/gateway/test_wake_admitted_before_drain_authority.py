@@ -25,11 +25,11 @@ class Hold:
 
 
 async def authority_route(monkeypatch, instance_id, executed, hold=None):
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.platforms.base import SendResult
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_results import execution_result
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.base import SendResult
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_results import execution_result
     from plugins.platforms.discord.adapter import DiscordAdapter
 
     monkeypatch.setenv("DISCORD_ALLOWED_USERS", "42")
@@ -74,9 +74,9 @@ def wake_runs(executed):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("busy", [False, True], ids=["idle", "busy"])
 async def test_authority_route_runs_a_wake_receipted_before_drain_once_after_restart(monkeypatch, busy):
-    from gateway.platforms.event import MessageEvent
-    from gateway.run_runtime import recover_profile_native_sessions, settle_gateway_runtime
-    from gateway.wake import deliver_wake
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run_runtime import recover_profile_native_sessions, settle_gateway_runtime
+    from hermes_agent.gateway.wake import deliver_wake
 
     executed, hold = [], Hold() if busy else None
     runner, adapter, authority, source = await authority_route(monkeypatch, "owner", executed, hold)
@@ -113,9 +113,9 @@ async def test_authority_route_runs_a_wake_receipted_before_drain_once_after_res
 async def test_a_wake_claimed_just_before_a_drain_runs_rather_than_settling_unrun(monkeypatch):
     """The drain begins after the wake's claim committed (its admission gate already passed): the
     old owner holds the only claim, so it must run the wake, not answer it with the drain notice."""
-    from gateway.platforms.event import MessageEvent
-    from gateway.run_runtime import settle_gateway_runtime
-    from gateway.wake import deliver_wake
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run_runtime import settle_gateway_runtime
+    from hermes_agent.gateway.wake import deliver_wake
 
     executed = []
     runner, adapter, authority, source = await authority_route(monkeypatch, "owner", executed)

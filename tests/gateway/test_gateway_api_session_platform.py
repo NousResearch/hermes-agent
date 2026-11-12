@@ -13,7 +13,7 @@ from tests.gateway.test_session_follow_profile_config import _owner
 
 
 def _connection(authority, user, *, native):
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     identity = {'user_id': user, 'provider': 'local' if native else 'fixture', 'profile_id': authority.profile_id,
                 'instance_id': authority.instance_id, 'capabilities': CAPS}
     if native:
@@ -23,8 +23,8 @@ def _connection(authority, user, *, native):
 
 @pytest.mark.asyncio
 async def test_api_created_sessions_are_local_and_the_connection_mode_marks_remote(monkeypatch):
-    from gateway import run
-    from gateway.config import Platform
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import Platform
     from hermes_constants import get_hermes_home
     home = get_hermes_home()
     home.mkdir(parents=True, exist_ok=True)
@@ -44,7 +44,7 @@ async def test_api_created_sessions_are_local_and_the_connection_mode_marks_remo
             assert 'result' in reply, reply
             sid = reply['result']['session_id']
             source = authority.sessions[sid].source
-            from gateway.session_local_recovery import local_adapter_map
+            from hermes_agent.gateway.session_local_recovery import local_adapter_map
             policy = local_adapter_map(authority)[Platform.LOCAL].policies[source.chat_id]
             created[name] = (source.platform, policy.client_env_remote)
         # Same platform either way; only the connection-derived policy flag differs.

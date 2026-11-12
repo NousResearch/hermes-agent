@@ -4,8 +4,8 @@ import sys
 
 
 def test_persisted_off_is_not_overridden_by_frozen_launch_after_restart(tmp_path):
-    from gateway.config import GatewayConfig, Platform
-    from gateway.session import SessionStore, SessionSource
+    from hermes_agent.gateway.config import GatewayConfig, Platform
+    from hermes_agent.gateway.session import SessionStore, SessionSource
     store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
     store._db = None
     source = SessionSource(platform=Platform.LOCAL, chat_id='revoked', user_id='human')
@@ -15,10 +15,10 @@ def test_persisted_off_is_not_overridden_by_frozen_launch_after_restart(tmp_path
     probe = '''
 import sys
 from pathlib import Path
-from gateway.config import GatewayConfig
-from gateway.session import SessionStore
+from hermes_agent.gateway.config import GatewayConfig
+from hermes_agent.gateway.session import SessionStore
 from types import SimpleNamespace
-from gateway.session_managed_worker import _session_yolo
+from hermes_agent.gateway.session_managed_worker import _session_yolo
 from tools.approval import is_session_yolo_enabled
 store = SessionStore(sessions_dir=Path(sys.argv[1]), config=GatewayConfig())
 store._db = None

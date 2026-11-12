@@ -9,8 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import control_socket
-from gateway import status as gateway_status
+from hermes_agent.gateway import control_socket
+from hermes_agent.gateway import status as gateway_status
 from hermes_cli import gateway as gw
 from hermes_cli import gateway_supervised_restart as supervised
 

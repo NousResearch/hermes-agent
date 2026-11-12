@@ -5,8 +5,8 @@ import logging
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.run import GatewayRunner
 
 _WARNING = "No env user allowlists configured"
 
@@ -36,7 +36,7 @@ def test_allowlist_warning_requires_an_enabled_messaging_platform(
     monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
     runner = _runner(platforms, tmp_path)
 
-    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.run"):
         refused = runner._start_check_access_policy()
 
     assert refused is False

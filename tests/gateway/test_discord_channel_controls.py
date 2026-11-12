@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 
 def _ensure_discord_mock():
@@ -217,7 +217,7 @@ async def test_auto_thread_failure_skips_agent_and_notifies_user(adapter, monkey
 
 
 def test_config_bridges_ignored_channels(monkeypatch, tmp_path):
-    """gateway/config.py bridges discord.ignored_channels to env var."""
+    """hermes_agent/gateway/config.py bridges discord.ignored_channels to env var."""
     import hermes_yaml as yaml
     config_file = tmp_path / "config.yaml"
     config_file.write_text(yaml.safe_dump({
@@ -230,7 +230,7 @@ def test_config_bridges_ignored_channels(monkeypatch, tmp_path):
     # the var doesn't exist yet — load_gateway_config will overwrite it.
     monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "")
 
-    from gateway.config import load_gateway_config
+    from hermes_agent.gateway.config import load_gateway_config
     load_gateway_config()
 
     import os

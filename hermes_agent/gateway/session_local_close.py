@@ -5,7 +5,7 @@ session row it owned; pickers then listed it as resumable. The stamp itself is t
 ``session.detach {end_reason}`` (``session_acp_lifecycle.end_idle_viewer_session``); this module only
 decides which live rows read as closed.
 """
-from gateway.session_history_mount import is_history_mount
+from hermes_agent.gateway.session_history_mount import is_history_mount
 from hermes_agent.hermes_state_local import local_receipt
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
@@ -19,7 +19,7 @@ def _local_target(authority, session_id):
 
 def closed_idle_unviewed(live, execution_state, target_ended_at):
     """The verdict on facts already read: the live listings read ``target_ended_at`` for a whole batch
-    in one off-loop query (``gateway/session_live_listing``)."""
+    in one off-loop query (``hermes_agent/gateway/session_live_listing``)."""
     if live is None or live.subscribers or execution_state != 'idle':
         return False
     if live.detached or is_history_mount(live):

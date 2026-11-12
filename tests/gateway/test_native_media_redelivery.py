@@ -27,13 +27,13 @@ class _Media(BaseHTTPRequestHandler):
 
 @pytest.mark.asyncio
 async def test_redelivered_media_message_returns_its_receipt_and_changed_bytes_conflict(tmp_path, monkeypatch):
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.platforms.event import MessageEvent, MessageType
-    from gateway.relay.media import RelayMediaClient
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import SessionAuthority, initialize_session_authority
-    from gateway.session_ingress_context import native_callback
-    from gateway.session_ingress_media import _media_root, release_admission_media
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+    from hermes_agent.gateway.relay.media import RelayMediaClient
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import SessionAuthority, initialize_session_authority
+    from hermes_agent.gateway.session_ingress_context import native_callback
+    from hermes_agent.gateway.session_ingress_media import _media_root, release_admission_media
     from hermes_constants import get_hermes_home
     from hermes_agent.hermes_state_runtime import (RuntimeStoreError, claim_session_input, list_session_admissions,
                                       settle_session_input)

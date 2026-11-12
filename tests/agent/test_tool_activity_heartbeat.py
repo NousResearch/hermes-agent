@@ -1,7 +1,7 @@
 """Tests for the in-flight tool activity heartbeat (#84491).
 
 The gateway's turn-inactivity watchdog
-(``gateway/run.py::_watch_gateway_turn_inactivity``) abandons a turn once
+(``hermes_agent/gateway/run.py::_watch_gateway_turn_inactivity``) abandons a turn once
 ``seconds_since_activity`` exceeds the inactivity timeout (default 30 min).
 Activity was only stamped when a tool *started* and when it *completed*, so
 a tool call that ran silently for 30+ minutes looked idle to the watchdog

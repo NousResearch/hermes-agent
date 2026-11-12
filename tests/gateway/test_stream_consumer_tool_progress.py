@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.stream_consumer import (
+from hermes_agent.gateway.stream_consumer import (
     GatewayStreamConsumer,
     StreamConsumerConfig,
 )
@@ -20,7 +20,7 @@ from gateway.stream_consumer import (
 
 def _make_native_streaming_adapter(*, supports_native: bool = True):
     """Build a BasePlatformAdapter subclass that supports native streaming."""
-    from gateway.platforms.base import BasePlatformAdapter
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
     NativeStreamingAdapter = type(
         "NativeStreamingAdapter",

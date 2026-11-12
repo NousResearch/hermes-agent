@@ -93,7 +93,7 @@ def _mirror_subagent_to_child(event_type: str, payload: dict, profile_home) -> N
 
 
 def _agent_presentation_enabled(sid: str, *, diagnostic: bool) -> bool:
-    from gateway.warning_notifications import warning_notifications_enabled
+    from hermes_agent.gateway.warning_notifications import warning_notifications_enabled
     with _sessions_lock:
         session = _sessions.get(sid)
     # Callback workers do not necessarily inherit the turn's ContextVars. The
@@ -108,14 +108,14 @@ def _agent_presentation_enabled(sid: str, *, diagnostic: bool) -> bool:
 
 
 def _agent_status_update(sid: str, kind: str, text: str | None = None) -> None:
-    from gateway.warning_notifications import is_warning_status
+    from hermes_agent.gateway.warning_notifications import is_warning_status
     if not _agent_presentation_enabled(sid, diagnostic=is_warning_status(kind, text if text is not None else kind)):
         return
     _status_update(sid, str(kind), None if text is None else str(text))
 
 
 def _agent_thinking_update(sid: str, text: str) -> None:
-    from gateway.warning_notifications import DiagnosticText
+    from hermes_agent.gateway.warning_notifications import DiagnosticText
     # Wait notices and the quiet spinner share this callback with diagnostics.
     # They are not reasoning blocks; display.show_reasoning must not swallow them.
     if not _agent_presentation_enabled(sid, diagnostic=isinstance(text, DiagnosticText)):
@@ -124,7 +124,7 @@ def _agent_thinking_update(sid: str, text: str) -> None:
 
 
 def _agent_notice_update(sid: str, notice) -> None:
-    from gateway.warning_notifications import is_diagnostic_notice
+    from hermes_agent.gateway.warning_notifications import is_diagnostic_notice
     if not _agent_presentation_enabled(sid, diagnostic=is_diagnostic_notice(notice)):
         return
     _emit("notification.show", sid,
@@ -224,7 +224,7 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
 def _wire_callbacks(sid: str):
     from tools.terminal_tool import set_sudo_password_callback
     from tools.terminal_tool_sudo import get_sudo_prompt_command
-    from gateway.run import _redact_approval_command
+    from hermes_agent.gateway.run import _redact_approval_command
     from tools.skills_tool import set_secret_capture_callback
     from tools.project_tools import set_project_workspace_callback
 
@@ -233,7 +233,7 @@ def _wire_callbacks(sid: str):
         # One process-global callback, so the closure sid is just the last session wired,
         # not the owner. Ask the UI session bound by _set_session_context: the same
         # record whose profile scope the value is saved into. No bound owner: skip.
-        from gateway.session_context import get_session_env
+        from hermes_agent.gateway.session_context import get_session_env
 
         owner_sid = get_session_env("HERMES_UI_SESSION_ID")
         # Credential admission is fenced to a live runtime. owner_sid is a ContextVar copied onto
@@ -381,7 +381,7 @@ def _sync_agent_fallback_with_config(sid: str, session: dict) -> None:
     if agent is None:
         return
     try:
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
         from hermes_cli.config_effective import load_user_config_effective
         from hermes_cli.fallback_config import get_fallback_chain
         chain = get_fallback_chain(load_user_config_effective(_active_config_path(), fail_closed=True))
@@ -523,7 +523,7 @@ def _preview_restart_callbacks(parent: str, task_id: str) -> dict:
 def _restart_status_factory(parent: str, progress):
     """Restart-panel status rows: automatic warnings honor the TUI policy like the main agent's sink."""
     def _restart_status(kind, text=None):
-        from gateway.warning_notifications import is_warning_status
+        from hermes_agent.gateway.warning_notifications import is_warning_status
         message = text if text is not None else kind
         if is_warning_status(kind, message) and not _agent_presentation_enabled(parent, diagnostic=True):
             return

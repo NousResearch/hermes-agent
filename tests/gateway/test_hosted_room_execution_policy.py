@@ -7,14 +7,14 @@ import json
 
 import pytest
 
-from gateway.hosted_room_execution_policy import (
+from hermes_agent.gateway.hosted_room_execution_policy import (
     MAX_POLICY_ITERATIONS,
     RoomExecutionPolicy,
     bind_room_execution_policy,
     execution_policy_mapping,
     reset_room_execution_policy,
 )
-from gateway.hosted_room_peer import (
+from hermes_agent.gateway.hosted_room_peer import (
     GatewayRoomCatalog,
     HostedMemberDispatch,
     HostedRoomGrantError,
@@ -150,8 +150,8 @@ def test_grant_and_recipient_dispatch_bind_the_exact_policy_digest():
 
 
 def test_room_agent_uses_target_policy_toolsets_and_turn_limit(monkeypatch):
-    from gateway.platforms.api_server import APIServerAdapter
-    from gateway.platforms.base import PlatformConfig
+    from hermes_agent.gateway.platforms.api_server import APIServerAdapter
+    from hermes_agent.gateway.platforms.base import PlatformConfig
 
     captured = {}
 
@@ -162,20 +162,20 @@ def test_room_agent_uses_target_policy_toolsets_and_turn_limit(monkeypatch):
     policy = _policy(max_turns=7)
     monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
     monkeypatch.setattr(
-        "gateway.run._resolve_runtime_agent_kwargs",
+        "hermes_agent.gateway.run._resolve_runtime_agent_kwargs",
         lambda: {"provider": "openai-codex", "base_url": "https://example.test/v1"},
     )
-    monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "gpt-test")
-    monkeypatch.setattr("gateway.run._load_gateway_config", dict)
+    monkeypatch.setattr("hermes_agent.gateway.run._resolve_gateway_model", lambda: "gpt-test")
+    monkeypatch.setattr("hermes_agent.gateway.run._load_gateway_config", dict)
     monkeypatch.setattr(
-        "gateway.run.GatewayRunner._load_reasoning_config",
+        "hermes_agent.gateway.run.GatewayRunner._load_reasoning_config",
         staticmethod(lambda model="": {"enabled": True, "effort": "high"}),
     )
     monkeypatch.setattr(
-        "gateway.run.GatewayRunner._load_fallback_model",
+        "hermes_agent.gateway.run.GatewayRunner._load_fallback_model",
         staticmethod(lambda: None),
     )
-    monkeypatch.setattr("gateway.run._current_max_iterations", lambda: 999)
+    monkeypatch.setattr("hermes_agent.gateway.run._current_max_iterations", lambda: 999)
     monkeypatch.setattr(
         "hermes_cli.tools_config._get_platform_tools",
         lambda *_: {"terminal", "file", "web"},
@@ -244,7 +244,7 @@ def _two_profile_homes(tmp_path, monkeypatch) -> None:
             "platform_toolsets:\n  api_server: [hermes-api-server, web]\n")
         (home / ".env").write_text("")
     from hermes_cli import profiles
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
     alpha = root / "profiles" / "alpha"
     monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: root)
     monkeypatch.setattr(gateway_run, "_hermes_home", alpha)

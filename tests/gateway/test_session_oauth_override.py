@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.run import GatewayRunner
 from hermes_cli.auth import PROVIDER_REGISTRY
 from hermes_cli.model_switch import ModelSwitchResult
 
@@ -15,8 +15,8 @@ def _runner(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     # Default-route fallback is an external dependency of this invariant, not its subject.
-    monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda *_: "default-model")
-    monkeypatch.setattr("gateway.run._resolve_runtime_agent_kwargs", lambda: {
+    monkeypatch.setattr("hermes_agent.gateway.run._resolve_gateway_model", lambda *_: "default-model")
+    monkeypatch.setattr("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", lambda: {
         "provider": "openrouter", "api_key": "default-key", "base_url": "https://openrouter.ai/api/v1"})
     runner = object.__new__(GatewayRunner)
     runner.config = None
@@ -76,7 +76,7 @@ def test_managed_session_override_reresolves_each_turn_and_keeps_route_on_auth_l
          "api_key": "other-provider", "base_url": endpoint},
         {"provider": provider, "api_key": "", "base_url": endpoint},
     ):
-        monkeypatch.setattr("gateway.run._resolve_runtime_agent_kwargs_for_provider", lambda *a, **k: dict(fresh_route))
+        monkeypatch.setattr("hermes_agent.gateway.run._resolve_runtime_agent_kwargs_for_provider", lambda *a, **k: dict(fresh_route))
         model, runtime = runner._resolve_session_agent_runtime(session_key="session")
         assert (model, runtime["provider"], runtime["base_url"], runtime["api_key"]) == (
             "selected-model", provider, endpoint + "/", "fixture-D")
@@ -109,7 +109,7 @@ async def test_recorded_explicit_routes_keep_their_own_key(tmp_path, monkeypatch
     await runner._record_model_switch(result, ctx, source=None, one_turn=False, picker=False)
     _write_auth(tmp_path, provider, "managed-key")
     # Pool discovery is not credential authority for a route with its own explicit key.
-    monkeypatch.setattr("gateway.run._credential_pool_for_provider", lambda *_: None)
+    monkeypatch.setattr("hermes_agent.gateway.run._credential_pool_for_provider", lambda *_: None)
     for _ in range(2):
         model, runtime = runner._resolve_session_agent_runtime(session_key="session")
         assert (model, runtime["provider"], runtime["base_url"], runtime["api_key"]) == (
@@ -142,9 +142,9 @@ async def test_catalog_alias_producer_keeps_managed_credential_ownership(tmp_pat
     runner._evict_cached_agent = Mock()
     ctx = SimpleNamespace(session_key="session", current_model="old-model", persist_global=False)
     await runner._record_model_switch(result, ctx, source=None, one_turn=False, picker=False)
-    monkeypatch.setattr("gateway.run._resolve_runtime_agent_kwargs_for_provider", lambda *a, **k: {
+    monkeypatch.setattr("hermes_agent.gateway.run._resolve_runtime_agent_kwargs_for_provider", lambda *a, **k: {
         "provider": provider, "api_key": "fresh-key", "base_url": endpoint, "credential_pool": None})
-    monkeypatch.setattr("gateway.run._credential_pool_for_provider", lambda *_: None)
+    monkeypatch.setattr("hermes_agent.gateway.run._credential_pool_for_provider", lambda *_: None)
     model, runtime = runner._resolve_session_agent_runtime(session_key="session")
     assert (model, runtime["api_key"]) == (selected, "fresh-key")
 
@@ -152,8 +152,8 @@ async def test_catalog_alias_producer_keeps_managed_credential_ownership(tmp_pat
 @pytest.mark.parametrize("provider", ["openai-codex", "xai-oauth"])
 @pytest.mark.parametrize("channel_failure", ["conflicting-pool", "provider-error", "lookup-error"])
 def test_managed_session_route_bypasses_channel_resolution(tmp_path, monkeypatch, provider, channel_failure):
-    from gateway.config import Platform
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session import SessionSource
 
     runner = _runner(monkeypatch, tmp_path)
     runner.config = SimpleNamespace()
@@ -180,8 +180,8 @@ def test_managed_session_route_bypasses_channel_resolution(tmp_path, monkeypatch
     channel_lookup = Mock(return_value=SimpleNamespace(model="channel-model", provider="openrouter"))
     if channel_failure == "lookup-error":
         channel_lookup.side_effect = RuntimeError("channel lookup unavailable")
-    monkeypatch.setattr("gateway.run._get_channel_override", channel_lookup)
-    monkeypatch.setattr("gateway.run._resolve_runtime_agent_kwargs_for_provider", resolve)
+    monkeypatch.setattr("hermes_agent.gateway.run._get_channel_override", channel_lookup)
+    monkeypatch.setattr("hermes_agent.gateway.run._resolve_runtime_agent_kwargs_for_provider", resolve)
     model, runtime = runner._resolve_session_agent_runtime(source=source, session_key="session")
     assert model == "selected-model"
     assert runtime == {k: override.get(k) for k in (

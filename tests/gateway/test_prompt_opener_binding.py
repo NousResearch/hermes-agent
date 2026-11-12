@@ -12,10 +12,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import gateway.run as gateway_run
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionSource
+import hermes_agent.gateway.run as gateway_run
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionSource
 
 EXTRA = {"group_allow_admin_from": ["alice"]}
 REFUSAL = "Only Alice can answer this approval."
@@ -113,9 +113,9 @@ async def test_update_prompt_answers_only_its_opener(surface, sender, tmp_path, 
     (tmp_path / "checkout" / "gateway").mkdir(parents=True)
     (tmp_path / "checkout" / ".git").mkdir()
     runner._schedule_update_notification_watch = lambda: None
-    with patch("gateway.slash_commands.project_root_str", lambda: str(tmp_path / "checkout")), \
-            patch("gateway.slash_commands._spawn_detached_update"), \
-            patch("gateway.run._resolve_hermes_bin", return_value=["hermes"]), \
+    with patch("hermes_agent.gateway.slash_commands.project_root_str", lambda: str(tmp_path / "checkout")), \
+            patch("hermes_agent.gateway.slash_commands._spawn_detached_update"), \
+            patch("hermes_agent.gateway.run._resolve_hermes_bin", return_value=["hermes"]), \
             patch("hermes_cli.config.is_managed", return_value=False), \
             patch("hermes_cli.config.detect_install_method", return_value="git"):
         assert await runner._handle_update_command(MessageEvent(text="/update", source=_source("alice")))
@@ -148,7 +148,7 @@ async def test_update_prompt_answers_only_its_opener(surface, sender, tmp_path, 
 async def test_second_update_while_one_runs_keeps_the_first_opener(tmp_path, monkeypatch):
     """Bob's /update while Alice's is still running is refused before it touches the marker, so
     Alice stays the only one (besides admins) who answers the running update's prompt."""
-    from gateway.approval_actor import update_prompt_refusal
+    from hermes_agent.gateway.approval_actor import update_prompt_refusal
 
     runner = _runner(MagicMock(send=AsyncMock()))
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
@@ -156,9 +156,9 @@ async def test_second_update_while_one_runs_keeps_the_first_opener(tmp_path, mon
     (tmp_path / "checkout" / "gateway").mkdir(parents=True)
     (tmp_path / "checkout" / ".git").mkdir()
     runner._schedule_update_notification_watch = lambda: None
-    with patch("gateway.slash_commands.project_root_str", lambda: str(tmp_path / "checkout")), \
-            patch("gateway.slash_commands._spawn_detached_update") as spawn, \
-            patch("gateway.run._resolve_hermes_bin", return_value=["hermes"]), \
+    with patch("hermes_agent.gateway.slash_commands.project_root_str", lambda: str(tmp_path / "checkout")), \
+            patch("hermes_agent.gateway.slash_commands._spawn_detached_update") as spawn, \
+            patch("hermes_agent.gateway.run._resolve_hermes_bin", return_value=["hermes"]), \
             patch("hermes_cli.config.is_managed", return_value=False), \
             patch("hermes_cli.config.detect_install_method", return_value="git"):
         await runner._handle_update_command(MessageEvent(text="/update", source=_source("alice")))
@@ -172,7 +172,7 @@ async def test_second_update_while_one_runs_keeps_the_first_opener(tmp_path, mon
 def test_clarify_with_an_empty_authority_answers_to_anyone():
     """A clarify registered with ``authority={}`` records no restriction, so any admitted sender's
     reply answers it (a plugin's rewritten voice-note reply relies on this)."""
-    from gateway.approval_actor import clarify_refusal
+    from hermes_agent.gateway.approval_actor import clarify_refusal
     from tools import clarify_gateway
 
     clarify_gateway.register("cl-open", "agent:main:telegram:dm:1", "Which one?", None, authority={})

@@ -23,8 +23,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.platforms.api_server import _PROFILE_REJECTED, APIServerAdapter
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.api_server import _PROFILE_REJECTED, APIServerAdapter
+from hermes_agent.gateway.config import PlatformConfig
 
 
 @pytest.fixture()

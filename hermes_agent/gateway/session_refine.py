@@ -3,7 +3,7 @@
 ``/moa`` arms a one-shot model swap that evicts the session's cached agent, and its settle evicts
 the MoA-built one, so the cached agent is not where a local session's conversation lives. The
 session's stored transcript is: the review runs over it on a side agent built from the session's
-frozen launch policy (the route ``/bg`` and ``/btw`` use, ``gateway/session_tui_side.py``), and its
+frozen launch policy (the route ``/bg`` and ``/btw`` use, ``hermes_agent/gateway/session_tui_side.py``), and its
 summary lands on the session's event stream as ``review.summary``, as a turn-time review does.
 Messaging sessions keep the cached-agent path unchanged.
 """
@@ -15,8 +15,8 @@ from agent.i18n import t
 
 
 def _local_session(runner, source):
-    from gateway.config import Platform
-    from gateway.session_setting_commands import local_authority_live
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session_setting_commands import local_authority_live
     if source is None or getattr(source, 'platform', None) != Platform.LOCAL:
         return None, None
     return local_authority_live(runner, source)
@@ -27,9 +27,9 @@ async def refine_local_session(runner, source, focus):
     authority, live = _local_session(runner, source)
     if live is None:
         return None
-    from gateway.session_contract import SessionRef
-    from gateway.session_local_recovery import transcript_target
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_local_recovery import transcript_target
+    from hermes_agent.gateway.session_policy import policy_for_source
     policy = policy_for_source(runner, live.source)
     if policy is None:
         return None
@@ -43,7 +43,7 @@ async def refine_local_session(runner, source, focus):
     if not history:
         return t('gateway.refine.nothing_yet')
     from agent.background_review import finish_background_review_run, prepare_background_review_run
-    from gateway.session_tui_side import _side_agent, _side_scope, _spawn
+    from hermes_agent.gateway.session_tui_side import _side_agent, _side_scope, _spawn
     # The guard is the session's (its side agent is per call): a /refine while one runs joins it, as
     # the resident agent's does, and the session's next turn cancels it (``_execute_claimed``).
     run = prepare_background_review_run(live.review)
@@ -64,7 +64,7 @@ async def refine_local_session(runner, source, focus):
             review_body()
         finally:  # whatever raised first, the session's guard is released
             finish_background_review_run(live.review, run)
-            from gateway.session_retirement import retire_after_review
+            from hermes_agent.gateway.session_retirement import retire_after_review
             with contextlib.suppress(RuntimeError):  # the loop already closed
                 loop.call_soon_threadsafe(retire_after_review, authority, ref, live)
         return ''  # the summary (if any) was published above; an empty review.summary draws nothing

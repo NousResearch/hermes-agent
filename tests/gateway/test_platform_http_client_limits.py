@@ -23,7 +23,7 @@ def test_env_override_rejects_garbage(monkeypatch):
     """Malformed env values fall back to defaults rather than raising."""
     monkeypatch.setenv("HERMES_GATEWAY_HTTPX_KEEPALIVE_EXPIRY", "not-a-number")
     monkeypatch.setenv("HERMES_GATEWAY_HTTPX_MAX_KEEPALIVE", "-3")
-    from gateway.platforms._http_client_limits import platform_httpx_limits
+    from hermes_agent.gateway.platforms._http_client_limits import platform_httpx_limits
     limits = platform_httpx_limits()
     # Non-positive / non-numeric → fell back to defaults (not the override values)
     assert limits.keepalive_expiry is not None and limits.keepalive_expiry > 0
@@ -35,9 +35,9 @@ def test_env_override_rejects_garbage(monkeypatch):
 async def test_platform_http_client_is_ssrf_guarded_with_shared_limits():
     """The public plugin client refuses private targets at connect time, re-checks redirects ahead of
     caller hooks, and uses the shared keepalive limits."""
-    from gateway.platforms._http_client_limits import platform_httpx_limits
-    from gateway.platforms.base import ssrf_redirect_guard
-    from gateway.platforms.helpers import platform_http_client
+    from hermes_agent.gateway.platforms._http_client_limits import platform_httpx_limits
+    from hermes_agent.gateway.platforms.base import ssrf_redirect_guard
+    from hermes_agent.gateway.platforms.helpers import platform_http_client
 
     async def caller_hook(response):
         return None
@@ -59,7 +59,7 @@ def test_max_keepalive_zero_disables_keepalive(monkeypatch):
     """``0`` is httpx's "keep no idle connections" and must survive the parse; the expiry knob stays > 0."""
     monkeypatch.setenv("HERMES_GATEWAY_HTTPX_MAX_KEEPALIVE", "0")
     monkeypatch.setenv("HERMES_GATEWAY_HTTPX_KEEPALIVE_EXPIRY", "0")
-    from gateway.platforms._http_client_limits import platform_httpx_limits
+    from hermes_agent.gateway.platforms._http_client_limits import platform_httpx_limits
     limits = platform_httpx_limits()
     assert limits.max_keepalive_connections == 0
     assert limits.keepalive_expiry == 2.0

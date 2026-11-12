@@ -47,7 +47,7 @@ async def test_a_slow_admission_answer_is_awaited_not_failed(monkeypatch, tmp_pa
     real_wait_for = asyncio.wait_for
     monkeypatch.setattr(asyncio, 'wait_for', lambda fut, timeout: real_wait_for(
         fut, None if timeout is None else timeout / 1000))
-    from gateway import session_kanban
+    from hermes_agent.gateway import session_kanban
     monkeypatch.setattr(session_kanban, 'worker_result', lambda db, params: {'exit_code': 0, 'last_output': 'done'})
     owner = _Owner()
     params = {'board': 'b', 'task_id': 't1', 'run_id': 1, 'claim_lock': 'lock'}

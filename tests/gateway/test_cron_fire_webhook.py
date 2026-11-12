@@ -16,8 +16,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import PlatformConfig
-from gateway.platforms.api_server import APIServerAdapter, cors_middleware
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.api_server import APIServerAdapter, cors_middleware
 
 _MOD = "gateway.platforms.api_server"
 
@@ -84,7 +84,7 @@ async def test_valid_fire_reservation_blocks_drain_before_body_and_task(adapter,
         lambda: (lambda **kw: {"purpose": "cron_fire"}),
     )
     app = _create_app(adapter)
-    with patch("gateway.run._gateway_runner_ref", lambda: runner), patch.object(
+    with patch("hermes_agent.gateway.run._gateway_runner_ref", lambda: runner), patch.object(
         web.Request, "json", delayed_json
     ):
         async with TestClient(TestServer(app)) as cli:
@@ -323,7 +323,7 @@ async def test_async_verifier_is_awaited(adapter, monkeypatch):
 @pytest.mark.asyncio
 async def test_fire_passes_live_adapters_to_provider(adapter, monkeypatch):
     """The fire webhook must hand the gateway's live adapters to fire_due —
-    delivery parity with the built-in ticker (gateway/run.py passes
+    delivery parity with the built-in ticker (hermes_agent/gateway/run.py passes
     runner.adapters). Without them, relay-fronted logical platforms (whose
     ONLY send path is the live relay adapter — no native credential exists on
     the box) and E2EE platforms fail every external-provider fire with
@@ -354,7 +354,7 @@ async def test_fire_passes_live_adapters_to_provider(adapter, monkeypatch):
         lambda: (lambda **kw: {"purpose": "cron_fire"}),
     )
 
-    with patch("gateway.run._gateway_runner_ref", lambda: runner):
+    with patch("hermes_agent.gateway.run._gateway_runner_ref", lambda: runner):
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.post("/api/cron/fire",

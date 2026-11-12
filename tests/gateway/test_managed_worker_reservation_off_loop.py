@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_contract import SessionActor, SessionRef
+from hermes_agent.gateway.session_contract import SessionActor, SessionRef
 from tests.waiting import wait_until
 
 CHILD = """import json, os, sys, time, psutil
@@ -37,10 +37,10 @@ HOLD_S = 3.0
 @pytest.mark.platforms("linux")
 @pytest.mark.parametrize('held_during', ['reserve', 'lose'])
 def test_reservation_and_loss_writes_never_block_the_loop(tmp_path, monkeypatch, held_during):
-    from gateway import session_managed_worker as managed
-    from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import Submission
-    from gateway.session_policy import build_policy
+    from hermes_agent.gateway import session_managed_worker as managed
+    from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_agent.gateway.session_contract import Submission
+    from hermes_agent.gateway.session_policy import build_policy
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import begin_runtime_epoch, claim_session_input
 

@@ -3,12 +3,12 @@ import asyncio
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
-from gateway.wake import deliver_wake
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.wake import deliver_wake
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 

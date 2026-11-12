@@ -4,7 +4,7 @@ import json
 from dataclasses import asdict, replace
 from typing import NamedTuple
 
-from gateway.session_route_identity import ROUTE_BOUND_KEYS
+from hermes_agent.gateway.session_route_identity import ROUTE_BOUND_KEYS
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
@@ -27,7 +27,7 @@ def _current_route(authority, live, old):
     authenticate here must not block leaving it: like main's agent-less ``--provider`` path, the
     pick then switches from the configured provider alone and resolves its own target.
     """
-    from gateway.session_policy import profile_read_scope
+    from hermes_agent.gateway.session_policy import profile_read_scope
     from hermes_cli.auth import AuthError
     with profile_read_scope(old, authority):
         config = old.config(authority)
@@ -43,8 +43,8 @@ def _current_route(authority, live, old):
 
 
 async def prepare_model(authority, live, payload, prepared):
-    from gateway.session_policy import restore_policy, bind_launch_key, bound_route_holds, route_launch_key
-    from gateway.session_policy_credentials import recover_config_secrets
+    from hermes_agent.gateway.session_policy import restore_policy, bind_launch_key, bound_route_holds, route_launch_key
+    from hermes_agent.gateway.session_policy_credentials import recover_config_secrets
     from hermes_cli.model_switch import apply_model_selection, switch_model
     from hermes_cli.config import get_compatible_custom_providers
     old = restore_policy(prepared['snapshot']['receipt']['policy'])
@@ -100,14 +100,14 @@ async def prepare_model(authority, live, payload, prepared):
     frozen['model'] = await asyncio.to_thread(apply_model_selection, frozen.get('model'), result)
     if 'reasoning' in payload:
         # The level picked with the model lands in the same commit (as prepare_reasoning writes it).
-        from gateway.session_policy import pin_reasoning_effort
+        from hermes_agent.gateway.session_policy import pin_reasoning_effort
         pin_reasoning_effort(frozen, payload['reasoning'], session=True)
     if old.follows_profile:
         # A committed /model holds while the profile still targets what it targets now (main's
         # composer_override_profile); a later profile edit supersedes it.
         from pathlib import Path
-        from gateway.run import _load_gateway_config
-        from gateway.session_policy import present_sections, profile_target
+        from hermes_agent.gateway.run import _load_gateway_config
+        from hermes_agent.gateway.session_policy import present_sections, profile_target
         live = await asyncio.to_thread(
             lambda: _load_gateway_config(Path(authority.db.db_path).resolve().parent / 'config.yaml'))
         frozen['model']['selection_profile'] = list(profile_target(present_sections(live)))
@@ -168,8 +168,8 @@ def is_model_reset(payload):
 
 def configured_default(authority):
     """``(model, provider)`` the owning profile's config.yaml names now (``auto`` reads as no provider)."""
-    from gateway.run import _resolve_gateway_model
-    from gateway.session_policy import profile_config
+    from hermes_agent.gateway.run import _resolve_gateway_model
+    from hermes_agent.gateway.session_policy import profile_config
     profile = profile_config(authority)
     block = profile.get('model')
     if not block:
@@ -199,7 +199,7 @@ def _provider_resolution_config(authority, config, bypass=False):
     profile (``ignore_user_config``, implied by safe mode) resolves only its own frozen config.
     ``${VAR}`` refs expand against the profile's CURRENT ``.env``, not the daemon's start env."""
     from pathlib import Path
-    from gateway.session_local import load_profile_config
+    from hermes_agent.gateway.session_local import load_profile_config
     if bypass:
         return config
     current = load_profile_config(Path(authority.db.db_path).resolve().parent)
@@ -252,7 +252,7 @@ def _freeze_selected_provider(config, frozen, provider):
     recovery re-reads); an equivalent earlier spelling is blanked, never left to win.
     """
     from copy import deepcopy
-    from gateway.session_policy import _extract_config_secrets
+    from hermes_agent.gateway.session_policy import _extract_config_secrets
     from hermes_cli.runtime_provider_custom import named_custom_provider_config_path
     path = named_custom_provider_config_path(provider, config)
     if path is None:
@@ -302,7 +302,7 @@ def _alias_credential(authority, result):
     process-global alias cache another served profile may refill after the switch. A raw
     ``api_key: "${VAR}"`` is the pointer ``VAR``; ``(None, None, None)`` when it declares none."""
     from pathlib import Path
-    from gateway.run import _load_gateway_config
+    from hermes_agent.gateway.run import _load_gateway_config
     from hermes_cli.config import _env_ref_var_name, read_user_config_raw
     name = result.resolved_via_alias if result.success else ''
     path = Path(authority.db.db_path).resolve().parent / 'config.yaml'

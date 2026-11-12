@@ -342,7 +342,7 @@ class SessionCompressionMixin:
         # so those stay NULL. Compression sets ``_session_db_created`` and does not
         # create the child again. The turn's ``update_token_counts(source=...)`` fills
         # that NULL; auxiliary usage must not write ``unknown`` into it first.
-        from gateway.session_policy import created_surface
+        from hermes_agent.gateway.session_policy import created_surface
         created_source = created_surface(parent["created_source"]) or created_surface(source)
         # The child continues the parent's tools[] pin (the compaction refresh re-pinned it just
         # before publish), or its first hop to another surface re-derives the array.

@@ -3,7 +3,7 @@ import json
 import os
 
 from agent import kanban_turn_recovery as rec
-from gateway import session_kanban
+from hermes_agent.gateway import session_kanban
 from hermes_cli import kanban_db as kb
 from hermes_cli.kanban_db_connect import connect_closing
 

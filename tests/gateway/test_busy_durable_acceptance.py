@@ -5,14 +5,14 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent, SessionSource
-from gateway.session_ingress import admit_message, dispatch_shared_busy
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent, SessionSource
+from hermes_agent.gateway.session_ingress import admit_message, dispatch_shared_busy
 
 
 @pytest.mark.asyncio
 async def test_busy_receive_returns_after_acceptance_but_delivers_once_after_completion(monkeypatch):
-    import gateway.session_ingress as ingress
+    import hermes_agent.gateway.session_ingress as ingress
     accepted = asyncio.Event()
     release = asyncio.Event()
 

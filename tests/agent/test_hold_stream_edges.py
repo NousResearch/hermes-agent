@@ -102,7 +102,7 @@ def _assistant_commentary(request: dict) -> list:
 
 
 def test_held_commentary_stays_out_of_history_but_in_the_model_context():
-    from gateway.session_controls import display_projection
+    from hermes_agent.gateway.session_controls import display_projection
     from hermes_cli import plugins
     from hermes_agent.hermes_state import SessionDB
 
@@ -138,7 +138,7 @@ def test_held_commentary_stays_out_of_history_but_in_the_model_context():
 
 def test_codex_reply_that_failed_after_its_text_is_still_rewritten(monkeypatch):
     from agent.transports.codex_app_server_session import CodexAppServerSession, TurnResult
-    from gateway.session_controls import display_projection
+    from hermes_agent.gateway.session_controls import display_projection
     from hermes_cli import plugins
     from tests.agent.test_codex_app_server_integration import _make_codex_agent
 

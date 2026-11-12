@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Optional
 if TYPE_CHECKING:
     from aiohttp import web
 
-from gateway.platforms.shared_ingress import is_wildcard_host
+from hermes_agent.gateway.platforms.shared_ingress import is_wildcard_host
 
 logger = logging.getLogger(__name__)
 

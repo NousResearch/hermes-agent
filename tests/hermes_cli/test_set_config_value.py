@@ -89,7 +89,7 @@ class TestGatewayPlatformsPrefixRedirect:
         loaded = yaml.safe_load(_read_config(_isolated_hermes_home))
         assert loaded["platforms"]["telegram"]["enabled"] is True
         assert "gateway" not in loaded
-        from gateway.config import Platform, load_gateway_config
+        from hermes_agent.gateway.config import Platform, load_gateway_config
         assert load_gateway_config().platforms[Platform.TELEGRAM].enabled is True
 
     def test_nested_display_setting_still_reaches_display_platforms(self):
@@ -252,7 +252,7 @@ class TestConfigGetPhantomKeyNotice:
         self, _isolated_hermes_home, capsys
     ):
         # The check is a DEFAULT_CONFIG walk; ``gateway.proxy_url`` is deliberately unseeded
-        # yet read by gateway/run_turn.py, so the notice must not claim it is never read.
+        # yet read by hermes_agent/gateway/run_turn.py, so the notice must not claim it is never read.
         (_isolated_hermes_home / "config.yaml").write_text("gateway:\n  proxy_url: http://127.0.0.1:1\n")
 
         config_command(argparse.Namespace(config_command="get", key="gateway.proxy_url", json=False))
@@ -497,7 +497,7 @@ class TestSchemaValidation:
         assert f"Did you mean: {suggestion}" in err
 
     @pytest.mark.parametrize("key,value,expected,suggestion", [
-        # ``gateway.proxy_url`` is read at runtime (gateway/run_turn.py) but has no seeded
+        # ``gateway.proxy_url`` is read at runtime (hermes_agent/gateway/run_turn.py) but has no seeded
         # default, so the schema walk must not refuse it.
         ("gateway.proxy_url", "http://127.0.0.1:1", "http://127.0.0.1:1", None),
         # TRADE-OFF made explicit: a same-section typo (``agent.max_turnz``) is indistinguishable
@@ -505,7 +505,7 @@ class TestSchemaValidation:
         # (``agent.max_turns``) instead of a refusal.
         ("agent.max_turnz", "50", 50, "agent.max_turns"),
         # ``filter_silence_narration`` is an _EXTRA_KNOWN_ROOT_KEYS top-level form of a nested
-        # gateway setting (gateway/config_loader.py bridge). Its presence in the known roots
+        # gateway setting (hermes_agent/gateway/config_loader.py bridge). Its presence in the known roots
         # must not turn the nested path into a wrong-prefix refusal.
         ("gateway.filter_silence_narration", "false", False, None),
     ])

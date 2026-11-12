@@ -6,12 +6,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gateway.session import SessionSource, build_session_key
-from gateway.run import GatewayRunner
-from gateway.profile_routing import ProfileRoute, ProfileRouteRejected
-from gateway.config import GatewayConfig, Platform
-from gateway.platforms.base import BasePlatformAdapter
-from gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionSource, build_session_key
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.profile_routing import ProfileRoute, ProfileRouteRejected
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.platforms.event import MessageEvent
 
 
 @pytest.fixture
@@ -195,7 +195,7 @@ class TestNonDiscordProfileRouting:
             "hermes_cli.profiles.profiles_to_serve",
             return_value=[("default", Path("/profiles/default")),
                           ("worker", Path("/profiles/worker"))],
-        ), caplog.at_level(logging.WARNING, logger="gateway.run"):
+        ), caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.run"):
             with pytest.raises(ProfileRouteRejected):
                 mock_runner._profile_name_for_source(telegram_source)
 
@@ -231,7 +231,7 @@ class TestGatewayRunnerInjection:
         lifecycle path (startup, reconnect, secondary profiles) goes through
         it, so this is the single seam that makes profile_routes reachable
         for built-ins like Signal (#68332 / #70831)."""
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         runner = object.__new__(GatewayRunner)
         adapter = MagicMock(spec=BasePlatformAdapter)
@@ -246,7 +246,7 @@ class TestGatewayRunnerInjection:
         """A factory-built Signal adapter (bundled plugin, via the registry) resolves
         profile_routes for a real inbound envelope — the original bug was a bare
         ``SignalAdapter(config)`` with no runner."""
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from hermes_cli.plugins import discover_plugins
 
         discover_plugins()  # the gateway does this at startup; Signal is a plugin platform now
@@ -399,7 +399,7 @@ class TestAdapterToSessionKeyIntegration:
         mock_runner.config.profile_routes = [
             ProfileRoute(name="r", platform="discord", profile="routed", chat_id="c")
         ]
-        with patch("gateway.profile_routing.match_profile_route", side_effect=RuntimeError("boom")):
+        with patch("hermes_agent.gateway.profile_routing.match_profile_route", side_effect=RuntimeError("boom")):
             with pytest.raises(ProfileRouteRejected):
                 mock_runner._profile_name_for_source(
                     SessionSource(platform=Platform.DISCORD, chat_id="c")

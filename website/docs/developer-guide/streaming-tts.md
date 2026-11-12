@@ -24,7 +24,7 @@ The streaming pipeline has four parts:
    into raw PCM chunks (int16 mono at the provider's declared `sample_rate`)
 4. **Audio sink** — `sounddevice.OutputStream` for local playback
    (`tools.tts_tool_speaker.stream_tts_to_speaker`), or a gateway platform adapter's
-   `write_streaming_tts` seam (`gateway/streaming_tts_consumer.py`)
+   `write_streaming_tts` seam (`hermes_agent/gateway/streaming_tts_consumer.py`)
 
 Providers with no chunked API still get per-*sentence* playback via the proven
 sync `text_to_speech_tool` path, so edge (the default) is conversational too.
@@ -104,7 +104,7 @@ path serializes `synthesize()`; this path does not).
 
 ## Gateway streaming (platform adapters)
 
-`gateway/streaming_tts_consumer.py` bridges agent deltas to an adapter's
+`hermes_agent/gateway/streaming_tts_consumer.py` bridges agent deltas to an adapter's
 streaming-audio seam. Adapters opt in by overriding, on
 `BasePlatformAdapter`:
 

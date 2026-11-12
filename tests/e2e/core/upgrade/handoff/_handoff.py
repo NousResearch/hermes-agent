@@ -308,7 +308,7 @@ def reply_text(body) -> str:
 def identify(home: Path) -> dict | None:
     """The live gateway's own answer to the control-socket ``identify`` verb: its pid (as the
     sandbox sees it) and the code identity it booted with (per-process, not re-read from disk)."""
-    from gateway.control_socket import identify_gateway
+    from hermes_agent.gateway.control_socket import identify_gateway
 
     return identify_gateway(home, timeout=5.0)
 
@@ -468,7 +468,7 @@ def settle_gateway(inst: Install, old_pid: int, *, timeout: float = 180) -> dict
 
 
 # Which open issue explains a missing relaunch, per column (fix PRs delete their entry). ``n1``: the
-# restart watcher runs on the bare store Python and dies importing gateway.status.
+# restart watcher runs on the bare store Python and dies importing hermes_agent.gateway.status.
 RELAUNCH_GATES = {
     "n1": (r"relaunch armed but never started: no new gateway process booted",
            "gated on #124649: the update restart watcher dies before relaunching a manual gateway"),

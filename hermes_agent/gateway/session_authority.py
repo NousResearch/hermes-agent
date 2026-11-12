@@ -14,13 +14,13 @@ import sqlite3
 from types import SimpleNamespace
 import uuid
 
-from gateway.session_contract import (
+from hermes_agent.gateway.session_contract import (
     CANONICAL_GATEWAY_PROTOCOL, AdmissionReceipt, PendingAdmission, SessionActor, SessionHandle, SessionRef, Submission,
     SubscriptionSnapshot,
 )
-from gateway.session_events import SessionEvents
-from gateway.session_pending_controls import PendingControls
-from gateway.session_producer_lifecycle import drop_producer_turn, mark_producer_admission
+from hermes_agent.gateway.session_events import SessionEvents
+from hermes_agent.gateway.session_pending_controls import PendingControls
+from hermes_agent.gateway.session_producer_lifecycle import drop_producer_turn, mark_producer_admission
 from hermes_cli.observability.shared_metrics_busy import busy_row_settled
 from hermes_agent.hermes_state_runtime import (
     STEERING, RuntimeStoreError, admit_session_input, begin_runtime_epoch,
@@ -74,20 +74,20 @@ class LiveSession:
     # A viewer attached while a guarded deferred pick awaits consent: the next boundary asks again.
     reask_pick: bool = False
     # (principal, effort) of a ``/reasoning`` command that arrived while a turn ran: applied in memory at
-    # once, committed to the policy at the next boundary (gateway/session_setting_commands.py).
+    # once, committed to the policy at the next boundary (hermes_agent/gateway/session_setting_commands.py).
     pending_reasoning: tuple | None = None
-    # The background-review guard of a cold ``/refine`` (gateway/session_refine.py): its side agent is
+    # The background-review guard of a cold ``/refine`` (hermes_agent/gateway/session_refine.py): its side agent is
     # per call, so the run token lives here; a second /refine joins it and the next turn cancels it.
     review: SimpleNamespace = field(default_factory=SimpleNamespace)
-    # Revision of the last ``session.control.update`` (gateway/session_control_actions.publish): a tool
+    # Revision of the last ``session.control.update`` (hermes_agent/gateway/session_control_actions.publish): a tool
     # completion republishes only when a tool actually moved the goal/loop/heartbeat state.
     control_revision: str = ""
     # Tickets ordering control publishes whose snapshot is read off the loop: the last one scheduled
-    # wins, so a slow read cannot land over a newer state (gateway/session_control_actions.publish).
+    # wins, so a slow read cannot land over a newer state (hermes_agent/gateway/session_control_actions.publish).
     control_seq: int = 0
     control_published_seq: int = 0
     # ``(execution stamp,)`` the last viewer close completed at: a drain alive then retires the closed
-    # conversation at its idle exit unless a turn claimed since (gateway/session_retirement.py).
+    # conversation at its idle exit unless a turn claimed since (hermes_agent/gateway/session_retirement.py).
     closed_stamp: tuple | None = None
     # A conversation retirement let go that an RPC brought back: its re-retirement check
     # (``session_retirement.touch_restored``), pushed back by each authorize.
@@ -101,8 +101,8 @@ class LiveSession:
     @property
     def detached(self):
         """A messaging conversation its chat moved past (``name_lane``): its turns and Stop act on
-        it alone, on its own key, and reach its app viewers only (gateway/session_detached.py)."""
-        from gateway.session_detached import detached_route_of
+        it alone, on its own key, and reach its app viewers only (hermes_agent/gateway/session_detached.py)."""
+        from hermes_agent.gateway.session_detached import detached_route_of
         return detached_route_of(self.source) is not None
 
 
@@ -157,7 +157,7 @@ class SessionAuthority:
         # adopt_agent hands it to that agent (never a later generation's), the drain drops the rest.
         self.pending_steers = {}
         # session -> (generation, {admission_id: delivered}): queued admissions prompt.steer_queued handed
-        # to that running claim (gateway/session_queued_controls.py); its settlement decides each one.
+        # to that running claim (hermes_agent/gateway/session_queued_controls.py); its settlement decides each one.
         self.steer_transfers = {}
         self.launch_sources = {}  # session -> its frozen launch source (session_queued_controls)
         # Closed local conversations ``session_retirement`` let go (a restored one may linger here until
@@ -183,7 +183,7 @@ class SessionAuthority:
         self._classic_evict_at = {}  # route -> last leaked/reaped-slot eviction check (monotonic)
         self.executing = {}  # session id -> generation whose execution is in progress (publish fence)
         # session id -> end_reason of a last-viewer close still waiting for an idle FIFO
-        # (gateway/session_viewer_close); a viewer attaching again cancels it.
+        # (hermes_agent/gateway/session_viewer_close); a viewer attaching again cancels it.
         self.pending_closes = {}
         self.orphan_closes = {}  # session id -> grace timer of a session left with no viewer, never closed
         # Logical owner rotated away by the exhaustion auto-reset -> its session key: an admission
@@ -203,7 +203,7 @@ class SessionAuthority:
         """Every handler calls this first, so a later ``self.sessions[ref.session_id]`` is
         safe: a deleted/evicted live entry surfaces here as ``not_found``, not as a KeyError
         deeper in the handler."""
-        from gateway.session_authorities import require_serving
+        from hermes_agent.gateway.session_authorities import require_serving
         require_serving(self)
         if actor.profile_id != self.profile_id or ref.profile_id != self.profile_id:
             raise RuntimeStoreError('profile_mismatch')
@@ -219,25 +219,25 @@ class SessionAuthority:
                 local = conn.execute('SELECT 1 FROM state_meta WHERE key IN (?,?)',
                     (POLICY_PREFIX + ref.session_id, LEGACY_PREFIX + ref.session_id)).fetchone()
             if local or str(row.get('chat_id') or '').startswith('local-'):
-                from gateway.session_local_recovery import restore_local_session
+                from hermes_agent.gateway.session_local_recovery import restore_local_session
                 restore_local_session(self, ref.session_id)
             else:
-                from gateway.session_route_recovery import restore_routed_session
-                from gateway.session_history_mount import mount_history
+                from hermes_agent.gateway.session_route_recovery import restore_routed_session
+                from hermes_agent.gateway.session_history_mount import mount_history
                 if (restore_routed_session(self, ref.session_id) is None
                         and not mount_history(self, actor, ref.session_id)):
-                    from gateway.session_api import restore_api_session
+                    from hermes_agent.gateway.session_api import restore_api_session
                     restore_api_session(self, ref.session_id)
-        from gateway.session_history_mount import is_history_mount, require_history_access
+        from hermes_agent.gateway.session_history_mount import is_history_mount, require_history_access
         if is_history_mount(self.sessions[ref.session_id]):
             require_history_access(self, actor, ref.session_id, capability)
-        from gateway.config import Platform
+        from hermes_agent.gateway.config import Platform
         source = self.sessions[ref.session_id].source
-        from gateway.owner_identity import same_owner
+        from hermes_agent.gateway.owner_identity import same_owner
         if (source is not None and source.platform == Platform.LOCAL
                 and not same_owner(source.user_id, actor.subject) and 'session:operator' not in actor.capabilities):
             raise RuntimeStoreError('permission_denied')
-        from gateway.session_retirement import touch_restored
+        from hermes_agent.gateway.session_retirement import touch_restored
         touch_restored(self, ref.session_id)  # a rename or a read brought a retired one back
 
     def _require_admission_open(self, *, queue_only=False):
@@ -247,7 +247,7 @@ class SessionAuthority:
         if self.retiring:
             raise RuntimeStoreError('runtime_draining')
         if self.runner._draining:
-            from gateway.drain_control import restart_wait_open
+            from hermes_agent.gateway.drain_control import restart_wait_open
             if not (queue_only and restart_wait_open(self.runner)):
                 raise RuntimeStoreError('runtime_draining')
 
@@ -297,11 +297,11 @@ class SessionAuthority:
         """The messaging chat on *route* (*source*) now names conversation *sid* (its next inbound,
         ``/new``, ``/resume``, ``/branch``, ``/handoff``). Every other live session on the route (a
         view kept open, a cold mount, a local chat handed off earlier) detaches onto its own key: its
-        app viewers keep using it, and nothing of it reaches the chat (gateway/session_detached.py).
+        app viewers keep using it, and nothing of it reaches the chat (hermes_agent/gateway/session_detached.py).
         *sid*'s own mount moves onto the route: a detached one comes back, a local one ``/handoff``
         took over or one another chat held (a cross-chat ``/resume``) follows it, so its open viewers'
         turns and Stops reach the chat that holds it now (#143286)."""
-        from gateway.session_detached import detach, forget_detached
+        from hermes_agent.gateway.session_detached import detach, forget_detached
         for other_sid, other in self.sessions.items():
             if other.route == route and other_sid != sid:
                 detach(self, other, other_sid)
@@ -312,7 +312,7 @@ class SessionAuthority:
                 forget_detached(self, left)
 
     def agent(self, ref):
-        from gateway.session_detached import running_key
+        from hermes_agent.gateway.session_detached import running_key
         live = self.sessions[ref.session_id]
         lookup = getattr(self.runner, '_resident_agent_for', None) or self.runner._cached_agent_for
         return lookup(running_key(self.runner, live.route, ref.session_id))
@@ -361,24 +361,24 @@ class SessionAuthority:
         skipped; for a viewer that pages the transcript itself (Desktop over REST).
         *replay_from*: ``(epoch, sequence)`` this connection's reconnect replay answered (SessionEvents.catch_up)."""
         self.authorize(actor, ref, 'session:read')
-        from gateway.session_local_recovery import local_history, prepare_history, transcript_target
+        from hermes_agent.gateway.session_local_recovery import local_history, prepare_history, transcript_target
         # The lineage read stays off the loop and the lock; without history the target is resolved under it.
         prepared = await prepare_history(self, ref) if history else None
-        from gateway.session_onboarding import keep_from_discard
+        from hermes_agent.gateway.session_onboarding import keep_from_discard
         # The last await before the viewer joins: a fresh launch's claim is taken back with no yield
         # before the join, and a delete already past it answers not_found below.
         await keep_from_discard(self, ref.session_id)
         # A delete or eviction can land during those awaits: re-check, so it answers not_found, never a KeyError.
         self.authorize(actor, ref, 'session:read')
         live = self.sessions[ref.session_id]
-        from gateway.session_queued_controls import pending_rows
+        from hermes_agent.gateway.session_queued_controls import pending_rows
         with live.event_stream.lock:
             handle = self._handle(ref)  # before the viewer joins: a delete committed meanwhile is not_found
             subscription = next((key for key, member in live.subscribers.items()
                                  if member == actor), None) or uuid.uuid4().hex
             live.subscribers[subscription] = actor
             self.pending_closes.pop(ref.session_id, None)
-            from gateway.session_viewer_close import cancel_orphan_close
+            from hermes_agent.gateway.session_viewer_close import cancel_orphan_close
             cancel_orphan_close(self, ref.session_id)
             from tools.async_delegation import allow_for_session
             allow_for_session((self.profile_id, ref.session_id))  # a closed session's work may start again
@@ -398,9 +398,9 @@ class SessionAuthority:
             snapshot = SubscriptionSnapshot(subscription, handle, epoch, sequence, history,
                                         tuple(self._pending_receipt(r) for r in pending_rows(self, ref)), prompts,
                                         transcript_target=target)
-        from gateway.session_viewer_close import cancel_persisted_close
+        from hermes_agent.gateway.session_viewer_close import cancel_persisted_close
         await asyncio.to_thread(cancel_persisted_close, self, ref.session_id)  # the viewer cancels it
-        from gateway.session_deferred_pick import reask_on_attach
+        from hermes_agent.gateway.session_deferred_pick import reask_on_attach
         await reask_on_attach(self, ref, live)
         return snapshot
 
@@ -422,23 +422,23 @@ class SessionAuthority:
                 if transport is not None:
                     live.event_stream.fanout.detach(transport)
                 if not live.subscribers:
-                    from gateway.session_local_mcp import release_editor_mcp
+                    from hermes_agent.gateway.session_local_mcp import release_editor_mcp
                     live.detaching += 1  # unwatched off the loop, its close not yet pending: not retirable
                     try:
                         await asyncio.to_thread(release_editor_mcp, self, [session_id])
                     finally:
                         live.detaching -= 1
                     if end_reason:
-                        from gateway.session_viewer_close import close_viewer_session
+                        from hermes_agent.gateway.session_viewer_close import close_viewer_session
                         await close_viewer_session(self, session_id, end_reason)
                         return
-                    from gateway.session_acp_lifecycle import end_idle_acp_session, reopen_if_reattached
-                    from gateway.session_runtime_workers import tracked_write
+                    from hermes_agent.gateway.session_acp_lifecycle import end_idle_acp_session, reopen_if_reattached
+                    from hermes_agent.gateway.session_runtime_workers import tracked_write
                     # A viewer that attached while the close was off the loop reopens it.
                     await tracked_write(self, partial(end_idle_acp_session, self, session_id),
                                         then=partial(reopen_if_reattached, self, session_id))
                     if orphaned:  # a plain session.detach is a live client handing the session back
-                        from gateway.session_viewer_close import arm_detached_orphan_close
+                        from hermes_agent.gateway.session_viewer_close import arm_detached_orphan_close
                         await arm_detached_orphan_close(self, session_id)
                 return
         raise RuntimeStoreError('not_found')
@@ -457,15 +457,15 @@ class SessionAuthority:
         text = payload.get('text')
         if text is None:
             text = payload.get('native_text_v1', {}).get('event', {}).get('text', '')
-        from gateway.session_queued_controls import queued_controls
+        from hermes_agent.gateway.session_queued_controls import queued_controls
         return PendingAdmission(**vars(self._receipt(row)), input_id=row['request_id'], text=text,
                                 controls=queued_controls(self, row), steering=row['outcome'] == STEERING)
 
     def _publish_pending(self, ref):
-        from gateway.session_retirement import restore_retired
+        from hermes_agent.gateway.session_retirement import restore_retired
         restore_retired(self, ref.session_id)  # input committed after its conversation retired
         live = self.sessions[ref.session_id]
-        from gateway.session_queued_controls import pending_rows
+        from hermes_agent.gateway.session_queued_controls import pending_rows
         with live.event_stream.lock:
             handle = self._handle(ref)
             pending = [asdict(self._pending_receipt(row)) for row in pending_rows(self, ref)]
@@ -479,18 +479,18 @@ class SessionAuthority:
                 'execution_generation': handle.execution_generation,
                 'revision': handle.revision,
             }, event_type='session.info')
-        from gateway.session_bot_mailbox import wake_bot_receipts
+        from hermes_agent.gateway.session_bot_mailbox import wake_bot_receipts
         wake_bot_receipts(self, ref.session_id)
 
     def _schedule(self, ref):
-        from gateway.session_retirement import restore_retired
+        from hermes_agent.gateway.session_retirement import restore_retired
         restore_retired(self, ref.session_id)
         live = self.sessions[ref.session_id]
         live.rescan = True
         if live.task is None or live.task.done():
             live.task = asyncio.create_task(self._drain(ref))
             live.task.add_done_callback(_log_drain_failure)
-            from gateway.session_runtime_workers import persist_work_count
+            from hermes_agent.gateway.session_runtime_workers import persist_work_count
             live.task.add_done_callback(lambda task: persist_work_count(self, task))
 
     def wake_after_worker(self, session_id):
@@ -518,12 +518,12 @@ class SessionAuthority:
                 waiter.set_exception(RuntimeStoreError(reason))
 
     async def admit_automation(self, adapter, event, identity, replaces=None, fold=None):
-        from gateway.session_automation import admit_automation
+        from hermes_agent.gateway.session_automation import admit_automation
         return await admit_automation(self, adapter, event, identity, replaces, fold)
 
     async def admit_native(self, event):
         """Await current connector policy, then commit before ACK or scheduling execution."""
-        from gateway.session_ingress_media import abandon_capture, capture_lease
+        from hermes_agent.gateway.session_ingress_media import abandon_capture, capture_lease
         async with self._route_turn(event) as fence:
             with capture_lease(self) as scope:  # captured bytes are held until commit or refusal
                 try:
@@ -577,14 +577,14 @@ class SessionAuthority:
 
     async def _admit_native(self, event, fence=None):
         import json
-        from gateway.session_envelope import prepare_native, restore_native_source
+        from hermes_agent.gateway.session_envelope import prepare_native, restore_native_source
         self._require_admission_open()
         payload = await prepare_native(self.runner, event)
         if fingerprint := getattr(event, '_ingress_sha256', None):
             payload['native_text_v1']['ingress_sha256'] = fingerprint  # the delivery before a rewrite
         self._require_admission_open()
         source = restore_native_source(payload)  # no re-hash of the just-captured media on the loop
-        from gateway.session_runtime_workers import tracked_write
+        from hermes_agent.gateway.session_runtime_workers import tracked_write
         ref = self._publish_route(source, *await tracked_write(self, partial(self._reserve_route, source)))
         identity = json.dumps([source.profile, source.platform.value, source.chat_id,
                                source.thread_id, source.user_id], separators=(',', ':'))
@@ -593,7 +593,7 @@ class SessionAuthority:
             request_id += ':edit:' + revision  # an edit is its own input, not a changed replay of the send
         committed = [ref]  # the row's target: the write may retarget a rotated-away reservation
         # A /retry re-send carries its transcript rewrite: it commits in this admission's own write.
-        from gateway import session_retry_admission
+        from hermes_agent.gateway import session_retry_admission
         rewrite = session_retry_admission.take(event, self.db)
 
         def admitted(row):
@@ -601,7 +601,7 @@ class SessionAuthority:
             if rewrite is not None and rewrite.applied:
                 rewrite.on_commit()
             return self._admitted(committed[0], event, row)
-        from gateway.session_ingress_media import _lease_scope
+        from hermes_agent.gateway.session_ingress_media import _lease_scope
         if (scope := _lease_scope.get()) is not None:
             scope.write_started = True
         native_write_started.set(True)  # shielded from here: a cancelled caller may still commit
@@ -615,7 +615,7 @@ class SessionAuthority:
     def _admit_native_write(self, *, principal_id, session_id, request_id, payload, authorize, raw=None):
         # Off the loop and in admission order: the redelivery reconcile reads the ledger it decides
         # against, so a concurrent first delivery of the same message cannot slip between them.
-        from gateway.session_ingress_media import drop_capture_lease, reconcile_native_retry, release_unheld_media
+        from hermes_agent.gateway.session_ingress_media import drop_capture_lease, reconcile_native_retry, release_unheld_media
         fresh = payload.get('native_text_v1', {}).get('media', [])
         session_id = self._current_owner(session_id)
         try:
@@ -655,7 +655,7 @@ class SessionAuthority:
     async def recover_native_sessions(self, bindings):
         """Bind only server-observed native routes; unknown work stays paused."""
         from collections import Counter
-        from gateway.session_envelope import check_native_route
+        from hermes_agent.gateway.session_envelope import check_native_route
         bindings = list(bindings)
         counts = Counter(sid for sid, _, _ in bindings)
         results = {}
@@ -676,11 +676,11 @@ class SessionAuthority:
                     if 'native_text_v1' in row['payload']:
                         await check_native_route(self.runner, row['payload'], target, available_source, adapter)
                     elif 'local_automation_v1' in row['payload']:
-                        from gateway.session_automation import check_local_automation
+                        from hermes_agent.gateway.session_automation import check_local_automation
                         check_local_automation(
                             self, SessionRef(self.profile_id, sid), row, route=route)
                     else:
-                        from gateway.session_operator import check_local_input
+                        from hermes_agent.gateway.session_operator import check_local_input
                         check_local_input(
                             self, SessionRef(self.profile_id, sid), row, source=source)
                 self._require_admission_open()
@@ -707,7 +707,7 @@ class SessionAuthority:
         async with self.sessions[request.ref.session_id].mutation_lock:
             # Deletion can retire this session while the caller waits on its writer.
             self.authorize(actor, request.ref, 'session:submit')
-            from gateway.session_ingress_media import capture_lease
+            from hermes_agent.gateway.session_ingress_media import capture_lease
             with capture_lease():  # captured bytes are held from capture until commit or refusal
                 return await self._submit(actor, request, _authorize_write=_authorize_write,
                                           queue_only=queue_while_restarting is True, _replay_guard=_replay_guard,
@@ -721,11 +721,11 @@ class SessionAuthority:
                 'voice_turn', 'display_kind', 'title_preview', 'turn_author', 'api_text', 'model_override', 'clarify_batch'}
                 or not isinstance(request.payload['text'], str)):
             raise RuntimeStoreError('invalid_params')
-        from gateway.session_ingress_media import admit_attachments
-        from gateway.session_finite import admit_finite
-        from gateway.session_surface import admit_surface
-        from gateway.session_display import admit_display
-        from gateway.session_cli_turn import admit_cli_turn
+        from hermes_agent.gateway.session_ingress_media import admit_attachments
+        from hermes_agent.gateway.session_finite import admit_finite
+        from hermes_agent.gateway.session_surface import admit_surface
+        from hermes_agent.gateway.session_display import admit_display
+        from hermes_agent.gateway.session_cli_turn import admit_cli_turn
         finite = admit_finite(request.payload)
         def admitted():
             # The exact durable identity (authenticated principal + target + request id); the
@@ -739,7 +739,7 @@ class SessionAuthority:
         if _kanban_card is not None:
             payload['kanban_card_v1'] = _kanban_card
         source = self.sessions[request.ref.session_id].source
-        from gateway.owner_identity import same_owner
+        from hermes_agent.gateway.owner_identity import same_owner
         if source is not None and not same_owner(source.user_id, actor.subject):
             # Durable server authorization, not a client payload field. The original
             # principal remains the admission/retry identity across owner restarts.
@@ -757,7 +757,7 @@ class SessionAuthority:
             except Exception:
                 self._release_refused_capture(request, payload)
                 raise
-        from gateway.session_runtime_workers import tracked_write
+        from hermes_agent.gateway.session_runtime_workers import tracked_write
         return await tracked_write(self, admit, then=partial(self._admitted, request.ref, None), ordered=True,
                                    after=partial(self._schedule_admitted, request.ref))
 
@@ -769,7 +769,7 @@ class SessionAuthority:
         media = payload.get('attachments_v1', {}).get('media', [])
         if not media:
             return
-        from gateway.session_ingress_media import drop_capture_lease
+        from hermes_agent.gateway.session_ingress_media import drop_capture_lease
         drop_capture_lease()  # its own lease must not keep the refused bytes from collection
         from hermes_agent.hermes_state_media import collect_retired_media, retire_media
         try:
@@ -785,7 +785,7 @@ class SessionAuthority:
         row = get_session_admission(self.db, admission_id=admission_id)
         if row is None or row['target_session_id'] != ref.session_id:
             raise RuntimeStoreError('not_found')
-        from gateway.owner_identity import same_owner
+        from hermes_agent.gateway.owner_identity import same_owner
         if not same_owner(row['principal_id'], actor.subject) and 'session:control' not in actor.capabilities:
             raise RuntimeStoreError('permission_denied')
         live = self.sessions[ref.session_id]
@@ -797,13 +797,13 @@ class SessionAuthority:
 
     async def cancel_queued(self, actor, ref, admission_id):
         before = await self.receipt(actor, ref, admission_id)
-        from gateway.session_runtime_workers import track_mutation
+        from hermes_agent.gateway.session_runtime_workers import track_mutation
         # Write off the shared loop; commit and observer settlement are one tracked task the
         # caller cannot cancel between (an exact retry still pays a left-over obligation).
         row = await asyncio.shield(track_mutation(self, self._commit_cancel(ref, admission_id, before)))
         # Media collection is its own write txn after the committed, settled cancellation: its
         # failure surfaces to the caller, and an exact retry collects again without re-settling.
-        from gateway.session_ingress_media import release_admission_media
+        from hermes_agent.gateway.session_ingress_media import release_admission_media
         await asyncio.to_thread(release_admission_media, self.db, admission_id)
         return self._receipt(row)
 
@@ -880,20 +880,20 @@ class SessionAuthority:
 
     async def resolve_unknown_as_owner(self, ref, admission_id, generation, *, notice=None):
         """``resolve_unknown`` past authorization: also the owner's own call when the last viewer
-        closed a session whose turn recovered ``unknown`` (gateway/session_viewer_close), or when an
+        closed a session whose turn recovered ``unknown`` (hermes_agent/gateway/session_viewer_close), or when an
         unattended automation turn settles itself (``notice``: its transcript copy, GW-10)."""
         captured = self.pending_results.get(admission_id)
         before = get_session_admission(self.db, admission_id=admission_id)
         prepared = None
         if captured is not None and before is not None and before['status'] == 'unknown':
-            from gateway.session_results import prepare_result
+            from hermes_agent.gateway.session_results import prepare_result
             row = get_session_admission(self.db, admission_id=admission_id)
             prepared = prepare_result(row, captured['result'].get('final_response') or '', 'completed', captured)
         # The transcript boundary commits WITH the terminal transition: a follower can never be
         # claimed with the discarded text left open to be merged into its request. With a captured
         # result the answer is normally already the transcript tail, so the closer is a no-op.
-        from gateway.session_results import close_discarded_turn
-        from gateway.session_runtime_workers import tracked_write
+        from hermes_agent.gateway.session_results import close_discarded_turn
+        from hermes_agent.gateway.session_runtime_workers import tracked_write
         return await tracked_write(self, partial(
             resolve_unknown_session_input, self.db, epoch=self.epoch, admission_id=admission_id,
             generation=generation, _captured=prepared,
@@ -910,13 +910,13 @@ class SessionAuthority:
         # bring it back first, so the captured answer reaches its viewers.
         live = self.sessions.get(ref.session_id)
         if live is None:
-            from gateway.session_retirement import restore_retired
+            from hermes_agent.gateway.session_retirement import restore_retired
             restore_retired(self, ref.session_id)
             live = self.sessions.get(ref.session_id)
         drain_owns = live is not None and live.event_stream.execution.get('admission_id') == admission_id
         if not drain_owns:
-            from gateway.session_ingress import deliver_resolved
-            from gateway.session_settlement_recovery import _publish_completion, release_media_after_delivery
+            from hermes_agent.gateway.session_ingress import deliver_resolved
+            from hermes_agent.gateway.session_settlement_recovery import _publish_completion, release_media_after_delivery
             try:
                 if prepared is not None and row['owner_epoch'] == self.epoch:
                     live = self.sessions[ref.session_id]
@@ -927,7 +927,7 @@ class SessionAuthority:
             finally:
                 release_media_after_delivery(self, row)
         else:
-            from gateway.session_settlement_recovery import hand_collection_to_drain
+            from hermes_agent.gateway.session_settlement_recovery import hand_collection_to_drain
             hand_collection_to_drain(self, admission_id)
         self._publish_pending(ref)
         self._schedule(ref)
@@ -983,8 +983,8 @@ class SessionAuthority:
     def _runs_own_agent(self, ref):
         """The route's running slot holds a real agent (not the claim's pending sentinel), so the
         Stop above reached the turn's own agent, not a cached one it may still replace."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
-        from gateway.session_detached import running_key
+        from hermes_agent.gateway.run import _AGENT_PENDING_SENTINEL
+        from hermes_agent.gateway.session_detached import running_key
         live = self.sessions[ref.session_id]
         running = getattr(self.runner, '_running_agents', None) or {}
         agent = running.get(running_key(self.runner, live.route, ref.session_id))
@@ -999,7 +999,7 @@ class SessionAuthority:
         adopted_generation, agent = self.adopted.get(ref.session_id, (None, None))
         if adopted_generation != generation:
             agent = self.agent(ref) if self._runs_own_agent(ref) else None
-        from gateway.session_busy_controls import adopts_owner_agent
+        from hermes_agent.gateway.session_busy_controls import adopts_owner_agent
         if agent is not None or text is None or not adopts_owner_agent(self, ref):
             return agent, False
         latched, texts = self.pending_steers.get(ref.session_id, (None, []))
@@ -1047,7 +1047,7 @@ class SessionAuthority:
                 return False
             live.event_stream.note_progress(generation, event_type, payload)
             delivered = live.event_stream.publish(session_id, payload, event_type=event_type)
-            from gateway.session_api_turn import publish_api_event
+            from hermes_agent.gateway.session_api_turn import publish_api_event
             observed = publish_api_event(self, session_id, event_type, payload)
             return bool(delivered or observed)
 
@@ -1086,19 +1086,19 @@ class SessionAuthority:
             if any(row['status'] == 'unknown' for row in pending):
                 raise RuntimeStoreError('unknown_execution')
             first = next((row for row in pending if row['status'] == 'queued'), None)
-            from gateway.config import Platform
+            from hermes_agent.gateway.config import Platform
             if live.source.platform == Platform.LOCAL:
                 # A reasoning command or a model pick made while the previous turn ran lands here, at the
                 # turn boundary.
-                from gateway.session_deferred_pick import apply_deferred_pick
-                from gateway.session_setting_commands import apply_pending_reasoning
+                from hermes_agent.gateway.session_deferred_pick import apply_deferred_pick
+                from hermes_agent.gateway.session_setting_commands import apply_pending_reasoning
                 await apply_pending_reasoning(self, ref, live)
                 await apply_deferred_pick(self, ref, live)
             if first is not None and live.source.platform == Platform.LOCAL:
-                from gateway.session_local_recovery import restore_local_session
+                from hermes_agent.gateway.session_local_recovery import restore_local_session
                 restore_local_session(self, ref.session_id)
                 if first['request_id'].startswith('hosted:'):
-                    from gateway.session_hosted_transport import check_remote_hosted_admission
+                    from hermes_agent.gateway.session_hosted_transport import check_remote_hosted_admission
                     if not await asyncio.to_thread(check_remote_hosted_admission, self, ref, first):
                         service = getattr(self, 'hosted_room_service', None)
                         if service is None:
@@ -1110,25 +1110,25 @@ class SessionAuthority:
                     if current is None or current['status'] != 'queued':
                         return False, first
                 if 'local_automation_v1' in first['payload']:
-                    from gateway.session_automation import check_local_automation
+                    from hermes_agent.gateway.session_automation import check_local_automation
                     check_local_automation(self, ref, first)
                 else:
-                    from gateway.session_operator import check_local_input
+                    from hermes_agent.gateway.session_operator import check_local_input
                     check_local_input(self, ref, first)
                 # Editor MCP schema drift re-freezes here, at this admission's start (a turn boundary),
                 # once the head is authorized: a refused head spawns no server and commits no change.
-                from gateway.session_local_mcp import refreeze_editor_mcp
+                from hermes_agent.gateway.session_local_mcp import refreeze_editor_mcp
                 await refreeze_editor_mcp(self, ref, live)
                 # The first real turn reopens a finalized row (#85303): mounts are reads, and
                 # SessionStore would route a stamped row as stale onto a FRESH session. A write: off-loop,
                 # tracked so retirement and the shutdown close gate count it.
-                from gateway.session_local_recovery import reopen_local_session
-                from gateway.session_runtime_workers import tracked_write
-                from gateway.session_completion_notes import noted_completion
+                from hermes_agent.gateway.session_local_recovery import reopen_local_session
+                from hermes_agent.gateway.session_runtime_workers import tracked_write
+                from hermes_agent.gateway.session_completion_notes import noted_completion
                 if not noted_completion(first):  # a note leaves a closed row closed (session_completion_notes)
                     await tracked_write(self, partial(reopen_local_session, self, ref))
             if first is not None and 'native_text_v1' in first['payload']:
-                from gateway.session_envelope import check_native_route
+                from hermes_agent.gateway.session_envelope import check_native_route
                 await check_native_route(self.runner, first['payload'], self.physical_target(ref), live.source,
                                    self.runner._adapter_for_source(live.source))
                 # Cancellation may advance FIFO while the connector is awaited.
@@ -1137,15 +1137,15 @@ class SessionAuthority:
                 if current is None or current['status'] != 'queued':
                     return False, first
             if first is not None and live.source.platform == Platform.API_SERVER:
-                from gateway.session_api import reopen_api_session
-                from gateway.session_api_turn import check_api_turn
-                from gateway.session_runtime_workers import tracked_write
+                from hermes_agent.gateway.session_api import reopen_api_session
+                from hermes_agent.gateway.session_api_turn import check_api_turn
+                from hermes_agent.gateway.session_runtime_workers import tracked_write
                 check_api_turn(self, ref, first['payload'])
                 await tracked_write(self, partial(reopen_api_session, self, ref))
             elif first is not None and live.detached:
                 # The chat's /new ended its row; the app's turn makes it live again, as an API row's
                 # does. A note leaves it closed, as a local one's does (session_completion_notes).
-                from gateway.session_completion_notes import noted_completion, reopen_for_turn
+                from hermes_agent.gateway.session_completion_notes import noted_completion, reopen_for_turn
                 if not noted_completion(first):
                     await reopen_for_turn(self, ref)
             if first is not None and self._classic_turn_holds(live.route):
@@ -1154,7 +1154,7 @@ class SessionAuthority:
                 # waits queued, as main's pending slot did; /stop and /new still cancel it.
                 return 'classic_busy', first
             self._require_admission_open()
-            from gateway.session_runtime_workers import tracked_write
+            from hermes_agent.gateway.session_runtime_workers import tracked_write
             live.rescan = False  # a _schedule from here on may not be visible to this claim's read
             # The row these checks validated, never whichever is first when the write runs: a
             # cancellation commits from a worker thread and can advance the FIFO at any point.
@@ -1175,7 +1175,7 @@ class SessionAuthority:
                     'authority_epoch': self.epoch, 'execution_generation': row['generation'],
                     'admission_id': row['admission_id']}
                 self.executing[ref.session_id] = row['generation']
-                from gateway.session_automation import admission_display
+                from hermes_agent.gateway.session_automation import admission_display
                 live.event_stream.publish(ref.session_id, admission_display(row.get('payload') or {}),
                                           event_type='message.start')
                 self._publish_pending(ref)
@@ -1192,7 +1192,7 @@ class SessionAuthority:
     async def _refuse_head(self, ref, admission_id, reason):
         """Settle the queued head a preclaim check refused as cancelled: its waiters get *reason* (the
         ingress notice, the API's refusal) and its successors revalidate on their own merits."""
-        from gateway.session_runtime_workers import tracked_write
+        from hermes_agent.gateway.session_runtime_workers import tracked_write
         before = get_session_admission(self.db, admission_id=admission_id)
         if before is not None and before['status'] == 'queued':
             # Owed from before the write, as in _commit_cancel: storage failing after the commit leaves
@@ -1212,7 +1212,7 @@ class SessionAuthority:
             if waiter is not None and not waiter.done():
                 waiter.set_exception(RuntimeStoreError(reason))
             self._settle_cancelled(ref, admission_id)
-        from gateway.session_ingress_media import release_admission_media
+        from hermes_agent.gateway.session_ingress_media import release_admission_media
         await asyncio.to_thread(release_admission_media, self.db, admission_id)
         return True
 
@@ -1233,7 +1233,7 @@ class SessionAuthority:
                     if exc.reason == 'unknown_execution':
                         # An automation turn nobody is waiting on settles interrupted (GW-10); only a
                         # person's lost turn keeps the FIFO paused for them to resolve.
-                        from gateway.session_unattended_unknown import settle_unattended_unknown
+                        from hermes_agent.gateway.session_unattended_unknown import settle_unattended_unknown
                         if await settle_unattended_unknown(self, ref):
                             continue
                     if exc.reason == 'admission_conflict':
@@ -1279,10 +1279,10 @@ class SessionAuthority:
         """Run the claimed admission: ``(response, outcome)``. The executing stamp clears the moment
         execution returns; a lost managed worker settles an automation turn (``settled_unknown``) or pauses
         the FIFO and re-raises ManagedExecutionUnknown."""
-        from gateway.session_finite import execute_finite_admission
-        from gateway.session_managed_worker import ManagedExecutionUnknown
+        from hermes_agent.gateway.session_finite import execute_finite_admission
+        from hermes_agent.gateway.session_managed_worker import ManagedExecutionUnknown
         review = getattr(live.review, '_background_review_run', None)
-        from gateway.session_open import settled
+        from hermes_agent.gateway.session_open import settled
         try:
             try:
                 if review is not None and not review.request_done.is_set():
@@ -1305,7 +1305,7 @@ class SessionAuthority:
             self.adopted.pop(ref.session_id, None)
             # An automation turn nobody waits on settles here, at the exit that fenced it (GW-10),
             # so the followers already queued run in this drain; a person's turn still pauses.
-            from gateway.session_unattended_unknown import settle_unattended_unknown
+            from hermes_agent.gateway.session_unattended_unknown import settle_unattended_unknown
             if await settle_unattended_unknown(self, ref):
                 return None, 'settled_unknown'
             self._pause(ref, 'unknown_execution')
@@ -1316,7 +1316,7 @@ class SessionAuthority:
             return 'The admitted turn failed.', 'failed'
 
     async def _drain(self, ref):
-        from gateway.session_managed_worker import ManagedExecutionUnknown
+        from hermes_agent.gateway.session_managed_worker import ManagedExecutionUnknown
         live = self.sessions[ref.session_id]
         while True:
             claimed = await self._claim_with_retry(ref, live)
@@ -1333,18 +1333,18 @@ class SessionAuthority:
             # The FIFO is moving again (or empty): the next pause is a new episode.
             live.pause_notified = False
             if row is None:
-                from gateway.session_acp_lifecycle import end_idle_acp_session
+                from hermes_agent.gateway.session_acp_lifecycle import end_idle_acp_session
                 # A write (idle check + stamp in one txn): off-loop. Input scheduled meanwhile set
                 # ``rescan`` on this still-live drain, which must claim it rather than exit.
-                from gateway.session_runtime_workers import tracked_write
+                from hermes_agent.gateway.session_runtime_workers import tracked_write
                 await tracked_write(self, partial(end_idle_acp_session, self, ref.session_id))
                 if live.rescan:
                     continue
-                from gateway.session_viewer_close import settle_viewer_close
+                from hermes_agent.gateway.session_viewer_close import settle_viewer_close
                 await settle_viewer_close(self, ref.session_id)  # a close that arrived mid-turn
                 if live.rescan:
                     continue
-                from gateway.session_retirement import retire_at_idle
+                from hermes_agent.gateway.session_retirement import retire_at_idle
                 retire_at_idle(self, ref, live)
                 return
             admission_id = row['admission_id']
@@ -1358,13 +1358,13 @@ class SessionAuthority:
                 # replayed, so its deferred reset is dropped (the next turn re-detects the overflow),
                 # never left to fire after a later settled turn with a stale entry.
                 self.deferred_resets.pop(live.route, None)
-                from gateway.session_ingress import fire_post_delivery
+                from hermes_agent.gateway.session_ingress import fire_post_delivery
                 await fire_post_delivery(self, admission_id)  # cancelled mid-turn: as an adapter task's finally
                 if isinstance(exc, ManagedExecutionUnknown):
                     return
                 raise
-            from gateway.session_runtime_workers import track_mutation
-            from gateway.session_settlement_recovery import settle_and_deliver
+            from hermes_agent.gateway.session_runtime_workers import track_mutation
+            from hermes_agent.gateway.session_settlement_recovery import settle_and_deliver
             delivery = track_mutation(self, settle_and_deliver(self, live, ref, row, response, outcome))
             try:
                 advance = await asyncio.shield(delivery)
@@ -1463,22 +1463,22 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     # Hot-serve builds a profile while the loop serves the others: both writes stay off it.
     await asyncio.to_thread(recover_session_inputs, db, epoch=epoch)
     # A lost automation turn has nobody to resolve it: it settles interrupted before any FIFO runs.
-    from gateway.session_unattended_unknown import settle_recovered_unattended
+    from hermes_agent.gateway.session_unattended_unknown import settle_recovered_unattended
     await asyncio.to_thread(settle_recovered_unattended, db, epoch)
     await asyncio.to_thread(backfill_legacy_session_owners, db)
     await asyncio.to_thread(backfill_compression_created_sources, db)
-    from gateway.session_local_recovery import release_handed_off_receipts
+    from hermes_agent.gateway.session_local_recovery import release_handed_off_receipts
     await asyncio.to_thread(release_handed_off_receipts, db, epoch=epoch)
-    from gateway.session_bot import release_superseded_bot_chat_at_boot
+    from hermes_agent.gateway.session_bot import release_superseded_bot_chat_at_boot
     await asyncio.to_thread(release_superseded_bot_chat_at_boot, db, runner.session_store)
     authority = SessionAuthority(runner, profile_id=profile_id, instance_id=instance_id, db=db, epoch=epoch)
     # A receipt's compression catch-up (#140060) writes: it commits off the loop too, before the
     # authority is published, so the recovery below only reads.
-    from gateway.session_local_adoption import adopt_local_compressions
+    from hermes_agent.gateway.session_local_adoption import adopt_local_compressions
     await adopt_local_compressions(authority)
     if register:
         runner.session_authority = authority
-    from gateway.session_cron import bind_owner
+    from hermes_agent.gateway.session_cron import bind_owner
     bind_owner(authority)
     store = runner.session_store
     if register:
@@ -1488,8 +1488,8 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     if epochs is None:
         epochs = store._local_authority_epochs = {}
     epochs[db_key] = epoch
-    from gateway.session_detached import watch_routes
+    from hermes_agent.gateway.session_detached import watch_routes
     watch_routes(runner, store)
-    from gateway.session_local_recovery import recover_local_sessions
+    from hermes_agent.gateway.session_local_recovery import recover_local_sessions
     recover_local_sessions(authority)
     return authority

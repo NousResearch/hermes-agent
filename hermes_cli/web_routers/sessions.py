@@ -887,7 +887,7 @@ def _owner_db_for(request: Request, profile: Optional[str]):
     runner = getattr(request.app.state, "gateway_runner", None)
     if runner is None:
         return None
-    from gateway.session_authorities import authority_for_home
+    from hermes_agent.gateway.session_authorities import authority_for_home
     from hermes_agent.hermes_state import _default_db_path
     home = Path(_cron_profile_home(profile)[1]) if profile else Path(_default_db_path()).parent
     authority = authority_for_home(runner, home)

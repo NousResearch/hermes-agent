@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_authority import LiveSession, SessionAuthority
+from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
 from hermes_agent.hermes_state_runtime import (
     begin_runtime_epoch, claim_session_input, find_session_admission, list_session_admissions,
     recover_session_inputs,
@@ -32,7 +32,7 @@ class Turn:
     text raises after adoption, so its execution fails)."""
 
     def __init__(self, monkeypatch, fail=None):
-        from gateway import session_finite
+        from hermes_agent.gateway import session_finite
         self.agent, self.claimed, self.release, self.ran = Agent(), asyncio.Event(), asyncio.Event(), []
 
         async def execute(authority, ref, row):
@@ -53,7 +53,7 @@ def interactive(db, sid='s', source='gui'):
 
 
 def _connection(authority):
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     conn = AuthorityConnection(authority, object(), {'user_id': 'human'})
     conn.subscriptions['s'] = 'attached'  # prompt.replace_queued admits like prompt.submit
     return conn

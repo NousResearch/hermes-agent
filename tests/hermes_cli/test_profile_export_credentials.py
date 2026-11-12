@@ -38,7 +38,7 @@ _EXTRA_STORES = {
     "browser-profiles/live/Default/Cookies", "browser_profiles/default/Default/Login Data",
     "mcp-tokens/srv.json", "vault/vault.key", "platforms/pairing/approved.json", "slack_tokens.json",
     "webhook_subscriptions.json", ".ssh/id_rsa", ".aws/credentials", ".gnupg/x", ".kube/config", ".envrc",
-    "webapp/session-token",  # the Webapp browser's credential (gateway.webapp_listener.TOKEN_PATH)
+    "webapp/session-token",  # the Webapp browser's credential (hermes_agent.gateway.webapp_listener.TOKEN_PATH)
     "webapp/native-sign-in-tokens.json",  # its listener's grants to native apps (webapp_sign_in.RECORD_PATH)
     "webapp/sign-in-registration.json",  # the Portal callback its Web Access registered (webapp_access)
 }
@@ -303,7 +303,7 @@ def profile_env(tmp_path, monkeypatch):
 def test_clone_all_does_not_share_the_source_webapp_browser_credential(profile_env):
     """The Webapp's browser credential belongs to one gateway: a clone mints its own on first
     use, so signing one profile's browsers out never leaves them signed in to the other."""
-    from gateway.webapp_listener import TOKEN_PATH, browser_session_token
+    from hermes_agent.gateway.webapp_listener import TOKEN_PATH, browser_session_token
     from hermes_cli.profiles import create_profile
 
     default_home = profile_env / ".hermes"

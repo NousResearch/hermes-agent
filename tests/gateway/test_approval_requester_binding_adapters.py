@@ -12,7 +12,7 @@ import asyncio
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from tests.gateway.test_approval_requester_binding import DEFAULT, pending_from, write_approvers
 
 REFUSAL = "Only Alice can answer this approval."

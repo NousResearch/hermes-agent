@@ -39,10 +39,10 @@ def _rows(bot):
 
 @pytest.mark.asyncio
 async def test_an_old_pin_with_no_admission_is_withdrawn_and_the_resend_admits_once(bot, caplog):
-    from gateway.session_bot import deliver, recover_bot_deliveries
+    from hermes_agent.gateway.session_bot import deliver, recover_bot_deliveries
     path = _pin(bot)
     _age(path, HOUR)
-    with caplog.at_level(logging.DEBUG, logger='gateway.session_bot'):
+    with caplog.at_level(logging.DEBUG, logger='hermes_agent.gateway.session_bot'):
         await recover_bot_deliveries(bot.authority)
     assert not path.exists()
     assert not _scan_warnings(caplog, KEY)
@@ -57,9 +57,9 @@ async def test_an_old_pin_with_no_admission_is_withdrawn_and_the_resend_admits_o
 @pytest.mark.asyncio
 async def test_a_pin_inside_the_grace_window_is_left_alone(bot, caplog):
     """An ``_admit`` between its pin and its commit must never lose its pin."""
-    from gateway.session_bot import deliver, recover_bot_deliveries
+    from hermes_agent.gateway.session_bot import deliver, recover_bot_deliveries
     path = _pin(bot)
-    with caplog.at_level(logging.DEBUG, logger='gateway.session_bot'):
+    with caplog.at_level(logging.DEBUG, logger='hermes_agent.gateway.session_bot'):
         await recover_bot_deliveries(bot.authority)
     assert path.exists()
     with pytest.raises(RuntimeStoreError, match='unknown_execution'):
@@ -69,7 +69,7 @@ async def test_a_pin_inside_the_grace_window_is_left_alone(bot, caplog):
 
 @pytest.mark.asyncio
 async def test_an_old_pin_whose_admission_committed_stays_and_still_warns(bot, monkeypatch, caplog):
-    from gateway.session_bot import deliver, recover_bot_deliveries
+    from hermes_agent.gateway.session_bot import deliver, recover_bot_deliveries
     from tools.bot_live_delivery import read_delivery_result
     real = type(bot.authority).admit_automation
     async def committed_then_refused(self, *args):
@@ -81,7 +81,7 @@ async def test_an_old_pin_whose_admission_committed_stays_and_still_warns(bot, m
         await deliver(bot.connection, dict(id=KEY, profile='default', message='ping'))
     before = read_delivery_result(bot.home, KEY)
     _age(bot.home / 'runtime' / 'bot_live_delivery' / f'{KEY}.json', HOUR)
-    with caplog.at_level(logging.DEBUG, logger='gateway.session_bot'):
+    with caplog.at_level(logging.DEBUG, logger='hermes_agent.gateway.session_bot'):
         await recover_bot_deliveries(bot.authority)
     assert read_delivery_result(bot.home, KEY) == before
     assert before['status'] == 'ambiguous' and 'admission_id' not in before
@@ -108,7 +108,7 @@ async def test_a_legacy_migration_pin_left_by_a_transient_refusal_is_requeued_an
     """``_migrate`` keeps the pin on an owner-state refusal (``legacy=``), and that pin is the only
     copy of a never-run message: a later owner scan past the grace window restores the queued
     ticket (never deletes it), and ``_migrate`` admits it once, ahead of the ticket queued after it."""
-    from gateway.session_bot import recover_bot_deliveries
+    from hermes_agent.gateway.session_bot import recover_bot_deliveries
     from tools.bot_live_delivery import _locked, _read
     path = _legacy(bot, KEY, 1, 'never-run text')
     _legacy(bot, OTHER, 2, 'later')
@@ -121,7 +121,7 @@ async def test_a_legacy_migration_pin_left_by_a_transient_refusal_is_requeued_an
     refusing.clear()
     _age(path, HOUR)
     caplog.clear()
-    with caplog.at_level(logging.DEBUG, logger='gateway.session_bot'):
+    with caplog.at_level(logging.DEBUG, logger='hermes_agent.gateway.session_bot'):
         await recover_bot_deliveries(bot.authority)
     assert path.exists()
     assert not _scan_warnings(caplog, KEY)
@@ -138,10 +138,10 @@ async def test_a_legacy_migration_pin_left_by_a_transient_refusal_is_requeued_an
 @pytest.mark.asyncio
 async def test_a_scan_outside_the_owner_withdraws_nothing(bot, caplog):
     """The bare mailbox scan has no authority to ask for the admission row: it only reads."""
-    from gateway.session_bot_mailbox import scan_receipts
+    from hermes_agent.gateway.session_bot_mailbox import scan_receipts
     path = _pin(bot)
     _age(path, HOUR)
-    with caplog.at_level(logging.DEBUG, logger='gateway.session_bot'):
+    with caplog.at_level(logging.DEBUG, logger='hermes_agent.gateway.session_bot'):
         await scan_receipts(bot.home)
     assert path.exists()
     assert _scan_warnings(caplog, KEY)
@@ -153,9 +153,9 @@ async def test_a_committed_pin_on_a_deleted_bot_chat_is_kept_and_the_resend_does
     """A delete moves the admission rows to retired receipts keyed by the route principal, which
     the pin never recorded: a deleted target must read as "may have committed", never withdrawn."""
     import asyncio
-    from gateway.session_bot import deliver, recover_bot_deliveries
-    from gateway.session_local import create_local_session
-    from gateway.session_local_title import title_new_session
+    from hermes_agent.gateway.session_bot import deliver, recover_bot_deliveries
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_local_title import title_new_session
     real = type(bot.authority).admit_automation
     async def committed_then_refused(self, *args):
         await real(self, *args)

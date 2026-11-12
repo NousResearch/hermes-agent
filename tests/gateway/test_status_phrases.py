@@ -1,6 +1,6 @@
 import random
 
-from gateway.status_phrases import (
+from hermes_agent.gateway.status_phrases import (
     choose_status_phrase,
     resolve_status_phrase_catalog,
 )

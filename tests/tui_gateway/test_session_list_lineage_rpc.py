@@ -2,7 +2,7 @@
 
 ``hermes_agent.hermes_state.list_sessions_rich`` already returns ``_lineage_root_id`` on projected
 compression rows, and the REST ``/api/sessions`` path projects it
-(``gateway/platforms/api_server.py::_session_response``). The ``session.list`` RPC row
+(``hermes_agent/gateway/platforms/api_server.py::_session_response``). The ``session.list`` RPC row
 summary dropped the field, so RPC consumers could not group a compressed conversation
 with its continuation — the desktop store keys pinning and lineage dedup on it
 (``apps/desktop/src/store/session.ts::sessionPinId``).

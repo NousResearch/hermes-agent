@@ -152,7 +152,7 @@ def _repair_explicit_computer_use_media_paths_inner(response: str, messages: lis
         return response
 
     # Lazy: keeps the import cheap for standalone cron processes that may never hit MEDIA:.
-    from gateway.platforms.base import BasePlatformAdapter
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
     repaired = response
     for emitted_path, _is_voice in BasePlatformAdapter.extract_media(response)[0]:

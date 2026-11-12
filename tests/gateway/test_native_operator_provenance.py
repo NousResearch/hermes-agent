@@ -6,10 +6,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session import SessionSource
-from gateway.session_authority import LiveSession, SessionAuthority
-from gateway.session_contract import SessionActor, SessionRef, Submission
-from gateway.config import Platform
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+from hermes_agent.gateway.session_contract import SessionActor, SessionRef, Submission
+from hermes_agent.gateway.config import Platform
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import (
     RuntimeStoreError,
@@ -112,7 +112,7 @@ async def test_recovery_rejects_mismatched_operator_provenance(monkeypatch, tmp_
             return source, route
 
         monkeypatch.setattr(
-            "gateway.session_envelope.check_native_route", check_native_route)
+            "hermes_agent.gateway.session_envelope.check_native_route", check_native_route)
 
         recovered = SessionAuthority(
             _runner(), profile_id="default", instance_id="restart", db=db, epoch=epoch)
@@ -137,7 +137,7 @@ async def test_native_route_failure_still_blocks_recovery(monkeypatch, tmp_path)
             raise RuntimeStoreError("admission_conflict")
 
         monkeypatch.setattr(
-            "gateway.session_envelope.check_native_route", reject_route)
+            "hermes_agent.gateway.session_envelope.check_native_route", reject_route)
 
         recovered = SessionAuthority(
             _runner(), profile_id="default", instance_id="restart", db=db, epoch=epoch)

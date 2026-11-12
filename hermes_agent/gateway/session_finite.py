@@ -60,7 +60,7 @@ def _may_run_unattended(connection, ref):
     """``hermes -z`` parity: main auto-approved only inside the one-shot's own process. Over the wire that
     is the private local bootstrap ticket (no dashboard / remote identity), the session's creator (no
     operator attach) and a CLI-surface session (never a Desktop, TUI, ACP or Bot Chat others watch)."""
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_policy import policy_for_source
     source = connection.authority.sessions[ref.session_id].source
     if not connection.native_owner or source is None or source.user_id != connection.actor.subject:
         return False
@@ -69,10 +69,10 @@ def _may_run_unattended(connection, ref):
 
 
 async def execute_finite_admission(authority, ref, row):
-    from gateway.session_ingress import execute_admission
-    from gateway.session_display import display_turn_scope, submission_turn_scope
-    from gateway.session_surface import surface_turn_scope
-    from gateway.session_cli_turn import cli_turn_scope
+    from hermes_agent.gateway.session_ingress import execute_admission
+    from hermes_agent.gateway.session_display import display_turn_scope, submission_turn_scope
+    from hermes_agent.gateway.session_surface import surface_turn_scope
+    from hermes_agent.gateway.session_cli_turn import cli_turn_scope
     with finite_turn_scope(row['payload'].get('finite', False), row['payload'].get('unattended') is True), \
             surface_turn_scope(row['payload'].get('surface_v1')), \
             display_turn_scope(row['admission_id'], row['payload'].get('display_v1')), \

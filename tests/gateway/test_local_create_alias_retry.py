@@ -52,17 +52,17 @@ def _params(home, **fields):
 
 
 def _create(authority, connection, params):
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_local import create_local_session
     return create_local_session(authority, connection.actor, dict(params))
 
 
 def _stage(authority, connection, params):
-    from gateway.session_local import stage_local_session
+    from hermes_agent.gateway.session_local import stage_local_session
     return stage_local_session(authority, connection.actor, dict(params))
 
 
 def _commit(authority, staged):
-    from gateway.session_local_recovery import restore_local_session
+    from hermes_agent.gateway.session_local_recovery import restore_local_session
     from hermes_agent.hermes_state_local import commit_local_session
     commit_local_session(authority.db, epoch=authority.epoch, receipt=staged)
     return restore_local_session(authority, staged['session_id'])
@@ -84,7 +84,7 @@ def _refusal(call, *args):
 async def test_exact_alias_retry_after_an_owner_key_rotation_returns_the_original(owner):
     """``api_key: "${VAR}"`` rotated in ``.env`` between create and retry: the owner's new expansion is
     not the client's payload, so the retry returns the original session, which keeps its own key."""
-    from gateway.session_policy import launch_key, restore_policy
+    from hermes_agent.gateway.session_policy import launch_key, restore_policy
     home, authority, connection = owner
     ref = _create(authority, connection, _params(home, model='alias-key'))
     saved = _policy(authority, ref)
@@ -144,7 +144,7 @@ async def test_exact_alias_retry_after_an_endpoint_rotation_returns_the_original
 
 
 def restore_policy_url(saved):
-    from gateway.session_policy import restore_policy
+    from hermes_agent.gateway.session_policy import restore_policy
     return restore_policy(saved).config()['model']['base_url']
 
 
@@ -218,7 +218,7 @@ async def test_an_overlapping_exact_alias_retry_after_a_key_rotation_reuses_the_
     """Both attempts share one key slot: the retry staged after ``.env`` rotated the alias's key runs with
     the key the first attempt holds, and whichever commits stores that key's fingerprint."""
     from agent.credential_persistence import fingerprint_secret_value
-    from gateway.session_policy import launch_key, restore_policy
+    from hermes_agent.gateway.session_policy import launch_key, restore_policy
     home, authority, connection = owner
     params = _params(home, model='alias-key')
     staged = [_stage(authority, connection, params)]
@@ -272,7 +272,7 @@ async def test_an_overlapping_alias_retry_with_another_client_env_never_takes_th
 @pytest.mark.asyncio
 async def test_an_overlapping_alias_retry_differing_only_in_a_dropped_name_reuses_the_held_key(owner):
     """A name the holder's rules drop (PATH from a client not proven local) does not make another request."""
-    from gateway.session_policy import launch_key, restore_policy
+    from hermes_agent.gateway.session_policy import launch_key, restore_policy
     home, authority, connection = owner
     staged = [_stage(authority, connection, _params(home, model='alias-key', client_env={PROMPT: 'P'}))]
     _rotate_key(home)

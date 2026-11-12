@@ -109,7 +109,7 @@ def _run_handoff(db, session_id, monkeypatch, time_budget=30.0):
     gw_config.platforms = {}
     gw_config.get_home_channel.return_value = home
 
-    import gateway.config as gwc
+    import hermes_agent.gateway.config as gwc
 
     platform_obj = gwc.Platform("discord")
     pcfg = types.SimpleNamespace(enabled=True, extra={})

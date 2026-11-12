@@ -1,4 +1,4 @@
-"""Plugin and user extension points on the inbound pipeline (moved out of ``gateway/run_inbound.py``).
+"""Plugin and user extension points on the inbound pipeline (moved out of ``hermes_agent/gateway/run_inbound.py``).
 
 ``pre_gateway_dispatch`` (before auth), ``post_gateway_admission`` (once per admitted inbound
 message, #129958), ``pre_command`` / ``command:<name>`` hooks, user ``quick_commands`` and
@@ -19,11 +19,11 @@ import sys
 from typing import Optional, Tuple
 
 from agent.i18n import t
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionSource, build_session_context
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionSource, build_session_context
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 # Seconds a ``type: exec`` quick command may run before its whole process tree is killed.
 _EXEC_QUICK_COMMAND_TIMEOUT = 30
@@ -65,10 +65,10 @@ class GatewayInboundHooksMixin:
         Never while an admitted row EXECUTES (first run or restart replay): the authority path
         already offered the message at ingress, before its commit, so a consumed message is never
         admitted and an admitted one is never offered twice."""
-        from gateway.session_ingress import executing_admission
+        from hermes_agent.gateway.session_ingress import executing_admission
         if executing_admission.get():
             return False, None
-        from gateway.run_inbound_consumer import run_post_admission_hook
+        from hermes_agent.gateway.run_inbound_consumer import run_post_admission_hook
         return await run_post_admission_hook(self, event, source, session_key)
 
     async def _hm_pre_gateway_dispatch_hook(
@@ -83,7 +83,7 @@ class GatewayInboundHooksMixin:
         Once per inbound message, at ingress (here, or ``admit_producer`` for webhook/relay), never
         while an admitted row EXECUTES: a messaging turn already passed it before its commit, and a
         local CLI/TUI/Desktop turn never fired it on main, so a skip must not drop committed input."""
-        from gateway.session_ingress import executing_admission
+        from hermes_agent.gateway.session_ingress import executing_admission
         if executing_admission.get():
             return event
         try:
@@ -111,7 +111,7 @@ class GatewayInboundHooksMixin:
             if _action == "rewrite":
                 _new_text = _result.get("text")
                 if isinstance(_new_text, str):
-                    from gateway.session_ingress_context import carry_callback
+                    from hermes_agent.gateway.session_ingress_context import carry_callback
                     rewritten = dataclasses.replace(event, text=_new_text)
                     carry_callback(event, rewritten)
                     _carry_replied_voice_answer(event, rewritten, _new_text)
@@ -273,7 +273,7 @@ class GatewayInboundHooksMixin:
         self, plugin_handler, event: MessageEvent, source: SessionSource, session_entry=None, args=None
     ) -> Optional[str]:
         """Run a resolved plugin command handler for *source* → its reply text or None; raises what
-        the handler raises (``gateway/session_commands.py`` resolves the exact registered name).
+        the handler raises (``hermes_agent/gateway/session_commands.py`` resolves the exact registered name).
         *args* is the argument as typed (a local session's command); otherwise the message's
         command arguments, with the messaging dash repair of ``get_command_args``."""
         # The agent-turn path binds HERMES_SESSION_* via _set_session_env; this dispatch
@@ -293,8 +293,8 @@ class GatewayInboundHooksMixin:
             _plugin_context.session_key = self._session_key_for_source(source)
         user_args = event.get_command_args().strip() if args is None else args
         from hermes_cli.plugin_command_dispatch import invoke_plugin_command
-        from gateway.plugin_messages import bind_live_source
-        from gateway.plugin_command_choice import chat_choices
+        from hermes_agent.gateway.plugin_messages import bind_live_source
+        from hermes_agent.gateway.plugin_command_choice import chat_choices
         call = functools.partial(
             invoke_plugin_command, plugin_handler, user_args, source=source,
             session_id=_plugin_context.session_id or "", session_key=_plugin_context.session_key or "",

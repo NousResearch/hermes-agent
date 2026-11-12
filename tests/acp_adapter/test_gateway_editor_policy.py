@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-from gateway.session_policy import build_policy, policy_scope, restore_policy
+from hermes_agent.gateway.session_policy import build_policy, policy_scope, restore_policy
 
 
 def test_acp_policy_uses_its_own_tools_and_restores_frozen_cwd(tmp_path):
@@ -28,8 +28,8 @@ def test_acp_policy_uses_its_own_tools_and_restores_frozen_cwd(tmp_path):
 @pytest.mark.asyncio
 async def test_editor_guard_uses_shared_waiter_without_leaking_to_cli(tmp_path):
     from hermes_agent.acp_adapter.edit_approval import maybe_require_edit_approval
-    from gateway.session_events import SessionEvents
-    from gateway.session_pending_controls import PendingControls
+    from hermes_agent.gateway.session_events import SessionEvents
+    from hermes_agent.gateway.session_pending_controls import PendingControls
     from tools.approval import register_gateway_notify, unregister_gateway_notify
     from tools.approval_context import set_current_session_key, reset_current_session_key
 

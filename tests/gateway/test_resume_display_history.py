@@ -17,11 +17,11 @@ SUMMARY = SUMMARY_PREFIX + '\nearlier turns summarized'
 
 
 async def _local_session(tmp_path, monkeypatch):
-    from gateway import run, session_local
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import SessionActor
+    from hermes_agent.gateway import run, session_local
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionActor
     from hermes_agent.hermes_state_local import local_receipt
     monkeypatch.setattr(run, '_load_gateway_config', dict)
     monkeypatch.setattr(session_local, 'local_session_info', lambda *a: {})
@@ -37,7 +37,7 @@ async def _local_session(tmp_path, monkeypatch):
 
 
 async def _resume(authority, actor, ref, **params):
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     conn = AuthorityConnection(authority, object(), {'user_id': 'owner'})
     conn.actor = actor
     authority.events[actor.transport_id] = object()
@@ -117,7 +117,7 @@ async def test_undo_and_retry_choose_only_among_live_turns(tmp_path, monkeypatch
 @pytest.mark.asyncio
 async def test_an_undone_turn_stays_gone_after_a_rotated_compression(tmp_path, monkeypatch):
     """The rewind removes the child's copies; the parent's copies of the same turn must not come back."""
-    from gateway.session_mutations import mutate_session
+    from hermes_agent.gateway.session_mutations import mutate_session
     authority, actor, ref, physical = await _local_session(tmp_path, monkeypatch)
     db = authority.db
     _append(db, physical, 'OLD_Q', 'OLD_A', 'TAIL_Q', 'TAIL_A')
@@ -177,7 +177,7 @@ async def test_a_row_appended_during_prepare_counts_against_the_archive_budget(t
     """A live row landing between the off-loop prepare and the locked read shrinks what the archive may
     use, as a fresh read would: the raced reply is no larger than the fresh one (review of #140971)."""
     import json
-    from gateway import session_local_recovery as recovery
+    from hermes_agent.gateway import session_local_recovery as recovery
     authority, actor, ref, physical = await _local_session(tmp_path, monkeypatch)
     db = authority.db
     for n in range(28):  # ~2.8 MiB of history, then summarized away in place (all archived)
@@ -203,8 +203,8 @@ async def test_a_row_appended_during_prepare_counts_against_the_archive_budget(t
 async def test_a_delete_during_the_resume_prepare_answers_not_found(tmp_path, monkeypatch):
     """``attach`` awaits the lineage read between its authorize and the live-entry lookup: a delete committed
     by another connection in that window answers ``not_found``, never an internal error (review of #140971)."""
-    from gateway import session_local_recovery as recovery
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway import session_local_recovery as recovery
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     authority, _actor, ref, physical = await _local_session(tmp_path, monkeypatch)
     authority.runner.session_authority = authority  # one process owns both writes of a delete
     authority.db.append_message(physical, 'user', 'hello')
@@ -233,8 +233,8 @@ async def test_a_delete_during_the_resume_prepare_answers_not_found(tmp_path, mo
 async def test_a_committed_but_unretired_delete_during_the_prepare_answers_not_found(tmp_path, monkeypatch):
     """The delete's commit lands off the loop before its retirement runs: the live entry is still there,
     so the re-authorize passes, but the row is gone. The resume answers ``not_found``, not an internal error."""
-    from gateway import session_local_recovery, session_mutations
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway import session_local_recovery, session_mutations
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     authority, _actor, ref, physical = await _local_session(tmp_path, monkeypatch)
     authority.runner.session_authority = authority  # one process owns both writes of a delete
     authority.db.append_message(physical, 'user', 'hello')
@@ -280,8 +280,8 @@ async def test_a_committed_but_unretired_delete_during_the_prepare_answers_not_f
 async def test_rollback_turn_rewind_never_targets_an_archived_turn(tmp_path, monkeypatch, mode):
     """/rollback's history rewind picks the newest live user turn; with none left (the last one undone after
     a compression) it rewinds nothing instead of aiming the owner's rewind at an archived row it refuses."""
-    from gateway.session_mutations import mutate_session
-    from gateway.session_tui_ops import _rewind_last_turn
+    from hermes_agent.gateway.session_mutations import mutate_session
+    from hermes_agent.gateway.session_tui_ops import _rewind_last_turn
     authority, actor, ref, physical = await _local_session(tmp_path, monkeypatch)
     db = authority.db
     _append(db, physical, 'OLD_Q', 'OLD_A', 'TAIL_Q', 'TAIL_A')

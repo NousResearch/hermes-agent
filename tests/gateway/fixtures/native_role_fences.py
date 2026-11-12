@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 
 async def fences(runner, authority, adapter, guild, event, peer, mode):
-    from gateway.config import Platform
-    from gateway.session_ingress_context import native_callback
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session_ingress_context import native_callback
     from hermes_agent.hermes_state_runtime import RuntimeStoreError, cancel_session_input, list_session_admissions
 
     state = Path(os.environ['HERMES_HOME'])

@@ -23,7 +23,7 @@ _real_run = asyncio.run
 
 
 def _describe(sink):
-    from gateway.control_socket import GatewayControlServer, windows_pipe_name
+    from hermes_agent.gateway.control_socket import GatewayControlServer, windows_pipe_name
     sink.write('\n=== runtime descriptors ===\n')
     for obj in gc.get_objects():
         # vars() only: ctypes CDLL objects turn arbitrary getattr into a library load.
@@ -67,4 +67,4 @@ def _run(main, **kwargs):
 
 
 asyncio.run = _run
-runpy.run_module('gateway.run', run_name='__main__')
+runpy.run_module('hermes_agent.gateway.run', run_name='__main__')

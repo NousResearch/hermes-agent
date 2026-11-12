@@ -3,7 +3,7 @@
 On the gateway's Webapp (``app.state.ui_surface == "webapp"``) with the sign-in gate engaged, every
 successful cookie login (a password login or an OAuth callback) also sets the cookie
 ``hermes_webapp_signin_<gateway>``: the hex HMAC-SHA256 of ``"webapp-sign-in"`` keyed with the browser
-session token the gateway serves (``web_server._SESSION_TOKEN``, kept in the gateway home by ``gateway.webapp_listener``). The gate treats
+session token the gateway serves (``web_server._SESSION_TOKEN``, kept in the gateway home by ``hermes_agent.gateway.webapp_listener``). The gate treats
 a cookie session without a matching value as signed out. Replacing that token (``hermes webapp
 --sign-out``, or the CLI replacing the stored token while no gateway runs) therefore signs every browser
 out, whichever provider it signed in with. ``<gateway>`` comes from a digest of the gateway's home

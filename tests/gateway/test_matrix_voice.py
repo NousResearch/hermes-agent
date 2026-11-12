@@ -18,7 +18,7 @@ try:
 except ImportError:
     pytest.skip("mautrix not installed", allow_module_level=True)
 
-from gateway.platforms.event import MessageType
+from hermes_agent.gateway.platforms.event import MessageType
 
 
 # ---------------------------------------------------------------------------
@@ -37,7 +37,7 @@ def _make_adapter():
     tests exercise voice/audio TYPE detection, not mention gating.
     """
     from plugins.platforms.matrix.adapter import MatrixAdapter
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
 
     config = PlatformConfig(
         enabled=True,

@@ -48,7 +48,7 @@ def test_unmanaged_runtime_drops_session_config_bypass_flags(tmp_path, monkeypat
 
 @pytest.mark.platforms("linux")
 def test_ensure_waits_for_real_control_owner_without_claiming_pending_is_ready(tmp_path):
-    from gateway.control_socket import GatewayControlServer
+    from hermes_agent.gateway.control_socket import GatewayControlServer
     from hermes_cli import gateway_runtime as runtime
 
     assert callable(getattr(runtime, "ensure_gateway_runtime", None))
@@ -278,7 +278,7 @@ def test_unmanaged_runtime_does_not_inherit_client_launch_flags(tmp_path, monkey
 
 @pytest.mark.platforms("linux")
 def test_reserved_profile_without_pid_or_control_is_never_absent(tmp_path):
-    from gateway.runtime_ownership import ProfileOwnership
+    from hermes_agent.gateway.runtime_ownership import ProfileOwnership
     from hermes_cli.gateway_runtime import discover_gateway_endpoint
     home = tmp_path / "reserved"
     home.mkdir(mode=0o700)
@@ -300,7 +300,7 @@ def test_native_windows_discovery_uses_same_user_pipe(tmp_path, monkeypatch):
     # The pipe server below runs on this process's own token, so both sides of the identity check
     # read its real elevation: a pinned non-elevated client refuses its own elevated server.
     monkeypatch.setattr(hermes_dir_acl, "process_is_elevated", _REAL_PROCESS_IS_ELEVATED)
-    from gateway.runtime_bootstrap_windows import NativeControlServer
+    from hermes_agent.gateway.runtime_bootstrap_windows import NativeControlServer
     from hermes_cli.gateway_runtime import discover_gateway_endpoint
     home = tmp_path.resolve()
     def handle(raw, subject):
@@ -480,7 +480,7 @@ def test_cold_start_target_follows_boot_multiplex_policy(tmp_path, monkeypatch, 
 def test_reserved_root_never_suppresses_a_standalone_profile_start(tmp_path, monkeypatch):
     """A held root reservation means "the multiplexer is coming" only for profiles its boot policy
     serves; a `gateway.standalone: true` secondary must still get its own owner started."""
-    from gateway.runtime_ownership import ProfileOwnership
+    from hermes_agent.gateway.runtime_ownership import ProfileOwnership
     from hermes_cli import gateway_runtime as runtime, gateway_runtime_service as service, gateway_runtime_start as start
 
     root = tmp_path / ".hermes"

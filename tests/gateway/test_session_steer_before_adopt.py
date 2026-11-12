@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent.interrupt_control import InterruptControlMixin
-from gateway.session_busy_controls import correct
+from hermes_agent.gateway.session_busy_controls import correct
 from tests.gateway.test_session_authority_cancel_settlement import ACTOR, REF, _authority, _submit, _wire_turn_agent
 
 
@@ -20,7 +20,7 @@ class Agent(InterruptControlMixin):
 
 @pytest.mark.asyncio
 async def test_steer_before_adoption_reaches_the_rebuilt_agent_not_the_stale_cached_one(tmp_path, monkeypatch):
-    from gateway import session_finite
+    from hermes_agent.gateway import session_finite
 
     db, authority = _authority(tmp_path, monkeypatch)
     stale, fresh = Agent(), Agent()

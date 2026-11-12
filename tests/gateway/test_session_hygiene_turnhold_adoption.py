@@ -30,10 +30,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionEntry, SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionEntry, SessionSource
 
 
 def _make_history(n_messages: int, content_size: int = 100) -> list:
@@ -224,7 +224,7 @@ async def test_turn_hold_keeps_admission_and_adopts_watermark_fenced_summary(
                 if commit_fence is not None:
                     commit_fence.finish_commit()
 
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     _write_turnhold_config(tmp_path)
     _install_fakes(monkeypatch, gateway_run, tmp_path, FencedStreamingAgent)
 
@@ -320,7 +320,7 @@ async def test_turn_hold_kept_admission_arms_flat_retry_only_when_nothing_commit
             # Summary failed — return unchanged, no commit.
             return (messages, None)
 
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     _write_turnhold_config(tmp_path)
     _install_fakes(monkeypatch, gateway_run, tmp_path, FencedNoCommitAgent)
 
@@ -410,7 +410,7 @@ async def test_turn_hold_without_watermark_fence_still_cancels(
                 if commit_fence is not None:
                     commit_fence.finish_commit()
 
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     _write_turnhold_config(tmp_path)
     _install_fakes(monkeypatch, gateway_run, tmp_path, UnfencedStreamingAgent)
 

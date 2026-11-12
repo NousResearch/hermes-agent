@@ -2,7 +2,7 @@
 
 Both scenarios are about states the PR itself can create, so the liveness these tests assert is
 the REAL one: a "started" gateway writes the pid file + runtime record a live gateway writes, and
-``gateway.status`` reads them back. Only the service manager is faked (the seam the migration
+``hermes_agent.gateway.status`` reads them back. Only the service manager is faked (the seam the migration
 suite already fakes).
 """
 
@@ -66,7 +66,7 @@ def stranded(tmp_path, monkeypatch):
         if verb in ("start", "restart") and name == "default" and state.start_succeeds:
             _write_live_gateway(root, ["default", "coder", "ops"])
 
-    from gateway import status
+    from hermes_agent.gateway import status
     monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "hermes gateway run")
     monkeypatch.setattr(gm, "_installed_services", lambda home: [])
     monkeypatch.setattr(gm, "_service_op", _service_op)

@@ -5,7 +5,7 @@ the one place an upgraded install's legacy rows get their owner.
 """
 from hermes_agent.hermes_state import SessionDB
 
-from gateway.session_authority import backfill_legacy_session_owners
+from hermes_agent.gateway.session_authority import backfill_legacy_session_owners
 
 
 def _legacy(db, session_id, profile_name=None):

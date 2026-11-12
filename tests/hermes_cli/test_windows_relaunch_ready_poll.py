@@ -14,7 +14,7 @@ import time
 
 import pytest
 
-from gateway import status
+from hermes_agent.gateway import status
 from hermes_cli import gateway_windows, update_cmd_windows
 from hermes_cli.update_cmd_windows import _READY_CONFIRM_S, _verify_relaunched_gateways_alive
 

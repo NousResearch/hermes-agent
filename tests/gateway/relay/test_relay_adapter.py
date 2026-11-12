@@ -4,9 +4,9 @@ import asyncio
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.relay.adapter import RelayAdapter
-from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.relay.adapter import RelayAdapter
+from hermes_agent.gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
 
 
 def make_desc(**kw) -> CapabilityDescriptor:
@@ -70,8 +70,8 @@ class _CaptureTransport:
 
 
 def _make_event(chat_id="chan-1", scope_id="scope-9"):
-    from gateway.platforms.event import MessageEvent, MessageType
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+    from hermes_agent.gateway.session import SessionSource
 
     src = SessionSource(
         platform=Platform.RELAY,
@@ -84,8 +84,8 @@ def _make_event(chat_id="chan-1", scope_id="scope-9"):
 
 def _make_dm_event(chat_id="dm-1", user_id="user-42"):
     """An inbound DM: no scope_id, carries the authentic author user_id."""
-    from gateway.platforms.event import MessageEvent, MessageType
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+    from hermes_agent.gateway.session import SessionSource
 
     src = SessionSource(
         platform=Platform.RELAY,
@@ -105,8 +105,8 @@ def _make_scoped_event_with_author(
     guild scope_id and an author). Used to prove the adapter re-attaches BOTH
     discriminators so the connector can fall back author-first when the guild
     has no route row (managed agents join guilds dynamically)."""
-    from gateway.platforms.event import MessageEvent, MessageType
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+    from hermes_agent.gateway.session import SessionSource
 
     src = SessionSource(
         platform=Platform.RELAY,
@@ -187,8 +187,8 @@ async def test_send_typing_tags_egress_platform():
     """Phase 1.5: a multi-platform gateway must egress typing through the
     platform the chat lives on, exactly like send() — the underlying platform
     learned from the inbound event tags the frame."""
-    from gateway.platforms.event import MessageEvent, MessageType
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+    from hermes_agent.gateway.session import SessionSource
 
     t = _CaptureTransport()
     a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=t)

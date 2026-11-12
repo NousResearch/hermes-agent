@@ -1,8 +1,8 @@
 """Goal/heartbeat continuation, post-turn hooks and loop-wakeup watcher methods for GatewayRunner.
 
-Split out of ``gateway/run.py``; bound onto ``GatewayRunner`` via the MRO.
-``gateway.run`` internals are imported lazily inside method bodies (import cycle),
-so ``patch("gateway.run.X")`` keeps intercepting them at call time.
+Split out of ``hermes_agent/gateway/run.py``; bound onto ``GatewayRunner`` via the MRO.
+``hermes_agent.gateway.run`` internals are imported lazily inside method bodies (import cycle),
+so ``patch("hermes_agent.gateway.run.X")`` keeps intercepting them at call time.
 """
 
 from __future__ import annotations
@@ -14,15 +14,15 @@ import time
 from contextlib import nullcontext, suppress
 from typing import TYPE_CHECKING, Any, Optional
 
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner
-    from gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 
 class GatewayGoalsMixin:
@@ -108,7 +108,7 @@ class GatewayGoalsMixin:
         would quote that stale message (Telegram DM topics route anchorless via the topic id).
         ``replace_source`` keeps the receiving-adapter provenance native admission reads.
         """
-        from gateway.session_identity import replace_source
+        from hermes_agent.gateway.session_identity import replace_source
         source = replace_source(source, message_id=None) if getattr(source, "message_id", None) else source
         return MessageEvent(
             text=text, message_type=MessageType.TEXT, source=source, internal=internal,
@@ -146,8 +146,8 @@ class GatewayGoalsMixin:
             session_id = current
             watch[quick_key] = (source, session_id)
         adapter = self._delivery_adapter_for(source)
-        from gateway.session_local import LocalSessionAdapter
-        from gateway.session_viewer_automation import viewer_driven
+        from hermes_agent.gateway.session_local import LocalSessionAdapter
+        from hermes_agent.gateway.session_viewer_automation import viewer_driven
         local = isinstance(adapter, LocalSessionAdapter)
         # A local chat has no message handler: its owner admits the tick (``admit_heartbeat``).
         if adapter is None or not (adapter._message_handler or local):
@@ -155,7 +155,7 @@ class GatewayGoalsMixin:
         if local and viewer_driven(adapter.authority, source.chat_id, "viewer_heartbeat"):
             return  # the classic CLI's watchdog fires it: that CLI paints only the turns it submits
         if getattr(self, 'session_authority', None) is not None:
-            from gateway.run_heartbeat_acceptance import admit_heartbeat
+            from hermes_agent.gateway.run_heartbeat_acceptance import admit_heartbeat
             await admit_heartbeat(self, adapter, source, session_id, quick_key)
             return
         if (
@@ -190,7 +190,7 @@ class GatewayGoalsMixin:
         finally:
             task = getattr(adapter, "_session_tasks", {}).get(quick_key)
             if task is not None:
-                from gateway.run_heartbeat_acceptance import settle_heartbeat_attempt
+                from hermes_agent.gateway.run_heartbeat_acceptance import settle_heartbeat_attempt
                 task.add_done_callback(lambda done: settle_heartbeat_attempt(event, mgr))
             elif quick_key not in adapter._active_sessions:
                 mgr.abandon_fire()
@@ -206,7 +206,7 @@ class GatewayGoalsMixin:
         async def _poll_loop():
             while True:
                 await asyncio.sleep(POLL_SECONDS)
-                from gateway.run_heartbeat_restore import restore_heartbeat_watches
+                from hermes_agent.gateway.run_heartbeat_restore import restore_heartbeat_watches
                 await restore_heartbeat_watches(self)
                 watch = getattr(self, "_heartbeat_watch", None)
                 if watch:
@@ -235,7 +235,7 @@ class GatewayGoalsMixin:
         if getattr(source, "platform", None) == Platform.LOCAL:
             # The local adapter's send is a no-op (viewers read the event stream): main's TUI
             # painted the verdict from ``status.update {kind: goal}``.
-            from gateway.session_authorities import active_authority
+            from hermes_agent.gateway.session_authorities import active_authority
             authority = active_authority(self)
             live = authority.sessions.get(source.chat_id) if authority is not None else None
             if live is not None:
@@ -340,7 +340,7 @@ class GatewayGoalsMixin:
         if getattr(source, "platform", None) == Platform.LOCAL:
             # A local session's adapter FIFO has no reader: its turns are authority admissions.
             # Commit the continuation there, as main's TUI chained it after the turn.
-            from gateway.session_automation import admit_route_wake
+            from hermes_agent.gateway.session_automation import admit_route_wake
             try:
                 await admit_route_wake(self, self._delivery_adapter_for(source), source, prompt, "goal-continuation")
             except Exception:  # health: allow BLE001 -- best-effort like the FIFO enqueue below; traceback logged
@@ -359,8 +359,8 @@ class GatewayGoalsMixin:
         self, *, agent_result: Any, source: Any, is_internal: bool, event: Any = None,
     ) -> None:
         """Run goal and loop bookkeeping after an agent turn returns."""
-        from gateway.session_authorities import active_authority
-        from gateway.session_viewer_automation import viewer_driven
+        from hermes_agent.gateway.session_authorities import active_authority
+        from hermes_agent.gateway.session_viewer_automation import viewer_driven
         if viewer_driven(active_authority(self), getattr(source, "chat_id", None)):
             return  # the classic CLI viewer judges and continues through ``session.automation``
         final_text = self._final_text_for_post_turn_hooks(agent_result, event)
@@ -391,15 +391,15 @@ class GatewayGoalsMixin:
         whose loop countdown runs off the snapshot's ``next_due_at``."""
         if getattr(source, "platform", None) != Platform.LOCAL:
             return
-        from gateway.session_authorities import active_authority
-        from gateway.session_control_actions import publish_async
+        from hermes_agent.gateway.session_authorities import active_authority
+        from hermes_agent.gateway.session_control_actions import publish_async
         await publish_async(active_authority(self), source.chat_id, only_if_present=only_if_present)
 
     @staticmethod
     def _turn_failed() -> bool:
         """Whether the owner recorded this turn's result as failed (``session_ingress`` captures it
         around ``_handle_message``; turns outside an owner capture nothing)."""
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         captured = execution_result.get() or {}
         result = captured.get('terminal_result', captured.get('result'))
         return isinstance(result, dict) and bool(result.get('failed'))
@@ -512,7 +512,7 @@ class GatewayGoalsMixin:
                 mgr.state.ticks_fired if mgr.state else "?",
                 platform_name, source.chat_id, source.thread_id,
             )
-            from gateway.session_automation import admit_route_wake
+            from hermes_agent.gateway.session_automation import admit_route_wake
             # Under a session authority the tick commits to the FIFO (never a classic turn beside an
             # admitted one); a slash-command loop is a command and keeps the command path.
             if wakeup.lstrip().startswith("/") or not await admit_route_wake(self, adapter, source, wakeup, "loop-tick"):
@@ -538,8 +538,8 @@ class GatewayGoalsMixin:
         store — a ``/loop`` set from a secondary profile's chat would never fire. Every served
         profile's store is scanned under its own runtime scope (same shape as ``_handoff_watcher``),
         and each hit is fired against that profile's adapters."""
-        from gateway.run import _async_profile_runtime_scope, _resolve_handoff_watch_scopes
-        from gateway.run_idle_gates import profile_has_active_loop
+        from hermes_agent.gateway.run import _async_profile_runtime_scope, _resolve_handoff_watch_scopes
+        from hermes_agent.gateway.run_idle_gates import profile_has_active_loop
         await asyncio.sleep(5)  # let platforms finish connecting
         warned_no_route: set = set()
 

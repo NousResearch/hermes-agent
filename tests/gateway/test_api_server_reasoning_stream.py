@@ -13,8 +13,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.platforms.api_server import APIServerAdapter, ThreadSafeAsyncQueue
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.api_server import APIServerAdapter, ThreadSafeAsyncQueue
 
 
 def _frames(payloads):
@@ -54,14 +54,14 @@ def _stub_create_agent_runtime(monkeypatch, fake_agent_cls):
     """Stub every external dependency of ``_create_agent`` so the real
     ``_spawn_stream_agent -> _run_agent -> _create_agent -> AIAgent(...)`` wiring runs."""
     monkeypatch.setattr("run_agent.AIAgent", fake_agent_cls)
-    monkeypatch.setattr("gateway.run._resolve_runtime_agent_kwargs", lambda: {
+    monkeypatch.setattr("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", lambda: {
         "provider": "openrouter", "api_key": "sk-test", "base_url": "https://openrouter.ai/api/v1",
         "api_mode": "chat_completions"})
-    monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "global/model")
-    monkeypatch.setattr("gateway.run._load_gateway_config", dict)
-    monkeypatch.setattr("gateway.run.GatewayRunner._load_reasoning_config", staticmethod(lambda model="": {}))
-    monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
-    monkeypatch.setattr("gateway.run._current_max_iterations", lambda: 90)
+    monkeypatch.setattr("hermes_agent.gateway.run._resolve_gateway_model", lambda: "global/model")
+    monkeypatch.setattr("hermes_agent.gateway.run._load_gateway_config", dict)
+    monkeypatch.setattr("hermes_agent.gateway.run.GatewayRunner._load_reasoning_config", staticmethod(lambda model="": {}))
+    monkeypatch.setattr("hermes_agent.gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
+    monkeypatch.setattr("hermes_agent.gateway.run._current_max_iterations", lambda: 90)
     monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
 
 
@@ -70,7 +70,7 @@ async def test_chat_completions_stream_forwards_agent_reasoning_callback(adapter
     """Production entry point: ``_spawn_stream_agent`` wires the agent's ``reasoning_callback``
     through ``_run_agent`` / ``_create_agent`` into ``AIAgent(...)``; what the agent emits there
     reaches the SSE writer as ``delta.reasoning_content`` while answer text stays in ``delta.content``."""
-    import gateway.platforms.api_server as api_mod
+    import hermes_agent.gateway.platforms.api_server as api_mod
 
     class FakeAgent:
         def __init__(self, **kwargs):
@@ -105,7 +105,7 @@ async def test_responses_stream_emits_reasoning_summary_events_before_message(ad
     """A thinking burst becomes one ``reasoning`` output item (summary_part/text added→delta→done)
     closed before the message item opens; it is echoed in ``response.completed`` and every
     event's ``sequence_number`` stays strictly increasing."""
-    import gateway.platforms.api_server as api_mod
+    import hermes_agent.gateway.platforms.api_server as api_mod
     request, written, fake_response = _fake_writer_env()
     stream_q = ThreadSafeAsyncQueue()
 

@@ -8,13 +8,13 @@ import pytest_asyncio
 
 @pytest_asyncio.fixture
 async def reset_lineage(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import SessionActor
-    from gateway.session_local import create_local_session
-    from gateway.session_mutations import mutate_session
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_mutations import mutate_session
     from hermes_agent.hermes_state import SessionDB
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
@@ -42,8 +42,8 @@ async def reset_lineage(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_reset_lineage_lists_once_and_deleting_the_listed_row_deletes_it(reset_lineage):
-    from gateway.session_contract import SessionRef
-    from gateway.session_mutations import mutate_session
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_mutations import mutate_session
     t = reset_lineage
     rows = t.authority.db.list_sessions_rich(order_by_last_active=True, limit=50)
     assert [r['id'] for r in rows] == [t.s1], 'listed as two conversations'

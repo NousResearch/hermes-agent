@@ -21,8 +21,8 @@ def manual_gateway_identity(home: Path) -> dict | None:
     Raises RuntimeError for a gateway this client may not drain: a supervisor (systemd, launchd,
     Desktop, ...) relaunches it right after a pause, so it would take the profile back.
     """
-    from gateway.control_socket import identify_gateway, launch_supervisor
-    from gateway.status import get_running_pid_identity_strict
+    from hermes_agent.gateway.control_socket import identify_gateway, launch_supervisor
+    from hermes_agent.gateway.status import get_running_pid_identity_strict
 
     identity = identify_gateway(home)
     if identity is None:
@@ -45,8 +45,8 @@ def pause_acked(response: dict | None, identity: dict | None) -> bool:
 
 
 def _drain_manual_gateway(home: Path) -> None:
-    from gateway.control_socket import identify_gateway, pause_gateway_for_update
-    from gateway.status import get_process_start_time, get_running_pid_identity_strict, _pid_exists
+    from hermes_agent.gateway.control_socket import identify_gateway, pause_gateway_for_update
+    from hermes_agent.gateway.status import get_process_start_time, get_running_pid_identity_strict, _pid_exists
 
     identity = manual_gateway_identity(home)
     if identity is None:
@@ -92,7 +92,7 @@ def _refuse_backend_writers(home: Path) -> None:
 def _refuse_cron_writers(home: Path) -> None:
     from contextlib import closing
     import sqlite3
-    from gateway.status import get_process_start_time, _pid_exists
+    from hermes_agent.gateway.status import get_process_start_time, _pid_exists
 
     path = home / "cron" / "executions.db"
     try:
@@ -122,8 +122,8 @@ def _refuse_cron_writers(home: Path) -> None:
 
 def _refuse_multiplexer(home: Path) -> None:
     from hermes_constants import get_default_hermes_root
-    from gateway.control_socket import identify_gateway
-    from gateway.status import get_running_pid_identity_strict
+    from hermes_agent.gateway.control_socket import identify_gateway
+    from hermes_agent.gateway.status import get_running_pid_identity_strict
 
     root = get_default_hermes_root(home=home).resolve()
     if home == root:
@@ -139,7 +139,7 @@ def _refuse_multiplexer(home: Path) -> None:
 @contextmanager
 def quiescent_home(home: Path):
     """Hold existing writer locks through deletion; do not remove their inodes."""
-    from gateway.status import _release_file_lock, _try_acquire_file_lock
+    from hermes_agent.gateway.status import _release_file_lock, _try_acquire_file_lock
     from hermes_cli.active_sessions import _FileLock, _prune_dead, _read_entries
     from hermes_cli.runtime_state import _lock
     from tools.checkpoint_pruning import store_lock

@@ -15,12 +15,12 @@ def test_runs_refuse_native_session_without_phantom_run(tmp_path):
 
 async def probe():
     import aiohttp
-    from gateway.config import Platform, PlatformConfig
-    from gateway.platforms.api_server import APIServerAdapter
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import SessionActor
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway.config import Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.api_server import APIServerAdapter
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_local import create_local_session
 
     runner = GatewayRunner()
     authority = await initialize_session_authority(runner, profile_id='default', instance_id='runs-test')

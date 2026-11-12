@@ -149,9 +149,9 @@ def test_idle_tick_without_an_admitted_turn_queues_nothing():
 
 
 def test_stamp_claim_publishes_the_card_and_an_ordinary_claim_stays_empty():
-    from gateway.session_authority import SessionAuthority
-    from gateway.session_contract import SessionRef
-    from gateway.session_events import SessionEvents
+    from hermes_agent.gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_events import SessionEvents
     published = []
     stream = SessionEvents()
     stream.publish = lambda sid, payload, *, event_type: published.append((event_type, payload))
@@ -169,7 +169,7 @@ def test_stamp_claim_publishes_the_card_and_an_ordinary_claim_stays_empty():
 
 
 def test_claim_stamp_carries_the_automation_card_on_message_start():
-    from gateway.session_automation import admission_display
+    from hermes_agent.gateway.session_automation import admission_display
     local = {"text": MODEL_TEXT, "local_automation_v1": {
         "identity": "i", "owner": SID, "route": "r", "target": SID,
         "display_kind": "process_complete", "display_text": DISPLAY}}
@@ -191,10 +191,10 @@ def _delegation_completion(goal):
 def _claim_card(evt, text):
     """The ``message.start`` card the gateway publishes for this LOCAL completion's admission: the
     producer's metadata, validated as ``snapshot_local_automation`` does, read back at the claim."""
-    from gateway.config import Platform
-    from gateway.run_notifications import _watch_notification_metadata
-    from gateway.session import SessionSource
-    from gateway.session_automation import admission_display, automation_display_metadata
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.run_notifications import _watch_notification_metadata
+    from hermes_agent.gateway.session import SessionSource
+    from hermes_agent.gateway.session_automation import admission_display, automation_display_metadata
     metadata = _watch_notification_metadata(evt, SessionSource(platform=Platform.LOCAL, chat_id=SID))
     descriptor = {"identity": "i", "owner": SID, "route": "r", "target": SID,
                   **automation_display_metadata(metadata)}

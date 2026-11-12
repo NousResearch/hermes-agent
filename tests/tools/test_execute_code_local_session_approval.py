@@ -13,8 +13,8 @@ import contextlib
 
 import pytest
 
-from gateway.session_context import clear_session_vars, set_session_vars
-from gateway.session_policy import _ACTIVE_POLICY, SURFACES, LocalSessionPolicy
+from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
+from hermes_agent.gateway.session_policy import _ACTIVE_POLICY, SURFACES, LocalSessionPolicy
 from tools import approval as A
 from tools import approval_context, approval_smart
 from tools.approval_detection import detect_dangerous_command
@@ -37,7 +37,7 @@ def _viewer_session(attached: str = "approver"):
     """The live session; ``attached`` is who ``session.resume`` recorded as subscribed: a viewer holding
     ``session:approve``, a read-only one, or nobody."""
     from types import SimpleNamespace
-    from gateway.session_authority import LiveSession
+    from hermes_agent.gateway.session_authority import LiveSession
     live = LiveSession(None, SESSION_KEY)
     capabilities = {"approver": {"session:read", "session:approve"}, "read-only": {"session:read"}}.get(attached)
     if capabilities is not None:
@@ -76,7 +76,7 @@ def turn(monkeypatch, tmp_path):
         key_token = approval_context.set_current_session_key(SESSION_KEY)
         policy_token = _ACTIVE_POLICY.set(_policy(source, str(tmp_path)) if source else None)
         if viewer:
-            from gateway.session_ingress import viewer_turn
+            from hermes_agent.gateway.session_ingress import viewer_turn
             viewer_token = viewer_turn.set(_viewer_session(attached))
             cleanups.append(lambda: viewer_turn.reset(viewer_token))
         A.register_gateway_notify(SESSION_KEY, notify)
@@ -163,7 +163,7 @@ def _run_unguarded_rm(victim) -> tuple[str, dict]:
 
 @contextlib.contextmanager
 def _side_task(cwd):
-    """/bg and /btw (gateway/session_tui_side.py ``_side_scope``): the session's policy, their own task key and
+    """/bg and /btw (hermes_agent/gateway/session_tui_side.py ``_side_scope``): the session's policy, their own task key and
     no notifier."""
     tokens = set_session_vars(session_key=SIDE_KEY, session_id=SIDE_KEY, cwd=str(cwd))
     key_token = approval_context.set_current_session_key(SIDE_KEY)

@@ -18,7 +18,7 @@ from unittest.mock import patch
 
 import pytest
 
-from gateway.config import Platform
+from hermes_agent.gateway.config import Platform
 from tests.cron.test_cron_relay_media_upload_failure import CHAT, _gateway_config, live_relay
 
 
@@ -66,7 +66,7 @@ def test_cron_marks_an_unconfirmed_attachment_unverified(ack_lost_relay, tmp_pat
     pdf.write_bytes(b"%PDF-1.4 q3")
     job = create_job("Post the Q3 report", "every 1d", name="Q3 report", deliver="origin",
                      origin={"platform": "slack", "chat_id": CHAT})
-    with patch("gateway.config.load_gateway_config", return_value=_gateway_config()), \
+    with patch("hermes_agent.gateway.config.load_gateway_config", return_value=_gateway_config()), \
          patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
          patch("hermes_agent.cron.scheduler_delivery._maybe_mirror_cron_delivery", lambda *a, **k: None):
         error = _deliver_result(job, f"Q3 numbers are in.\n\nMEDIA:{pdf}",

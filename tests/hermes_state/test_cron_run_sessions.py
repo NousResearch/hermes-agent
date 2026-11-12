@@ -1,7 +1,7 @@
 """A cron job's run history includes the runs the unified gateway runtime creates (#138812).
 
 Since the unified runtime, an agent fire is created through the session authority
-(``gateway/session_cron.py``) under a runtime-minted ``local-*`` id; only runs from before it
+(``hermes_agent/gateway/session_cron.py``) under a runtime-minted ``local-*`` id; only runs from before it
 carry ``cron_{job_id}_{timestamp}``. These drive that real producer over SQLite (admission only,
 no agent turn) and read back through ``SessionDB.list_cron_job_runs``.
 """
@@ -10,7 +10,7 @@ import sqlite3
 import pytest
 
 from hermes_agent.cron import jobs
-from gateway import session_cron
+from hermes_agent.gateway import session_cron
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 from tests.fakes.cron_owner import admit_fire, cron_owner

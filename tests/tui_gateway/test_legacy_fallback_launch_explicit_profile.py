@@ -49,7 +49,7 @@ def homes(tmp_path, monkeypatch):
 def _call_on_launch_socket(server, launch, params):
     """One legacy fallback request on a socket whose ticket is the launch profile's, in the scope
     ``gateway_ws`` binds for it."""
-    from gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
+    from hermes_agent.gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
     from hermes_agent.tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
     from hermes_agent.tui_gateway.ws_legacy_fallback import dispatch_legacy
     actor = types.SimpleNamespace(profile_id=str(launch), capabilities=frozenset(_PURPOSE_CAPABILITIES["interactive"]))
@@ -82,7 +82,7 @@ def test_explicit_profile_that_does_not_resolve_is_refused_before_the_handler(ho
 def test_a_secondary_socket_naming_the_launch_profile_runs_in_the_launch_scope(homes, monkeypatch):
     """Reverse direction: a profile-bound socket runs in that profile's scope, so a verb naming the
     launch profile must not keep the secondary's secrets and home."""
-    from gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
+    from hermes_agent.gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
     from hermes_agent.tui_gateway.ws_legacy_fallback import dispatch_legacy
     server, launch, bee, seen = homes
     env_only = []

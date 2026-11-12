@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import hosted_rooms
+from hermes_agent.gateway import hosted_rooms
 from tests.gateway.test_session_group_peers import (
     _grant_error, _seat, invite, gateway as gateway_fixture, linked_peer as linked_peer_fixture,
 )

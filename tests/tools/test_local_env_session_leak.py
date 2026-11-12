@@ -27,8 +27,8 @@ import os
 
 import pytest
 
-import gateway.session_context as sc
-from gateway.session_context import _VAR_MAP, clear_session_vars, set_session_vars
+import hermes_agent.gateway.session_context as sc
+from hermes_agent.gateway.session_context import _VAR_MAP, clear_session_vars, set_session_vars
 from tools.environments.local import _make_run_env, _sanitize_subprocess_env, hermes_subprocess_env
 
 # The full set of session vars the bridge owns.

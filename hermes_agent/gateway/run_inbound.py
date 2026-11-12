@@ -1,8 +1,8 @@
 """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner.
 
-Split out of ``gateway/run.py``; bound onto ``GatewayRunner`` via the MRO.
-``gateway.run`` internals are imported lazily inside method bodies (import cycle),
-so ``patch("gateway.run.X")`` keeps intercepting them at call time.
+Split out of ``hermes_agent/gateway/run.py``; bound onto ``GatewayRunner`` via the MRO.
+``hermes_agent.gateway.run`` internals are imported lazily inside method bodies (import cycle),
+so ``patch("hermes_agent.gateway.run.X")`` keeps intercepting them at call time.
 """
 
 from __future__ import annotations
@@ -20,33 +20,33 @@ from contextlib import suppress
 from pathlib import Path
 
 from agent.i18n import t
-from gateway.config import Platform
-from gateway.platforms.base import EphemeralReply
-from gateway.platforms.event import MessageEvent, MessageType, clean_attachment_filename
-from gateway.run_busy import approval_input_words
-from gateway.run_inbound_media import rehome_inbound_media
-from gateway.run_inbound_hooks import GatewayInboundHooksMixin
-from gateway.run_inbound_transcription import GatewayInboundTranscriptionMixin
-from gateway.run_plugin_injection import GatewayPluginInjectionMixin
-from gateway.run_inbound_unauthorized import (
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.base import EphemeralReply
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType, clean_attachment_filename
+from hermes_agent.gateway.run_busy import approval_input_words
+from hermes_agent.gateway.run_inbound_media import rehome_inbound_media
+from hermes_agent.gateway.run_inbound_hooks import GatewayInboundHooksMixin
+from hermes_agent.gateway.run_inbound_transcription import GatewayInboundTranscriptionMixin
+from hermes_agent.gateway.run_plugin_injection import GatewayPluginInjectionMixin
+from hermes_agent.gateway.run_inbound_unauthorized import (
     UnauthorizedOwnerNotifier, pairing_code_reply, pairing_profile_arg, pairing_rate_limited_reply,
     unauthorized_owner_hint,
 )
-from gateway.session import (
+from hermes_agent.gateway.session import (
     SessionSource, build_session_context, is_shared_multi_user_session,
     neutralize_untrusted_inline_text,
 )
-from gateway.turn_lease import TurnLeaseTimeoutError
+from hermes_agent.gateway.turn_lease import TurnLeaseTimeoutError
 from hermes_cli.observability.shared_metrics_busy import (
     note_busy_admitting, note_busy_outcome, settle_busy_arrival, stamp_busy_arrival)
 from typing import Any, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner
-    from gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 # ``RelayMediaClient.download`` temp-file prefix: the rest of such a basename is random, not a name.
 _RELAY_MEDIA_PREFIX = "relay_media_"
@@ -110,7 +110,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         """``decline`` behavior: one short refusal per sender per DECLINE_DEDUPE_SECONDS, then silence
         (#88028). The stamp is written BEFORE the send so a delivery
         hiccup cannot become a decline storm; without a store there is no dedupe state → stay silent."""
-        from gateway.config import DEFAULT_UNAUTHORIZED_DM_DECLINE_MESSAGE
+        from hermes_agent.gateway.config import DEFAULT_UNAUTHORIZED_DM_DECLINE_MESSAGE
         platform_name = source.platform.value if source.platform else "unknown"
         pairing_store = self._pairing_store_for(source)
         if pairing_store is None or pairing_store.has_recent_decline(platform_name, source.user_id):
@@ -151,7 +151,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
     ) -> Optional[tuple[MessageEvent, SessionSource, bool]]:
         """Ingress gates for ``_handle_message``; None when dropped, else ``(event, source, is_internal)``
         (the ``pre_gateway_dispatch`` hook may have rewritten ``event``)."""
-        from gateway.run import _is_slack_ignored_channel
+        from hermes_agent.gateway.run import _is_slack_ignored_channel
         source = event.source
         # getattr(self, ...) throughout: bare test runners build GatewayRunner via object.__new__.
         _config = getattr(self, "config", None)
@@ -160,7 +160,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         # spawning context, which may carry ANOTHER message's HERMES_SESSION_* ContextVars; until
         # _set_session_env binds ours a subprocess would read the foreign identity. Reset to _UNSET.
         try:
-            from gateway.session_context import reset_session_vars
+            from hermes_agent.gateway.session_context import reset_session_vars
             reset_session_vars()
         except Exception:
             logger.debug("reset_session_vars failed at handler entry", exc_info=True)
@@ -172,7 +172,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         if getattr(_config, "multiplex_profiles", False):
             self._canonicalize(source)
         if getattr(source, "profile_route_rejected", False) is True:
-            from gateway.parked_route_refusal import drop_rejected_route
+            from hermes_agent.gateway.parked_route_refusal import drop_rejected_route
             _intake = None
             with suppress(Exception):
                 _intake = self._intake_adapter_for(source)
@@ -200,7 +200,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
 
         # An admission the authority is executing is already ordered by its durable FIFO; parking it
         # here would settle the row with no turn and replay the input outside it (GW-2).
-        from gateway.session_ingress import executing_admission
+        from hermes_agent.gateway.session_ingress import executing_admission
         if (
             getattr(self, "_startup_restore_in_progress", False)
             and not is_internal
@@ -307,7 +307,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
     @staticmethod
     def _hm_write_update_response(response_text: str) -> Optional[str]:
         """Atomically hand *response_text* to the detached update process; returns the OSError str."""
-        from gateway.run import _hermes_home
+        from hermes_agent.gateway.run import _hermes_home
         response_path = _hermes_home / ".update_response"
         try:
             tmp = response_path.with_suffix(".tmp")
@@ -321,8 +321,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
     def _hm_update_reply_refused(self, event: MessageEvent) -> bool:
         """Whether *event*'s sender may not answer the pending ``/update`` prompt (not its opener nor
         an admin of the chat scope): their message is ordinary chat, never the update answer."""
-        from gateway.approval_actor import update_prompt_refusal
-        from gateway.slash_access import policy_for_runner_source
+        from hermes_agent.gateway.approval_actor import update_prompt_refusal
+        from hermes_agent.gateway.slash_access import policy_for_runner_source
         return update_prompt_refusal(event.user_id or event.source.user_id,
                                      admin_ids=policy_for_runner_source(self, event.source).admin_user_ids) is not None
 
@@ -450,20 +450,20 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
     def _refused_clarify(self, event: MessageEvent, clarify_id: str) -> Optional[str]:
         """The localized refusal when *event*'s sender may not answer clarify *clarify_id* (not its
         requester, an approver, or this bot's admin), else None."""
-        from gateway.approval_actor import clarify_refusal, refusal_text
+        from hermes_agent.gateway.approval_actor import clarify_refusal, refusal_text
         requester = clarify_refusal(clarify_id, event.sender_id() or "", admin_ids=self._prompt_admin_ids(event))
         return refusal_text(requester) if requester else None
 
     def _refused_slash_confirm(self, event: MessageEvent, session_key: str, confirm_id: str) -> Optional[str]:
         """The localized refusal when *event*'s sender may not answer slash confirm *confirm_id*, else None."""
-        from gateway.approval_actor import refusal_text, slash_confirm_refusal
+        from hermes_agent.gateway.approval_actor import refusal_text, slash_confirm_refusal
         requester = slash_confirm_refusal(session_key, confirm_id, event.sender_id() or "",
                                           admin_ids=self._prompt_admin_ids(event))
         return refusal_text(requester) if requester else None
 
     def _prompt_admin_ids(self, event: MessageEvent):
         """The answer policy of the chat *event* arrived in (admins + its slash floor)."""
-        from gateway.slash_access import policy_for_runner_source
+        from hermes_agent.gateway.slash_access import policy_for_runner_source
         return policy_for_runner_source(self, event.source)
 
     async def _release_pending_clarify(self, pending, source) -> bool:
@@ -560,7 +560,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         the threshold (active tasks can run for hours), or has no activity tracker and an extreme
         wall-clock age. The pending sentinel is never evicted (no get_activity_summary() → idle
         reads inf and would race the async setup path)."""
-        from gateway.run import _AGENT_PENDING_SENTINEL, _float_env
+        from hermes_agent.gateway.run import _AGENT_PENDING_SENTINEL, _float_env
         _raw_stale_timeout = _float_env("HERMES_AGENT_TIMEOUT", 1800)
         _quick_state = self._peek_session_state(_quick_key)
         _stale_ts = _quick_state.turn.started_ts if _quick_state else 0
@@ -574,7 +574,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         if _stale_agent and hasattr(_stale_agent, "get_activity_summary"):
             with suppress(Exception):
                 _sa = _stale_agent.get_activity_summary()
-                from gateway.session_stall import resolve_session_idle_seconds_from_activity
+                from hermes_agent.gateway.session_stall import resolve_session_idle_seconds_from_activity
 
                 _sa_d = _sa if isinstance(_sa, dict) else {}
                 _resolved_idle = resolve_session_idle_seconds_from_activity(
@@ -635,7 +635,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             logger.debug("reaped-session staleness check failed", exc_info=True)
 
     def _hm_evict_running_agent(self, _quick_key: str, reason: str) -> None:
-        from gateway.run import _INTERRUPT_REASON_EVICTED, _INTERRUPT_TOOL_REASON_EVICTED
+        from hermes_agent.gateway.run import _INTERRUPT_REASON_EVICTED, _INTERRUPT_TOOL_REASON_EVICTED
         _generation_at_interrupt = self._interrupt_running_turn(
             _quick_key, interrupt_reason=_INTERRUPT_REASON_EVICTED, invalidation_reason=reason,
             tool_reason=_INTERRUPT_TOOL_REASON_EVICTED)
@@ -645,7 +645,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         self, source: SessionSource, _quick_key: str, event: MessageEvent, *, merge_text: bool = False
     ) -> None:
         """Merge *event* into the source adapter's pending slot (no-op without an adapter)."""
-        from gateway.platforms.base import merge_pending_message_event
+        from hermes_agent.gateway.platforms.base import merge_pending_message_event
         adapter = self._delivery_adapter_for(source)
         if adapter:
             merge_pending_message_event(adapter._pending_messages, _quick_key, event, merge_text=merge_text)
@@ -697,7 +697,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         ``messaging:*`` rows of this route's logical owner first (automation wakes, LOCAL/API input
         and ``unknown`` rows are untouched; settled silently, no pause notice), then interrupts the
         claimed generation: a turn still constructing its agent latches the Stop for adopt_agent."""
-        from gateway.session_authorities import active_authority
+        from hermes_agent.gateway.session_authorities import active_authority
         authority = active_authority(self)
         sid = authority.logical_owner(self.session_store.peek_session_id(_quick_key)) if authority else None
         if not sid or sid not in authority.sessions:
@@ -705,7 +705,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                 # The chat's first input, and a command's turn, not committed yet never commit.
                 authority.fence_route(_quick_key)
             return
-        from gateway.session_contract import SessionActor, SessionRef
+        from hermes_agent.gateway.session_contract import SessionActor, SessionRef
         from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions
         ref = SessionRef(authority.profile_id, sid)
         actor = SessionActor('messaging-control', authority.profile_id,
@@ -739,7 +739,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         Invalid or empty ``HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS`` falls back to 3.0
         via ``_float_env`` — a config typo must not crash the inbound handler.
         """
-        from gateway.run import _float_env
+        from hermes_agent.gateway.run import _float_env
         _grace = _float_env("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", 3.0)
         _grace_state = self._peek_session_state(_quick_key)
         _started_at = _grace_state.turn.started_ts if _grace_state else 0
@@ -784,7 +784,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         self, event: MessageEvent, source: SessionSource, running_agent: Any, _quick_key: str
     ) -> None:
         """Interrupt path: redirect text-only corrections when supported, else ``agent.interrupt()``."""
-        from gateway.run import _build_media_placeholder
+        from hermes_agent.gateway.run import _build_media_placeholder
         # Text-only corrections redirect the live turn (preserving displayed context) when the
         # runtime supports it; media/voice and older runtimes use the interrupt path below.
         _can_redirect = getattr(running_agent, "_supports_active_turn_redirect", False) is True
@@ -816,7 +816,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         Returns True when the text already landed inside the running turn (steer / redirect), so it
         must NOT also be admitted as its own turn; False when the caller should admit it (queue mode,
         a demotion, or an interrupt — the ended turn lets the FIFO run the follow-up next)."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from hermes_agent.gateway.run import _AGENT_PENDING_SENTINEL
         superseded = self._clarify_takeover(event, _quick_key)
         mode = "interrupt" if superseded else self._effective_busy_input_mode(source)
         state = self._peek_session_state(_quick_key)
@@ -836,7 +836,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
     ) -> Optional[str]:
         """Fast-path while this session's agent is running: interrupt by default (minimal latency);
         busy_input_mode queue/steer, subagent and compression protection demote to queue."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from hermes_agent.gateway.run import _AGENT_PENDING_SENTINEL
         if getattr(event, "internal", False) and not event.get_command():
             # Main's rule (run_busy's busy handler, which the shared runtime's busy dispatch skips):
             # an internal synthetic event never interrupts or steers the running turn.
@@ -1145,7 +1145,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
     @staticmethod
     def _hm_unknown_slash_reply(command: str, source: SessionSource) -> Optional[str]:
         """Reply for a /command that is not built-in/plugin/skill; None when it is known."""
-        from gateway.run import _check_unavailable_skill
+        from hermes_agent.gateway.run import _check_unavailable_skill
         from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
         # Known commands never need an unavailable-skill hint (which can require a cold scan).
         if command.replace("_", "-") in GATEWAY_KNOWN_COMMANDS:
@@ -1230,7 +1230,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         """Replies owned by in-flight work: pending /update prompt, clarify, slash-confirm.
         Only events that may control the gateway (``allow_gateway_control``) can answer them, never
         an admitted turn: it was offered here before its commit, or a slash command queued it."""
-        from gateway.session_ingress import executing_admission
+        from hermes_agent.gateway.session_ingress import executing_admission
         if not event.allow_gateway_control or getattr(event, "_fifo_only", False) or executing_admission.get():
             return None
         _reply = self._hm_update_prompt_reply(event, _quick_key)
@@ -1305,10 +1305,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         on the in-process path. Raises ``RuntimeStoreError('profile_mismatch')`` for a scope this
         process does not serve."""
         # The message handler entered the routed profile's scope; its authority owns this turn.
-        from gateway.session_authorities import active_authority
+        from hermes_agent.gateway.session_authorities import active_authority
         authority = active_authority(self)
         if authority is not None and not event.get_command() and not is_internal:
-            from gateway.session_ingress import executing_admission
+            from hermes_agent.gateway.session_ingress import executing_admission
             if not executing_admission.get():
                 # A message the adapter saw as idle still waits when an earlier queued turn runs
                 # outside its session guard: the running-turn check is the busy test that counts.
@@ -1330,7 +1330,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         self, authority: Any, event: MessageEvent, source: SessionSource, _quick_key: str, busy: bool,
     ) -> tuple[bool, Optional[str]]:
         """The authority-owned path of ``_hm_authority_admission`` (not inside a FIFO execution)."""
-        from gateway.session_ingress import admit_message
+        from hermes_agent.gateway.session_ingress import admit_message
         # The durable FIFO only orders turns; busy_input_mode still decides what a follow-up
         # does to the RUNNING one (steer into it, redirect it, or end it so the FIFO advances).
         # Without this, ``interrupt`` degrades to ``queue`` behind a turn that may hang for
@@ -1354,7 +1354,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """Handle an incoming message from any platform: auth → command check → running-agent
         interrupt → get/create session → build context → run agent → return response."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from hermes_agent.gateway.run import _AGENT_PENDING_SENTINEL
         _admitted = await self._hm_admit_event(event)
         if _admitted is None:
             return None
@@ -1535,7 +1535,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         """Split ``event.media_urls`` into (image, STT-voice, audio-file, video) paths. Per-attachment
         MIME wins over the message-level type (a document sent alongside an image must not be routed
         as an image). MessageType.AUDIO / mixed DOCUMENT audio is a file attachment, never STT."""
-        from gateway.run import _event_media_is_audio, _event_media_is_image, _event_media_is_stt_input
+        from hermes_agent.gateway.run import _event_media_is_audio, _event_media_is_image, _event_media_is_stt_input
         image_paths, audio_paths, audio_file_paths, video_paths = [], [], [], []
         for i, path in enumerate(event.media_urls or []):
             mtype = event.media_types[i] if i < len(event.media_types) else ""
@@ -1590,7 +1590,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         self, adapter, source: SessionSource, transcripts: list[str], *, metadata=None, log_context: str = "Transcript"
     ) -> None:
         """Send each transcript back as ``🎙️ "…"`` (best-effort; failures are logged, never raised)."""
-        from gateway.bot_peer_notices import automatic_notices_allowed
+        from hermes_agent.gateway.bot_peer_notices import automatic_notices_allowed
         for tx in transcripts if automatic_notices_allowed(source) else ():
             try:
                 await adapter.send(source.chat_id, t("gateway.voice.transcript_echo_short", text=tx), metadata=metadata)
@@ -1664,7 +1664,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
     @classmethod
     def _prepend_inbound_document_notes(cls, event: MessageEvent, message_text: str) -> str:
         """Prepend a context note per non-media attachment (anything not routed as image/audio/video)."""
-        from gateway.run import (
+        from hermes_agent.gateway.run import (
             _build_document_context_note, _event_media_is_audio, _event_media_is_image,
             _event_media_is_video,
         )
@@ -1717,7 +1717,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             and getattr(source, "platform", None) == Platform.DISCORD
             and getattr(event, "message_id", None)
         ):
-            from gateway.session import _discord_tools_loaded as _disc_tools_loaded
+            from hermes_agent.gateway.session import _discord_tools_loaded as _disc_tools_loaded
             if _disc_tools_loaded():
                 message_text = f"{discord_triggering_note(event.message_id)}\n\n{message_text}"
         return message_text
@@ -1725,7 +1725,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
     async def _inbound_model_context_length(self, source: SessionSource, session_key: str) -> int:
         """Context length of the model this turn runs on. A global ``model.context_length`` pin
         belongs to the configured model, not a /model or channel override; custom-provider limits win."""
-        from gateway.run import _load_gateway_config
+        from hermes_agent.gateway.run import _load_gateway_config
         from agent.model_metadata import get_model_context_length_async
 
         _msg_config_ctx = None
@@ -1785,11 +1785,11 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         self, source: SessionSource, session_key: str, message_text: str
     ) -> Optional[str]:
         """Expand ``@`` context references; returns None when the injection was refused (user notified)."""
-        from gateway.session_context_refs import inbound_references
+        from hermes_agent.gateway.session_context_refs import inbound_references
         expanded, refusal = await inbound_references(self, source, session_key, message_text)
         if refusal is None:
             return expanded
-        from gateway.bot_peer_notices import automatic_notices_allowed
+        from hermes_agent.gateway.bot_peer_notices import automatic_notices_allowed
         _adapter = self._delivery_adapter_for(source) if automatic_notices_allowed(source) else None
         if _adapter:
             await _adapter.send(source.chat_id, refusal)
@@ -1821,7 +1821,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         message_text = self._prepend_inbound_media_file_notes(
             message_text, audio_file_paths, video_paths, self._inbound_original_names(event))
         message_text = self._prepend_inbound_document_notes(event, message_text)
-        from gateway.session_context_refs import turn_references
+        from hermes_agent.gateway.session_context_refs import turn_references
         message_text = await turn_references(self, event, source, session_key, message_text)
         if message_text is None:
             return None
@@ -1834,7 +1834,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         session_key: Optional[str] = None,
     ) -> Optional[str]:
         """Run inbound preprocessing under the routed profile when multiplexed."""
-        from gateway.run import _async_profile_runtime_scope
+        from hermes_agent.gateway.run import _async_profile_runtime_scope
         kwargs = dict(event=event, source=source, history=history, session_key=session_key)
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
             async with _async_profile_runtime_scope(self._resolve_profile_home_for_source(source)):

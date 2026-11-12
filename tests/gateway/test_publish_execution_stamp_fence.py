@@ -9,7 +9,7 @@ from tests.gateway.test_session_authority_cancel_settlement import _authority, _
 
 @pytest.mark.asyncio
 async def test_publish_execution_reads_no_ledger_per_delta_and_still_fences_stale_generations(tmp_path, monkeypatch):
-    from gateway import session_finite
+    from hermes_agent.gateway import session_finite
 
     db, authority = _authority(tmp_path, monkeypatch)
     published = {}

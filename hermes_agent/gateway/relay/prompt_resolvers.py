@@ -11,8 +11,8 @@ from typing import Optional
 
 def prompt_refusal(state: dict, actor: dict, option_id: Optional[str] = None) -> Optional[str]:
     """The localized refusal when *actor* (``actor_id`` + ``admin_ids``) may not answer the pending
-    prompt *state*, else None: the requester / approvers / admins rule of ``gateway.approval_actor``."""
-    from gateway import approval_actor
+    prompt *state*, else None: the requester / approvers / admins rule of ``hermes_agent.gateway.approval_actor``."""
+    from hermes_agent.gateway import approval_actor
 
     session_key = str(state.get("session_key") or "")
     kind = state.get("kind")
@@ -29,7 +29,7 @@ def prompt_refusal(state: dict, actor: dict, option_id: Optional[str] = None) ->
 
 
 async def resolve_exec_approval(adapter, state, option_id, chat_id, ack_meta) -> None:
-    from gateway.relay import adapter as _relay
+    from hermes_agent.gateway.relay import adapter as _relay
     from tools.approval import resolve_gateway_approval_card
 
     choice = option_id if option_id in _relay._EXEC_APPROVAL_LABELS else "deny"
@@ -45,7 +45,7 @@ async def resolve_exec_approval(adapter, state, option_id, chat_id, ack_meta) ->
 
 
 async def resolve_slash_confirm(adapter, state, option_id, chat_id, ack_meta) -> None:
-    from gateway.relay import adapter as _relay
+    from hermes_agent.gateway.relay import adapter as _relay
     from tools import slash_confirm as slash_confirm_mod
 
     choice = option_id if option_id in _relay._SLASH_CONFIRM_LABELS else "cancel"

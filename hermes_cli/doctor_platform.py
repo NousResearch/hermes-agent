@@ -203,7 +203,7 @@ def _report_host_gateway_slot(mgr, issues: list[str]) -> None:
     """Multiplex-only: ONE gateway process serves N profiles, so report THAT process and its
     roster. The old ``Per-profile gateways: up/total`` line described a topology we no longer
     run — it counted supervision slots and never said which profiles were actually served."""
-    from gateway.host_topology import host_gateway_topology
+    from hermes_agent.gateway.host_topology import host_gateway_topology
     slots = sorted(mgr.list_profile_gateways())
     topology = host_gateway_topology()
     if topology is None:

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_policy import build_policy, rebind_launch_key
+from hermes_agent.gateway.session_policy import build_policy, rebind_launch_key
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 _CFG = {'platform_toolsets': {'cli': ['terminal']}}
@@ -106,12 +106,12 @@ def test_the_reason_code_is_unchanged_on_the_wire():
 
 def test_the_profile_in_the_log_line_is_a_name_not_a_home_path(tmp_path, caplog):
     """A root profile is keyed by its home path; the log line carries its name, never the path."""
-    from gateway.session_controls import _log_refusal, _profile_label
+    from hermes_agent.gateway.session_controls import _log_refusal, _profile_label
 
     assert _profile_label('test') == 'test'
     assert _profile_label(None) == 'default'
     assert _profile_label(str(tmp_path)) == 'default'
-    with caplog.at_level('WARNING', logger='gateway.session_controls'):
+    with caplog.at_level('WARNING', logger='hermes_agent.gateway.session_controls'):
         _log_refusal(str(tmp_path), 'session.create',
                      RuntimeStoreError('invalid_params', field='cwd', detail='not a directory'))
     line = caplog.records[-1].getMessage()
@@ -121,8 +121,8 @@ def test_the_profile_in_the_log_line_is_a_name_not_a_home_path(tmp_path, caplog)
 @pytest.mark.asyncio
 async def test_the_frame_carries_the_field_and_the_gateway_logs_it(tmp_path, caplog):
     """What a report can quote: the JSON-RPC ``error.data`` and one gateway log line."""
-    from gateway.session_authority import SessionAuthority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 
@@ -140,7 +140,7 @@ async def test_the_frame_carries_the_field_and_the_gateway_logs_it(tmp_path, cap
                 return {'session.policy_probe': probe}
 
         connection = Connection(authority, object(), {'user_id': 'human'})
-        with caplog.at_level('WARNING', logger='gateway.session_controls'):
+        with caplog.at_level('WARNING', logger='hermes_agent.gateway.session_controls'):
             reply = await connection.dispatch({'id': 7, 'method': 'session.policy_probe', 'params': {}})
         assert reply['error']['message'] == 'invalid_params'
         assert reply['error']['data'] == {'reason': 'invalid_params', 'field': 'toolsets', 'detail': detail}
@@ -154,8 +154,8 @@ async def test_the_frame_carries_the_field_and_the_gateway_logs_it(tmp_path, cap
 @pytest.mark.asyncio
 async def test_a_bare_refusal_does_not_warn(tmp_path, caplog):
     """A retrying client must not be able to flood the log: only a named refusal is a warning."""
-    from gateway.session_authority import SessionAuthority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 
@@ -172,7 +172,7 @@ async def test_a_bare_refusal_does_not_warn(tmp_path, caplog):
                 return {'session.unnamed_probe': probe}
 
         connection = Connection(authority, object(), {'user_id': 'human'})
-        with caplog.at_level('DEBUG', logger='gateway.session_controls'):
+        with caplog.at_level('DEBUG', logger='hermes_agent.gateway.session_controls'):
             reply = await connection.dispatch({'id': 8, 'method': 'session.unnamed_probe', 'params': {}})
         assert reply['error']['data'] == {'reason': 'permission_denied'}
         levels = {record.levelname for record in caplog.records}
@@ -206,7 +206,7 @@ def test_a_refusal_without_a_named_field_reads_exactly_as_before():
 
 def test_a_bypass_launch_without_a_model_names_the_model():
     """`--ignore-user-config` has no profile to inherit a model from: the refusal says so."""
-    from gateway.session_local import _bypass_policy
+    from hermes_agent.gateway.session_local import _bypass_policy
 
     with pytest.raises(RuntimeStoreError) as caught:
         _bypass_policy({'source': 'cli'}, private_secrets=None)

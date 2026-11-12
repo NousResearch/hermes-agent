@@ -20,7 +20,7 @@ def follow_launch_path(runner, home, platform: str) -> bool:
     ``macos`` takes the path of macOS and the BSDs, where nothing identifies who owns the browser's
     connection: the gateway is told so through ``register_control_verbs(links_checked=False)``, and its
     link is printed for the user to open by hand. Anything else keeps the host's own path."""
-    from gateway import webapp_listener
+    from hermes_agent.gateway import webapp_listener
 
     if platform == "macos":
         webapp_listener.register_control_verbs(runner, home, links_checked=False)
@@ -59,7 +59,7 @@ async def sockets_across_sign_out(runner, client, origin, ask):
     sign-out; also what each browser socket ticket refuses to open."""
     from websockets.asyncio.client import connect
 
-    from gateway.runtime_bootstrap import TicketStore
+    from hermes_agent.gateway.runtime_bootstrap import TicketStore
     from hermes_cli import web_host_terminal, web_server
     from tests.gateway.fixtures.local_recovery_probe import rpc
 
@@ -104,12 +104,12 @@ async def probe(mode, port, dist, platform):
     import httpx
     from websockets.asyncio.client import connect
 
-    from gateway.control_socket import GatewayControlServer
-    from gateway.run import GatewayRunner
-    from gateway.run_api import stop_gateway_api
-    from gateway.run_runtime import start_gateway_runtime_api
-    from gateway.session_authority import initialize_session_authority
-    from gateway.webapp_listener import TOKEN_PATH
+    from hermes_agent.gateway.control_socket import GatewayControlServer
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.run_api import stop_gateway_api
+    from hermes_agent.gateway.run_runtime import start_gateway_runtime_api
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.webapp_listener import TOKEN_PATH
     import hermes_cli.webapp
     from tests.gateway.fixtures.local_recovery_probe import rpc
 

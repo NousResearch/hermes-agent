@@ -28,7 +28,7 @@ def _visible(setting):
 
 def test_compression_replay_is_classified_diagnostic():
     from agent.conversation_compression import replay_compression_warning
-    from gateway.warning_notifications import DiagnosticText, is_warning_status
+    from hermes_agent.gateway.warning_notifications import DiagnosticText, is_warning_status
     seen = []
     agent = types.SimpleNamespace(_compression_warning="ℹ Codex caps context at 272K, so auto-compaction was raised",
                                   status_callback=lambda kind, msg: seen.append((kind, msg)))
@@ -43,10 +43,10 @@ def test_compression_replay_reaches_gateway_status_sink_only_when_visible(tmp_pa
     """Composed: replay -> the gateway status callback's own gate (render_notification + is_warning_status)."""
     _policy(tmp_path, monkeypatch, setting)
     from agent.conversation_compression import replay_compression_warning
-    from gateway.warning_notifications import is_warning_status, render_notification
+    from hermes_agent.gateway.warning_notifications import is_warning_status, render_notification
     rendered = []
 
-    def gateway_status_callback(kind, msg):  # mirrors gateway/run_turn_runner._status_callback_sync
+    def gateway_status_callback(kind, msg):  # mirrors hermes_agent/gateway/run_turn_runner._status_callback_sync
         render_notification(lambda: rendered.append(str(msg)), platform="slack", diagnostic=is_warning_status(kind, msg))
 
     agent = types.SimpleNamespace(_compression_warning="⚠️ Session compressed 3 times — accuracy may degrade",
@@ -100,7 +100,7 @@ def test_tui_preview_restart_status_warning_honors_policy(tmp_path, monkeypatch,
     emitted = []
     monkeypatch.setattr(server, "_emit", lambda ev, sid, payload: emitted.append(payload["text"]))
     monkeypatch.setattr(server, "_session_get", lambda sid: {"agent": types.SimpleNamespace(_notification_config=None)}, raising=False)
-    from gateway.warning_notifications import DiagnosticText
+    from hermes_agent.gateway.warning_notifications import DiagnosticText
     cbs = server._preview_restart_callbacks("parent-1", "task-1")
     cbs["status_callback"]("lifecycle", "Starting preview")
     cbs["status_callback"]("warn", "⚠ provider fallback engaged")

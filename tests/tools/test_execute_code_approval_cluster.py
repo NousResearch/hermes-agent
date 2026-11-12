@@ -27,7 +27,7 @@ from tools import approval_detection
 from tools import approval_context
 from tools import approval_smart
 from tools.thread_context import propagate_context_to_thread
-from gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
+from hermes_agent.gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
 from tests.tools._child_env_fixtures import child_env
 
 

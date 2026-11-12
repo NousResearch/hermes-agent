@@ -3,7 +3,7 @@ from unittest.mock import Mock
 
 import pytest
 
-import gateway.run as gateway_run
+import hermes_agent.gateway.run as gateway_run
 
 
 class _ExitCalled(Exception):
@@ -73,7 +73,7 @@ def test_exit_backstop_releases_pid_file_and_runtime_lock(monkeypatch):
     _stop_impl — so the force-exit backstop itself must release the PID file and
     runtime lock, or those early paths (#51228 fatal-config) would leak them.
     Both releases are idempotent, so this is safe on every exit path."""
-    from gateway import status as gateway_status
+    from hermes_agent.gateway import status as gateway_status
 
     remove_pid = Mock()
     release_lock = Mock()

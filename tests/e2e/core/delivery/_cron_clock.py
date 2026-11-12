@@ -18,7 +18,7 @@ What is virtual and what stays real:
   delivery queue (``cron/deliveries.db``) and its drain, delivery routing, ``mark_job_run`` — is
   production code.
 * An agent run books its send into the durable queue (ledger ``delivery_outcome='queued'``) and
-  the gateway's housekeeping thread drains it (``gateway/run.py::
+  the gateway's housekeeping thread drains it (``hermes_agent/gateway/run.py::
   _drain_restart_safe_cron_deliveries`` -> ``hermes_agent.cron.scheduler.drain_delivery_queue``). The soak has
   no gateway process, so the driver performs that drain (``drain_deliveries``) once the ticker is
   quiescent; ``delivery_status`` reads the queue's terminal verdict for a queued execution.

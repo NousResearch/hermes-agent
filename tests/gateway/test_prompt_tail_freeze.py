@@ -24,8 +24,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
-from gateway.session import (
+from hermes_agent.gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+from hermes_agent.gateway.session import (
     SessionContext,
     SessionSource,
     build_session_context_prompt,
@@ -37,7 +37,7 @@ from gateway.session import (
 # ---------------------------------------------------------------------------
 
 def _make_runner(**attrs):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner._session_model_overrides = {}
@@ -97,8 +97,8 @@ def _make_context(
 def _stable_discord_tools(monkeypatch):
     """Pin the config/env-dependent renderer gates so key<->render parity is
     evaluated on the same footing in every environment."""
-    monkeypatch.setattr("gateway.session._discord_tools_loaded", lambda: True)
-    monkeypatch.setattr("gateway.session._slack_tools_loaded", lambda: False)
+    monkeypatch.setattr("hermes_agent.gateway.session._discord_tools_loaded", lambda: True)
+    monkeypatch.setattr("hermes_agent.gateway.session._slack_tools_loaded", lambda: False)
 
 
 def _key(runner, context, redact_pii=False):
@@ -339,7 +339,7 @@ class TestVoiceAckFollowsTheAnsweringBot:
         assert runner._voice_ack_guild_for(source) is None
 
     def test_ack_plays_through_the_answering_bot(self):
-        from gateway.run_turn_progress import GatewayTurnProgressMixin
+        from hermes_agent.gateway.run_turn_progress import GatewayTurnProgressMixin
         runner, _primary, secondary = self._runner(True, True)
         source = _secondary_source()
         source._transport_adapter_ref = lambda: secondary

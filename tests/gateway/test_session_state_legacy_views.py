@@ -6,8 +6,8 @@ Each name below used to be a legacy dict view on GatewayRunner; its state now li
 
 import pytest
 
-from gateway import session_state
-from gateway.run import GatewayRunner
+from hermes_agent.gateway import session_state
+from hermes_agent.gateway.run import GatewayRunner
 
 MIGRATED = (
     "_active_session_leases",

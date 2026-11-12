@@ -46,7 +46,7 @@ def discard_orphan_workers_on_reset(conn, session_ids):
 
 RETIRED_RECEIPT = {'retired': True}
 # A delegated child's execution id is its parent's plus this and a random suffix, so every
-# descendant of an execution is one prefix probe away (gateway/session_worker_child.py).
+# descendant of an execution is one prefix probe away (hermes_agent/gateway/session_worker_child.py).
 CHILD_SEPARATOR = '/child:'
 
 

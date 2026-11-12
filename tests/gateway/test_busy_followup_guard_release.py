@@ -29,12 +29,12 @@ import threading
 
 import pytest
 
-import gateway.run as gateway_run
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource, SessionStore
+import hermes_agent.gateway.run as gateway_run
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource, SessionStore
 from hermes_agent.hermes_state import SessionDB
 
 

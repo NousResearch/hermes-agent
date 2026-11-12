@@ -26,13 +26,13 @@ SESSION_ID_RECOGNIZERS = (
     # /bg: CLI + gateway mint f"bg_{now:%H%M%S}_{hex6}" (time only, no date); the TUI/Desktop
     # (hermes_agent/tui_gateway/methods_prompt.py _side_agent_args) mints f"bg_{uuid4().hex[:6]}".
     re.compile(r"^bg_(?:\d{6}_)?[0-9a-f]{6}$"),
-    # gateway/platforms/api_server_room_dispatch.py: f"room_{sha256(seed)[:32]}".
+    # hermes_agent/gateway/platforms/api_server_room_dispatch.py: f"room_{sha256(seed)[:32]}".
     re.compile(r"^room_[0-9a-f]{32}$"),
-    # gateway/platforms/api_server.py: POST /api/sessions + fork f"api_{int(time())}_{hex8}",
+    # hermes_agent/gateway/platforms/api_server.py: POST /api/sessions + fork f"api_{int(time())}_{hex8}",
     # chat-completions _derive_chat_session_id f"api-{sha256[:16]}".
     re.compile(r"^api_\d{9,}_[0-9a-f]{8}$"),
     re.compile(r"^api-[0-9a-f]{16}$"),
-    # gateway/platforms/api_server_runs.py: /v1/runs falls back to its f"run_{uuid4().hex}".
+    # hermes_agent/gateway/platforms/api_server_runs.py: /v1/runs falls back to its f"run_{uuid4().hex}".
     re.compile(r"^run_[0-9a-f]{32}$"),
     # hermes_agent/acp_adapter/session.py and /v1/responses: str(uuid4()).
     re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"),

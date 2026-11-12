@@ -1,7 +1,7 @@
 """Human-friendly generic gateway status phrases: short chat-safe lines for the long-running
 status surface without relaying raw model scratch text — only configured phrase strings are used;
 tool args, commands, previews, and reasoning are never interpolated. Built-in defaults live in
-``gateway/assets/status_phrases.yaml``; users add profile-relative catalogs under ``HERMES_HOME``
+``hermes_agent/gateway/assets/status_phrases.yaml``; users add profile-relative catalogs under ``HERMES_HOME``
 via ``status_phrases.yaml`` / ``status_phrases/*.yaml`` or ``display.status_phrases: {path:
 <HERMES_HOME-relative>, mode: append|replace}``. Absolute paths and ``..`` escapes are ignored on
 purpose so config stays profile-portable and cannot read arbitrary files."""

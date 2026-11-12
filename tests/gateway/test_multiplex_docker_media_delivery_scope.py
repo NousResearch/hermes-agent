@@ -16,11 +16,11 @@ from pathlib import Path
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner, _async_profile_runtime_scope
-from gateway.session import SessionSource, build_session_key
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner, _async_profile_runtime_scope
+from hermes_agent.gateway.session import SessionSource, build_session_key
 
 
 class _Adapter(BasePlatformAdapter):

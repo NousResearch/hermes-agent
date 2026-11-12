@@ -123,7 +123,7 @@ def _network_listener_without_auth(config: Optional[dict]) -> list[str]:
     config + env; overlaps the hard fail-closed guards but surfaces the posture at startup.
     """
     # Any error (incl. an unimportable gateway package) propagates to run_security_audit.
-    from gateway.platforms.base import is_network_accessible
+    from hermes_agent.gateway.platforms.base import is_network_accessible
 
     plats = (config or {}).get("platforms") or {}
     api = plats.get("api_server") if isinstance(plats, dict) else None

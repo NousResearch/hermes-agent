@@ -18,12 +18,12 @@ import asyncio
 import os
 import types
 
-import gateway.run as gw_run
-from gateway.status import GatewayLiveness
+import hermes_agent.gateway.run as gw_run
+from hermes_agent.gateway.status import GatewayLiveness
 
 
 def _liveness(monkeypatch, liveness):
-    from gateway import status as gateway_status
+    from hermes_agent.gateway import status as gateway_status
 
     monkeypatch.setattr(gateway_status, "resolve_gateway_liveness", lambda **_kw: liveness)
 
@@ -47,7 +47,7 @@ class TestCronProfileGate:
 
     def test_probe_failure_ticks_rather_than_silently_dropping_cron(self, tmp_path, monkeypatch):
         """A raising probe must not be read as "another gateway owns it"."""
-        from gateway import status as gateway_status
+        from hermes_agent.gateway import status as gateway_status
 
         def _boom(**_kw):
             raise RuntimeError("probe exploded")
@@ -94,7 +94,7 @@ def test_gateway_passes_a_profile_gate_to_the_cron_ticker(tmp_path, monkeypatch)
     gate = captured.get("profile_gate")
     assert callable(gate), "the gateway must pass a profile_gate to the cron ticker"
     # And the gate it passes is the stand-down one, not a pass-everything stub.
-    from gateway import status as gateway_status
+    from hermes_agent.gateway import status as gateway_status
 
     monkeypatch.setattr(
         gateway_status, "resolve_gateway_liveness",

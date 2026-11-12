@@ -13,8 +13,8 @@ from tests.gateway.test_session_authorities_multiplex import _reserve_homes, _ru
 @pytest.mark.asyncio
 async def test_secondary_store_opens_run_off_the_loop_in_their_own_scope(tmp_path, monkeypatch):
     from hermes_agent import hermes_state_registry
-    from gateway.run_runtime import initialize_gateway_runtime
-    from gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.run_runtime import initialize_gateway_runtime
+    from hermes_agent.gateway.runtime_ownership import process_ownership
     from hermes_constants import get_hermes_home
 
     root, homes = _reserve_homes(tmp_path, monkeypatch)

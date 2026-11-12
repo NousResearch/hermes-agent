@@ -38,16 +38,16 @@ except ImportError:
     HTTPX_AVAILABLE = False
     httpx = None  # type: ignore[assignment]
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import (
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult,
     cache_document_from_bytes_async, cache_image_from_bytes_async,
 )
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms.helpers import strip_markdown
-from gateway.platforms.helpers import MessageDeduplicator, cancel_task, platform_http_client
-from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
-from gateway.platforms.media_cache import ext_for_mime
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.platforms.helpers import strip_markdown
+from hermes_agent.gateway.platforms.helpers import MessageDeduplicator, cancel_task, platform_http_client
+from hermes_agent.gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
+from hermes_agent.gateway.platforms.media_cache import ext_for_mime
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +74,7 @@ from .keyboards import (
     ApprovalRequest, InlineKeyboard, InteractionEvent, approval_button_request_id, build_approval_keyboard,
     build_update_prompt_keyboard, parse_approval_button_data, parse_interaction_event,
     parse_update_prompt_button_data)
-from gateway.platforms._shared import get_scoped_secret as _resolve_qq_secret
+from hermes_agent.gateway.platforms._shared import get_scoped_secret as _resolve_qq_secret
 
 
 def check_qq_requirements() -> bool:
@@ -641,7 +641,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         """Parse ``agent:<namespace>:<platform>:<chat_type>:<chat_id>[:<user_id>]``.
 
         The namespace slot carries the multiplex profile ("main" for the
-        default profile — see ``gateway.session._session_key_namespace``);
+        default profile — see ``hermes_agent.gateway.session._session_key_namespace``);
         it takes no part in any authorization decision, so any non-empty
         value is accepted and every later slot keeps its position.
         """
@@ -1477,7 +1477,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             req.session_key, allow_permanent=getattr(req, "allow_permanent", True), request_id=req.request_id)
         return await self.send_with_keyboard(chat_id, build_approval_text(req), keyboard, reply_to=reply_to)
 
-    # Cross-adapter gateway contract: gateway/run.py detects send_exec_approval /
+    # Cross-adapter gateway contract: hermes_agent/gateway/run.py detects send_exec_approval /
     # send_update_prompt on the adapter class for button-based approval/update UX.
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:

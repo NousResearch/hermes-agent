@@ -10,7 +10,7 @@ does not re-execute stale interrupted tool calls before addressing new input.
 def _simulate_auto_continue(agent_history: list, user_message: str) -> str:
     """Reproduce the auto-continue injection logic from _run_agent().
 
-    This mirrors the exact code in gateway/run.py so we can test the
+    This mirrors the exact code in hermes_agent/gateway/run.py so we can test the
     detection and message transformation without spinning up a full
     gateway runner.
     """
@@ -30,7 +30,7 @@ def _simulate_auto_continue(agent_history: list, user_message: str) -> str:
 
 class TestInterruptedReplayFiltering:
     def test_interrupted_side_effect_is_replayed_as_unknown(self):
-        from gateway.run import _build_gateway_agent_history
+        from hermes_agent.gateway.run import _build_gateway_agent_history
 
         history = [
             {"role": "user", "content": "transcribe this video"},
@@ -66,7 +66,7 @@ class TestInterruptedReplayFiltering:
         and zero matching tool rows. A synthetic UNKNOWN result closes the tool
         pair without claiming the restart did not happen or inviting a retry.
         """
-        from gateway.run import _build_gateway_agent_history
+        from hermes_agent.gateway.run import _build_gateway_agent_history
 
         history = [
             {"role": "user", "content": "restart the container"},

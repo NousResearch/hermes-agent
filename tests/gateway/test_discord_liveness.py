@@ -25,7 +25,7 @@ from tests.gateway.test_discord_connect import (
 _ensure_discord_mock()
 
 import plugins.platforms.discord.adapter as discord_platform
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.discord.adapter import DiscordAdapter
 
 
@@ -234,10 +234,10 @@ def _live_bot_factory():
 
 async def _connect(adapter: DiscordAdapter, monkeypatch, bot_factory):
     monkeypatch.setattr(
-        "gateway.status.acquire_scoped_lock",
+        "hermes_agent.gateway.status.acquire_scoped_lock",
         lambda scope, identity, metadata=None: (True, None),
     )
-    monkeypatch.setattr("gateway.status_scoped_locks.release_scoped_lock", lambda scope, identity: None)
+    monkeypatch.setattr("hermes_agent.gateway.status_scoped_locks.release_scoped_lock", lambda scope, identity: None)
     intents = SimpleNamespace(
         message_content=False, dm_messages=False, guild_messages=False,
         members=False, voice_states=False,

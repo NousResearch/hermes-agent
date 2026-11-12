@@ -104,7 +104,7 @@ class TestGatewayBridgeNullHandling:
         cfg_file.write_text("agent:\n  max_turns: null\n", encoding="utf-8")
         monkeypatch.setenv("HERMES_MAX_ITERATIONS", "stale-120")
         # Import here to avoid module-level gateway dependency
-        from gateway.run import _bridge_max_turns_from_config
+        from hermes_agent.gateway.run import _bridge_max_turns_from_config
         _bridge_max_turns_from_config(tmp_path)
         # The stale env var should be cleared so downstream resolver
         # applies the default rather than using the stale value.
@@ -115,7 +115,7 @@ class TestGatewayBridgeNullHandling:
         cfg_file = tmp_path / "config.yaml"
         cfg_file.write_text('agent:\n  max_turns: "none"\n', encoding="utf-8")
         monkeypatch.delenv("HERMES_MAX_ITERATIONS", raising=False)
-        from gateway.run import _bridge_max_turns_from_config
+        from hermes_agent.gateway.run import _bridge_max_turns_from_config
         _bridge_max_turns_from_config(tmp_path)
         assert os.environ.get("HERMES_MAX_ITERATIONS") == "none"
 
@@ -124,7 +124,7 @@ class TestGatewayBridgeNullHandling:
         cfg_file = tmp_path / "config.yaml"
         cfg_file.write_text("agent:\n  max_turns: 120\n", encoding="utf-8")
         monkeypatch.delenv("HERMES_MAX_ITERATIONS", raising=False)
-        from gateway.run import _bridge_max_turns_from_config
+        from hermes_agent.gateway.run import _bridge_max_turns_from_config
         _bridge_max_turns_from_config(tmp_path)
         assert os.environ.get("HERMES_MAX_ITERATIONS") == "120"
 
@@ -133,7 +133,7 @@ class TestGatewayBridgeNullHandling:
         cfg_file = tmp_path / "config.yaml"
         cfg_file.write_text("agent:\n  max_turns:\n", encoding="utf-8")
         monkeypatch.setenv("HERMES_MAX_ITERATIONS", "stale-90")
-        from gateway.run import _bridge_max_turns_from_config
+        from hermes_agent.gateway.run import _bridge_max_turns_from_config
         _bridge_max_turns_from_config(tmp_path)
         assert "HERMES_MAX_ITERATIONS" not in os.environ
 

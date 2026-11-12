@@ -11,7 +11,7 @@ A watcher therefore starts in an empty context and binds the OWNING profile's sc
 run: the output it prepares goes through that profile's ``transform_terminal_output`` hooks, not the
 launch profile's.
 
-Real daemon (``python -m gateway.run``) serving two profiles, each with its own output-hook plugin; a
+Real daemon (``python -m hermes_agent.gateway.run``) serving two profiles, each with its own output-hook plugin; a
 local session on the SECONDARY profile over the websocket, scripted loopback model: the parent
 delegates; the child starts a notify watcher and hands it off; its completion starts a parent turn
 that starts a second notify process, whose completion must re-enter the session.

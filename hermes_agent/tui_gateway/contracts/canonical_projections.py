@@ -21,7 +21,7 @@ class CanonicalConfigGetResult(ConfigGetResult):
 
 class CanonicalConfigSetParams(ProfileParams):
     """Session controls (``busy`` / ``verbose`` / ``yolo`` / ``show_reasoning`` / ``service_tier``, which
-    need ``session_id``) and the TUI's profile preferences (``gateway/session_tui_config.py``;
+    need ``session_id``) and the TUI's profile preferences (``hermes_agent/gateway/session_tui_config.py``;
     ``session_id`` optional). ``model`` is recognised only to be refused with
     ``use_session_mutation_model``: a model pick is the revision-fenced ``session.mutate`` operation,
     never a config write."""
@@ -77,7 +77,7 @@ class CanonicalBotDeliverParams(Params):
 
 class CanonicalBotDeliverResult(Result):
     """A delivery's receipt. It names its admission, unless ``refused``: the FIFO refused the
-    delivery before anything was committed (``gateway/session_bot.py``), a terminal ``failed``
+    delivery before anything was committed (``hermes_agent/gateway/session_bot.py``), a terminal ``failed``
     receipt with no admission that the relay settles as the sender's answer."""
 
     status: str
@@ -91,7 +91,7 @@ class CanonicalBotDeliverResult(Result):
     retry_admission_id: str | None = None
     error: str | None = None
     reason: str | None = None
-    # The target Bot Chat's live state at answer time (``gateway/session_bot_state.py``); never stored.
+    # The target Bot Chat's live state at answer time (``hermes_agent/gateway/session_bot_state.py``); never stored.
     target_state: Literal['idle', 'working', 'waiting_approval', 'waiting_clarify', 'paused'] | None = None
 
     @model_validator(mode='after')
@@ -108,7 +108,7 @@ class CanonicalBotCancelParams(Params):
 
 
 class CanonicalBotCancelResult(Result):
-    """``gateway/session_bot_cancel.py``: ``cancelled`` (withdrawn before it ran, or its pending
+    """``hermes_agent/gateway/session_bot_cancel.py``: ``cancelled`` (withdrawn before it ran, or its pending
     automatic retry withdrawn), ``stopping`` (its running turn was told to stop), or ``finished``
     (nothing left to cancel); ``receipt_status`` is the delivery receipt's status after it."""
 
@@ -127,7 +127,7 @@ for _name, _params, _result in (
     ('groups.approve', CanonicalRoomApproveParams, GroupsApproveResult),
     ('bot_relay.deliver', CanonicalBotDeliverParams, CanonicalBotDeliverResult),
     # The sender's finalize of a refusal marked ``admitted: false``: the same identity, answered
-    # with the id's terminal not-sent receipt or its existing admission (``gateway/session_bot.py``).
+    # with the id's terminal not-sent receipt or its existing admission (``hermes_agent/gateway/session_bot.py``).
     ('bot_relay.settle', CanonicalBotDeliverParams, CanonicalBotDeliverResult),
     # The sender's own cancel by delivery id, decided on the owner beside its one retry.
     ('bot_relay.cancel', CanonicalBotCancelParams, CanonicalBotCancelResult),

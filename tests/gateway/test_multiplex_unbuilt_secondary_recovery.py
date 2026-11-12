@@ -9,10 +9,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import gateway.run as gateway_run
-from gateway.run_adapters_recovery import _adapter_unavailable_message
+import hermes_agent.gateway.run as gateway_run
+from hermes_agent.gateway.run_adapters_recovery import _adapter_unavailable_message
 from tests.waiting import async_wait_until
-from gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 from tests.gateway.test_multiplex_adapter_registry import (
     _install_secondary_reconnect_context,
     _SecondaryRecoveryAdapter,
@@ -31,7 +31,7 @@ def _install_plugin_platform_context(monkeypatch, runner, adapter):
     """Point the secondary-restart fixtures at that platform + credential."""
     _install_secondary_reconnect_context(monkeypatch, runner, adapter)
     monkeypatch.setattr(
-        "gateway.config.load_gateway_config",
+        "hermes_agent.gateway.config.load_gateway_config",
         lambda: GatewayConfig(
             multiplex_profiles=True,
             platforms={
@@ -44,7 +44,7 @@ def _install_plugin_platform_context(monkeypatch, runner, adapter):
 def _dispose_platform_registration(monkeypatch, name: str) -> None:
     """Model the state #137268(d) rules in: the plugin's load overran its deadline, so the plugin
     manager disposed the lease and the registry holds NO registration for the platform at boot."""
-    from gateway.platform_registry import platform_registry
+    from hermes_agent.gateway.platform_registry import platform_registry
 
     real_is_registered = platform_registry.is_registered
     monkeypatch.setattr(
@@ -64,7 +64,7 @@ def _install_none_buildable_context(monkeypatch, runner, platform):
     """
     _install_secondary_reconnect_context(monkeypatch, runner, _SecondaryRecoveryAdapter())
     monkeypatch.setattr(
-        "gateway.config.load_gateway_config",
+        "hermes_agent.gateway.config.load_gateway_config",
         lambda: GatewayConfig(
             multiplex_profiles=True,
             platforms={
@@ -222,7 +222,7 @@ class TestSecondaryAdapterUnavailableRecovery:
         import contextvars
 
         import hermes_cli.plugins as plugins_mod
-        from gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.platform_registry import platform_registry
 
         scope = contextvars.ContextVar("probe_scope", default="launch")
 
@@ -359,7 +359,7 @@ class TestSecondaryAdapterUnavailableRecovery:
         runner, _create = _shared_token_runner(monkeypatch)
         runner._profile_bot_platforms = {"reviewer": {Platform("irc")}}  # an earlier tick's claim
         config = PlatformConfig(enabled=cause != "disabled", token="plugin-token")
-        monkeypatch.setattr("gateway.config.load_gateway_config",
+        monkeypatch.setattr("hermes_agent.gateway.config.load_gateway_config",
                             lambda: GatewayConfig(multiplex_profiles=True, platforms={Platform("irc"): config}))
         monkeypatch.setattr(gateway_run, "_platform_has_bot_credential",
                             lambda platform, cfg: cause != "no credential")
@@ -508,7 +508,7 @@ class TestSecondaryAdapterUnavailableRecovery:
         """While unserve awaits its reconnects' cancellation the profile's adapters stay live owners and a fatal
         teardown finishing meanwhile queues nothing; each adapter then holds its bot until its own teardown. A
         later teardown spares a re-serve's hold. An unserve cancelled mid-wait leaves the profile served."""
-        from gateway.runtime_ownership import process_ownership
+        from hermes_agent.gateway.runtime_ownership import process_ownership
 
         runner, create = _shared_token_runner(monkeypatch)
         torn_down, reserve_connecting, owners_during_cancel, finished_in_wait = asyncio.Event(), asyncio.Event(), [], []
@@ -576,7 +576,7 @@ class TestSecondaryAdapterUnavailableRecovery:
                 torn_down.set()
                 await teardown  # the profile is still served: its fatal platform is queued again
             else:
-                with caplog.at_level(logging.INFO, logger="gateway.run_profile_reconcile"):
+                with caplog.at_level(logging.INFO, logger="hermes_agent.gateway.run_profile_reconcile"):
                     await runner._unserve_profile("a", home)
                 assert "2 adapter(s) stopped" in caplog.text
                 live_claim = runner._adapter_claims(Platform("slack"), live)[0]

@@ -1,4 +1,4 @@
-"""Tests for gateway/wake.py — background wake delivery.
+"""Tests for hermes_agent/gateway/wake.py — background wake delivery.
 
 Two strategies:
 * push-capable adapters keep the synthetic MessageEvent / handle_message path;
@@ -12,9 +12,9 @@ import asyncio
 
 import pytest
 
-from gateway.config import Platform
-from gateway.session import SessionSource
-from gateway.wake import deliver_wake, adapter_supports_push
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.wake import deliver_wake, adapter_supports_push
 
 
 class PushAdapter:
@@ -102,7 +102,7 @@ def test_deliver_wake_retries_429_then_succeeds(monkeypatch):
     """HTTP 429 (max_concurrent_runs cap) is transient — retried with backoff."""
     from aiohttp import web
 
-    import gateway.wake as wake_mod
+    import hermes_agent.gateway.wake as wake_mod
 
     monkeypatch.setattr(wake_mod, "_RETRY_DELAYS_SECONDS", (0.01, 0.01, 0.01))
     calls = {"n": 0}
@@ -131,7 +131,7 @@ def test_persist_delegation_delivery_appends_delivery_row(tmp_path):
     NO self-post / agent turn is involved."""
     from pathlib import Path
 
-    from gateway.wake import persist_delegation_delivery
+    from hermes_agent.gateway.wake import persist_delegation_delivery
     from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=Path(tmp_path) / "state.db")
@@ -170,7 +170,7 @@ def test_persist_delegation_delivery_appends_delivery_row(tmp_path):
 
 def test_persist_delegation_delivery_raises_without_db():
     """DB unavailable must RAISE so the durable claim is released for retry."""
-    from gateway.wake import persist_delegation_delivery
+    from hermes_agent.gateway.wake import persist_delegation_delivery
 
     class NoDbAdapter(ApiServerLikeAdapter):
         def _ensure_session_db(self):

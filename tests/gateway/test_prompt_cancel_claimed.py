@@ -8,8 +8,8 @@ from tests.gateway.test_session_authority_cancel_settlement import REF, _authori
 
 @pytest.mark.asyncio
 async def test_prompt_cancel_racing_the_claim_stops_the_claimed_turn(tmp_path, monkeypatch):
-    from gateway import session_authority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway import session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     from hermes_agent.hermes_state_runtime import claim_session_input
 
     db, authority = _authority(tmp_path, monkeypatch)

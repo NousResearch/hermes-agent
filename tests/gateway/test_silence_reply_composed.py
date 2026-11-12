@@ -7,12 +7,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import gateway.run as gateway_run
+import hermes_agent.gateway.run as gateway_run
 import hermes_yaml as yaml
 import run_agent
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionSource
 from tests.agent import test_empty_response_recovery_persistence as recovery
 from tests.gateway.test_gateway_silence_tokens import _runner
 from tests.gateway.test_run_progress_topics import ProgressCaptureAdapter

@@ -1,6 +1,6 @@
 """Unit tests for the gateway-side relay relevance-policy declaration (Phase 6 ζ).
 
-Covers gateway.relay.relay_relevance_policy() (the projection of the agent's
+Covers hermes_agent.gateway.relay.relay_relevance_policy() (the projection of the agent's
 mention-gating / free-response / allow-bots config into the connector's generic
 vocabulary) and send_relay_policy() (the boot-time POST to /relay/policy). The
 connector HTTP POST is monkeypatched; the cross-repo E2E (connector repo,
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from gateway import relay
+from hermes_agent.gateway import relay
 
 
 @pytest.fixture(autouse=True)
@@ -28,7 +28,7 @@ def _clean_env(monkeypatch):
         "DISCORD_ALLOW_BOTS",
     ):
         monkeypatch.delenv(k, raising=False)
-    monkeypatch.setattr("gateway.run._load_gateway_config", dict, raising=False)
+    monkeypatch.setattr("hermes_agent.gateway.run._load_gateway_config", dict, raising=False)
 
 
 # --------------------------------------------------------------------------
@@ -38,7 +38,7 @@ def _clean_env(monkeypatch):
 def test_projection_maps_require_mention_and_free_response(monkeypatch):
     monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "discord")
     monkeypatch.setattr(
-        "gateway.run._load_gateway_config",
+        "hermes_agent.gateway.run._load_gateway_config",
         lambda: {"discord": {"require_mention": True, "free_response_channels": ["c-support", "c-help"]}},
         raising=False,
     )
@@ -58,7 +58,7 @@ def test_projection_declares_explicit_require_mention_false(monkeypatch):
     # operator configured to free-respond.
     monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "discord")
     monkeypatch.setattr(
-        "gateway.run._load_gateway_config",
+        "hermes_agent.gateway.run._load_gateway_config",
         lambda: {"discord": {"require_mention": False}},
         raising=False,
     )
@@ -85,7 +85,7 @@ def _arm(monkeypatch, *, url="wss://connector.example/relay"):
 def test_send_posts_projected_policy_with_token(monkeypatch):
     _arm(monkeypatch)
     monkeypatch.setattr(
-        "gateway.run._load_gateway_config",
+        "hermes_agent.gateway.run._load_gateway_config",
         lambda: {"discord": {"require_mention": True, "free_response_channels": ["c-support"]}},
         raising=False,
     )
@@ -110,7 +110,7 @@ def test_send_skips_when_no_secret(monkeypatch):
     monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "discord")
     # no GATEWAY_RELAY_ID / SECRET
     monkeypatch.setattr(
-        "gateway.run._load_gateway_config",
+        "hermes_agent.gateway.run._load_gateway_config",
         lambda: {"discord": {"require_mention": True}},
         raising=False,
     )
@@ -123,7 +123,7 @@ def test_send_skips_when_no_secret(monkeypatch):
 def test_send_fail_soft_on_transport_error(monkeypatch):
     _arm(monkeypatch)
     monkeypatch.setattr(
-        "gateway.run._load_gateway_config",
+        "hermes_agent.gateway.run._load_gateway_config",
         lambda: {"discord": {"require_mention": True}},
         raising=False,
     )

@@ -6,13 +6,13 @@ import threading
 
 import pytest
 
-from gateway.session_contract import Submission
+from hermes_agent.gateway.session_contract import Submission
 from tests.gateway.test_local_authority_transitions import local_session
 
 
 async def pending_model(tmp_path, monkeypatch):
-    from gateway import session_mutations
-    from gateway.session_policy import restore_policy
+    from hermes_agent.gateway import session_mutations
+    from hermes_agent.gateway.session_policy import restore_policy
     owner, connection, ref = await local_session(tmp_path, monkeypatch)
     entered, release, completed = threading.Event(), threading.Event(), threading.Event()
     original = session_mutations.mutate_runtime_session
@@ -34,7 +34,7 @@ async def pending_model(tmp_path, monkeypatch):
         return {**prepared, 'policy': asdict(replace(old, model='new', config_json=json.dumps(config)))}
 
     monkeypatch.setattr(session_mutations, 'mutate_runtime_session', blocked)
-    monkeypatch.setattr('gateway.session_mutation_model.prepare_model', prepare)
+    monkeypatch.setattr('hermes_agent.gateway.session_mutation_model.prepare_model', prepare)
     handle = owner._handle(ref)
     task = asyncio.create_task(session_mutations.mutate_session(owner, connection.actor, ref,
         dict(session_id=ref.session_id, request_id='model', operation='model', payload={'model': 'new'},
@@ -50,7 +50,7 @@ async def test_cancelling_model_request_cannot_strand_next_admission(tmp_path, m
     async def execute(authority, ref, row):
         seen.append(row['request_id'])
         return 'done'
-    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    monkeypatch.setattr('hermes_agent.gateway.session_finite.execute_finite_admission', execute)
     try:
         task.cancel()
         await asyncio.sleep(0)
@@ -70,7 +70,7 @@ async def test_cancelling_model_request_cannot_strand_next_admission(tmp_path, m
 
 @pytest.mark.asyncio
 async def test_profile_retirement_waits_for_mutation_thread(tmp_path, monkeypatch):
-    from gateway.run_runtime import _retire_profile_authority
+    from hermes_agent.gateway.run_runtime import _retire_profile_authority
     owner, connection, _ref, task, release, completed = await pending_model(tmp_path, monkeypatch)
     retirement = asyncio.create_task(_retire_profile_authority(owner))
     try:

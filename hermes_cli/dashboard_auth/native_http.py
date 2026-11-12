@@ -162,7 +162,7 @@ def _check_registry_scope(request, profile_id, launch_home):
 
 
 def _redeem_http_ticket(store, ticket, request):
-    from gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
+    from hermes_agent.gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
     try:
         grant = store.redeem(ticket, profile_id=None, purpose='native-http')
     except PermissionError:
@@ -182,7 +182,7 @@ def _redeem_http_ticket(store, ticket, request):
 
 
 def _launch_home(runner):
-    from gateway.session_authorities import all_authorities
+    from hermes_agent.gateway.session_authorities import all_authorities
     registry = getattr(runner, 'session_authorities', None)
     launch = registry.launch if registry is not None else (all_authorities(runner) or [None])[0]
     return launch.profile_id if launch is not None else None
@@ -190,8 +190,8 @@ def _launch_home(runner):
 
 def _native_store(conn, tickets):
     """The runner's ticket store when *conn* may redeem a private grant here, else None."""
-    from gateway.drain_control import restart_wait_read
-    from gateway.session_authorities import all_authorities
+    from hermes_agent.gateway.drain_control import restart_wait_read
+    from hermes_agent.gateway.session_authorities import all_authorities
     runner = getattr(conn.app.state, 'gateway_runner', None)
     descriptor = getattr(runner, 'session_runtime_descriptor', {})
     authorities = all_authorities(runner)
@@ -232,7 +232,7 @@ def redeem_native_ws(conn):
     if gate is None:
         return None
     runner, store = gate
-    from gateway.session_authorities import authority_for_profile_id
+    from hermes_agent.gateway.session_authorities import authority_for_profile_id
     try:
         grant = store.redeem(tickets[0], profile_id=None, purpose='native-http')
         if (grant['capabilities'] != frozenset({'http:owner'})
@@ -252,7 +252,7 @@ def redeem_audio_ws(ws):
     """Redeem the ``interactive`` grant a local Desktop's audio stream upgrade presents; None when refused.
 
     The voice sockets are siblings of the Desktop's ``/api/ws`` dial and ride the same one-use
-    grant in the same gateway subprotocol (``gateway/run_api.py``), under the HTTP seam's
+    grant in the same gateway subprotocol (``hermes_agent/gateway/run_api.py``), under the HTTP seam's
     peer/Origin/served-profile rules. The upgrade's ``profile`` selectors must name the grant's home.
     """
     from hermes_cli.web_server_boundary import _gateway_ws_ticket_from_subprotocol
@@ -261,7 +261,7 @@ def redeem_audio_ws(ws):
     if gate is None:
         return None
     runner, store = gate
-    from gateway.session_authorities import authority_for_profile_id
+    from hermes_agent.gateway.session_authorities import authority_for_profile_id
     try:
         grant = store.redeem(ticket, profile_id=None, purpose='interactive')
         if authority_for_profile_id(runner, grant['profile_id']) is None:
@@ -289,7 +289,7 @@ async def authenticate_native_http(request):
     tickets = request.headers.getlist(HEADER)
     if not tickets:
         return None
-    from gateway.session_authorities import authority_for_profile_id
+    from hermes_agent.gateway.session_authorities import authority_for_profile_id
     gate = _native_store(request, tickets)
     if gate is None:
         return JSONResponse({'detail': 'Unauthorized'}, status_code=401)

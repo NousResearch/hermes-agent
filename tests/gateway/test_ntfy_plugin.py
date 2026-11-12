@@ -7,7 +7,7 @@ sibling platform-plugin tests in the same process.
 Most tests target the adapter class directly. The plugin-shape tests
 (``register()``, ``_env_enablement``, ``_standalone_send``, registry
 presence) replace the core-file grep tests from the original PR — the
-ntfy adapter no longer modifies ``gateway/config.py``, ``gateway/run.py``,
+ntfy adapter no longer modifies ``hermes_agent/gateway/config.py``, ``hermes_agent/gateway/run.py``,
 ``hermes_agent/cron/scheduler.py``, ``toolsets.py``, etc.  Everything routes through
 the ``platform_registry``.
 """
@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
 _ntfy = load_plugin_adapter("ntfy")
@@ -49,7 +49,7 @@ def _run(coro):
 
 def test_platform_enum_resolves_via_plugin_scan():
     """The plugin filesystem scan should expose Platform("ntfy")."""
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     p = Platform("ntfy")
     assert p.value == "ntfy"
     # Identity stability — repeated lookups return the same pseudo-member

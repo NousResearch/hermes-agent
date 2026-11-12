@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from gateway.owner_identity import host_owner_subject as _owner
+from hermes_agent.gateway.owner_identity import host_owner_subject as _owner
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_cli.active_sessions import active_session_registry_snapshot
 from hermes_cli.browser_connect import ChromeDebugLaunch
@@ -2898,7 +2898,7 @@ def test_history_to_messages_strips_legacy_discord_triggering_note():
     # Rows written before the gateway persisted the authored text carry the model-facing
     # routing note in user ``content``; this projection heals them for TUI/web resume
     # (the desktop hydration strip is the same rule). Reply pointer and assistant rows are kept.
-    from gateway.run_inbound import discord_triggering_note
+    from hermes_agent.gateway.run_inbound import discord_triggering_note
 
     note = discord_triggering_note("123")
     history = [
@@ -4675,7 +4675,7 @@ def _capture_make_agent_kwargs(monkeypatch) -> dict:
     ({"user_id": "abc", "provider": ""}, None),
 ])
 def test_make_agent_passes_the_authenticated_dashboard_user_as_user_id(monkeypatch, identity, user_id):
-    """A signed-in login is the machine owner (gateway.owner_identity): the agent gets native Desktop's OS subject
+    """A signed-in login is the machine owner (hermes_agent.gateway.owner_identity): the agent gets native Desktop's OS subject
     as ``user_id``. The legacy token, stdio and the PTY child's server-internal credential stay unstamped."""
     captured = _capture_make_agent_kwargs(monkeypatch)
     transport = types.SimpleNamespace(auth_identity=identity)
@@ -12192,7 +12192,7 @@ def test_plugin_slash_command_runs_under_the_session_env(monkeypatch):
     # TUI/Desktop sibling of #108698: command.dispatch and slash.exec ran plugin handlers on the RPC
     # thread with no HERMES_SESSION_* binding, so a handler reading get_session_env() saw "" (or the
     # launch process's inherited values) instead of the session it was invoked from.
-    from gateway.session_context import get_session_env
+    from hermes_agent.gateway.session_context import get_session_env
 
     seen = {}
 
@@ -15928,7 +15928,7 @@ def test_handoff_request_uses_session_profile_home(monkeypatch, tmp_path):
     """Handoff validation must read the owning session's gateway config."""
     import contextlib
 
-    from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+    from hermes_agent.gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
     from hermes_cli.config import get_hermes_home
     from hermes_agent.tui_gateway import methods_session
 
@@ -15963,7 +15963,7 @@ def test_handoff_request_uses_session_profile_home(monkeypatch, tmp_path):
     def profile_db(_session):
         yield ProfileDB()
 
-    monkeypatch.setattr("gateway.config.load_gateway_config", load_config)
+    monkeypatch.setattr("hermes_agent.gateway.config.load_gateway_config", load_config)
     monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: None)
     monkeypatch.setattr(server, "_session_db", profile_db)
     server._sessions["handoff-profile"] = {

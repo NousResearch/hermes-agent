@@ -3,7 +3,7 @@
 A follow-up delivered to the provider mid-compression aborts the compression
 (``explicit_interrupt``) — the user's message kills the turn that would have
 answered it. The channel-side busy path already demoted interrupt→queue for
-this reason (gateway/run_busy.py, #56391); these tests pin the same contract
+this reason (hermes_agent/gateway/run_busy.py, #56391); these tests pin the same contract
 for the local RPC busy path (prompt.submit / session.steer / session.redirect)
 so TUI, Desktop and classic chat share the Discord-gateway behavior: the
 follow-up queues and drains when compression finishes.

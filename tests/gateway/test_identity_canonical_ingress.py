@@ -12,11 +12,11 @@ from unittest.mock import patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.pairing import PairingStore
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
-from gateway.profile_routing import parse_profile_routes
-from gateway.session_identity import identity_of
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.pairing import PairingStore
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
+from hermes_agent.gateway.profile_routing import parse_profile_routes
+from hermes_agent.gateway.session_identity import identity_of
 
 UID = "72719239"  # Telegram DM: chat.id == user.id, identical for every bot
 
@@ -42,7 +42,7 @@ def _adapter(runner, owner=None):
 def rig(tmp_path, monkeypatch):
     """Default home owns bot A; ``team_b`` owns bot B; satellite ``ops`` is routed through bot A
     for chat 5150; a route to unserved ``ghost`` for chat 4040."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     home = tmp_path / "hh"
     for name in ("ops", "team_b"):

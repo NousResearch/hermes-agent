@@ -61,7 +61,7 @@ def _bare_marker_after_reply(agent: Any, final_response: Any, *, truncated_parts
     """End this turn on the reply written beside a housekeeping round instead of its bare marker:
     only when the host says a marker may not stay silent (``_silence_marker_needs_reply``), for a
     complete uninterrupted response, and only when a real (non-marker) reply line exists."""
-    from gateway.response_filters import is_intentional_silence_response
+    from hermes_agent.gateway.response_filters import is_intentional_silence_response
 
     if (getattr(agent, "_silence_marker_needs_reply", False) is not True or truncated_parts or promoted
             or getattr(agent, "_interrupt_requested", False)):

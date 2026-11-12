@@ -7,7 +7,7 @@ measured loop stall. It is queued to one ordered worker instead, and still lands
 import threading
 import time
 
-from gateway.active_lease_io import release_soon
+from hermes_agent.gateway.active_lease_io import release_soon
 from hermes_cli import active_sessions
 
 

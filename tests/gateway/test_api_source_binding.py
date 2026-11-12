@@ -2,13 +2,13 @@
 
 import pytest
 
-from gateway.config import Platform
-from gateway.session_contract import SessionActor, SessionRef, Submission
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.session_contract import SessionActor, SessionRef, Submission
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
 def test_private_api_binding_restores_exact_route(owner):
-    from gateway.session_api import bind_api_session, restore_api_session
+    from hermes_agent.gateway.session_api import bind_api_session, restore_api_session
     db = owner.db
     db.create_session('api-stored', source='api_server')
     ref = bind_api_session(owner, 'api-stored')
@@ -28,7 +28,7 @@ def test_private_api_binding_restores_exact_route(owner):
 
 def test_private_api_binding_adopts_matching_legacy_declared_key(owner):
     """Regression for #139835: a pre-binding API row stores the caller's declared key."""
-    from gateway.session_api import bind_api_session, declared_api_session
+    from hermes_agent.gateway.session_api import bind_api_session, declared_api_session
 
     session_id = 'legacy-api-session'
     declared_key = 'webui:legacy-api-session'
@@ -46,7 +46,7 @@ def test_private_api_binding_adopts_matching_legacy_declared_key(owner):
 
 @pytest.mark.asyncio
 async def test_private_api_binding_is_not_public_submission_authority(owner):
-    from gateway.session_api import bind_api_session
+    from hermes_agent.gateway.session_api import bind_api_session
     owner.db.create_session('api-stored', source='api_server')
     ref = bind_api_session(owner, 'api-stored')
     actor = SessionActor('api-user', 'default', frozenset({'session:read', 'session:submit'}), 'socket')

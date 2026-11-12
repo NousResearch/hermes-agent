@@ -51,13 +51,13 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from gateway.platforms.base import SessionSource
-from gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.platforms.base import SessionSource
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 
 
 def _unbound_voice_adapter() -> AsyncMock:
     """A Discord adapter bound to text channel 123 with no join source (a programmatic join)."""
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     adapter = AsyncMock()
     adapter._voice_text_channels, adapter._voice_sources = {111: 123}, {}
     adapter._client = MagicMock()
@@ -86,7 +86,7 @@ def _make_event(text: str = "", message_type=MessageType.TEXT, chat_id="123") ->
 
 def _make_runner(tmp_path):
     """Create a bare GatewayRunner without calling __init__."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
     runner._voice_mode = {}
@@ -140,7 +140,7 @@ class TestHandleVoiceCommand:
         ``/voice on`` was relying on a "not in disabled set" default that
         silently enabled auto-TTS for every chat.
         """
-        from gateway.config import Platform
+        from hermes_agent.gateway.config import Platform
         runner._voice_mode = {
             "telegram:off_chat": "off",
             "telegram:on_chat": "voice_only",
@@ -161,7 +161,7 @@ class TestHandleVoiceCommand:
 
     def test_sync_pushes_config_default_onto_adapter(self, runner, monkeypatch):
         """Issue #16007: ``voice.auto_tts`` must propagate to ``_auto_tts_default``."""
-        from gateway.config import Platform
+        from hermes_agent.gateway.config import Platform
 
         fake_cfg = {"voice": {"auto_tts": True}}
         monkeypatch.setattr(
@@ -304,7 +304,7 @@ class TestSendVoiceReply:
 
     @pytest.mark.asyncio
     async def test_calls_tts_and_send_voice(self, runner):
-        from gateway.config import Platform
+        from hermes_agent.gateway.config import Platform
 
         mock_adapter = AsyncMock()
         mock_adapter.send_voice = AsyncMock()
@@ -329,7 +329,7 @@ class TestSendVoiceReply:
 
     @pytest.mark.asyncio
     async def test_auto_voice_reply_uses_thread_metadata_helper(self, runner):
-        from gateway.config import Platform
+        from hermes_agent.gateway.config import Platform
 
         mock_adapter = AsyncMock()
         mock_adapter.send_voice = AsyncMock()
@@ -358,7 +358,7 @@ class TestSendVoiceReply:
             "direct_messages_topic_id": "20197",
             "telegram_reply_to_message_id": "462",
             # Final voice reply is notify-worthy (issue #27970 Bug 2):
-            # mirrors the final-text path in gateway/platforms/base.py.
+            # mirrors the final-text path in hermes_agent/gateway/platforms/base.py.
             "notify": True,
         }
 
@@ -536,7 +536,7 @@ class TestVoiceChannelCommands:
     @pytest.mark.asyncio
     async def test_input_creates_event_and_dispatches(self, runner):
         """Voice input creates synthetic event and calls handle_message."""
-        from gateway.config import Platform
+        from hermes_agent.gateway.config import Platform
         mock_adapter = _unbound_voice_adapter()
         mock_channel = AsyncMock()
         mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
@@ -552,8 +552,8 @@ class TestVoiceChannelCommands:
 
     @pytest.mark.asyncio
     async def test_input_reroutes_speaker_without_changing_transport_owner(self, runner, monkeypatch):
-        from gateway.config import Platform
-        from gateway.profile_routing import parse_profile_routes
+        from hermes_agent.gateway.config import Platform
+        from hermes_agent.gateway.profile_routing import parse_profile_routes
 
         runner.config = SimpleNamespace(
             multiplex_profiles=True,
@@ -563,7 +563,7 @@ class TestVoiceChannelCommands:
             ]),
         )
         monkeypatch.setattr(
-            "gateway.run._multiplex_profile_homes",
+            "hermes_agent.gateway.run._multiplex_profile_homes",
             lambda _config: [("team-bot", None), ("first", None), ("second", None)],
         )
         mock_adapter = AsyncMock()
@@ -591,7 +591,7 @@ class TestVoiceChannelCommands:
     @pytest.mark.asyncio
     async def test_input_resolves_channel_prompt(self, runner):
         """Voice input must carry the bound text channel's channel_prompt (#50149)."""
-        from gateway.config import Platform
+        from hermes_agent.gateway.config import Platform
         mock_adapter = _unbound_voice_adapter()
         mock_adapter._client.get_channel = MagicMock(return_value=AsyncMock())
         mock_adapter._resolve_channel_prompt = MagicMock(return_value="Be terse in #dev.")
@@ -605,7 +605,7 @@ class TestVoiceChannelCommands:
     @pytest.mark.asyncio
     async def test_input_reuses_bound_source_metadata(self, runner):
         """Voice input should share the linked text channel session metadata."""
-        from gateway.config import Platform
+        from hermes_agent.gateway.config import Platform
 
         bound_source = SessionSource(
             chat_id="123",
@@ -661,7 +661,7 @@ class TestDiscordVoiceChannelMethods:
 
     def _make_adapter(self):
         from plugins.platforms.discord.adapter import DiscordAdapter
-        from gateway.config import Platform, PlatformConfig
+        from hermes_agent.gateway.config import Platform, PlatformConfig
         config = PlatformConfig(enabled=True, extra={})
         config.token = "fake-token"
         adapter = object.__new__(DiscordAdapter)
@@ -769,7 +769,7 @@ class TestDiscordVoiceChannelMethods:
 
     def test_discord_voice_timeout_config_loaded(self):
         from plugins.platforms.discord.adapter import DiscordAdapter
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         with patch("hermes_cli.config.read_raw_config", return_value={
             "discord": {
@@ -1018,7 +1018,7 @@ class TestVoiceTimeoutCleansRunnerState:
     @staticmethod
     def _make_discord_adapter():
         from plugins.platforms.discord.adapter import DiscordAdapter
-        from gateway.config import PlatformConfig, Platform
+        from hermes_agent.gateway.config import PlatformConfig, Platform
         config = PlatformConfig(enabled=True, extra={})
         config.token = "fake-token"
         adapter = object.__new__(DiscordAdapter)
@@ -1077,7 +1077,7 @@ class TestPlaybackTimeout:
     @staticmethod
     def _make_discord_adapter():
         from plugins.platforms.discord.adapter import DiscordAdapter
-        from gateway.config import PlatformConfig, Platform
+        from hermes_agent.gateway.config import PlatformConfig, Platform
         config = PlatformConfig(enabled=True, extra={})
         config.token = "fake-token"
         adapter = object.__new__(DiscordAdapter)
@@ -1137,7 +1137,7 @@ class TestVoiceChannelAwareness:
 
     def _make_adapter(self):
         from plugins.platforms.discord.adapter import DiscordAdapter
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         config = PlatformConfig(enabled=True, extra={})
         config.token = "fake-token"
         adapter = object.__new__(DiscordAdapter)
@@ -1351,7 +1351,7 @@ class TestVoiceTTSPlayback:
     @staticmethod
     def _make_discord_adapter():
         from plugins.platforms.discord.adapter import DiscordAdapter
-        from gateway.config import PlatformConfig, Platform
+        from hermes_agent.gateway.config import PlatformConfig, Platform
         config = PlatformConfig(enabled=True, extra={})
         config.token = "fake-token"
         adapter = object.__new__(DiscordAdapter)
@@ -1390,7 +1390,7 @@ class TestVoiceTTSPlayback:
 
     @staticmethod
     def _make_runner():
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
         runner = object.__new__(GatewayRunner)
         runner._voice_mode = {}
         runner.adapters = {}
@@ -1398,9 +1398,9 @@ class TestVoiceTTSPlayback:
 
     def _call_should_reply(self, runner, voice_mode, msg_type, response="Hello",
                            agent_msgs=None, already_sent=False):
-        from gateway.platforms.base import SessionSource
-        from gateway.platforms.event import MessageEvent
-        from gateway.config import Platform
+        from hermes_agent.gateway.platforms.base import SessionSource
+        from hermes_agent.gateway.platforms.event import MessageEvent
+        from hermes_agent.gateway.config import Platform
         runner._voice_mode["discord:ch1"] = voice_mode
         source = SessionSource(
             platform=Platform.DISCORD, chat_id="ch1",
@@ -1415,14 +1415,14 @@ class TestVoiceTTSPlayback:
 
     def test_voice_input_runner_skips(self):
         """Streaming OFF + voice input: runner skips — base adapter handles."""
-        from gateway.platforms.event import MessageType
+        from hermes_agent.gateway.platforms.event import MessageType
         runner = self._make_runner()
         assert self._call_should_reply(runner, "all", MessageType.VOICE, already_sent=False) is False
 
 
     def test_error_response_no_tts(self):
         """Error response: no TTS regardless of voice_mode."""
-        from gateway.platforms.event import MessageType
+        from hermes_agent.gateway.platforms.event import MessageType
         runner = self._make_runner()
         assert self._call_should_reply(runner, "all", MessageType.TEXT, response="Error: boom") is False
 
@@ -1432,7 +1432,7 @@ class TestVoiceTTSPlayback:
 
     def test_streaming_on_agent_tts_dedup(self):
         """Streaming ON + agent called TTS: runner skips (dedup still works)."""
-        from gateway.platforms.event import MessageType
+        from hermes_agent.gateway.platforms.event import MessageType
         runner = self._make_runner()
         agent_msgs = [{"role": "assistant", "tool_calls": [
             {"id": "1", "type": "function", "function": {"name": "text_to_speech", "arguments": "{}"}}
@@ -1450,7 +1450,7 @@ class TestUDPKeepalive:
     async def test_keepalive_sends_silence_frame(self):
         """Listen loop sends silence frame via send_packet after interval."""
         from plugins.platforms.discord.adapter import DiscordAdapter
-        from gateway.config import PlatformConfig, Platform
+        from hermes_agent.gateway.config import PlatformConfig, Platform
 
         config = PlatformConfig(enabled=True, extra={})
         config.token = "fake"
@@ -1523,7 +1523,7 @@ class TestShouldAutoTtsForChat:
         )
         # Bind the unbound method — _should_auto_tts_for_chat only reads the
         # three attrs above via ``self.``, so an unbound call works.
-        from gateway.platforms.base import BasePlatformAdapter
+        from hermes_agent.gateway.platforms.base import BasePlatformAdapter
         return BasePlatformAdapter._should_auto_tts_for_chat, adapter
 
     def test_default_false_no_override_suppresses(self):

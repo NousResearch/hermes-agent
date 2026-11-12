@@ -4,7 +4,7 @@ import pytest
 from contextlib import nullcontext
 from unittest.mock import patch
 
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.run import GatewayRunner
 
 
 @pytest.fixture()
@@ -19,9 +19,9 @@ def _patch_info(tmp_path, config_yaml, model, runtime):
     if config_yaml is not None:
         cfg_path.write_text(config_yaml)
     return (
-        patch("gateway.run._hermes_home", tmp_path),
-        patch("gateway.run._resolve_gateway_model", return_value=model),
-        patch("gateway.run._resolve_runtime_agent_kwargs", return_value=runtime),
+        patch("hermes_agent.gateway.run._hermes_home", tmp_path),
+        patch("hermes_agent.gateway.run._resolve_gateway_model", return_value=model),
+        patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", return_value=runtime),
     )
 
 
@@ -131,7 +131,7 @@ class TestChannelOverrideSessionInfo:
     }
 
     def _runner_with_override(self, runner, chat_id="123", **override_kwargs):
-        from gateway.config import ChannelOverride, GatewayConfig, Platform, PlatformConfig
+        from hermes_agent.gateway.config import ChannelOverride, GatewayConfig, Platform, PlatformConfig
         runner.config = GatewayConfig(platforms={
             Platform.TELEGRAM: PlatformConfig(
                 enabled=True,
@@ -141,8 +141,8 @@ class TestChannelOverrideSessionInfo:
         return runner
 
     def _source(self, chat_id="123", thread_id=None):
-        from gateway.config import Platform
-        from gateway.session import SessionSource
+        from hermes_agent.gateway.config import Platform
+        from hermes_agent.gateway.session import SessionSource
         return SessionSource(
             platform=Platform.TELEGRAM, chat_id=chat_id, user_id="u1",
             thread_id=thread_id,
@@ -154,7 +154,7 @@ class TestChannelOverrideSessionInfo:
             tmp_path, "model:\n  default: base-model\n  provider: openrouter\n",
             "base-model", self._GLOBAL_RUNTIME)
         with p1, p2, p3, patch(
-            "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+            "hermes_agent.gateway.run._resolve_runtime_agent_kwargs_for_provider",
             return_value=self._OVERRIDE_RUNTIME,
         ):
             info = runner._format_session_info(self._source())
@@ -188,7 +188,7 @@ class TestChannelOverrideSessionInfo:
             tmp_path, "model:\n  default: base-model\n  context_length: 4096\n",
             "base-model", self._GLOBAL_RUNTIME)
         with p1, p2, p3, patch(
-            "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+            "hermes_agent.gateway.run._resolve_runtime_agent_kwargs_for_provider",
             side_effect=RuntimeError("no creds"),
         ):
             info = runner._format_session_info(self._source())
@@ -204,7 +204,7 @@ class TestChannelOverrideSessionInfo:
             tmp_path, "model:\n  default: base-model\n  provider: openrouter\n",
             "base-model", self._GLOBAL_RUNTIME)
         with p1, p2, p3, patch(
-            "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+            "hermes_agent.gateway.run._resolve_runtime_agent_kwargs_for_provider",
             return_value=self._OVERRIDE_RUNTIME,
         ), patch.object(GatewayRunner, "_standalone_launch_scope", return_value=nullcontext()):
             info = runner._reset_notice_session_info(self._source())
@@ -222,7 +222,7 @@ class TestChannelOverrideSessionInfo:
             self._GLOBAL_RUNTIME,
         )
         with p1, p2, p3, patch(
-            "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+            "hermes_agent.gateway.run._resolve_runtime_agent_kwargs_for_provider",
             return_value=self._OVERRIDE_RUNTIME,
         ) as for_provider:
             info = runner._format_session_info(self._source())
@@ -240,8 +240,8 @@ class TestResetNoticeSessionInfo:
     _RUNTIME = {"provider": "", "base_url": "", "api_key": ""}
 
     def _source(self):
-        from gateway.config import Platform
-        from gateway.session import SessionSource
+        from hermes_agent.gateway.config import Platform
+        from hermes_agent.gateway.session import SessionSource
         return SessionSource(
             platform=Platform.TELEGRAM, chat_id="123", user_id="u1",
             profile="planner",
@@ -262,9 +262,9 @@ class TestResetNoticeSessionInfo:
         from types import SimpleNamespace
         base, profile = self._homes(tmp_path)
         runner.config = SimpleNamespace(multiplex_profiles=True)
-        with patch("gateway.run._hermes_home", base), \
+        with patch("hermes_agent.gateway.run._hermes_home", base), \
              patch.object(GatewayRunner, "_resolve_profile_home_for_source", return_value=profile), \
-             patch("gateway.run._resolve_runtime_agent_kwargs", return_value=self._RUNTIME):
+             patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", return_value=self._RUNTIME):
             info = runner._reset_notice_session_info(self._source())
         assert "profile-model" in info
         assert "anthropic" in info

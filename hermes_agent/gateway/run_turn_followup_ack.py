@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, ProcessingOutcome
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, MessageEvent, ProcessingOutcome
 
 
 def _followup_processing_hooks_apply(adapter, event: MessageEvent | None) -> bool:

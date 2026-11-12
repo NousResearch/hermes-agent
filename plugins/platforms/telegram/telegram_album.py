@@ -18,7 +18,7 @@ import os
 from typing import Any, Optional
 from urllib.parse import unquote
 
-from gateway.platforms.base import SendResult
+from hermes_agent.gateway.platforms.base import SendResult
 
 logger = logging.getLogger(__name__)
 

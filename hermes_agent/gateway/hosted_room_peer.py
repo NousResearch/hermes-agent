@@ -21,8 +21,8 @@ from functools import lru_cache, partial
 from pathlib import Path
 from typing import Any, Callable, Iterable, Literal, Mapping
 
-from gateway.hosted_room_execution_policy import RoomExecutionPolicy, execution_policy_mapping
-from gateway.hosted_rooms_common import bounded_int, clock, compact_json, exact_fields, identifier, text
+from hermes_agent.gateway.hosted_room_execution_policy import RoomExecutionPolicy, execution_policy_mapping
+from hermes_agent.gateway.hosted_rooms_common import bounded_int, clock, compact_json, exact_fields, identifier, text
 
 
 # v2 adds authority/member lineage to scoped grants and is deliberately not wire-compatible with the
@@ -335,7 +335,7 @@ def served_room_link_endpoint(target_profile: str) -> dict[str, Any]:
 @lru_cache(maxsize=16)
 def _room_link_url_from_config(home: str) -> str | None:
     """Read the restart-scoped user setting without polling config on probes."""
-    from gateway.config import load_gateway_config
+    from hermes_agent.gateway.config import load_gateway_config
     from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
     if str(get_hermes_home()) == home:
         value = load_gateway_config().room_link_url

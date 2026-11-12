@@ -6,11 +6,11 @@ import logging
 
 import pytest
 
-from gateway.config import HomeChannel, Platform
-from gateway.pairing import PairingStore
-from gateway.run import GatewayRunner
-from gateway.run_inbound_unauthorized import pairing_code_reply, unauthorized_owner_hint
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import HomeChannel, Platform
+from hermes_agent.gateway.pairing import PairingStore
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.run_inbound_unauthorized import pairing_code_reply, unauthorized_owner_hint
+from hermes_agent.gateway.session import SessionSource
 from tests.gateway.restart_test_helpers import make_restart_runner
 
 
@@ -34,7 +34,7 @@ async def test_ignored_dm_sends_nothing_to_stranger_and_notifies_owner_once(tmp_
     runner._hm_report_ignored_dm = GatewayRunner._hm_report_ignored_dm.__get__(runner, GatewayRunner)
     stranger = SessionSource(platform=Platform.TELEGRAM, chat_id="dm-777", user_id="777", user_name="Eve", chat_type="dm")
 
-    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.run"):
         await runner._hm_report_ignored_dm(stranger)
         await runner._hm_report_ignored_dm(stranger)
 
@@ -56,7 +56,7 @@ def test_owner_hint_neutralizes_hostile_display_name():
 
 
 def test_owner_notifier_seen_set_is_bounded():
-    from gateway.run_inbound_unauthorized import UnauthorizedOwnerNotifier
+    from hermes_agent.gateway.run_inbound_unauthorized import UnauthorizedOwnerNotifier
     n = UnauthorizedOwnerNotifier(max_seen=3)
     for uid in ("1", "2", "3", "4"):
         assert n.first_time("telegram", uid) is True

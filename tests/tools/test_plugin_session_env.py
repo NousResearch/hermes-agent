@@ -2,7 +2,7 @@
 
 import pytest
 
-from gateway.session_context import clear_session_vars, set_session_vars
+from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
 from hermes_cli import plugins_session_env
 from hermes_cli.plugins import PluginManager
 

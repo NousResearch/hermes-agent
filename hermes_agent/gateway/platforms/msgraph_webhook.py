@@ -20,11 +20,11 @@ except ImportError:
     AIOHTTP_AVAILABLE = False
     web = None  # type: ignore[assignment]
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import (
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import (
     BasePlatformAdapter, SendResult, is_network_accessible,
 )
-from gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 from datetime import UTC
 
 logger = logging.getLogger(__name__)
@@ -147,7 +147,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         # Plugin-registered native routes; wired before AppRunner.setup() freezes the router.
         self._wire_plugin_handlers(app)
         # Shared-listener mode (multiplex secondary): no bind; served at /p/<profile>/<webhook_path>.
-        from gateway.platforms.shared_ingress import bind_listener
+        from hermes_agent.gateway.platforms.shared_ingress import bind_listener
         self._runner = await bind_listener(self, app, self._host, self._port, self._webhook_path)
         self._mark_connected()
         if self._runner is not None:
@@ -328,8 +328,8 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         # Reuse the existing private automation envelope: public native admission
         # continues to reject internal events and arbitrary metadata.
         from datetime import datetime, timezone
-        from gateway.platforms.webhook_ingress import producer_scope
-        from gateway.session_ingress_context import capture_provenance
+        from hermes_agent.gateway.platforms.webhook_ingress import producer_scope
+        from hermes_agent.gateway.session_ingress_context import capture_provenance
         from hermes_agent.hermes_state_runtime import admit_session_input, RuntimeStoreError
 
         async with producer_scope(self, event) as authority:
@@ -349,7 +349,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
             # Off the owner loop and in admission order (``tracked_write``), committed before the
             # 202: a held SQLite writer must not freeze every session while Graph waits.
             from functools import partial
-            from gateway.session_runtime_workers import tracked_write
+            from hermes_agent.gateway.session_runtime_workers import tracked_write
             return await tracked_write(authority, partial(
                 admit_session_input, authority.db, epoch=authority.epoch,
                 principal_id='msgraph:' + route, session_id=ref.session_id, request_id=event.message_id,

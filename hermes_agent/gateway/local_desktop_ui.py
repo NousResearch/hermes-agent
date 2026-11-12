@@ -22,7 +22,7 @@ execution stream, and the process sinks route by the process's ``session_key`` t
 session's event stream (a background process outlives the turn that started it). The callbacks
 are installed per turn on the cached agent and restored with the other turn sinks.
 
-Card for ``manage_connections``: ``connection_callback`` publishes ``connection.request`` on the turn, and each later change of an operation is published as ``connection.update`` on the session that owns it (looked up by its session key, the route); the card answers through ``connection.respond`` (``gateway/session_connections.py``).
+Card for ``manage_connections``: ``connection_callback`` publishes ``connection.request`` on the turn, and each later change of an operation is published as ``connection.update`` on the session that owns it (looked up by its session key, the route); the card answers through ``connection.respond`` (``hermes_agent/gateway/session_connections.py``).
 """
 from __future__ import annotations
 
@@ -81,7 +81,7 @@ _process_sinks_installed = False
 
 def _emit(sid, event, payload) -> None:
     """``desktop_ui`` sink: publish *event* on the stream of the turn that raised it."""
-    from gateway.session_context import get_session_env
+    from hermes_agent.gateway.session_context import get_session_env
     keys = [str(sid or ""), get_session_env("HERMES_SESSION_ID", "")]
     with _lock:
         publish = next((_turns[key] for key in keys if key and key in _turns), None)
@@ -156,7 +156,7 @@ def _install_connection_hook() -> None:
 
 def _ask_result(turn, agent, method, params, timeout):
     """One structured server request; the viewer's ``result`` dict, or None when none answered."""
-    from gateway.session_server_requests import ask_viewer_result
+    from hermes_agent.gateway.session_server_requests import ask_viewer_result
     authority, session_id, _generation = turn._approval_owner
     live = authority.sessions.get(session_id)
     if live is None:
@@ -209,7 +209,7 @@ def _setup_beat(turn, agent, payload):
 
 def _ask(turn, agent, method, params, timeout):
     """One ``ValueResult`` server request to the session's attached viewers; "" when none answered."""
-    from gateway.session_server_requests import ask_viewer
+    from hermes_agent.gateway.session_server_requests import ask_viewer
     authority, session_id, _generation = turn._approval_owner
     live = authority.sessions.get(session_id)
     if live is None:

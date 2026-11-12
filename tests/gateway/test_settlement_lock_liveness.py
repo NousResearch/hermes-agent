@@ -8,7 +8,7 @@ import sqlite3
 import threading
 import pytest
 
-from gateway.session_contract import SessionActor, Submission
+from hermes_agent.gateway.session_contract import SessionActor, Submission
 from tests.gateway.test_session_authority_cancel_settlement import ACTOR, REF, _authority, _submit
 from tests.waiting import async_wait_until
 
@@ -20,7 +20,7 @@ VIEWER = SessionActor('human', 'owned', frozenset({'session:read', 'session:subm
 
 async def _settling_behind_a_held_writer(tmp_path, monkeypatch):
     """Run a turn whose settlement write waits on a real competing SQLite writer."""
-    from gateway import session_results
+    from hermes_agent.gateway import session_results
     db, authority = _authority(tmp_path, monkeypatch)
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
     frames, entered, released, go = [], threading.Event(), threading.Event(), threading.Event()
@@ -45,7 +45,7 @@ async def _settling_behind_a_held_writer(tmp_path, monkeypatch):
             writer.close()
         threading.Thread(target=release, daemon=True).start()
         return 'done'
-    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    monkeypatch.setattr('hermes_agent.gateway.session_finite.execute_finite_admission', execute)
     await authority.submit(ACTOR, Submission('work', REF, {'text': 'work'}, 'queue'))
     drain = asyncio.create_task(authority._drain(REF))
     await async_wait_until(entered.is_set, what='the settlement to reach the held writer')
@@ -156,7 +156,7 @@ async def _loop_stays_free(tmp_path, operation):
 async def test_submit_claim_and_discard_behind_a_held_writer_leave_the_loop_free(tmp_path, monkeypatch):
     """Admission, the FIFO claim and Discard wait on a held writer in a worker thread, tracked so
     retirement joins them; the claim's execution stamp still lands with its commit."""
-    from gateway.session_runtime_workers import mutation_tasks
+    from hermes_agent.gateway.session_runtime_workers import mutation_tasks
     from hermes_agent.hermes_state_runtime import get_session_admission, recover_session_inputs, begin_runtime_epoch
     db, authority = _authority(tmp_path, monkeypatch)
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
@@ -178,7 +178,7 @@ async def test_submit_claim_and_discard_behind_a_held_writer_leave_the_loop_free
             tmp_path, lambda: authority.resolve_unknown(ACTOR, REF, receipt.admission_id, row['generation']))
         assert (resolved.status, resolved.outcome) == ('terminal', 'interrupted')
         assert get_session_admission(db, admission_id=receipt.admission_id)['status'] == 'terminal'
-        from gateway.session_runtime_workers import join_authority_work
+        from hermes_agent.gateway.session_runtime_workers import join_authority_work
         await join_authority_work(authority, timeout=5)
         assert not mutation_tasks(authority)
 
@@ -187,7 +187,7 @@ async def test_submit_claim_and_discard_behind_a_held_writer_leave_the_loop_free
 async def test_input_admitted_while_an_idle_claim_is_in_flight_still_runs(tmp_path, monkeypatch):
     """The claim's transaction runs off-loop: an admission that commits after it read an empty
     FIFO must not be stranded by the drain exiting idle (its ``_schedule`` saw the drain alive)."""
-    from gateway import session_authority as sa
+    from hermes_agent.gateway import session_authority as sa
     db, authority = _authority(tmp_path, monkeypatch)
     ran, read_empty, admitted = [], threading.Event(), threading.Event()
     claim = sa.claim_session_input
@@ -204,7 +204,7 @@ async def test_input_admitted_while_an_idle_claim_is_in_flight_still_runs(tmp_pa
         ran.append(row['request_id'])
         owner.pending_results[row['admission_id']] = {'result': {'final_response': 'done'}, 'usage': {}}
         return 'done'
-    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    monkeypatch.setattr('hermes_agent.gateway.session_finite.execute_finite_admission', execute)
     with db:
         authority._schedule(REF)
         assert await asyncio.to_thread(read_empty.wait, 5)
@@ -242,7 +242,7 @@ async def test_admission_schedules_its_drain_in_the_admitting_callers_step(tmp_p
         await asyncio.sleep(0)
         assert order == ['schedule', 'caller', 'drain'] and receipt.status == 'queued'
 
-        from gateway.session_runtime_workers import mutation_tasks
+        from hermes_agent.gateway.session_runtime_workers import mutation_tasks
         order.clear()
         task = asyncio.ensure_future(_submit(authority, 'cancelled-mid-commit'))
         while not mutation_tasks(authority):

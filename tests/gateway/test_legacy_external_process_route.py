@@ -23,7 +23,7 @@ ADDRESS = 'process://proc-provider'
 @pytest.fixture
 def home(monkeypatch):
     import providers
-    from gateway import run
+    from hermes_agent.gateway import run
     from hermes_constants import get_hermes_home
     from providers.base import ProviderProfile
     profile = ProviderProfile(name=PROVIDER, auth_type='external_process', base_url=ADDRESS,
@@ -49,7 +49,7 @@ def _legacy(db, home, sid, title=None, provider=PROVIDER, address=ADDRESS, **mod
 
 
 def _model(runner, live):
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_policy import policy_for_source
     return json.loads(policy_for_source(runner, live.source).config_json).get('model') or {}
 
 
@@ -59,7 +59,7 @@ async def test_a_bot_chat_with_a_held_pick_on_a_process_provider_adopts(home, pr
     """The work-bot shape: a Bot Chat whose composer pick still holds keeps its saved route, which
     carried the provider's ``process://`` address. A ``model.base_url`` the profile still lists for the
     provider is ignored by the runtime too, so it must not change the outcome."""
-    from gateway.session_local_migration import resolve_local_target
+    from hermes_agent.gateway.session_local_migration import resolve_local_target
     _profile(home, **({'base_url': profile_url} if profile_url else {}))
     store, runner, authority, owner = _owner(home)
     runner._peek_session_state = lambda key: None
@@ -80,7 +80,7 @@ async def test_a_bot_chat_with_a_held_pick_on_a_process_provider_adopts(home, pr
 @pytest.mark.parametrize('provider, address', [(PROVIDER, ADDRESS), ('moa', 'moa://local')], ids=['process', 'moa'])
 async def test_an_old_desktop_chat_on_a_process_provider_keeps_its_provider_and_opens(home, provider, address):
     """Not a Bot Chat: the row keeps its saved route, the provider. The address is not part of it."""
-    from gateway.session_local_migration import resolve_local_target
+    from hermes_agent.gateway.session_local_migration import resolve_local_target
     _profile(home, provider='custom', base_url='http://127.0.0.1:1/v1', api_key='k1')
     store, runner, authority, owner = _owner(home)
     runner._peek_session_state = lambda key: None

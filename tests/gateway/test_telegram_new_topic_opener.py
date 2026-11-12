@@ -10,8 +10,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.platforms.event import MessageType
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageType
 from tests.gateway.conftest import _ensure_telegram_mock
 
 _ensure_telegram_mock()

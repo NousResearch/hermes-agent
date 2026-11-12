@@ -10,7 +10,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 SECRET = "AgentTok987"
 SHAPES = [f"http://bob:{SECRET}#x@127.0.0.1:1", f"ftp://{SECRET}:pw@127.0.0.1:1"]

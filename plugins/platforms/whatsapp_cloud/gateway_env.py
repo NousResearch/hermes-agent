@@ -1,7 +1,7 @@
 """WhatsApp Cloud API env -> gateway config bridge (``PlatformEntry.env_overrides``)."""
 
-from gateway.config import Platform
-from gateway.platform_env import INT, EnvCred, home_step
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platform_env import INT, EnvCred, home_step
 
 ENV_ENABLE_CREDENTIALS = ("WHATSAPP_CLOUD_PHONE_NUMBER_ID", "WHATSAPP_CLOUD_ACCESS_TOKEN")
 # Distinct from the Baileys bridge; both may run against different numbers.

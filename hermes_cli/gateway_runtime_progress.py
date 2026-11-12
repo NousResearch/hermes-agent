@@ -39,7 +39,7 @@ def _starting_owner_pid(homes, child) -> int | None:
     own, or the multiplexer root this call started: runtime lock held, PID record matching a live
     gateway of that home), else the child this call spawned. Never a bare lock record, which a
     backup or restore holding the home also writes."""
-    from gateway.status import get_running_pid
+    from hermes_agent.gateway.status import get_running_pid
     for home in dict.fromkeys(homes):
         if (pid := get_running_pid(Path(home) / "gateway.pid", cleanup_stale=False)) is not None:
             return pid

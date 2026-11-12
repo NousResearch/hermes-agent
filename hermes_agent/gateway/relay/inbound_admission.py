@@ -4,7 +4,7 @@ import logging
 
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
-logger = logging.getLogger("gateway.relay.adapter")
+logger = logging.getLogger("hermes_agent.gateway.relay.adapter")
 
 
 async def admit_relay_delivery(adapter, runner, event):
@@ -37,9 +37,9 @@ async def _admit(adapter, runner, event):
     # parked target is refused to the sender and ACKed: it stays parked until a rescan or a restart,
     # and a withheld frame would stall the connector's ordered, ack-gated buffer drain for every
     # profile on this instance (a live frame is never redelivered anyway).
-    from gateway.parked_route_refusal import ParkedProfileRefusal, refuse_parked_route
-    from gateway.platforms.webhook_ingress import admit_producer
-    from gateway.relay.adapter import _PERMANENT_REFUSALS
+    from hermes_agent.gateway.parked_route_refusal import ParkedProfileRefusal, refuse_parked_route
+    from hermes_agent.gateway.platforms.webhook_ingress import admit_producer
+    from hermes_agent.gateway.relay.adapter import _PERMANENT_REFUSALS
     try:
         receipt = await admit_producer(adapter, event)
     except ParkedProfileRefusal as exc:
@@ -54,7 +54,7 @@ async def _admit(adapter, runner, event):
     if receipt is None and getattr(event, '_consumer_reply', None):
         # A post_gateway_admission plugin consumed it (never committed); its reply is
         # sent off this reader, like an executed admission's.
-        from gateway.session_ingress import deliver_response
+        from hermes_agent.gateway.session_ingress import deliver_response
         task = asyncio.create_task(deliver_response(
             adapter, event, runner._session_key_for_source(event.source), event._consumer_reply))
         adapter._background_tasks.add(task)

@@ -50,7 +50,7 @@ def test_desktop_local_serve_spares_fixed_port_and_remote_hosts():
 def test_profile_liveness_is_the_shared_ladder(tmp_path, monkeypatch):
     """``_check_gateway_running`` is ``resolve_gateway_liveness`` scoped to the profile dir, with the
     PID rung reading (never cleaning) THAT profile's ``gateway.pid``."""
-    import gateway.status as gw_status
+    import hermes_agent.gateway.status as gw_status
     from hermes_cli.profiles import _check_gateway_running
 
     seen: dict = {}

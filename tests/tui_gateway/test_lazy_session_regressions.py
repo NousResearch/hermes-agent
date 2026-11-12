@@ -184,7 +184,7 @@ class TestGatewaySurfacesNullResponse:
 
     def test_partial_response_surfaces_error(self):
         """Agent returns partial=True with no response → user sees error."""
-        from gateway.run import _normalize_empty_agent_response
+        from hermes_agent.gateway.run import _normalize_empty_agent_response
 
         agent_result = {
             "final_response": None,
@@ -206,7 +206,7 @@ class TestGatewaySurfacesNullResponse:
 
     def test_failed_generic_error(self):
         """Agent failed with non-context error → generic error message."""
-        from gateway.run import _normalize_empty_agent_response
+        from hermes_agent.gateway.run import _normalize_empty_agent_response
 
         agent_result = {
             "final_response": None,
@@ -231,7 +231,7 @@ class TestGatewaySurfacesNullResponse:
         no failure, no interruption. Without normalization the gateway
         silently drops the turn (response=0 chars). Surface a retry hint
         so the user knows the message was lost."""
-        from gateway.run import _normalize_empty_agent_response
+        from hermes_agent.gateway.run import _normalize_empty_agent_response
 
         agent_result = {
             "final_response": "",

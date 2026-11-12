@@ -134,7 +134,7 @@ event("notice", NoticePayload, doc="Informational one-liner for the session (cap
 
 class MessageStartPayload(Payload):
     """``message.start``. Empty from the TUI gateway's emitters and for an ordinary admission;
-    ``gateway/session_authority._stamp_claim`` adds an automation admission's async-result card
+    ``hermes_agent/gateway/session_authority._stamp_claim`` adds an automation admission's async-result card
     (``session_automation.admission_display``: a background-process completion) and its model
     text, so a viewer that did not submit the turn paints the same header the submitter would."""
 
@@ -318,7 +318,7 @@ event("status.update", StatusUpdatePayload, doc="Transient status line (kind: st
 class SessionUsagePayload(Payload):
     """``usage``: the status-bar view (``server._get_usage``), sent by the embedded backend's ticker
     (``server._start_usage_ticker``) and by a canonical local viewer's gateway after every API call
-    and at turn end (``gateway/session_usage.py::usage_frame``). Read this.
+    and at turn end (``hermes_agent/gateway/session_usage.py::usage_frame``). Read this.
 
     Deprecated: the top-level session-cumulative counters (``usage_stats``, the ``session.stats``
     dict) that the gateway frame also carries. They are kept for existing readers; new readers use

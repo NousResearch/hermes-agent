@@ -2,13 +2,13 @@
 
 import math
 
-from gateway.restart import (
+from hermes_agent.gateway.restart import (
     DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT,
     parse_restart_after_turn_timeout,
     resolve_restart_exit_wait_budget,
     resolve_systemd_timeout_stop_sec,
 )
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.run import GatewayRunner
 
 
 def test_parse_restart_after_turn_timeout_defaults_and_clamps():
@@ -46,7 +46,7 @@ def test_cli_restart_wait_covers_configured_cron_drain(tmp_path, monkeypatch):
 
 def test_load_restart_after_turn_timeout_preserves_zero(tmp_path, monkeypatch):
     """Config/env ``0`` must disable after-turn wait, not fall back to default."""
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     monkeypatch.delenv("HERMES_RESTART_AFTER_TURN_TIMEOUT", raising=False)
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)

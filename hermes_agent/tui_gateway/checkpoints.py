@@ -4,7 +4,7 @@ Desktop sessions (``hermes serve`` → TUI gateway) never set ``HERMES_TUI_CHECK
 (that env var is only set by the ``hermes --tui --checkpoints`` CLI path), so agent
 creation previously gated filesystem checkpointing on the env var alone and silently
 ignored ``checkpoints.enabled`` in config.yaml. These helpers resolve enablement the
-way the messaging gateway does (``gateway/run.py`` ``_checkpoint_agent_kwargs``):
+way the messaging gateway does (``hermes_agent/gateway/run.py`` ``_checkpoint_agent_kwargs``):
 the env var (explicit CLI opt-in) wins when set, otherwise the ``checkpoints``
 config section applies with ``DEFAULT_CONFIG`` defaults.
 """

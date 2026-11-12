@@ -42,7 +42,7 @@ def profile(tmp_path):
 
 @pytest.mark.asyncio
 async def test_async_owner_scope_binds_what_owner_scope_binds_with_the_reads_off_the_loop(profile, monkeypatch):
-    from gateway import session_authorities
+    from hermes_agent.gateway import session_authorities
     from tools import terminal_scope
 
     authority = _authority(profile)
@@ -74,7 +74,7 @@ async def test_async_owner_scope_binds_what_owner_scope_binds_with_the_reads_off
 async def test_async_owner_scope_keeps_owner_scope_for_unrouted_owners(tmp_path):
     """A single-profile gateway, a symbolic test owner and a vanished home bind exactly what
     ``owner_scope`` binds (nothing, or the launch scope), without a worker hop."""
-    from gateway.session_authorities import async_owner_scope, owner_scope
+    from hermes_agent.gateway.session_authorities import async_owner_scope, owner_scope
 
     for authority in (_authority(tmp_path, multiplex=False), _authority("fixture"),
                       _authority(tmp_path / "gone")):
@@ -102,7 +102,7 @@ class _RecordingLock:
 
 
 def _ancillary_fixture(monkeypatch, *, on_enter=None, snapshot=None):
-    from gateway import session_ancillary
+    from hermes_agent.gateway import session_ancillary
     lock = _RecordingLock(on_enter)
     live = SimpleNamespace(event_stream=SimpleNamespace(lock=lock))
     authority = SimpleNamespace(sessions={"s1": live})

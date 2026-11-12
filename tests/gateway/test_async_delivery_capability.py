@@ -10,7 +10,7 @@ of silently registering a watcher that never fires.
 This is wired through:
   - ``BasePlatformAdapter.supports_async_delivery`` (default True)
   - ``APIServerAdapter.supports_async_delivery = False``
-  - ``gateway.session_context._SESSION_ASYNC_DELIVERY`` contextvar +
+  - ``hermes_agent.gateway.session_context._SESSION_ASYNC_DELIVERY`` contextvar +
     ``async_delivery_supported()`` helper, bound per-session.
 
 These are behavior/invariant tests (how the capability relates to the channel),
@@ -21,7 +21,7 @@ import json
 
 import pytest
 
-from gateway.session_context import (
+from hermes_agent.gateway.session_context import (
     async_delivery_supported,
     clear_session_vars,
     get_session_env,
@@ -78,7 +78,7 @@ class TestDeclareStatelessChannel:
         subprocess env bridge to ContextVar-authoritative. A pure single-process
         one-shot must not trigger that as a side effect of declaring a capability.
         """
-        from gateway import session_context as sc
+        from hermes_agent.gateway import session_context as sc
 
         reset_session_vars()
         engaged_before = sc._session_context_engaged
@@ -100,7 +100,7 @@ class TestStatelessChannelForcesSyncDelegation:
         self, monkeypatch
     ):
         import tools.delegate_tool as dt
-        from gateway.session_context import declare_stateless_channel
+        from hermes_agent.gateway.session_context import declare_stateless_channel
 
         class _Parent:
             _delegate_depth = 0
@@ -160,8 +160,8 @@ class TestAdapterCapabilityFlag:
         """Every API-server agent-entry path binds through
         _bind_api_server_session, which hardwires async_delivery=False — a new
         route physically cannot reintroduce the silent no-op (#10760)."""
-        from gateway.platforms.api_server import APIServerAdapter
-        from gateway.session_context import clear_session_vars, get_session_env
+        from hermes_agent.gateway.platforms.api_server import APIServerAdapter
+        from hermes_agent.gateway.session_context import clear_session_vars, get_session_env
 
         tokens = APIServerAdapter._bind_api_server_session(
             chat_id="c1", session_key="sk1", session_id="sid1"

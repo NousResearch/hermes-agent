@@ -15,7 +15,7 @@ These tests pin two fixes:
 
 import threading
 
-import gateway.run as gateway_run
+import hermes_agent.gateway.run as gateway_run
 
 
 def _make_runner():

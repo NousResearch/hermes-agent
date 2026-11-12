@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
-from gateway.platforms.base import SendResult
+from hermes_agent.gateway.platforms.base import SendResult
 
 
 class _CardAdapter:
@@ -52,7 +52,7 @@ def _run_clarify(adapter, questions=_ONE_QUESTION, answers=(), via_tool=False):
     Question i resolves from ``answers[i]``, and ``None`` leaves it unanswered so it expires.
     ``via_tool`` routes the questions through ``clarify_tool`` itself rather than calling the
     runner's callback directly."""
-    from gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
     from tools import clarify_gateway as cm
 
     runner = object.__new__(TurnRunner)
@@ -176,9 +176,9 @@ def test_clarify_tool_batch_route_answers_and_stops_together(adapter_cls, outcom
 def test_skip_hint_only_on_messaging_platforms(platform, hinted):
     """The messaging "Reply \"skip\"" hint is for chat adapters, where a typed reply answers the card.
     A local viewer (TUI / Desktop / CLI) renders a modal with its own skip key, as on main (row 8)."""
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     adapter = _CardAdapter()
-    from gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
     from tools import clarify_gateway as cm
     runner = object.__new__(TurnRunner)
     runner._approval_owner = None

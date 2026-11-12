@@ -4,12 +4,12 @@ import logging
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent
-from gateway.run import GatewayRunner
-from gateway.session_authority import initialize_session_authority
-from gateway.session_envelope import prepare_native
-from gateway.session_ingress import admit_message
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session_authority import initialize_session_authority
+from hermes_agent.gateway.session_envelope import prepare_native
+from hermes_agent.gateway.session_ingress import admit_message
 from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions
 
 CHAT = '15551234567@s.whatsapp.net'
@@ -38,7 +38,7 @@ async def _authority(tmp_path, monkeypatch):
 async def test_invalid_params_names_the_failing_clause(tmp_path, monkeypatch, caplog, fields, clause):
     authority, source = await _authority(tmp_path, monkeypatch)
     try:
-        with caplog.at_level(logging.WARNING, logger='gateway.session_envelope'):
+        with caplog.at_level(logging.WARNING, logger='hermes_agent.gateway.session_envelope'):
             with pytest.raises(RuntimeStoreError) as raised:
                 await prepare_native(authority.runner, MessageEvent(text='hi', source=source, **fields))
         # A string still refuses after MSG-2's None -> [] normalisation. The wire reason is unchanged; the clause rides beside it (was a bare invalid_params).
@@ -81,7 +81,7 @@ async def test_trust_clause_refusal_is_not_named_to_the_chat(tmp_path, monkeypat
     authority, source = await _authority(tmp_path, monkeypatch)
     try:
         forge(authority, source)
-        with caplog.at_level(logging.WARNING, logger='gateway.session_envelope'):
+        with caplog.at_level(logging.WARNING, logger='hermes_agent.gateway.session_envelope'):
             with pytest.raises(RuntimeStoreError) as raised:
                 await prepare_native(authority.runner, MessageEvent(text='hi', source=source))
             reply = await admit_message(authority, MessageEvent(text='hi', source=source, message_id='m1'))

@@ -237,7 +237,7 @@ def test_simplex_idna_host_is_never_treated_as_bypassed(monkeypatch, caplog, no_
 
 def test_an_oddly_cased_no_proxy_alone_is_not_a_bypass(monkeypatch):
     # httplib2 reads only ``no_proxy`` / ``NO_PROXY``: a ``No_Proxy`` it ignores cannot prove a direct send.
-    from gateway.platforms.base_log_safety import env_proxy_for_redaction
+    from hermes_agent.gateway.platforms.base_log_safety import env_proxy_for_redaction
 
     for name in (*ENV_PROXY_VARS, "NO_PROXY", "no_proxy"):
         monkeypatch.delenv(name, raising=False)
@@ -249,8 +249,8 @@ def test_an_oddly_cased_no_proxy_alone_is_not_a_bypass(monkeypatch):
 
 
 def test_feishu_media_download_failure_log_carries_no_proxy_secret(monkeypatch, caplog):
-    from gateway.config import PlatformConfig
-    from gateway.platforms.base import SendResult as _SendResult
+    from hermes_agent.gateway.config import PlatformConfig
+    from hermes_agent.gateway.platforms.base import SendResult as _SendResult
     from plugins.platforms.feishu import adapter as fs
 
     for name in (*ENV_PROXY_VARS, "NO_PROXY", "no_proxy"):

@@ -2,8 +2,8 @@
 import json
 from datetime import datetime, timedelta
 
-from gateway.config import GatewayConfig, Platform
-from gateway.session import SessionSource, SessionStore
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.session import SessionSource, SessionStore
 
 
 def test_internal_turn_does_not_advance_activity_clock(tmp_path):

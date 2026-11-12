@@ -610,7 +610,7 @@ def refresh_launchd_plist_if_needed() -> bool:
     # Inside the gateway's launchd process tree (agent self-update) a direct bootout kills THIS CLI
     # before bootstrap runs, leaving the job unloaded with no KeepAlive.
     try:
-        from gateway.status import get_running_pid
+        from hermes_agent.gateway.status import get_running_pid
         gateway_pid = get_running_pid()
     except Exception:
         gateway_pid = None
@@ -850,7 +850,7 @@ def launchd_restart():
     # bootout/bootstrap-retry path, which is bounded and reports its own
     # failure instead of stalling the update for 90s.
     refresh_ok = _gw().refresh_launchd_plist_if_needed()
-    from gateway.status import get_running_pid
+    from hermes_agent.gateway.status import get_running_pid
     try:
         pid = get_running_pid()
         if pid is not None and _gw()._request_gateway_self_restart(pid):
@@ -970,7 +970,7 @@ def launchd_status(deep: bool = False):
     launchd_pid = _gw()._parse_launchd_pid_from_list_output(list_output) if service_listed else None
 
     # Hermes PID may be a detached fallback process; when launchd IS supervising both PIDs match — don't double-count.
-    from gateway.status import get_running_pid
+    from hermes_agent.gateway.status import get_running_pid
     fallback_pid = get_running_pid(cleanup_stale=False)
     if launchd_pid is not None and fallback_pid == launchd_pid:
         fallback_pid = None

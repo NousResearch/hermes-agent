@@ -17,8 +17,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from gateway import hosted_room_driver as driver
-from gateway import hosted_rooms
+from hermes_agent.gateway import hosted_room_driver as driver
+from hermes_agent.gateway import hosted_rooms
 
 logger = logging.getLogger(__name__)
 

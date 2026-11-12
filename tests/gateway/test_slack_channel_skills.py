@@ -10,7 +10,7 @@ def _make_adapter(extra=None):
     return adapter
 
 def _resolve(adapter, channel_id, parent_id=None):
-    from gateway.platforms.base import resolve_channel_skills
+    from hermes_agent.gateway.platforms.base import resolve_channel_skills
     return resolve_channel_skills(adapter.config.extra, channel_id, parent_id)
 
 class TestSlackResolveChannelSkills:

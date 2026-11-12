@@ -14,13 +14,13 @@ async def test_reopening_a_finalized_local_row_behind_a_contended_writer_keeps_t
     """The first turn of a finalized local session reopens its row inside the claim. With another
     writer holding state.db's lock at that moment, the reopen waits for it; the loop must not."""
     from types import SimpleNamespace
-    from gateway import run, session_operator
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import SessionAuthority
-    from gateway.session_contract import Submission
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway import run, session_operator
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_contract import Submission
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_local import create_local_session
     import hermes_agent.hermes_state_runtime as rt
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())

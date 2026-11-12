@@ -24,8 +24,8 @@ def _relay_root() -> Path:
 
 
 # Desktop deadline mirror; no retry runs here. The owner gateway retries a transiently failed
-# admission once (``gateway.session_bot._maybe_retry``). Remove with the renderer relay deadline migration.
-TURN_MAX_ATTEMPTS = 2  # first admission + the owner's one transient-failure retry (gateway.session_bot)
+# admission once (``hermes_agent.gateway.session_bot._maybe_retry``). Remove with the renderer relay deadline migration.
+TURN_MAX_ATTEMPTS = 2  # first admission + the owner's one transient-failure retry (hermes_agent.gateway.session_bot)
 
 
 @method("bot_relay.roster.sync")
@@ -77,7 +77,7 @@ def _(rid, params: dict, _root=_relay_root) -> dict:
     except ValueError:
         return _err(rid, 4090, 'invalid_params', data={'reason': 'invalid_params'})
     from tools.bot_relay import delivery_turn_author, relaying_principal_author
-    from gateway.session_identity import authenticated_principal_digest, is_authenticated_identity
+    from hermes_agent.gateway.session_identity import authenticated_principal_digest, is_authenticated_identity
     sender_fields = ("from_profile", "from_handle", "from_connection")
     identity = getattr(current_transport(), "auth_identity", None)
     if is_authenticated_identity(identity):

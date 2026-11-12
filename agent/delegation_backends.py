@@ -119,7 +119,7 @@ def set_global_backend(name: str, *, session_key: str = "", apply_now: bool = Fa
 
 
 def _current_session_key(agent: Any) -> str:
-    from gateway.session_context import get_session_env
+    from hermes_agent.gateway.session_context import get_session_env
     return get_session_env("HERMES_SESSION_KEY", "") or str(getattr(agent, "session_id", "") or "")
 
 

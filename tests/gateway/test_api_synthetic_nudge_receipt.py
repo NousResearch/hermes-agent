@@ -10,8 +10,8 @@ from aiohttp.test_utils import TestClient, TestServer
 @pytest.mark.parametrize('stream', [False, True])
 @pytest.mark.parametrize('marked', [False, True])
 async def test_tool_output_before_synthetic_user_nudge_survives_settlement(api, owner, stream, marked):
-    from gateway.session_api_turn import publish_api_tool_event
-    from gateway.session_results import execution_result
+    from hermes_agent.gateway.session_api_turn import publish_api_tool_event
+    from hermes_agent.gateway.session_results import execution_result
     prior = [{'role': 'user', 'content': 'read a'}, {'role': 'assistant', 'content': 'previous answer'}]
     transcript = []
 

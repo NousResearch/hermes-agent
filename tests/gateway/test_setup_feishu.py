@@ -198,7 +198,7 @@ class TestSetupFeishuAdapterIntegration:
         env = self._make_env_from_setup()
 
         with patch.dict(os.environ, {**_SYS_ENV, **env}, clear=True):
-            from gateway.config import PlatformConfig
+            from hermes_agent.gateway.config import PlatformConfig
             from plugins.platforms.feishu.adapter import FeishuAdapter
             adapter = FeishuAdapter(PlatformConfig())
             assert adapter._app_id == "cli_test_app"

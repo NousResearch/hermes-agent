@@ -20,7 +20,7 @@ async def mailbox_lock(authority):
             yield
         finally:
             active.discard(task)
-            from gateway.session_runtime_workers import persist_work_count
+            from hermes_agent.gateway.session_runtime_workers import persist_work_count
             persist_work_count(authority)
 
 
@@ -81,7 +81,7 @@ async def write_receipt(home, record, *, expect=_UNCHECKED):
 
 
 def _scan_receipts(home, pins=None):
-    from gateway.session_bot import _scan_records
+    from hermes_agent.gateway.session_bot import _scan_records
     with _locked(home) as root:
         return root, list(_scan_records(root, pins))
 
@@ -189,7 +189,7 @@ def wake_bot_receipts(authority, session_id):
 
 
 def _start_refresh(authority, home, key):
-    from gateway.session_bot import refresh_receipt
+    from hermes_agent.gateway.session_bot import refresh_receipt
     async def refresh_until_current():
         while True:
             authority._bot_receipt_dirty.discard(key)

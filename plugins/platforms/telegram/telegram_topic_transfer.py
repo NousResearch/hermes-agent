@@ -11,9 +11,9 @@ from __future__ import annotations
 import logging
 from typing import Any, Awaitable, Callable, Optional
 
-from gateway.platforms.base import coerce_plaintext_gateway_command, resolve_channel_prompt
-from gateway.platforms.event import MessageEvent
-from gateway.session_identity import replace_source
+from hermes_agent.gateway.platforms.base import coerce_plaintext_gateway_command, resolve_channel_prompt
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session_identity import replace_source
 
 logger = logging.getLogger(__name__)
 

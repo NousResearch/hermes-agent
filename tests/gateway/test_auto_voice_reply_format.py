@@ -6,10 +6,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource
 
 
 class TestAutoVoiceReplyFormat:
@@ -174,7 +174,7 @@ class TestAutoVoiceReplyFormat:
         assert telegram_adapter._auto_tts_default is True
 
 def _make_runner() -> GatewayRunner:
-    with patch("gateway.run.GatewayRunner._load_voice_modes", return_value={}):
+    with patch("hermes_agent.gateway.run.GatewayRunner._load_voice_modes", return_value={}):
         runner = GatewayRunner.__new__(GatewayRunner)
         runner._voice_mode = {}
         runner.adapters = {}
@@ -231,7 +231,7 @@ def test_bridge_called_tts_suppresses_the_auto_voice_reply():
 def test_bridge_called_tts_audio_is_delivered():
     """The audio a bridge-called text_to_speech produced is attached to the reply, while a MEDIA:
     string in another bridge-called tool's result still is not."""
-    from gateway.run import _collect_auto_append_media_tags
+    from hermes_agent.gateway.run import _collect_auto_append_media_tags
 
     tags, voice = _collect_auto_append_media_tags(_bridge_tts_turn("/tmp/voice/note.ogg"))
     assert tags == ["MEDIA:/tmp/voice/note.ogg"] and voice is True

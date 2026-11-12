@@ -1,8 +1,8 @@
 """User-authorization mixin for ``GatewayRunner``: may this user/chat talk to the agent,
 the per-adapter DM policy, the unauthorized-DM behavior, and the bot loop guard.
 
-``gateway.run`` is never imported at module import time (cycle). The unauthorized-DM method still
-logs through ``gateway.run``'s logger so its records keep that name.
+``hermes_agent.gateway.run`` is never imported at module import time (cycle). The unauthorized-DM method still
+logs through ``hermes_agent.gateway.run``'s logger so its records keep that name.
 """
 
 from __future__ import annotations
@@ -14,10 +14,10 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-from gateway.bot_loop_guard import BotLoopGuard
-from gateway.config import Platform
-from gateway.session import SessionSource
-from gateway.whatsapp_identity import (
+from hermes_agent.gateway.bot_loop_guard import BotLoopGuard
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.whatsapp_identity import (
     expand_whatsapp_aliases as _expand_whatsapp_auth_aliases,
     normalize_whatsapp_identifier as _normalize_whatsapp_identifier,
 )
@@ -36,9 +36,9 @@ _GROUP_USER_ENV = {Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS"}
 
 
 # Gate reads use the shared per-profile isolated reader (allowlist leak under multiplex, #72348).
-from gateway.platforms._shared import decode_json_list_literal as _decode_json_list_literal
-from gateway.platforms._shared import extra_or_secret as _extra_or_secret
-from gateway.platforms._shared import platform_gate_env as _auth_env
+from hermes_agent.gateway.platforms._shared import decode_json_list_literal as _decode_json_list_literal
+from hermes_agent.gateway.platforms._shared import extra_or_secret as _extra_or_secret
+from hermes_agent.gateway.platforms._shared import platform_gate_env as _auth_env
 
 
 def _env_truthy(name: str) -> bool:
@@ -46,8 +46,8 @@ def _env_truthy(name: str) -> bool:
 
 
 def authz_field(name, field, entry):
-    """Late-bound :func:`gateway.platform_env.authz_field` (entry field, else the bundled declaration)."""
-    from gateway.platform_env import authz_field as _field
+    """Late-bound :func:`hermes_agent.gateway.platform_env.authz_field` (entry field, else the bundled declaration)."""
+    from hermes_agent.gateway.platform_env import authz_field as _field
     return _field(name, field, entry)
 
 
@@ -67,7 +67,7 @@ def _registry_entry(platform):
         from hermes_cli.plugins import discover_plugins
         discover_plugins()
     with contextlib.suppress(Exception):
-        from gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.platform_registry import platform_registry
 
         return platform_registry.get(platform.value)
     return None
@@ -244,7 +244,7 @@ class GatewayAuthorizationMixin:
         (``_adapters_for_profile``, ``send_message``, the platform-events API) never reaches here, so a
         satellite cannot write to an arbitrary chat through the primary's credentials.
         """
-        from gateway.delivery import resolve_delivery_transport
+        from hermes_agent.gateway.delivery import resolve_delivery_transport
         platform = getattr(source, "platform", None)
         profile = (getattr(source, "profile", None) or "").strip()
         if platform is None or not profile or not self._is_shared_bot_satellite(profile, platform):
@@ -258,7 +258,7 @@ class GatewayAuthorizationMixin:
 
     def _default_bot_routes_to(self, source: SessionSource, profile: str) -> bool:
         """Whether the most specific default-bot route matching *source*'s chat names *profile*."""
-        from gateway.profile_routing import match_profile_route
+        from hermes_agent.gateway.profile_routing import match_profile_route
         route = match_profile_route(
             self.config.profile_routes, source.platform.value, guild_id=getattr(source, "scope_id", None),
             chat_id=getattr(source, "chat_id", None), thread_id=getattr(source, "thread_id", None),
@@ -287,14 +287,14 @@ class GatewayAuthorizationMixin:
         that answers is the runtime profile's own LocalSessionAdapter (#139060), as on a live turn."""
         if identity is None or not identity.multiplexed or identity.transport_inferred:
             return False
-        from gateway.config import SHARED_LISTENER_MIRROR_PLATFORMS
+        from hermes_agent.gateway.config import SHARED_LISTENER_MIRROR_PLATFORMS
         platform = getattr(getattr(source, "platform", None), "value", None)
         return (platform in SHARED_LISTENER_MIRROR_PLATFORMS
                 or self._restored_transport_trusted(source, identity))
 
     def _is_shared_bot_satellite(self, profile_name: str, platform: Optional[Platform] = None) -> bool:
         """A served profile that a ``profile_routes`` entry targets through the default profile's bot
-        (gateway/AGENTS.md). With no *platform*, it must own no bot at all: such a profile drains
+        (hermes_agent/gateway/AGENTS.md). With no *platform*, it must own no bot at all: such a profile drains
         through the primary's adapters (its ``_profile_adapters`` entry is the ``{}`` startup
         placeholder). With *platform*, only a bot it owns on THAT platform makes it a credential
         boundary there — the per-destination borrow in ``_routed_primary_adapter``. Restored/cached
@@ -310,7 +310,7 @@ class GatewayAuthorizationMixin:
         routes = getattr(config, "profile_routes", None) or []
         if not any(r.enabled and r.profile == profile_name and r.bot_profile is None for r in routes):
             return False
-        from gateway.run import _multiplex_profile_homes
+        from hermes_agent.gateway.run import _multiplex_profile_homes
         try:
             return profile_name in {name for name, _home in _multiplex_profile_homes(config)}
         except Exception:
@@ -339,7 +339,7 @@ class GatewayAuthorizationMixin:
         if getattr(source, "delivered_via_upstream_relay", False) is True:
             return self._primary_adapters().get(Platform.RELAY)
         platform = getattr(source, "platform", None)
-        from gateway.session_identity import identity_of
+        from hermes_agent.gateway.session_identity import identity_of
         identity = identity_of(source)
         # An INFERRED transport is a guess (the primary profile), not a receiving bot: a hand-built
         # internal source canonicalized by ``run_inbound`` (the CLI handoff turn) would otherwise take
@@ -362,15 +362,15 @@ class GatewayAuthorizationMixin:
         runtime_profile)`` delivers — ``_adapters_for_profile`` holds one adapter per platform per
         profile, a shared-bot satellite drains through the primary, and a disconnected secondary
         fails closed to ``{}`` rather than borrowing the default bot. Restored sessions, cron,
-        kanban and completion notices all rely on this row. Matrix: gateway/AGENTS.md § Profile scope.
+        kanban and completion notices all rely on this row. Matrix: hermes_agent/gateway/AGENTS.md § Profile scope.
         """
         if source is None:
             return None
-        from gateway.session_detached import detached_route_of
+        from hermes_agent.gateway.session_detached import detached_route_of
         if detached_route_of(source):
             # A conversation its chat moved past answers its app viewers only, through the local
-            # adapter's event-stream delivery (gateway/session_detached.py), never the chat.
-            from gateway.session_identity import identity_of
+            # adapter's event-stream delivery (hermes_agent/gateway/session_detached.py), never the chat.
+            from hermes_agent.gateway.session_identity import identity_of
             identity = identity_of(source)
             profile = identity.runtime_profile if identity is not None else getattr(source, "profile", None)
             return self._adapters_for_profile(profile).get(Platform.LOCAL)
@@ -382,7 +382,7 @@ class GatewayAuthorizationMixin:
         # the runtime profile's bot — that fallthrough is the "restored lane answers from the wrong
         # bot" row the identity exists to close. Only an identity-less source (legacy row, bare
         # fixture) uses the unique-owner heuristic below.
-        from gateway.session_identity import identity_of
+        from hermes_agent.gateway.session_identity import identity_of
         identity = identity_of(source)
         if self._names_receiving_bot(source, identity):
             return None
@@ -427,7 +427,7 @@ class GatewayAuthorizationMixin:
         Inside a routed satellite's turn the ambient scope is the satellite's, whose ``.env`` has no
         token/allowlist; every authorization decision made mid-turn (``/topic``, sibling ``/stop``, plugin
         injection, voice, auto-resume) must read the admitting bot's allowlist instead."""
-        from gateway.session_identity import identity_of
+        from hermes_agent.gateway.session_identity import identity_of
         identity = identity_of(source)
         if identity is not None:
             return identity.authorization_home if identity.multiplexed else None
@@ -453,7 +453,7 @@ class GatewayAuthorizationMixin:
         owner = self._transport_owner(source)
         if owner is not None:
             return owner[1]
-        from gateway.session_identity import identity_of
+        from hermes_agent.gateway.session_identity import identity_of
         identity = identity_of(source)
         if identity is not None and identity.multiplexed:
             return None if identity.transport_profile == "default" else identity.transport_profile
@@ -468,7 +468,7 @@ class GatewayAuthorizationMixin:
         source = getattr(entry, "origin", None)
         if source is None:
             return None
-        from gateway.session_identity import restore_identity
+        from hermes_agent.gateway.session_identity import restore_identity
         restore_identity(source, runner=self, transport_profile=getattr(entry, "transport_profile", None))
         return source
 
@@ -664,7 +664,7 @@ class GatewayAuthorizationMixin:
     def _legacy_telegram_chat_grant(self, source, group_user_allowlist: str) -> bool:
         """TELEGRAM_GROUP_ALLOWED_USERS was once (mis)used as a chat-ID allowlist; "-"-prefixed
         values are chat IDs, honor them and warn once."""
-        from gateway.run import logger
+        from hermes_agent.gateway.run import logger
         legacy_chat_ids = {v.strip() for v in group_user_allowlist.split(",") if v.strip().startswith("-")}
         if not legacy_chat_ids:
             return False
@@ -712,7 +712,7 @@ class GatewayAuthorizationMixin:
         transport profile like the budget. A human message resets its conversation's chain; a bot message
         past ``max_hops``, a repeat of the same ask, or a bot answering the reply this bot just gave it
         starts no turn (#137027)."""
-        from gateway.session_ingress import executing_admission
+        from hermes_agent.gateway.session_ingress import executing_admission
         source = event.source
         is_bot = bool(getattr(source, "is_bot", False))
         # A committed admission re-enters the handler to execute; ingress already judged that message.
@@ -749,7 +749,7 @@ class GatewayAuthorizationMixin:
 
     def _principal_authorized(self, source: SessionSource, *, allow_adapter_delegation: bool) -> bool:
         """The allowlist verdict alone, before the bot loop guard."""
-        from gateway.session_local import authorize_local_source
+        from hermes_agent.gateway.session_local import authorize_local_source
         local_verdict = authorize_local_source(self, source)
         if local_verdict is not None:
             return local_verdict

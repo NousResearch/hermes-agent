@@ -2,7 +2,7 @@
 
 Under ``gateway.multiplex_profiles`` every secondary profile is constructed
 inside ``_profile_runtime_scope`` and its ``.env`` lives in that scope —
-``gateway/run.py`` explicitly does NOT mutate ``os.environ`` with it. Raw
+``hermes_agent/gateway/run.py`` explicitly does NOT mutate ``os.environ`` with it. Raw
 ``os.getenv`` authorization reads therefore (a) silently miss the secondary
 profile's own allowlists (fail-closed no-replies) and (b) leak the default
 profile's ``GATEWAY_ALLOW_ALL_USERS`` / allowlists into secondary profiles
@@ -165,8 +165,8 @@ def test_wecom_open_gate_ignores_default_env_under_scope(profile_scope, multiple
 def test_startup_guard_uses_scoped_gateway_flag(multiplex_on):
     """_own_policy_open_startup_violation must consult the scope for
     GATEWAY_ALLOW_ALL_USERS, not raw os.environ (#93522)."""
-    from gateway.platforms.base import Platform
-    from gateway.run import _own_policy_open_startup_violation
+    from hermes_agent.gateway.platforms.base import Platform
+    from hermes_agent.gateway.run import _own_policy_open_startup_violation
 
     class _PlatformConfig:
         enabled = True

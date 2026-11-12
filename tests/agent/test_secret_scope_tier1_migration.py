@@ -47,7 +47,7 @@ class _ExplodingScope(dict):
 
 class TestPairingAllowlistRead:
     def test_scoped_value_wins(self, monkeypatch):
-        from gateway.pairing import _read_allowlist_env
+        from hermes_agent.gateway.pairing import _read_allowlist_env
 
         monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "111")
         ss.set_multiplex_active(True)
@@ -55,7 +55,7 @@ class TestPairingAllowlistRead:
             assert _read_allowlist_env("TELEGRAM_ALLOWED_USERS") == "222"
 
     def test_scoped_miss_no_borrow(self, monkeypatch):
-        from gateway.pairing import _read_allowlist_env
+        from hermes_agent.gateway.pairing import _read_allowlist_env
 
         monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "other-profile")
         ss.set_multiplex_active(True)
@@ -64,7 +64,7 @@ class TestPairingAllowlistRead:
 
     def test_unscoped_multiplex_falls_back_to_env(self, monkeypatch):
         # Slack pattern: unscoped read under multiplex uses the process env.
-        from gateway.pairing import _read_allowlist_env
+        from hermes_agent.gateway.pairing import _read_allowlist_env
 
         monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "own-env")
         ss.set_multiplex_active(True)
@@ -73,7 +73,7 @@ class TestPairingAllowlistRead:
     def test_scope_failure_never_borrows_env(self, monkeypatch):
         # A bound scope that errors must propagate -- a blanket suppress would
         # silently borrow the default profile's os.environ allowlist.
-        from gateway.pairing import _read_allowlist_env
+        from hermes_agent.gateway.pairing import _read_allowlist_env
 
         monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "other-profile")
         ss.set_multiplex_active(True)
@@ -85,7 +85,7 @@ class TestPairingAllowlistRead:
 
 class TestAuthzPlatformGateEnv:
     def test_scoped_value_wins(self, monkeypatch):
-        from gateway.platforms._shared import platform_gate_env as _platform_gate_env
+        from hermes_agent.gateway.platforms._shared import platform_gate_env as _platform_gate_env
 
         monkeypatch.setenv("DISCORD_ALLOW_BOTS", "none")
         ss.set_multiplex_active(True)
@@ -93,7 +93,7 @@ class TestAuthzPlatformGateEnv:
             assert _platform_gate_env("DISCORD_ALLOW_BOTS", "none") == "all"
 
     def test_scoped_miss_returns_default_not_env(self, monkeypatch):
-        from gateway.platforms._shared import platform_gate_env as _platform_gate_env
+        from hermes_agent.gateway.platforms._shared import platform_gate_env as _platform_gate_env
 
         monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")  # another profile's bridge
         ss.set_multiplex_active(True)
@@ -101,7 +101,7 @@ class TestAuthzPlatformGateEnv:
             assert _platform_gate_env("DISCORD_ALLOW_BOTS", "none") == "none"
 
     def test_single_profile_legacy_env(self, monkeypatch):
-        from gateway.platforms._shared import platform_gate_env as _platform_gate_env
+        from hermes_agent.gateway.platforms._shared import platform_gate_env as _platform_gate_env
 
         monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "42")
         assert _platform_gate_env("GATEWAY_ALLOWED_USERS") == "42"
@@ -111,7 +111,7 @@ class TestAuthzAuthEnv:
     fallthrough on a scoped miss under multiplex)."""
 
     def test_scoped_value_wins(self, monkeypatch):
-        from gateway.authz_mixin import _auth_env
+        from hermes_agent.gateway.authz_mixin import _auth_env
 
         monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "111")
         ss.set_multiplex_active(True)
@@ -119,7 +119,7 @@ class TestAuthzAuthEnv:
             assert _auth_env("TELEGRAM_ALLOWED_USERS") == "222"
 
     def test_scoped_miss_returns_default_not_env(self, monkeypatch):
-        from gateway.authz_mixin import _auth_env
+        from hermes_agent.gateway.authz_mixin import _auth_env
 
         monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "profile-A")
         monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
@@ -131,7 +131,7 @@ class TestAuthzAuthEnv:
             assert _auth_env("TELEGRAM_ALLOW_ALL_USERS") == ""
 
     def test_single_profile_legacy_env(self, monkeypatch):
-        from gateway.authz_mixin import _auth_env
+        from hermes_agent.gateway.authz_mixin import _auth_env
 
         monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "42")
         assert _auth_env("GATEWAY_ALLOWED_USERS") == "42"
@@ -141,7 +141,7 @@ class TestAuthzAuthEnv:
 class TestMatrixStartupSecret:
     def _helper(self):
         pytest.importorskip("plugins.platforms.matrix.adapter")
-        from gateway.platforms._shared import get_scoped_secret
+        from hermes_agent.gateway.platforms._shared import get_scoped_secret
 
         return lambda name: (get_scoped_secret(name, "") or "").strip()
 

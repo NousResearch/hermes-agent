@@ -5,9 +5,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from hermes_agent.gateway.session import SessionSource
 
 
 def _make_adapter(**extra_env):
@@ -150,7 +150,7 @@ async def test_clear_reactions_handles_api_error_gracefully(monkeypatch):
 
 
 def test_config_bridges_telegram_reactions(monkeypatch, tmp_path):
-    """gateway/config.py bridges telegram.reactions to TELEGRAM_REACTIONS env var."""
+    """hermes_agent/gateway/config.py bridges telegram.reactions to TELEGRAM_REACTIONS env var."""
     import hermes_yaml as yaml
     config_file = tmp_path / "config.yaml"
     config_file.write_text(yaml.safe_dump({
@@ -163,7 +163,7 @@ def test_config_bridges_telegram_reactions(monkeypatch, tmp_path):
     # the var doesn't exist yet — load_gateway_config will overwrite it.
     monkeypatch.setenv("TELEGRAM_REACTIONS", "")
 
-    from gateway.config import load_gateway_config
+    from hermes_agent.gateway.config import load_gateway_config
     load_gateway_config()
 
     import os

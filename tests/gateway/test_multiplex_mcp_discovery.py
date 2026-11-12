@@ -9,9 +9,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionSource
 from hermes_constants import get_hermes_home, hermes_home_key
 
 
@@ -19,7 +19,7 @@ from hermes_constants import get_hermes_home, hermes_home_key
 async def test_gateway_boot_discovers_mcp_under_every_profile_home(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
     from tools import mcp_tool_discovery as _mcp_discovery
 
     homes = [("default", tmp_path / "default"), ("worker", tmp_path / "worker")]
@@ -48,7 +48,7 @@ async def test_gateway_boot_discovers_mcp_under_every_profile_home(
 async def test_reload_mcp_only_touches_requesting_profile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
     from tools import mcp_tool
     from tools import mcp_tool_discovery as _mcp_discovery
     from tools import mcp_tool_lifecycle as _mcp_lifecycle
@@ -107,7 +107,7 @@ async def test_reload_mcp_formats_scoped_connection_keys_before_refreshing_cache
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Connection-ledger tuple keys are internal; reload reports server names and completes refresh."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
     from tools import mcp_tool
     from tools import mcp_tool_discovery as _mcp_discovery
     from tools import mcp_tool_lifecycle as _mcp_lifecycle
@@ -155,7 +155,7 @@ async def test_reload_mcp_reports_a_shared_server_to_a_non_owner_profile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A shared connection remains visible when its peer profile reloads MCP."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
     from tools import mcp_tool
     from tools import mcp_tool_discovery as _mcp_discovery
     from tools import mcp_tool_lifecycle as _mcp_lifecycle

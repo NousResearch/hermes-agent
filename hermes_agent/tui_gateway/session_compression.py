@@ -14,7 +14,7 @@ from .method_ctx import bind_module
 def _tui_compression_config_signature(cfg: dict | None) -> tuple:
     """Stable snapshot of compression/context keys that must apply next turn: the messaging-gateway
     cache-busting extract plus ``idle_compact_after_seconds``/``tail_mode`` (live-TUI-only keys)."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
     keys = GatewayRunner._extract_cache_busting_config(cfg)
     picked = {k: v for k, v in keys.items() if k.startswith("compression.") or k == "model.context_length"}
     compression = cfg.get("compression") if isinstance(cfg, dict) and isinstance(cfg.get("compression"), dict) else {}

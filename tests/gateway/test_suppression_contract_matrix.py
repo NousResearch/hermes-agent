@@ -1,7 +1,7 @@
 """Contract matrix for the gateway's final-send suppression (#82656).
 
 The gateway skips its own final send when the stream consumer claims the turn
-final already reached the user (``gateway/run.py``: ``final_response_sent`` /
+final already reached the user (``hermes_agent/gateway/run.py``: ``final_response_sent`` /
 ``final_content_delivered``, reconciled through ``delivered_final_matches``).
 Every incident in this family — #71643 (stale finalize snapshot), #78541
 (payload-less multi-message split), #82656 (frozen preview left with a visible
@@ -29,9 +29,9 @@ import asyncio
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 CURSOR = " ▉"
 PREFIX = "Ack received. Starting the deploy now,"
@@ -165,7 +165,7 @@ async def _drive(adapter, *, interrupt: bool):
 def _consumer_claims_final_delivery(consumer, final_text: str) -> bool:
     """Whether the gateway would suppress its normal final send.
 
-    Mirrors the decision in ``gateway/run.py`` (``_stream_confirmed_final_delivery``
+    Mirrors the decision in ``hermes_agent/gateway/run.py`` (``_stream_confirmed_final_delivery``
     plus the ``_stale_finalized`` reconciliation), which lives inside
     ``_run_agent`` and cannot be imported.  Kept deliberately small: a
     ``False`` verdict from ``delivered_final_matches`` vetoes both flags,

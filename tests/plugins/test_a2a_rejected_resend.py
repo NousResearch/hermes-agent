@@ -1,6 +1,6 @@
 """A forwarded message refused by an admission guard stays refused on its exact resend."""
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.a2a import protocol
 from plugins.platforms.a2a.adapter import A2AAdapter
 

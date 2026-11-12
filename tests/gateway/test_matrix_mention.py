@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 # The matrix adapter module is importable without mautrix installed
 # (module-level imports use try/except with stubs).  No need for

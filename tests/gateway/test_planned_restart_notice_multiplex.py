@@ -12,10 +12,10 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-import gateway.delivery as gateway_delivery
-import gateway.run as gateway_run
-from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
-from gateway.platforms.base import SendResult
+import hermes_agent.gateway.delivery as gateway_delivery
+import hermes_agent.gateway.run as gateway_run
+from hermes_agent.gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import SendResult
 
 ONLINE_NOTICE = "♻️ Gateway online — Hermes is back and ready."
 
@@ -200,7 +200,7 @@ async def test_unserved_profile_config_is_pruned_from_the_fan_out(tmp_path, monk
     monkeypatch.setattr(gateway_run, "_multiplex_profile_homes", lambda cfg: [("ghost", tmp_path / "ghost")])
     monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "default")
     monkeypatch.setattr(
-        "gateway.run_profile_reconcile.profile_serve_signature", lambda home: ("sig",))
+        "hermes_agent.gateway.run_profile_reconcile.profile_serve_signature", lambda home: ("sig",))
 
     await runner._start_secondary_profile_adapters()
 

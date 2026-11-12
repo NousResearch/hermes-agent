@@ -22,7 +22,7 @@ from contextlib import suppress
 
 import pytest
 
-import gateway.run as gw_mod
+import hermes_agent.gateway.run as gw_mod
 
 class _FakeSessionDB:
     """Records when the gateway closed it, on a shared event log."""
@@ -214,7 +214,7 @@ def _arm_cron(gw):
 def _arm_api(gw):
     # Through the real hook: the adapter map is cleared one phase before the close gate, so the
     # gate must use the count taken before the clear, not a live lookup.
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
 
     class _ApiAdapter:
         def active_agent_work_count(self):
@@ -267,7 +267,7 @@ async def test_cancelled_api_handler_worker_still_blocks_session_db_close(monkey
     worker itself exits.
     """
     from hermes_agent import hermes_state_registry
-    from gateway.platforms import api_server_runs as api_runs
+    from hermes_agent.gateway.platforms import api_server_runs as api_runs
 
     events = []
     gw = _FakeGateway(events)

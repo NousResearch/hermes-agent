@@ -392,7 +392,7 @@ class PluginLoaderMixin:
         """Publish the deferred loader as a ledger-owned lease; False when the registry refused it."""
         platform_name = self._platform_name_from_manifest(manifest)
         try:
-            from gateway.platform_registry import platform_registry
+            from hermes_agent.gateway.platform_registry import platform_registry
             scope = self.scope_key
 
             def _loader(_manifest: PluginManifest = manifest) -> None:
@@ -406,7 +406,7 @@ class PluginLoaderMixin:
             previous = platform_registry.snapshot_registration(platform_name, scope=scope)
             platform_registry.register_deferred(platform_name, _loader, scope=scope)
             # Lets the gateway config pass recognise an env-only setup (sms: TWILIO_*) without
-            # importing the adapter; see gateway.platform_activation.
+            # importing the adapter; see hermes_agent.gateway.platform_activation.
             platform_registry.note_activation_env(
                 platform_name, [e.get("name") if isinstance(e, dict) else e for e in manifest.requires_env or ()])
             current = platform_registry.snapshot_registration(platform_name, scope=scope)

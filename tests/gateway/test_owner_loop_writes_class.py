@@ -13,11 +13,11 @@ from tests.waiting import async_wait_until
 
 
 def _owner(tmp_path, monkeypatch, handle):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import SessionAuthority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     import hermes_agent.hermes_state_runtime as rt
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
@@ -33,7 +33,7 @@ def _owner(tmp_path, monkeypatch, handle):
 
 
 def _local(authority, owner, tmp_path, source='cli', request_id='m'):
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_local import create_local_session
     return create_local_session(authority, owner.actor, dict(
         request_id=request_id, source=source, cwd=str(tmp_path), model='frozen', toolsets=[]))
 
@@ -62,7 +62,7 @@ async def _model_prepare(authority, owner, tmp_path, db):
 
 
 async def _claim_reopen(authority, owner, tmp_path, db):
-    from gateway.session_contract import Submission
+    from hermes_agent.gateway.session_contract import Submission
     ref = _local(authority, owner, tmp_path)
     db.end_session(ref.session_id, 'tui_shutdown')
     await _terminal(db, await authority.submit(owner.actor, Submission('first', ref, {'text': 'FIRST'}, 'queue')))
@@ -70,7 +70,7 @@ async def _claim_reopen(authority, owner, tmp_path, db):
 
 
 async def _acp_idle_after_turn(authority, owner, tmp_path, db):
-    from gateway.session_contract import Submission
+    from hermes_agent.gateway.session_contract import Submission
     ref = _local(authority, owner, tmp_path, source='acp')
     await _terminal(db, await authority.submit(owner.actor, Submission('acp', ref, {'text': 'ACP'}, 'queue')))
     async with asyncio.timeout(10):
@@ -93,9 +93,9 @@ async def _create_titled_hidden(authority, owner, tmp_path, db):
 
 
 async def _native_register(authority, owner, tmp_path, db):
-    from gateway.config import Platform
-    from gateway.session import SessionSource
-    from gateway import session_envelope
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session import SessionSource
+    from hermes_agent.gateway import session_envelope
     source = SessionSource(platform=Platform.TELEGRAM, chat_id='c', user_id='u')
     payload = {'native_text_v1': {'event': {'message_id': 'm1', 'text': 'hi'}}}
 
@@ -116,7 +116,7 @@ async def _native_register(authority, owner, tmp_path, db):
 
 
 async def _initialize(authority, owner, tmp_path, db):
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_authority import initialize_session_authority
     authority.runner.session_authority = None
     authority.runner._session_db = db
     await initialize_session_authority(authority.runner, profile_id='owned', instance_id='second')
@@ -135,10 +135,10 @@ async def _initialize_adoption(authority, owner, tmp_path, db):
 
 async def _first_read_adoption(authority, owner, tmp_path, db):
     """A cold owner's first read (``session.resume``) of a session its boot recovery never reached."""
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import SessionAuthority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     import hermes_agent.hermes_state_runtime as rt
     from tests.gateway.test_local_receipt_untracked_compression import _compact_like_0_22_2
     ref = _local(authority, owner, tmp_path)

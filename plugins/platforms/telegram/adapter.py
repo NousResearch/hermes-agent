@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 from agent.deadline import run_bounded_async
 from agent.ssl_verify import platform_ssl_context
-from gateway.platforms._shared import (
+from hermes_agent.gateway.platforms._shared import (
     decode_json_list_literal as _decode_json_list_literal,
     extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
     platform_gate_env as _scoped_gate_env,
@@ -140,10 +140,10 @@ except ImportError as _import_exc:
 
 import sys
 
-from gateway.authz_mixin import _coerce_allow_set
+from hermes_agent.gateway.authz_mixin import _coerce_allow_set
 from agent.i18n import get_language, t
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import (
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult, classify_send_error, unauthorized_action_notice,
     cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_video_from_bytes_async, resolve_proxy_url, safe_proxy_url_for_log, describe_proxy_error, SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len, env_proxy_for_redaction,
@@ -175,7 +175,7 @@ _MEDIA_KIND_KEYS = {
     "voice message": "platform.telegram.media.kind_voice", "audio file": "platform.telegram.media.kind_audio",
     "video file": "platform.telegram.media.kind_video", "video note": "platform.telegram.media.kind_video"}
 
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_audio_meta import (
     _coerce_duration_seconds, _probe_voice_duration_seconds, audio_player_fields, fit_thumbnail_jpeg)
 from plugins.platforms.telegram.telegram_dm_topic_send import dead_topic_may_reroute, dead_topic_retry_kwargs, private_chat, topic_gone
@@ -199,7 +199,7 @@ from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, 
 from plugins.platforms.telegram.telegram_resolved_prompt import edit_keeping_prompt
 from plugins.platforms.telegram.telegram_clarify_binding import ClarifyPrompt, log_resolved, tap_matches_prompt
 from plugins.platforms.telegram.telegram_topic_transfer import TopicTransferFn, apply_root_dm_topic_transfer
-from gateway.approval_actor import picker_refusal, update_prompt_refusal
+from hermes_agent.gateway.approval_actor import picker_refusal, update_prompt_refusal
 from plugins.platforms.telegram.callback_answer import TOAST_LIMIT as _TOAST_LIMIT, answer_callback, answer_or_note, refuse_tap
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, build_ptb_requests, discover_fallback_ips, parse_fallback_ip_env,
@@ -355,7 +355,7 @@ def _separate_chunk_indicator_from_fence(text: str) -> str:
 
 
 # MarkdownV2 has no table syntax, so pipe tables become bullet groups via convert_table_to_bullets().
-from gateway.platforms.helpers import (
+from hermes_agent.gateway.platforms.helpers import (
     TABLE_SEPARATOR_RE as _TABLE_SEPARATOR_RE, compile_mention_patterns)
 
 # Internal safety bounds (not user knobs): no reconnect/teardown path may hang on a dead CLOSE-WAIT
@@ -756,7 +756,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         auth_fn = self._legacy_runner_auth_fn()
         if auth_fn is not None:
             try:
-                from gateway.session import SessionSource
+                from hermes_agent.gateway.session import SessionSource
                 source = SessionSource(
                     platform=Platform.TELEGRAM, chat_id=str(chat_id or normalized_user_id), chat_type=normalized_chat_type,
                     user_id=normalized_user_id, user_name=str(user_name).strip() if user_name else None,
@@ -776,7 +776,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
     def _source_from_message_for_auth(self, message: Message):
         """Build the SessionSource the gateway auth path expects; identity comes from ``from_user``,
         falling back to ``sender_chat`` for channel posts so an unauthorized channel can't inject."""
-        from gateway.session import SessionSource
+        from hermes_agent.gateway.session import SessionSource
         user = getattr(message, "from_user", None)
         chat = getattr(message, "chat", None)
         user_id = str(getattr(user, "id", "")).strip() or None
@@ -1015,7 +1015,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         ``_recover_telegram_topic_thread_id`` keeps steering inbound to the dead thread. Best-effort.
         Rows are namespaced by profile: the send's ``hermes_profile`` wins over the adapter's stamp.
 
-        Without this prune the recovery logic in ``gateway.run._recover_telegram_topic_thread_id`` keeps
+        Without this prune the recovery logic in ``hermes_agent.gateway.run._recover_telegram_topic_thread_id`` keeps
         steering future inbound messages to the dead thread (the bug behind #31501 — tool progress,
         approvals, replies all end up in the wrong place even though the user has moved on to a fresh
         topic). Best-effort: we never raise from a send-fallback path — a failed cleanup must not turn into
@@ -1375,7 +1375,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
 
         Awaited so the store's read-modify-write + ``os.replace`` runs off the loop."""
         try:
-            from gateway import rich_sent_store
+            from hermes_agent.gateway import rich_sent_store
             await rich_sent_store.record_async(str(chat_id), str(message_id), content)
         except Exception:
             pass
@@ -4445,7 +4445,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         if not (session_key := await self._claim_callback_state(
                 query, cb, self._approval_state, approval_id, _unauthorized(), resolved, pop=False)):
             return
-        from gateway.approval_actor import approval_refusal, refusal_text
+        from hermes_agent.gateway.approval_actor import approval_refusal, refusal_text
         request_id = self._approval_request_ids.get(approval_id)
         if requester := approval_refusal(session_key, getattr(query.from_user, "id", ""), extra=self.config.extra, request_id=request_id, choice=choice):
             return await answer_callback(query, refusal_text(requester)[:_TOAST_LIMIT], show_alert=True)
@@ -4486,7 +4486,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         if not (session_key := await self._claim_callback_state(
                 query, cb, self._slash_confirm_state, confirm_id, _unauthorized(), resolved, pop=False)):
             return
-        from gateway.approval_actor import refusal_text, slash_confirm_refusal
+        from hermes_agent.gateway.approval_actor import refusal_text, slash_confirm_refusal
         if requester := slash_confirm_refusal(session_key, confirm_id, getattr(query.from_user, "id", ""), extra=self.config.extra):
             return await answer_callback(query, refusal_text(requester)[:_TOAST_LIMIT], show_alert=True)
         if not self._slash_confirm_state.pop(confirm_id, None):  # a concurrent tap claimed it first
@@ -4538,7 +4538,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             _toast("platform.telegram.slash_confirm.already_resolved"), pop=False)
         if not prompt or not await tap_matches_prompt(query, clarify_id, prompt, _toast("platform.telegram.prompt.invalid_choice")):
             return
-        from gateway.approval_actor import clarify_refusal, refusal_text
+        from hermes_agent.gateway.approval_actor import clarify_refusal, refusal_text
         if requester := clarify_refusal(clarify_id, getattr(query.from_user, "id", ""), extra=self.config.extra):
             return await answer_callback(query, refusal_text(requester)[:_TOAST_LIMIT], show_alert=True)
         user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
@@ -4909,7 +4909,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             # sendVoice only accepts Ogg/Opus: an explicit voice-bubble request (is_voice) transcodes via
             # ffmpeg; otherwise route by extension (.mp3/.m4a → sendAudio, others → document).
             if kwargs.get("is_voice") and os.path.splitext(audio_path)[1].lower() not in (".ogg", ".opus"):
-                from gateway.platforms.base import transcode_to_ogg_opus
+                from hermes_agent.gateway.platforms.base import transcode_to_ogg_opus
                 _transcoded_voice_path = await asyncio.to_thread(transcode_to_ogg_opus, audio_path)
                 if _transcoded_voice_path:
                     audio_path = _transcoded_voice_path
@@ -5092,7 +5092,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             logger.warning(
                 "[%s] URL-based send_photo failed, trying file upload: %s", self.name, _redact_telegram_error_text(e), exc_info=True)
             try:
-                from gateway.platforms.base import read_httpx_body_with_limit, ssrf_redirect_guard
+                from hermes_agent.gateway.platforms.base import read_httpx_body_with_limit, ssrf_redirect_guard
                 from tools.url_safety import create_ssrf_safe_async_client
                 async with create_ssrf_safe_async_client(timeout=30.0, event_hooks={"response": [ssrf_redirect_guard]}) as client, \
                         client.stream("GET", image_url) as resp:
@@ -5731,7 +5731,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
     async def _download_observed_media(self, msg: Any, what: str):
         """Download ``msg``'s attachment into the media cache (bounded by ``_max_doc_bytes``). Returns ``(status, cached)``:
         ``"none"``, ``"oversized"`` (cached = raw file_size), ``"failed"``, ``"unreadable"`` or ``"ok"``."""
-        from gateway.platforms.base import cache_media_bytes_async
+        from hermes_agent.gateway.platforms.base import cache_media_bytes_async
         source, filename, mime, kind = self._observed_media_source(msg)
         if source is None:
             return "none", None
@@ -6260,7 +6260,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             # Any file type is accepted (authorization is the gate, not the extension); unknown types get
             # application/octet-stream. Image documents already returned above.
             _, raw_bytes = await fetch_telegram_file(doc, "document")
-            from gateway.platforms.base import cache_media_bytes_async
+            from hermes_agent.gateway.platforms.base import cache_media_bytes_async
             cached = await cache_media_bytes_async(raw_bytes, filename=original_filename or f"document{ext or '.bin'}", mime_type=doc_mime)
             if cached is None:
                 return self._note_instead_of_media(event, f"Document '{display}' could not be cached.")
@@ -6353,7 +6353,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
 
     async def _handle_sticker(self, msg: Message, event: MessageEvent) -> None:
         """Describe a sticker via vision, cached by file_unique_id; animated/video stickers get an emoji placeholder."""
-        from gateway.sticker_cache import (
+        from hermes_agent.gateway.sticker_cache import (
             get_cached_description, cache_sticker_description_async, build_sticker_injection,
             build_animated_sticker_injection, STICKER_VISION_PROMPT)
         sticker = msg.sticker
@@ -6497,7 +6497,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             reply_to_text = rich_message_text(message.reply_to_message) or None
         if not reply_to_text:
             try:
-                from gateway import rich_sent_store
+                from hermes_agent.gateway import rich_sent_store
                 reply_to_text = rich_sent_store.lookup(str(message.chat.id), reply_to_id)
             except Exception:
                 # Extract reply context if this message is a reply. Prefer Telegram's native partial quote
@@ -6542,7 +6542,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             user_name=user_name, thread_id=thread_id_str, chat_topic=chat_topic, message_id=str(message.message_id),
             is_bot=bool(getattr(user, "is_bot", False)) if user else False)
         reply_to_id, reply_to_text = self._reply_context(message)
-        from gateway.platforms.base import resolve_channel_prompt  # per-channel/topic ephemeral prompt
+        from hermes_agent.gateway.platforms.base import resolve_channel_prompt  # per-channel/topic ephemeral prompt
         from plugins.platforms.telegram.telegram_context import group_identity_prompt, group_reply_expected
         _chat_id_str = str(chat.id)
         channel_prompt = resolve_channel_prompt(self.config.extra, thread_id_str or _chat_id_str, _chat_id_str if thread_id_str else None)
@@ -6626,10 +6626,10 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
 # -- Plugin registration glue: register(ctx) plus the hook implementations (adapter factory, YAML→env/extra
 # config, setup wizard, standalone sender).
 # ────────────────────────────────────────────────────────────────────────── Plugin migration glue (#41112 /
-# #3823) Added when the Telegram adapter (+ its telegram_network satellite) moved from gateway/platforms/
+# #3823) Added when the Telegram adapter (+ its telegram_network satellite) moved from hermes_agent/gateway/platforms/
 # into this bundled plugin. Mirrors the Discord (#24356) / Slack migrations: a register(ctx) entry point
 # plus hook implementations that replace the per-platform core touchpoints (the Platform.TELEGRAM branch in
-# gateway/run.py, the telegram_cfg YAML→env/extra block in gateway/config.py, the _setup_telegram wizard +
+# hermes_agent/gateway/run.py, the telegram_cfg YAML→env/extra block in hermes_agent/gateway/config.py, the _setup_telegram wizard +
 # _PLATFORMS["telegram"] static dict in hermes_cli/{setup,gateway}.py; the out-of-process sender lives in
 # standalone.py as standalone_sender_fn). Telegram uses the generic token connected check, so no is_connected override
 # is needed. ──────────────────────────────────────────────────────────────────────────
@@ -6663,10 +6663,10 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
     take precedence over YAML. Returns extras to merge into PlatformConfig.extra, or None.
 
     Implements the apply_yaml_config_fn contract (#24849). Mirrors the legacy telegram_cfg block from
-    gateway/config.py::load_gateway_config().
+    hermes_agent/gateway/config.py::load_gateway_config().
     """
     import json as _json
-    from gateway.platforms._shared import yaml_env_setter
+    from hermes_agent.gateway.platforms._shared import yaml_env_setter
     extras: dict = {}
     # Under multiplex a secondary profile's settings must NOT hit the process-global env (first-writer-wins
     # would pin them for every profile, #72348); yaml_env_setter skips the write under its scope and the
@@ -6740,7 +6740,7 @@ def register(ctx) -> None:
     from .adapter_hint import PLATFORM_HINT, PLATFORM_HINT_TOOL_NOTES
     from .dashboard_card import DASHBOARD_CARD
     from .standalone import standalone_send
-    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
+    from . import gateway_env  # env -> GatewayConfig bridge (hermes_agent.gateway.config_env)
     ctx.register_platform(
         name="telegram", label="Telegram", adapter_factory=_build_adapter, check_fn=telegram_deps_present,
         **DASHBOARD_CARD,

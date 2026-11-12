@@ -5,7 +5,7 @@ from xml.etree import ElementTree as ET
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.wecom import callback_adapter as _callback_mod
 from plugins.platforms.wecom.callback_adapter import WecomCallbackAdapter
 from plugins.platforms.wecom.wecom_crypto import WXBizMsgCrypt
@@ -216,8 +216,8 @@ async def test_oversized_cron_output_is_split_under_the_2048_byte_text_limit():
     """message/send keeps only the first 2048 BYTES of text.content; CJK output used to lose
     everything past ~680 characters. The router now hands over the full payload and send()
     splits it by UTF-8 bytes."""
-    from gateway.config import GatewayConfig
-    from gateway.delivery import DeliveryRouter
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.delivery import DeliveryRouter
 
     adapter = WecomCallbackAdapter(_config())
     adapter._access_tokens["test-app"] = {"token": "tok", "expires_at": 9999999999}

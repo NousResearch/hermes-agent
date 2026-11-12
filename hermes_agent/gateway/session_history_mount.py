@@ -6,8 +6,8 @@ from ``state.db``. Nothing can run them (no frozen policy, no lane, and adopting
 writable would legitimise its second writer), so the owner mounts them for reading only. The mount
 is keyed by no lane's route, so nothing route-keyed acts through it, and every capability but
 ``session:read`` is refused by name. Archive, pin and delete still work as for any read-only mount
-(gateway/session_mutations.py), but only a leaf row deletes. Old local CLI/TUI/Desktop rows are not mounted
-here: resume adopts them as writable conversations (gateway/session_local_migration.py), as it does a phone
+(hermes_agent/gateway/session_mutations.py), but only a leaf row deletes. Old local CLI/TUI/Desktop rows are not mounted
+here: resume adopts them as writable conversations (hermes_agent/gateway/session_local_migration.py), as it does a phone
 app's self-labelled chat (``mobile``, ``ios``) for its native owner; anyone else still reads that one here.
 """
 
@@ -42,7 +42,7 @@ def mount_history(authority, actor, sid):
         if conn.execute('SELECT 1 FROM state_meta WHERE key=?', (API_BINDING_PREFIX + sid,)).fetchone():
             return False  # restore_api_session's
     authority._require_admission_open()
-    from gateway.session_authority import LiveSession
+    from hermes_agent.gateway.session_authority import LiveSession
     authority.sessions.setdefault(sid, LiveSession(None, _ROUTE_PREFIX + sid))
     return True
 

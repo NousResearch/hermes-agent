@@ -20,7 +20,7 @@ import time
 import psutil
 import pytest
 
-from gateway.status import get_process_start_time
+from hermes_agent.gateway.status import get_process_start_time
 from hermes_cli.update_cmd_windows import _unmapped_ready_filter
 from tests.waiting import wait_until
 

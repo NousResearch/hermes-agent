@@ -38,7 +38,7 @@ def refusal_text(error: BaseException | str) -> str:
     named one (``invalid_params (toolsets: unknown or invalid toolset name: 'mcp-codegraph')``).
 
     The gateway sends ``field``/``detail`` in the JSON-RPC error's ``data``
-    (``gateway/session_controls.py``), and ``hermes_cli.gateway_client.rpc_error`` carries the
+    (``hermes_agent/gateway/session_controls.py``), and ``hermes_cli.gateway_client.rpc_error`` carries the
     bounded scalars onto ``GatewayRPCError.data``. A refusal from anywhere else has no ``data`` and
     reads exactly as before."""
     if str(error) == "launch_credentials_unavailable":

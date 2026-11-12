@@ -2,7 +2,7 @@
 
 import pytest
 
-from gateway.stream_events import ToolCallChunk
+from hermes_agent.gateway.stream_events import ToolCallChunk
 from tests.gateway.test_run_progress_topics import ProgressCaptureAdapter, _run_with_agent
 from tests.waiting import wait_until
 

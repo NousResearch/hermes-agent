@@ -4,7 +4,7 @@ import pytest
 
 import tools.approval as approval_module
 from tools import approval_context
-from gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
+from hermes_agent.gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
 from tools.approval import check_all_command_guards, check_dangerous_command
 from tools.approval_context import _get_cron_approval_mode
 
@@ -316,7 +316,7 @@ class TestCronWithGatewayOrigin:
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
 
-        from gateway.session_context import set_session_vars, clear_session_vars
+        from hermes_agent.gateway.session_context import set_session_vars, clear_session_vars
         tokens = set_session_vars(platform="telegram", chat_id="123")
         try:
             from unittest.mock import patch as mock_patch
@@ -338,7 +338,7 @@ class TestCronWithGatewayOrigin:
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
 
-        from gateway.session_context import set_session_vars, clear_session_vars
+        from hermes_agent.gateway.session_context import set_session_vars, clear_session_vars
         tokens = set_session_vars(platform="discord", chat_id="456")
         try:
             from unittest.mock import patch as mock_patch

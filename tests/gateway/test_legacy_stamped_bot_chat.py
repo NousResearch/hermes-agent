@@ -28,10 +28,10 @@ _FOREIGN = ('uid:4242', 'basic:alice', 'auth:v1:["dashboard","","alice"]', 'nous
 
 
 async def _bot_chat_lookup(tmp_path, monkeypatch, source, user_id):
-    from gateway.run_runtime import initialize_gateway_runtime
-    from gateway.runtime_ownership import process_ownership
-    from gateway.session_authorities import authority_for_profile_id, owner_scope
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.run_runtime import initialize_gateway_runtime
+    from hermes_agent.gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.session_authorities import authority_for_profile_id, owner_scope
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     root, homes = _reserve_homes(tmp_path, monkeypatch)
     process_ownership.reserve([home for _, home in homes])
     connections, runner, replies = [], None, {}

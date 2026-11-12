@@ -16,7 +16,7 @@ import threading
 import uuid
 from functools import partial
 
-from gateway.session_contract import SessionRef
+from hermes_agent.gateway.session_contract import SessionRef
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
@@ -54,7 +54,7 @@ async def start(connection, ref, params):
     target = _onboarding_connection(connection)
     if target is not connection:
         # Dispatch entered the asking profile's scope; the claim, the facts and the chat's policy are default's.
-        from gateway.session_authorities import owner_scope
+        from hermes_agent.gateway.session_authorities import owner_scope
         with owner_scope(target.authority):
             return await start(target, ref, params)
     if 'session:create' not in connection.actor.capabilities:
@@ -67,8 +67,8 @@ async def start(connection, ref, params):
     async with lock:
         plan = await asyncio.to_thread(_choose_run, authority, request)
         stored = plan['stored'] or await _create_chat(connection)
-        from gateway.session_mutations import retire_live_sessions
-        from gateway.session_runtime_workers import tracked_write
+        from hermes_agent.gateway.session_mutations import retire_live_sessions
+        from hermes_agent.gateway.session_runtime_workers import tracked_write
         discards = _discards(authority)
         if request.fresh_launch:
             discards.ids.update(sid for sid in plan['replaced']
@@ -147,9 +147,9 @@ def _claim_before_run(*, assume_fresh):
 
 
 async def _create_chat(connection):
-    from gateway.session_local import stage_local_session
-    from gateway.session_local_recovery import restore_local_session
-    from gateway.session_runtime_workers import tracked_write
+    from hermes_agent.gateway.session_local import stage_local_session
+    from hermes_agent.gateway.session_local_recovery import restore_local_session
+    from hermes_agent.gateway.session_runtime_workers import tracked_write
     from hermes_agent.hermes_state_local import commit_local_session
     authority = connection.authority
     staged = stage_local_session(authority, connection.actor, {'source': 'gui', 'request_id': uuid.uuid4().hex},
@@ -258,7 +258,7 @@ def ending_run_on_delete(db, session_id, commit):
 
 def _withdraw_setup_cards(authority, stored_ids):
     """Close the card still waiting in a chat whose run just ended; its answer would be refused."""
-    from gateway.session_server_requests import withdraw
+    from hermes_agent.gateway.session_server_requests import withdraw
     for sid in stored_ids:
         live = authority.sessions.get(sid)
         if live is not None:
@@ -284,8 +284,8 @@ async def skip(connection, ref, params):
     skipped record when it wakes (``setup_beat``)."""
     from agent.onboarding_flow import End
     from agent.onboarding_record import advance, load
-    from gateway.session_runtime_workers import tracked_write
-    from gateway.session_server_requests import withdraw
+    from hermes_agent.gateway.session_runtime_workers import tracked_write
+    from hermes_agent.gateway.session_server_requests import withdraw
     from pydantic import ValidationError
     from hermes_agent.tui_gateway.contracts.profiles_vault_complete_foreign_subagents import OnboardingSkipParams
     try:
@@ -313,7 +313,7 @@ def arm_onboarding_turn(agent, owner, history):
     from agent.onboarding_session import append_turn_note, builds_onboarding, onboarding_prelude, onboarding_turn_note
     if owner is None or not builds_onboarding(agent):
         return None
-    from gateway.session_server_requests import waiting
+    from hermes_agent.gateway.session_server_requests import waiting
     authority, session_id, _generation = owner
     live = authority.sessions.get(session_id)
     card_waiting = live is not None and waiting(live.event_stream, session_id, 'setup_beat')

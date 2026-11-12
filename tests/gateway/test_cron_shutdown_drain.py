@@ -13,7 +13,7 @@ import threading
 
 import pytest
 
-import gateway.run as gateway_run
+import hermes_agent.gateway.run as gateway_run
 
 
 @pytest.mark.asyncio

@@ -2,12 +2,12 @@
 
 Configs written by ``hermes config set KEY '["-100","-200"]'`` before the writer learned
 to emit YAML lists hold the literal ``'["-100","-200"]'`` as a string. The Telegram gate
-already decodes that shape (``gateway/platforms/_shared.py::decode_json_list_literal``);
+already decodes that shape (``hermes_agent/gateway/platforms/_shared.py::decode_json_list_literal``);
 the Discord / WhatsApp / DingTalk gates comma-split it into one bogus entry that matches
 nothing, silently locking out every allowlisted chat or user.
 """
 
-from gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.config import Platform, PlatformConfig
 
 BRACKET_LIST = '["-100", "-200"]'
 

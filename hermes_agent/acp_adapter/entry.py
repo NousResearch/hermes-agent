@@ -223,7 +223,7 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(1)
     # No ended_at stamp here: sessions are daemon-owned and may have other viewers or queued work.
     # The owner ends an ACP session when its last viewer detaches with an idle FIFO, and at gateway
-    # stop (gateway/session_acp_lifecycle.py, #118216).
+    # stop (hermes_agent/gateway/session_acp_lifecycle.py, #118216).
 
 
 if __name__ == "__main__":

@@ -3,9 +3,9 @@
 The gateway writes one itself only when the restart is in-band (SIGUSR1 / pause-for-update). A CLI
 ``stop`` + ``start`` — always on Windows, which has no SIGUSR1 — is otherwise indistinguishable from
 a plain stop, and the boot pass skips the "Gateway online" home-channel notice
-(``gateway/run_notifications.py::_send_home_channel_startup_notifications``).
+(``hermes_agent/gateway/run_notifications.py::_send_home_channel_startup_notifications``).
 
-The reader is ``gateway/run.py::_planned_restart_notification_path``; the roundtrip test in
+The reader is ``hermes_agent/gateway/run.py::_planned_restart_notification_path``; the roundtrip test in
 ``tests/gateway/test_planned_restart_marker_cli.py`` pins the two together.
 """
 
@@ -33,7 +33,7 @@ def write_planned_restart_marker(*, via_service: bool = False, detached: bool = 
     One writer for both restart kinds: the gateway's own in-band shutdown (``via_service`` /
     ``detached`` from its shutdown context) and the CLI, which has no in-band path of its own.
 
-    Best-effort like ``gateway.status.write_planned_stop_marker``: an unwritable home costs the
+    Best-effort like ``hermes_agent.gateway.status.write_planned_stop_marker``: an unwritable home costs the
     notice, not the restart. Wider than ``OSError`` on purpose — a marker write that raises for any
     other reason must still not leave the caller's ``stop()`` un-run.
     """

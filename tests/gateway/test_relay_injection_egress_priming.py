@@ -25,9 +25,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform
-from gateway.relay.adapter import RelayAdapter
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.relay.adapter import RelayAdapter
+from hermes_agent.gateway.session import SessionSource
 
 
 def _bare_relay_adapter():
@@ -71,7 +71,7 @@ async def test_injection_path_primes_before_handle_message():
     prime_routing_cache on the resolved adapter BEFORE handle_message —
     a helper nobody calls fixes nothing."""
     from unittest.mock import AsyncMock
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     calls = []
 

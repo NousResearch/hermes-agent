@@ -102,7 +102,7 @@ def test_import_and_startup_exclude_each_other_before_publication(tmp_path, monk
     import subprocess
     import sys
     import zipfile
-    from gateway.runtime_ownership import ProfileOwnership
+    from hermes_agent.gateway.runtime_ownership import ProfileOwnership
     from hermes_cli import backup
 
     home = tmp_path / 'state'
@@ -137,7 +137,7 @@ def test_import_and_startup_exclude_each_other_before_publication(tmp_path, monk
         env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ', 'TIRITH_ENABLED') if k in os.environ}
         env.update(HOME=str(tmp_path / 'user'), HERMES_HOME=str(home), PYTHONPATH=str(root))
         contender = subprocess.run([sys.executable, '-c',
-            "import logging, runpy; logging.basicConfig(level=logging.INFO); runpy.run_module('gateway.run', run_name='__main__')"], cwd=root, env=env,
+            "import logging, runpy; logging.basicConfig(level=logging.INFO); runpy.run_module('hermes_agent.gateway.run', run_name='__main__')"], cwd=root, env=env,
                                    stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=25, check=False)
         assert 'already owns profile' in contender.stdout + contender.stderr, contender
         assert not (home / 'state.db').exists()
@@ -151,7 +151,7 @@ def test_import_and_startup_exclude_each_other_before_publication(tmp_path, monk
     try:
         before = (home / 'config.yaml').read_bytes(), (home / 'state.db').read_bytes()
         import pytest
-        from gateway.runtime_ownership import OwnershipConflict
+        from hermes_agent.gateway.runtime_ownership import OwnershipConflict
         with pytest.raises(OwnershipConflict, match='maintenance refused'):
             restore()
         assert before == ((home / 'config.yaml').read_bytes(), (home / 'state.db').read_bytes())
@@ -176,7 +176,7 @@ def test_import_and_startup_exclude_each_other_before_publication(tmp_path, monk
 def test_recovery_output_exemption_excludes_canonical_activation(tmp_path):
     import hashlib
     import pytest
-    from gateway.runtime_ownership import ProfileOwnership
+    from hermes_agent.gateway.runtime_ownership import ProfileOwnership
     from hermes_cli.session_recovery import recover_session_database, SessionRecoverySafetyError
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import begin_runtime_epoch, admit_session_input

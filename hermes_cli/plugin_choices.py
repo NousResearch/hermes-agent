@@ -4,7 +4,7 @@ The surface that dispatches the command binds an asker around the handler call (
 Each asker is that surface's existing clarify prompt, so no surface grows a new kind of card:
 
 * a messaging chat: ``adapter.send_clarify`` (buttons on Telegram, Discord and Slack, the numbered
-  list answered by a typed reply elsewhere): ``gateway/plugin_command_choice.py``;
+  list answered by a typed reply elsewhere): ``hermes_agent/gateway/plugin_command_choice.py``;
 * a local session on the gateway (classic CLI, Ink TUI, Desktop): the ``clarify`` server request to
   its attached viewers (same module);
 * the in-process classic CLI and the legacy ``hermes serve`` backend: their own clarify picker.

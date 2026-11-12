@@ -37,10 +37,10 @@ def test_gateway_failure_writer_preserves_accepted_turn_identity(tmp_path):
 def test_failure_owner_follows_only_live_lineage_markers(tmp_path):
     import asyncio
     import sqlite3
-    from gateway.config import GatewayConfig, Platform
-    from gateway.platforms.event import MessageEvent
-    from gateway.run import GatewayRunner
-    from gateway.session import SessionSource, SessionStore
+    from hermes_agent.gateway.config import GatewayConfig, Platform
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import SessionSource, SessionStore
 
     async def check():
         store = SessionStore(tmp_path / "sessions", GatewayConfig())
@@ -134,10 +134,10 @@ def test_context_overflow_exception_persists_nothing(tmp_path):
     """Exception-path overflow (400/500 on a long session) must not write the user row or a
     boundary — the same no-grow rule as the persist path (#1630)."""
     import asyncio
-    from gateway.config import GatewayConfig, Platform
-    from gateway.platforms.event import MessageEvent
-    from gateway.run import GatewayRunner
-    from gateway.session import SessionSource, SessionStore
+    from hermes_agent.gateway.config import GatewayConfig, Platform
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import SessionSource, SessionStore
 
     async def check():
         store = SessionStore(tmp_path / "sessions", GatewayConfig())
@@ -171,10 +171,10 @@ def test_context_overflow_error_reply_carries_no_partial_effect_notice():
     """Overflow is a deterministic rejection (#107567); the reply must stay the /compress
     guidance alone rather than inherit the indeterminate "actions may have run" warning."""
     import asyncio
-    from gateway.config import Platform
-    from gateway.platforms.event import MessageEvent
-    from gateway.run import GatewayRunner
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import SessionSource
 
     runner = object.__new__(GatewayRunner)
 
@@ -191,7 +191,7 @@ def test_context_overflow_error_reply_carries_no_partial_effect_notice():
         err, MessageEvent(text="x", source=source), source, None, "k", prepared,
     ))
 
-    from gateway.run import _context_overflow_reply
+    from hermes_agent.gateway.run import _context_overflow_reply
     assert reply == _context_overflow_reply()
     assert PARTIAL_FAILED_TURN_NOTICE not in reply
 
@@ -202,10 +202,10 @@ def test_fresh_session_agent_flushed_failed_turn_is_closed(tmp_path):
     still land — ``session_meta`` is stripped before the model sees history, so an open user row
     behind it is exactly the #107070 replay shape."""
     import asyncio
-    from gateway.config import GatewayConfig, Platform
-    from gateway.platforms.event import MessageEvent
-    from gateway.run import GatewayRunner
-    from gateway.session import SessionSource, SessionStore
+    from hermes_agent.gateway.config import GatewayConfig, Platform
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import SessionSource, SessionStore
 
     async def check():
         store = SessionStore(tmp_path / "sessions", GatewayConfig())
@@ -246,10 +246,10 @@ def test_failed_turn_whose_tail_is_a_tool_row_is_closed(tmp_path):
     """A turn that failed after its tool ran leaves the tool row as the durable tail. That tail is
     as open as a bare user row: the gateway closer must land the boundary, once."""
     import asyncio
-    from gateway.config import GatewayConfig, Platform
-    from gateway.platforms.event import MessageEvent
-    from gateway.run import GatewayRunner
-    from gateway.session import SessionSource, SessionStore
+    from hermes_agent.gateway.config import GatewayConfig, Platform
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import SessionSource, SessionStore
 
     async def check():
         store = SessionStore(tmp_path / "sessions", GatewayConfig())
@@ -300,10 +300,10 @@ def test_content_policy_refusal_drops_the_turn_and_evicts_the_cached_agent(tmp_p
     (the rewind /undo uses) and the cached agent is evicted so the next turn rebuilds clean. An
     earlier accepted exchange survives."""
     import asyncio
-    from gateway.config import GatewayConfig, Platform
-    from gateway.platforms.event import MessageEvent
-    from gateway.run import GatewayRunner
-    from gateway.session import AsyncSessionStore, SessionSource, SessionStore
+    from hermes_agent.gateway.config import GatewayConfig, Platform
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import AsyncSessionStore, SessionSource, SessionStore
 
     async def check():
         store = SessionStore(tmp_path / "sessions", GatewayConfig())
@@ -357,10 +357,10 @@ def test_content_policy_refused_turn_stays_in_the_display_tagged_content_refused
     import asyncio
 
     from agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY
-    from gateway.config import GatewayConfig, Platform
-    from gateway.platforms.event import MessageEvent
-    from gateway.run import GatewayRunner
-    from gateway.session import AsyncSessionStore, SessionSource, SessionStore
+    from hermes_agent.gateway.config import GatewayConfig, Platform
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import AsyncSessionStore, SessionSource, SessionStore
 
     async def check():
         store = SessionStore(tmp_path / "sessions", GatewayConfig())
@@ -423,10 +423,10 @@ def test_managed_worker_refusal_is_cleaned_owner_side_in_the_real_db(tmp_path):
     from types import SimpleNamespace
 
     from agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY
-    from gateway.config import GatewayConfig, Platform
-    from gateway.run import GatewayRunner
-    from gateway.session import AsyncSessionStore, SessionSource, SessionStore
-    from gateway.session_managed_worker import _finalize_managed_refusal
+    from hermes_agent.gateway.config import GatewayConfig, Platform
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import AsyncSessionStore, SessionSource, SessionStore
+    from hermes_agent.gateway.session_managed_worker import _finalize_managed_refusal
 
     async def check():
         store = SessionStore(tmp_path / "sessions", GatewayConfig())
@@ -477,10 +477,10 @@ def test_managed_worker_cleanup_is_a_no_op_for_a_non_refusal(tmp_path):
     import asyncio
     from types import SimpleNamespace
 
-    from gateway.config import GatewayConfig, Platform
-    from gateway.run import GatewayRunner
-    from gateway.session import AsyncSessionStore, SessionSource, SessionStore
-    from gateway.session_managed_worker import _finalize_managed_refusal
+    from hermes_agent.gateway.config import GatewayConfig, Platform
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import AsyncSessionStore, SessionSource, SessionStore
+    from hermes_agent.gateway.session_managed_worker import _finalize_managed_refusal
 
     async def check():
         store = SessionStore(tmp_path / "sessions", GatewayConfig())

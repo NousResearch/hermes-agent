@@ -3,9 +3,9 @@
 import sqlite3
 from pathlib import Path
 
-from gateway import hosted_rooms
-from gateway.hosted_rooms_gateway_import import handoff_gateway_id, import_standalone_rooms
-from gateway.owner_identity import host_owner_subject
+from hermes_agent.gateway import hosted_rooms
+from hermes_agent.gateway.hosted_rooms_gateway_import import handoff_gateway_id, import_standalone_rooms
+from hermes_agent.gateway.owner_identity import host_owner_subject
 
 MEMBERS = [{"member_id": "a", "profile": "default", "handle": "a"},
            {"member_id": "b", "profile": "default", "handle": "b"}]
@@ -86,7 +86,7 @@ def test_a_room_disbanded_in_the_gateway_never_comes_back(tmp_path):
 def test_the_gateway_imports_again_once_ready(tmp_path):
     import threading
     from types import SimpleNamespace
-    from gateway.hosted_rooms_gateway_import import import_after_ready
+    from hermes_agent.gateway.hosted_rooms_gateway_import import import_after_ready
     source, target = _stores(tmp_path)
     woke = threading.Event()
     authority = SimpleNamespace(db=SimpleNamespace(db_path=str(target)), epoch=None,
@@ -104,7 +104,7 @@ def test_gateway_startup_takes_over_the_standalone_rooms(tmp_path, monkeypatch):
     gateway starting beside a standalone store serves and drives the rooms that store held."""
     import asyncio
     from types import SimpleNamespace
-    from gateway import session_hosted_service, session_hosted_transport
+    from hermes_agent.gateway import session_hosted_service, session_hosted_transport
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 

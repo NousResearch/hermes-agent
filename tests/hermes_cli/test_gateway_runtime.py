@@ -9,7 +9,7 @@ import pytest
 
 @asynccontextmanager
 async def control_peer(home: Path, payload: dict):
-    from gateway.control_socket import GatewayControlServer
+    from hermes_agent.gateway.control_socket import GatewayControlServer
 
     home.mkdir(mode=0o700)
     server = GatewayControlServer(home, verb_handlers={"identify": lambda: payload})
@@ -103,7 +103,7 @@ def test_fifo_control_pointer_is_rejected_without_a_writer(tmp_path):
 
 
 def test_start_decisions_do_not_turn_uncertainty_into_another_owner():
-    from gateway.runtime_contract import RuntimeObservation, next_start_action
+    from hermes_agent.gateway.runtime_contract import RuntimeObservation, next_start_action
 
     cases = [
         (RuntimeObservation("ready"), "attach"),

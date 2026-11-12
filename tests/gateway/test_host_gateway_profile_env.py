@@ -13,7 +13,7 @@ from typing import Sequence
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 
 _WORKER_TOKEN = "worker-profile-token-456"
 
@@ -54,7 +54,7 @@ def _inherit_worker_env(monkeypatch, worker_home: Path) -> None:
 class TestProfileEnvIsNotThePrimaryClaim:
     def test_worker_env_does_not_become_the_host_primary_token(self, tmp_path, monkeypatch):
         """Profile env inherited by the host process must not seed the primary adapter."""
-        from gateway import run as run_mod
+        from hermes_agent.gateway import run as run_mod
 
         default_home, worker_home = _two_homes(tmp_path)
         _inherit_worker_env(monkeypatch, worker_home)
@@ -73,7 +73,7 @@ class TestProfileEnvIsNotThePrimaryClaim:
 
     @pytest.mark.asyncio
     async def test_named_launcher_starts_as_secondary(self, tmp_path, monkeypatch):
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         default_home, worker_home = _two_homes(tmp_path)
         _inherit_worker_env(monkeypatch, worker_home)
@@ -104,7 +104,7 @@ class TestProfileEnvIsNotThePrimaryClaim:
 
         monkeypatch.setattr(runner, "_start_one_profile_adapters", fake_start)
         monkeypatch.setattr(
-            "gateway.run_profile_reconcile.profile_serve_signature", lambda _home: "signature",
+            "hermes_agent.gateway.run_profile_reconcile.profile_serve_signature", lambda _home: "signature",
         )
 
         assert await runner._start_secondary_profile_adapters() == 1
@@ -115,7 +115,7 @@ class TestHostGatewaySpawnEnv:
     def test_restart_watcher_uses_settled_default_on_when_config_is_unset(self, tmp_path, monkeypatch):
         """A resolved default-on decision survives restart even when raw config is unset."""
         from agent.secret_scope import set_multiplex_active
-        from gateway.run_shutdown import GatewayShutdownMixin
+        from hermes_agent.gateway.run_shutdown import GatewayShutdownMixin
 
         default_home, worker_home = _two_homes(tmp_path)
         (worker_home / "config.yaml").write_text("gateway: {}\n", encoding="utf-8")
@@ -127,7 +127,7 @@ class TestHostGatewaySpawnEnv:
 
     def test_restart_watcher_keeps_standalone_named_profile_isolated(self, tmp_path, monkeypatch):
         """A standalone named gateway remains profile-scoped when multiplex is not settled."""
-        from gateway.run_shutdown import GatewayShutdownMixin
+        from hermes_agent.gateway.run_shutdown import GatewayShutdownMixin
 
         _default_home, worker_home = _two_homes(tmp_path)
         (worker_home / "config.yaml").write_text("gateway: {}\n", encoding="utf-8")
@@ -138,7 +138,7 @@ class TestHostGatewaySpawnEnv:
 
     def test_restart_watcher_does_not_inherit_profile_token(self, tmp_path, monkeypatch):
         """The detached restart child is built with served_profile_child_env, not os.environ.copy()."""
-        from gateway.run_shutdown import GatewayShutdownMixin
+        from hermes_agent.gateway.run_shutdown import GatewayShutdownMixin
 
         default_home, worker_home = _two_homes(tmp_path)
         _inherit_worker_env(monkeypatch, worker_home)
@@ -158,7 +158,7 @@ class TestSettledHostRecordDecidesRestart:
     @staticmethod
     def _publish_live_host_record(monkeypatch, tmp_path, *, home: Path, profiles: Sequence[str]) -> None:
         """Publish a proven-live host record in an isolated lock dir."""
-        from gateway import host_rendezvous as hr
+        from hermes_agent.gateway import host_rendezvous as hr
         lock_dir = tmp_path / "locks"
         lock_dir.mkdir(parents=True, exist_ok=True)
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(lock_dir))
@@ -213,7 +213,7 @@ class TestSettledHostRecordDecidesRestart:
         self, tmp_path, monkeypatch,
     ):
         """An unset raw config + no settled flag + a live host record => host env."""
-        from gateway.run_shutdown import GatewayShutdownMixin
+        from hermes_agent.gateway.run_shutdown import GatewayShutdownMixin
 
         default_home, worker_home = _two_homes(tmp_path)
         (worker_home / "config.yaml").write_text("gateway: {}\n", encoding="utf-8")
@@ -236,7 +236,7 @@ class TestDuplicateRefusalNamesEnvClaim:
     @pytest.mark.asyncio
     async def test_refusal_says_which_claim_is_env_derived(self, tmp_path, monkeypatch):
         """Default inherited the token from the process env; worker configured it in .env."""
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         _default_home, worker_home = _two_homes(tmp_path)
         _inherit_worker_env(monkeypatch, worker_home)
@@ -257,7 +257,7 @@ class TestDuplicateRefusalNamesEnvClaim:
             multiplex_profiles=True,
             platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token=_WORKER_TOKEN)},
         )
-        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: config)
+        monkeypatch.setattr("hermes_agent.gateway.config.load_gateway_config", lambda: config)
         monkeypatch.setattr(runner, "_create_adapter", lambda _p, _c: adapter)
         monkeypatch.setattr(
             runner, "_update_platform_runtime_status",

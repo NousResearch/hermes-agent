@@ -5,9 +5,9 @@ from contextvars import ContextVar
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import replace
 
-from gateway.platforms.event import MessageEvent, ProcessingOutcome
-from gateway.session_envelope import restore_native
-from gateway.session_producer_lifecycle import close_producer_turn, producer_turn
+from hermes_agent.gateway.platforms.event import MessageEvent, ProcessingOutcome
+from hermes_agent.gateway.session_envelope import restore_native
+from hermes_agent.gateway.session_producer_lifecycle import close_producer_turn, producer_turn
 from hermes_cli.observability.shared_metrics_busy import (
     busy_turn_started, note_busy_admitted, note_busy_parked, settle_busy_arrival)
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
@@ -37,7 +37,7 @@ QUEUE_FULL_REPLY = ('⏳ Too many messages are already waiting in this conversat
 
 
 async def admit_message(authority, event):
-    from gateway.session_authority import messaging_admission
+    from hermes_agent.gateway.session_authority import messaging_admission
     accepted, committed = busy_acceptance.get(), busy_commit.get()
     busy_acceptance.set(None)  # the drain task this schedules must not inherit the busy caller's future
     busy_commit.set(None)
@@ -222,8 +222,8 @@ async def fire_post_delivery(authority, admission_id):
     taken = _registry(authority, 'post_delivery').pop(admission_id, None)
     if taken is None:
         return
-    from gateway.platforms.base import _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS, _split_post_delivery_entry
-    from gateway.platforms.base_post_delivery import run_post_delivery_callback
+    from hermes_agent.gateway.platforms.base import _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS, _split_post_delivery_entry
+    from hermes_agent.gateway.platforms.base_post_delivery import run_post_delivery_callback
     callback = _split_post_delivery_entry(taken[2])[1]
     with await _execution_scope(authority, None):  # off-turn: the owning profile's scope
         await run_post_delivery_callback(callback, _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
@@ -270,23 +270,23 @@ def row_turn_author(policy, row):
         author = (payload.get(key) or {}).get('turn_author')
         if author is not None:
             return author
-    from gateway.session_a2a import forward_author
+    from hermes_agent.gateway.session_a2a import forward_author
     return forward_author(policy)
 
 
 async def execute_admission(authority, ref, row):
     busy_turn_started(row['admission_id'])
-    from gateway.session_completion_notes import note_if_unviewed
+    from hermes_agent.gateway.session_completion_notes import note_if_unviewed
     noted = await note_if_unviewed(authority, ref, row)  # #134889 LC-7: no viewer, no turn
     if noted is not None:
         return noted
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_policy import policy_for_source
     policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
     if policy is not None and policy.source == 'cron':
-        from gateway.session_cron import execute
+        from hermes_agent.gateway.session_cron import execute
         return await execute(authority, ref, row, policy)
     local_policy = policy
-    from gateway.session_managed_worker import managed_policy, admit_managed
+    from hermes_agent.gateway.session_managed_worker import managed_policy, admit_managed
     policy = managed_policy(authority, ref)
     if policy is not None:
         return await admit_managed(authority, ref, row, policy)
@@ -298,11 +298,11 @@ async def execute_admission(authority, ref, row):
     if 'native_text_v1' in row['payload']:
         event = restore_native(row['payload'], authority.runner)
     else:
-        from gateway.session_ingress_media import restore_attachments
+        from hermes_agent.gateway.session_ingress_media import restore_attachments
         event = MessageEvent(text=row['payload']['text'], source=live.source,
                              message_id=row['admission_id'], **restore_attachments(row['payload']))
         if 'local_automation_v1' in row['payload']:
-            from gateway.session_automation import restore_local_automation
+            from hermes_agent.gateway.session_automation import restore_local_automation
             event = restore_local_automation(authority, ref, row)
     # The claim passed the admission gate, which refuses once a drain begins: a wake claimed here was
     # receipted before any drain and is never re-sent, so a drain starting now runs it rather than
@@ -316,11 +316,11 @@ async def execute_admission(authority, ref, row):
     provenance = row['payload'].get('native_text_v1', {}).get('provenance')
     home = None
     if provenance is not None:
-        from gateway.session_ingress_context import restore_provenance
+        from hermes_agent.gateway.session_ingress_context import restore_provenance
         home = restore_provenance(authority.runner, event.source, provenance)
-    from gateway.config import Platform
-    from gateway.session_api_turn import api_execution, prepare_api_execution
-    from gateway.session_results import execution_result
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session_api_turn import api_execution, prepare_api_execution
+    from hermes_agent.gateway.session_results import execution_result
     is_api = live.source.platform == Platform.API_SERVER
     if not (event.internal or is_api or live.source.platform == Platform.LOCAL):
         # The claim on a chat route (native or a viewer's submit): a /new before the turn resolves
@@ -328,7 +328,7 @@ async def execute_admission(authority, ref, row):
         event._claimed_owner = (ref.session_id, row['generation'])
     author = event.metadata.get('turn_author')
     author_token = admission_author.set(author if author is not None else row_turn_author(local_policy, row))
-    from gateway.session_operator import is_viewer_input
+    from hermes_agent.gateway.session_operator import is_viewer_input
     viewer_token = viewer_turn.set(live if is_viewer_input(row) else None)
     api_token = api_execution.set(None)
     captured = {}
@@ -427,7 +427,7 @@ async def _execution_scope(authority, home):
     multiplex = getattr(getattr(authority.runner, 'config', None), 'multiplex_profiles', False)
     if home is None and not multiplex:
         return _launch_body_if_launch_owner(authority)
-    from gateway.run import _load_profile_secret_scope, _profile_runtime_scope
+    from hermes_agent.gateway.run import _load_profile_secret_scope, _profile_runtime_scope
 
     def load():
         from pathlib import Path
@@ -483,7 +483,7 @@ async def deliver_settled(authority, admission_id):
 async def deliver_response(adapter, event, session_key, response):
     """Send a turn's reply; whether it was delivered (``_process_message_background``'s verdict:
     nothing to send, or at least one send that succeeded)."""
-    from gateway.platforms.base import _thread_metadata_for_event, _mark_notify_metadata
+    from hermes_agent.gateway.platforms.base import _thread_metadata_for_event, _mark_notify_metadata
     text, ttl = adapter._unwrap_ephemeral(response)
     if not text:
         return True

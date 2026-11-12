@@ -7,8 +7,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import PlatformConfig
-from gateway.platforms.webhook import WebhookAdapter
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.webhook import WebhookAdapter
 from tests.gateway.fixtures.webhook_route_authority import mount_authority
 
 
@@ -41,11 +41,11 @@ async def test_destination_commits_with_input_and_survives_adapter_restart():
         replacement.gateway_runner = runner
         calls = []
         async def sink(content, delivery):
-            from gateway.platforms.base import SendResult
+            from hermes_agent.gateway.platforms.base import SendResult
             calls.append((content, delivery))
             return SendResult(success=True)
         replacement._deliver_github_comment = sink
-        from gateway.platforms.webhook import _WebhookDeliveryIdentity
+        from hermes_agent.gateway.platforms.webhook import _WebhookDeliveryIdentity
         chat_id = _WebhookDeliveryIdentity.from_parts(None, 'fixture', 'durable-one').session_chat_id
         result = await replacement.send(chat_id, 'completed answer')
         assert result.success and calls[0][1] == retained
@@ -73,16 +73,16 @@ async def test_later_automation_completion_keeps_original_destination_resolvable
         authority = runner.session_authority
         calls = []
         async def sink(content, delivery):
-            from gateway.platforms.base import SendResult
+            from hermes_agent.gateway.platforms.base import SendResult
             calls.append((content, delivery))
             return SendResult(success=True)
         adapter._deliver_github_comment = sink
-        from gateway.platforms.webhook import _WebhookDeliveryIdentity
+        from hermes_agent.gateway.platforms.webhook import _WebhookDeliveryIdentity
         chat_id = _WebhookDeliveryIdentity.from_parts(None, 'fixture', 'automation-one').session_chat_id
         assert (await adapter.send(chat_id, 'first reply')).success
         # The production completion path: an internal native_text_v1 admission on the original chat.
-        from gateway.platforms.event import MessageEvent
-        from gateway.session_envelope import restore_native
+        from hermes_agent.gateway.platforms.event import MessageEvent
+        from hermes_agent.gateway.session_envelope import restore_native
         origin = restore_native(json.loads(authority.db._read_one(
             'SELECT payload_json FROM session_admissions')['payload_json']), runner)
         entry = runner.session_store.lookup_by_session_key(runner.session_store._generate_session_key(origin.source))
@@ -106,7 +106,7 @@ async def test_missing_destination_never_counts_as_log_delivery():
 
 
 def test_destination_retains_only_fields_consumed_by_sender():
-    from gateway.platforms.webhook_delivery import validate_destination
+    from hermes_agent.gateway.platforms.webhook_delivery import validate_destination
     for target, fields in [('log', {}), ('github_comment', {'repo': 'owned/repo', 'pr_number': '7'}),
                            ('telegram', {'chat_id': '7', 'thread_id': '8', 'message_thread_id': '9'})]:
         original = {'deliver': target, 'deliver_extra': {**fields, 'token': 'private-secret', 'unused': 'private-payload'}}
@@ -142,7 +142,7 @@ async def test_exact_legacy_webhook_retry_keeps_receipt_without_inference():
         assert authority.db._read_one('SELECT payload_json FROM session_admissions')['payload_json'] == encoded
         assert len(authority.db._read_all('SELECT admission_id FROM session_admissions')) == 1
         # Receipt compatibility cannot authorize an invented destination or changed input.
-        from gateway.session_envelope import check_native_route, restore_native
+        from hermes_agent.gateway.session_envelope import check_native_route, restore_native
         from hermes_agent.hermes_state_runtime import RuntimeStoreError
         event = restore_native(legacy)
         with pytest.raises(RuntimeStoreError):

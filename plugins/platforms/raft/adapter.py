@@ -39,10 +39,10 @@ _checkout_root = _Path(__file__).resolve().parents[3]
 if str(_checkout_root) not in sys.path:
     sys.path.append(str(_checkout_root))
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult, merge_pending_message_event
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms._shared import coerce_port, profile_scoped as _profile_scoped
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult, merge_pending_message_event
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.platforms._shared import coerce_port, profile_scoped as _profile_scoped
 from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
 
 logger = logging.getLogger(__name__)
@@ -330,7 +330,7 @@ class RaftAdapter(BasePlatformAdapter):
             self._bridge_token = secrets.token_hex(32)
             logger.info("[raft] Auto-generated bridge token")
         # client_max_size makes aiohttp enforce the cap on every read path, including
-        # chunked bodies with no Content-Length (mirrors gateway/platforms/webhook.py).
+        # chunked bodies with no Content-Length (mirrors hermes_agent/gateway/platforms/webhook.py).
         app = web.Application(client_max_size=self._max_body_bytes)
         app.router.add_get("/health", self._handle_health)
         app.router.add_post(self._path, self._handle_wake)

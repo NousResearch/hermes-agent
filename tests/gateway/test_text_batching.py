@@ -13,9 +13,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import SessionSource
-from gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import SessionSource
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 
 
 # =====================================================================

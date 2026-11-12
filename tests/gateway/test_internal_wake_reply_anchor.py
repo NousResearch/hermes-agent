@@ -6,10 +6,10 @@ on it in the adapter, and the final send fell back to ledger redelivery behind a
 banner. Synthetic events never reply-anchor (#52694); an explicit redirect override still wins.
 """
 
-from gateway.config import Platform
-from gateway.platforms.base import _reply_anchor_for_event
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.base import _reply_anchor_for_event
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionSource
 
 PRODUCER_IDENTITY = '["completion","proc_0123456789ab",1760000000.0]'
 

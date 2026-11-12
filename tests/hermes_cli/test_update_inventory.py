@@ -29,9 +29,9 @@ def fleet(monkeypatch, tmp_path):
     monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: default_home)
     monkeypatch.setattr("hermes_cli.profiles._get_profiles_root", lambda: default_home / "profiles")
     monkeypatch.setattr("hermes_cli.profiles._PROFILE_ID_RE", re.compile(r"^[a-z0-9][a-z0-9_-]*$"), raising=False)
-    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: pid in (100, 200))
+    monkeypatch.setattr("hermes_agent.gateway.status._pid_exists", lambda pid: pid in (100, 200))
     # A runtime is a VERIFIED gateway identity: live PID whose command line is a gateway's for that home.
-    monkeypatch.setattr("gateway.status._read_process_cmdline", lambda pid: {
+    monkeypatch.setattr("hermes_agent.gateway.status._read_process_cmdline", lambda pid: {
         100: "hermes gateway run", 200: "hermes --profile work gateway run"}.get(pid))
     monkeypatch.setattr("hermes_cli.gateway._get_service_pids", lambda all_profiles=False: {100})
     monkeypatch.setattr("hermes_cli.gateway.supports_systemd_services", lambda: True)
@@ -78,7 +78,7 @@ class TestCollectInventory:
         assert "docker pull" in plan.update_mechanism
 
     def test_dead_pids_excluded(self, fleet, monkeypatch):
-        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
+        monkeypatch.setattr("hermes_agent.gateway.status._pid_exists", lambda pid: False)
         plan = ui.collect_runtime_inventory()
         assert plan.runtimes == []
 
@@ -87,7 +87,7 @@ class TestCollectInventory:
         gateway the restart phase can never touch (that phantom made `hermes update` exit partial)."""
         work_home = fleet / "home" / "profiles" / "work"
         _write_state(work_home, 200, gateway_state="stopped")
-        monkeypatch.setattr("gateway.status._read_process_cmdline", lambda pid: {
+        monkeypatch.setattr("hermes_agent.gateway.status._read_process_cmdline", lambda pid: {
             100: "hermes gateway run", 200: "C:/Windows/system32/dllhost.exe /Processid:{X}"}.get(pid))
         plan = ui.collect_runtime_inventory()
         assert [r.profile for r in plan.runtimes] == ["default"]
@@ -104,7 +104,7 @@ class TestCollectInventory:
                 ProfileGatewayProcess(profile="default", path=Path("/y"), pid=100),
             ],
         )
-        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: pid in (100, 200))
+        monkeypatch.setattr("hermes_agent.gateway.status._pid_exists", lambda pid: pid in (100, 200))
         plan = ui.collect_runtime_inventory()
         profiles = [r.profile for r in plan.runtimes]
         assert profiles.count("default") == 1  # deduped by pid

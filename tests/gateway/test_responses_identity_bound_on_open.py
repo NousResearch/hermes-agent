@@ -1,5 +1,5 @@
 """A reopened Responses store enforces its settled-identity bound before serving a request."""
-from gateway.platforms.api_server_response_store import ResponseStore
+from hermes_agent.gateway.platforms.api_server_response_store import ResponseStore
 
 
 def test_reopen_prunes_settled_identities_to_the_bound(tmp_path):

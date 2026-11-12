@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_api_turn import admit_api_turn
+from hermes_agent.gateway.session_api_turn import admit_api_turn
 
 DM = "disk status?"
 
@@ -14,10 +14,10 @@ DM = "disk status?"
 async def test_api_session_keeps_its_id_after_compression_exhaustion(monkeypatch):
     """The messaging auto-reset rotated the API route to a fresh id, so every later request to the
     id the caller addresses was refused (``admission_conflict``; the session-chat door's 500)."""
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.platforms.api_server import APIServerAdapter
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import SessionAuthority, initialize_session_authority
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.api_server import APIServerAdapter
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import SessionAuthority, initialize_session_authority
 
     monkeypatch.setattr(SessionAuthority, "_schedule", lambda self, ref: None)
     runner = GatewayRunner(GatewayConfig())
@@ -45,9 +45,9 @@ async def test_api_session_keeps_its_id_after_compression_exhaustion(monkeypatch
 def test_session_chat_rerun_continues_the_failed_attempts_row(api, owner):
     """The re-run's history ends with the DM its failed attempt persisted: the turn adopts that row
     instead of sending (and storing) a second copy. A fresh admission never adopts."""
-    from gateway.run_turn_runner import TurnRunner
-    from gateway.session_api_turn import api_execution, prepare_api_execution
-    from gateway.turn_context import TurnContext
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.session_api_turn import api_execution, prepare_api_execution
+    from hermes_agent.gateway.turn_context import TurnContext
 
     history = [{"role": "user", "content": "earlier"}, {"role": "assistant", "content": "ok"},
                {"role": "user", "content": DM}]
@@ -72,9 +72,9 @@ def test_session_chat_rerun_continues_the_failed_attempts_row(api, owner):
 def test_admitted_retry_preserves_completed_tool_evidence(api, owner):
     """A 429/5xx re-run after a tool completed keeps ``user → assistant(tool_calls) → tool`` in view
     (as on main), so it can't repeat the side effect or answer without its result."""
-    from gateway.run_turn_runner import TurnRunner
-    from gateway.session_api_turn import api_execution, prepare_api_execution
-    from gateway.turn_context import TurnContext
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.session_api_turn import api_execution, prepare_api_execution
+    from hermes_agent.gateway.turn_context import TurnContext
     from tools.bot_failure_reasons import RETRY_RESUME, result_retry_action
 
     sid = "retry-completed-tool"

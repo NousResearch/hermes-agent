@@ -84,7 +84,7 @@ def _notify_provider_jobs_changed_safe() -> None:
 def _relay_fronted_delivery_platforms(job: dict[str, Any]) -> set:
     """Delivery-platform names for this job that the relay connector fronts."""
     try:
-        from gateway.relay import relay_fronted_platforms
+        from hermes_agent.gateway.relay import relay_fronted_platforms
     except Exception:
         return set()
     fronted = relay_fronted_platforms()
@@ -164,7 +164,7 @@ def _primary_routed_delivery_platforms(job: dict[str, Any]) -> set:
                   if t.get("platform") and _delivery_platform_routed_from_primary_gateway(t["platform"])}
         if not routed:
             return set()
-        from gateway.config import load_gateway_config
+        from hermes_agent.gateway.config import load_gateway_config
         return routed - {p.value for p in load_gateway_config().get_connected_platforms()}
     except Exception:
         return set()
@@ -175,7 +175,7 @@ def _hand_off_primary_routed_run(job: dict[str, Any], extra_prompt: Optional[str
     profile route: only the gateway process holding the primary's bot can send it, so an in-process
     run would spend the whole turn and then record ``delivery_failed`` (#120330). Returns a JSON
     result string when the hand-off engages, else None (normal in-process run)."""
-    runner_ref = getattr(sys.modules.get("gateway.run"), "_gateway_runner_ref", None)
+    runner_ref = getattr(sys.modules.get("hermes_agent.gateway.run"), "_gateway_runner_ref", None)
     if callable(runner_ref) and runner_ref() is not None:
         return None  # inside the gateway: its live adapter delivers (#89302)
     if not is_job_runnable(job):
@@ -348,7 +348,7 @@ def _run_claimed_job(job: dict[str, Any], extra_prompt: Optional[str] = None) ->
 
         # Inside the gateway process deliver on the loop that owns clients such as
         # Matrix/aiohttp (a standalone asyncio.run() loop breaks them).
-        runner_ref = getattr(sys.modules.get("gateway.run"), "_gateway_runner_ref", None)
+        runner_ref = getattr(sys.modules.get("hermes_agent.gateway.run"), "_gateway_runner_ref", None)
         # Manual runs invoked from a gateway agent execute outside the scheduler ticker, but they still
         # share the process with the live platform adapters. Calling those clients from run_one_job's
         # standalone asyncio.run() loop raises errors like "Timeout context manager should be used inside a
@@ -571,7 +571,7 @@ def _try_dispatch_background_run(
 
     # Finite sessions cannot route a detached result back after the turn ends (delegate_task's gate).
     try:
-        from gateway.session_context import async_delivery_supported
+        from hermes_agent.gateway.session_context import async_delivery_supported
         if not async_delivery_supported():
             return None
     except Exception:
@@ -604,7 +604,7 @@ def _try_dispatch_background_run(
 
     origin_ui_session_id = ""
     try:
-        from gateway.session_context import get_session_env
+        from hermes_agent.gateway.session_context import get_session_env
         origin_ui_session_id = get_session_env("HERMES_UI_SESSION_ID", "") or ""
     except Exception:
         pass
@@ -1221,7 +1221,7 @@ def check_cronjob_requirements() -> bool:
     scheduler is internal; no crontab needed). Flags must be explicitly truthy via
     ``env_var_enabled``. An external cron worker has the presence vars stripped from its env, so
     the cron session marker keeps ``cron.allow_agent_scheduling`` meaningful there."""
-    from gateway.session_context import get_session_env
+    from hermes_agent.gateway.session_context import get_session_env
     from utils import env_var_enabled, is_truthy_value
     return (
         env_var_enabled("HERMES_INTERACTIVE")

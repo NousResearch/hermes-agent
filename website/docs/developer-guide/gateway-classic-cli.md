@@ -46,7 +46,7 @@ implicitly bypasses approval policy.
 ## Launch options
 
 The gateway advertises its accepted creation parameters through `runtime.describe`
-(`session_create.parameters`, from `gateway.session_policy.CREATE_FIELDS`). The client
+(`session_create.parameters`, from `hermes_agent.gateway.session_policy.CREATE_FIELDS`). The client
 sends a creation option only when it is advertised; a requested option an older
 gateway does not advertise is refused (`Gateway does not support creation options:
 …`). Caller cwd is sent when advertised; an old gateway lacking cwd support prints a

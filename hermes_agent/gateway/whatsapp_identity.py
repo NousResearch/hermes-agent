@@ -1,8 +1,8 @@
 """Shared helpers for canonicalising WhatsApp sender identity.
 
 The bridge can surface one human as a LID (``999...@lid``) or a phone JID
-(``1555...@s.whatsapp.net``) within one conversation. Authorisation (:mod:`gateway.run`) and
-session keys (:mod:`gateway.session`) both resolve aliases here so they never drift apart;
+(``1555...@s.whatsapp.net``) within one conversation. Authorisation (:mod:`hermes_agent.gateway.run`) and
+session keys (:mod:`hermes_agent.gateway.session`) both resolve aliases here so they never drift apart;
 plugins should use :func:`canonical_whatsapp_identifier` to line up with Hermes' session keys.
 """
 

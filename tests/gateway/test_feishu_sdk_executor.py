@@ -57,7 +57,7 @@ async def test_is_duplicate_flush_survives_default_executor_teardown(
     outbound SDK calls (#10849).
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
 
     adapter = FeishuAdapter(PlatformConfig())
     loop = asyncio.get_running_loop()
@@ -90,7 +90,7 @@ async def test_run_blocking_propagates_caller_contextvars(tmp_path, monkeypatch)
     multiplexed profile's HERMES_HOME override is a contextvar, and a worker that lost it
     would flush dedup state / look up threads under the wrong profile."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
     from hermes_constants import get_hermes_home_override, reset_hermes_home_override, set_hermes_home_override
 
     adapter = FeishuAdapter(PlatformConfig())

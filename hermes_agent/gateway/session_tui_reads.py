@@ -4,8 +4,8 @@ On main the TUI's ``slash.exec`` never reached the messaging gateway's handlers:
 ``session.status`` (``Hermes TUI Status``), ``/context`` was ``_format_live_context_output`` (the
 conversation counts, then the desktop gauge's category table). A TUI session on the shared owner
 gets the same lines here, read from the owner's live agent and stored row; every other surface keeps
-the gateway's own handlers (``gateway/session_commands.py``). ``/cron``, the classic CLI's handler
-that main's TUI ran in its slash worker, is gateway/session_cron_commands.py.
+the gateway's own handlers (``hermes_agent/gateway/session_commands.py``). ``/cron``, the classic CLI's handler
+that main's TUI ran in its slash worker, is hermes_agent/gateway/session_cron_commands.py.
 """
 from __future__ import annotations
 
@@ -65,7 +65,7 @@ def _status(authority, ref, live, policy, agent, arg) -> str:
         tokens=getattr(agent, 'session_total_tokens', 0) if agent is not None else None,
         agent_running=running, home=authority.profile_id)
     if fields['provider'] == 'custom':  # the adapter's billing class: show the entry the session runs on
-        from gateway.run import _profile_runtime_scope
+        from hermes_agent.gateway.run import _profile_runtime_scope
         from hermes_cli.runtime_provider_custom import session_provider_identity
         with _profile_runtime_scope(Path(authority.profile_id)):
             fields['provider'] = session_provider_identity('custom', getattr(agent, 'requested_provider', None),
@@ -84,7 +84,7 @@ def _context(authority, ref, live, policy, agent, arg) -> str:
     rows = []
     with contextlib.suppress(Exception):
         rows = authority.db.get_messages_as_conversation(stored, include_ancestors=True, include_row_ids=True)
-    from gateway.session_controls import display_projection
+    from hermes_agent.gateway.session_controls import display_projection
     messages = display_projection(rows, authority.profile_id) if rows else []
     breakdown: list[str] = []
     if agent is not None:
@@ -120,8 +120,8 @@ def _context(authority, ref, live, policy, agent, arg) -> str:
 
 async def run_tui_read(authority, ref, live, policy, render, arg) -> dict:
     """Render off the owner loop, inside the owning profile and the session's workspace."""
-    from gateway.session_authorities import owner_scope
-    from gateway.session_commands import _session_workspace
+    from hermes_agent.gateway.session_authorities import owner_scope
+    from hermes_agent.gateway.session_commands import _session_workspace
     agent = authority.agent(ref)
 
     def build():
@@ -136,7 +136,7 @@ async def context_breakdown(connection, ref, params) -> dict:
     model history, built in the session's workspace. With no resident agent (not run since the gateway
     started, or reaped): the same categories from what the session froze (``_stored_breakdown``) beside
     its stored usage."""
-    from gateway.session_busy_controls import authorize
+    from hermes_agent.gateway.session_busy_controls import authorize
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     if set(params) - {'session_id', 'profile'} or not isinstance(ref.session_id, str) or not ref.session_id:
         raise RuntimeStoreError('invalid_params')
@@ -148,11 +148,11 @@ async def context_breakdown(connection, ref, params) -> dict:
     agent = authority.agent(ref)
     usage = None
     if agent is None:
-        from gateway.session_usage import stats
+        from hermes_agent.gateway.session_usage import stats
         usage = await stats(connection, ref, {'session_id': ref.session_id})
         usage = usage.get('usage') if isinstance(usage.get('usage'), dict) else usage
-    from gateway.session_authorities import owner_scope
-    from gateway.session_commands import _session_workspace
+    from hermes_agent.gateway.session_authorities import owner_scope
+    from hermes_agent.gateway.session_commands import _session_workspace
 
     def build():
         from agent.context_breakdown import compute_session_context_breakdown

@@ -9,7 +9,7 @@ import pytest
 def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
     from hermes_cli import kanban_db as kb
     from hermes_cli.kanban_db_connect import connect
-    from gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_contract import SessionActor
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     monkeypatch.setenv('HERMES_KANBAN_HOME', str(tmp_path))
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
@@ -31,7 +31,7 @@ def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
     actor = SessionActor('owner', str(tmp_path), frozenset({'session:create'}), 'transport')
     connection = SimpleNamespace(authority=SimpleNamespace(profile_id=str(tmp_path)), actor=actor, native_owner=True)
     params = dict(board='owned', task_id=task.id, run_id=task.current_run_id, claim_lock=task.claim_lock)
-    from gateway.session_kanban import build_kanban_policy
+    from hermes_agent.gateway.session_kanban import build_kanban_policy
     config = {'model': {'default': 'loop-model', 'provider': 'custom'}, 'platform_toolsets': {'cli': ['terminal', 'file']},
               'agent': {'coding_context': 'focus'}}  # the worktree must not collapse a worker into the coding posture
     policy, _secrets = build_kanban_policy(connection, params, config)
@@ -49,7 +49,7 @@ def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
     connection.native_owner = False
     with pytest.raises(RuntimeStoreError, match='permission_denied'):
         build_kanban_policy(connection, params, config)
-    from gateway.session_policy import build_policy
+    from hermes_agent.gateway.session_policy import build_policy
     with pytest.raises(RuntimeStoreError, match='invalid_params'):
         build_policy({'source': 'kanban', 'cwd': str(workspace)}, config)
 
@@ -105,7 +105,7 @@ def test_claim_reclaimed_before_admission_marker_is_refused(tmp_path, monkeypatc
     from contextlib import closing
     from hermes_cli import kanban_db as kb
     from hermes_cli.kanban_db_connect import connect
-    from gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_contract import SessionActor
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     monkeypatch.setenv('HERMES_KANBAN_HOME', str(tmp_path))
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
@@ -121,7 +121,7 @@ def test_claim_reclaimed_before_admission_marker_is_refused(tmp_path, monkeypatc
         kb.recompute_ready(conn)
         old = kb.claim_task(conn, task_id)
     config = {'model': {'default': 'loop-model', 'provider': 'custom'}, 'platform_toolsets': {'cli': ['terminal']}}
-    monkeypatch.setattr('gateway.run._load_gateway_config', lambda: config)
+    monkeypatch.setattr('hermes_agent.gateway.run._load_gateway_config', lambda: config)
     calls = []
     def create_local_session(authority, actor, params, *, trusted_policy=None, trusted_secrets=None):
         # Another process reclaims the task while the owner session is being created.
@@ -130,7 +130,7 @@ def test_claim_reclaimed_before_admission_marker_is_refused(tmp_path, monkeypatc
             kb.unblock_task(conn, task_id)
             kb.claim_task(conn, task_id)
         return SimpleNamespace(session_id='owner-session', profile_id=str(tmp_path))
-    monkeypatch.setattr('gateway.session_local.create_local_session', create_local_session)
+    monkeypatch.setattr('hermes_agent.gateway.session_local.create_local_session', create_local_session)
     async def submit(actor, submission, **kwargs):
         calls.append(('submit', submission))
     async def resume(ref, params):
@@ -140,7 +140,7 @@ def test_claim_reclaimed_before_admission_marker_is_refused(tmp_path, monkeypatc
     actor = SessionActor('owner', str(tmp_path), frozenset({'session:create'}), 'transport')
     connection = SimpleNamespace(authority=authority, actor=actor, native_owner=True, resume=resume)
     params = dict(board='owned', task_id=task_id, run_id=old.current_run_id, claim_lock=old.claim_lock)
-    from gateway.session_kanban import run_task
+    from hermes_agent.gateway.session_kanban import run_task
     with pytest.raises(RuntimeStoreError, match='stale_kanban_claim'):
         asyncio.run(run_task(connection, params))
     assert calls == []

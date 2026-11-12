@@ -1,7 +1,7 @@
 """Mattermost env -> gateway config bridge (``PlatformEntry.env_overrides``)."""
 
-from gateway.config import Platform
-from gateway.platform_env import EnvCred, home_step
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platform_env import EnvCred, home_step
 
 ENV_ENABLE_CREDENTIALS = ("MATTERMOST_TOKEN",)
 ENV_OVERRIDES = (

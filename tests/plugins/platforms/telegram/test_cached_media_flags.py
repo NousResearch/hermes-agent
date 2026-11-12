@@ -5,9 +5,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.platforms.base import BasePlatformAdapter, CachedMedia
-from gateway.platforms.event import MessageEvent
-from gateway.session_envelope import _media_clause
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, CachedMedia
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session_envelope import _media_clause
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 

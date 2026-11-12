@@ -9,9 +9,9 @@ from tests.gateway.test_automation_compression_media import _admit_human, _disco
 
 @pytest.mark.asyncio
 async def test_admitted_completion_survives_a_transient_owner_read_after_compression(tmp_path, monkeypatch):
-    from gateway.platforms.event import MessageEvent
-    from gateway.session_contract import SessionRef
-    from gateway.session_ingress import execute_admission
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_ingress import execute_admission
     from hermes_agent.hermes_state_runtime import list_session_admissions
     from tests.gateway.test_completion_admission import pending
 

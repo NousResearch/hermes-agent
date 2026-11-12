@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
@@ -53,7 +53,7 @@ async def test_interim_edit_skipped_when_slot_busy_but_final_edit_never_gated():
 async def test_skipped_interim_edit_leaves_visible_prefix_untouched():
     """A slot-busy skip shows nothing new, so the stream consumer must not record the skipped text as
     the on-screen prefix: a later turn-final flood must not treat the unseen tail as delivered."""
-    from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+    from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
     adapter = _adapter(AsyncMock())
     consumer = GatewayStreamConsumer(adapter, "c1", StreamConsumerConfig(cursor="▌"))
@@ -72,7 +72,7 @@ async def test_skipped_interim_edit_leaves_visible_prefix_untouched():
     assert consumer._last_sent_text == "The answer▌"  # screen still shows the older preview
     assert consumer._flood_strikes == 1
 
-    from gateway.platforms.base import SendResult
+    from hermes_agent.gateway.platforms.base import SendResult
 
     adapter.edit_message = AsyncMock(return_value=SendResult(
         success=False, error="Flood control exceeded. Retry in 9 seconds", retry_after=9))

@@ -6,8 +6,8 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_unserve_holds_the_profile_lock_until_its_handles_close(tmp_path, monkeypatch):
-    from gateway.run_profile_reconcile import GatewayProfileReconcileMixin
-    from gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance, process_ownership
+    from hermes_agent.gateway.run_profile_reconcile import GatewayProfileReconcileMixin
+    from hermes_agent.gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance, process_ownership
 
     home = tmp_path / 'gone'
     process_ownership.reserve([home])

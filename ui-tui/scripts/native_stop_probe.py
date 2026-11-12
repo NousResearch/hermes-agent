@@ -129,7 +129,7 @@ def exercise(kind, model, first, sid, grant, rpc, connect, home, receipts, desti
 def daemon():
     root = Path(__file__).resolve().parents[2]
     sys.path.insert(0, str(root))
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     original = AuthorityConnection.dispatch
     async def observed(self, request):
         reply = await original(self, request)
@@ -139,7 +139,7 @@ def daemon():
         return reply
     AuthorityConnection.dispatch = observed
     sys.argv = ['gateway.run']
-    runpy.run_module('gateway.run', run_name='__main__')
+    runpy.run_module('hermes_agent.gateway.run', run_name='__main__')
 
 
 if __name__ == '__main__':

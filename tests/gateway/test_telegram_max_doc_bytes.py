@@ -6,7 +6,7 @@ of `extra.base_url` as the explicit opt-in to the higher cap.
 """
 
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 

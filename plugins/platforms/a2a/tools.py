@@ -12,7 +12,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Optional
 
-from gateway.platforms._shared import coerce_port as _coerce_int, get_scoped_secret as _get_scoped_secret
+from hermes_agent.gateway.platforms._shared import coerce_port as _coerce_int, get_scoped_secret as _get_scoped_secret
 
 from . import protocol, security
 

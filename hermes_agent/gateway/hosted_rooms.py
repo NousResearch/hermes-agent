@@ -16,7 +16,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from gateway.hosted_rooms_common import (
+from hermes_agent.gateway.hosted_rooms_common import (
     DbPath, bounded_int, canonical_json, clock as _now, compact_json, connect, fenced_update as _fenced_update,
     identifier, open_sqlite, table_columns, table_exists, transaction, utf8_len)
 
@@ -461,14 +461,14 @@ def local_authority_gateway_id() -> str:
 
 def _store_ready(conn: sqlite3.Connection, db_path: Path) -> bool:
     """The store can serve rooms once its schema is current and the pre-isolation import has run."""
-    from gateway.hosted_rooms_legacy_import import settled
+    from hermes_agent.gateway.hosted_rooms_legacy_import import settled
 
     return _schema_is_current(conn) and settled(conn, db_path)
 
 
 def _initialize_store(conn: sqlite3.Connection, db_path: Path) -> None:
     """Create or migrate the schema, then copy the pre-isolation rows in (#109775)."""
-    from gateway.hosted_rooms_legacy_import import import_legacy_rooms
+    from hermes_agent.gateway.hosted_rooms_legacy_import import import_legacy_rooms
 
     _initialize_schema(conn)
     import_legacy_rooms(conn, db_path)
@@ -1019,7 +1019,7 @@ def upsert_remote_run_receipt(db_path: DbPath, *, record: Mapping[str, Any], now
                    target_profile, task_id, execution_generation, run_id,
                    session_id, created_at, updated_at
                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (*immutable, timestamp, timestamp))
-        from gateway.hosted_room_work_records import capture_transition_locked
+        from hermes_agent.gateway.hosted_room_work_records import capture_transition_locked
         capture_transition_locked(conn, record["room_id"])
 
 
@@ -1031,7 +1031,7 @@ def drop_remote_run_receipt(db_path: DbPath, *, record: Mapping[str, Any], run_i
             f"DELETE FROM hosted_room_remote_runs WHERE {_REMOTE_RUN_WHERE} AND run_id=?",
             (*_remote_run_identity(record), run_id)).rowcount
         if dropped:
-            from gateway.hosted_room_work_records import capture_transition_locked
+            from hermes_agent.gateway.hosted_room_work_records import capture_transition_locked
             capture_transition_locked(conn, record["room_id"])
     return bool(dropped)
 
@@ -1211,7 +1211,7 @@ def append_event(
         if expected_latest_seq is not None and seq - 1 != expected_latest_seq:
             raise EventCursorConflictError("room changed before event publication")
         if kind in {"message.user", "message.member"}:
-            from gateway.hosted_room_attachments import retain_message_attachments
+            from hermes_agent.gateway.hosted_room_attachments import retain_message_attachments
             retain_message_attachments(conn, room_id=room_id, event_id=event_id,
                                        manifest=json.loads(payload_json).get("attachments", []), now=now)
         event_bytes = _insert_event(
@@ -1382,7 +1382,7 @@ def disband_room(
             (now, now, disband_bytes, room_id, expected_gateway_id, expected_epoch),
             RoomConflictError("hosted room disband lost its fence"))
         conn.execute(_INSERT_RETIRED, (room_id, now))
-        from gateway.session_hosted_member_homes import forget_room_member_homes_locked
+        from hermes_agent.gateway.session_hosted_member_homes import forget_room_member_homes_locked
         forget_room_member_homes_locked(conn, room_id)
         event = _reload(
             conn, _SELECT_EVENT, (room_id, "system:room-disbanded"), "room disband event could not be reloaded")

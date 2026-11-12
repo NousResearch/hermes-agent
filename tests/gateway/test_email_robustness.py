@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 
 
 def _make_adapter(address="hermes@test.com"):
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
 
     with patch.dict(os.environ, {
         "EMAIL_ADDRESS": address,
@@ -76,7 +76,7 @@ class TestTransportSecurity(unittest.TestCase):
     """platforms.email.extra.imap_security / smtp_security select the transport (#99641)."""
 
     def _adapter(self, **extra):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         with patch.dict(os.environ, {
             "EMAIL_ADDRESS": "hermes@test.com", "EMAIL_PASSWORD": "secret",

@@ -208,10 +208,10 @@ class Fault:
 
 
 def _adapter_class():
-    from gateway.config import Platform
-    from gateway.platforms.base import BasePlatformAdapter, SendResult
-    from gateway.platforms.event import MessageEvent, MessageType
-    from gateway.platforms.helpers import MessageDeduplicator
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+    from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+    from hermes_agent.gateway.platforms.helpers import MessageDeduplicator
 
     class FakePlatformAdapter(BasePlatformAdapter):
         """A platform adapter honouring the base contract against ``FakePlatformServer``."""
@@ -380,12 +380,12 @@ def _serve(spool: Path) -> None:  # pragma: no cover - runs in the child process
 
     # Knob-only: shrink the ledger's in-process redelivery backoff (30 s / 120 s) so a rejected final
     # is retried within the test's patience; the policy (who retries, with which marker) is untouched.
-    import gateway.delivery_ledger as ledger
+    import hermes_agent.gateway.delivery_ledger as ledger
     ledger._RETRY_BACKOFF_SECONDS = tuple(cfg.get("ledger_backoff", (0.5, 1.0)))
 
-    from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig, StreamingConfig
-    from gateway.platform_registry import PlatformEntry, platform_registry
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig, StreamingConfig
+    from hermes_agent.gateway.platform_registry import PlatformEntry, platform_registry
+    from hermes_agent.gateway.run import GatewayRunner
 
     cls = _adapter_class()
     platforms = {}
@@ -628,7 +628,7 @@ RECOVERY_MARKER_PREFIXES: tuple = ()
 
 
 def recovery_markers() -> tuple:
-    from gateway.delivery_ledger import FLOOD_MARKER, RECONNECTED_MARKER, RECOVERED_MARKER
+    from hermes_agent.gateway.delivery_ledger import FLOOD_MARKER, RECONNECTED_MARKER, RECOVERED_MARKER
     return (RECOVERED_MARKER, RECONNECTED_MARKER, FLOOD_MARKER)
 
 

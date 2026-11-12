@@ -28,7 +28,7 @@ def _resolve_origin(explicit: Optional[dict[str, Any]]) -> Optional[dict[str, An
     if explicit is not None:
         return explicit
     try:
-        from gateway.session_context import get_session_env
+        from hermes_agent.gateway.session_context import get_session_env
         platform = get_session_env("HERMES_SESSION_PLATFORM")
         chat_id = get_session_env("HERMES_SESSION_CHAT_ID")
         if platform and chat_id:

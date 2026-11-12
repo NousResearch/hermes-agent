@@ -60,10 +60,10 @@ def _names_cwd(content, cwd):
 
 async def probe(peer):
     import websockets
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority
-    from gateway.run_api import start_gateway_api, stop_gateway_api
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.run_api import start_gateway_api, stop_gateway_api
+    from hermes_agent.gateway.session_contract import SessionRef
     from hermes_cli import web_server
     from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
     runner = GatewayRunner()
@@ -99,7 +99,7 @@ async def probe(peer):
             sid = created['result']['session_id']
             sessions.append(sid)
             created_ids[sid] = created['result']['stored_session_id']
-            from gateway.session_policy import policy_for_source
+            from hermes_agent.gateway.session_policy import policy_for_source
             from hermes_agent.hermes_state_runtime import RuntimeStoreError
             live_source = authority.sessions[sid].source
             adapter = runner._adapter_for_source(live_source)

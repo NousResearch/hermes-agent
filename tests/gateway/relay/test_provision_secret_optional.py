@@ -23,7 +23,7 @@ import os
 
 import pytest
 
-from gateway import relay
+from hermes_agent.gateway import relay
 
 
 @pytest.fixture(autouse=True)
@@ -41,7 +41,7 @@ def _clean_env(monkeypatch):
         "GATEWAY_RELAY_WAKE_URL",
     ):
         monkeypatch.delenv(k, raising=False)
-    monkeypatch.setattr("gateway.run._load_gateway_config", dict, raising=False)
+    monkeypatch.setattr("hermes_agent.gateway.run._load_gateway_config", dict, raising=False)
 
 
 class _Resp:

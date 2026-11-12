@@ -2,7 +2,7 @@
 survive it (#58403)."""
 from __future__ import annotations
 
-from gateway import run as gateway_run
+from hermes_agent.gateway import run as gateway_run
 
 
 def test_auto_reset_cleanup_clears_last_resolved_model():

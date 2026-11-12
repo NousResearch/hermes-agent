@@ -9,14 +9,14 @@ import pytest
 
 @pytest.mark.platforms("linux")
 def test_losing_start_never_constructs_writable_runner(tmp_path):
-    from gateway.status import acquire_gateway_runtime_lock, release_gateway_runtime_lock
+    from hermes_agent.gateway.status import acquire_gateway_runtime_lock, release_gateway_runtime_lock
     assert acquire_gateway_runtime_lock()
     code = '''
 import asyncio
 from pathlib import Path
 import os
-import gateway.run as run
-from gateway.config import GatewayConfig
+from hermes_agent.gateway import run
+from hermes_agent.gateway.config import GatewayConfig
 class Witness:
     def __init__(self, config):
         Path(os.environ['WITNESS']).write_text('writable init reached')
@@ -45,9 +45,9 @@ async def test_reserved_home_is_eligible_for_same_user_bootstrap(tmp_path):
     import asyncio
     import json
 
-    from gateway.control_socket import GatewayControlServer
-    from gateway.runtime_bootstrap import TicketStore
-    from gateway.runtime_ownership import ProfileOwnership
+    from hermes_agent.gateway.control_socket import GatewayControlServer
+    from hermes_agent.gateway.runtime_bootstrap import TicketStore
+    from hermes_agent.gateway.runtime_ownership import ProfileOwnership
     from hermes_cli.gateway_runtime import discover_gateway_endpoint
 
     home = tmp_path / 'new-private-home'
@@ -94,7 +94,7 @@ async def test_reserved_home_is_eligible_for_same_user_bootstrap(tmp_path):
 
 @pytest.mark.platforms("linux")
 def test_profile_reservations_unwind_without_releasing_another_owner(tmp_path):
-    from gateway import runtime_ownership
+    from hermes_agent.gateway import runtime_ownership
     homes = [tmp_path / 'a', tmp_path / 'b']
     for home in homes:
         home.mkdir()
@@ -125,7 +125,7 @@ def test_stale_unopenable_gateway_lock_is_replaced_on_boot(tmp_path, monkeypatch
     flock proves unheld is unlinked and recreated, so boot does not exit "already held" forever.
     An unreadable one is refused instead (test_foreign_stale_gateway_lock)."""
     import json
-    from gateway.status import acquire_gateway_runtime_lock, release_gateway_runtime_lock
+    from hermes_agent.gateway.status import acquire_gateway_runtime_lock, release_gateway_runtime_lock
     home = tmp_path / 'home'
     home.mkdir(mode=0o700)
     monkeypatch.setenv('HERMES_HOME', str(home))
@@ -145,7 +145,7 @@ def test_stale_unopenable_gateway_lock_is_replaced_on_boot(tmp_path, monkeypatch
 def test_unusable_gateway_lock_held_or_linked_is_never_unlinked(tmp_path):
     """The stale-lock recovery never removes an inode a live process holds, and never follows a
     symlink or touches a hardlinked lock."""
-    from gateway import runtime_ownership
+    from hermes_agent.gateway import runtime_ownership
     homes = {kind: tmp_path / kind for kind in ('held', 'held_readable', 'hardlink', 'symlink')}
     for home in homes.values():
         home.mkdir(mode=0o700)

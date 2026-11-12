@@ -2,14 +2,14 @@
 
 Multiplex-only (Teknium ruling): exactly ONE ``hermes serve`` and ONE ``hermes gateway run``
 per host, each multiplexing every profile. The per-``HERMES_HOME`` gateway lock/PID files
-(``gateway.status``) cannot express that — N profiles are N homes, so N processes each take
+(``hermes_agent.gateway.status``) cannot express that — N profiles are N homes, so N processes each take
 their own flock and none of them ever sees the others. This module adds the missing layer:
 
 * a **host lock** (flock/``msvcrt``) held for the lifetime of the winning process, and
 * a **rendezvous record** the winner publishes so a second invocation can find it, prove it
   is the same live process, and ATTACH instead of binding a second port.
 
-Both live in :func:`gateway.status._get_lock_dir` — the only cross-profile lock root already
+Both live in :func:`hermes_agent.gateway.status._get_lock_dir` — the only cross-profile lock root already
 in the tree (``$HERMES_GATEWAY_LOCK_DIR`` else ``$XDG_STATE_HOME/hermes/gateway-locks``),
 which scopes to the **OS user**. That is the correct granularity: separate OS users have
 separate ``$HOME``s, separate ``~/.hermes`` profile roots, separate ports-by-convention and
@@ -26,7 +26,7 @@ it) and is still written unchanged. It cannot be the host record: it has no lock
 single-writer semantics, no removal on exit, and no place to publish a protocol version or
 an authentication handle. The record here is authoritative for "who owns this host role"; the
 ledger remains authoritative for "what is running". Both are written. New host records pair the
-ledger's live-PID proof with ``gateway.status``'s canonical process-start fingerprint; legacy
+ledger's live-PID proof with ``hermes_agent.gateway.status``'s canonical process-start fingerprint; legacy
 records without that fingerprint keep the old ``(pid, create_time)`` proof.
 """
 
@@ -94,7 +94,7 @@ class HostRecord:
     token_fingerprint: str
     profiles: tuple[str, ...]
     updated_at: str
-    #: HERMES_HOME the owner was launched from. The attach channel (``gateway.control_socket``) is
+    #: HERMES_HOME the owner was launched from. The attach channel (``hermes_agent.gateway.control_socket``) is
     #: keyed by home, so without it a client can only guess the default root — wrong as soon as a
     #: named profile launches the host process. Absent in records written before this field; added
     #: WITHOUT a protocol bump on purpose, because a bump would make every live owner's record read
@@ -162,7 +162,7 @@ class HostRecord:
 
 def host_state_dir() -> Path:
     """Per-OS-USER rendezvous dir (shared by every profile of this user)."""
-    from gateway.status import _get_lock_dir
+    from hermes_agent.gateway.status import _get_lock_dir
 
     return _get_lock_dir()
 
@@ -187,7 +187,7 @@ def ensure_host_state_dir() -> Path:
 def _record_is_own(path: Path) -> bool:
     """True when ``path`` was written by THIS OS user inside a dir this user owns.
 
-    ``read_record`` hands its result straight to :mod:`gateway.host_attach`, which dials the home
+    ``read_record`` hands its result straight to :mod:`hermes_agent.gateway.host_attach`, which dials the home
     it names and believes the served set it carries. A hand-written record therefore buys an
     attacker the lifecycle verdict for every profile on the host, so the file's ``st_uid`` — not
     its contents — is what makes it a record at all. Windows sets no ACLs from mode bits; there
@@ -272,7 +272,7 @@ def _host_lock_is_free(role: str) -> Optional[bool]:
     """
     if owns_host_lock(role):
         return False
-    from gateway.status import _probe_lock_file
+    from hermes_agent.gateway.status import _probe_lock_file
 
     try:
         fd = os.open(str(lock_path(role)), os.O_RDWR)
@@ -287,7 +287,7 @@ def _host_lock_is_free(role: str) -> Optional[bool]:
 def _current_boot_epoch() -> str:
     """Identity of this boot. Empty when /proc is unreadable — a recorded epoch is then unprovable."""
     try:
-        from gateway.drain_control import current_instantiation_epoch
+        from hermes_agent.gateway.drain_control import current_instantiation_epoch
 
         return current_instantiation_epoch() or ""
     except Exception:
@@ -325,7 +325,7 @@ def _record_incarnation_matches(record: HostRecord) -> Optional[bool]:
         alive = _pid_incarnation_matches(record.pid, None)
         if alive is not True:
             return alive
-        from gateway.status import get_process_start_time, start_time_fingerprints_match
+        from hermes_agent.gateway.status import get_process_start_time, start_time_fingerprints_match
 
         current = get_process_start_time(record.pid)
         matched = None if current is None else start_time_fingerprints_match(record.start_time, current)
@@ -523,7 +523,7 @@ def claim_host_lock(role: str) -> tuple[HostLockOutcome, Optional[OSError]]:
     key = _lock_key(role)
     if _lock_handles.get(key) is not None:
         return (HostLockOutcome.ACQUIRED, None)
-    from gateway.status import _try_acquire_file_lock
+    from hermes_agent.gateway.status import _try_acquire_file_lock
 
     path = Path(key[1])
     try:
@@ -545,7 +545,7 @@ def release_host_lock(role: str) -> None:
     handle = _lock_handles.pop(_lock_key(_validated_role(role)), None)
     if handle is None:
         return
-    from gateway.status import _release_file_lock
+    from hermes_agent.gateway.status import _release_file_lock
 
     _release_file_lock(handle)
     with contextlib.suppress(OSError):
@@ -574,7 +574,7 @@ def host_lock_is_held(role: str) -> Optional[bool]:
         handle = open(path, "a+", encoding="utf-8")
     except OSError:
         return None
-    from gateway.status import _probe_lock_file
+    from hermes_agent.gateway.status import _probe_lock_file
 
     return _probe_lock_file(handle)
 
@@ -610,7 +610,7 @@ def publish_record(
     control socket.
     """
     role = _validated_role(role)
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway.status import get_process_start_time
 
     record = HostRecord(
         role=role,
@@ -641,9 +641,9 @@ def publish_record(
 
 
 def _invalidate_attach_cache() -> None:
-    """Drop :mod:`gateway.host_attach`'s memo: the record it summarises just changed."""
+    """Drop :mod:`hermes_agent.gateway.host_attach`'s memo: the record it summarises just changed."""
     with contextlib.suppress(Exception):
-        from gateway.host_attach import invalidate_host_gateway_cache
+        from hermes_agent.gateway.host_attach import invalidate_host_gateway_cache
 
         invalidate_host_gateway_cache()
 
@@ -676,7 +676,7 @@ def discard_dead_record(role: str) -> bool:
                 path.unlink(missing_ok=True)
     finally:
         if guard is not None:
-            from gateway.status import _release_file_lock
+            from hermes_agent.gateway.status import _release_file_lock
 
             _release_file_lock(guard)
             with contextlib.suppress(OSError):
@@ -687,7 +687,7 @@ def discard_dead_record(role: str) -> bool:
 
 def _hold_lock_briefly(role: str):
     """Open and flock ``role``'s host lock without registering it; ``None`` when not won."""
-    from gateway.status import _try_acquire_file_lock
+    from hermes_agent.gateway.status import _try_acquire_file_lock
 
     path = lock_path(role)
     try:
@@ -783,7 +783,7 @@ def _multiplex_profiles_enabled() -> bool:
     the process actually serves. Reading it here was the last place the retired flag still decided
     topology, and it made CLI/dashboard report "standalone, serving default" while the runtime
     multiplexed. The RUNTIME verdict (a boot-time guard refusal) narrows the record afterwards, in
-    ``gateway.run._refresh_host_gateway_record``, which republishes the SETTLED set.
+    ``hermes_agent.gateway.run._refresh_host_gateway_record``, which republishes the SETTLED set.
     """
     return True
 

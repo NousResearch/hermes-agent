@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 
 class _Resp:

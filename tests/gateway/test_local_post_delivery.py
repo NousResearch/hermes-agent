@@ -13,9 +13,9 @@ from tests.waiting import async_wait_until
 
 
 async def _owner(tmp_path, monkeypatch):
-    from gateway.config import GatewayConfig
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import initialize_session_authority
     from hermes_agent.hermes_state import SessionDB
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -27,15 +27,15 @@ async def _owner(tmp_path, monkeypatch):
 
 
 def _viewer():
-    from gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_contract import SessionActor
     return SessionActor("test-owner", "default", frozenset(
         {"session:create", "session:submit", "session:read", "session:control"}), "viewer")
 
 
 @pytest.mark.asyncio
 async def test_local_turn_runs_its_post_delivery_callbacks_after_settling(tmp_path, monkeypatch):
-    from gateway.session_contract import Submission
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_contract import Submission
+    from hermes_agent.gateway.session_local import create_local_session
     from hermes_agent.hermes_state_runtime import get_session_admission
 
     runner, authority, db = await _owner(tmp_path, monkeypatch)
@@ -72,8 +72,8 @@ async def test_local_turn_runs_its_post_delivery_callbacks_after_settling(tmp_pa
 @pytest.mark.asyncio
 async def test_post_delivery_is_taken_by_the_key_the_turn_registered_under(tmp_path, monkeypatch):
     """A route rebind while the turn runs must not strand the slot under the key it registered with."""
-    from gateway.session_contract import Submission
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_contract import Submission
+    from hermes_agent.gateway.session_local import create_local_session
 
     runner, authority, db = await _owner(tmp_path, monkeypatch)
     fired = []
@@ -99,9 +99,9 @@ async def test_post_delivery_is_taken_by_the_key_the_turn_registered_under(tmp_p
 
 @pytest.mark.asyncio
 async def test_deleted_local_session_leaves_nothing_on_the_local_adapter(tmp_path, monkeypatch):
-    from gateway.session_local import create_local_session
-    from gateway.session_mutations import mutate_session
-    from gateway.session_queued_controls import _interactive
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_mutations import mutate_session
+    from hermes_agent.gateway.session_queued_controls import _interactive
 
     runner, authority, db = await _owner(tmp_path, monkeypatch)
     try:

@@ -10,7 +10,7 @@ from tests.waiting import async_wait_until
 @pytest.mark.asyncio
 @pytest.mark.parametrize('command', ['/queue', '/steer'])  # _Agent cannot steer: the queue fallback
 async def test_edited_busy_command_is_queued_as_its_own_turn(monkeypatch, command):
-    from gateway.platforms.event import MessageEvent, MessageType
+    from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 
     rig = await _start_a(monkeypatch, 'queue')
     for text, revision in ((f'{command} C', None), (f'{command} C edited', 'u101')):
@@ -28,9 +28,9 @@ async def test_edited_busy_command_is_queued_as_its_own_turn(monkeypatch, comman
 async def test_edited_goal_kickoff_is_admitted_as_its_own_turn(monkeypatch):
     """The same rebuild on the idle path: ``/goal`` kicks off with the command's message id, so an
     edited ``/goal`` (a replaced goal) needs the edit's revision on its kickoff turn too."""
-    from gateway.platforms.event import MessageEvent, MessageType
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_results import execution_result
+    from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_results import execution_result
     from tests.gateway.test_messaging_slash_command_fifo import _owner
 
     runner, adapter, sent = _owner(monkeypatch)

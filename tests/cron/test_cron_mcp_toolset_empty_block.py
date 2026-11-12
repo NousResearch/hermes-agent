@@ -18,8 +18,8 @@ import hermes_agent.cron.jobs as cron_jobs
 
 def _run_owned_job(job, tmp_path):
     """Run through the production owner bridge: cron turns execute inside the gateway owner."""
-    from gateway.session_contract import SessionRef
-    from gateway.session_cron import current_execution, execute
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_cron import current_execution, execute
     from hermes_agent.hermes_state_registry import acquire, release
 
     ref = SessionRef("test-profile", "cron-owner-session")
@@ -135,7 +135,7 @@ def _park_notion(home, *, ever_connected: bool, park_reason=None):
     import tools.mcp_tool as core
     from tools.mcp_tool_scope import _resolve_server_key
     from tools.registry import registry
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
 
     server = core.MCPServerTask("notion")
     server._ever_connected = ever_connected

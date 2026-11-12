@@ -3,8 +3,8 @@ import json
 import sqlite3
 from contextlib import closing
 
-from gateway import hosted_room_driver as driver, hosted_rooms as rooms
-from gateway import hosted_room_work_records as work
+from hermes_agent.gateway import hosted_room_driver as driver, hosted_rooms as rooms
+from hermes_agent.gateway import hosted_room_work_records as work
 
 
 def test_remote_receipt_is_captured_without_another_driver_transition(tmp_path):

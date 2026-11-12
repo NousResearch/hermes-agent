@@ -756,7 +756,7 @@ def _check_gateway_running(profile_dir: Path) -> bool:
     the lock isn't held by *this* reader: dashboard as a separate s6 service, launch-service
     gateways with no live PID file); fallback validates the PID in ``gateway_state.json``
     against the process table, matching ``/api/status``."""
-    from gateway.status import get_running_pid, resolve_gateway_liveness
+    from hermes_agent.gateway.status import get_running_pid, resolve_gateway_liveness
     # cleanup_stale=False: a status probe for ANOTHER profile must never unlink its PID file.
     return resolve_gateway_liveness(
         profile_dir=profile_dir, use_cache=False,
@@ -1072,7 +1072,7 @@ def profile_is_standalone(home: Path) -> bool:
 def _standalone_truthy(value: object) -> bool:
     """``gateway.standalone`` truthiness via the shared bool parser; only the
     ``gateway:`` section's ``standalone`` key is read (no top-level alias)."""
-    from gateway.config import _bool_token
+    from hermes_agent.gateway.config import _bool_token
     if isinstance(value, str):
         return _bool_token(value) is True
     return bool(value)
@@ -1601,7 +1601,7 @@ def _wait_then_force_kill(pids: list[int], start_times: dict, *, wait: float = 1
     """After a graceful ``terminate_pid``, wait up to *wait* seconds (0.5s polls) for *pids*
     to exit, then force-kill stragglers. True when every pid exited gracefully.
     ``start_times`` pins each force kill to the same process incarnation (PID reuse guard)."""
-    from gateway.status import _pid_exists, get_process_start_time, terminate_pid
+    from hermes_agent.gateway.status import _pid_exists, get_process_start_time, terminate_pid
     for _ in range(int(wait / 0.5)):
         time.sleep(0.5)
         if not any(_pid_exists(pid) for pid in pids):
@@ -1621,7 +1621,7 @@ def _stop_profile_backends(canon: str, profile_dir: Path) -> None:
     if not pids:
         return
     try:
-        from gateway.status import terminate_pid
+        from hermes_agent.gateway.status import terminate_pid
     except Exception:
         return
     for pid in pids:
@@ -1821,7 +1821,7 @@ def _maybe_register_gateway_service(profile_name: str) -> None:
     creation must not fail over a supervision-tree hiccup; `gateway start` re-registers.
 
     Port selection: each supervised profile gateway loads its own ``HERMES_HOME`` and binds the port
-    resolved by ``gateway/config.py`` from that profile's environment — ``API_SERVER_PORT`` (or
+    resolved by ``hermes_agent/gateway/config.py`` from that profile's environment — ``API_SERVER_PORT`` (or
     ``platforms.api_server.extra.port`` in the profile's ``config.yaml``), defaulting to 8642. There is no
     ``[gateway] port`` key and no Python-side allocator (PR #30136 review item I5 retired the
     SHA-256-derived range [9200, 9800) as dead code), so two profiles that both leave the port at its
@@ -1915,7 +1915,7 @@ def _stop_gateway_process(profile_dir: Path) -> None:
         # Cross-profile kill refusal: the record's hermes_home stamp names the gateway's TRUE
         # owner. A poisoned gateway.pid in this dir can point at another profile's live
         # gateway — killing it starts a mutual SIGTERM restart loop.
-        from gateway.status import get_process_start_time, recorded_gateway_home_conflicts, terminate_pid
+        from hermes_agent.gateway.status import get_process_start_time, recorded_gateway_home_conflicts, terminate_pid
         if recorded_gateway_home_conflicts(data, expected_home=profile_dir):
             print(
                 f"✗ Refusing to stop PID {pid}: its recorded HERMES_HOME "

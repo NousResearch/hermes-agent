@@ -7,7 +7,7 @@ rows of the session's visible resume lineage only), on the conversation's curren
 """
 from functools import partial
 
-from gateway.session_busy_controls import authorize
+from hermes_agent.gateway.session_busy_controls import authorize
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 _FIELDS = frozenset({'session_id', 'profile', 'row_id', 'newest_role', 'emoji', 'author'})
@@ -38,8 +38,8 @@ async def react(connection, ref, params):
     if not ref.session_id or ref.session_id not in authority.sessions:
         raise RuntimeStoreError('not_found')
     authorize(connection, ref, params, 'session:submit')
-    from gateway.session_ancillary import physical_target
-    from gateway.session_runtime_workers import tracked_write
+    from hermes_agent.gateway.session_ancillary import physical_target
+    from hermes_agent.gateway.session_runtime_workers import tracked_write
     # A reset or compression moves the conversation's rows onto a new physical session; the
     # reaction lineage check runs from that tip, as the sidecar's submit-row target did.
     target = physical_target(authority, ref)

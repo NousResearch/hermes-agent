@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.stream_consumer import (
+from hermes_agent.gateway.stream_consumer import (
     GatewayStreamConsumer,
     StreamConsumerConfig,
 )
@@ -34,7 +34,7 @@ def _make_draft_capable_adapter(
     (Telegram bot, Discord client, etc.) while still satisfying the
     consumer's isinstance(BasePlatformAdapter) gate.
     """
-    from gateway.platforms.base import BasePlatformAdapter, SendResult
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
 
     DraftCapableAdapter = type(
         "DraftCapableAdapter",
@@ -311,7 +311,7 @@ def _make_fresh_final_adapter():
     (first send) from the fresh final (second send) and assert the preview
     is the one deleted.
     """
-    from gateway.platforms.base import BasePlatformAdapter, SendResult
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
 
     FreshFinalAdapter = type(
         "FreshFinalAdapter",
@@ -449,7 +449,7 @@ def _make_rich_capable_adapter(*, overflow_limit=32768, send_results=None):
     prefers a fresh (rich) final send, and reports a 32,768 streaming overflow
     limit so the consumer doesn't pre-split a reply that fits one rich message.
     """
-    from gateway.platforms.base import BasePlatformAdapter, SendResult
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
 
     RichAdapter = type(
         "RichCapableAdapter",
@@ -479,7 +479,7 @@ class TestRichAwareOverflow:
 
     @pytest.mark.asyncio
     async def test_long_rich_reply_not_split_and_final_is_whole(self):
-        from gateway.platforms.base import SendResult
+        from hermes_agent.gateway.platforms.base import SendResult
 
         long_text = "x" * 5000  # > 4096 legacy limit, < 32768 rich limit
         adapter = _make_rich_capable_adapter(send_results=[

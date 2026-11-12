@@ -54,7 +54,7 @@ def _read_message_body(positional: Optional[str], file_path: Optional[str]) -> O
 
 def _invalid_whatsapp_mentions(mentions: list[str]) -> list[str]:
     """Return mention values that cannot identify a WhatsApp participant."""
-    from gateway.whatsapp_identity import normalize_whatsapp_mention_jid
+    from hermes_agent.gateway.whatsapp_identity import normalize_whatsapp_mention_jid
 
     return [mention for mention in mentions if not normalize_whatsapp_mention_jid(mention)]
 
@@ -87,7 +87,7 @@ def _list_targets(platform_filter: Optional[str], *, json_mode: bool) -> int:
     """Print the channel directory (all configured targets across platforms), reusing the
     ``format_directory_for_display`` rendering the send_message tool shows the model."""
     try:
-        from gateway.channel_directory import format_directory_for_display, load_directory
+        from hermes_agent.gateway.channel_directory import format_directory_for_display, load_directory
     except Exception as exc:
         return _fail(f"hermes send: failed to load channel directory: {exc}")
     try:
@@ -99,7 +99,7 @@ def _list_targets(platform_filter: Optional[str], *, json_mode: bool) -> int:
     # Merge in configured-but-undiscovered platforms (e.g. a fresh SimpleX setup used only for
     # outbound sends) so `--list` never hides a working send target.
     try:
-        from gateway.config import load_gateway_config
+        from hermes_agent.gateway.config import load_gateway_config
         for plat in load_gateway_config().get_connected_platforms():
             plat_name = getattr(plat, "value", str(plat))
             if plat_name not in ("local", "api_server", "webhook"):
@@ -153,7 +153,7 @@ def _load_hermes_env() -> None:
     The target is ``os.environ`` for the standalone CLI. Inside a multi-profile host (dashboard console
     running ``send`` for profile B under its secret scope) it is the installed scope mapping: writing B's
     ``.env`` into the shared process env would hand every other profile's later reads B's tokens
-    (``gateway.config._getenv`` reads the scope first, so the loader sees the same values either way).
+    (``hermes_agent.gateway.config._getenv`` reads the scope first, so the loader sees the same values either way).
     The installed scope is already ``build_profile_secret_scope``'s composition — user ``.env``, then
     the profile's external secret sources over it — so it is authoritative as-is; replaying raw
     ``.env`` over it would let a stale user value beat the secret-manager one for this request.

@@ -1,6 +1,6 @@
 """Gateway slash commands that rotate, switch, fork or rewrite the session transcript:
 /new, /resume, /sessions, /branch, /title, /save, /undo, /retry, /topic, /compress.
-Split out of ``gateway/slash_commands.py``; bound onto ``GatewayRunner`` through
+Split out of ``hermes_agent/gateway/slash_commands.py``; bound onto ``GatewayRunner`` through
 ``GatewaySlashCommandsMixin``.  Origin internals are imported lazily inside the bodies to avoid
 the import cycle."""
 
@@ -17,18 +17,18 @@ from typing import Optional, Union
 
 from agent.i18n import t
 from agent.turn_context import extract_api_content_sidecar
-from gateway.config import Platform
-from gateway.platforms.base import EphemeralReply
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run_topics import TopicLinkedElsewhere
-from gateway.session import SessionSource, build_session_key, is_shared_multi_user_session
-from gateway.session_transcript import TranscriptReadError
-from gateway.slash_commands_branch_thread import (
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.base import EphemeralReply
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run_topics import TopicLinkedElsewhere
+from hermes_agent.gateway.session import SessionSource, build_session_key, is_shared_multi_user_session
+from hermes_agent.gateway.session_transcript import TranscriptReadError
+from hermes_agent.gateway.slash_commands_branch_thread import (
     BRANCH_THREAD_PLATFORMS, branch_dest_source, branch_thread_parent, format_thread_ref, parse_branch_args,
 )
-from gateway.slash_commands_status import history_unreadable
+from hermes_agent.gateway.slash_commands_status import history_unreadable
 
-logger = logging.getLogger("gateway.run")  # log-record parity with gateway/run.py
+logger = logging.getLogger("hermes_agent.gateway.run")  # log-record parity with hermes_agent/gateway/run.py
 
 # Bound on the off-loop agent cleanup during /new; past it the reset proceeds and the teardown
 # finishes (or leaks) in its worker thread rather than blocking the event loop.
@@ -119,7 +119,7 @@ async def discard_lost_turns(authority, session_id) -> str:
     of this chat's FIFO through the owner's fenced ``resolve_unknown``, the path Desktop's Discard,
     the TUI queue and ``hermes sessions discard`` use. Never replays the input; the saved
     followers run once it commits."""
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_contract import SessionRef
     from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions
     rows = await asyncio.to_thread(list_session_admissions, authority.db, session_id=session_id)
     lost = [row for row in rows if row['status'] == 'unknown']
@@ -180,7 +180,7 @@ class GatewaySessionCommandsMixin:
 
     async def _handle_discard_command(self, event: MessageEvent) -> str:
         """``/discard``: drop this chat's turn lost in a gateway restart so its queue runs again."""
-        from gateway.session_authorities import active_authority
+        from hermes_agent.gateway.session_authorities import active_authority
         if not self._is_user_authorized_for_source(event.source):
             return t("gateway.discard.nothing")
         authority = active_authority(self)
@@ -214,7 +214,7 @@ class GatewaySessionCommandsMixin:
         await self._cleanup_old_agent_for_reset(session_key)
         self._evict_cached_agent(session_key)
         # Conversation boundary: ALL conversation-scoped per-session state + security state in one
-        # funnel call (see _CONVERSATION_SCOPED_STATE in gateway/run.py).
+        # funnel call (see _CONVERSATION_SCOPED_STATE in hermes_agent/gateway/run.py).
         self._clear_conversation_scope(session_key, reason="session_reset")
         # In-flight async delegations end WITH the conversation: once the id rotates their
         # completions have no live owner. Expire by durable id, routing key as legacy fallback.
@@ -225,7 +225,7 @@ class GatewaySessionCommandsMixin:
         _reset_process_scoped_tool_state()
 
         _old_sid = old_entry.session_id if old_entry else None
-        from gateway.session_automation import move_route_wakes, route_owner_lock
+        from hermes_agent.gateway.session_automation import move_route_wakes, route_owner_lock
         async with route_owner_lock(self, _old_sid):
             new_entry = await self.async_session_store.reset_session(session_key)
             await move_route_wakes(self, session_key, _old_sid)  # main #114456: a parked wake survives /new
@@ -374,7 +374,7 @@ class GatewaySessionCommandsMixin:
         Stricter than ``SlashAccessPolicy.is_admin()``, which is True for every caller when slash
         gating is DISABLED — the default config would make everyone cross-origin-capable (IDOR)."""
         try:
-            from gateway.slash_access import policy_for_runner_source
+            from hermes_agent.gateway.slash_access import policy_for_runner_source
             policy = policy_for_runner_source(self, source)
             uid = getattr(source, "user_id", None)
             return bool(policy.enabled and uid and policy.is_admin(uid))
@@ -514,7 +514,7 @@ class GatewaySessionCommandsMixin:
         self._record_model_friction("retry", source, session_entry.session_id)
         # The re-sent turn is the /retry event's own turn, built on its authenticated source: carry
         # that event's native callback to it, or admission refuses it under multiplex (#139040).
-        from gateway.session_ingress_context import carry_callback
+        from hermes_agent.gateway.session_ingress_context import carry_callback
         turn = MessageEvent(
             text=last_user_msg, message_type=MessageType.TEXT, source=source,
             raw_message=event.raw_message, channel_prompt=event.channel_prompt)
@@ -525,7 +525,7 @@ class GatewaySessionCommandsMixin:
         """The SessionDB that holds both *session_id*'s transcript and its authority's admission
         ledger, or None (no authority: the rewrite-then-send path). One handle means one write
         transaction can carry the rewrite and the admission (#139257 step 2)."""
-        from gateway.session_authorities import active_authority
+        from hermes_agent.gateway.session_authorities import active_authority
         authority = active_authority(self)
         if authority is None:
             return None
@@ -535,10 +535,10 @@ class GatewaySessionCommandsMixin:
     async def _retry_in_admission(self, event, session_entry, db, pinned, truncated, resend_text,
                                   composite: bool) -> Optional[str]:
         """Plan the rewrite, bind it to the re-send and let ``admit_native`` commit both in one write
-        (``gateway.session_retry_admission``). A refusal leaves the transcript as it was; a
+        (``hermes_agent.gateway.session_retry_admission``). A refusal leaves the transcript as it was; a
         transcript changed since the read refuses both."""
-        from gateway import session_retry_admission as retry_admission
-        from gateway.session_ingress_context import carry_callback
+        from hermes_agent.gateway import session_retry_admission as retry_admission
+        from hermes_agent.gateway.session_ingress_context import carry_callback
         from hermes_agent.hermes_state_rewind import RewindTargetUnavailableError
         from hermes_agent.hermes_state_runtime import RuntimeStoreError
         session_id = session_entry.session_id
@@ -615,7 +615,7 @@ class GatewaySessionCommandsMixin:
         """The routed authority's own admission refusals for the re-send (#139257): a draining or
         retiring runtime (``runtime_draining``) and a full FIFO (``queue_full``), the gates
         ``admit_native`` applies. Same not-race-free caveat as the caller."""
-        from gateway.session_authorities import active_authority
+        from hermes_agent.gateway.session_authorities import active_authority
         authority = active_authority(self)
         if authority is None:
             return None
@@ -631,7 +631,7 @@ class GatewaySessionCommandsMixin:
         rows = hermes_state_runtime.list_session_admissions(
             authority.db, session_id=authority.logical_owner(entry.session_id))
         if sum(row["status"] == "queued" for row in rows) >= hermes_state_runtime.ADMISSION_QUEUE_MAX:
-            from gateway.session_ingress import QUEUE_FULL_REPLY
+            from hermes_agent.gateway.session_ingress import QUEUE_FULL_REPLY
             return QUEUE_FULL_REPLY
         return None
 
@@ -689,7 +689,7 @@ class GatewaySessionCommandsMixin:
         does not install — unscoped, /compress would raise ``UnscopedSecretError``."""
         if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
             return await self._handle_compress_command_inner(event)
-        from gateway.run import _profile_runtime_scope
+        from hermes_agent.gateway.run import _profile_runtime_scope
         with _profile_runtime_scope(self._resolve_profile_home_for_source(event.source)):
             return await self._handle_compress_command_inner(event)
 
@@ -700,7 +700,7 @@ class GatewaySessionCommandsMixin:
 
         See #73503.
         """
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from hermes_agent.gateway.run import _AGENT_PENDING_SENTINEL
 
         agent = self._cached_agent_for(session_key, lockless_fallback=True)
         if agent is None or agent is _AGENT_PENDING_SENTINEL or getattr(agent, "_codex_session", None) is None:
@@ -745,7 +745,7 @@ class GatewaySessionCommandsMixin:
         """Build a temporary agent, run the shared compress core, persist, and describe the outcome."""
         from agent.conversation_compression import finalize_context_engine_compression_notification
         from agent.conversation_compression_manual import compress_now, render_compress_result
-        from gateway.run import _platform_config_key
+        from hermes_agent.gateway.run import _platform_config_key
 
         session_key = self._session_key_for_source(source)
         # Platform + stable gateway session key bind this agent (for external context engines) to
@@ -795,7 +795,7 @@ class GatewaySessionCommandsMixin:
     async def _build_manual_compression_agent(self, session_id: str, model, runtime_kwargs: dict):
         """Build the throwaway AIAgent that performs a manual /compress rewrite of *session_id*."""
         from run_agent import AIAgent
-        from gateway.run import _GATEWAY_HYGIENE_PLATFORM, _seed_hygiene_system_prompt
+        from hermes_agent.gateway.run import _GATEWAY_HYGIENE_PLATFORM, _seed_hygiene_system_prompt
         from hermes_cli.config import load_config as _load_cfg
         from utils import is_truthy_value as _is_truthy
 
@@ -1110,7 +1110,7 @@ class GatewaySessionCommandsMixin:
         target_id, name = resolved
         # A local conversation moves onto this lane from its current head, as /handoff carries it: a
         # title naming its first segment (a local /new moved on) would strand the live one (#143286).
-        from gateway.session_route_recovery import conversation_head, follow_hand_off
+        from hermes_agent.gateway.session_route_recovery import conversation_head, follow_hand_off
         authority, local_owner, head = await conversation_head(self, target_id)
         if local_owner is not None:
             target_id = head
@@ -1140,7 +1140,7 @@ class GatewaySessionCommandsMixin:
         # Conversation boundary: all conversation-scoped state + security state in one funnel call.
         # Conversation boundary: clear ALL conversation-scoped per-session state (model/reasoning overrides
         # #10702, one-turn restores, model notes, last-resolved cache #58403, /queue overflow) + security
-        # state in one funnel call. See _CONVERSATION_SCOPED_STATE in gateway/run.py.
+        # state in one funnel call. See _CONVERSATION_SCOPED_STATE in hermes_agent/gateway/run.py.
         self._clear_conversation_scope(session_key, reason="resume")
         # switch_session keeps the route's persisted /model pin (a re-pin is not a boundary,
         # #119864); /resume IS one, and the funnel above clears only in-memory state — without this
@@ -1274,7 +1274,7 @@ class GatewaySessionCommandsMixin:
         if in_place:
             dest_source = source
         dest_key = session_key if in_place else self._session_key_for_source(dest_source)
-        # Full origin (same shape as the reset path in gateway/session.py); the live entry's origin
+        # Full origin (same shape as the reset path in hermes_agent/gateway/session.py); the live entry's origin
         # may hold richer metadata than the triggering event's source (#82633). A thread branch
         # is routed by the NEW thread, so its origin is the destination.
         _branch_origin_json = None

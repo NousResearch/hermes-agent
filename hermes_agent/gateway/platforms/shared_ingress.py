@@ -44,7 +44,7 @@ def listener_base_url(host: Any, port: Any) -> str:
 
 def shared_listener_base(runner: Any) -> Optional[str]:
     """``http://host:port`` of the default profile's live listener (api_server first, then webhook)."""
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     adapters = getattr(runner, "adapters", None) or {}
     for platform in (Platform.API_SERVER, Platform.WEBHOOK):
         adapter = adapters.get(platform)
@@ -126,10 +126,10 @@ async def dispatch_profile_ingress(
     from aiohttp import web
     from aiohttp.web_urldispatcher import MatchInfoError
     candidates = shared_ingress_apps(runner, profile)
-    from gateway.run_runtime import profile_parked
+    from hermes_agent.gateway.run_runtime import profile_parked
     if not candidates and profile_parked(runner, profile):
         # Its adapters come back with it (a rescan or restart): the platform retries a 503.
-        from gateway.parked_route_refusal import ParkedRouteRefused
+        from hermes_agent.gateway.parked_route_refusal import ParkedRouteRefused
         raise web.HTTPServiceUnavailable(text="Profile temporarily unavailable; retry",
                                          headers=ParkedRouteRefused.headers)
     if not profile or not candidates:
@@ -150,7 +150,7 @@ async def dispatch_profile_ingress(
     forwarded = request.clone(rel_url=rel_url, client_max_size=chosen._client_max_size)
     if scoped:
         return await chosen._handle(forwarded)
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
     from hermes_cli.profiles import get_profile_dir
     with _profile_runtime_scope(get_profile_dir(profile)):
         return await chosen._handle(forwarded)

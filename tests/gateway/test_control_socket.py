@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway.control_socket import (
+from hermes_agent.gateway.control_socket import (
     CONTROL_PROTOCOL_VERSION,
     GatewayControlServer,
     identify_gateway,
@@ -420,7 +420,7 @@ def test_collect_fleet_versions_prefers_socket(tmp_path: Path, monkeypatch):
         json.dumps({"pid": 1, "code_sha": "stalefile", "kind": "hermes-gateway"})
     )
     monkeypatch.setattr(
-        "gateway.control_socket.identify_gateway",
+        "hermes_agent.gateway.control_socket.identify_gateway",
         lambda h, **kw: _fake_identity(31337, "HEADSHA"),
     )
 
@@ -458,7 +458,7 @@ def test_collect_fleet_versions_falls_back_to_state_file(tmp_path: Path, monkeyp
         "hermes_cli.profiles._get_profiles_root", lambda: tmp_path / "no-profiles"
     )
     monkeypatch.setattr(
-        "gateway.control_socket.identify_gateway", lambda h, **kw: None
+        "hermes_agent.gateway.control_socket.identify_gateway", lambda h, **kw: None
     )
     (home / "gateway_state.json").write_text(
         json.dumps(
@@ -480,7 +480,7 @@ def test_collect_fleet_versions_falls_back_to_state_file(tmp_path: Path, monkeyp
     # Same file, but the profile's identity resolver verifies this PID as the
     # gateway: the fallback may now classify from the stamped sha.
     monkeypatch.setattr(
-        "gateway.status.live_gateway_pid_for_home", lambda h: os.getpid()
+        "hermes_agent.gateway.status.live_gateway_pid_for_home", lambda h: os.getpid()
     )
     fleet = ur.collect_fleet_versions()
     assert len(fleet) == 1
@@ -512,7 +512,7 @@ def test_runtime_inventory_dedupes_same_pid_across_homes(tmp_path: Path, monkeyp
         "hermes_cli.gateway.find_profile_gateway_processes", list
     )
     monkeypatch.setattr(
-        "gateway.control_socket.identify_gateway",
+        "hermes_agent.gateway.control_socket.identify_gateway",
         lambda h, **kw: _fake_identity(777, "SHA777"),
     )
 
@@ -541,7 +541,7 @@ def test_runtime_inventory_prefers_socket_supervisor(tmp_path: Path, monkeypatch
         "hermes_cli.gateway.find_profile_gateway_processes", list
     )
     monkeypatch.setattr(
-        "gateway.control_socket.identify_gateway",
+        "hermes_agent.gateway.control_socket.identify_gateway",
         lambda h, **kw: _fake_identity(555, "SHA555"),
     )
 
@@ -559,7 +559,7 @@ def test_windows_pipe_query_is_bounded_when_the_peer_never_answers(home: Path, m
     import threading
     import time
 
-    from gateway import control_socket
+    from hermes_agent.gateway import control_socket
 
     released = threading.Event()
 
@@ -567,7 +567,7 @@ def test_windows_pipe_query_is_bounded_when_the_peer_never_answers(home: Path, m
         released.wait(10)
         return b""
 
-    monkeypatch.setattr("gateway.runtime_bootstrap_windows.query_runtime_control", _silent_native_client)
+    monkeypatch.setattr("hermes_agent.gateway.runtime_bootstrap_windows.query_runtime_control", _silent_native_client)
     start = time.monotonic()
     try:
         assert control_socket._query_windows_pipe(home, b"{}\n", 0.3) is None

@@ -2,13 +2,13 @@
 import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 
 @pytest.fixture
 def mock_adapter():
     """Create a mock WeCom adapter with native streaming support."""
-    from gateway.platforms.base import BasePlatformAdapter
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter
     MockAdapter = type("MockAdapter", (BasePlatformAdapter,), {
         "MAX_MESSAGE_LENGTH": 4096,
         "SUPPORTS_MESSAGE_EDITING": False,

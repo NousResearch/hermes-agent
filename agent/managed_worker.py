@@ -238,7 +238,7 @@ class WorkerControls:
         One owner prompt per question, stopping at the first that is interrupted or unanswered;
         an empty answer is a skip (``None``), as on the other surfaces. A finite turn (``chat -q`` /
         ``-z``, bound by worker_turn_scope) answers headless at once: its viewer cannot answer."""
-        from gateway.session_finite import finite_clarify_reply, finite_turn_required
+        from hermes_agent.gateway.session_finite import finite_clarify_reply, finite_turn_required
         if finite_turn_required() is True:
             return finite_clarify_reply()
         answers = {}
@@ -321,7 +321,7 @@ def tool_frame(call_id, name, args, *result):
         from agent.display import _detect_tool_failure
         frame['result'] = result[0] if isinstance(result[0], str) else str(result[0])
         frame['is_error'] = bool(_detect_tool_failure(frame['name'], result[0])[0])
-    from gateway.session_tool_events import bounded_args, bounded_result
+    from hermes_agent.gateway.session_tool_events import bounded_args, bounded_result
     frame['args'] = bounded_args(frame['args'])
     if result:
         frame['result'] = bounded_result(result[0], frame['is_error'])
@@ -329,7 +329,7 @@ def tool_frame(call_id, name, args, *result):
 
 
 def execute(frame, channel):
-    # The owner RPC below imports gateway/config modules (hermes_cli.config, providers,
+    # The owner RPC below imports hermes_agent/gateway/config modules (hermes_cli.config, providers,
     # hermes_cli.plugins) transitively; the policy must already be frozen when they load.
     bind_worker_policy(frame)
     from agent.runtime_session_store import RuntimeSessionStore, WorkerRPC
@@ -339,14 +339,14 @@ def execute(frame, channel):
     if adopted['owner_epoch'] != scope['epoch']:
         raise RuntimeError('stale_epoch')
     store = RuntimeSessionStore(rpc, scope, outbox_dir(frame['home'], scope['execution_id']), adopted)
-    from gateway.session_kanban import bind_worker_context
+    from hermes_agent.gateway.session_kanban import bind_worker_context
     bind_worker_context(frame)
     # Background processes a previous admission of this session started outlive that worker
     # (F24); adopt them so process_manage in this turn can poll and kill them.
     from tools.process_registry import process_registry
     process_registry.recover_from_checkpoint()
     # Store construction binds the delegation ledger before tool discovery.
-    from gateway.session_policy import restore_policy, policy_scope, register_worker_hooks
+    from hermes_agent.gateway.session_policy import restore_policy, policy_scope, register_worker_hooks
     policy = restore_policy(frame['policy'])
     register_worker_hooks(policy)
     discover_profile_mcp(policy)
@@ -355,7 +355,7 @@ def execute(frame, channel):
     from tools.approval_context import set_current_session_key
     set_current_session_key(frame['route'])
     os.environ['HERMES_GATEWAY_SESSION'] = '1'
-    from gateway.session_worker_construct import checkpoint_agent_kwargs, construct_kwargs, routing_agent_kwargs
+    from hermes_agent.gateway.session_worker_construct import checkpoint_agent_kwargs, construct_kwargs, routing_agent_kwargs
     construct = {'ephemeral_system_prompt': policy.skills_prompt, **construct_kwargs(frame)}
     controls = WorkerControls(channel, frame['route'])
     register_gateway_notify(frame['route'], controls.approval)
@@ -387,9 +387,9 @@ def execute(frame, channel):
                 request_hard_interrupt(agent)
             channel.send('ready', pid=os.getpid())
             history = store.get_messages_as_conversation(scope['session_id'])
-            from gateway.session_kanban import run_worker_turns
+            from hermes_agent.gateway.session_kanban import run_worker_turns
             if 'attachments_v1' in frame:
-                from gateway.session_ingress_media import restore_attachments
+                from hermes_agent.gateway.session_ingress_media import restore_attachments
                 from agent.image_routing import build_native_content_parts
                 media = restore_attachments(frame)
                 content, skipped = build_native_content_parts(frame['text'], media['media_urls'])
@@ -432,10 +432,10 @@ def _construct_agent(frame, factory, policy, **kwargs):
     """Agent construction resolves the provider credentials; a Kanban attempt that fails here
     still books the one-shot exit mapping (quota wall 75, re-login 78) before the crash."""
     try:
-        from gateway.session_worker_construct import worker_route
+        from hermes_agent.gateway.session_worker_construct import worker_route
         return factory(**{**kwargs, **worker_route(policy, kwargs)})
     except Exception as exc:
-        from gateway.session_kanban import record_start_failure
+        from hermes_agent.gateway.session_kanban import record_start_failure
         record_start_failure(frame, exc)
         raise
 

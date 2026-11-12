@@ -6,7 +6,7 @@ import asyncio
 import logging
 from typing import Optional
 
-from gateway.platforms.base import SendResult
+from hermes_agent.gateway.platforms.base import SendResult
 
 logger = logging.getLogger("plugins.platforms.telegram.adapter")
 

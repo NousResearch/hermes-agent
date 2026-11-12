@@ -518,7 +518,7 @@ class CLITuiRuntimeMixin:
         if self.agent and self._agent_running and not (
                 self._detach_on_exit and _gateway_owns_session_end(self.agent)):
             # A gateway turn left by Ctrl+D is not interrupted: ``end_session`` below detaches this
-            # viewer and the owner closes the row once the turn settles (gateway/session_viewer_close).
+            # viewer and the owner closes the row once the turn settles (hermes_agent/gateway/session_viewer_close).
             with suppress(Exception):
                 request_hard_interrupt(self.agent)
         if self._voice_recorder:

@@ -12,10 +12,10 @@ import pytest
 def _build_runtime(tmp_path, monkeypatch):
     """A fresh runner/registry/store over the reserved homes (launch ``default`` + ``secondary``):
     a cold restart builds a second one over the same on-disk state."""
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authorities import SessionAuthorities
-    from gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authorities import SessionAuthorities
+    from hermes_agent.gateway import run
     root = tmp_path / '.hermes'
     root.mkdir(mode=0o700, exist_ok=True)
     monkeypatch.setenv('HERMES_HOME', str(root))
@@ -38,7 +38,7 @@ def _build_runtime(tmp_path, monkeypatch):
 async def _served_authority(tmp_path, monkeypatch, instance_id, db=None):
     """Launch home plus one served secondary sharing the runner's store, as a multiplex gateway
     builds them; returns (served authority, its state db, the secondary home path)."""
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_authority import initialize_session_authority
     from hermes_agent.hermes_state import SessionDB
     runner, registry, root, secondary = _build_runtime(tmp_path, monkeypatch)
     launch = await initialize_session_authority(runner, profile_id=str(root), instance_id=instance_id)
@@ -123,9 +123,9 @@ async def test_a_refused_receipt_names_its_failing_check_in_the_log(tmp_path, mo
     refused the receipt (the wrapped cause, or where an inner check raised), on cold recovery and on
     every later restore, so a field report pins the layer without offline replication."""
     import logging
-    from gateway.session_contract import SessionActor
-    from gateway.session_local import create_local_session
-    from gateway.session_local_recovery import restore_local_session
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_local_recovery import restore_local_session
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     served, db, secondary = await _served_authority(tmp_path, monkeypatch, 'first')
@@ -134,7 +134,7 @@ async def test_a_refused_receipt_names_its_failing_check_in_the_log(tmp_path, mo
                                                'cwd': str(tmp_path), 'model': 'frozen', 'toolsets': []})
     _RECEIPT_DAMAGE[damage](db, ref.session_id)
 
-    with caplog.at_level(logging.WARNING, logger='gateway.session_local_recovery'):
+    with caplog.at_level(logging.WARNING, logger='hermes_agent.gateway.session_local_recovery'):
         cold, _, _ = await _served_authority(tmp_path, monkeypatch, 'second', db=db)
         assert ref.session_id not in cold.sessions
         recovery = [r.getMessage() for r in caplog.records if ref.session_id in r.getMessage()]

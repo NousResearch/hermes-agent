@@ -178,7 +178,7 @@ def display_kind_for_event(event: Any) -> str | None:
     by the gateway poller, never inferred from inbound text), but it deliberately stays
     non-internal so authorization and the emergency stop still apply to it.
     """
-    from gateway.session_display import admission_display
+    from hermes_agent.gateway.session_display import admission_display
     if kind := admission_display(event).get("kind"):
         # A canonical admission committed hidden (Desktop widget intent): never a user bubble.
         return kind
@@ -201,7 +201,7 @@ def _producer_card(event: Any) -> dict:
 def display_metadata_for_event(event: Any) -> dict:
     """``{"display_text": ...}`` for an internal event whose producer named an async-result card, plus the
     ``title_preview`` (titler-only) a canonical admission committed for this exact event."""
-    from gateway.session_display import admission_display
+    from hermes_agent.gateway.session_display import admission_display
     preview = admission_display(event).get("title_preview")
     return {**_producer_card(event), **({"title_preview": preview} if preview else {})}
 
@@ -209,7 +209,7 @@ def display_metadata_for_event(event: Any) -> dict:
 def persisted_user_metadata_for_event(event: Any) -> dict:
     """The user row's display metadata: ``display_metadata_for_event`` plus the canonical admission's
     ``submission_id``, which lets a client match a send whose ack it never received to its stored row."""
-    from gateway.session_display import admission_submission
+    from hermes_agent.gateway.session_display import admission_submission
     return {**display_metadata_for_event(event), **admission_submission(event)}
 
 

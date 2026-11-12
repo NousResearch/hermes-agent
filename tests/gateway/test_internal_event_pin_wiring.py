@@ -18,11 +18,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import ChannelOverride, GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
-from gateway.run_turn_runner import TurnRunner
-from gateway.session import SessionEntry, SessionSource
-from gateway.turn_context import TurnContext
+from hermes_agent.gateway.config import ChannelOverride, GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import MessageEvent
+from hermes_agent.gateway.run_turn_runner import TurnRunner
+from hermes_agent.gateway.session import SessionEntry, SessionSource
+from hermes_agent.gateway.turn_context import TurnContext
 
 KEY = "agent:main:discord:group:1513247605675790346:117431298246705156"
 _ORIGIN = dict(
@@ -53,8 +53,8 @@ def _make_runner(
     monkeypatch, config: GatewayConfig | None = None, *, durable_prompt_pin: dict | None = None,
 ):
     import agent.model_metadata as mm
-    import gateway.run as gr
-    import gateway.session as gs
+    import hermes_agent.gateway.run as gr
+    import hermes_agent.gateway.session as gs
 
     monkeypatch.setattr(gs, "_discord_tools_loaded", lambda: True)
     monkeypatch.setattr(gr, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
@@ -459,9 +459,9 @@ async def test_goal_continuation_keeps_channel_pin_through_session_authority(tmp
     continuation is enqueued mid-turn like the post-turn hook does and drains from the adapter
     FIFO; a source carrying ``message_id`` (Discord) must keep its adapter ref through the
     producer's copy or native admission refuses it as ``not_found``."""
-    import gateway.run as gr
-    from gateway.platforms.base import SendResult
-    from gateway.session_authority import initialize_session_authority
+    import hermes_agent.gateway.run as gr
+    from hermes_agent.gateway.platforms.base import SendResult
+    from hermes_agent.gateway.session_authority import initialize_session_authority
     from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
     from tests.waiting import async_wait_until
 
@@ -556,7 +556,7 @@ async def test_human_first_after_restart_ignores_stale_durable_prompt_pin(monkey
 async def test_internal_event_never_reuses_prompt_pin_from_another_privacy_policy(monkeypatch):
     """A pin rendered with redact_pii off must not reach the model once redaction is on, not even
     through the internal-event reuse path after a restart."""
-    import gateway.run as gr
+    import hermes_agent.gateway.run as gr
 
     monkeypatch.setattr(gr, "_load_gateway_config", lambda: {"privacy": {"redact_pii": True}})
     durable = {
@@ -633,7 +633,7 @@ class _TurnAgent:
 async def test_channel_override_turns_keep_one_cached_agent_and_the_pin(
     monkeypatch, runtime, global_model, expected_model,
 ):
-    import gateway.run as gr
+    import hermes_agent.gateway.run as gr
 
     config = GatewayConfig()
     config.platforms[Platform.DISCORD] = PlatformConfig(

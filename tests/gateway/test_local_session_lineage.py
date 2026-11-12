@@ -7,12 +7,12 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_local_lineage_transitions_preserve_owner_or_roll_back(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig, Platform
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import SessionActor, SessionRef
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig, Platform
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionActor, SessionRef
+    from hermes_agent.gateway.session_local import create_local_session
     from hermes_agent.hermes_state_local import local_receipt
     from hermes_agent.hermes_state_runtime import (RuntimeStoreError, admit_session_input, claim_session_input,
                                       get_session_admission, list_session_admissions)
@@ -120,9 +120,9 @@ async def test_local_lineage_transitions_preserve_owner_or_roll_back(tmp_path, m
     with pytest.raises(RuntimeStoreError, match='storage_unavailable'):
         await restarted.attach(actor, SessionRef('fixture', 'unrelated-fork'))
     # Route reuse by a native reset must not pick a departed logical owner's generation.
-    from gateway.run_turn_runner import TurnRunner
-    from gateway.session import SessionSource
-    from gateway.session_authority import LiveSession
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.session import SessionSource
+    from hermes_agent.gateway.session_authority import LiveSession
     restarted.sessions[reset.session_id] = LiveSession(None, live.route)
     native = SimpleNamespace(session_id=reset.session_id, session_key=live.route,
                              source=SessionSource(Platform.TELEGRAM, 'native'))

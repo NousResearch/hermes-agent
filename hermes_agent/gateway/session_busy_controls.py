@@ -54,7 +54,7 @@ async def busy_config(connection, ref, params, *, write=False):
         live.busy_input_mode = params['value']
     value = getattr(live, 'busy_input_mode', None)
     if value is None:
-        from gateway.session_policy import policy_for_source
+        from hermes_agent.gateway.session_policy import policy_for_source
         policy = policy_for_source(authority.runner, live.source)
         # Main's TUI defaulted to ``queue`` (``ui-tui/src/app/useConfigSync.ts`` TUI_BUSY_DEFAULT): in a
         # full-screen composer the next prompt is authored while the agent streams, and an unintended
@@ -101,8 +101,8 @@ def show_reasoning_config(connection, ref, params, write):
         live.show_reasoning = _YOLO_WORDS[word]
     shown = getattr(live, 'show_reasoning', None)
     if shown is None:
-        from gateway.local_viewer_events import launch_shows_reasoning
-        from gateway.session_policy import policy_for_source
+        from hermes_agent.gateway.local_viewer_events import launch_shows_reasoning
+        from hermes_agent.gateway.session_policy import policy_for_source
         shown = launch_shows_reasoning(policy_for_source(connection.authority.runner, live.source),
                                        connection.authority)
     return {'key': 'show_reasoning', 'value': '1' if shown is True else '0', 'scope': 'session'}
@@ -140,7 +140,7 @@ async def yolo_config(connection, ref, params, write):
     if write and value is not None and str(value).strip().lower() not in _YOLO_WORDS:
         raise RuntimeStoreError('invalid_params')
     authorize(connection, ref, params, 'session:control' if write else 'session:read')
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_policy import policy_for_source
     from tools.approval import is_session_yolo_enabled
     from tools.approval_yolo import restore_gateway_yolo, toggle_session_yolo
     live = connection.authority.sessions[ref.session_id]
@@ -164,8 +164,8 @@ async def yolo_config(connection, ref, params, write):
 def adopts_owner_agent(authority, ref):
     """The claimed turn runs an in-process owner agent, which adopt_agent hands latched steers to;
     a cron job or a managed worker has no steer seam, so a latch there would be acknowledged and lost."""
-    from gateway.session_managed_worker import managed_policy
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_managed_worker import managed_policy
+    from hermes_agent.gateway.session_policy import policy_for_source
     try:
         policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
         return not (policy is not None and policy.source == 'cron') and managed_policy(authority, ref) is None

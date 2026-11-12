@@ -1,4 +1,4 @@
-"""Tests for gateway/pairing.py — DM pairing security system."""
+"""Tests for hermes_agent/gateway/pairing.py — DM pairing security system."""
 
 import json
 import os
@@ -12,7 +12,7 @@ import pytest
 
 from tests.lock_contention import watch_file_lock_contention
 from tests.waiting import wait_until
-from gateway.pairing import (
+from hermes_agent.gateway.pairing import (
     PairingStore,
     ALPHABET,
     CODE_LENGTH,
@@ -26,7 +26,7 @@ from gateway.pairing import (
 
 def _make_store(tmp_path):
     """Create a PairingStore with PAIRING_DIR pointed to tmp_path."""
-    with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+    with patch("hermes_agent.gateway.pairing.PAIRING_DIR", tmp_path):
         return PairingStore()
 
 
@@ -41,7 +41,7 @@ class TestSplitPairingDirMigration:
             "ou_user": {"user_name": "Alice", "approved_at": 123.0}
         }))
 
-        with patch("gateway.pairing.PAIRING_DIR", legacy), patch("gateway.pairing.get_hermes_home", return_value=home):
+        with patch("hermes_agent.gateway.pairing.PAIRING_DIR", legacy), patch("hermes_agent.gateway.pairing.get_hermes_home", return_value=home):
             store = PairingStore()
             assert store.is_approved("feishu", "ou_user") is True
 
@@ -65,8 +65,8 @@ class TestProfileScopedDiscovery:
         # HERMES_HOME — the current home may itself be a profile, and nesting
         # profiles inside profiles is how a `-p work` CLI and its gateway end
         # up reading different files. Patch that seam, not get_hermes_home.
-        with patch("gateway.pairing.PAIRING_DIR", global_dir), patch(
-            "gateway.pairing.get_default_hermes_root", return_value=home
+        with patch("hermes_agent.gateway.pairing.PAIRING_DIR", global_dir), patch(
+            "hermes_agent.gateway.pairing.get_default_hermes_root", return_value=home
         ):
             store = PairingStore(profile="alice")
             # Scoped under the mocked root's profile dir, using the same
@@ -108,7 +108,7 @@ class TestCodeGeneration:
 
     def test_code_uniqueness(self, tmp_path):
         """Multiple codes for different users should be distinct."""
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+        with patch("hermes_agent.gateway.pairing.PAIRING_DIR", tmp_path):
             store = PairingStore()
             codes = set()
             for i in range(3):
@@ -126,7 +126,7 @@ class TestCodeGeneration:
 class TestHashedStorage:
     def test_pending_file_contains_hash_and_salt(self, tmp_path):
         """Stored entries must have 'hash' and 'salt', never the plaintext code."""
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+        with patch("hermes_agent.gateway.pairing.PAIRING_DIR", tmp_path):
             store = PairingStore()
             code = store.generate_code("telegram", "user1", "Alice")
             raw = json.loads(
@@ -154,7 +154,7 @@ class TestHashedStorage:
 
     def test_plaintext_code_not_stored(self, tmp_path):
         """The raw JSON file must not contain the plaintext code anywhere."""
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+        with patch("hermes_agent.gateway.pairing.PAIRING_DIR", tmp_path):
             store = PairingStore()
             code = store.generate_code("telegram", "user1")
             raw_text = (tmp_path / "telegram-pending.json").read_text(encoding="utf-8")
@@ -190,7 +190,7 @@ class TestLegacyPendingFileCompat:
 
     def test_cleanup_expired_handles_malformed_entries(self, tmp_path):
         """Non-dict / missing-created_at entries get evicted, not crashed on."""
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+        with patch("hermes_agent.gateway.pairing.PAIRING_DIR", tmp_path):
             (tmp_path / "telegram-pending.json").write_text(
                 json.dumps({
                     "broken1": "not a dict",
@@ -209,7 +209,7 @@ class TestLegacyPendingFileCompat:
     def test_approve_code_skips_malformed_entries(self, tmp_path):
         """Malformed entries must not crash approve_code's hash loop."""
         import time as _time
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+        with patch("hermes_agent.gateway.pairing.PAIRING_DIR", tmp_path):
             (tmp_path / "telegram-pending.json").write_text(
                 json.dumps({
                     "broken": {"user_id": "x", "created_at": _time.time(),
@@ -229,7 +229,7 @@ class TestLegacyPendingFileCompat:
 
 class TestRateLimiting:
     def test_same_user_rate_limited(self, tmp_path):
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+        with patch("hermes_agent.gateway.pairing.PAIRING_DIR", tmp_path):
             store = PairingStore()
             code1 = store.generate_code("telegram", "user1")
             code2 = store.generate_code("telegram", "user1")
@@ -244,7 +244,7 @@ class TestRateLimiting:
 
 class TestMaxPending:
     def test_max_pending_per_platform(self, tmp_path):
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+        with patch("hermes_agent.gateway.pairing.PAIRING_DIR", tmp_path):
             store = PairingStore()
             codes = []
             for i in range(MAX_PENDING_PER_PLATFORM + 1):
@@ -264,7 +264,7 @@ class TestMaxPending:
 
 class TestApprovalFlow:
     def test_approve_valid_code(self, tmp_path):
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+        with patch("hermes_agent.gateway.pairing.PAIRING_DIR", tmp_path):
             store = PairingStore()
             code = store.generate_code("telegram", "user1", "Alice")
             result = store.approve_code("telegram", code)
@@ -276,7 +276,7 @@ class TestApprovalFlow:
         assert result["user_name"] == "Alice"
 
     def test_approve_code_with_internal_spacing(self, tmp_path):
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+        with patch("hermes_agent.gateway.pairing.PAIRING_DIR", tmp_path):
             store = PairingStore()
             code = store.generate_code("telegram", "user1", "Alice")
             spaced_code = "   ".join(code)
@@ -287,7 +287,7 @@ class TestApprovalFlow:
         assert result["user_name"] == "Alice"
 
     def test_approve_code_with_words_still_fails(self, tmp_path):
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+        with patch("hermes_agent.gateway.pairing.PAIRING_DIR", tmp_path):
             store = PairingStore()
             code = store.generate_code("telegram", "user1", "Alice")
             result = store.approve_code("telegram", f"code {code}")
@@ -295,14 +295,14 @@ class TestApprovalFlow:
         assert result is None
 
     def test_approved_user_is_approved(self, tmp_path):
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+        with patch("hermes_agent.gateway.pairing.PAIRING_DIR", tmp_path):
             store = PairingStore()
             code = store.generate_code("telegram", "user1", "Alice")
             store.approve_code("telegram", code)
             assert store.is_approved("telegram", "user1") is True
 
     def test_approve_request_id_from_pending_list(self, tmp_path):
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+        with patch("hermes_agent.gateway.pairing.PAIRING_DIR", tmp_path):
             store = PairingStore()
             bot_code = store.generate_code("telegram", "user1", "Alice")
             pending = store.list_pending("telegram")
@@ -326,7 +326,7 @@ class TestApprovalFlow:
         key, which admin GUIs posted straight back to approve — it could never
         match, because approval hashes its input and compares to that digest.
         """
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+        with patch("hermes_agent.gateway.pairing.PAIRING_DIR", tmp_path):
             store = PairingStore()
             bot_code = store.generate_code("telegram", "user1", "Alice")
             entry = store.list_pending("telegram")[0]
@@ -355,7 +355,7 @@ class TestApprovalFlow:
         a miss means the row went stale — counting it toward the code lockout
         let a handful of GUI clicks lock the operator out of `pairing approve`.
         """
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+        with patch("hermes_agent.gateway.pairing.PAIRING_DIR", tmp_path):
             store = PairingStore()
             code = store.generate_code("telegram", "user1", "Alice")
             stale_id = store.list_pending("telegram")[0]["request_id"]
@@ -395,7 +395,7 @@ class TestApprovalFlow:
             encoding="utf-8",
         )
 
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+        with patch("hermes_agent.gateway.pairing.PAIRING_DIR", tmp_path):
             store = PairingStore()
             assert store.is_approved("whatsapp", "999999999999999@lid") is True
 
@@ -413,7 +413,7 @@ class TestLockout:
         typos across the gateway's lifetime don't accumulate into a spurious
         lockout that rejects a valid code.
         """
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+        with patch("hermes_agent.gateway.pairing.PAIRING_DIR", tmp_path):
             store = PairingStore()
 
             # One short of the lockout threshold — not locked out yet.
@@ -440,7 +440,7 @@ class TestLockout:
         in `pending` (or a later lucky guess) still got accepted,
         nullifying the brute-force protection.
         """
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+        with patch("hermes_agent.gateway.pairing.PAIRING_DIR", tmp_path):
             store = PairingStore()
             # Generate a valid code before triggering the lockout.
             valid_code = store.generate_code("telegram", "attacker", "Attacker")
@@ -476,7 +476,7 @@ class TestLockout:
 
 class TestCodeExpiry:
     def test_expired_codes_cleaned_up(self, tmp_path):
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+        with patch("hermes_agent.gateway.pairing.PAIRING_DIR", tmp_path):
             store = PairingStore()
             store.generate_code("telegram", "user1")
 
@@ -498,7 +498,7 @@ class TestCodeExpiry:
 
 class TestRevoke:
     def test_revoke_approved_user(self, tmp_path):
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+        with patch("hermes_agent.gateway.pairing.PAIRING_DIR", tmp_path):
             store = PairingStore()
             code = store.generate_code("telegram", "user1", "Alice")
             store.approve_code("telegram", code)
@@ -506,14 +506,14 @@ class TestRevoke:
 
             revoked = store.revoke("telegram", "user1")
         assert revoked is True
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+        with patch("hermes_agent.gateway.pairing.PAIRING_DIR", tmp_path):
             assert store.is_approved("telegram", "user1") is False
 
     def test_revoke_from_other_store_is_not_undone_by_inflight_approval(self, tmp_path, monkeypatch):
         """Dashboard requests and the ``hermes pairing`` CLI each build their own store, so
         an approval that read approved.json before a revoke landed must not write it back."""
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path), \
-                patch("gateway.pairing._sync_allowlist_add"), patch("gateway.pairing._sync_allowlist_remove"):
+        with patch("hermes_agent.gateway.pairing.PAIRING_DIR", tmp_path), \
+                patch("hermes_agent.gateway.pairing._sync_allowlist_add"), patch("hermes_agent.gateway.pairing._sync_allowlist_remove"):
             seed = PairingStore()
             seed._approve_user("telegram", "carol")
             code = seed.generate_code("telegram", "alice", "Alice")
@@ -558,7 +558,7 @@ class TestRevoke:
 
 class TestListAndClear:
     def test_list_approved(self, tmp_path):
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+        with patch("hermes_agent.gateway.pairing.PAIRING_DIR", tmp_path):
             store = PairingStore()
             code = store.generate_code("telegram", "user1", "Alice")
             store.approve_code("telegram", code)
@@ -590,9 +590,9 @@ class TestUnreadablePairingFile:
             # to mimic a 0600 file owned by a different uid.
             raise PermissionError(13, "Permission denied", str(self))
 
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path), \
+        with patch("hermes_agent.gateway.pairing.PAIRING_DIR", tmp_path), \
              patch.object(Path, "read_text", fake_read_text), \
-             caplog.at_level(logging.WARNING, logger="gateway.pairing"):
+             caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.pairing"):
             store = PairingStore()
             result = store._load_json(approved_path)
 
@@ -625,7 +625,7 @@ class TestProfileScopedStorage:
         # Re-import PAIRING_DIR (it's a module-level constant resolved at
         # import time) so the test exercises the right path. We patch it
         # rather than re-importing so the assertion is unambiguous.
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+        with patch("hermes_agent.gateway.pairing.PAIRING_DIR", tmp_path):
             store = PairingStore()
         assert store.profile is None
         assert store._dir == tmp_path
@@ -695,7 +695,7 @@ class TestProfileScopedStorage:
             home=tmp_path,
         )
 
-        with patch("gateway.pairing.PAIRING_DIR", expected):
+        with patch("hermes_agent.gateway.pairing.PAIRING_DIR", expected):
             assert PairingStore(profile="default")._dir == PairingStore()._dir
 
     def test_profile_store_merges_split_pairing_layouts(
@@ -726,7 +726,7 @@ class TestProfileScopedStorage:
         """Approving in a profile-scoped store must not appear in the global
         store — and vice versa. This is the whole point of the fix."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+        with patch("hermes_agent.gateway.pairing.PAIRING_DIR", tmp_path):
             global_store = PairingStore()
             profile_store = PairingStore(profile="yangyang")
 
@@ -745,7 +745,7 @@ class TestProfileScopedStorage:
         """Rate-limit state is per-profile, not shared globally — otherwise
         one profile's flood would lock out the other profile's users."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+        with patch("hermes_agent.gateway.pairing.PAIRING_DIR", tmp_path):
             global_store = PairingStore()
             profile_store = PairingStore(profile="yangyang")
 
@@ -767,7 +767,7 @@ def test_approval_cache_reuses_parse_and_observes_replacement(tmp_path, monkeypa
     other = _make_store(tmp_path)
     path = store._approved_path("telegram")
     store._save_json(path, {"user1": {"user_name": "Alice", "approved_at": 1.0}})
-    with patch("gateway.pairing.json.load", wraps=json.load) as parse:
+    with patch("hermes_agent.gateway.pairing.json.load", wraps=json.load) as parse:
         for _ in range(5):
             assert store.is_approved("telegram", "user1")
         assert parse.call_count == 1

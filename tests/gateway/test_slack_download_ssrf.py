@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.platforms.base import ssrf_redirect_guard
+from hermes_agent.gateway.platforms.base import ssrf_redirect_guard
 
 
 def _ensure_slack_mock():

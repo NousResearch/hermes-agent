@@ -11,14 +11,14 @@ from unittest.mock import AsyncMock
 import pytest
 
 from agent.status_output import StatusOutputMixin
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.relay.adapter import RelayAdapter
-from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
-from gateway.run import GatewayRunner, _load_gateway_config, _profile_runtime_scope
-from gateway.run_turn_runner import TurnRunner
-from gateway.session import SessionSource
-from gateway.turn_context import TurnContext
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.relay.adapter import RelayAdapter
+from hermes_agent.gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+from hermes_agent.gateway.run import GatewayRunner, _load_gateway_config, _profile_runtime_scope
+from hermes_agent.gateway.run_turn_runner import TurnRunner
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.turn_context import TurnContext
 from plugins.platforms.slack.adapter import SlackAdapter
 from tests.gateway.relay.stub_connector import StubConnector
 
@@ -27,7 +27,7 @@ from tests.gateway.relay.stub_connector import StubConnector
 @pytest.mark.parametrize("thread_id", [None, "1700.1"])
 @pytest.mark.parametrize("enabled", [False, True])
 def test_warning_policy_reaches_slack_transport(tmp_path, monkeypatch, relay, thread_id, enabled):
-    from gateway import run
+    from hermes_agent.gateway import run
 
     (tmp_path / "config.yaml").write_text(f"display: {{suppress_warning_notifications: {str(not enabled).lower()}}}")
     monkeypatch.setattr(run, "_hermes_home", tmp_path)
@@ -79,8 +79,8 @@ def test_warning_policy_reaches_slack_transport(tmp_path, monkeypatch, relay, th
 
 
 def test_profile_config_isolated_for_callbacks_and_direct_warnings(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.warning_notifications import warning_notifications_enabled
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.warning_notifications import warning_notifications_enabled
 
     homes = [tmp_path / name for name in ("a", "b")]
     for home, value in zip(homes, ("true", "false")):

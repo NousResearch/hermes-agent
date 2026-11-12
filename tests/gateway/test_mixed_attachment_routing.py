@@ -1,4 +1,4 @@
-"""Regression tests for mixed-attachment routing in gateway/run.py.
+"""Regression tests for mixed-attachment routing in hermes_agent/gateway/run.py.
 
 Issue #25935: when a message mixes a real image with a document (e.g. a .md
 brief), Discord types the whole message MessageType.PHOTO. The per-attachment
@@ -21,17 +21,17 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import merge_pending_message_event
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import (
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import merge_pending_message_event
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import (
     GatewayRunner,
     _build_media_placeholder,
     _event_media_is_audio,
     _event_media_is_image,
     _event_media_is_video,
 )
-from gateway.session import SessionSource
+from hermes_agent.gateway.session import SessionSource
 
 
 def _evt(media_urls, media_types, message_type):

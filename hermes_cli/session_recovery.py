@@ -31,7 +31,7 @@ _TOPIC_TABLES = ("telegram_dm_topic_mode", "telegram_dm_topic_bindings")
 
 
 def _init_delivery_ledger_schema(conn: sqlite3.Connection) -> None:
-    from gateway.delivery_ledger import _initialize_schema
+    from hermes_agent.gateway.delivery_ledger import _initialize_schema
     _initialize_schema(conn)
 
 
@@ -1201,7 +1201,7 @@ def recover_session_database(
     progress_cb: Optional[ProgressCallback] = None, allow_partial: bool = False,
 ) -> dict[str, Any]:
     """Separate-output salvage is allowed; a canonical output requires offline ownership."""
-    from gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
+    from hermes_agent.gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
     from contextlib import nullcontext
     # Validate before creating any lock or output. Reserve only a canonical
     # destination, not the live source or an unrelated requested output file.

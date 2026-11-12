@@ -5,8 +5,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.platform_registry import PlatformRegistry, PlatformEntry
-from gateway.config import Platform, GatewayConfig
+from hermes_agent.gateway.platform_registry import PlatformRegistry, PlatformEntry
+from hermes_agent.gateway.config import Platform, GatewayConfig
 from hermes_cli import plugins_loader
 
 
@@ -27,7 +27,7 @@ class TestPlatformEnumDynamic:
 
     def test_dynamic_member_with_hyphens(self):
         """Registered plugin platforms with hyphens work once registered."""
-        from gateway.platform_registry import platform_registry as _reg
+        from hermes_agent.gateway.platform_registry import platform_registry as _reg
 
         entry = PlatformEntry(
             name="my-platform",
@@ -47,7 +47,7 @@ class TestPlatformEnumDynamic:
     def test_bundled_manifest_name_alias_resolves_to_directory_member(self):
         """A bundled platform whose plugin.yaml ``name:`` differs from its directory (a2a vs
         a2a-platform) resolves under the manifest name to the directory-name member (#116180)."""
-        import gateway.config as gc
+        import hermes_agent.gateway.config as gc
 
         gc._Platform__bundled_plugin_names = None  # force a rescan of plugins/platforms/
         gc._Platform__bundled_plugin_aliases = None
@@ -62,7 +62,7 @@ class TestPlatformEnumDynamic:
 
     def test_config_keeps_platform_written_under_manifest_name(self):
         """``platforms.<manifest name>:`` in config.yaml is no longer silently dropped (#116180)."""
-        import gateway.config as gc
+        import hermes_agent.gateway.config as gc
 
         gc._Platform__bundled_plugin_names = None
         gc._Platform__bundled_plugin_aliases = None
@@ -76,7 +76,7 @@ class TestPlatformEnumDynamic:
 
     def test_alias_never_shadows_a_directory_name(self):
         """An alias equal to another directory's name is dropped; directory names stay canonical."""
-        import gateway.config as gc
+        import hermes_agent.gateway.config as gc
 
         names, aliases = gc.Platform._scan_bundled_plugin_platforms()
         assert "a2a" in names
@@ -248,7 +248,7 @@ class TestGatewayConfigPluginPlatform:
     def test_get_connected_platforms_includes_registered_plugin(self):
         """Plugin platform with registry entry passes get_connected_platforms."""
         # Register a fake plugin platform
-        from gateway.platform_registry import platform_registry as _reg
+        from hermes_agent.gateway.platform_registry import platform_registry as _reg
 
         test_entry = PlatformEntry(
             name="testplat",
@@ -292,7 +292,7 @@ class TestPlatformsMerge:
 
     def test_get_all_platforms_includes_plugin(self):
         from hermes_cli.platforms import get_all_platforms
-        from gateway.platform_registry import platform_registry as _reg
+        from hermes_agent.gateway.platform_registry import platform_registry as _reg
 
         _reg.register(PlatformEntry(
             name="testmerge",
@@ -330,7 +330,7 @@ class TestApplyYamlConfigFnDispatch:
         return hermes_home
 
     def _register_hook(self, name, hook_fn):
-        from gateway.platform_registry import platform_registry as _reg
+        from hermes_agent.gateway.platform_registry import platform_registry as _reg
 
         entry = PlatformEntry(
             name=name,
@@ -357,7 +357,7 @@ class TestApplyYamlConfigFnDispatch:
         def _good_hook(yaml_cfg, platform_cfg):
             good_called["count"] += 1
 
-        from gateway.platform_registry import platform_registry as _reg
+        from hermes_agent.gateway.platform_registry import platform_registry as _reg
         _reg.register(PlatformEntry(
             name="mybadplat",
             label="MyBad",
@@ -383,7 +383,7 @@ class TestApplyYamlConfigFnDispatch:
             monkeypatch.setenv("HERMES_HOME", str(home))
 
             # Must not raise.
-            from gateway.config import load_gateway_config
+            from hermes_agent.gateway.config import load_gateway_config
             load_gateway_config()
 
             assert good_called["count"] == 1
@@ -413,7 +413,7 @@ class TestPluginPlatformSharedKeyBridge:
     def test_shared_keys_bridged_for_plugin_platform(self, tmp_path, monkeypatch):
         """A plugin platform's ``require_mention``/``dm_policy``/etc. flow into
         ``PlatformConfig.extra`` without the plugin needing its own bridge."""
-        from gateway.platform_registry import platform_registry as _reg
+        from hermes_agent.gateway.platform_registry import platform_registry as _reg
 
         _reg.register(PlatformEntry(
             name="mysharedplat",
@@ -433,7 +433,7 @@ class TestPluginPlatformSharedKeyBridge:
             )
             monkeypatch.setenv("HERMES_HOME", str(home))
 
-            from gateway.config import load_gateway_config, Platform
+            from hermes_agent.gateway.config import load_gateway_config, Platform
             cfg = load_gateway_config()
 
             plat = Platform("mysharedplat")
@@ -475,7 +475,7 @@ class TestPluginEnablementGate:
         Previously this auto-enabled Discord and the gateway spammed
         ``ERROR ... [Discord] No bot token configured`` on every reconnect.
         """
-        from gateway.platform_registry import platform_registry as _reg
+        from hermes_agent.gateway.platform_registry import platform_registry as _reg
 
         _reg.register(PlatformEntry(
             name="myunconfiguredplat",
@@ -489,7 +489,7 @@ class TestPluginEnablementGate:
             home = self._write_config(tmp_path)
             monkeypatch.setenv("HERMES_HOME", str(home))
 
-            from gateway.config import load_gateway_config, Platform
+            from hermes_agent.gateway.config import load_gateway_config, Platform
             cfg = load_gateway_config()
 
             plat = Platform("myunconfiguredplat")
@@ -509,7 +509,7 @@ class TestPluginEnablementGate:
         enable, log, and move on.  Anything else would re-introduce the
         #31116 bug for plugins whose probe has a transient failure.
         """
-        from gateway.platform_registry import platform_registry as _reg
+        from hermes_agent.gateway.platform_registry import platform_registry as _reg
 
         def _bad_probe(cfg):
             raise RuntimeError("plugin bug")
@@ -526,7 +526,7 @@ class TestPluginEnablementGate:
             home = self._write_config(tmp_path)
             monkeypatch.setenv("HERMES_HOME", str(home))
 
-            from gateway.config import load_gateway_config, Platform
+            from hermes_agent.gateway.config import load_gateway_config, Platform
             cfg = load_gateway_config()
 
             plat = Platform("mybadprobeplat")
@@ -543,7 +543,7 @@ class TestPluginEnablementGate:
         ``config.platforms``.  A rejected plugin should be invisible, not
         present-but-partially-populated.
         """
-        from gateway.platform_registry import platform_registry as _reg
+        from hermes_agent.gateway.platform_registry import platform_registry as _reg
 
         _reg.register(PlatformEntry(
             name="myrejectedplat",
@@ -558,7 +558,7 @@ class TestPluginEnablementGate:
             home = self._write_config(tmp_path)
             monkeypatch.setenv("HERMES_HOME", str(home))
 
-            from gateway.config import load_gateway_config, Platform
+            from hermes_agent.gateway.config import load_gateway_config, Platform
             cfg = load_gateway_config()
 
             plat = Platform("myrejectedplat")
@@ -580,7 +580,7 @@ class TestPluginEnablementGate:
         (#79812).  Skipping enablement here would mean a configured platform
         whose SDK isn't installed yet never gets the chance to install it.
         """
-        from gateway.platform_registry import platform_registry as _reg
+        from hermes_agent.gateway.platform_registry import platform_registry as _reg
 
         installer = MagicMock(return_value=True)
         _reg.register(PlatformEntry(
@@ -596,7 +596,7 @@ class TestPluginEnablementGate:
             home = self._write_config(tmp_path)
             monkeypatch.setenv("HERMES_HOME", str(home))
 
-            from gateway.config import load_gateway_config, Platform
+            from hermes_agent.gateway.config import load_gateway_config, Platform
             cfg = load_gateway_config()
 
             plat = Platform("myinstallableplat")
@@ -619,7 +619,7 @@ class TestPluginEnablementGate:
         Without an installer, missing deps are a hard block — enabling the
         platform would just queue guaranteed connect failures.
         """
-        from gateway.platform_registry import platform_registry as _reg
+        from hermes_agent.gateway.platform_registry import platform_registry as _reg
 
         _reg.register(PlatformEntry(
             name="myhardblockplat",
@@ -633,7 +633,7 @@ class TestPluginEnablementGate:
             home = self._write_config(tmp_path)
             monkeypatch.setenv("HERMES_HOME", str(home))
 
-            from gateway.config import load_gateway_config, Platform
+            from hermes_agent.gateway.config import load_gateway_config, Platform
             cfg = load_gateway_config()
 
             plat = Platform("myhardblockplat")
@@ -662,7 +662,7 @@ class TestMigratedPlatformWiring:
         from hermes_cli.plugins import discover_plugins
 
         discover_plugins()
-        from gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.platform_registry import platform_registry
 
         # Materialize deferred loaders (wecom_callback is registered by the
         # "wecom" manifest's loader; a cold get() by its own name misses).

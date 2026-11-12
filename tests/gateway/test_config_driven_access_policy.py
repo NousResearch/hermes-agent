@@ -30,8 +30,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.session import SessionSource
 
 
 # Platforms whose adapters own their access policy at intake.
@@ -67,7 +67,7 @@ def _make_runner(platform: Platform, config: GatewayConfig, *, enforces: bool):
     ``enforces`` controls whether the adapter declares
     ``enforces_own_access_policy`` — i.e. whether it owns its access gate.
     """
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.config = config
@@ -96,7 +96,7 @@ def _source(platform: Platform, *, chat_type: str = "dm") -> SessionSource:
 
 def test_base_adapter_defaults_to_not_owning_access_policy():
     """Adapters that don't override the property delegate to the gateway."""
-    from gateway.platforms.base import BasePlatformAdapter
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
     # The default lives on the base property descriptor.
     assert BasePlatformAdapter.enforces_own_access_policy.fget(object()) is False
@@ -251,7 +251,7 @@ def test_pairing_dm_policy_strict_intake_auth_denies_unknown(
     _clear_auth_env(monkeypatch)
     import importlib
 
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
 
     module = importlib.import_module(module_path)
     adapter_cls = getattr(module, class_name)

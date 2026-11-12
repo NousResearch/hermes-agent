@@ -20,10 +20,10 @@ from typing import Optional
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.relay.adapter import RelayAdapter
-from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
-from gateway.relay.media import RelayMediaClient, media_base_url
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.relay.adapter import RelayAdapter
+from hermes_agent.gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+from hermes_agent.gateway.relay.media import RelayMediaClient, media_base_url
 
 from tests.gateway.relay.stub_connector import StubConnector
 
@@ -180,8 +180,8 @@ async def test_lost_ack_on_send_media_is_not_reported_as_an_undelivered_attachme
 
 
 def _make_event(media_urls):
-    from gateway.platforms.event import MessageEvent, MessageType
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+    from hermes_agent.gateway.session import SessionSource
 
     return MessageEvent(
         text="look",

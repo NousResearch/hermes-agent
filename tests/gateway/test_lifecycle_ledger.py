@@ -1,4 +1,4 @@
-"""Tests for gateway.lifecycle_ledger — unclean-shutdown detection (NS-608).
+"""Tests for hermes_agent.gateway.lifecycle_ledger — unclean-shutdown detection (NS-608).
 
 The ledger is a tiny sentinel state machine:
 ``record_startup`` claims ``state/gateway.lifecycle.json`` as
@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway.lifecycle_ledger import (
+from hermes_agent.gateway.lifecycle_ledger import (
     detect_unclean_exit,
     get_lifecycle_sentinel_path,
     mark_exited,
@@ -157,7 +157,7 @@ def test_record_startup_carries_unclean_flags_onto_new_sentinel(
         "started_at": "2026-07-11T04:30:00+00:00",
     })
     # Last heartbeat shows near-exhausted memory → suspected OOM.
-    from gateway.shutdown_watchdog import get_loop_heartbeat_path
+    from hermes_agent.gateway.shutdown_watchdog import get_loop_heartbeat_path
 
     hb_path = get_loop_heartbeat_path(tmp_path)
     hb_path.parent.mkdir(parents=True, exist_ok=True)
@@ -237,7 +237,7 @@ def test_replace_handover_is_not_a_death_and_pid_reuse_is(tmp_path: Path, monkey
     (same producer, epoch seconds). The ledger's ``start_time`` (claim time) is never compared
     with ``get_process_start_time`` (proc ticks / centiseconds): that comparison could not match,
     so a ``--replace`` handover was reported as an unclean death."""
-    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
+    monkeypatch.setattr("hermes_agent.gateway.status._pid_exists", lambda pid: True)
     monkeypatch.setattr("hermes_cli.process_identity._process_create_time", lambda pid=None: 5000.0)
     live = {"phase": "running", "pid": 4242, "start_time": 5003.7, "started_at": "x"}
 

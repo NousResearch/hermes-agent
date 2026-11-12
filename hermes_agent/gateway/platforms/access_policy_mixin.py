@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Iterable
 
-from gateway.platforms._shared import get_scoped_secret
+from hermes_agent.gateway.platforms._shared import get_scoped_secret
 
 OPTIN_TRUTHY = frozenset({"true", "1", "yes"})
 

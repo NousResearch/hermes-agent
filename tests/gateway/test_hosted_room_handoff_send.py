@@ -14,10 +14,10 @@ import pytest
 from pathlib import Path
 from types import SimpleNamespace
 
-from gateway import hosted_room_driver, hosted_rooms
-from gateway.hosted_rooms_gateway_import import handoff_gateway_id, import_standalone_rooms
+from hermes_agent.gateway import hosted_room_driver, hosted_rooms
+from hermes_agent.gateway.hosted_rooms_gateway_import import handoff_gateway_id, import_standalone_rooms
 from tests.waiting import wait_until
-from gateway.session_hosted_controls import HostedControls
+from hermes_agent.gateway.session_hosted_controls import HostedControls
 from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService
 
 MEMBERS = [{"member_id": "default", "profile": "default", "handle": "hermes"},

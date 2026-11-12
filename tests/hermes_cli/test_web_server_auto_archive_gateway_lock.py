@@ -2,7 +2,7 @@
 SessionDB for a profile whose gateway is live (#110405).
 
 The gateway stand-in is a real subprocess: it takes the same ``flock(LOCK_EX)`` on
-``gateway.lock`` that ``gateway.status`` uses, runs under a ``hermes gateway run``
+``gateway.lock`` that ``hermes_agent.gateway.status`` uses, runs under a ``hermes gateway run``
 command line and is recorded in ``gateway.pid``, so ``_check_gateway_running``
 decides on kernel lock state plus live process identity rather than a patched
 predicate.
@@ -69,7 +69,7 @@ def archive_probe(tmp_path, monkeypatch):
 def test_serve_auto_archive_defers_to_a_live_gateway_for_the_profile(archive_probe):
     tmp_path, opens, archived = archive_probe
     # argv0 basename `hermes` + the `gateway run` subcommand is what
-    # gateway.status's process-identity check reads off /proc for this PID.
+    # hermes_agent.gateway.status's process-identity check reads off /proc for this PID.
     entrypoint = tmp_path / "hermes"
     entrypoint.write_text(_HOLDER, encoding="utf-8")
     lock_path = tmp_path / "gateway.lock"

@@ -1,8 +1,8 @@
 """Settlement itself drops a text-only API row's client history, not only the next restart's sweep."""
 import json
 
-from gateway.session_api_turn import admit_api_turn
-from gateway.session_ingress_media import release_admission_media
+from hermes_agent.gateway.session_api_turn import admit_api_turn
+from hermes_agent.gateway.session_ingress_media import release_admission_media
 from hermes_agent.hermes_state_runtime import claim_session_input, settle_session_input
 
 HISTORY = [{'role': 'user', 'content': 'earlier ' + 'x' * 4096}, {'role': 'assistant', 'content': 'reply'}]

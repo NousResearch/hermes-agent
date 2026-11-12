@@ -161,7 +161,7 @@ class TestSetupLogging:
         routed_secret = "sk-proj-ROUTEDPROFILE" + "b" * 24
         launch_secret = "sk-proj-LAUNCHPROFILE" + "a" * 24
 
-        logger = logging.getLogger("gateway.redaction-routing-test")
+        logger = logging.getLogger("hermes_agent.gateway.redaction-routing-test")
         token = set_hermes_home_override(routed)
         try:
             logger.warning("provider rejected key %s", routed_secret)
@@ -280,7 +280,7 @@ class TestSetupLogging:
         hermes_logging.setup_logging(hermes_home=profile_home)
         hermes_logging.setup_logging(hermes_home=hermes_home, mode="gateway")
 
-        logger = logging.getLogger("gateway.run.routed-component-test")
+        logger = logging.getLogger("hermes_agent.gateway.run.routed-component-test")
         token = set_hermes_home_override(profile_home)
         try:
             logger.info("gw-b")
@@ -761,7 +761,7 @@ class TestExternalRotationRecovery:
 
     def _emit(self, handler: logging.Handler, msg: str) -> None:
         record = logging.LogRecord(
-            name="gateway.run", level=logging.INFO, pathname="", lineno=0,
+            name="hermes_agent.gateway.run", level=logging.INFO, pathname="", lineno=0,
             msg=msg, args=(), exc_info=None,
         )
         # Match the record factory that hermes_logging installs at import time.
@@ -838,7 +838,7 @@ class TestExternalRotationRecovery:
         gw_path = hermes_home / "logs" / "gateway.log"
         rotated = hermes_home / "logs" / "gateway.log.1"
 
-        logging.getLogger("gateway.run").info("line BEFORE rotation")
+        logging.getLogger("hermes_agent.gateway.run").info("line BEFORE rotation")
         hermes_logging.flush_log_queue()
         assert "BEFORE rotation" in gw_path.read_text(encoding="utf-8-sig")
 
@@ -851,7 +851,7 @@ class TestExternalRotationRecovery:
         # stale fd in place.
         hermes_logging.setup_logging(hermes_home=hermes_home, mode="gateway")
 
-        logging.getLogger("gateway.run").info("line AFTER rotation")
+        logging.getLogger("hermes_agent.gateway.run").info("line AFTER rotation")
         hermes_logging.flush_log_queue()
 
         # The new record must reach the live gateway.log, not the rotated

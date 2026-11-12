@@ -11,8 +11,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import gateway.run as gateway_run
-from gateway.platforms.event import MessageEvent, MessageType
+import hermes_agent.gateway.run as gateway_run
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 
 
@@ -100,8 +100,8 @@ async def test_event_without_update_id_bypasses_dedup(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_different_platform_bypasses_dedup(tmp_path, monkeypatch):
     """Marker from Telegram doesn't block a /restart from another platform."""
-    from gateway.config import Platform
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session import SessionSource
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.delenv("INVOCATION_ID", raising=False)

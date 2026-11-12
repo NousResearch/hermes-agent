@@ -20,8 +20,8 @@ def _delete_past_the_horizon(authority, sid):
 
 @pytest.mark.asyncio
 async def test_a_hosted_room_member_rebinds_on_a_new_session_after_a_delete(api, owner):
-    from gateway.hosted_room_peer import HostedMemberDispatch
-    from gateway.session_api import restore_api_session
+    from hermes_agent.gateway.hosted_room_peer import HostedMemberDispatch
+    from hermes_agent.gateway.session_api import restore_api_session
     from tests.gateway.test_hosted_room_execution_policy import _dispatch, _policy
     dispatch = _dispatch(_policy())
     deleted = await api._ensure_hosted_member_session(dispatch)
@@ -40,11 +40,11 @@ async def test_a_hosted_room_member_rebinds_on_a_new_session_after_a_delete(api,
 @pytest_asyncio.fixture
 async def a2a(tmp_path, monkeypatch):
     """``(authority, forward)``: a real authority and its ``a2a.forward`` over a producer connection."""
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config',
                         lambda: {'model': {'default': 'fixture'}, 'platform_toolsets': {'cli': []}})

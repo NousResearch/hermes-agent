@@ -11,9 +11,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionEntry, SessionSource, build_session_key
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.session import SessionEntry, SessionSource, build_session_key
 
 
 def _make_source() -> SessionSource:
@@ -43,7 +43,7 @@ def _make_voice_event(text: str = "voice_message_1.ogg") -> MessageEvent:
 
 
 def _make_runner():
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
@@ -93,7 +93,7 @@ def _make_runner():
 async def test_unknown_slash_command_returns_guidance(monkeypatch):
     """A genuinely unknown /foobar should return user-facing guidance, not
     silently drop through to the LLM."""
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     runner = _make_runner()
     # If the LLM were called, this would fail: the guard must short-circuit
@@ -150,7 +150,7 @@ async def test_egress_slash_command_reports_proxy_status(monkeypatch):
 async def test_underscored_alias_for_hyphenated_builtin_not_flagged(monkeypatch):
     """Telegram autocomplete sends /reload_mcp for the /reload-mcp built-in.
     That must NOT be flagged as unknown."""
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     runner = _make_runner()
     # Prevent real MCP work; we only care that the unknown guard doesn't fire.
@@ -178,7 +178,7 @@ async def test_underscored_alias_for_hyphenated_builtin_not_flagged(monkeypatch)
 @pytest.mark.asyncio
 async def test_command_hook_rewrite_routes_to_plugin(monkeypatch):
     """A rewrite decision should re-resolve the command and route to the new one."""
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     runner = _make_runner()
     runner._run_agent = AsyncMock(
@@ -232,7 +232,7 @@ async def test_sync_plugin_command_runs_off_loop_thread(monkeypatch):
     import threading
     import time
 
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
     from hermes_cli import plugins as _plugins_mod
 
     runner = _make_runner()

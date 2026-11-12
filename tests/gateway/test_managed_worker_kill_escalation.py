@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from gateway.session_managed_worker import ManagedWorker
+from hermes_agent.gateway.session_managed_worker import ManagedWorker
 
 
 class _WedgedHandle(subprocess.Popen):

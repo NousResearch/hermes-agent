@@ -17,11 +17,11 @@ from tests.waiting import async_wait_until
 
 
 async def _gateway(monkeypatch):
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.platforms.base import SendResult
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_results import execution_result
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.base import SendResult
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_results import execution_result
     from plugins.platforms.discord.adapter import DiscordAdapter
 
     monkeypatch.setenv('DISCORD_ALLOWED_USERS', '42')
@@ -53,21 +53,21 @@ async def _gateway(monkeypatch):
 
 
 async def _chat(adapter, source, sent, text):
-    from gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.platforms.event import MessageEvent
     before = len(sent)
     await adapter.handle_message(MessageEvent(text=text, source=source, message_id=text))
     await async_wait_until(lambda: len(sent) > before, what=f'the reply to {text!r}')
 
 
 def _app():
-    from gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_contract import SessionActor
     return SessionActor('app-viewer', 'default', frozenset(
         {'session:read', 'session:submit', 'session:control', 'session:approve', 'session:respond'}), 'viewer')
 
 
 async def _app_turn(authority, ref, text):
     """The app's prompt, settled: ``(status, outcome)`` of its admission."""
-    from gateway.session_contract import Submission
+    from hermes_agent.gateway.session_contract import Submission
     from hermes_agent.hermes_state_runtime import list_session_admissions
     receipt = await authority.submit(_app(), Submission(text, ref, {'text': text}, 'queue'))
 
@@ -113,7 +113,7 @@ async def test_the_old_conversation_runs_beside_the_chats_turn_and_resume_brings
     authority.db.set_session_title(a, 'First chat')
     await _chat(adapter, source, sent, '/new')
 
-    from gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.platforms.event import MessageEvent
     gates['long chat turn'] = asyncio.Event()
     await adapter.handle_message(MessageEvent(text='long chat turn', source=source, message_id='long'))
     await async_wait_until(lambda: ran and ran[-1][0] == 'long chat turn', what="B's turn to start")
@@ -137,8 +137,8 @@ async def test_the_old_conversation_runs_beside_the_chats_turn_and_resume_brings
 async def test_the_old_conversation_never_drives_the_chats_topic_or_claims_a_reset(monkeypatch):
     """Review on #144840: a detached turn's compression must not rewrite the chat's Telegram topic
     binding (the chat would fall back into A), and its context exhaustion has no route to reset."""
-    from gateway.session_detached import detach
-    from gateway.session_identity import replace_source
+    from hermes_agent.gateway.session_detached import detach
+    from hermes_agent.gateway.session_identity import replace_source
     runner, adapter, authority, source, sent, _ran, _gates = await _gateway(monkeypatch)
     await _chat(adapter, source, sent, 'hello')
     ref_a = authority.register(source)
@@ -159,7 +159,7 @@ async def test_the_old_conversation_never_drives_the_chats_topic_or_claims_a_res
     response, kept = await runner._hmwa_compression_exhaustion_reset(
         {'compression_exhausted': True}, 'too long', entry, entry.session_key, detached)
     # The app viewer is told how to go on (the guidance a failed overflow turn gives), never "reset".
-    from gateway.run import _context_overflow_reply
+    from hermes_agent.gateway.run import _context_overflow_reply
     assert (response, kept.session_id) == (f'too long\n\n{_context_overflow_reply()}', ref_a.session_id)
 
 
@@ -167,11 +167,11 @@ async def test_the_old_conversation_never_drives_the_chats_topic_or_claims_a_res
 async def test_an_app_prompt_queued_for_the_old_conversation_runs_after_a_restart(monkeypatch):
     """Review on #144840: the routing index names only the chat's current conversation, so boot
     recovery of queued input never reached a detached one; its queued app prompt now runs."""
-    from gateway.config import GatewayConfig
-    from gateway.run import GatewayRunner
-    from gateway.run_runtime import recover_profile_native_sessions
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import Submission
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.run_runtime import recover_profile_native_sessions
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_contract import Submission
     runner, adapter, authority, source, sent, _ran, _gates = await _gateway(monkeypatch)
     await _chat(adapter, source, sent, 'hello')
     ref_a = authority.register(source)

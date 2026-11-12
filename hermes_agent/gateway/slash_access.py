@@ -6,7 +6,7 @@ which slash commands. Two lists per scope (DM vs group, mirroring ``allow_from``
 and plugin) and ``user_allowed_commands`` (names non-admins may run; empty/unset -> only the
 ``_ALWAYS_ALLOWED_FOR_USERS`` floor). No ``allow_admin_from`` for a scope => gating disabled there,
 so existing installs are unaffected until an operator lists an admin. Applied at the dispatch
-site in ``gateway/run.py`` via the live registry; never affects plain chat.
+site in ``hermes_agent/gateway/run.py`` via the live registry; never affects plain chat.
 """
 
 from __future__ import annotations
@@ -161,7 +161,7 @@ def policy_for_runner_source(runner: Any, source: Any) -> SlashAccessPolicy:
     config = getattr(runner, "config", None)
     if not getattr(config, "multiplex_profiles", False) or source is None:
         return policy_for_source(config, source)
-    from gateway.session_identity import identity_of
+    from hermes_agent.gateway.session_identity import identity_of
 
     identity = identity_of(source)
     owner = identity.transport_profile if identity is not None else getattr(source, "profile", None)

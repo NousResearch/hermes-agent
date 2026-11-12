@@ -196,7 +196,7 @@ def publish_usage(turn, agent, *, record: bool = False) -> None:
         stats = usage_stats(agent)
         turn._publish_execution("session.usage", usage_frame(stats))
         if record:
-            from gateway.session_results import execution_result
+            from hermes_agent.gateway.session_results import execution_result
             captured = execution_result.get()
             if captured is not None:
                 captured["session_usage"] = stats

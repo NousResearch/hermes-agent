@@ -49,7 +49,7 @@ def _write_active(data: dict[str, Any]) -> None:
 
 def _pid_alive(pid: int) -> bool:
     # Not ``os.kill(pid, 0)``: on Windows that can kill the target (bpo-14484).
-    from gateway.status import _pid_exists
+    from hermes_agent.gateway.status import _pid_exists
     return bool(pid) and _pid_exists(pid)
 
 

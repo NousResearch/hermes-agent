@@ -309,7 +309,7 @@ def reap_worker_zombies() -> list[int]:
 def _pid_alive(pid: Optional[int]) -> bool:
     """Return True if ``pid`` is still running on this host.
 
-    Uses ``gateway.status._pid_exists`` (OpenProcess on Windows, ``os.kill(pid, 0)``
+    Uses ``hermes_agent.gateway.status._pid_exists`` (OpenProcess on Windows, ``os.kill(pid, 0)``
     on POSIX). **DO NOT** call ``os.kill(pid, 0)`` directly on Windows — there
     ``sig=0`` is ``CTRL_C_EVENT`` broadcast to the console group, potentially
     killing unrelated processes.
@@ -321,7 +321,7 @@ def _pid_alive(pid: Optional[int]) -> bool:
     """
     if not pid or pid <= 0:
         return False
-    from gateway.status import _pid_exists
+    from hermes_agent.gateway.status import _pid_exists
     if not _pid_exists(int(pid)):
         return False
     if sys.platform == "linux":
@@ -366,10 +366,10 @@ def _process_fingerprint(pid: int) -> Optional[str]:
     """Restart-stable identity of a live process: ``"<instantiation epoch>|<start time>"``. The start
     time alone (``/proc/<pid>/stat`` field 22 on Linux) is clock ticks since THIS boot, so a row that
     survives a reboot could match an unrelated process with the same PID and the same tick value;
-    ``gateway.drain_control.current_instantiation_epoch`` (``boot_id`` + PID-1 start) changes on every
+    ``hermes_agent.gateway.drain_control.current_instantiation_epoch`` (``boot_id`` + PID-1 start) changes on every
     reboot / container recreate, so the composed value never survives one. ``None`` when unreadable."""
-    from gateway.drain_control import current_instantiation_epoch
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway.drain_control import current_instantiation_epoch
+    from hermes_agent.gateway.status import get_process_start_time
     start = get_process_start_time(int(pid))
     if start is None:
         return None
@@ -402,7 +402,7 @@ def _pid_recycled(pid: Optional[int], started_at) -> bool:
         return True
     if isinstance(started_at, str) and "|" in started_at:
         return _process_fingerprint(int(pid)) != started_at
-    from gateway.status import _start_times_agree, get_process_start_time
+    from hermes_agent.gateway.status import _start_times_agree, get_process_start_time
     current = get_process_start_time(int(pid))
     if current is None:
         return True
@@ -1854,7 +1854,7 @@ def _system_memory_sample() -> dict:
     ``{}`` so results don't depend on the CI runner's live memory.
     """
     try:
-        from gateway.lifecycle_ledger import sample_memory
+        from hermes_agent.gateway.lifecycle_ledger import sample_memory
         return sample_memory() or {}
     except Exception:
         return {}
@@ -1962,7 +1962,7 @@ def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
 def _memory_pressure_level(sample: Optional[Mapping[str, Any]] = None) -> str:
     """Classify system memory pressure: ok/elevated/critical/unknown.
 
-    Reuses :func:`gateway.memory_status.classify_pressure` so "critical" matches
+    Reuses :func:`hermes_agent.gateway.memory_status.classify_pressure` so "critical" matches
     the dashboard banner and lifecycle-ledger OOM heuristics. ``unknown``
     (non-Linux, read failure) imposes no restriction — never brick dispatch
     where /proc is unavailable.
@@ -1972,7 +1972,7 @@ def _memory_pressure_level(sample: Optional[Mapping[str, Any]] = None) -> str:
     if not sample:
         return "unknown"
     try:
-        from gateway.memory_status import classify_pressure
+        from hermes_agent.gateway.memory_status import classify_pressure
         return classify_pressure(sample.get("mem_available_kib"), sample.get("mem_total_kib"))
     except Exception:
         return "unknown"
@@ -2538,7 +2538,7 @@ def _resolve_hermes_argv() -> list[str]:
     search, batch shims fall back to the module form) only when ``hermes_cli``
     is not importable. The module argv must win over PATH: a PATH-first lookup
     lets an attacker-planted ``hermes`` shadow the running install (#111569).
-    Mirrors ``gateway.run._resolve_hermes_bin``; local because ``hermes_cli``
+    Mirrors ``hermes_agent.gateway.run._resolve_hermes_bin``; local because ``hermes_cli``
     sits below ``gateway`` in the dependency order.
     """
     import importlib.util
@@ -2794,7 +2794,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
         )
     # The dispatcher is detached from every conversation; its worker must never
     # inherit routing mirrored by a previous gateway turn.
-    from gateway.session_context import _VAR_MAP
+    from hermes_agent.gateway.session_context import _VAR_MAP
     for key in _VAR_MAP:
         env.pop(key, None)
 

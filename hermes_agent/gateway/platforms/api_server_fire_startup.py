@@ -61,7 +61,7 @@ async def live_adapters_once_started(
     runner = api_adapter.gateway_runner or request.app.get("gateway_runner")
     if runner is None:
         with suppress(Exception):
-            from gateway.run import _gateway_runner_ref
+            from hermes_agent.gateway.run import _gateway_runner_ref
             runner = _gateway_runner_ref()
     refusal = await refuse_until_started(runner, job_id, received_at=received_at)
     return refusal, (getattr(runner, "adapters", None) or None)

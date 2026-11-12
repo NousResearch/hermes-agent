@@ -358,7 +358,7 @@ def _parse_dotenv_file(path: Path) -> list[tuple[str, str | None]]:
         raw = raw.removeprefix(codecs.BOM_UTF8)
         text = raw.decode("latin-1")
     # Imported here, not at module level: gateway tests stub ``sys.modules["dotenv"]`` with a bare module
-    # exposing only ``load_dotenv``, and ``gateway.run`` imports this module at import time.
+    # exposing only ``load_dotenv``, and ``hermes_agent.gateway.run`` imports this module at import time.
     from dotenv.main import DotEnv
 
     return list(DotEnv(dotenv_path=None, stream=io.StringIO(text), interpolate=False).parse())
@@ -475,7 +475,7 @@ def _dotenv_assignments(path: Path) -> list:
             text = raw.decode("latin-1")
     text = text.replace("\x00", "")  # the sanitizer strips NULs too (BOM-less UTF-16 / NUL-padded ASCII)
     # Imported here, not at module level: gateway tests stub ``sys.modules["dotenv"]`` with a bare module
-    # exposing only ``load_dotenv``, and ``gateway.run`` imports this module at import time.
+    # exposing only ``load_dotenv``, and ``hermes_agent.gateway.run`` imports this module at import time.
     from dotenv.main import DotEnv
 
     return list(DotEnv(dotenv_path=None, stream=io.StringIO(text), interpolate=False).parse())

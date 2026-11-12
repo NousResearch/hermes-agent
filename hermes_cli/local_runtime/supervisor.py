@@ -226,7 +226,7 @@ class LlamaServerSupervisor:
     def _write_state(self) -> None:
         import os
         import psutil
-        from gateway.status import get_process_start_time
+        from hermes_agent.gateway.status import get_process_start_time
         from utils import atomic_json_write
 
         proc = psutil.Process(self.proc.pid)

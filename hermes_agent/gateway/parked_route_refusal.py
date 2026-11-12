@@ -98,7 +98,7 @@ def _notice_due(adapter, profile, platform, chat_id):
 def drop_rejected_route(adapter, source):
     """Log an inbound event dropped because its explicit profile route targets a profile this
     gateway does not serve; when that profile is parked, also refuse it to the sender in-channel."""
-    from gateway.run_runtime import profile_parked
+    from hermes_agent.gateway.run_runtime import profile_parked
     name = getattr(adapter, 'name', None) or getattr(getattr(source, 'platform', None), 'value', '?')
     chat_id = getattr(source, 'chat_id', '?')
     profile = getattr(source, '_rejected_route_profile', None)
@@ -148,7 +148,7 @@ async def _send_refusal(adapter, source, reply_to):
     """Reply in the sender's chat and thread, as the runner's own notices do. Marked interim: it is no
     turn's answer, so it never seals another turn's open stream (relay Slack) or fills a pending
     answer slot (LINE's postback cache)."""
-    from gateway.run import _interim_metadata
+    from hermes_agent.gateway.run import _interim_metadata
     try:
         metadata = _interim_metadata(adapter.gateway_runner._thread_metadata_for_source(source))
         result = await adapter.send(source.chat_id, PARKED_ROUTE_NOTICE, reply_to=reply_to, metadata=metadata)

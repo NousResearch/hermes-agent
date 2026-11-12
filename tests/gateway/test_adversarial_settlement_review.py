@@ -5,22 +5,22 @@ import threading
 
 import pytest
 
-from gateway.session_contract import Submission
+from hermes_agent.gateway.session_contract import Submission
 from hermes_agent.hermes_state_runtime import RuntimeStoreError, begin_runtime_epoch, get_session_admission
 from tests.gateway.test_session_authority_cancel_settlement import _authority, ACTOR, REF
 
 
 @pytest.mark.asyncio
 async def test_commit_then_error_still_releases_terminal_native_media(tmp_path, monkeypatch):
-    from gateway import session_results
-    from gateway.platforms.base import get_image_cache_dir
+    from hermes_agent.gateway import session_results
+    from hermes_agent.gateway.platforms.base import get_image_cache_dir
     db, authority = _authority(tmp_path, monkeypatch)
     image = get_image_cache_dir() / 'timeout.png'
     image.write_bytes(b'\x89PNG\r\n\x1a\nowned')
     async def execute(owner, ref, row):
         owner.pending_results[row['admission_id']] = {'result': {'final_response': 'done'}, 'usage': {}}
         return 'done'
-    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    monkeypatch.setattr('hermes_agent.gateway.session_finite.execute_finite_admission', execute)
     original = session_results.finish_result
     def commit_then_error(*args, **kwargs):
         monkeypatch.setattr(session_results, 'finish_result', original)
@@ -35,14 +35,14 @@ async def test_commit_then_error_still_releases_terminal_native_media(tmp_path, 
         assert retained.exists()
         await asyncio.wait_for(authority.sessions['s'].task, 5)
         assert get_session_admission(db, admission_id=receipt.admission_id)['status'] == 'terminal'
-        from gateway.session_runtime_workers import join_authority_work
+        from hermes_agent.gateway.session_runtime_workers import join_authority_work
         await join_authority_work(authority, timeout=5)
         assert not retained.exists(), 'commit-then-error skipped terminal media cleanup'
 
 
 @pytest.mark.asyncio
 async def test_discard_during_recovery_stamp_does_not_replay_head_or_lose_follower(tmp_path, monkeypatch):
-    from gateway import session_results, session_settlement_recovery
+    from hermes_agent.gateway import session_results, session_settlement_recovery
     db, authority = _authority(tmp_path, monkeypatch)
     schedule = authority._schedule
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
@@ -51,7 +51,7 @@ async def test_discard_during_recovery_stamp_does_not_replay_head_or_lose_follow
         calls.append(row['request_id'])
         owner.pending_results[row['admission_id']] = {'result': {'final_response': row['request_id']}, 'usage': {}}
         return row['request_id']
-    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    monkeypatch.setattr('hermes_agent.gateway.session_finite.execute_finite_admission', execute)
     original = session_results.finish_result
     # Storage stays down across every bounded settlement attempt, so the claim reaches the
     # recovery stamp; it comes back once the stamp is entered (the follower settles normally).
@@ -86,7 +86,7 @@ async def test_discard_during_recovery_stamp_does_not_replay_head_or_lose_follow
 
 @pytest.mark.asyncio
 async def test_stale_owner_cannot_stamp_a_new_epoch_claim_unknown(tmp_path, monkeypatch):
-    from gateway.session_settlement_recovery import recover_failed_settlement
+    from hermes_agent.gateway.session_settlement_recovery import recover_failed_settlement
     from hermes_agent.hermes_state_runtime import claim_session_input
     db, authority = _authority(tmp_path, monkeypatch)
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
@@ -103,14 +103,14 @@ async def test_stale_owner_cannot_stamp_a_new_epoch_claim_unknown(tmp_path, monk
 @pytest.mark.asyncio
 @pytest.mark.parametrize('failure_stage', ['cleanup', 'after_completion'])
 async def test_post_commit_cleanup_error_still_publishes_the_committed_completion(tmp_path, monkeypatch, failure_stage):
-    from gateway import session_ingress_media
+    from hermes_agent.gateway import session_ingress_media
     db, authority = _authority(tmp_path, monkeypatch)
     frames = []
     authority.sessions['s'].event_stream.observers.add(frames.append)
     async def execute(owner, ref, row):
         owner.pending_results[row['admission_id']] = {'result': {'final_response': 'done'}, 'usage': {}}
         return 'done'
-    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    monkeypatch.setattr('hermes_agent.gateway.session_finite.execute_finite_admission', execute)
     if failure_stage == 'cleanup':
         original = session_ingress_media.release_admission_media
         def unavailable_once(*args):

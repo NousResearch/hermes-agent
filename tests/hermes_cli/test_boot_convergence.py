@@ -46,7 +46,7 @@ def test_each_start_checks_pm_once_before_dispatch(surface, tmp_path, monkeypatc
     monkeypatch.setattr(pm, "sync_venv", no_install)
     dispatched = []
     if surface == "gateway":
-        import gateway.run as gr
+        import hermes_agent.gateway.run as gr
 
         async def start(*args, **kwargs):
             dispatched.append(len(checked))

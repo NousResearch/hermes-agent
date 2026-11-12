@@ -28,11 +28,11 @@ from tests.waiting import wait_until
 def _gateway(tmp_path, monkeypatch, *, served, unserved=(), linked=(), multiplex=True):
     """A running gateway over ``default`` + ``served`` + ``linked``; ``unserved`` profiles exist on
     disk only, and each ``linked`` profile is a ``profiles/<name>`` link to a home elsewhere."""
-    from gateway.config import GatewayConfig
-    from gateway.control_socket import GatewayControlServer
-    from gateway.run import GatewayRunner
-    from gateway.run_runtime import initialize_gateway_runtime, recover_gateway_native_sessions
-    from gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.control_socket import GatewayControlServer
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.run_runtime import initialize_gateway_runtime, recover_gateway_native_sessions
+    from hermes_agent.gateway.runtime_ownership import process_ownership
 
     root, homes = _reserve_homes(tmp_path, monkeypatch, names=(*served, *unserved))
     homes = dict(homes)
@@ -96,7 +96,7 @@ def _link(target, link):
 
 def _desktop(runner, call, scope='host'):
     """The Desktop's host-scoped socket; ``profile`` names the active bot, as the Bots plugin sends it."""
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     connection = AuthorityConnection(runner.session_authority, object(),
                                      {'user_id': 'desktop', 'profile_scope': scope})
 
@@ -112,7 +112,7 @@ def _members(*profiles):
 
 
 def test_desktop_group_of_served_bots_is_created_and_runs(tmp_path, monkeypatch):
-    from gateway import hosted_rooms, session_finite
+    from hermes_agent.gateway import hosted_rooms, session_finite
     from hermes_constants import get_hermes_home
 
     ran = []
@@ -146,8 +146,8 @@ def test_desktop_group_of_served_bots_is_created_and_runs(tmp_path, monkeypatch)
 def test_unserving_one_bot_keeps_the_rest_of_its_group_talking(tmp_path, monkeypatch):
     """Greptile on #140187: unserving alpha must not stop a saved default/alpha/beta group; a turn
     for beta still runs, a turn for alpha fails as that member's own turn, and no new group seats it."""
-    from gateway import hosted_rooms, session_finite
-    from gateway.run_runtime import unserve_profile_runtime
+    from hermes_agent.gateway import hosted_rooms, session_finite
+    from hermes_agent.gateway.run_runtime import unserve_profile_runtime
 
     ran = []
 
@@ -187,7 +187,7 @@ def test_unserving_one_bot_keeps_the_rest_of_its_group_talking(tmp_path, monkeyp
 
 
 def test_a_bot_this_gateway_does_not_serve_is_refused_by_name(tmp_path, monkeypatch, caplog):
-    caplog.set_level(logging.WARNING, logger='gateway.session_controls')
+    caplog.set_level(logging.WARNING, logger='hermes_agent.gateway.session_controls')
     # gamma is a real profile on disk, but this gateway does not serve it; ghost does not exist.
     with _gateway(tmp_path, monkeypatch, served=('alpha',), unserved=('gamma',)) as (runner, homes, call):
         desktop = _desktop(runner, call)
@@ -245,9 +245,9 @@ def test_single_profile_gateway_seats_only_itself_and_configured_profiles(tmp_pa
 
 
 def test_a_bad_hosted_rooms_entry_refuses_only_the_member_naming_it(tmp_path, monkeypatch, caplog):
-    from gateway import hosted_rooms, session_finite
+    from hermes_agent.gateway import hosted_rooms, session_finite
 
-    caplog.set_level(logging.WARNING, logger='gateway.session_hosted_members')
+    caplog.set_level(logging.WARNING, logger='hermes_agent.gateway.session_hosted_members')
     ran = []
 
     async def execute(authority, ref, row):
@@ -262,7 +262,7 @@ def test_a_bad_hosted_rooms_entry_refuses_only_the_member_naming_it(tmp_path, mo
             return request('default', 'groups.create', room_id=room_id, name='Crew', members=_members(*profiles))
 
         def ignored():
-            return [r.getMessage() for r in caplog.records if r.name == 'gateway.session_hosted_members']
+            return [r.getMessage() for r in caplog.records if r.name == 'hermes_agent.gateway.session_hosted_members']
         # A room that seats helper while its entry names a home of its own.
         config.write_text(json.dumps({'hosted_rooms': {'profiles': {'helper': str(tmp_path.resolve())}}}))
         assert 'result' in create(desktop, 'kept', 'default', 'beta', 'helper')

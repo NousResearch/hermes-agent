@@ -94,7 +94,7 @@ def clock(monkeypatch):
 @pytest.fixture(autouse=True)
 def _worker_env(monkeypatch, tmp_path):
     monkeypatch.delenv("HERMES_TUI_GATEWAY_URL", raising=False)
-    from gateway import session_kanban
+    from hermes_agent.gateway import session_kanban
     monkeypatch.setattr(session_kanban, "worker_result",
                         lambda *_: {"exit_code": 0, "last_output": "card closed"})
     return tmp_path

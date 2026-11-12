@@ -10,7 +10,7 @@ through delegate-child or compression-continuation hops. Anything else is ``avai
 """
 import asyncio
 
-from gateway.session_busy_controls import authorize
+from hermes_agent.gateway.session_busy_controls import authorize
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
@@ -32,7 +32,7 @@ async def subagent_transcript(connection, ref, params, binding, held, limit, inl
 def _child(authority, live, ref, subagent_id):
     """``(child session id or None, running)``. In a worker thread, like ``subagent.list``: the roster is read
     under the session's event lock, which every streamed token takes too."""
-    from gateway.session_ancillary import (
+    from hermes_agent.gateway.session_ancillary import (
         _compression_lineage, _owner_objects, _require_current_route, locked_projection, physical_target)
     from tools.delegate_tool_sessions import stored_child_session
 
@@ -49,8 +49,8 @@ def _child(authority, live, ref, subagent_id):
 
 
 def _read(authority, live, ref, binding, held, limit, inline_images):
-    from gateway.session_authorities import owner_scope
-    from gateway.session_stored_reads import read_transcript
+    from hermes_agent.gateway.session_authorities import owner_scope
+    from hermes_agent.gateway.session_stored_reads import read_transcript
 
     subagent_id = binding[1]
     with owner_scope(authority):  # every store read goes through the owning authority's own store

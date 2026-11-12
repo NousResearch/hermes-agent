@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.session import SessionSource
 
 
 def _clear_auth_env(monkeypatch) -> None:
@@ -21,7 +21,7 @@ def _clear_auth_env(monkeypatch) -> None:
 
 def _make_multiplex_runner(monkeypatch):
     """Runner with default allowlist WeCom and secondary open-policy WeCom."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     _clear_auth_env(monkeypatch)
 
@@ -85,7 +85,7 @@ def test_scoped_secondary_profile_still_uses_profile_adapters(monkeypatch):
     such as A2A default-deny an already-authenticated peer (#80884). A
     secondary profile with NO registry entry still fails closed.
     """
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     _clear_auth_env(monkeypatch)
 
@@ -140,7 +140,7 @@ def test_adapter_auth_check_stamps_secondary_profile(monkeypatch):
     authorization (e.g. Slack/Discord thread-reply lookups) silently
     resolved the *active* profile's allowlist scope instead of its own.
     """
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     _clear_auth_env(monkeypatch)
 
@@ -167,7 +167,7 @@ def test_startup_guard_gateway_allow_all_reads_scope_not_environ(monkeypatch):
     never opted in, and a secondary profile's own scoped opt-in must be
     honored."""
     from agent import secret_scope
-    from gateway.run import _own_policy_open_startup_violation
+    from hermes_agent.gateway.run import _own_policy_open_startup_violation
 
     _clear_auth_env(monkeypatch)
     cfg = GatewayConfig(multiplex_profiles=True)
@@ -198,7 +198,7 @@ def test_startup_guard_gateway_allow_all_reads_scope_not_environ(monkeypatch):
 
 def test_secondary_open_policy_fails_startup_guard(monkeypatch):
     """Secondary profiles must pass the same open-policy startup guard."""
-    from gateway.run import _own_policy_open_startup_violation
+    from hermes_agent.gateway.run import _own_policy_open_startup_violation
 
     _clear_auth_env(monkeypatch)
 
@@ -229,7 +229,7 @@ _BUZZ = Platform("buzz")
 
 def _make_buzz_multiplex_runner(monkeypatch, extra):
     """Runner whose secondary 'coder' profile runs a live Buzz adapter."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
     from tests.gateway.test_buzz_adapter import _normalize_user_ref
 
     for key in (
@@ -268,7 +268,7 @@ def _buzz_source(user_id):
 
 
 def _patch_buzz_registry(monkeypatch, allowed_users_env="BUZZ_ALLOWED_USERS"):
-    from gateway.platform_registry import platform_registry
+    from hermes_agent.gateway.platform_registry import platform_registry
 
     real_get = platform_registry.get
 
@@ -376,7 +376,7 @@ def test_adapter_intake_and_central_authz_agree_on_the_same_list(monkeypatch):
     construction-time intake allowlist (extra.allowed_users normalized to
     hex) is exactly the sender the central check authorizes, and an
     unlisted sender is rejected at BOTH layers."""
-    from gateway.session import SessionSource as _SessionSource
+    from hermes_agent.gateway.session import SessionSource as _SessionSource
 
     from tests.gateway.test_buzz_adapter import SELF_NPUB, SELF_PUBKEY
 

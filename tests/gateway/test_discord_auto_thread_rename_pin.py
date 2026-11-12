@@ -13,10 +13,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-import gateway.run as gateway_run
+import hermes_agent.gateway.run as gateway_run
 import plugins.platforms.discord.adapter as discord_platform
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.session import build_session_context
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.session import build_session_context
 from plugins.platforms.discord.adapter import DiscordAdapter
 from plugins.platforms.discord.adapter_thread_titles import SemanticThreadRenames
 
@@ -75,7 +75,7 @@ async def test_hermes_title_keeps_the_pin_and_a_moderator_rename_does_not(
 ) -> None:
     adapter, parent, thread, turn = conversation
     first = await turn(parent, 100)
-    # The title lane's call, as gateway/run_topics.py makes it, and its own gateway event.
+    # The title lane's call, as hermes_agent/gateway/run_topics.py makes it, and its own gateway event.
     assert await adapter.rename_thread("800", TITLE, only_if_current_name=OPENING)
     await _raw_rename(adapter, TITLE)
     thread.name = OPENING  # a cache that has not caught up with the edit

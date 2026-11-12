@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform
+from hermes_agent.gateway.config import Platform
 from tests.gateway.test_surface_admission import _authority
 
 QUESTIONS = [{'qid': 'q0', 'question': 'colour?', 'choices': ['red', 'blue'], 'multi_select': False},
@@ -43,7 +43,7 @@ async def _wait_for(predicate, timeout=5.0):
 
 
 def _start_batch(authority):
-    from gateway.session_clarify_batch import ask_clarify_batch
+    from hermes_agent.gateway.session_clarify_batch import ask_clarify_batch
     peer = _Peer()
     authority.sessions['s'].event_stream.fanout.attach(peer)
     turn = SimpleNamespace(_approval_owner=(authority, 's', 1), _ctx=SimpleNamespace(
@@ -61,7 +61,7 @@ async def _lock(connection, rid, qid, answer, n):
 
 @pytest.mark.asyncio
 async def test_clarify_lock_answers_the_owner_batch_request(tmp_path, monkeypatch):
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
 
     async def answer(event):
         return 'ok'
@@ -99,7 +99,7 @@ async def test_a_reattaching_viewer_gets_the_open_batch_back_and_answers_it(tmp_
     """The batch frame goes out once, to the transports attached then: a viewer that drops and resumes
     gets it back as ``open_requests`` (request id, questions, its locked answers), the reconnect replay
     its channel re-delivers, and answers the restored form."""
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
 
     async def answer(event):
         return 'ok'
@@ -129,8 +129,8 @@ async def test_a_reattaching_viewer_gets_the_open_batch_back_and_answers_it(tmp_
 
 @pytest.mark.asyncio
 async def test_a_viewer_without_the_session_cannot_lock_its_answers(tmp_path, monkeypatch):
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_server_requests import resolve
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_server_requests import resolve
 
     async def answer(event):
         return 'ok'
@@ -170,8 +170,8 @@ async def test_another_profiles_viewer_of_the_same_session_id_cannot_answer(tmp_
     authorities (separate homes and SQLite stores) both mount ``s``: profile B's own, attached viewer
     with ``session:respond`` must not lock or answer profile A's request, through ``clarify.lock`` or a
     raw response frame."""
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_server_requests import _open
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_server_requests import _open
 
     async def answer(event):
         return 'ok'
@@ -204,7 +204,7 @@ async def test_another_profiles_viewer_of_the_same_session_id_cannot_answer(tmp_
 async def test_clarify_lock_params_are_checked_by_the_declared_canonical_contract(tmp_path, monkeypatch):
     """``clarify.lock`` is a declared ``CANONICAL_METHODS`` verb: the dispatcher refuses an unknown key or a
     mistyped field from ``ClarifyLockParams`` (``4001`` naming the field) before the handler runs."""
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     from hermes_agent.tui_gateway.contracts.registry import CANONICAL_METHODS
     from hermes_agent.tui_gateway.contracts.prompt_voice import ClarifyLockParams, ClarifyLockResult
 
@@ -235,7 +235,7 @@ async def test_an_unattached_connection_cannot_settle_the_batch_with_a_raw_respo
     """``clarify.lock`` and the closing response frame are two ways to settle the same request id: both go
     through one entitlement rule (``session_server_requests.may_settle``), so a same-profile connection that
     never attached the session can no more close the batch with a frame than lock one of its answers."""
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
 
     async def answer(event):
         return 'ok'
@@ -247,7 +247,7 @@ async def test_an_unattached_connection_cannot_settle_the_batch_with_a_raw_respo
         peer, worker, out = _start_batch(authority)
         await _wait_for(lambda: any(f.get('method') == 'clarify' for f in peer.frames))
         rid = next(f['id'] for f in peer.frames if f.get('method') == 'clarify')
-        from gateway.session_server_requests import _open
+        from hermes_agent.gateway.session_server_requests import _open
         # ``dispatch`` settles a response frame synchronously: still open afterwards means refused.
         await outsider.dispatch({'jsonrpc': '2.0', 'id': rid, 'result': {'answers': {'q0': 'X', 'q1': 'X'}}})
         assert rid in _open and not _open[rid].event.is_set() and out == {}, out

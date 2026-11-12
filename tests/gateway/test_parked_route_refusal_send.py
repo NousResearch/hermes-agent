@@ -10,9 +10,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform
-from gateway.parked_route_refusal import PARKED_ROUTE_NOTICE, drop_rejected_route
-from gateway.platforms.base import SendResult
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.parked_route_refusal import PARKED_ROUTE_NOTICE, drop_rejected_route
+from hermes_agent.gateway.platforms.base import SendResult
 
 SECRET = 'xoxb-not-a-real-token'
 
@@ -41,7 +41,7 @@ async def _refuse(bot):
 @pytest.mark.asyncio
 async def test_an_unsuccessful_refusal_send_is_logged_without_text_or_raw_error(caplog):
     bot = _Bot(SendResult(success=False, error=f'invalid_auth for {SECRET}', error_kind='forbidden'))
-    with caplog.at_level(logging.WARNING, logger='gateway.parked_route_refusal'):
+    with caplog.at_level(logging.WARNING, logger='hermes_agent.gateway.parked_route_refusal'):
         await _refuse(bot)
     assert len(bot.sent) == 1
     failures = [r.getMessage() for r in caplog.records if 'not delivered' in r.getMessage()]
@@ -56,7 +56,7 @@ async def test_an_unsuccessful_refusal_send_is_logged_without_text_or_raw_error(
 @pytest.mark.asyncio
 async def test_a_successful_refusal_send_logs_no_failure(caplog):
     bot = _Bot(SendResult(success=True, message_id='n1'))
-    with caplog.at_level(logging.WARNING, logger='gateway.parked_route_refusal'):
+    with caplog.at_level(logging.WARNING, logger='hermes_agent.gateway.parked_route_refusal'):
         await _refuse(bot)
     assert len(bot.sent) == 1
     assert not [r for r in caplog.records if 'not delivered' in r.getMessage()]
@@ -66,7 +66,7 @@ async def test_a_successful_refusal_send_logs_no_failure(caplog):
 async def test_a_backlog_for_a_parked_profile_tells_each_chat_once_per_window(monkeypatch):
     """A relay reconnect drains a backlog of N frames for a parked profile; the chat is told once
     per (profile, platform, chat) and window, not N times. Another chat is still told."""
-    from gateway import parked_route_refusal
+    from hermes_agent.gateway import parked_route_refusal
     clock = [1000.0]
     monkeypatch.setattr(parked_route_refusal, '_monotonic', lambda: clock[0])
     bot = _Bot(SendResult(success=True))

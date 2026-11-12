@@ -10,7 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from tests.waiting import wait_until
-from gateway import hosted_room_driver as driver
+from hermes_agent.gateway import hosted_room_driver as driver
 from hermes_agent.tui_gateway.hosted_room_member_activity import project_room_member_activity
 from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService
 

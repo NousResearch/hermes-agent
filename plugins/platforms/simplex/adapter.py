@@ -24,15 +24,15 @@ from typing import Any, Dict, List, Optional
 
 from urllib.parse import unquote
 
-from gateway.platforms._shared import (
+from hermes_agent.gateway.platforms._shared import (
     decode_json_list_literal as _decode_json_list_literal, get_scoped_secret as _get_scoped_secret,
     platform_gate_env as _platform_gate_env, seed_extra_from_env as _seed_extra_from_env, send_error
 )
-from gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.config import Platform, PlatformConfig
 from hermes_constants import hermes_home_key
-from gateway.platforms.base import BasePlatformAdapter, SendResult, cache_image_from_url, describe_proxy_error, env_proxy_for_redaction
-from gateway.platforms.helpers import cancel_task
-from gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult, cache_image_from_url, describe_proxy_error, env_proxy_for_redaction
+from hermes_agent.gateway.platforms.helpers import cancel_task
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ def _parse_comma_list(value: str) -> list[str]:
 
 
 # (hermes home key, names) already warned about. Module-level: every reconnect builds a FRESH adapter
-# (gateway/run_adapters.py), so an instance flag would re-warn on every retry while the daemon is down.
+# (hermes_agent/gateway/run_adapters.py), so an instance flag would re-warn on every retry while the daemon is down.
 _NAME_ALLOWLIST_WARNED: set = set()
 
 

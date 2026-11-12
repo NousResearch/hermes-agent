@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.config import GatewayConfig, Platform
 from plugins.platforms.weixin import adapter as weixin
 from plugins.platforms.weixin.adapter import ContextTokenStore, WeixinAdapter
 from tools.send_message_targets import _parse_target_ref
@@ -298,7 +298,7 @@ class TestWeixinChunkDelivery:
     def test_prepare_failed_without_recovery_is_not_a_rate_limit(self, send_message_mock, stored_token):
         """No token to drop (fresh pairing, #80125) or a tokenless re-send that still fails: the error names the
         real cause and the rate-limit breaker stays closed, instead of "rate limited; cooldown active" for 30s."""
-        from gateway.platforms.base import classify_send_error
+        from hermes_agent.gateway.platforms.base import classify_send_error
 
         adapter = self._connected_adapter(context_token=stored_token)
         adapter._rate_limit_circuit_threshold = 1
@@ -504,7 +504,7 @@ class TestWeixinSendImageFileParameterName:
 
         send_document_mock.return_value = weixin.SendResult(success=True, message_id="test-id")
 
-        # This is the call pattern used by gateway/run.py extract_media
+        # This is the call pattern used by hermes_agent/gateway/run.py extract_media
         result = asyncio.run(
             adapter.send_image_file(
                 chat_id="wxid_test123",
@@ -743,7 +743,7 @@ class TestWeixinVoiceAlwaysDownloaded:
     returns ``None`` whenever Tencent provided *any* text (even
     incorrect), and ``_extract_text`` returns that text as the message
     body. The fix is to always download and never return Tencent's
-    text — the central STT pipeline in ``gateway/run.py`` produces
+    text — the central STT pipeline in ``hermes_agent/gateway/run.py`` produces
     the actual body from the downloaded audio.
     """
 
@@ -892,7 +892,7 @@ def test_register_declares_weixin_platform_entry():
 def test_is_connected_requires_account_and_token(monkeypatch):
     for name in ("WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN"):
         monkeypatch.delenv(name, raising=False)
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
     assert weixin._is_connected(PlatformConfig(enabled=True, token="t", extra={"account_id": "a"}))
     assert not weixin._is_connected(PlatformConfig(enabled=True, token="t"))
     assert not weixin._is_connected(PlatformConfig(enabled=True, extra={"account_id": "a"}))

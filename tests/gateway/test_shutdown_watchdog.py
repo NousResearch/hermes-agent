@@ -19,10 +19,10 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
-import gateway.shutdown_watchdog as shutdown_watchdog_module
+import hermes_agent.gateway.shutdown_watchdog as shutdown_watchdog_module
 import pytest
 
-from gateway.shutdown_watchdog import (
+from hermes_agent.gateway.shutdown_watchdog import (
     DEFAULT_SHUTDOWN_WATCHDOG_GRACE_S,
     arm_shutdown_watchdog,
     get_loop_heartbeat_path,
@@ -54,7 +54,7 @@ def test_arm_shutdown_watchdog_fires_with_dump_and_exit(tmp_path):
         exit_codes.append(code)
         fired.set()
 
-    with patch("gateway.shutdown_watchdog.os._exit", side_effect=fake_exit):
+    with patch("hermes_agent.gateway.shutdown_watchdog.os._exit", side_effect=fake_exit):
         arm_shutdown_watchdog(
             0.15,
             done_event=done,
@@ -147,7 +147,7 @@ async def test_loop_tick_witness_arms_over_tcp_on_windows(short_home, caplog):
         # create=True arms the forbidden-call tripwire anyway and mock
         # deletes the created attribute on exit.
         create=True,
-    ), caplog.at_level(logging.DEBUG, logger="gateway.shutdown_watchdog"):
+    ), caplog.at_level(logging.DEBUG, logger="hermes_agent.gateway.shutdown_watchdog"):
         payload = await _run_heartbeat_until_payload(tmp_path)
 
     # (a) the AF_UNIX server was never attempted

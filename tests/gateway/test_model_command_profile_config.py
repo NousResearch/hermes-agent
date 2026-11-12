@@ -4,10 +4,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource
 
 
 class _CapturingPickerAdapter:
@@ -33,7 +33,7 @@ def _make_event():
 
 @pytest.mark.asyncio
 async def test_model_picker_reads_routed_profile_config(tmp_path, monkeypatch):
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     default_home = tmp_path / "default"
     secondary_home = tmp_path / "profiles" / "secondary"

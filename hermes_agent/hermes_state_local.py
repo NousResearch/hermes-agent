@@ -64,7 +64,7 @@ def commit_local_session(db, *, epoch, receipt):
         # The agent's own accounting passes its surface (turn_usage._agent_session_source)
         # and is not that writer. gui's in-process agent is desktop; a managed worker
         # creates with the policy label gui.
-        from gateway.session_policy import created_surface
+        from hermes_agent.gateway.session_policy import created_surface
         created = created_surface(policy['source'])
         conn.execute('''INSERT INTO sessions(id,source,created_source,user_id,session_key,chat_id,chat_type,
             model,cwd,profile_name,origin_json,started_at) VALUES(?,?,?,?,?,?,'dm',?,?,?,?,?)
@@ -90,7 +90,7 @@ def client_request(request_json, derived=None):
     """A frozen create request as the client sent it: an owner-resolved ``-m`` route (``model_requested``)
     compares by the name the client typed, not by the model and the *derived* fields (a receipt from
     before ``route_derived``: the endpoint) its ``${VAR}`` refs expanded to at the time. ``desktop_local``
-    (``gateway.session_policy.LOCAL_DESKTOP_CHAT``), which an earlier owner stamped into the request, was
+    (``hermes_agent.gateway.session_policy.LOCAL_DESKTOP_CHAT``), which an earlier owner stamped into the request, was
     never sent."""
     request = json.loads(request_json)
     request.pop('desktop_local', None)
@@ -173,7 +173,7 @@ def moved_receipts(conn, target_ids=None):
     """``{owner id: (moved row id, its source)}`` of local receipts whose current physical target row
     now carries another lane's route. An explicit repoint (``/handoff``, a platform ``/resume``)
     rewrote that row's routing identity, so the receipt can never restore the conversation again
-    (the stored identity check in ``gateway.session_local_recovery._checked_entry``). Only the
+    (the stored identity check in ``hermes_agent.gateway.session_local_recovery._checked_entry``). Only the
     current target counts: an earlier ``/new`` segment that moved leaves the conversation the
     receipt guards local, and releasing it would strand that transcript. *target_ids* narrows the
     scan to the rows one repoint rewrote."""

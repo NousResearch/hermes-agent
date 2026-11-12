@@ -12,9 +12,9 @@ from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_ad
 
 
 def _queued_member_turn(hosted_owner, monkeypatch, task_id, prompt):
-    from gateway import hosted_room_driver as tasks
-    from gateway.hosted_rooms import create_room, local_authority_gateway_id
-    from gateway.session_hosted_service import CanonicalHostedRoomService
+    from hermes_agent.gateway import hosted_room_driver as tasks
+    from hermes_agent.gateway.hosted_rooms import create_room, local_authority_gateway_id
+    from hermes_agent.gateway.session_hosted_service import CanonicalHostedRoomService
     from hermes_agent.tui_gateway.hosted_room_driver import HostedRoomBinding, _member_id
     authority, loop, _, _ = hosted_owner
     service = getattr(authority, 'hosted_room_service', None)
@@ -41,7 +41,7 @@ def _queued_member_turn(hosted_owner, monkeypatch, task_id, prompt):
 
 
 def test_a_deferred_turn_s_queued_input_is_refused_and_the_next_turn_runs(hosted_owner, monkeypatch):
-    from gateway import hosted_room_driver as tasks, session_authority
+    from hermes_agent.gateway import hosted_room_driver as tasks, session_authority
     authority, loop, _, _ = hosted_owner
     _, rpc, stale, lease = _queued_member_turn(hosted_owner, monkeypatch, 'stale', 'first ask')
     # The member is busy past the room's deadline: the room fences that turn as deferred.
@@ -93,10 +93,10 @@ def test_a_peer_home_moves_on_only_from_an_unchanged_retired_attempt(hosted_owne
     so a changed row or owner is still a hard denial and only an unchanged one moves the queue on."""
     import pytest
     from types import SimpleNamespace
-    from gateway.control_socket import GatewayControlServer
-    from gateway.hosted_room_driver import TaskIdentity
-    from gateway.session_contract import SessionRef
-    from gateway.session_hosted_transport import (
+    from hermes_agent.gateway.control_socket import GatewayControlServer
+    from hermes_agent.gateway.hosted_room_driver import TaskIdentity
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_hosted_transport import (
         HostedRoomOwnerRPC, check_remote_hosted_admission, install_hosted_transport)
     authority, loop, _, _ = hosted_owner
     source, target = tmp_path / 'source', tmp_path / 'target'

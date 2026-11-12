@@ -8,7 +8,7 @@ import threading
 import time
 from unittest.mock import MagicMock, patch
 
-from gateway.shutdown_watchdog import (
+from hermes_agent.gateway.shutdown_watchdog import (
     loop_heartbeat_forever,
     start_loop_liveness_watchdog,
 )
@@ -24,12 +24,12 @@ def test_loop_liveness_watchdog_stop_during_dump_disarms_hard_exit():
         handle_ref["handle"].stop()
 
     with (
-        patch("gateway.shutdown_watchdog.logger.critical") as critical,
+        patch("hermes_agent.gateway.shutdown_watchdog.logger.critical") as critical,
         patch(
-            "gateway.shutdown_watchdog.faulthandler.dump_traceback",
+            "hermes_agent.gateway.shutdown_watchdog.faulthandler.dump_traceback",
             side_effect=stop_during_dump,
         ) as dump,
-        patch("gateway.shutdown_watchdog.os._exit", side_effect=exit_codes.append),
+        patch("hermes_agent.gateway.shutdown_watchdog.os._exit", side_effect=exit_codes.append),
     ):
         handle = start_loop_liveness_watchdog(
             loop, probe_interval=0.01, probe_timeout=0.01, max_strikes=1
@@ -55,14 +55,14 @@ def test_loop_liveness_death_leaves_its_stacks_in_the_dump_file(tmp_path, monkey
         exit_codes.append(code)
         ref["handle"].stop()
 
-    with patch("gateway.shutdown_watchdog._hard_exit", side_effect=exit_and_stop), \
-            patch("gateway.shutdown_watchdog._mark_exited_quietly"):
+    with patch("hermes_agent.gateway.shutdown_watchdog._hard_exit", side_effect=exit_and_stop), \
+            patch("hermes_agent.gateway.shutdown_watchdog._mark_exited_quietly"):
         ref["handle"] = handle = start_loop_liveness_watchdog(
             MagicMock(spec=asyncio.AbstractEventLoop), probe_interval=0.01, probe_timeout=0.01,
             max_strikes=1)
         handle_ready.set()
         handle.join(timeout=5.0)
-    from gateway.shutdown_watchdog import get_shutdown_watchdog_dump_path
+    from hermes_agent.gateway.shutdown_watchdog import get_shutdown_watchdog_dump_path
     dump = get_shutdown_watchdog_dump_path(tmp_path).read_text(encoding="utf-8-sig")
     assert '"event": "loop_liveness_watchdog_fired"' in dump
     assert "most recent call first" in dump
@@ -91,9 +91,9 @@ def test_loop_liveness_watchdog_stop_during_final_miss_disarms_hard_exit():
 
     loop.call_soon_threadsafe.side_effect = hold_scheduled_probe
     with (
-        patch("gateway.shutdown_watchdog.logger.critical") as critical,
-        patch("gateway.shutdown_watchdog.faulthandler.dump_traceback") as dump,
-        patch("gateway.shutdown_watchdog.os._exit", side_effect=exit_codes.append),
+        patch("hermes_agent.gateway.shutdown_watchdog.logger.critical") as critical,
+        patch("hermes_agent.gateway.shutdown_watchdog.faulthandler.dump_traceback") as dump,
+        patch("hermes_agent.gateway.shutdown_watchdog.os._exit", side_effect=exit_codes.append),
     ):
         handle = start_loop_liveness_watchdog(
             loop,
@@ -129,9 +129,9 @@ def test_loop_liveness_watchdog_stop_after_first_recheck_skips_final_actions():
 
     loop.call_soon_threadsafe.side_effect = hold_scheduled_probe
     with (
-        patch("gateway.shutdown_watchdog.logger.critical") as critical,
-        patch("gateway.shutdown_watchdog.faulthandler.dump_traceback") as dump,
-        patch("gateway.shutdown_watchdog.os._exit") as hard_exit,
+        patch("hermes_agent.gateway.shutdown_watchdog.logger.critical") as critical,
+        patch("hermes_agent.gateway.shutdown_watchdog.faulthandler.dump_traceback") as dump,
+        patch("hermes_agent.gateway.shutdown_watchdog.os._exit") as hard_exit,
     ):
         handle = start_loop_liveness_watchdog(
             loop, probe_interval=0.01, probe_timeout=0.01, max_strikes=1
@@ -153,7 +153,7 @@ def test_loop_liveness_watchdog_stop_after_first_recheck_skips_final_actions():
 
         handle._stop_event.is_set = stop_on_final_recheck
         with patch(
-            "gateway.shutdown_watchdog.time.monotonic", side_effect=[0.0, 1.0]
+            "hermes_agent.gateway.shutdown_watchdog.time.monotonic", side_effect=[0.0, 1.0]
         ):
             release_probe.set()
             handle.join(timeout=1.0)
@@ -166,7 +166,7 @@ def test_loop_liveness_watchdog_stop_after_first_recheck_skips_final_actions():
 
 def test_gateway_config_loop_watchdog_round_trip():
     """loop_watchdog is a config.yaml knob: default on, nested-gateway form honored."""
-    from gateway.config import GatewayConfig
+    from hermes_agent.gateway.config import GatewayConfig
 
     assert GatewayConfig.from_dict({}).loop_watchdog is True
     assert GatewayConfig.from_dict({"loop_watchdog": False}).loop_watchdog is False
@@ -181,7 +181,7 @@ def test_gateway_config_loop_watchdog_round_trip():
 
 def test_gateway_config_loop_watchdog_tuning_round_trip():
     """Watchdog tolerance knobs parse, serialize, and clamp malformed values."""
-    from gateway.config import GatewayConfig
+    from hermes_agent.gateway.config import GatewayConfig
 
     # Defaults
     default = GatewayConfig.from_dict({})
@@ -235,7 +235,7 @@ def test_gateway_config_loop_watchdog_tuning_round_trip():
 def test_gateway_config_loop_watchdog_nonfinite_values_degrade():
     """NaN/Inf tuning values fall back to defaults instead of reaching the
     watchdog's Event.wait loop (or aborting config load via int(inf))."""
-    from gateway.config import GatewayConfig
+    from hermes_agent.gateway.config import GatewayConfig
 
     cfg = GatewayConfig.from_dict(
         {
@@ -264,7 +264,7 @@ def test_load_gateway_config_bridges_loop_watchdog_keys(tmp_path, monkeypatch):
     """The real startup loader must honor gateway.loop_watchdog* from
     config.yaml — from_dict's nested fallback never sees the yaml gateway
     section because load_gateway_config builds gw_data flat."""
-    from gateway.config import load_gateway_config
+    from hermes_agent.gateway.config import load_gateway_config
 
     (tmp_path / "config.yaml").write_text(
         "gateway:\n"
@@ -274,7 +274,7 @@ def test_load_gateway_config_bridges_loop_watchdog_keys(tmp_path, monkeypatch):
         "  loop_watchdog_max_strikes: 12\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr("gateway.config.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_agent.gateway.config.get_hermes_home", lambda: tmp_path)
 
     cfg = load_gateway_config()
     assert cfg.loop_watchdog is False
@@ -284,7 +284,7 @@ def test_load_gateway_config_bridges_loop_watchdog_keys(tmp_path, monkeypatch):
 
 def test_loop_liveness_watchdog_marks_runtime_degraded_before_restart():
     """The terminal watchdog observation must be visible before ``os._exit``."""
-    from gateway.status import read_runtime_status, write_runtime_status
+    from hermes_agent.gateway.status import read_runtime_status, write_runtime_status
 
     write_runtime_status(gateway_state="running", exit_reason=None)
     loop = MagicMock(spec=asyncio.AbstractEventLoop)
@@ -296,8 +296,8 @@ def test_loop_liveness_watchdog_marks_runtime_degraded_before_restart():
         fired.set()
 
     with (
-        patch("gateway.shutdown_watchdog.faulthandler.dump_traceback"),
-        patch("gateway.shutdown_watchdog.os._exit", side_effect=fake_exit),
+        patch("hermes_agent.gateway.shutdown_watchdog.faulthandler.dump_traceback"),
+        patch("hermes_agent.gateway.shutdown_watchdog.os._exit", side_effect=fake_exit),
     ):
         handle = start_loop_liveness_watchdog(
             loop, probe_interval=0.01, probe_timeout=0.01, max_strikes=2
@@ -344,7 +344,7 @@ def test_heartbeat_write_does_not_block_the_loop_it_monitors():
                 ticks += 1
 
         with patch(
-            "gateway.shutdown_watchdog.write_loop_heartbeat", slow_write
+            "hermes_agent.gateway.shutdown_watchdog.write_loop_heartbeat", slow_write
         ):
             # should_continue False -> exactly one write, then return.
             hb = asyncio.create_task(

@@ -15,12 +15,12 @@ _CAPS = ['session:create', 'session:read', 'session:submit', 'session:control', 
 
 
 async def _owner(tmp_path, monkeypatch, toolsets):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.owner_identity import host_owner_subject
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.owner_identity import host_owner_subject
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': toolsets})
@@ -46,7 +46,7 @@ async def test_a_phone_apps_own_label_resumes_writable_and_a_webui_row_stays_rea
         db.append_message(sid, role='user', content='hi from ' + sid)
         db.end_session(sid, 'ws_orphan_reap')
     # hermes-mobile installed registers Platform('mobile'): a routeless row with that label still adopts.
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     Platform._add_pseudo_member('mobile')
     from hermes_cli.sessions_adopt import adoptable_sessions
     offered = {row['id'] for row in adoptable_sessions(db.db_path)}
@@ -76,8 +76,8 @@ async def test_a_phone_apps_own_label_resumes_writable_and_a_webui_row_stays_rea
 
 @pytest.mark.asyncio
 async def test_a_plugin_platform_sharing_the_label_keeps_its_messaging_route(tmp_path, monkeypatch):
-    from gateway.config import Platform
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session import SessionSource
 
     store, desktop = await _owner(tmp_path, monkeypatch, {})
     Platform._add_pseudo_member('mobile')  # what the hermes-mobile plugin's platform registration yields

@@ -1245,7 +1245,7 @@ overrides the config value.
 :::caution systemd `TimeoutStopSec`
 The generated systemd unit sizes `TimeoutStopSec` from this value: the larger of
 `restart_drain_timeout` and `cron_drain_timeout` + 10 s, plus 30 s of headroom, and at least 60 s
-(`gateway/restart.py`, `resolve_systemd_timeout_stop_sec`). If you raise `restart_drain_timeout`,
+(`hermes_agent/gateway/restart.py`, `resolve_systemd_timeout_stop_sec`). If you raise `restart_drain_timeout`,
 re-run `hermes gateway install` so the unit picks up the new budget. Otherwise systemd SIGKILLs the
 gateway in the middle of its drain. launchd caps its stop timeout at 60 s, so on macOS the drain
 is limited to what fits inside that.

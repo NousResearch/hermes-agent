@@ -18,36 +18,36 @@ from agent.turn_failure_copy import (
 from agent.session_activity import format_iteration_progress
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
-from gateway.bot_peer_notices import automatic_notices_allowed
-from gateway.config import Platform
-from gateway.media_repair import repair_explicit_computer_use_media_paths
-from gateway.platforms.base import BasePlatformAdapter
-from gateway.platforms.event import MessageEvent
-from gateway.session import (
+from hermes_agent.gateway.bot_peer_notices import automatic_notices_allowed
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.media_repair import repair_explicit_computer_use_media_paths
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
     build_session_context,
 )
-from gateway.session_detached import detached_route_of
-from gateway.session_transcript import TranscriptReadError
-from gateway.turn_context import TurnContext
-from gateway.warning_notifications import diagnostic_wake_muted
-from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
+from hermes_agent.gateway.session_detached import detached_route_of
+from hermes_agent.gateway.session_transcript import TranscriptReadError
+from hermes_agent.gateway.turn_context import TurnContext
+from hermes_agent.gateway.warning_notifications import diagnostic_wake_muted
+from hermes_agent.gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
 from hermes_constants import get_hermes_home_override
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from utils import base_url_hostname
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner
-    from gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 
 def _acp_launch(runner, source) -> bool:
     """An editor session: ACP shows no reasoning event yet, so its reply keeps the projected block."""
-    from gateway.session_setting_commands import local_policy
+    from hermes_agent.gateway.session_setting_commands import local_policy
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     try:
         return getattr(local_policy(runner, source), "source", None) == "acp"
@@ -59,7 +59,7 @@ class GatewayTurnPersistenceMixin:
     @staticmethod
     def _is_intentional_silence(agent_result, response) -> bool:
         try:
-            from gateway.response_filters import is_intentional_silence_agent_result
+            from hermes_agent.gateway.response_filters import is_intentional_silence_agent_result
             return is_intentional_silence_agent_result(agent_result, response)
         except Exception:
             return False
@@ -72,7 +72,7 @@ class GatewayTurnPersistenceMixin:
         A raw persisted marker is not proof that a partial/interrupted turn completed. A crash
         before this receipt is durable keeps the human safeguard; transcript bytes stay intact.
         """
-        from gateway.response_filters import is_intentional_silence_response, silence_allowed
+        from hermes_agent.gateway.response_filters import is_intentional_silence_response, silence_allowed
         kind = agent_result.get("queued_terminal_display_kind", display_kind)
         expected = agent_result.get("queued_terminal_reply_expected", reply_expected)
         if (not silent or not session_key or silence_allowed(kind, expected)
@@ -109,7 +109,7 @@ class GatewayTurnPersistenceMixin:
         logging, resume-pending clear, empty-response normalization, and identity-guarded
         post-compression session_id propagation. Returns
         ``(response, _intentional_silence, agent_messages)``."""
-        from gateway.run import (
+        from hermes_agent.gateway.run import (
             _is_gateway_hidden_reasoning_incomplete_turn, _normalize_empty_agent_response,
             _sanitize_gateway_final_response, _should_clear_resume_pending_after_turn,
         )
@@ -122,8 +122,8 @@ class GatewayTurnPersistenceMixin:
         # A queued (/queue) chain's TERMINAL turn owns the silence verdict, not the event that
         # opened the chain: an internal follow-up, or a message not addressed to the bot, may go
         # silent; any other human one must not.
-        from gateway.response_filters import is_machinery_display_kind, strip_trailing_silence_marker
-        from gateway.run_turn import _unexpected_silence_reply
+        from hermes_agent.gateway.response_filters import is_machinery_display_kind, strip_trailing_silence_marker
+        from hermes_agent.gateway.run_turn import _unexpected_silence_reply
         _silence_kind = agent_result.get("queued_terminal_display_kind", persist_user_display_kind)
         _silence_reply_expected = agent_result.get("queued_terminal_reply_expected", reply_expected)
         _silence_source = agent_result.get("queued_terminal_source", source)
@@ -219,7 +219,7 @@ class GatewayTurnPersistenceMixin:
             # Local viewers receive reasoning.delta through their event stream; projecting it into
             # the final response duplicates it and leaks messaging-platform formatting into Desktop.
             return response
-        from gateway.run import _load_gateway_config, _platform_config_key, _resolve_gateway_display_bool
+        from hermes_agent.gateway.run import _load_gateway_config, _platform_config_key, _resolve_gateway_display_bool
         try:
             _show_reasoning_effective = _resolve_gateway_display_bool(
                 _load_gateway_config(), _platform_config_key(source.platform), "show_reasoning",
@@ -233,7 +233,7 @@ class GatewayTurnPersistenceMixin:
         last_reasoning = agent_result.get("last_reasoning")
         if not (_show_reasoning_effective and response and not _intentional_silence and last_reasoning):
             return response
-        from gateway.stream_consumer_fences import escape_code_fences_for_display
+        from hermes_agent.gateway.stream_consumer_fences import escape_code_fences_for_display
         # Collapse long reasoning to keep messages readable
         lines = last_reasoning.strip().splitlines()
         if len(lines) > 15:
@@ -242,7 +242,7 @@ class GatewayTurnPersistenceMixin:
             display_reasoning = last_reasoning.strip()
         # Per-platform render style: Discord defaults to "-# " subtext, others keep the code block.
         try:
-            from gateway.display_config import resolve_display_setting
+            from hermes_agent.gateway.display_config import resolve_display_setting
             _reasoning_style = resolve_display_setting(
                 _load_gateway_config(), _platform_config_key(source.platform), "reasoning_style", "code",
             )
@@ -261,13 +261,13 @@ class GatewayTurnPersistenceMixin:
         """Runtime-metadata footer for the FINAL message of the turn; off by default
         (display.runtime_footer.enabled=false). Never on a finite (`-z`, `chat -q`) turn: its reply is
         the printed answer itself."""
-        from gateway.run import _load_gateway_config, _platform_config_key, _terminal_scope_cwd
-        from gateway.session_finite import finite_turn_required
+        from hermes_agent.gateway.run import _load_gateway_config, _platform_config_key, _terminal_scope_cwd
+        from hermes_agent.gateway.session_finite import finite_turn_required
         # A bot peer gets the model's words only: a streamed reply sends the footer as its own message.
         if finite_turn_required() is True or not automatic_notices_allowed(source):
             return ""
         try:
-            from gateway.runtime_footer import build_footer_line as _bfl
+            from hermes_agent.gateway.runtime_footer import build_footer_line as _bfl
             return _bfl(
                 user_config=_load_gateway_config(),
                 platform_key=_platform_config_key(source.platform), model=agent_result.get("model"),
@@ -319,7 +319,7 @@ class GatewayTurnPersistenceMixin:
 
     def _hmwa_failed_turn_notice(self, agent_result):
         """Choose retry guidance without assuming completed tool effects can be repeated safely."""
-        from gateway.media_repair import _current_turn_messages
+        from hermes_agent.gateway.media_repair import _current_turn_messages
         # Compression during the failed turn can move the slice boundary; the shared helper falls
         # back to the last user row so tool evidence is not silently dropped.
         turn_messages = _current_turn_messages(
@@ -353,7 +353,7 @@ class GatewayTurnPersistenceMixin:
 
         Context-overflow failures must NOT persist the user message (session would grow and
         reproduce the failure forever); transient failures (429/timeout/5xx) DO."""
-        from gateway.run import _is_gateway_hidden_reasoning_incomplete_turn
+        from hermes_agent.gateway.run import _is_gateway_hidden_reasoning_incomplete_turn
         # Save the full conversation to the transcript, including tool calls. This preserves the complete
         # agent loop (tool_calls, tool results, intermediate reasoning) so sessions can be resumed with full
         # context and transcripts are useful for debugging and training data. IMPORTANT: For
@@ -365,7 +365,7 @@ class GatewayTurnPersistenceMixin:
         # user turn so the conversation is preserved. (#7100)
         agent_failed_early = bool(agent_result.get("failed"))
         hidden_reasoning_incomplete = _is_gateway_hidden_reasoning_incomplete_turn(agent_result)
-        from gateway.run_turn import is_context_overflow_failure_result
+        from hermes_agent.gateway.run_turn import is_context_overflow_failure_result
         is_context_overflow_failure = is_context_overflow_failure_result(agent_result, len(history))
         if is_context_overflow_failure:
             logger.info(
@@ -406,11 +406,11 @@ class GatewayTurnPersistenceMixin:
             # The caller addresses an API conversation by its id and every API door re-validates that
             # binding (``restore_api_session``): a rotated entry would refuse each later request to it
             # (``admission_conflict``). A conversation its chat moved past has no route of its own to
-            # reset (gateway/session_detached.py): its app viewer gets the start-fresh guidance a
+            # reset (hermes_agent/gateway/session_detached.py): its app viewer gets the start-fresh guidance a
             # failed overflow turn gives. Never a reset that did not happen.
             logger.info("Keeping session %s after compression exhaustion.",
                         session_entry.session_id if session_entry else "?")
-            from gateway.run import _context_overflow_reply
+            from hermes_agent.gateway.run import _context_overflow_reply
             guidance = _context_overflow_reply() if detached_route_of(source) else ""
             if guidance not in (response or ""):
                 response = f"{response}\n\n{guidance}" if response else guidance
@@ -425,10 +425,10 @@ class GatewayTurnPersistenceMixin:
         ``hermes peer dm`` lands in) resets its target in the store, which refuses while an admission
         on it is started (``session_busy``): this turn's own. The drain runs the reset right after it
         settles this admission, before it claims any successor (the Bot Chat's retry included)."""
-        from gateway.session_ingress import executing_admission
+        from hermes_agent.gateway.session_ingress import executing_admission
         if getattr(source, "platform", None) != Platform.LOCAL or not executing_admission.get():
             return False
-        from gateway.session_authorities import active_authority
+        from hermes_agent.gateway.session_authorities import active_authority
         authority = active_authority(self)
         if authority is None:
             return False
@@ -439,7 +439,7 @@ class GatewayTurnPersistenceMixin:
     async def _hmwa_rotate_exhausted_session(self, session_entry, session_key, source):
         """The compression-exhaustion auto-reset itself; returns the route's (fresh) entry."""
         logger.info("Auto-resetting session %s after compression exhaustion.", session_entry.session_id)
-        from gateway.session_automation import move_route_wakes, reset_and_rehome_messages
+        from hermes_agent.gateway.session_automation import move_route_wakes, reset_and_rehome_messages
         # Messages queued behind the exhausted turn still run, on the fresh session (unlike /new).
         new_entry, release_fresh = await reset_and_rehome_messages(self, session_key, session_entry.session_id)
         try:
@@ -491,7 +491,7 @@ class GatewayTurnPersistenceMixin:
         }
         if prepared.persist_user_display_kind:
             _user_entry["display_kind"] = prepared.persist_user_display_kind
-        from gateway.response_filters import persisted_user_metadata_for_event
+        from hermes_agent.gateway.response_filters import persisted_user_metadata_for_event
         display_metadata = {**({"gateway_input_owner": prepared.persistence_owner} if prepared.persistence_owner else {}),
                             **persisted_user_metadata_for_event(event)}
         if display_metadata:
@@ -507,7 +507,7 @@ class GatewayTurnPersistenceMixin:
         """Persist this turn to the transcript (session_meta on first turn, user-only on transient
         failure, nothing on context overflow), update last_prompt_tokens, and re-baseline the
         cached agent's message count."""
-        from gateway.run import _resolve_gateway_model
+        from hermes_agent.gateway.run import _resolve_gateway_model
         ts = time.time()  # Unix epoch float — consistent with DB storage
         store = self.async_session_store
         sid = session_entry.session_id
@@ -751,8 +751,8 @@ class GatewayTurnPersistenceMixin:
         if status_code in {400, 500} and len(prepared.history) > 50:
             # Context overflow / payload too large: a deterministic rejection (#107567), and the same
             # no-grow rule as the persist path (#1630) — nothing is written into an oversized session.
-            from gateway.run import _context_overflow_reply
-            from gateway.session_results import record_unexecuted_failure
+            from hermes_agent.gateway.run import _context_overflow_reply
+            from hermes_agent.gateway.session_results import record_unexecuted_failure
             return record_unexecuted_failure(_context_overflow_reply())
         # Replay can coalesce inputs; only this input's durable marker establishes ownership.
         try:
@@ -793,7 +793,7 @@ class GatewayTurnPersistenceMixin:
                 status_hint = t("gateway.errors.hint_usage_limit")
         elif status_code == 400:
             status_hint = t("gateway.errors.hint_rejected")
-        from gateway.session_results import record_unexecuted_failure
+        from hermes_agent.gateway.session_results import record_unexecuted_failure
         if not automatic_notices_allowed(source):
             # The failure is recorded for the operator; the bot peer gets no apology to answer (#137027).
             record_unexecuted_failure(t("gateway.errors.generic_failed"))

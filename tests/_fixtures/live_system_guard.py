@@ -311,7 +311,7 @@ def _live_system_guard(request, monkeypatch):
 
     def _sandboxed_gateway_child(cmd_str: str, env) -> bool:
         """The disposable-daemon fixtures (``tests/gateway/fixtures/*``, the socket-path-length
-        probes) launch the bare ``python -m gateway.run`` module entry with an explicit ``env``
+        probes) launch the bare ``python -m hermes_agent.gateway.run`` module entry with an explicit ``env``
         that re-homes BOTH ``HERMES_HOME`` and ``HOME`` away from the developer's account. Such a
         child resolves no developer unit or config, holds no live port, and is reaped by its
         test: the orphan class the guard exists for is the ``hermes gateway run|start|restart``
@@ -414,7 +414,7 @@ def _live_system_guard(request, monkeypatch):
         # webhook port. 2026-09-03: 39 such orphans lived 6 days after a
         # sibling refactor moved the spawn seam and left tests patching the
         # facade. The canonical matcher, never an argv substring.
-        from gateway.status import gateway_spawn_intent_subcommand
+        from hermes_agent.gateway.status import gateway_spawn_intent_subcommand
         # A gateway launched INSIDE a container (`docker exec … hermes gateway start`) cannot
         # reach the host's systemd unit or webhook port; tests/docker/ exists to exercise it.
         in_container = _first_token_basename(cmd_str) in _CONTAINER_RUNTIMES

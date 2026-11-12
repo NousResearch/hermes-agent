@@ -160,7 +160,7 @@ def test_desktop_workspace_selection_and_recreation(
     docker_task, tmp_path, monkeypatch, mount
 ):
     """Desktop shares CLI's original sandbox unless a host workspace is actually selected for mounting."""
-    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
     from tools import terminal_tool
     from tools.file_tools import read_file_tool
     from tools.terminal_tool_lifecycle import cleanup_vm

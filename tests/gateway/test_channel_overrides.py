@@ -4,14 +4,14 @@ from unittest.mock import patch
 
 import pytest
 
-from gateway.config import (
+from hermes_agent.gateway.config import (
     ChannelOverride,
     GatewayConfig,
     Platform,
     PlatformConfig,
 )
-from gateway.run import _get_channel_override, GatewayRunner
-from gateway.session import SessionSource
+from hermes_agent.gateway.run import _get_channel_override, GatewayRunner
+from hermes_agent.gateway.session import SessionSource
 
 
 class TestGetChannelOverride:
@@ -130,15 +130,15 @@ class TestResolveSessionAgentRuntimePriority:
             chat_id="chan_1",
             user_id="u1",
         )
-        with patch("gateway.run._resolve_gateway_model", return_value="global/model"), \
-             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={
+        with patch("hermes_agent.gateway.run._resolve_gateway_model", return_value="global/model"), \
+             patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", return_value={
                  "provider": "anthropic",
                  "api_key": "k",
                  "base_url": "https://api.anthropic.com",
                  "api_mode": "chat_completions",
              }), \
              patch(
-                 "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+                 "hermes_agent.gateway.run._resolve_runtime_agent_kwargs_for_provider",
                  return_value={
                      "provider": "openrouter",
                      "api_key": "k2",

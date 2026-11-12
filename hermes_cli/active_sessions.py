@@ -284,7 +284,7 @@ def _read_entries(path: Path, *, strict: bool = False) -> list[dict[str, Any]]:
     return _without_queued_releases(path, valid)
 
 
-# Leases this process has queued for release (gateway/active_lease_io.py) whose durable drop has not
+# Leases this process has queued for release (hermes_agent/gateway/active_lease_io.py) whose durable drop has not
 # landed yet, keyed by registry file. Every in-process read hides them, so a claim, count or
 # ownership check made right after a turn end sees the registry as if the release had already run
 # (a slot freed, the session unowned); the next locked write persists the drop. Other processes
@@ -403,7 +403,7 @@ def _pid_liveness(pid: Any, process_start_time: Any = None, *, lenient: bool = F
     is_self = pid_int == os.getpid()  # trivially exists; the (pid, start) identity check still applies
     if not is_self:
         try:
-            from gateway.status import _pid_exists
+            from hermes_agent.gateway.status import _pid_exists
             if not _pid_exists(pid_int):
                 return False
         except Exception:

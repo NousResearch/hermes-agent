@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from tests.waiting import async_wait_until
 
 

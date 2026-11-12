@@ -10,7 +10,7 @@ diverge, a real client breaks, so we pin the relationship, not a literal.
 
 import json
 
-from gateway.platforms.api_server import _sse_frame
+from hermes_agent.gateway.platforms.api_server import _sse_frame
 
 
 def _inline_frame(data, *, event=None):

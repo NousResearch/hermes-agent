@@ -7,9 +7,9 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 from unittest.mock import patch, MagicMock
 from hermes_agent.hermes_state import SessionDB
-from gateway.config import Platform, GatewayConfig, PlatformConfig
-from gateway.platforms.event import MessageEvent
-from gateway.session import (
+from hermes_agent.gateway.config import Platform, GatewayConfig, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import (
     SessionEntry,
     SessionSource,
     SessionStore,
@@ -68,7 +68,7 @@ class TestBuildSessionContextPrompt:
         a static pointer.
         """
         from unittest.mock import patch
-        import gateway.session as _gs
+        import hermes_agent.gateway.session as _gs
 
         config = GatewayConfig(
             platforms={
@@ -107,7 +107,7 @@ class TestBuildSessionContextPrompt:
         ``except Exception -> os.environ`` tail returned True here."""
         from unittest.mock import patch
         from agent import secret_scope as ss
-        from gateway.session import _slack_tools_loaded
+        from hermes_agent.gateway.session import _slack_tools_loaded
 
         class _ExplodingScope(dict):
             def get(self, name, default=None):
@@ -134,7 +134,7 @@ class TestBuildSessionContextPrompt:
         config is intentionally left unset so only the MCP path can pass."""
         import os as _os
         from unittest.mock import patch
-        from gateway.session import _slack_tools_loaded
+        from hermes_agent.gateway.session import _slack_tools_loaded
         from tools import mcp_tool_registration as _mcp_registration
 
         # No native slack toolset / token configured.
@@ -210,7 +210,7 @@ class TestSenderPrefixWithBackfill:
 
     @pytest.fixture()
     def runner(self):
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         r = GatewayRunner.__new__(GatewayRunner)
         r.config = GatewayConfig(group_sessions_per_user=False)
@@ -283,10 +283,10 @@ class TestSenderPrefixWithBackfill:
 
 
 class TestNeutralizeUntrustedInlineText:
-    """Unit coverage for gateway.session.neutralize_untrusted_inline_text().
+    """Unit coverage for hermes_agent.gateway.session.neutralize_untrusted_inline_text().
 
     Sibling of _format_untrusted_prompt_value for inline call sites (like the
-    sender-name prefix in gateway/run.py) that must preserve the surrounding
+    sender-name prefix in hermes_agent/gateway/run.py) that must preserve the surrounding
     format instead of rendering a standalone quoted **Label:** line.
     """
 
@@ -359,7 +359,7 @@ class TestSessionStoreSwitchSession:
         from hermes_agent.hermes_state import SessionDB
 
         config = GatewayConfig()
-        with patch("gateway.session.SessionStore._ensure_loaded"):
+        with patch("hermes_agent.gateway.session.SessionStore._ensure_loaded"):
             store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
         db = SessionDB(db_path=tmp_path / "state.db")
         store._db = db
@@ -393,7 +393,7 @@ class TestSessionStoreSwitchSession:
     def test_switch_session_expected_session_id_refuses_moved_route(self, tmp_path):
         """With ``expected_session_id`` the repoint is a CAS: a route that moved past the caller's
         snapshot is left alone (None), while a matching snapshot still switches."""
-        with patch("gateway.session.SessionStore._ensure_loaded"):
+        with patch("hermes_agent.gateway.session.SessionStore._ensure_loaded"):
             store = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
         store._loaded = True
         source = SessionSource(platform=Platform.FEISHU, chat_id="chat-2", chat_type="dm", user_id="user-2")
@@ -409,7 +409,7 @@ class TestSessionStoreSwitchSession:
         from hermes_agent.hermes_state import SessionDB
 
         config = GatewayConfig()
-        with patch("gateway.session.SessionStore._ensure_loaded"):
+        with patch("hermes_agent.gateway.session.SessionStore._ensure_loaded"):
             store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
         db = SessionDB(db_path=tmp_path / "state.db")
         store._db = db
@@ -461,7 +461,7 @@ class TestSessionStoreLookup:
     @pytest.fixture()
     def store(self, tmp_path):
         config = GatewayConfig()
-        with patch("gateway.session.SessionStore._ensure_loaded"):
+        with patch("hermes_agent.gateway.session.SessionStore._ensure_loaded"):
             s = SessionStore(sessions_dir=tmp_path, config=config)
         s._db = None
         s._loaded = True
@@ -503,7 +503,7 @@ class TestWhatsAppSessionKeyConsistency:
     @pytest.fixture()
     def store(self, tmp_path):
         config = GatewayConfig()
-        with patch("gateway.session.SessionStore._ensure_loaded"):
+        with patch("hermes_agent.gateway.session.SessionStore._ensure_loaded"):
             s = SessionStore(sessions_dir=tmp_path, config=config)
         s._db = None
         s._loaded = True
@@ -886,7 +886,7 @@ class TestSessionEntryFromDictTraversalValidation:
         return {**self.BASE, **overrides}
 
     def test_valid_entry_loads(self):
-        from gateway.session import SessionEntry
+        from hermes_agent.gateway.session import SessionEntry
         entry = SessionEntry.from_dict(self._entry())
         assert entry.session_id == "abc123"
 
@@ -894,14 +894,14 @@ class TestSessionEntryFromDictTraversalValidation:
     def test_session_id_non_leading_separator_raises(self):
         """A path separator anywhere — not just leading — must be rejected,
         since a non-leading backslash is still a Windows traversal vector."""
-        from gateway.session import SessionEntry
+        from hermes_agent.gateway.session import SessionEntry
         with pytest.raises(ValueError, match="session_id"):
             SessionEntry.from_dict(self._entry(session_id="good\\..\\bad"))
 
     def test_session_id_interior_slash_raises(self):
         """A non-leading forward slash is still a traversal vector for session_id
         (it never touches the filesystem, so it must remain strict)."""
-        from gateway.session import SessionEntry
+        from hermes_agent.gateway.session import SessionEntry
         with pytest.raises(ValueError, match="session_id"):
             SessionEntry.from_dict(self._entry(session_id="good/../bad"))
 
@@ -929,7 +929,7 @@ class TestSessionEntryFromDictGoogleChatKeyAccepted:
         return {**self.BASE, **overrides}
 
     def test_google_chat_group_key_accepted(self):
-        from gateway.session import SessionEntry
+        from hermes_agent.gateway.session import SessionEntry
         entry = SessionEntry.from_dict(self._entry(
             session_key="agent:main:google_chat:group:spaces/AAAAEVvy5RY",
         ))
@@ -951,7 +951,7 @@ class TestSessionEntryFromDictSessionKeyTraversalStillRejected:
         return {**self.BASE, **overrides}
 
     def test_session_key_dotdot_raises(self):
-        from gateway.session import SessionEntry
+        from hermes_agent.gateway.session import SessionEntry
         with pytest.raises(ValueError, match="session_key"):
             SessionEntry.from_dict(self._entry(session_key="agent:main:../../secret"))
 
@@ -961,8 +961,8 @@ class TestEnsureLoadedSkipsInvalidEntries:
 
     def test_invalid_entry_skipped_valid_entry_loads(self, tmp_path):
         import json
-        from gateway.session import SessionStore
-        from gateway.config import GatewayConfig
+        from hermes_agent.gateway.session import SessionStore
+        from hermes_agent.gateway.config import GatewayConfig
 
         sessions_file = tmp_path / "sessions.json"
         sessions_file.write_text(json.dumps({
@@ -997,7 +997,7 @@ class TestHasAnySessions:
     def store_with_mock_db(self, tmp_path):
         """SessionStore with a mocked database."""
         config = GatewayConfig()
-        with patch("gateway.session.SessionStore._ensure_loaded"):
+        with patch("hermes_agent.gateway.session.SessionStore._ensure_loaded"):
             s = SessionStore(sessions_dir=tmp_path, config=config)
         s._loaded = True
         s._entries = {}
@@ -1019,7 +1019,7 @@ class TestHasAnySessions:
     def test_fallback_without_database(self, tmp_path):
         """Should fall back to len(_entries) when DB is not available."""
         config = GatewayConfig()
-        with patch("gateway.session.SessionStore._ensure_loaded"):
+        with patch("hermes_agent.gateway.session.SessionStore._ensure_loaded"):
             store = SessionStore(sessions_dir=tmp_path, config=config)
         store._loaded = True
         store._db = None
@@ -1038,7 +1038,7 @@ class TestLastPromptTokens:
 
     def test_session_entry_roundtrip(self):
         """last_prompt_tokens should survive serialization/deserialization."""
-        from gateway.session import SessionEntry
+        from hermes_agent.gateway.session import SessionEntry
         from datetime import datetime
         entry = SessionEntry(
             session_key="test",
@@ -1056,13 +1056,13 @@ class TestLastPromptTokens:
     def test_update_session_none_does_not_change(self, tmp_path):
         """update_session with default (None) should not change last_prompt_tokens."""
         config = GatewayConfig()
-        with patch("gateway.session.SessionStore._ensure_loaded"):
+        with patch("hermes_agent.gateway.session.SessionStore._ensure_loaded"):
             store = SessionStore(sessions_dir=tmp_path, config=config)
         store._loaded = True
         store._db = None
         store._save = MagicMock()
 
-        from gateway.session import SessionEntry
+        from hermes_agent.gateway.session import SessionEntry
         from datetime import datetime
         entry = SessionEntry(
             session_key="k1",
@@ -1169,7 +1169,7 @@ class TestRewriteTranscriptPreservesReasoning:
 
         # Now simulate /retry: build the SessionStore and call rewrite_transcript
         config = GatewayConfig()
-        with patch("gateway.session.SessionStore._ensure_loaded"):
+        with patch("hermes_agent.gateway.session.SessionStore._ensure_loaded"):
             store = SessionStore(sessions_dir=tmp_path, config=config)
         store._db = db
         store._loaded = True
@@ -1432,7 +1432,7 @@ class TestGatewaySessionDbRecovery:
         store._transcript_append_failures = {}
         store._fts_rebuild_last_attempt_at = time.monotonic()
         threshold = store._TRANSCRIPT_APPEND_FAILURE_ESCALATION_THRESHOLD
-        with caplog.at_level(logging.WARNING, logger="gateway.session_transcript"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.session_transcript"):
             for i in range(threshold):
                 store.append_to_transcript("s-esc", {"role": "user", "content": f"m{i}"})
         levels = [r.levelno for r in caplog.records if "transcript append failed" in r.getMessage()]
@@ -1459,7 +1459,7 @@ class TestGatewaySessionDbRecovery:
         store._transcript_append_failures = {}
         store._fts_rebuild_last_attempt_at = time.monotonic()
         threshold = store._TRANSCRIPT_APPEND_FAILURE_ESCALATION_THRESHOLD
-        with caplog.at_level(logging.WARNING, logger="gateway.session_transcript"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.session_transcript"):
             for i in range(threshold):
                 store.append_to_transcript("s-dead", {"role": "user", "content": f"m{i}"})
         assert store._transcript_append_failures["s-dead"] == threshold

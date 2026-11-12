@@ -4,12 +4,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_cli_turn import cli_turn_scope, one_turn_runtime
+from hermes_agent.gateway.session_cli_turn import cli_turn_scope, one_turn_runtime
 from hermes_cli.model_switch import ModelSwitchResult
 
 
 def test_settled_info_publishes_the_policy_route_and_drops_the_cached_agent(monkeypatch):
-    from gateway.session_local_inventory import publish_settled_info
+    from hermes_agent.gateway.session_local_inventory import publish_settled_info
     published, evicted = [], []
     policy = SimpleNamespace(effective=lambda _authority, secrets=True: (
         {"model": {"provider": "openrouter"}}, "session-model"), source="cli")
@@ -24,7 +24,7 @@ def test_settled_info_publishes_the_policy_route_and_drops_the_cached_agent(monk
     agent = SimpleNamespace(model="once-model", provider="anthropic", tools=None, _cached_system_prompt="",
                             context_compressor=None)
 
-    from gateway import session_local, session_policy
+    from hermes_agent.gateway import session_local, session_policy
     monkeypatch.setattr(session_local, "local_session_info", lambda *_a, **_k: {
         "model": "once-model", "provider": "anthropic"})
     monkeypatch.setattr(session_policy, "policy_for_source", lambda *_a, **_k: policy)
@@ -101,7 +101,7 @@ def _running_runner(route, agent):
     """A real ``GatewayRunner`` whose cache holds *agent* while its turn still owns the running slot."""
     import threading
     from collections import OrderedDict
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
     runner = GatewayRunner.__new__(GatewayRunner)
     runner._agent_cache = OrderedDict()
     runner._agent_cache_lock = threading.Lock()
@@ -117,8 +117,8 @@ def test_a_one_turn_agent_is_released_once_its_running_slot_clears(monkeypatch):
     (and a Codex app-server child) outlived every sweep."""
     import threading
     from unittest.mock import MagicMock
-    from gateway import session_local, session_policy
-    from gateway.session_local_inventory import publish_settled_info
+    from hermes_agent.gateway import session_local, session_policy
+    from hermes_agent.gateway.session_local_inventory import publish_settled_info
     from tests.waiting import wait_until
     route = "agent:main:local:dm:s"
     agent = MagicMock()
@@ -154,8 +154,8 @@ def test_settled_info_pairs_model_and_provider_from_one_profile_read(monkeypatch
     """Review of #140969: ``policy.provider`` read the frozen config while ``current_model`` followed
     the profile, so a following Bot Chat whose profile moved published the new model with the old
     provider."""
-    from gateway import session_local, session_policy
-    from gateway.session_local_inventory import publish_settled_info
+    from hermes_agent.gateway import session_local, session_policy
+    from hermes_agent.gateway.session_local_inventory import publish_settled_info
     published = []
 
     class _Policy:
@@ -337,7 +337,7 @@ def test_an_alias_runs_on_the_endpoint_the_switch_resolved_when_the_config_chang
 
 
 def test_a_one_turn_override_carries_its_reasoning_level_for_that_admission_only():
-    from gateway.session_cli_turn import admit_cli_turn, one_turn_reasoning
+    from hermes_agent.gateway.session_cli_turn import admit_cli_turn, one_turn_reasoning
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     committed = admit_cli_turn({"model_override": {"model": "m", "provider": "p", "reasoning": "high"}})
     assert committed["cli_turn_v1"]["model_override"] == {"model": "m", "provider": "p", "reasoning": "high"}

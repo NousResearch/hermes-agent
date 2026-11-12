@@ -17,13 +17,13 @@ class _Transport:
 
 @pytest.mark.asyncio
 async def test_profile_bound_ticket_never_reaches_a_sibling_authority(tmp_path, monkeypatch):
-    from gateway.config import Platform
-    from gateway.run_runtime import initialize_gateway_runtime
-    from gateway.runtime_ownership import process_ownership
-    from gateway.session import SessionSource
-    from gateway.session_authorities import authority_for_profile_id, owner_scope
-    from gateway.session_authority import LiveSession
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.run_runtime import initialize_gateway_runtime
+    from hermes_agent.gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.session import SessionSource
+    from hermes_agent.gateway.session_authorities import authority_for_profile_id, owner_scope
+    from hermes_agent.gateway.session_authority import LiveSession
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     root, homes = _reserve_homes(tmp_path, monkeypatch)
     process_ownership.reserve([home for _, home in homes])
     connections, runner = [], None
@@ -39,7 +39,7 @@ async def test_profile_bound_ticket_never_reaches_a_sibling_authority(tmp_path, 
             SessionSource(platform=Platform.LOCAL, chat_id='local-x', user_id='uid:other'), 'route')
 
         def connect(profile_id, **scope):
-            # Exactly gateway/run_api.py's redeem → identity → operator connection binding.
+            # Exactly hermes_agent/gateway/run_api.py's redeem → identity → operator connection binding.
             ticket = store.mint(profile_id=profile_id, subject='uid:attacker', purpose='interactive', **scope)
             grant = store.redeem(ticket, profile_id=None, purpose='interactive')
             authority = authority_for_profile_id(runner, grant['profile_id'])

@@ -24,15 +24,15 @@ except ImportError:
     HTTPX_AVAILABLE = False
     httpx = None  # type: ignore[assignment]
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult, describe_proxy_error, env_proxy_for_redaction
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
-from gateway.platforms.helpers import MessageDeduplicator
-from gateway.platforms._shared import (
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult, describe_proxy_error, env_proxy_for_redaction
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
+from hermes_agent.gateway.platforms.helpers import MessageDeduplicator
+from hermes_agent.gateway.platforms._shared import (
     extra_or_secret as _extra_or_secret, seed_extra_from_env as _seed_extra_from_env
 )
-from gateway.platforms.send_targets import parse_nonempty
+from hermes_agent.gateway.platforms.send_targets import parse_nonempty
 
 logger = logging.getLogger(__name__)
 

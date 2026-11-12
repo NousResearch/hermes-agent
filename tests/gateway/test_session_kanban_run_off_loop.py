@@ -15,8 +15,8 @@ HOLD_S = 3.0
 def test_run_task_kanban_write_never_blocks_the_loop(tmp_path, monkeypatch):
     from hermes_cli import kanban_db as kb
     from hermes_cli.kanban_db_connect import connect
-    from gateway.session_contract import SessionActor
-    from gateway.session_kanban import run_task
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_kanban import run_task
     monkeypatch.setenv('HERMES_KANBAN_HOME', str(tmp_path))
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setenv('HOME', str(tmp_path / 'home'))
@@ -33,8 +33,8 @@ def test_run_task_kanban_write_never_blocks_the_loop(tmp_path, monkeypatch):
         task = kb.claim_task(conn, task_id)
         board_db = conn.execute('PRAGMA database_list').fetchone()[2]
     config = {'model': {'default': 'loop-model', 'provider': 'custom'}, 'platform_toolsets': {'cli': ['terminal']}}
-    monkeypatch.setattr('gateway.run._load_gateway_config', lambda: config)
-    monkeypatch.setattr('gateway.session_local.create_local_session', lambda *a, **k: SimpleNamespace(
+    monkeypatch.setattr('hermes_agent.gateway.run._load_gateway_config', lambda: config)
+    monkeypatch.setattr('hermes_agent.gateway.session_local.create_local_session', lambda *a, **k: SimpleNamespace(
         session_id='owner-session', profile_id=str(tmp_path)))
     calls = []
 
@@ -58,7 +58,7 @@ def test_run_task_kanban_write_never_blocks_the_loop(tmp_path, monkeypatch):
         time.sleep(HOLD_S)  # health: allow HX013 -- the held writer's duration IS the behaviour under test
         rival.execute('ROLLBACK')
         rival.close()
-    monkeypatch.setattr('gateway.session_kanban.asdict', lambda receipt: {})
+    monkeypatch.setattr('hermes_agent.gateway.session_kanban.asdict', lambda receipt: {})
 
     async def scenario():
         writer = threading.Thread(target=dispatcher_holds_the_bus, daemon=True)

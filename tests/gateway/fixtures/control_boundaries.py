@@ -8,9 +8,9 @@ async def exercise_control_boundaries(tmp_path, monkeypatch):
     import asyncio
     from dataclasses import replace
     from types import SimpleNamespace
-    from gateway.run_turn_runner import TurnRunner
-    from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import SessionActor, SessionRef
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_agent.gateway.session_contract import SessionActor, SessionRef
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import (RuntimeStoreError, admit_session_input, begin_runtime_epoch,
                                      claim_session_input, settle_session_input)

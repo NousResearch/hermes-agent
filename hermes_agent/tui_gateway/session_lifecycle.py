@@ -62,7 +62,7 @@ _AUTOMATIC_SESSION_END_REASONS = frozenset({"ws_orphan_reap", "ws_disconnect", "
 
 def _lease_metadata(live_session_id: str) -> dict:
     """Writer identity for a lease: ``live_session_id`` is half of ``_is_same_writer``. Bot Chat delivery is
-    admitted by the session authority (gateway/session_bot), never gated on a lease flag."""
+    admitted by the session authority (hermes_agent/gateway/session_bot), never gated on a lease flag."""
     return {"live_session_id": live_session_id}
 
 
@@ -400,7 +400,7 @@ def _is_gateway_owned_source(source: str) -> bool:
     if src in _NON_GATEWAY_SOURCES:
         return False
     try:
-        from gateway.config import Platform
+        from hermes_agent.gateway.config import Platform
         Platform(src)  # raises ValueError for arbitrary non-platform strings
         return True
     except Exception:
@@ -796,7 +796,7 @@ def _interrupt_session_turn(
         session.pop("queued_prompts", None)
         session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
     if should_interrupt:
-        # Sibling of gateway/run_agent_cache.py::_interrupt_and_clear_session: a user-initiated stop of a
+        # Sibling of hermes_agent/gateway/run_agent_cache.py::_interrupt_and_clear_session: a user-initiated stop of a
         # live TUI/desktop turn is the same "loop is gone" event for plugins holding per-turn external
         # resources. Observer-only; dispatch failures never break the interrupt.
         # Every caller (session.interrupt RPC, orphan/idle reapers, lease takeover) is off-turn, so bind the

@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input, settle_session_input
-from gateway.session_bot import _result
-from gateway.session_results import retain_result
+from hermes_agent.gateway.session_bot import _result
+from hermes_agent.gateway.session_results import retain_result
 from tools import bot_mode_dm, bot_mode_dm_outcome
 
 from tests.tools.test_bot_mode_dm import _FakeAgent, _canonical_target, _capture_spawn, _fresh_probe_cache, _managed_home

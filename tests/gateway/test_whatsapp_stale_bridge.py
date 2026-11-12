@@ -23,7 +23,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import Platform
+from hermes_agent.gateway.config import Platform
 
 
 class _AsyncCM:
@@ -268,7 +268,7 @@ class TestCacheDirEnvPassthrough:
             await adapter.connect()
 
         env = mock_popen.call_args.kwargs["env"]
-        from gateway.platforms.base import (
+        from hermes_agent.gateway.platforms.base import (
             get_audio_cache_dir,
             get_document_cache_dir,
             get_image_cache_dir,

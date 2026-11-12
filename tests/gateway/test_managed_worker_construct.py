@@ -210,9 +210,9 @@ def test_construct_inputs_follow_the_session_mode(tmp_path, monkeypatch):
     (none configured here; never the runner's daemon-start copy); config-only:
     the frozen snapshot's chain and launch skills only, never the profile; safe mode: nothing.
     The child accepts only the closed shape."""
-    from gateway.session_local import _bypass_policy
-    from gateway.session_policy import build_policy
-    from gateway.session_worker_construct import construct_inputs, construct_kwargs
+    from hermes_agent.gateway.session_local import _bypass_policy
+    from hermes_agent.gateway.session_policy import build_policy
+    from hermes_agent.gateway.session_worker_construct import construct_inputs, construct_kwargs
     chain = [{'provider': 'custom', 'model': 'b', 'base_url': 'http://127.0.0.1:9/v1'}]
     profile_reads = []
     runner = SimpleNamespace(config=None, _prefill_messages=[{'role': 'user', 'content': 'P'}],

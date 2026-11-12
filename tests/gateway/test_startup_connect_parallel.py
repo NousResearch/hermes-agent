@@ -29,9 +29,9 @@ import asyncio
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.run import GatewayRunner
 
 
 class _OrderRecorder:
@@ -265,7 +265,7 @@ class TestTelegramColdStartCap:
         # Shrink the capped budget so the test is fast; the assertion is that
         # the INITIAL path (initial=True) is the one that fires, not the 180s
         # reconnect budget.
-        import gateway.run as gateway_run
+        import hermes_agent.gateway.run as gateway_run
 
         monkeypatch.setattr(
             gateway_run, "_TELEGRAM_INITIAL_CONNECT_TIMEOUT_SECS_DEFAULT", 0.2

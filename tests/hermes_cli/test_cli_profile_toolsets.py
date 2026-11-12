@@ -54,8 +54,8 @@ def _created(client):
 
 
 def test_stale_profile_toolset_warns_and_the_session_is_created(store, monkeypatch):
-    from gateway.session_local_inventory import _policy_tools, _unknown_toolsets
-    from gateway.session_policy import build_policy
+    from hermes_agent.gateway.session_local_inventory import _policy_tools, _unknown_toolsets
+    from hermes_agent.gateway.session_policy import build_policy
     from tests.hermes_cli import test_gateway_session_store as fake
     db, client = store
     # The gateway judges the profile list against its own plugins and reports the stale name with the
@@ -86,7 +86,7 @@ def test_stale_profile_toolset_warns_and_the_session_is_created(store, monkeypat
 
 
 def test_explicit_unknown_toolset_is_still_refused(store, monkeypatch):
-    from gateway.session_policy import build_policy
+    from hermes_agent.gateway.session_policy import build_policy
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     db, client = store
     _launch(monkeypatch, db, toolsets="terminal,bogus")

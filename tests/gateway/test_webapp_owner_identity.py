@@ -3,7 +3,7 @@
 Hermes is single-user. Sign-in only decides whether a browser may open the Webapp; it never names a
 second owner. So a Webapp tab's Group Chats are native Desktop's (and the reverse), and the rooms an
 older build stored under the tab's ``auth:v1`` login subject are still the owner's, while another OS
-user's subject or a messaging identity stays foreign (gateway.owner_identity).
+user's subject or a messaging identity stays foreign (hermes_agent.gateway.owner_identity).
 """
 import json
 from types import SimpleNamespace
@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 
-from gateway.owner_identity import host_owner_subject, same_owner
+from hermes_agent.gateway.owner_identity import host_owner_subject, same_owner
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 
@@ -27,7 +27,7 @@ def authority(tmp_path, monkeypatch):
     (tmp_path / 'profiles' / 'two').mkdir(parents=True)
     (tmp_path / 'config.yaml').write_text(
         'hosted_rooms:\n  profiles:\n    two: ' + str((tmp_path / 'profiles' / 'two').resolve()) + '\n')
-    from gateway.session_hosted_service import CanonicalHostedRoomService
+    from hermes_agent.gateway.session_hosted_service import CanonicalHostedRoomService
     with SessionDB(tmp_path / 'state.db') as db:
         authority = SimpleNamespace(db=db, profile_id=str(tmp_path), instance_id='owner', events={},
                                     epoch=begin_runtime_epoch(db, instance_id='test'))
@@ -41,7 +41,7 @@ async def _call(connection, method, **params):
 
 
 def _connect(authority, identity):
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     if identity.get('provider') == 'local':
         identity = {**identity, 'profile_id': authority.profile_id}
     return AuthorityConnection(authority, object(), identity)
@@ -61,7 +61,7 @@ async def test_a_webapp_tab_and_native_desktop_share_one_group_chat_list(authori
 
 @pytest.mark.asyncio
 async def test_a_room_an_older_build_stored_under_the_login_stays_the_owners(authority):
-    from gateway.session_hosted_service import _OWNER
+    from hermes_agent.gateway.session_hosted_service import _OWNER
     desktop = _connect(authority, NATIVE)
     assert await _call(desktop, 'groups.create', room_id='old-web-room', name='Old', members=MEMBERS) is not None
     authority.db._execute_write(lambda conn: conn.execute('UPDATE state_meta SET value=? WHERE key=?',
@@ -103,8 +103,8 @@ def _bind(store, sid, subject, **row):
 
 def test_a_chat_a_webapp_tab_imported_before_the_upgrade_still_opens(store):
     """The sidebar (authorize_history) and the open (mount_history) read a binding by one rule."""
-    from gateway.session_contract import SessionActor
-    from gateway.session_history_mount import mount_history
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_history_mount import mount_history
     from hermes_agent.hermes_state_mutation_binding import authorize_history
     caps = frozenset({'session:create', 'session:read'})
     owner, stranger = (SessionActor(s, store.profile_id, caps, 't') for s in (OWNER, 'uid:999999'))

@@ -800,7 +800,7 @@ that touches the OS, assume *any* platform can hit your code path.
 
    If you specifically need the hermes wrapper (it has a stdlib fallback
    for scaffold-phase imports before PM finishes dependency preparation), use
-   `gateway.status._pid_exists(pid)`. It calls `psutil.pid_exists` first
+   `hermes_agent.gateway.status._pid_exists(pid)`. It calls `psutil.pid_exists` first
    and falls back to a hand-rolled `OpenProcess + WaitForSingleObject`
    dance on Windows only when psutil is somehow missing.
 

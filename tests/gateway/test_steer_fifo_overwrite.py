@@ -12,20 +12,20 @@ from __future__ import annotations
 
 import pytest
 
-from gateway.run import _AGENT_PENDING_SENTINEL
+from hermes_agent.gateway.run import _AGENT_PENDING_SENTINEL
 from tests.gateway.test_steer_command import (
     _make_event,
     _make_runner,
     _session_entry,
     _make_source,
 )
-from gateway.session import build_session_key
+from hermes_agent.gateway.session import build_session_key
 from unittest.mock import MagicMock
 
 
 def _prequeue(runner, adapter, sk):
     """Pre-stage Q1 in the pending slot and Q2 in the overflow tail."""
-    from gateway.platforms.event import MessageEvent, MessageType
+    from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 
 
     q1 = MessageEvent(

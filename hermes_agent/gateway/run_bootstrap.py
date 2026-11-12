@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from gateway.config import GatewayConfig
+from hermes_agent.gateway.config import GatewayConfig
 
 
 def _start_deferred_state_db_integrity_check(evidence: dict) -> None:
@@ -18,20 +18,20 @@ def _start_deferred_state_db_integrity_check(evidence: dict) -> None:
     refused. A daemon thread nothing waits on; it only appends the forensic exit-diag record.
     """
     from agent.memory_provider import spawn_context_thread
-    from gateway.lifecycle_ledger import STATE_DB_INTEGRITY_DEADLINE_S, run_deferred_integrity_check
+    from hermes_agent.gateway.lifecycle_ledger import STATE_DB_INTEGRITY_DEADLINE_S, run_deferred_integrity_check
     # Under the caller's profile scope: the scan resolves this gateway's state.db through it.
     spawn_context_thread(
         run_deferred_integrity_check, args=(evidence,),
         kwargs={"deadline_s": STATE_DB_INTEGRITY_DEADLINE_S}, name="state-db-integrity-check").start()
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 async def _start_gateway_replace_existing_instance(existing_pid: int, replace: bool) -> bool:
     """Handle a live gateway PID under this HERMES_HOME: replace it (``--replace``) or refuse.
     Returns False when startup must abort (refused, permission denied, target still alive)."""
-    from gateway.run import (_clear_takeover_marker_quiet, _replace_target_belongs_to_other_profile, _wait_for_pid_exit, get_hermes_home, suppress)
-    from gateway.status import get_process_start_time, remove_pid_file, terminate_pid
+    from hermes_agent.gateway.run import (_clear_takeover_marker_quiet, _replace_target_belongs_to_other_profile, _wait_for_pid_exit, get_hermes_home, suppress)
+    from hermes_agent.gateway.status import get_process_start_time, remove_pid_file, terminate_pid
     if not replace:
         hermes_home = str(get_hermes_home())
         logger.error(
@@ -49,7 +49,7 @@ async def _start_gateway_replace_existing_instance(existing_pid: int, replace: b
 
     # Never signal a process not provably ours (a poisoned PID record → cross-profile restart loop).
     if _replace_target_belongs_to_other_profile(existing_pid):
-        from gateway.status import _get_process_hermes_home, write_runtime_status
+        from hermes_agent.gateway.status import _get_process_hermes_home, write_runtime_status
         logger.error(
             "Refusing --replace: PID %d cannot be proven to belong "
             "to this profile's gateway (HERMES_HOME %s). Remove the "
@@ -76,13 +76,13 @@ async def _start_gateway_replace_existing_instance(existing_pid: int, replace: b
     logger.info("Replacing existing gateway instance (PID %d) with --replace.", existing_pid)
     # Takeover marker: target exits 0 on our SIGTERM (exit 1 → systemd Restart=on-failure flap loop).
     try:
-        from gateway.status import write_takeover_marker
+        from hermes_agent.gateway.status import write_takeover_marker
         write_takeover_marker(existing_pid)
     except Exception as e:
         logger.debug("Could not write takeover marker: %s", e)
     # Snapshot children BEFORE signalling: reparented orphans are invisible yet hold scoped token locks.
     try:
-        from gateway.status import _snapshot_gateway_children
+        from hermes_agent.gateway.status import _snapshot_gateway_children
         _old_gateway_children = _snapshot_gateway_children(existing_pid)
     except Exception:
         _old_gateway_children = []
@@ -113,7 +113,7 @@ async def _start_gateway_replace_existing_instance(existing_pid: int, replace: b
             return False
     # Reap orphaned children (POSIX; mirrors Windows taskkill /T) so they stop holding scoped token locks.
     try:
-        from gateway.status import reap_gateway_children
+        from hermes_agent.gateway.status import reap_gateway_children
         reap_gateway_children(_old_gateway_children, parent_pid=existing_pid)
     except Exception:
         logger.debug("Child reap for replaced gateway PID %d failed", existing_pid, exc_info=True)
@@ -125,7 +125,7 @@ async def _start_gateway_replace_existing_instance(existing_pid: int, replace: b
     _clear_takeover_marker_quiet()
     # Stopped (Ctrl+Z) processes don't release scoped locks on exit; stale lock files block the new gateway.
     try:
-        from gateway.status_scoped_locks import release_all_scoped_locks
+        from hermes_agent.gateway.status_scoped_locks import release_all_scoped_locks
         _released = release_all_scoped_locks(owner_pid=existing_pid, owner_start_time=existing_start_time)
         if _released:
             logger.info("Released %d stale scoped lock(s) from old gateway.", _released)
@@ -136,7 +136,7 @@ async def _start_gateway_replace_existing_instance(existing_pid: int, replace: b
 
 def _start_gateway_configure_logging(verbosity: Optional[int]) -> None:
     """Sync bundled skills, set up file logging + startup security audit, and the -v/-q stderr handler."""
-    from gateway.run import (_best_effort, _gateway_stderr_formatter, _hermes_home, logging)
+    from hermes_agent.gateway.run import (_best_effort, _gateway_stderr_formatter, _hermes_home, logging)
     def _sync_skills() -> None:
         from tools.skills_sync import sync_skills
         sync_skills(quiet=True)
@@ -173,23 +173,23 @@ def _start_gateway_configure_logging(verbosity: Optional[int]) -> None:
 
 def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdown: list):
     """Build the SIGINT/SIGTERM handler; ``_signal_initiated_shutdown[0]`` records an unplanned signal."""
-    from gateway.run import (_best_effort, _hermes_home, asyncio, logger, signal)
+    from hermes_agent.gateway.run import (_best_effort, _hermes_home, asyncio, logger, signal)
     planned_stop_seen = [False]
 
     def shutdown_signal_handler(received_signal=None):
         # Planned --replace takeover (sibling marked this PID): exit 0 so systemd won't revive us.
         def _takeover() -> bool:
-            from gateway.status import consume_takeover_marker_for_self
+            from hermes_agent.gateway.status import consume_takeover_marker_for_self
             return consume_takeover_marker_for_self()
 
         # Planned stop: CLI marks first, else its SIGTERM looks like an external kill. SIGINT = Ctrl+C.
         def _planned_stop() -> bool:
-            from gateway.status import consume_planned_stop_marker_for_self
+            from hermes_agent.gateway.status import consume_planned_stop_marker_for_self
             return consume_planned_stop_marker_for_self()
 
         # Fast (<10ms) sync snapshot: stdlib + /proc, no subprocesses (`ps aux` here once blocked ~3s).
         def _snapshot():
-            from gateway.shutdown_forensics import snapshot_shutdown_context
+            from hermes_agent.gateway.shutdown_forensics import snapshot_shutdown_context
             return snapshot_shutdown_context(received_signal)
 
         planned_takeover = bool(_best_effort(_takeover, "Takeover marker check failed: %s"))
@@ -217,13 +217,13 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
         if _shutdown_ctx is not None:
             def _log_context() -> None:
                 # The most useful line for "gateway keeps dying" tickets.
-                from gateway.shutdown_forensics import format_context_for_log
+                from hermes_agent.gateway.shutdown_forensics import format_context_for_log
                 logger.warning("Shutdown context: %s", format_context_for_log(_shutdown_ctx))
 
             def _diagnostic() -> None:
                 # Heavyweight (ps auxf, pstree, dmesg), detached so it finishes even if our cgroup is torn
                 # down; bounded by an internal timeout, never blocks.
-                from gateway.shutdown_forensics import spawn_async_diagnostic
+                from hermes_agent.gateway.shutdown_forensics import spawn_async_diagnostic
                 spawn_async_diagnostic(
                     _hermes_home / "logs" / "gateway-shutdown-diag.log", _shutdown_ctx["signal"], timeout_seconds=5.0)
 
@@ -241,9 +241,9 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
 
 def _start_gateway_claim_pid_file(force: bool = False) -> bool:
     """Claim the runtime lock + PID file (O_EXCL winner is the authoritative gateway). False = lost."""
-    from gateway.run import (_claim_host_gateway_role, logger, os)
+    from hermes_agent.gateway.run import (_claim_host_gateway_role, logger, os)
     import atexit
-    from gateway.status import (
+    from hermes_agent.gateway.status import (
         acquire_gateway_runtime_lock, get_running_pid, release_gateway_runtime_lock,
         remove_pid_file, write_pid_file)
     _current_pid = get_running_pid()
@@ -270,7 +270,7 @@ def _start_gateway_claim_pid_file(force: bool = False) -> bool:
 
 async def _start_gateway_start_control_socket(runner):
     """Start the gateway control socket (identify/status/pause-for-update); None when unavailable."""
-    from gateway.run import (asyncio, logger, os, threading)
+    from hermes_agent.gateway.run import (asyncio, logger, os, threading)
     import atexit
     import concurrent.futures
     _control_server = None
@@ -280,15 +280,15 @@ async def _start_gateway_start_control_socket(runner):
         # a truthful liveness/identity query for updater and fleet consumers. Returns None on failure and
         # start_gateway aborts startup: the listener mints every local client's attach ticket, so a
         # gateway without it can serve no local session. See #92091.
-        from gateway.control_socket import GatewayControlServer, build_identify_payload
-        from gateway.run_profile_reconcile import (
+        from hermes_agent.gateway.control_socket import GatewayControlServer, build_identify_payload
+        from hermes_agent.gateway.run_profile_reconcile import (
             migrate_profile_identity_verb, purge_profile_identity_verb,
             unserve_profile_verb, serve_profile_verb,
         )
-        from gateway.run_plugin_rewire import reload_plugins_verb
-        from gateway.run_active_work_verb import active_work_verb
-        from gateway.relay.link import relay_link_verb
-        from gateway.drain_control import RESTART_WAIT_REASON
+        from hermes_agent.gateway.run_plugin_rewire import reload_plugins_verb
+        from hermes_agent.gateway.run_active_work_verb import active_work_verb
+        from hermes_agent.gateway.relay.link import relay_link_verb
+        from hermes_agent.gateway.drain_control import RESTART_WAIT_REASON
         descriptor = runner.session_runtime_descriptor
 
         def _identify_runtime():
@@ -369,11 +369,11 @@ async def _start_gateway_start_control_socket(runner):
                            "relay-link": relay_link_verb})
         _control_server.ticket_store = runner.session_ticket_store
         # The public client lookup answers from the same descriptor ``identify`` does.
-        from gateway.control_resolve import resolve_profile_handler
+        from hermes_agent.gateway.control_resolve import resolve_profile_handler
         _control_server.resolve_handler = resolve_profile_handler(_identify_runtime)
         # The Webapp's verbs answer from the socket's first moment ("starting" until the listener
         # settles): a client polling a restarting gateway must never read "unknown verb" as a failure.
-        from gateway.webapp_listener import register_control_verbs
+        from hermes_agent.gateway.webapp_listener import register_control_verbs
         from hermes_constants import get_hermes_home
         register_control_verbs(runner, get_hermes_home(), server=_control_server)
         if not await _control_server.start():
@@ -392,7 +392,7 @@ async def _start_gateway_start_control_socket(runner):
 def _start_gateway_start_cron_and_housekeeping(runner):
     """Start the cron scheduler thread + gateway housekeeping thread; returns
     ``(cron_stop, cron_provider, cron_thread, housekeeping_thread)``."""
-    from gateway.run import (Dict, Platform, _cron_profile_gate, _cron_tick_profile_homes, _start_gateway_housekeeping, asyncio, logger, threading)
+    from hermes_agent.gateway.run import (Dict, Platform, _cron_profile_gate, _cron_tick_profile_homes, _start_gateway_housekeeping, asyncio, logger, threading)
     # The event loop is passed so cron delivery can use live adapters (E2EE support).
     from hermes_agent.cron.scheduler_provider import (
         InProcessCronScheduler, resolve_cron_scheduler, scheduler_for_profile_mode)
@@ -439,7 +439,7 @@ def _start_gateway_start_cron_and_housekeeping(runner):
     from hermes_agent.cron.scheduler_thread import SupervisedTickerThread
     cron_thread = SupervisedTickerThread(
         cron_provider.start, args=(cron_stop,), kwargs=cron_start_kwargs, stop_event=cron_stop)
-    from gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.runtime_ownership import process_ownership
     process_ownership.start_writer(cron_thread)
 
     # External providers fire over loopback HTTP to THIS process's api_server; if it never came up (usually
@@ -476,7 +476,7 @@ async def _start_gateway_shutdown_tail(
     _planned_stop_watcher_stop: threading.Event, _planned_stop_watcher_thread: threading.Thread,
     _signal_initiated_shutdown: list) -> bool:
     """Post-``wait_for_shutdown`` teardown; returns the process exit verdict (True = exit 0)."""
-    from gateway.run import (_CRON_SHUTDOWN_DRAIN_TIMEOUT, _HOUSEKEEPING_SHUTDOWN_DRAIN_TIMEOUT, _await_thread_exit, _best_effort, _resolve_gateway_exit_verdict, _shutdown_mcp_servers_nonblocking, _stop_cron_provider)
+    from hermes_agent.gateway.run import (_CRON_SHUTDOWN_DRAIN_TIMEOUT, _HOUSEKEEPING_SHUTDOWN_DRAIN_TIMEOUT, _await_thread_exit, _best_effort, _resolve_gateway_exit_verdict, _shutdown_mcp_servers_nonblocking, _stop_cron_provider)
     # Control socket first: once shutdown begins we are no longer a truthful "serving here" answer and a
     # successor must be able to bind. Early-exit paths rely on the atexit cleanup_files hook instead.
     if _control_server is not None:
@@ -534,7 +534,7 @@ def _launch_home_may_multiplex(config=None) -> bool:
     this process comes up standalone, says why, and *config* is flipped in place so the boot below
     reserves and serves only the launch profile."""
     from hermes_constants import profile_name_for_home
-    from gateway.run import get_hermes_home, logger
+    from hermes_agent.gateway.run import get_hermes_home, logger
     name = profile_name_for_home(get_hermes_home())
     if name in (None, "default"):
         return True
@@ -552,8 +552,8 @@ def _launch_home_may_multiplex(config=None) -> bool:
         set_multiplex_active(False)
         log_multiplex_decision(decision)
         return True
-    from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
-    from gateway.run import _write_runtime_status_quiet
+    from hermes_agent.gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+    from hermes_agent.gateway.run import _write_runtime_status_quiet
     logger.error(
         "gateway.multiplex_profiles is set on profile %r, but only the default profile can run the "
         "multiplexer. Unset the flag in this profile's config.yaml, or start the gateway from the "
@@ -568,9 +568,9 @@ def _reload_config_keeping_multiplex_verdict(first: GatewayConfig) -> GatewayCon
     named-launch downgrade ``_launch_home_may_multiplex`` applied in place, and reserved homes to
     match. A second ``resolve_multiplex_mode`` would re-enable an implicit default and serve
     profiles this process never reserved."""
-    from gateway.config import load_gateway_config
+    from hermes_agent.gateway.config import load_gateway_config
     if getattr(first, "multiplex_profiles", False):
-        from gateway.run import _profile_runtime_scope
+        from hermes_agent.gateway.run import _profile_runtime_scope
         from hermes_constants import get_default_hermes_root
         with _profile_runtime_scope(Path(get_default_hermes_root())):
             reloaded = load_gateway_config()
@@ -586,7 +586,7 @@ def _reload_config_keeping_multiplex_verdict(first: GatewayConfig) -> GatewayCon
 def _start_gateway_resolve_terminal_cwd() -> None:
     """Messaging-only defaults belong to startup, not incidental imports by the TUI."""
     import os
-    from gateway.cwd_placeholder import CWD_PLACEHOLDERS, resolve_placeholder_terminal_cwd
+    from hermes_agent.gateway.cwd_placeholder import CWD_PLACEHOLDERS, resolve_placeholder_terminal_cwd
     configured_cwd = os.environ.get("TERMINAL_CWD", "")
     if not configured_cwd or configured_cwd in CWD_PLACEHOLDERS:
         resolved_cwd = resolve_placeholder_terminal_cwd(
@@ -616,7 +616,7 @@ def _browse_reconcile_reserve_wait_s() -> float:
 def _reserve_waiting_out_browse_reconcile(ownership, homes, *, wait_s: float | None = None):
     """Boot's all-or-nothing reserve of every served home, waiting out transient holders (a browse
     reconcile, an unpublished record, a client's lock probe) for up to the browse window."""
-    from gateway.runtime_ownership import reserve_waiting_out_transient_holders
+    from hermes_agent.gateway.runtime_ownership import reserve_waiting_out_transient_holders
     if wait_s is None:
         wait_s = _browse_reconcile_reserve_wait_s()
     return reserve_waiting_out_transient_holders(ownership, homes, wait_s=wait_s)
@@ -624,8 +624,8 @@ def _reserve_waiting_out_browse_reconcile(ownership, homes, *, wait_s: float | N
 
 def _start_gateway_reserve_profiles(profile_homes) -> bool:
     """Reserve the launch home plus every served profile home; False when startup must abort."""
-    from gateway.run import get_hermes_home
-    from gateway.runtime_ownership import process_ownership, OwnershipConflict
+    from hermes_agent.gateway.run import get_hermes_home
+    from hermes_agent.gateway.runtime_ownership import process_ownership, OwnershipConflict
     homes = [get_hermes_home(), *(home for _, home in profile_homes)]
     try:
         _reserve_waiting_out_browse_reconcile(process_ownership, homes)
@@ -637,8 +637,8 @@ def _start_gateway_reserve_profiles(profile_homes) -> bool:
         # Any other same-user contender keeps the ordinary "already running" exit 1.
         from hermes_cli.gateway import named_profile_served_by_running_multiplexer
         if named_profile_served_by_running_multiplexer():
-            from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
-            from gateway.run import _write_runtime_status_quiet
+            from hermes_agent.gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+            from hermes_agent.gateway.run import _write_runtime_status_quiet
             logger.error(
                 "The default gateway is running as a profile multiplexer and already serves this profile. "
                 "Manage it with `hermes gateway restart` from the default profile instead of starting a "
@@ -671,7 +671,7 @@ def _start_gateway_install_signal_handlers(loop, shutdown_signal_handler, restar
 async def _start_gateway_run_runner(runner, _signal_initiated_shutdown: list) -> Optional[bool]:
     """MCP discovery, then ``runner.start()``. Returns the exit verdict when the process must end
     before running mode (start failed, clean exit, aborted startup); None to continue into cron."""
-    from gateway.run import (_discover_gateway_mcp_tools, _resolve_gateway_exit_verdict,
+    from hermes_agent.gateway.run import (_discover_gateway_mcp_tools, _resolve_gateway_exit_verdict,
                              _shutdown_gateway_health_export, _shutdown_mcp_servers_nonblocking)
     # discover_mcp_tools() blocks up to 120s; on the loop thread it would freeze platform heartbeats.
     try:
@@ -742,8 +742,8 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
     """Start the gateway and run until interrupted; False if it failed to start (non-zero exit so
     systemd can auto-restart). ``replace`` kills any existing instance first (avoids restart-loop
     deadlocks); ``force`` starts without consulting the host owner at all; ``idle_exit`` arms the
-    unmanaged idle exit (``gateway.run_idle_exit``) for a client-started daemon."""
-    from gateway.run import (
+    unmanaged idle exit (``hermes_agent.gateway.run_idle_exit``) for a client-started daemon."""
+    from hermes_agent.gateway.run import (
         GatewayRunner,
         _best_effort,
         _enable_multiplex_log_routing,
@@ -760,7 +760,7 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
         os,
         threading,
     )
-    # Set here (not at import) so incidental gateway.run imports from CLI code don't poison it.
+    # Set here (not at import) so incidental hermes_agent.gateway.run imports from CLI code don't poison it.
     os.environ["HERMES_EXEC_ASK"] = "1"
     from hermes_cli.update_proxy_env import restore_user_proxy_env
     restore_user_proxy_env()  # a gateway an update restarted keeps the user's proxy env, not the update's
@@ -770,7 +770,7 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
     apply_nofile_soft_limit()
 
     # Snapshot the revision while sys.modules matches disk so a later `git pull` is detected safely.
-    from gateway.code_skew import record_boot_fingerprint
+    from hermes_agent.gateway.code_skew import record_boot_fingerprint
     record_boot_fingerprint()
 
     # Config verdicts come before the duplicate-instance guard: `--replace` must not stop a healthy
@@ -795,13 +795,13 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
         return _host_decision
 
     # Duplicate-instance guard scoped to HERMES_HOME (the host record is absent or unusable here).
-    from gateway.status import get_running_pid
+    from hermes_agent.gateway.status import get_running_pid
     existing_pid = get_running_pid()
     if (existing_pid is not None and existing_pid != os.getpid()
             and not await _start_gateway_replace_existing_instance(existing_pid, replace)):
         return False
 
-    from gateway.status import remove_pid_file, release_gateway_runtime_lock
+    from hermes_agent.gateway.status import remove_pid_file, release_gateway_runtime_lock
     if not _start_gateway_reserve_profiles(profile_homes):
         return False
     # Freeze discovery: later profile additions must restart and reserve before opening stores.
@@ -821,11 +821,11 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
     try:
         _start_gateway_configure_logging(verbosity)
 
-        from gateway.run_startup import recover_left_core_at_gateway_start
+        from hermes_agent.gateway.run_startup import recover_left_core_at_gateway_start
         if await asyncio.to_thread(recover_left_core_at_gateway_start) and config is None:
             resolved_config = _reload_config_keeping_multiplex_verdict(resolved_config)
 
-        from gateway.run_runtime import initialize_gateway_runtime, pin_launch_store, unpin_launch_store
+        from hermes_agent.gateway.run_runtime import initialize_gateway_runtime, pin_launch_store, unpin_launch_store
         _launch_store_pin = await asyncio.to_thread(pin_launch_store)
         try:
             runner = GatewayRunner(resolved_config)
@@ -886,16 +886,16 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
         # Now the attach channel answers: republish the host record with the settled served set.
         _refresh_host_gateway_record(runner)
         _log_standalone_profiles_at_boot(runner)
-        from gateway.run_runtime import start_gateway_runtime_api
+        from hermes_agent.gateway.run_runtime import start_gateway_runtime_api
         await start_gateway_runtime_api(runner)
-        from gateway.run_api import await_session_socket_preload, preload_session_socket
+        from hermes_agent.gateway.run_api import await_session_socket_preload, preload_session_socket
         ws_preload = preload_session_socket() if idle_exit else None  # overlaps the adapter/cron start
 
         def _lifecycle_record_startup() -> Optional[dict]:
             # Report if the previous life died uncleanly (SIGKILL / OOM / VM death), then claim the
             # sentinel for this life. After the PID-file claim so a --replace loser can't clobber it.
             # The store scan that report used to run here is deferred: see below.
-            from gateway.lifecycle_ledger import record_startup
+            from hermes_agent.gateway.lifecycle_ledger import record_startup
             return record_startup()
 
         def _start_keepalive() -> None:
@@ -917,20 +917,20 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
             _start_gateway_start_cron_and_housekeeping(runner))
         # From here every exit (a READY publication that raises included) runs the shutdown tail,
         # which stops the cron ticker and housekeeping before the adapters they deliver through close.
-        from gateway.run_runtime import publish_gateway_runtime_ready, wait_gateway_runtime
+        from hermes_agent.gateway.run_runtime import publish_gateway_runtime_ready, wait_gateway_runtime
         try:
             await await_session_socket_preload(ws_preload)
             # READY only once adapters, cron and housekeeping run; missing systemd state just disables watchdog.
             publish_gateway_runtime_ready(runner)
             runner._start_systemd_watchdog()
             if idle_exit:
-                from gateway.run_idle_exit import arm_unmanaged_idle_exit
+                from hermes_agent.gateway.run_idle_exit import arm_unmanaged_idle_exit
                 arm_unmanaged_idle_exit(runner)
             else:
                 # A supervised/explicit gateway serves Desktop and the dashboard SPA, which call the
                 # dashboard routes right away: mount them now, after READY. A client's own idle-exit
                 # gateway (chat -q, TUI) only uses the native WebSocket; it mounts on first request.
-                from gateway.run_api import warm_gateway_dashboard
+                from hermes_agent.gateway.run_api import warm_gateway_dashboard
                 warm_gateway_dashboard(runner)
             await wait_gateway_runtime(runner)
         finally:
@@ -945,7 +945,7 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
     finally:
         try:
             if runner is not None:
-                from gateway.run_runtime import drain_gateway_runtime
+                from hermes_agent.gateway.run_runtime import drain_gateway_runtime
                 await drain_gateway_runtime(runner)
                 # Startup may have opened adapters before an exception or an early exit verdict. The
                 # same stop path owns their writers and DB handles on every exit, but when no stop ran

@@ -5,7 +5,7 @@ from http.server import ThreadingHTTPServer
 
 import pytest
 
-from gateway import hosted_room_driver as driver
+from hermes_agent.gateway import hosted_room_driver as driver
 from tests.tui_gateway.test_hosted_room_peer_http import FakePeer
 from tests.tui_gateway.test_hosted_room_peer_recovery import _deferred_peer_turn
 from tests.tui_gateway.test_hosted_room_service import _FakeRPC

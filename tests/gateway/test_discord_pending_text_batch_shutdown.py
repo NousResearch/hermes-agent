@@ -7,9 +7,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.session import SessionSource
 
 
 def _ensure_discord_mock():

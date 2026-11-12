@@ -14,7 +14,7 @@ from typing import Any, List
 
 import pytest
 
-from gateway.platforms.base import SendResult
+from hermes_agent.gateway.platforms.base import SendResult
 from tools import approval as _approval
 from tools.approval_gateway_wait import _ApprovalEntry
 
@@ -66,7 +66,7 @@ class _PlainAdapter(_ButtonAdapter):
 
 
 def _runner(adapter):
-    from gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
 
     runner = object.__new__(TurnRunner)
     runner._ctx = SimpleNamespace(
@@ -86,7 +86,7 @@ def _runner(adapter):
 @pytest.fixture
 def pending_entry(monkeypatch):
     """A queued approval entry exactly as ``_await_gateway_decision`` registers it."""
-    monkeypatch.setattr("gateway.platforms.base_exec_approval.approval_timeout_seconds", lambda: 300)
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base_exec_approval.approval_timeout_seconds", lambda: 300)
     entry = _ApprovalEntry(dict(APPROVAL))
     with _approval._lock:
         _approval._gateway_queues[SESSION] = [entry]
@@ -97,7 +97,7 @@ def pending_entry(monkeypatch):
 
 @pytest.mark.parametrize("warning_notifications", [True, False])
 def test_timeout_edits_the_card_to_say_the_command_did_not_run(pending_entry, tmp_path, monkeypatch, warning_notifications):
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
     (tmp_path / "config.yaml").write_text(f"display: {{suppress_warning_notifications: {str(not warning_notifications).lower()}}}")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     adapter = _ButtonAdapter()

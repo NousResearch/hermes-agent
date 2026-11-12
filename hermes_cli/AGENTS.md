@@ -54,9 +54,9 @@ gateway can dispatch them; help/menus show them only when the gate is open).
 args_hint="[arg]")` in `COMMAND_REGISTRY`; (2) `_handle_mycommand_command(self, cmd_original)` on the
 relevant `cli_*_mixin.py` (picked up by convention) or an explicit `_SLASH_DISPATCH` entry
 `"mycommand": ("_handle_mycommand", True)` when the method name/arg-passing differs; (3) for the
-gateway, `_handle_mycommand_command(self, event)` on the matching `gateway/slash_commands_*.py`
+gateway, `_handle_mycommand_command(self, event)` on the matching `hermes_agent/gateway/slash_commands_*.py`
 mixin and list it in `_IDLE_COMMANDS` (or `_PLAIN_COMMANDS` if it must work mid-run) in
-`gateway/run_busy.py` — handlers resolve by name via `_command_handler_table`; (4) persistent
+`hermes_agent/gateway/run_busy.py` — handlers resolve by name via `_command_handler_table`; (4) persistent
 settings via `save_config_value()` in `cli.py`. **Adding an alias** = add to `aliases`; every
 surface updates automatically. Commands that mutate system-prompt state default to deferred
 invalidation with `--now` opt-in (root invariant).
@@ -100,7 +100,7 @@ set/get/unset <NAME>` route any bare name registered in `OPTIONAL_ENV_VARS` / `_
 - **Three loaders — know which you're in:** `load_cli_config()` (CLI, `cli.py`); `load_config()`
   (`hermes tools/setup`, most subcommands, `hermes_cli/config.py`, merges `DEFAULT_CONFIG`);
   `hermes_cli/config_effective.py::load_user_config_effective()` (gateway runtime via
-  `gateway/run.py::_load_gateway_config`, TUI gateway `_load_cfg`, cron, `hermes send`, doctor,
+  `hermes_agent/gateway/run.py::_load_gateway_config`, TUI gateway `_load_cfg`, cron, `hermes send`, doctor,
   `hermes_time`/`hermes_logging`: user file + managed overlay + `${VAR}` expansion + model-key
   canon, NO defaults — for presence-sensitive readers). If the CLI sees a key and the gateway
   doesn't (or vice versa), you're on the wrong loader — check `DEFAULT_CONFIG` coverage. Never
@@ -160,7 +160,7 @@ list; a platform that left core keeps its ownership from its `LEFT_CORE` row whi
 and TUI all go through it). Clones are built in `profiles/.<name>.staging-<pid>` (hidden → invisible to
 `_iter_named_profile_dirs` and the hot-serve rescan) and published by one `os.rename` after the strip;
 symlinked `.env`/`config.yaml` are materialized first so a clone never writes through to its source. Multiplex
-(`gateway.multiplex_profiles`) secret-scope rules: `gateway/AGENTS.md`. The served set is
+(`gateway.multiplex_profiles`) secret-scope rules: `hermes_agent/gateway/AGENTS.md`. The served set is
 `profiles.py::profiles_to_serve(multiplex=True)` = default + every live dir under `profiles/` — live =
 carries an identity marker (`hermes_constants.named_profile_has_identity`: `config.yaml`/`.env`/`SOUL.md`/
 `profile.yaml`/`auth.json`/`state.db`) and is not tombstoned. A marker-less dir (cron/log side-effect
@@ -207,7 +207,7 @@ profile's `HERMES_HOME` (and `HOME` for the service user) explicitly — a super
 empty environment, so the env override that makes `-p` work interactively does not exist there. A
 change to install/restart/status regenerates and diffs every kind; both user and system units are
 recorded when both exist. Process liveness is `(pid, start_time)` or the canonical matchers
-(`gateway.status.live_gateway_pid_for_home`), never bare PID existence.
+(`hermes_agent.gateway.status.live_gateway_pid_for_home`), never bare PID existence.
 
 ## Nous free tier (`hermes_cli/anon_auth.py`)
 

@@ -38,9 +38,9 @@ async def _response_id(resp) -> str:
 async def test_a_profile_key_never_reaches_another_profiles_responses(tmp_path, monkeypatch, stream):
     from aiohttp import web
     from aiohttp.test_utils import TestClient, TestServer
-    from gateway.config import GatewayConfig, PlatformConfig
-    from gateway.platforms import api_server as api
-    from gateway.platforms.api_server import APIServerAdapter
+    from hermes_agent.gateway.config import GatewayConfig, PlatformConfig
+    from hermes_agent.gateway.platforms import api_server as api
+    from hermes_agent.gateway.platforms.api_server import APIServerAdapter
 
     home = tmp_path / ".hermes"
     for name, key in (("alice", ALICE), ("bob", BOB)):

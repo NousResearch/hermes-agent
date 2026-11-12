@@ -22,8 +22,8 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
 
-from gateway.config import SHARED_LISTENER_MIRROR_PLATFORMS as _LISTENER_MIRRORS
-from gateway.status import resolve_gateway_liveness, retained_gateway_state
+from hermes_agent.gateway.config import SHARED_LISTENER_MIRROR_PLATFORMS as _LISTENER_MIRRORS
+from hermes_agent.gateway.status import resolve_gateway_liveness, retained_gateway_state
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path
 from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
@@ -56,16 +56,16 @@ _whatsapp_session_path = late("_whatsapp_session_path", "hermes_cli.web_server_m
 _write_platform_enabled = late("_write_platform_enabled", "hermes_cli.web_server_messaging")
 load_env = late("load_env", "hermes_cli.config")
 get_secret_source_values = late("get_secret_source_values", "hermes_cli.env_loader")
-builtin_platform_status = late("builtin_platform_status", "gateway.config_env")
+builtin_platform_status = late("builtin_platform_status", "hermes_agent.gateway.config_env")
 load_config = late("load_config", "hermes_cli.config")
-read_runtime_status = late("read_runtime_status", "gateway.status")
+read_runtime_status = late("read_runtime_status", "hermes_agent.gateway.status")
 remove_env_value = late("remove_env_value", "hermes_cli.config")
 save_env_value = late("save_env_value", "hermes_cli.config")
 _gateway_subcommand = late("_gateway_subcommand", "hermes_cli.web_server_gateway")
 _probe_gateway_health = late("_probe_gateway_health", "hermes_cli.web_server_gateway")
-get_running_pid_cached = late("get_running_pid_cached", "gateway.status")
-get_runtime_status_running_pid = late("get_runtime_status_running_pid", "gateway.status")
-served_profile_runtime = late("served_profile_runtime", "gateway.status_served")
+get_running_pid_cached = late("get_running_pid_cached", "hermes_agent.gateway.status")
+get_runtime_status_running_pid = late("get_runtime_status_running_pid", "hermes_agent.gateway.status")
+served_profile_runtime = late("served_profile_runtime", "hermes_agent.gateway.status_served")
 _GATEWAY_HEALTH_URL = LateState("_GATEWAY_HEALTH_URL")
 # Display labels for env vars not in OPTIONAL_ENV_VARS (bridge toggles, Twilio, Email, ...)
 # so the UI can still render a friendly label. Rows: (key, description, prompt, extra flags).
@@ -115,8 +115,8 @@ def _env_value_rules(platform_id: str) -> dict[str, tuple[Any, str]]:
     would silently stop applying. Without rules on the entry (the dashboard's own profile disabled the
     plugin, a user plugin overrides it) a bundled platform's ``dashboard_card.py`` answers, read from
     its file: the rules guard the edited profile's values whatever the dashboard's profile loads."""
-    from gateway.platform_env import bundled_sibling
-    from gateway.platform_registry import platform_registry
+    from hermes_agent.gateway.platform_env import bundled_sibling
+    from hermes_agent.gateway.platform_registry import platform_registry
     entry = platform_registry.get(platform_id)
     if entry is not None and entry.env_value_rules:
         return dict(entry.env_value_rules)
@@ -189,7 +189,7 @@ def _platform_enablement(
             enabled, home_channel = False, None
         return enabled, configured, home_channel
     try:
-        from gateway.config import Platform, load_gateway_config
+        from hermes_agent.gateway.config import Platform, load_gateway_config
 
         gateway_config = load_gateway_config()
         platform = Platform(platform_id)
@@ -211,7 +211,7 @@ def _relay_disabled_platform_ids(scoped: bool) -> frozenset[str]:
     if scoped:
         return frozenset()
     try:
-        from gateway.config import load_gateway_config
+        from hermes_agent.gateway.config import load_gateway_config
 
         platforms = load_gateway_config().platforms
         return frozenset(p.value for p, cfg in platforms.items() if cfg.disabled_by_relay)
@@ -233,7 +233,7 @@ def _messaging_platform_payload(
         runtime_platform = {}
     # Same shared liveness ladder /api/status uses, so the sidebar strip and the
     # Channels page can never disagree on one page load. profile_home is passed when
-    # scoped to a named profile: gateway/status readers resolve process-level paths
+    # scoped to a named profile: hermes_agent/gateway/status readers resolve process-level paths
     # and do NOT follow the HERMES_HOME contextvar override, so without it messaging
     # silently reports another profile's gateway.
     gateway_running = resolve_gateway_liveness(
@@ -345,7 +345,7 @@ def _relay_channel_view(home: Path) -> tuple[frozenset[str], bool]:
     """The relay serves only the gateway's own (launch) profile; other profiles keep direct setup."""
     if Path(home).resolve() != Path(get_process_hermes_home()).resolve():
         return frozenset(), False
-    from gateway.relay.link import relay_channel_view
+    from hermes_agent.gateway.relay.link import relay_channel_view
 
     return relay_channel_view()
 
@@ -450,7 +450,7 @@ def _ensure_whatsapp_bridge_dependencies(bridge_dir: Path) -> None:
 
 
 def _spawn_whatsapp_pairing_process(session_path: Path, mode: str) -> subprocess.Popen:
-    from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
+    from hermes_agent.gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
     from hermes_constants import find_node_executable, with_hermes_node_path
 
     bridge_dir = resolve_whatsapp_bridge_dir()
@@ -611,7 +611,7 @@ def _release_whatsapp_reservation(record: _WhatsAppOnboardingSession) -> None:
         return  # A queued worker has not entered its startup section yet.
     if record.proc is not None and record.proc.poll() is None:
         return
-    from gateway.status_scoped_locks import release_scoped_lock
+    from hermes_agent.gateway.status_scoped_locks import release_scoped_lock
 
     release_scoped_lock("whatsapp-session", record.session_path)
     record.session_reserved = False
@@ -662,7 +662,7 @@ def _register_whatsapp_session(session_path: Path, record) -> str:
 
 def _reserve_whatsapp_session(record: _WhatsAppOnboardingSession) -> None:
     """Reserve before moving keys or launching a writer, including its queued start."""
-    from gateway.status import acquire_scoped_lock
+    from hermes_agent.gateway.status import acquire_scoped_lock
 
     busy = "WhatsApp is in use. Disable WhatsApp and restart the gateway, then try re-pairing again."
     for existing in _whatsapp_onboarding_sessions.values():
@@ -1011,7 +1011,7 @@ def _multiplex_port_binding_conflict(platform_id: str, requested_profile: Option
     enable a second one. Every other inbound-port platform (Twilio, LINE, Teams, ...) IS allowed on a
     secondary: the gateway serves it on the shared listener at ``/p/<profile>/<path>``.
     """
-    from gateway.config import SHARED_LISTENER_MIRROR_PLATFORMS
+    from hermes_agent.gateway.config import SHARED_LISTENER_MIRROR_PLATFORMS
 
     if platform_id not in SHARED_LISTENER_MIRROR_PLATFORMS:
         return None
@@ -1125,7 +1125,7 @@ def _notify_multiplexer_hot_serve(profile: Optional[str]) -> bool:
 
 def _gate_env(name: str) -> str:
     """Per-profile allow/deny gate env read, always stripped (gateway seam)."""
-    from gateway.platforms._shared import platform_gate_env
+    from hermes_agent.gateway.platforms._shared import platform_gate_env
 
     return platform_gate_env(name)
 
@@ -1136,9 +1136,9 @@ def _platform_authz_env_names(platform_id: str) -> tuple[str, str]:
     (webhook-style trusted inbound or unknown), so no posture is computed for it."""
     allowed = allow_all = ""
     with contextlib.suppress(Exception):
-        from gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.platform_registry import platform_registry
 
-        from gateway.platform_env import authz_field
+        from hermes_agent.gateway.platform_env import authz_field
 
         entry = platform_registry.get(platform_id)
         if entry is not None and getattr(entry, "trusted_inbound", False) is True:
@@ -1173,7 +1173,7 @@ def _messaging_platform_posture(
     scope, after the connectivity chain has already reported ``connected``).
 
     Mirrors the decision ladder of ``AuthorizationMixin._principal_authorized``
-    (gateway/authz_mixin.py) for the "can any user reach the bot" question, evaluated
+    (hermes_agent/gateway/authz_mixin.py) for the "can any user reach the bot" question, evaluated
     against the ACTIVE profile's env/config only — never the dashboard process's
     ``os.environ`` (which carries the ROOT profile's credentials, #66030):
 
@@ -1226,10 +1226,10 @@ def _messaging_platform_posture(
         return {"posture": "allowlist", "message": "Connected. Access restricted by the configured allow_from policy."}
 
     # Pairing grants: the profile's approved users (the gateway honors the store as a
-    # union with any allowlist, gateway/authz_mixin.py `_pairing_store_for`).
+    # union with any allowlist, hermes_agent/gateway/authz_mixin.py `_pairing_store_for`).
     approved = pending = 0
     with contextlib.suppress(Exception):
-        from gateway.pairing import PairingStore
+        from hermes_agent.gateway.pairing import PairingStore
 
         store = PairingStore()
         approved = len(store.list_approved(platform_id))

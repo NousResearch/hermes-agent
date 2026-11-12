@@ -42,14 +42,14 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _mock_dotenv(monkeypatch):
-    """gateway.run imports dotenv at module load; stub so tests run bare."""
+    """hermes_agent.gateway.run imports dotenv at module load; stub so tests run bare."""
     fake = types.ModuleType("dotenv")
     fake.load_dotenv = lambda *a, **kw: None
     monkeypatch.setitem(sys.modules, "dotenv", fake)
 
 
 def _make_runner():
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     # _finalize_shutdown_agents offloads _cleanup_agent_resources to a worker
@@ -168,7 +168,7 @@ class TestShutdownTranscriptSurvivesResumeE2E:
         assert len(before) == 2, before
 
         # Drive the gateway shutdown finalization with this real agent.
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
         runner = object.__new__(GatewayRunner)
         _finalize(runner, {"agent:main:discord:dm:7": agent})
 

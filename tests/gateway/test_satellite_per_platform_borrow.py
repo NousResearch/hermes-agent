@@ -17,10 +17,10 @@ from unittest.mock import patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter
-from gateway.profile_routing import parse_profile_routes
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.profile_routing import parse_profile_routes
+from hermes_agent.gateway.session import SessionSource
 
 
 class _Stub(BasePlatformAdapter):
@@ -42,7 +42,7 @@ def _stub(platform, runner, label, owner=None):
 
 @pytest.fixture
 def rig(tmp_path, monkeypatch):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     home = tmp_path / "hh"
     for name in ("ops", "team_b"):
@@ -101,7 +101,7 @@ def test_satellite_cannot_send_to_an_unrouted_chat_through_the_primary_bot(rig):
     assert r._resolve_injection_adapter("discord", _restored("ops", chat_id="999")) is None
     assert r._delivery_adapter_for(_restored("ops", chat_id="999")) is None
     # send_message from an ops turn takes a caller-chosen chat_id: it must not get the primary bot.
-    with patch("gateway.run._gateway_runner_ref", return_value=r), \
+    with patch("hermes_agent.gateway.run._gateway_runner_ref", return_value=r), \
             patch("hermes_cli.profiles.get_active_profile_name", return_value="ops"):
         assert _live_adapter(Platform.DISCORD) == (r, None)
         assert _live_adapter(Platform.TELEGRAM) == (r, rig.ops_tg)
@@ -118,7 +118,7 @@ def test_satellite_cannot_send_to_an_unrouted_chat_through_the_primary_bot(rig):
 def test_inferred_transport_is_not_a_receiving_bot(rig):
     """``run_inbound`` canonicalizes hand-built internal/voice sources; the identity it pins guesses
     the primary as transport (``transport_inferred``). That guess must still pass the route gate."""
-    from gateway.session_identity import identity_of, resolve_identity
+    from hermes_agent.gateway.session_identity import identity_of, resolve_identity
 
     r = rig.runner
 
@@ -196,12 +196,12 @@ def test_async_delegation_completion_is_deliverable_and_a_held_lane_logs_once(ri
 
 
 def _store(tmp_path):
-    from gateway.session import SessionStore
+    from hermes_agent.gateway.session import SessionStore
     return SessionStore(sessions_dir=tmp_path / "routes", config=GatewayConfig(multiplex_profiles=True))
 
 
 def _inferred(r, chat_id):
-    from gateway.session_identity import identity_of, resolve_identity
+    from hermes_agent.gateway.session_identity import identity_of, resolve_identity
     source = _restored("ops", chat_id=chat_id)
     resolve_identity(source, runner=r)
     assert identity_of(source).transport_inferred is True
@@ -211,7 +211,7 @@ def _inferred(r, chat_id):
 def test_inferred_transport_is_not_saved_as_the_receiving_bot_across_a_restart(rig, tmp_path):
     """A session created from a source whose transport was only guessed must not come back from disk
     pinned to the primary bot: the restored identity is trusted, so an unrouted chat would borrow it."""
-    from gateway.session_identity import resolve_identity
+    from hermes_agent.gateway.session_identity import resolve_identity
 
     r = rig.runner
     key = _store(tmp_path).get_or_create_session(_inferred(r, "999")).session_key

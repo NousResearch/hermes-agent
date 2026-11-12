@@ -1,16 +1,16 @@
 """A real profile gateway authority that admits cron fires without running an agent turn.
 
 Shared by the cron run-history suites (tests/hermes_state, tests/hermes_cli): fires go through
-the real producer (``gateway/session_cron.py``) over SQLite, so run history reads exactly what a
+the real producer (``hermes_agent/gateway/session_cron.py``) over SQLite, so run history reads exactly what a
 scheduler fire writes.
 """
 from types import SimpleNamespace
 
 from hermes_agent.cron import executions
-from gateway import run, session_cron
-from gateway.config import GatewayConfig
-from gateway.session import SessionStore
-from gateway.session_authority import SessionAuthority
+from hermes_agent.gateway import run, session_cron
+from hermes_agent.gateway.config import GatewayConfig
+from hermes_agent.gateway.session import SessionStore
+from hermes_agent.gateway.session_authority import SessionAuthority
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 

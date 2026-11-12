@@ -12,8 +12,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import HomeChannel, Platform
-from gateway.session import SessionEntry, build_session_key
+from hermes_agent.gateway.config import HomeChannel, Platform
+from hermes_agent.gateway.session import SessionEntry, build_session_key
 from hermes_agent.hermes_state import SessionDB
 from tests.gateway.test_telegram_topic_mode import _make_event, _make_runner, _make_source
 from tests.waiting import async_wait_until
@@ -89,7 +89,7 @@ async def test_resume_in_topic_rebinds_topic_to_resumed_session(tmp_path):
 
 @pytest.mark.asyncio
 async def test_root_topic_activation_creates_no_extra_topic(tmp_path, monkeypatch):
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     runner = _make_runner(session_db=SessionDB(db_path=tmp_path / "state.db"))
     runner._run_agent = AsyncMock(side_effect=AssertionError("/topic must not enter the agent loop"))
@@ -107,7 +107,7 @@ async def test_root_topic_activation_creates_no_extra_topic(tmp_path, monkeypatc
 async def test_resume_rename_obeys_receiving_bot_kill_switch(tmp_path):
     """``disable_topic_auto_rename`` is the RECEIVING bot's setting: a secondary bot that opted out
     keeps its topic name on /resume even though the launch profile's Telegram config never set it."""
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
 
     db, runner = _bound_topic(tmp_path, "earlier")
     db.set_session_title("earlier", "Earlier Topic Work")

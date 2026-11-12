@@ -16,7 +16,7 @@ from tests.hermes_state.test_target_advance_fence import _local_session, _mutate
 
 
 def _store_reset(db, epoch, sid):
-    from gateway.session import SessionEntry
+    from hermes_agent.gateway.session import SessionEntry
     from hermes_agent.hermes_state_local import local_receipt
     from hermes_agent.hermes_state_local_lineage import reset_local_target
     old = SessionEntry.from_dict(local_receipt(db, sid)['entry'])

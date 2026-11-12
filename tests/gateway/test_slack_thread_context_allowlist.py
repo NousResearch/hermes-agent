@@ -47,8 +47,8 @@ import plugins.platforms.slack.adapter as _slack_mod
 
 _slack_mod.SLACK_AVAILABLE = True
 
-from gateway.config import Platform, load_gateway_config
-from gateway.pairing import PairingStore
+from hermes_agent.gateway.config import Platform, load_gateway_config
+from hermes_agent.gateway.pairing import PairingStore
 from hermes_constants import get_hermes_home
 from plugins.platforms.slack.adapter import SlackAdapter
 
@@ -72,7 +72,7 @@ def _clean_auth_env(monkeypatch):
 
 def _wired_adapter(slack_yaml: str, messages=THREAD):
     """SlackAdapter from a real config.yaml, wired to the real runner auth callback."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     (get_hermes_home() / "config.yaml").write_text(
         "slack:\n  enabled: true\n" + slack_yaml, encoding="utf-8")

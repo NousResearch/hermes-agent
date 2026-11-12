@@ -48,7 +48,7 @@ def test_tui_worktree_quit_removes_only_a_clean_idle_tree(tmp_path, monkeypatch,
             db.append_message('tui-wt', 'user', 'hello')
         if case != 'pending_turn':
             # Ink's exit detaches with ``tui_shutdown``; the owner ends the idle row once no other
-            # viewer holds it (gateway/session_viewer_close.py).
+            # viewer holds it (hermes_agent/gateway/session_viewer_close.py).
             db.end_session('tui-wt', 'tui_shutdown')
         db.close()
         if case == 'pending_turn':  # an accepted turn the gateway has not finished yet

@@ -582,8 +582,8 @@ def gateway_listeners(tmp_path, monkeypatch):
     auth registry and the listener's sign-in client are reset before and after."""
     import types
 
-    from gateway.run_api import GatewayDashboardMount
-    from gateway.webapp_listener import WebappMount
+    from hermes_agent.gateway.run_api import GatewayDashboardMount
+    from hermes_agent.gateway.webapp_listener import WebappMount
     from hermes_cli import web_server
     from hermes_cli.dashboard_auth import clear_providers, listener_client
     from hermes_cli.dashboard_auth.registry import register_global_provider
@@ -673,7 +673,7 @@ def test_a_disabled_nous_plugin_keeps_nous_sign_in_off_the_webapp(portal, gatewa
     """Web Access's client signs the Webapp in only through the Nous sign-in plugin: where
     ``plugins.disabled`` keeps that plugin from loading (discovery never registered it), the Webapp
     gets no Nous sign-in from Web Access either."""
-    from gateway.webapp_listener import WebappMount, use_own_sign_in
+    from hermes_agent.gateway.webapp_listener import WebappMount, use_own_sign_in
     from hermes_cli import webapp_access
     from hermes_cli.dashboard_auth import get_provider
     from hermes_constants import get_hermes_home

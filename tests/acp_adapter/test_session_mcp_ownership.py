@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_policy import policy_scope
+from hermes_agent.gateway.session_policy import policy_scope
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 from tests.acp_adapter.test_session_mcp_policy import owner, policy
 
@@ -20,7 +20,7 @@ def _editor_servers():
 
 
 def test_changed_credentials_with_equal_schemas_keep_the_manifest(server_spec, tmp_path):
-    from gateway.session_local_mcp import attach_editor_mcp, rebind_editor_mcp
+    from hermes_agent.gateway.session_local_mcp import attach_editor_mcp, rebind_editor_mcp
     from tools.registry import registry
     authority = owner()
     before = policy(authority, 'rebind', server_spec, tmp_path)
@@ -41,7 +41,7 @@ def test_changed_credentials_with_equal_schemas_keep_the_manifest(server_spec, t
 
 
 def test_changed_schema_is_reported_as_a_manifest_change(server_spec, tmp_path):
-    from gateway.session_local_mcp import rebind_editor_mcp
+    from hermes_agent.gateway.session_local_mcp import rebind_editor_mcp
     authority = owner()
     before = policy(authority, 'schema', server_spec, tmp_path)
     script = tmp_path / 'owned_mcp.py'
@@ -54,7 +54,7 @@ def test_changed_schema_is_reported_as_a_manifest_change(server_spec, tmp_path):
 
 
 def test_viewed_session_keeps_editor_connections_between_executions(server_spec, tmp_path):
-    from gateway.session_local_mcp import release_editor_mcp
+    from hermes_agent.gateway.session_local_mcp import release_editor_mcp
     authority = owner()
     live = SimpleNamespace(subscribers={'editor': object()})
     authority.sessions = {'viewed': live}
@@ -85,7 +85,7 @@ def test_unviewed_session_releases_editor_connections_after_execution(server_spe
 
 
 def test_editor_scopes_are_per_session_and_per_profile():
-    from gateway.session_local_mcp import session_scope
+    from hermes_agent.gateway.session_local_mcp import session_scope
     one, other = owner(), SimpleNamespace(profile_id='other-profile')
     assert session_scope(one, 'parent') != session_scope(one, 'child')
     assert session_scope(one, 'parent') != session_scope(other, 'parent')
@@ -96,8 +96,8 @@ def test_editor_scopes_are_per_session_and_per_profile():
     ('foreign-profile', {'session:read', 'session:submit', 'session:control'}, 'profile_mismatch'),
 ])
 def test_editor_mcp_change_requires_control_in_the_owning_profile(server_spec, actor_profile, capabilities, reason):
-    from gateway.session_contract import SessionActor, SessionRef
-    from gateway.session_mutations import _mutate_session
+    from hermes_agent.gateway.session_contract import SessionActor, SessionRef
+    from hermes_agent.gateway.session_mutations import _mutate_session
     authority = owner()
     actor = SessionActor('viewer', actor_profile, frozenset(capabilities), 'viewer-transport')
     params = {'session_id': 'held', 'request_id': 'r', 'expected_revision': 0, 'expected_generation': 0,
@@ -108,7 +108,7 @@ def test_editor_mcp_change_requires_control_in_the_owning_profile(server_spec, a
 
 
 def test_store_payload_carries_only_the_fingerprint(server_spec):
-    from gateway.session_local_mcp import fingerprint, private_mutation_payload
+    from hermes_agent.gateway.session_local_mcp import fingerprint, private_mutation_payload
     from hermes_agent.hermes_state_mutations import validate_action
     payload, servers = private_mutation_payload('editor_mcp', {'mcp_servers': [server_spec]})
     assert servers == [server_spec]

@@ -8,7 +8,7 @@ The in-agent compressor already escalates repeat timeouts 60 -> 300 -> 900s via
 in-memory ``_consecutive_timeout_failures`` counter, and:
 
   * session hygiene constructs a FRESH ``AIAgent`` for every run
-    (``gateway/run.py`` ~16820), and
+    (``hermes_agent/gateway/run.py`` ~16820), and
   * ``ContextCompressor.bind_session_state`` zeroes that counter.
 
 so the in-agent ladder is *structurally unreachable* from the gateway — the
@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import pytest
 
-from gateway.run import (
+from hermes_agent.gateway.run import (
     _HYGIENE_COOLDOWN_LADDER_MULTIPLIERS,
     _hygiene_cooldown_for_failure,
     _record_hygiene_cooldown,
@@ -28,8 +28,8 @@ from gateway.run import (
     hygiene_compaction_recovered,
     hygiene_wait_should_extend,
 )
-from gateway.run import GatewayRunner
-from gateway.session_state import SessionState
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session_state import SessionState
 
 
 def _Runner():
@@ -154,7 +154,7 @@ class TestCooldownLadder:
     def test_absolute_cap_bounds_a_large_operator_base(self):
         """The multiplier ladder alone would reach 9h at base=3600, which is
         indistinguishable from 'compaction silently switched off'."""
-        from gateway.run import _HYGIENE_COOLDOWN_MAX_SECONDS
+        from hermes_agent.gateway.run import _HYGIENE_COOLDOWN_MAX_SECONDS
 
         runner = _Runner()
         seen = [
@@ -166,7 +166,7 @@ class TestCooldownLadder:
     def test_cap_does_not_shrink_the_configured_base(self):
         """A base already above the cap must still be honoured on rung 1 —
         clamping must never hand back a SHORTER cooldown than configured."""
-        from gateway.run import _HYGIENE_COOLDOWN_MAX_SECONDS
+        from hermes_agent.gateway.run import _HYGIENE_COOLDOWN_MAX_SECONDS
 
         runner = _Runner()
         big = _HYGIENE_COOLDOWN_MAX_SECONDS * 2
@@ -365,7 +365,7 @@ class TestRecordedCooldownEscalates:
         db = self._DB()
         gw = self._GW(db)
         monkeypatch.setattr(
-            "gateway.run.logger", __import__("logging").getLogger("test")
+            "hermes_agent.gateway.run.logger", __import__("logging").getLogger("test")
         )
 
         now = real_time.time()

@@ -19,8 +19,8 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from gateway.platforms.base import SendResult
-from gateway.relay.egress import EGRESS_DECLINE_CODE
+from hermes_agent.gateway.platforms.base import SendResult
+from hermes_agent.gateway.relay.egress import EGRESS_DECLINE_CODE
 
 CODE_ONLY_DECLINE: dict[str, Any] = {"success": False, "code": EGRESS_DECLINE_CODE}
 
@@ -53,7 +53,7 @@ class _Adapter:
 
 def _runner(adapter: _Adapter):
     """A TurnRunner driven through its real _approval_notify_sync."""
-    from gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
 
     ctx = SimpleNamespace(
         _status_adapter=adapter,
@@ -78,7 +78,7 @@ APPROVAL = {"command": "rm -rf /", "description": "danger", "pattern_key": "k"}
 
 
 def test_exec_approval_decline_does_not_send_the_text_fallback():
-    from gateway.run_turn_runner import _ExecApprovalDeclined
+    from hermes_agent.gateway.run_turn_runner import _ExecApprovalDeclined
 
     adapter = _Adapter(
         SendResult(success=False, error="declined", raw_response=CODE_ONLY_DECLINE)
@@ -116,7 +116,7 @@ class _ConfirmAdapter:
 
 
 def _busy(adapter: _ConfirmAdapter):
-    from gateway.run_busy import GatewayBusySessionMixin
+    from hermes_agent.gateway.run_busy import GatewayBusySessionMixin
 
     busy = object.__new__(GatewayBusySessionMixin)
     busy._delivery_adapter_for = lambda _s: adapter
@@ -127,9 +127,9 @@ def _busy(adapter: _ConfirmAdapter):
 
 
 def _event():
-    from gateway.config import Platform
-    from gateway.platforms.event import MessageEvent
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.session import SessionSource
     return MessageEvent(text="/wipe", source=SessionSource(platform=Platform.DISCORD, chat_id="C1", user_id="u1"))
 
 
@@ -187,7 +187,7 @@ class _CardAdapter:
 
 
 def _card_runner(adapter: _CardAdapter):
-    from gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
 
     runner = object.__new__(TurnRunner)
     runner._ctx = SimpleNamespace(
@@ -303,7 +303,7 @@ def test_queued_reconcile_decline_does_not_fall_back_to_a_send():
     refused edit delivered the full text to the refused chat. Measured:
     [('edit', 'SECRET'), ('send', 'SECRET')].
     """
-    from gateway.run_notifications import GatewayNotificationsMixin
+    from hermes_agent.gateway.run_notifications import GatewayNotificationsMixin
 
     adapter = _EditAdapter()
     mixin = object.__new__(GatewayNotificationsMixin)
@@ -321,7 +321,7 @@ def test_queued_reconcile_decline_does_not_fall_back_to_a_send():
 
 def test_queued_reconcile_ORDINARY_edit_failure_still_sends():
     """Control: a genuinely un-editable message must still be delivered."""
-    from gateway.run_notifications import GatewayNotificationsMixin
+    from hermes_agent.gateway.run_notifications import GatewayNotificationsMixin
 
     class _Ordinary(_EditAdapter):
         async def edit_message(self, **k: Any) -> SendResult:
@@ -345,7 +345,7 @@ def test_queued_reconcile_ORDINARY_edit_failure_still_sends():
 def test_task_card_fallback_edit_decline_does_not_send_progress_text():
     """R6-4: R5-4 covered the native card, not the editable-text fallback."""
     adapter = _EditAdapter()
-    runner = object.__new__(__import__("gateway.run_turn_runner", fromlist=["x"]).TurnRunner)
+    runner = object.__new__(__import__("hermes_agent.gateway.run_turn_runner", fromlist=["x"]).TurnRunner)
     runner._ctx = SimpleNamespace(
         source=SimpleNamespace(chat_id="C1", platform="slack"),
         _progress_metadata={},

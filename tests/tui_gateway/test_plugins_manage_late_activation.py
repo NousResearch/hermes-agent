@@ -49,7 +49,7 @@ def test_plugins_manage_install_rescans_fires_on_plugin_loaded_and_exposes_mcp_s
     with patch("hermes_cli.plugins_cmd._install_plugin_core", _fake_install_core), \
          patch("hermes_cli.plugins_cmd._python_dependency_summary", return_value=[]), \
          patch("hermes_cli.plugins_admission.admit_plugin_set_change", _commit_plugin_selection), \
-         patch("gateway.control_socket.reload_gateway_plugins", return_value=None), \
+         patch("hermes_agent.gateway.control_socket.reload_gateway_plugins", return_value=None), \
          patch("tools.mcp_tool_discovery.register_mcp_servers", return_value=[]), \
          patch("tools.connectors.mcp._registered_tool_names", return_value=[]):  # no gateway, no real server
         resp = server.handle_request({"id": "1", "method": "plugins.manage",

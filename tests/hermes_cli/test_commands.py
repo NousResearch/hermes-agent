@@ -430,7 +430,7 @@ class TestSubcommandCompletion:
             get_connected_platforms=lambda: list(enums.values()),
             get_home_channel=lambda p: homes[p.value],
         )
-        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: fake)
+        monkeypatch.setattr("hermes_agent.gateway.config.load_gateway_config", lambda: fake)
 
     def test_handoff_completes_connected_platforms(self, monkeypatch):
         """`/handoff ` offers connected platforms, with or without a home channel."""

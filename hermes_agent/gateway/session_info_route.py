@@ -3,7 +3,7 @@
 import logging
 from typing import Any, Optional
 
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 
 def channel_override_route(config: Any, source: Any) -> tuple[Optional[str], Optional[dict], Optional[str]]:
@@ -11,7 +11,7 @@ def channel_override_route(config: Any, source: Any) -> tuple[Optional[str], Opt
     (``_resolve_session_agent_runtime``): the override model, and the override provider's own
     endpoint/credentials. ``force_provider`` names the provider when its runtime cannot be
     resolved, so the display still reports it. ``(None, None, None)`` without an override."""
-    from gateway.run import _get_channel_override, _resolve_runtime_agent_kwargs_for_provider
+    from hermes_agent.gateway.run import _get_channel_override, _resolve_runtime_agent_kwargs_for_provider
     if source is None or config is None:
         return None, None, None
     ch = _get_channel_override(

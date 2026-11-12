@@ -10,7 +10,7 @@ committed for it is restored by ``_schedule``/``_publish_pending`` before the FI
 import asyncio
 import contextvars
 
-from gateway.config import Platform
+from hermes_agent.gateway.config import Platform
 
 _RETIRABLE = frozenset({Platform.LOCAL, Platform.API_SERVER})
 # How long a retired conversation an RPC brought back stays after its last authorize: longer than any
@@ -23,7 +23,7 @@ LISTING_READ = contextvars.ContextVar("retirement_listing_read", default=False)
 
 def _pinned(authority, session_id, live):
     """In-memory state that still needs this exact ``LiveSession``."""
-    from gateway.session_history_mount import is_history_mount
+    from hermes_agent.gateway.session_history_mount import is_history_mount
     task = live.task
     return (authority.sessions.get(session_id) is not live
             or live.source is None or live.source.platform not in _RETIRABLE
@@ -50,7 +50,7 @@ def retire_idle(authority, session_id, live, target):
     restores the conversation (``restore_retired``) before anything indexes it."""
     if _pinned(authority, session_id, live):
         return False
-    from gateway.session_viewer_close import _busy
+    from hermes_agent.gateway.session_viewer_close import _busy
     if _busy(authority, session_id, target):
         return False
     del authority.sessions[session_id]
@@ -79,7 +79,7 @@ def retire_at_idle(authority, ref, live):
         return retire_idle(authority, ref.session_id, live, authority.physical_target(ref))
     stamp = live.closed_stamp
     if platform == Platform.LOCAL and stamp is not None and stamp[0] is live.event_stream.execution:
-        from gateway.session_viewer_close import _physical_target
+        from hermes_agent.gateway.session_viewer_close import _physical_target
         return retire_idle(authority, ref.session_id, live, _physical_target(authority, ref.session_id))
     return False
 
@@ -97,10 +97,10 @@ def restore_retired(authority, session_id):
     if session_id in authority.sessions:
         return
     if session_id in authority.retired_local:
-        from gateway.session_local_recovery import restore_local_session
+        from hermes_agent.gateway.session_local_recovery import restore_local_session
         restore_local_session(authority, session_id)
     else:
-        from gateway.session_api import restore_api_session
+        from hermes_agent.gateway.session_api import restore_api_session
         from hermes_agent.hermes_state_runtime import RuntimeStoreError
         try:
             restore_api_session(authority, session_id)
@@ -131,11 +131,11 @@ def _retire_restored(authority, session_id, live):
     live.retire_timer = None
     if authority.sessions.get(session_id) is not live or live.subscribers or live.source is None:
         return  # deleted or restored anew, or watched: that viewer's close retires it
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_contract import SessionRef
     if live.source.platform == Platform.API_SERVER:
         target = authority.physical_target(SessionRef(authority.profile_id, session_id))
     else:
-        from gateway.session_viewer_close import _physical_target
+        from hermes_agent.gateway.session_viewer_close import _physical_target
         target = _physical_target(authority, session_id)
     if not retire_idle(authority, session_id, live, target):
         touch_restored(authority, session_id)  # running work pins it: check again later
@@ -154,7 +154,7 @@ def forget_retired(authority, session_id):
         evict(route)
     if not local_retired:
         return
-    from gateway.session_local_recovery import local_adapter_map
+    from hermes_agent.gateway.session_local_recovery import local_adapter_map
     local = local_adapter_map(authority).get(Platform.LOCAL)
     saved = local.sources.get(session_id) if local is not None else None
     if saved is not None:

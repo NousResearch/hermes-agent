@@ -58,14 +58,14 @@ def pin_reasoning_effort(config, effort, *, session=False):
 
 def profile_config(authority):
     """The owning profile's current ``config.yaml`` (its present sections), read fresh."""
-    from gateway.run import _load_gateway_config
+    from hermes_agent.gateway.run import _load_gateway_config
     return present_sections(_load_gateway_config(Path(authority.db.db_path).resolve().parent / 'config.yaml'))
 
 
 def unpin_reasoning(config, profile):
     """``/reasoning reset``: the level is *profile*'s (its current config) again, re-read every turn by a
     following session and on each resume by any other; a create-time ``reasoning`` included."""
-    from gateway.session_policy_refresh import _follow
+    from hermes_agent.gateway.session_policy_refresh import _follow
     followed = profile.get('agent') if isinstance(profile.get('agent'), dict) else {}
     agent = config.setdefault('agent', {})
     for key in ('reasoning_effort', 'reasoning_overrides'):
@@ -188,7 +188,7 @@ class LocalSessionPolicy:
         config = present_sections(json.loads(self.config_json))
         live = self.read_profile(authority)
         if self.config_secret_ref is not None and authority is not None and secrets:
-            from gateway.session_policy_credentials import disable_dropped_secrets, recover_config_secrets
+            from hermes_agent.gateway.session_policy_credentials import disable_dropped_secrets, recover_config_secrets
             recovered = recover_config_secrets(authority, self)
             for path, value in recovered.items():
                 if path[0] is None:  # private terminal projection, not config
@@ -218,7 +218,7 @@ class LocalSessionPolicy:
             if held:
                 config['model'] = _held_pick(frozen, config.get('model') or {})
             else:
-                from gateway.run import _resolve_gateway_model
+                from hermes_agent.gateway.run import _resolve_gateway_model
                 model = _resolve_gateway_model(live) or self.model
             agent, live_agent = config.setdefault('agent', {}), live.get('agent') or {}
             for key in FOLLOW_AGENT_KEYS:
@@ -273,7 +273,7 @@ class LocalSessionPolicy:
             return dict(state.conversation.reasoning_override)
         if not self.follows_profile:
             return self.reasoning_config
-        from gateway.session_authorities import active_authority
+        from hermes_agent.gateway.session_authorities import active_authority
         from hermes_constants import resolve_reasoning_config
         config, model = self.effective(active_authority(runner), secrets=False)
         return resolve_reasoning_config(config, model or '')
@@ -281,8 +281,8 @@ class LocalSessionPolicy:
     def current_service_tier(self, runner, session_key):
         """The next turn's tier: a typed session /fast, else the policy's (frozen, or the profile's when following)."""
         from agent.fast_mode import parse_service_tier
-        from gateway.session_authorities import active_authority
-        from gateway.session_state import SERVICE_TIER_UNSET
+        from hermes_agent.gateway.session_authorities import active_authority
+        from hermes_agent.gateway.session_state import SERVICE_TIER_UNSET
         state = runner._peek_session_state(session_key) if session_key else None
         if state is not None and state.conversation.service_tier_override is not SERVICE_TIER_UNSET:
             return state.conversation.service_tier_override
@@ -367,7 +367,7 @@ def bound_route_holds(bound, bound_config, block, config):
     the config it was bound in: a respelled provider on one endpoint is one route, and a named entry
     whose ``base_url`` moved is another. An ``auto``/unset side keeps the literal comparison: a
     credential never follows a route the resolver picks later."""
-    from gateway.session_route_identity import resolved_route, same_route
+    from hermes_agent.gateway.session_route_identity import resolved_route, same_route
     bound = bound if isinstance(bound, dict) else {}
     identity, url = resolved_route(bound, bound_config)
     if 'auto' in (identity, resolved_route(block, config)[0]):
@@ -385,7 +385,7 @@ def entry_serves(block, config):
     url = normalize_route_base_url(block.get('base_url'))
     if not url:
         return True
-    from gateway.session_route_identity import _named_entry
+    from hermes_agent.gateway.session_route_identity import _named_entry
     provider = str(block.get('provider') or '').strip()
     entries = [_named_entry(provider, config)] if provider else []
     source = block.get('api_key_from')
@@ -425,7 +425,7 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
 
     source = params.get('source', 'cli')
     if source == 'a2a':
-        from gateway.session_a2a import build_forward_policy
+        from hermes_agent.gateway.session_a2a import build_forward_policy
         return build_forward_policy(params, config, private_secrets=private_secrets)
     unknown = sorted(set(params) - CREATE_FIELDS)
     if unknown or not isinstance(source, str) or source not in SURFACES:
@@ -449,10 +449,10 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
         _refuse('row_cwd', 'must be an absolute path when set')
     if params.get('cwd_explicit') is False and 'cwd' in params:
         cwd = _profile_workspace_cwd(get_hermes_home()) or cwd
-    from gateway.session_local_editor import validate_editor
+    from hermes_agent.gateway.session_local_editor import validate_editor
     validate_editor(source, params.get('editor'))
     if 'client' in params:  # a self-declared label kept in the request as sent; no decision below reads it
-        from gateway.session_client import client_problem
+        from hermes_agent.gateway.session_client import client_problem
         if problem := client_problem(params['client']):
             _refuse('client', problem)
     launch_skills(params)
@@ -487,7 +487,7 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
     # Values stay out of the request: ``launch_request`` is echoed to every viewer of the session.
     request = {k: v for k, v in params.items() if k not in {'request_id', 'api_key', 'client_env'}}
     request.setdefault('source', 'cli')
-    from gateway.session_local_mcp import private_editor_request
+    from hermes_agent.gateway.session_local_mcp import private_editor_request
     private_editor_request(request, private_secrets)
     _extract_config_secrets(config, private_secrets)
     _extract_config_secrets(terminal, private_secrets, (None,))
@@ -535,7 +535,7 @@ def _keeps_profile_route(picked, config):
     `deepinfra`, `custom:<name>` for a named entry) is the same route. A block with an endpoint
     and no provider (or `auto`) already routes to `custom` there.
     """
-    from gateway.session_route_identity import profile_route_identity, resolved_route
+    from hermes_agent.gateway.session_route_identity import profile_route_identity, resolved_route
     held_id = profile_route_identity(config)
     if held_id == 'auto' or not isinstance(picked, str) or not picked.strip():
         return False
@@ -556,7 +556,7 @@ def _with_entry_pick(params, config):
     (the profile's own first), else (no endpoint picked) the profile's own entry. A launch key for an
     entry the model alone chose is refused. Other picks stay as they came.
     """
-    from gateway.session_route_identity import configured_entry_key, profile_route_identity
+    from hermes_agent.gateway.session_route_identity import configured_entry_key, profile_route_identity
     picked = params.get('provider')
     if not isinstance(picked, str):
         return params
@@ -598,7 +598,7 @@ def _apply_launch_overrides(params, config):
         # own — the same route keys a committed /model switch rewrites (#138843). An explicit
         # base_url is applied after the drop, so a pinned endpoint survives without carrying
         # the replaced provider's other pins, and a same-provider re-pick keeps the profile's.
-        from gateway.session_route_identity import ROUTE_BOUND_KEYS
+        from hermes_agent.gateway.session_route_identity import ROUTE_BOUND_KEYS
         # The replaced provider's context window goes too: it was sized for the old model.
         for stale in ROUTE_BOUND_KEYS:
             model.pop(stale, None)
@@ -779,7 +779,7 @@ def accept_launch_hooks(policy):
     consent to, so the flag is a no-op there rather than a refusal. Allowlist I/O: off the loop."""
     if json.loads(policy.request_json).get('accept_hooks') and not policy.ignore_user_config:
         from agent.shell_hooks import accept_for_launch
-        from gateway.run import _load_gateway_config
+        from hermes_agent.gateway.run import _load_gateway_config
         accept_for_launch(_load_gateway_config())
 
 
@@ -795,7 +795,7 @@ def refresh_profile_hooks(policy):
     if policy is None or policy.ignore_user_config:
         return
     from agent.shell_hooks import sync_from_config
-    from gateway.run import _load_gateway_config
+    from hermes_agent.gateway.run import _load_gateway_config
     try:
         sync_from_config(_load_gateway_config)  # it never removes on an empty (failed-open) config
     except Exception:  # health: allow BLE001 -- best effort; a hook re-sync never blocks opening a session
@@ -832,7 +832,7 @@ def bind_launch_key(authority, session_id, policy, api_key, *, config_secrets=No
     """
     from dataclasses import replace
     import hmac
-    from gateway.session_local_mcp import PRIVATE_KEY, bind_editor_mcp
+    from hermes_agent.gateway.session_local_mcp import PRIVATE_KEY, bind_editor_mcp
     config_secrets = dict(config_secrets or {})
     policy = bind_editor_mcp(authority, session_id, policy, config_secrets.pop(PRIVATE_KEY, None))
     if api_key is None and not config_secrets:
@@ -859,7 +859,7 @@ def bind_launch_key(authority, session_id, policy, api_key, *, config_secrets=No
         configs = authority._local_config_secrets = {}
     config_ref = ref
     if config_secrets and getattr(authority, 'db', None) is not None:
-        from gateway.session_policy_credentials import config_reference
+        from hermes_agent.gateway.session_policy_credentials import config_reference
         config_ref = config_reference(authority, session_id, policy, config_secrets)
     if config_ref in configs and configs[config_ref] != config_secrets:
         raise RuntimeStoreError('admission_conflict')
@@ -891,7 +891,7 @@ def rebind_launch_key(authority, session, api_key):
     original, the key lives in this authority's memory only."""
     import hmac
     from agent.credential_persistence import fingerprint_secret_value
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     if not isinstance(api_key, str) or not api_key.strip():
         _refuse('api_key', 'must be a non-empty string')
     source = authority.sessions[session.session_id].source
@@ -919,13 +919,13 @@ def _secret_refs(authority, retired):
     """The launch-key slots and config-secret references the LOCAL policies outside *retired* name: the
     live sessions', and those of closed conversations ``session_retirement`` let go, which keep their
     frozen policy on the local adapter and resume on it (a branch on its parent's slots)."""
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     sources = [live.source for sid, live in authority.sessions.items() if sid not in retired]
     chats = {source.chat_id for source in sources if source is not None and source.platform == Platform.LOCAL}
     chats.update(sid for sid in getattr(authority, 'retired_local', ()) if sid not in retired)
     if not chats:
         return set()  # only a restored or retired LOCAL session has a policy in the adapter map
-    from gateway.session_local_recovery import local_adapter_map
+    from hermes_agent.gateway.session_local_recovery import local_adapter_map
     policies = getattr(local_adapter_map(authority).get(Platform.LOCAL), 'policies', None) or {}
     refs = set()
     for policy in filter(None, map(policies.get, chats)):
@@ -945,7 +945,7 @@ def release_launch_secrets(authority, session_ids):
     sweep, and a binding not yet published always sits under its own live session's name. Call
     before the retired sessions leave ``authority.sessions``."""
     import hashlib
-    from gateway.session_policy_credentials import PREFIX
+    from hermes_agent.gateway.session_policy_credentials import PREFIX
     retired = {str(sid) for sid in session_ids}
     if not retired:
         return
@@ -993,7 +993,7 @@ def restore_policy(data):
     """Reject incomplete private policy rather than rebuilding from current defaults."""
     try:
         policy = LocalSessionPolicy(**data)
-        from gateway.session_a2a import is_forward_policy
+        from hermes_agent.gateway.session_a2a import is_forward_policy
         surfaces = {**SURFACES, 'cron': 'cron', 'kanban': 'cli', 'bot_room': 'bot_room'}
         if ((not is_forward_policy(policy) and
              (policy.source not in surfaces or policy.platform != surfaces[policy.source]))
@@ -1043,7 +1043,7 @@ def local_desktop_turn(runner, source, scope):
     turn belongs to a Desktop chat its creator's connection declared local (``stage_local_session``);
     any other turn gets *scope* untouched. Read from the live policy without raising: a cold policy
     is restored, or refused, by the turn."""
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     policy = None
     if getattr(source, 'platform', None) == Platform.LOCAL:
         policy = getattr(runner._adapter_for_source(source), 'policies', {}).get(source.chat_id)
@@ -1062,8 +1062,8 @@ def _serving_local_desktop_within(scope):
 
 
 def policy_for_source(runner, source):
-    from gateway.session_local import LocalSessionAdapter
-    from gateway.config import Platform
+    from hermes_agent.gateway.session_local import LocalSessionAdapter
+    from hermes_agent.gateway.config import Platform
     if source is None or source.platform != Platform.LOCAL:  # None: a history mount, which runs nothing
         return None
     adapter = runner._adapter_for_source(source)
@@ -1126,7 +1126,7 @@ def policy_scope(policy, *, authority=None):
     from tools.terminal_scope import set_terminal_scope, reset_terminal_scope
     terminal = json.loads(policy.terminal_json)
     if policy.config_secret_ref is not None:
-        from gateway.session_policy_credentials import recover_config_secrets
+        from hermes_agent.gateway.session_policy_credentials import recover_config_secrets
         for path, value in recover_config_secrets(authority, policy).items():
             if path[0] is None:
                 terminal[path[1]] = value
@@ -1139,10 +1139,10 @@ def policy_scope(policy, *, authority=None):
     cwd_token = set_session_cwd(policy.cwd)
     terminal_token = set_terminal_scope(terminal)
     policy_token = _ACTIVE_POLICY.set(active)
-    from gateway.session_local_editor import editor_scope
+    from hermes_agent.gateway.session_local_editor import editor_scope
     try:
         from agent.auxiliary_task_config import session_auxiliary_scope
-        from gateway.session_local_mcp import editor_mcp_scope
+        from hermes_agent.gateway.session_local_mcp import editor_mcp_scope
         # Side tasks follow the profile's config.yaml, as every other side-task reader does; a bypass
         # session never reads the profile: its side tasks use its own saved section (code defaults only).
         aux_scope = (session_auxiliary_scope(policy.config(authority, secrets=False).get('auxiliary'))
@@ -1203,7 +1203,7 @@ def unbind_turn_workspace(task_id):
 def release_session_workspaces(authority, session_ids):
     """Session teardown: drop each session's workspace binding under its owning profile's scope (the
     key the turn bound it under), so the override table does not grow with every closed session."""
-    from gateway.session_authorities import owner_scope
+    from hermes_agent.gateway.session_authorities import owner_scope
     with owner_scope(authority):
         for sid in session_ids:
             unbind_turn_workspace(sid)

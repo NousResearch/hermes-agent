@@ -24,13 +24,13 @@ import logging
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import (
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import (
     BasePlatformAdapter,
     SendResult,
 )
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionSource, build_session_key
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionSource, build_session_key
 
 
 class _DummyAdapter(BasePlatformAdapter):
@@ -111,7 +111,7 @@ class TestExtractStripRecoveryAllPlatforms:
         _strip_everything(adapter, monkeypatch)
 
         event = _make_event(platform)
-        with caplog.at_level(logging.WARNING, logger="gateway.platforms.base"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.platforms.base"):
             await adapter._process_message_background(
                 event, build_session_key(event.source)
             )
@@ -157,7 +157,7 @@ class TestRecoveryDoesNotLeakMediaFragments:
         )
 
         event = _make_event(Platform.DISCORD)
-        with caplog.at_level(logging.ERROR, logger="gateway.platforms.base"):
+        with caplog.at_level(logging.ERROR, logger="hermes_agent.gateway.platforms.base"):
             await adapter._process_message_background(
                 event, build_session_key(event.source)
             )
@@ -193,7 +193,7 @@ class TestUnrecoverableDropIsLoud:
         _strip_everything(adapter, monkeypatch)
 
         event = _make_event(Platform.DISCORD)
-        with caplog.at_level(logging.ERROR, logger="gateway.platforms.base"):
+        with caplog.at_level(logging.ERROR, logger="hermes_agent.gateway.platforms.base"):
             await adapter._process_message_background(
                 event, build_session_key(event.source)
             )
@@ -225,7 +225,7 @@ class TestPostStopInterruptSwallow:
         """Interrupted before the first API call → the user's message was
         never processed; silence here swallows it (the #44212 malign shape:
         ``response ready ... api_calls=0 response=0 chars``)."""
-        from gateway.run import _normalize_empty_agent_response
+        from hermes_agent.gateway.run import _normalize_empty_agent_response
 
         agent_result = {
             "final_response": None,
@@ -243,7 +243,7 @@ class TestPostStopInterruptSwallow:
         """No interrupt and no work — #31884 (landed after this PR was
         written) surfaces a retry hint instead of silence for the
         generation-race drop."""
-        from gateway.run import _normalize_empty_agent_response
+        from hermes_agent.gateway.run import _normalize_empty_agent_response
 
         agent_result = {
             "final_response": None,
@@ -264,7 +264,7 @@ class TestPostStopInterruptSwallow:
         so its ``_interrupt_requested`` flag cannot leak into the next turn."""
         import threading
 
-        from gateway.run import GatewayRunner, _INTERRUPT_REASON_STOP
+        from hermes_agent.gateway.run import GatewayRunner, _INTERRUPT_REASON_STOP
 
         class _RecordingAgent:
             def __init__(self):

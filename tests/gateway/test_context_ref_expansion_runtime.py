@@ -22,12 +22,12 @@ from contextlib import contextmanager
 
 import pytest
 
-import gateway.run as gateway_run
+import hermes_agent.gateway.run as gateway_run
 from agent.context_references import ContextReferenceResult
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource
 
 
 def _make_runner() -> GatewayRunner:
@@ -111,7 +111,7 @@ async def test_at_reference_reaches_preprocessor_with_real_context_length(
 
     monkeypatch.setattr(ctx_mod, "preprocess_context_references_async", _fake_preprocess)
 
-    caplog.set_level(logging.DEBUG, logger="gateway.run")
+    caplog.set_level(logging.DEBUG, logger="hermes_agent.gateway.run")
 
     event = MessageEvent(text="please look at @file:notes.txt", source=source)
 

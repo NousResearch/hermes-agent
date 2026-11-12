@@ -13,9 +13,9 @@ from tests.gateway.test_session_authorities_multiplex import _reserve_homes, _ru
 
 @pytest.fixture
 def mux(tmp_path, monkeypatch, request):
-    from gateway.control_socket import GatewayControlServer
-    from gateway.run_runtime import initialize_gateway_runtime
-    from gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.control_socket import GatewayControlServer
+    from hermes_agent.gateway.run_runtime import initialize_gateway_runtime
+    from hermes_agent.gateway.runtime_ownership import process_ownership
 
     root, homes = _reserve_homes(tmp_path, monkeypatch)
     for name, home in homes:
@@ -60,8 +60,8 @@ def mux(tmp_path, monkeypatch, request):
 
 
 def test_hosted_lifecycle_serves_and_stops_every_authority(mux):
-    from gateway.run_runtime import recover_gateway_native_sessions
-    from gateway.session_hosted_service import stop_hosted_service
+    from hermes_agent.gateway.run_runtime import recover_gateway_native_sessions
+    from hermes_agent.gateway.session_hosted_service import stop_hosted_service
 
     runner, homes, _, call = mux
     assert call(recover_gateway_native_sessions(runner)) == {}
@@ -78,15 +78,15 @@ def test_hosted_lifecycle_serves_and_stops_every_authority(mux):
 
 
 def test_secondary_owner_transport_routes_both_directions_through_mux(mux):
-    from gateway import hosted_rooms
-    from gateway.session_authorities import owner_scope
-    from gateway.session_hosted_service import CanonicalHostedRoomService
-    from gateway.session_hosted_transport import (
+    from hermes_agent.gateway import hosted_rooms
+    from hermes_agent.gateway.session_authorities import owner_scope
+    from hermes_agent.gateway.session_hosted_service import CanonicalHostedRoomService
+    from hermes_agent.gateway.session_hosted_transport import (
         HostedRoomOwnerRPC, install_hosted_transport, check_remote_hosted_admission,
     )
-    from gateway import hosted_room_driver as tasks
-    from gateway.hosted_room_attachments import HostedRoomAttachmentStore
-    from gateway.session_ingress_media import restore_native_media
+    from hermes_agent.gateway import hosted_room_driver as tasks
+    from hermes_agent.gateway.hosted_room_attachments import HostedRoomAttachmentStore
+    from hermes_agent.gateway.session_ingress_media import restore_native_media
     from hermes_agent.hermes_state_runtime import list_session_admissions, RuntimeStoreError
 
     runner, homes, loop, _ = mux
@@ -159,9 +159,9 @@ def test_secondary_owner_transport_routes_both_directions_through_mux(mux):
 
 
 def test_private_rpc_builds_policy_in_destination_scope(mux):
-    from gateway.session_contract import SessionActor
-    from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+    from hermes_agent.gateway.session_policy import policy_for_source
 
     runner, homes, loop, _ = mux
     authority = runner.session_authorities.require(homes['beta'])
@@ -176,10 +176,10 @@ def test_private_rpc_builds_policy_in_destination_scope(mux):
 
 
 def test_room_coordinator_submits_once_to_destination_authority(mux, monkeypatch):
-    from gateway import hosted_rooms, session_finite
-    from gateway.session_authorities import owner_scope
-    from gateway.session_authority import SessionAuthority
-    from gateway.session_hosted_service import ensure_hosted_service
+    from hermes_agent.gateway import hosted_rooms, session_finite
+    from hermes_agent.gateway.session_authorities import owner_scope
+    from hermes_agent.gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_hosted_service import ensure_hosted_service
     from hermes_constants import get_hermes_home
     from hermes_agent.hermes_state_runtime import list_session_admissions
 
@@ -224,11 +224,11 @@ def test_room_coordinator_submits_once_to_destination_authority(mux, monkeypatch
 @pytest.mark.parametrize('mux', ['starting'], indirect=True)
 def test_startup_preserves_queued_work_until_ready(mux, monkeypatch):
     from types import SimpleNamespace
-    from gateway import hosted_room_driver as tasks, session_finite
-    from gateway.run_runtime import publish_gateway_runtime_ready
-    from gateway.session_authorities import owner_scope
-    from gateway.session_authority import SessionAuthority
-    from gateway.session_hosted_service import CanonicalHostedRoomService, ensure_hosted_service
+    from hermes_agent.gateway import hosted_room_driver as tasks, session_finite
+    from hermes_agent.gateway.run_runtime import publish_gateway_runtime_ready
+    from hermes_agent.gateway.session_authorities import owner_scope
+    from hermes_agent.gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_hosted_service import CanonicalHostedRoomService, ensure_hosted_service
     from hermes_agent.hermes_state_runtime import list_session_admissions
 
     runner, homes, loop, call = mux

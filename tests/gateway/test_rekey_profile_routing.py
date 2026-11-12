@@ -8,8 +8,8 @@ from __future__ import annotations
 
 
 def _make_store(tmp_path):
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
     store = SessionStore(
@@ -22,8 +22,8 @@ def _make_store(tmp_path):
 
 
 def _entry(session_key, chat_id, profile):
-    from gateway.session import SessionEntry, SessionSource, Platform
-    from gateway.session_lifecycle import _now
+    from hermes_agent.gateway.session import SessionEntry, SessionSource, Platform
+    from hermes_agent.gateway.session_lifecycle import _now
     now = _now()
     return SessionEntry(
         session_key=session_key, session_id=f"sid-{chat_id}",

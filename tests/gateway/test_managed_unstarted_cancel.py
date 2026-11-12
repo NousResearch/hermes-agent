@@ -7,7 +7,7 @@ import threading
 
 import pytest
 
-from gateway.session_contract import Submission
+from hermes_agent.gateway.session_contract import Submission
 from hermes_agent.hermes_state_runtime import get_session_admission
 from tests.gateway.test_session_authority_cancel_settlement import _authority, ACTOR, REF
 from tests.waiting import async_wait_until
@@ -16,7 +16,7 @@ from tests.waiting import async_wait_until
 @pytest.mark.asyncio
 @pytest.mark.parametrize('phase', ['environment', 'spawn', 'hello'])
 async def test_cancel_before_worker_reservation_settles_interrupted(tmp_path, monkeypatch, phase):
-    from gateway import session_managed_worker as managed
+    from hermes_agent.gateway import session_managed_worker as managed
     db, authority = _authority(tmp_path, monkeypatch)
     entered, release = threading.Event(), threading.Event()
     children = []
@@ -43,7 +43,7 @@ async def test_cancel_before_worker_reservation_settles_interrupted(tmp_path, mo
     monkeypatch.setattr(managed.ManagedWorker, 'next_frame', next_frame)
     async def execute(owner, ref, row):
         return await managed.execute_managed(owner, ref, row, policy=None)
-    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    monkeypatch.setattr('hermes_agent.gateway.session_finite.execute_finite_admission', execute)
     with db:
         receipt = await authority.submit(ACTOR, Submission('cancelled-startup', REF, {'text': 'work'}, 'queue'))
         task = authority.sessions['s'].task

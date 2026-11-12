@@ -18,7 +18,7 @@ import tools.async_delegation as ad
 import tools.delegate_tool_dispatch as dd
 from tools.process_registry import process_registry as reg
 from tools.process_registry_notifications import format_process_notification
-from gateway.run_notifications import GatewayNotificationsMixin
+from hermes_agent.gateway.run_notifications import GatewayNotificationsMixin
 assert Path(ad.__file__).is_relative_to(root)
 assert Path(dd.__file__).is_relative_to(root)
 print('SOURCE',ad.__file__,dd.__file__,flush=True)

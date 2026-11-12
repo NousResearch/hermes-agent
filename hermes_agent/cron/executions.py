@@ -160,7 +160,7 @@ def _emit_execution_state(
 
 def _process_start_time(pid: int) -> Optional[int]:
     try:
-        from gateway.status import get_process_start_time
+        from hermes_agent.gateway.status import get_process_start_time
         return get_process_start_time(pid)
     except Exception:
         return None
@@ -168,7 +168,7 @@ def _process_start_time(pid: int) -> Optional[int]:
 
 def _owner_is_live(pid: int, started_at: Optional[int]) -> bool:
     try:
-        from gateway.status import _pid_exists
+        from hermes_agent.gateway.status import _pid_exists
         if not _pid_exists(pid):
             return False
     except Exception:
@@ -180,7 +180,7 @@ def _owner_is_live(pid: int, started_at: Optional[int]) -> bool:
         return True  # cannot compare -> cannot prove death; a misread must not rewrite state
     # Drifted same-host readings (#117505) are not proof of death; a live misread is still
     # bounded by the stale-claim sweep below.
-    from gateway.status import start_time_fingerprints_match
+    from hermes_agent.gateway.status import start_time_fingerprints_match
     return start_time_fingerprints_match(started_at, current)
 
 

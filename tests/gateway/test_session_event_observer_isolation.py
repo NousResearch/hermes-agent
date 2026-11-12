@@ -1,7 +1,7 @@
 """A failed same-thread projection cannot abort canonical event publication."""
 import pytest
 
-from gateway.session_events import SessionEvents
+from hermes_agent.gateway.session_events import SessionEvents
 
 
 @pytest.mark.parametrize('healthy', [False, True])

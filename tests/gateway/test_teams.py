@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.teams_pipeline.models import TeamsMeetingRef, TeamsMeetingSummaryPayload
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
@@ -470,8 +470,8 @@ class TestTeamsMessageHandling:
 
     @pytest.mark.anyio
     async def test_aad_user_route_survives_conversation_changes(self, monkeypatch):
-        from gateway.profile_routing import parse_profile_routes
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.profile_routing import parse_profile_routes
+        from hermes_agent.gateway.run import GatewayRunner
 
         routes = parse_profile_routes([
             {"name": "owner", "platform": "teams", "user_id": "aad-456", "profile": "owner"},
@@ -480,7 +480,7 @@ class TestTeamsMessageHandling:
         runner = GatewayRunner.__new__(GatewayRunner)
         runner.config = SimpleNamespace(multiplex_profiles=True, profile_routes=routes)
         monkeypatch.setattr(
-            "gateway.run._multiplex_profile_homes",
+            "hermes_agent.gateway.run._multiplex_profile_homes",
             lambda _config: [("owner", None), ("other", None)],
         )
 
@@ -576,7 +576,7 @@ class TestTeamsAttachmentClassification:
 
     @pytest.mark.anyio
     async def test_file_download_info_sets_document_type(self):
-        from gateway.platforms.event import MessageType
+        from hermes_agent.gateway.platforms.event import MessageType
 
         adapter = self._make_adapter()
         adapter._fetch_attachment_bytes = AsyncMock(return_value=b"%PDF-1.4 fake")
@@ -594,7 +594,7 @@ class TestTeamsAttachmentClassification:
 
     @pytest.mark.anyio
     async def test_mixed_image_and_document_prefers_document(self):
-        from gateway.platforms.event import MessageType
+        from hermes_agent.gateway.platforms.event import MessageType
 
         adapter = self._make_adapter()
         adapter._fetch_attachment_bytes = AsyncMock(return_value=b"%PDF-1.4 fake")

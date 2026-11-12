@@ -8,7 +8,7 @@ from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
 def test_hosted_binding_requires_exact_server_dispatch(owner):
-    from gateway.session_api import bind_api_session, restore_api_session
+    from hermes_agent.gateway.session_api import bind_api_session, restore_api_session
     dispatch = _dispatch(_policy()).as_mapping()
     seed = '\0'.join(dispatch[k] for k in ('home_install_id', 'room_id', 'member_id', 'target_profile'))
     sid = 'room_' + hashlib.sha256(seed.encode()).hexdigest()[:32]

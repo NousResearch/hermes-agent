@@ -1,6 +1,6 @@
 import pytest
 
-from gateway.session_context import _UNSET, _VAR_MAP, clear_session_vars, set_session_vars
+from hermes_agent.gateway.session_context import _UNSET, _VAR_MAP, clear_session_vars, set_session_vars
 from agent.session_source import session_source_for
 
 

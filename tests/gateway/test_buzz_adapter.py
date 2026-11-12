@@ -10,8 +10,8 @@ from types import SimpleNamespace
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from gateway.platforms.base import CachedMedia
-from gateway.platforms.event import MessageType
+from hermes_agent.gateway.platforms.base import CachedMedia
+from hermes_agent.gateway.platforms.event import MessageType
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
 # Load plugins/platforms/buzz/adapter.py under a unique module name
@@ -79,7 +79,7 @@ def _event(event_id, pubkey=OTHER_PUBKEY, content="hello", created_at=1000, kind
     }
 
 def _make_adapter(extra=None):
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
 
     cfg = PlatformConfig(enabled=True, extra={"relay_url": "https://test.relay", **(extra or {})})
     adapter = BuzzAdapter(cfg)
@@ -128,7 +128,7 @@ class TestBuzzAdapterInit:
 
     def test_env_overrides_config(self, monkeypatch):
         monkeypatch.setenv("BUZZ_RELAY_URL", "https://env.relay")
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         adapter = BuzzAdapter(PlatformConfig(enabled=True, extra={"relay_url": "https://cfg.relay"}))
         assert adapter.relay_url == "https://env.relay"
 
@@ -175,7 +175,7 @@ class TestMultiplexProfileScope:
         self, multiplex_scope, default_profile_env, tmp_path
     ):
         """The secondary profile's PlatformConfig is authoritative (#98738)."""
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         cli = tmp_path / "buzz"
         cli.write_text("#!/bin/sh\n", encoding="utf-8")
@@ -207,7 +207,7 @@ class TestMultiplexProfileScope:
         """Keys absent from the profile's config must NOT borrow the default
         profile's bridged env values — that would connect this adapter to the
         default profile's relay and watch its channels."""
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         multiplex_scope()
         adapter = BuzzAdapter(PlatformConfig(enabled=True, extra={}))
@@ -239,7 +239,7 @@ class TestMultiplexProfileScope:
         """Multiplex ON but no scope (the DEFAULT profile constructs
         unscoped): env is its own bridge output and still wins."""
         from agent.secret_scope import set_multiplex_active
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         set_multiplex_active(True)
         try:
@@ -372,7 +372,7 @@ class TestMultiplexProfileScope:
         self, multiplex_scope, default_profile_env, monkeypatch, tmp_path
     ):
         multiplex_scope()
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         cli = tmp_path / "buzz"
         cli.write_text("#!/bin/sh\n", encoding="utf-8")
@@ -404,7 +404,7 @@ class TestMultiplexProfileScope:
     ):
         """Partial config: configured keys win, unconfigured keys fall back to
         their own defaults — never to the default profile's env values."""
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         multiplex_scope()
         adapter = BuzzAdapter(
@@ -519,7 +519,7 @@ class TestMultiplexProfileScope:
         passes via its own credentials file."""
         creds = tmp_path / "creds.json"
         creds.write_text(json.dumps({"nsec": "nsec1profile"}), encoding="utf-8")
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         multiplex_scope()
         assert validate_config(PlatformConfig(enabled=True, extra={})) is False
@@ -541,7 +541,7 @@ class TestMultiplexProfileScope:
     ):
         """Single-profile/unscoped: env relay + env key still validate even
         with an empty extra mapping."""
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         assert validate_config(PlatformConfig(enabled=True, extra={})) is True
 
@@ -551,7 +551,7 @@ class TestMultiplexProfileScope:
         """With no explicit chat_id, the scoped standalone send targets the
         profile's own home_channel — never the default profile's env one."""
         multiplex_scope()
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         cli = tmp_path / "buzz"
         cli.write_text("#!/bin/sh\n", encoding="utf-8")
@@ -588,7 +588,7 @@ class TestMultiplexProfileScope:
         """No chat_id and no profile home_channel: the error is returned —
         the default profile's env BUZZ_HOME_CHANNEL must not be borrowed."""
         multiplex_scope()
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         cli = tmp_path / "buzz"
         cli.write_text("#!/bin/sh\n", encoding="utf-8")
@@ -1383,8 +1383,8 @@ class TestInboundAttachments:
         self,
         monkeypatch,
     ):
-        from gateway.config import GatewayConfig
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.config import GatewayConfig
+        from hermes_agent.gateway.run import GatewayRunner
 
         monkeypatch.delenv("GATEWAY_ALLOWED_USERS", raising=False)
         monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
@@ -2824,7 +2824,7 @@ class TestInboundMediaAuthorizationGate:
 
     @pytest.mark.asyncio
     async def test_send_to_platform_live_buzz_delivers_all_media(self, monkeypatch, tmp_path):
-        from gateway.config import Platform
+        from hermes_agent.gateway.config import Platform
         from tools.send_message_tool import _send_to_platform
 
         first = tmp_path / "first.txt"
@@ -2839,7 +2839,7 @@ class TestInboundMediaAuthorizationGate:
         adapter._run_cli = cli
         platform = Platform("buzz")
         runner = SimpleNamespace(adapters={platform: adapter})
-        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
+        monkeypatch.setattr("hermes_agent.gateway.run._gateway_runner_ref", lambda: runner)
 
         result = await _send_to_platform(
             platform,
@@ -2873,7 +2873,7 @@ class TestBuzzAdapterLifecycle:
     @pytest.mark.asyncio
     async def test_disconnect_releases_scoped_lock(self, monkeypatch):
         """The identity lock taken in connect() must be released on disconnect."""
-        import gateway.status_scoped_locks as scoped_locks
+        import hermes_agent.gateway.status_scoped_locks as scoped_locks
 
         released = []
         monkeypatch.setattr(
@@ -2893,7 +2893,7 @@ class TestBuzzAdapterLifecycle:
         """A second profile using the same relay+pubkey must fail fast. ``acquire_scoped_lock``
         returns ``(acquired, existing_record)`` — a bare truthiness check on that tuple never
         fires, so the mock returns the real contract."""
-        import gateway.status as gateway_status
+        import hermes_agent.gateway.status as gateway_status
 
         monkeypatch.setattr(
             gateway_status, "acquire_scoped_lock",
@@ -2998,7 +2998,7 @@ class TestEnvEnablement:
 class TestBuzzPluginRegistration:
 
     def test_register_platform_contract(self):
-        from gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.platform_registry import platform_registry
 
         platform_registry.unregister("buzz")
         ctx = MagicMock()
@@ -3017,7 +3017,7 @@ class TestStandaloneSend:
 
     @pytest.mark.asyncio
     async def test_standalone_send_success(self, monkeypatch, tmp_path):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         fake_cli = tmp_path / "buzz"
         fake_cli.write_text("#!/bin/sh\n", encoding="utf-8")
@@ -3050,7 +3050,7 @@ class TestStandaloneSend:
         credentials file holds auth_tag, omitting injection causes relay 403
         membership failures on owner-gated relays.
         """
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         tag = ["auth", "b" * 64, "", "c" * 128]
         creds = tmp_path / "agent_credentials.json"
@@ -3098,7 +3098,7 @@ class TestStandaloneSend:
         self, monkeypatch, tmp_path
     ):
         """Direct private key without credentials_file must not invent an auth tag."""
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         fake_cli = tmp_path / "buzz"
         fake_cli.write_text("#!/bin/sh\n", encoding="utf-8")
@@ -3135,7 +3135,7 @@ class TestStandaloneSend:
     async def test_standalone_send_retries_unresolved_presentation_mention(
         self, monkeypatch, tmp_path
     ):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         fake_cli = tmp_path / "buzz"
         fake_cli.write_text("#!/bin/sh\n", encoding="utf-8")
@@ -3186,7 +3186,7 @@ class TestStandaloneSend:
 
     @pytest.mark.asyncio
     async def test_standalone_send_extracts_path_from_media_descriptor(self, monkeypatch, tmp_path):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         fake_cli = tmp_path / "buzz"
         fake_cli.write_text("#!/bin/sh\n", encoding="utf-8")
@@ -3346,7 +3346,7 @@ class TestBuzzAdapterEdit:
     async def test_standalone_send_rejects_invalid_zero_exit_receipt(
         self, monkeypatch, tmp_path, stdout
     ):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         fake_cli = tmp_path / "buzz"
         fake_cli.write_text("#!/bin/sh\n", encoding="utf-8")
@@ -3370,7 +3370,7 @@ class TestBuzzAdapterEdit:
     async def test_standalone_send_rejection_is_useful_bounded_and_not_delivered(
         self, monkeypatch, tmp_path
     ):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         fake_cli = tmp_path / "buzz"
         fake_cli.write_text("#!/bin/sh\n", encoding="utf-8")

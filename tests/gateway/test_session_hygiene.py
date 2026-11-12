@@ -20,10 +20,10 @@ from unittest.mock import MagicMock, AsyncMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionEntry, SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionEntry, SessionSource
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +108,7 @@ async def test_session_hygiene_preserves_transcript_when_no_rotation(monkeypatch
     fake_run_agent.AIAgent = NonRotatingCompressAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
 
     adapter = HygieneCaptureAdapter()
@@ -234,7 +234,7 @@ async def test_session_hygiene_preserves_transcript_when_in_place_configured_but
     fake_run_agent.AIAgent = InPlaceConfiguredAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
 
     adapter = HygieneCaptureAdapter()
@@ -373,7 +373,7 @@ async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monk
         f"display: {{suppress_warning_notifications: {str(not warning_notifications).lower()}}}\n"
     )
 
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
 
     adapter = HygieneCaptureAdapter()
@@ -535,7 +535,7 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
     fake_run_agent.AIAgent = FakeInPlaceCompressAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
 
     adapter = HygieneCaptureAdapter()
@@ -668,7 +668,7 @@ async def test_session_hygiene_honors_configurable_hard_message_limit(
         "  hygiene_hard_message_limit: 10\n"
     )
 
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
 
     adapter = HygieneCaptureAdapter()
@@ -769,7 +769,7 @@ def _make_cooldown_runner(monkeypatch, tmp_path, agent_cls, session_db, session_
         encoding="utf-8",
     )
 
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
 
     adapter = HygieneCaptureAdapter()
@@ -845,7 +845,7 @@ async def test_hygiene_compression_cooldown_survives_gateway_restart(
     """
     from hermes_agent.hermes_state import SessionDB
 
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     session_id = "sess-restart"
     db = SessionDB(db_path=tmp_path / "state.db")
     try:
@@ -1155,7 +1155,7 @@ class _LandedCompressAgent:
 
 def test_bound_model_input_without_hygiene_is_deterministic_and_fail_closed():
     """The bound keeps the setup head + the newest tail, drops the middle, never mutates input."""
-    from gateway.run_turn import bound_model_input_without_hygiene
+    from hermes_agent.gateway.run_turn import bound_model_input_without_hygiene
 
     rows = _make_bound_probe_transcript()
     snapshot = [dict(r) for r in rows]

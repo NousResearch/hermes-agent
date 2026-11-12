@@ -11,8 +11,8 @@ pytest_plugins = ['tests.gateway.test_session_bot_retry']
 
 @pytest.mark.asyncio
 async def test_paused_bot_follower_rearms_until_its_durable_completion(bot, monkeypatch):
-    from gateway.session_bot import deliver
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_bot import deliver
+    from hermes_agent.gateway.session_contract import SessionRef
     from tools.bot_live_delivery import read_delivery_result
 
     authority = bot.authority
@@ -41,9 +41,9 @@ async def test_paused_watcher_never_publishes_final_failed_while_retry_is_due(bo
     """The pause wakes the watcher; the resumed admission then fails transiently before the watcher
     takes the mailbox lock. Its receipt must read pending, never the final ``failed``, while the
     one retry is still owed (a poller would otherwise return that failure as the answer)."""
-    from gateway import session_bot
-    from gateway.session_bot_mailbox import mailbox_lock
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway import session_bot
+    from hermes_agent.gateway.session_bot_mailbox import mailbox_lock
+    from hermes_agent.gateway.session_contract import SessionRef
     from tests.gateway.test_session_bot_retry import _admissions
 
     authority = bot.authority

@@ -1,11 +1,11 @@
 import pytest
 from unittest.mock import AsyncMock
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter
-from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE, is_global_startup_conflict
-from gateway.run import GatewayRunner
-from gateway.status import read_runtime_status
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE, is_global_startup_conflict
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.status import read_runtime_status
 
 
 @pytest.fixture(autouse=True)
@@ -16,9 +16,9 @@ def _host_attach_gate_is_not_under_test(monkeypatch):
     there makes ``start_gateway`` attach and return before reaching the code under test. The host
     role claimed along the way is released afterwards, so one test's owner is not the next one's.
     """
-    monkeypatch.setattr("gateway.run._host_attach_or_none", AsyncMock(return_value=None))
+    monkeypatch.setattr("hermes_agent.gateway.run._host_attach_or_none", AsyncMock(return_value=None))
     yield
-    from gateway import host_rendezvous as hr
+    from hermes_agent.gateway import host_rendezvous as hr
 
     hr.release_host_lock(hr.ROLE_GATEWAY)
     hr.clear_record(hr.ROLE_GATEWAY)
@@ -107,7 +107,7 @@ async def test_start_gateway_verbosity_imports_redacting_formatter(monkeypatch, 
 
     class _CleanExitRunner:
         def __init__(self, config):
-            from gateway.session import SessionStore
+            from hermes_agent.gateway.session import SessionStore
             from hermes_agent.hermes_state import SessionDB
             from hermes_constants import get_hermes_home
             self.session_store = SessionStore(get_hermes_home() / 'sessions', config)
@@ -128,13 +128,13 @@ async def test_start_gateway_verbosity_imports_redacting_formatter(monkeypatch, 
             self.session_store.close_all_db_handles()
             self._session_db.close()
 
-    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+    monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda: None)
     monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
     monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
     monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
-    monkeypatch.setattr("gateway.run.GatewayRunner", _CleanExitRunner)
+    monkeypatch.setattr("hermes_agent.gateway.run.GatewayRunner", _CleanExitRunner)
 
-    from gateway.run import start_gateway
+    from hermes_agent.gateway.run import start_gateway
 
     # verbosity=1 triggers the code path that uses RedactingFormatter.
     # Before the fix this raised NameError.
@@ -172,20 +172,20 @@ async def test_start_gateway_replace_aborts_when_force_killed_pid_still_alive(
         released_locks = True
         return 0
 
-    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 42)
-    monkeypatch.setattr("gateway.status.remove_pid_file", _mock_remove_pid_file)
+    monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda: 42)
+    monkeypatch.setattr("hermes_agent.gateway.status.remove_pid_file", _mock_remove_pid_file)
     monkeypatch.setattr(
-        "gateway.status_scoped_locks.release_all_scoped_locks",
+        "hermes_agent.gateway.status_scoped_locks.release_all_scoped_locks",
         _mock_release_all_scoped_locks,
     )
     monkeypatch.setattr(
-        "gateway.status.terminate_pid",
+        "hermes_agent.gateway.status.terminate_pid",
         lambda pid, force=False, **kwargs: calls.append((pid, force)),
     )
     # Ownership guard (#89315): legitimate same-home replace fixture — the
     # persisted record is bound to target pid 42 in this home.
     monkeypatch.setattr(
-        "gateway.status._read_pid_record",
+        "hermes_agent.gateway.status._read_pid_record",
         lambda path=None: {
             "pid": 42,
             "kind": "hermes-gateway",
@@ -195,19 +195,19 @@ async def test_start_gateway_replace_aborts_when_force_killed_pid_still_alive(
         },
     )
     monkeypatch.setattr(
-        "gateway.status._get_process_start_time", lambda pid: 0 if pid == 42 else None
+        "hermes_agent.gateway.status._get_process_start_time", lambda pid: 0 if pid == 42 else None
     )
     # _pid_exists never goes False — the force-kill did not take.
-    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
-    monkeypatch.setattr("gateway.run.os.getpid", lambda: 100)
-    monkeypatch.setattr("gateway.run.os.kill", lambda pid, sig: None)
+    monkeypatch.setattr("hermes_agent.gateway.status._pid_exists", lambda pid: True)
+    monkeypatch.setattr("hermes_agent.gateway.run.os.getpid", lambda: 100)
+    monkeypatch.setattr("hermes_agent.gateway.run.os.kill", lambda pid, sig: None)
     monkeypatch.setattr("time.sleep", lambda _: None)
     monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
     monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
     monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
-    monkeypatch.setattr("gateway.run.GatewayRunner", _RunnerShouldNotStart)
+    monkeypatch.setattr("hermes_agent.gateway.run.GatewayRunner", _RunnerShouldNotStart)
 
-    from gateway.run import start_gateway
+    from hermes_agent.gateway.run import start_gateway
 
     ok = await start_gateway(config=GatewayConfig(), replace=True, verbosity=None)
 
@@ -241,7 +241,7 @@ async def test_start_gateway_replace_writes_takeover_marker_before_sigterm(
             (tmp_path / ".gateway-takeover.json").exists() is False  # not yet
         )
         # Actually write the marker so we can verify cleanup later
-        from gateway.status import _get_takeover_marker_path, _write_json_file
+        from hermes_agent.gateway.status import _get_takeover_marker_path, _write_json_file
         _write_json_file(_get_takeover_marker_path(), {
             "target_pid": target_pid,
             "target_start_time": 0,
@@ -255,7 +255,7 @@ async def test_start_gateway_replace_writes_takeover_marker_before_sigterm(
 
     class _CleanExitRunner:
         def __init__(self, config):
-            from gateway.session import SessionStore
+            from hermes_agent.gateway.session import SessionStore
             from hermes_agent.hermes_state import SessionDB
             from hermes_constants import get_hermes_home
             self.session_store = SessionStore(get_hermes_home() / 'sessions', config)
@@ -280,14 +280,14 @@ async def test_start_gateway_replace_writes_takeover_marker_before_sigterm(
         return 42 if _pid_state["alive"] else None
     def _mock_remove_pid_file():
         _pid_state["alive"] = False
-    monkeypatch.setattr("gateway.status.get_running_pid", _mock_get_running_pid)
-    monkeypatch.setattr("gateway.status.remove_pid_file", _mock_remove_pid_file)
+    monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", _mock_get_running_pid)
+    monkeypatch.setattr("hermes_agent.gateway.status.remove_pid_file", _mock_remove_pid_file)
     # Ownership guard (#89315): this test simulates a legitimate same-home
     # replace, so the persisted pid record must be a valid BOUND record for
     # the target pid in THIS home. start_time 0 matches the legacy fixture's
     # convention; the live probe is patched to agree.
     monkeypatch.setattr(
-        "gateway.status._read_pid_record",
+        "hermes_agent.gateway.status._read_pid_record",
         lambda path=None: {
             "pid": 42,
             "kind": "hermes-gateway",
@@ -297,27 +297,27 @@ async def test_start_gateway_replace_writes_takeover_marker_before_sigterm(
         },
     )
     monkeypatch.setattr(
-        "gateway.status._get_process_start_time", lambda pid: 0 if pid == 42 else None
+        "hermes_agent.gateway.status._get_process_start_time", lambda pid: 0 if pid == 42 else None
     )
     monkeypatch.setattr(
-        "gateway.status_scoped_locks.release_all_scoped_locks",
+        "hermes_agent.gateway.status_scoped_locks.release_all_scoped_locks",
         lambda **kwargs: 0,
     )
-    monkeypatch.setattr("gateway.status.write_takeover_marker", record_write_marker)
-    monkeypatch.setattr("gateway.status.terminate_pid", record_terminate)
-    monkeypatch.setattr("gateway.run.os.getpid", lambda: 100)
+    monkeypatch.setattr("hermes_agent.gateway.status.write_takeover_marker", record_write_marker)
+    monkeypatch.setattr("hermes_agent.gateway.status.terminate_pid", record_terminate)
+    monkeypatch.setattr("hermes_agent.gateway.run.os.getpid", lambda: 100)
     # Simulate old process exiting on first check so we don't loop into force-kill
     monkeypatch.setattr(
-        "gateway.run.os.kill",
+        "hermes_agent.gateway.run.os.kill",
         lambda pid, sig: (_ for _ in ()).throw(ProcessLookupError()),
     )
     monkeypatch.setattr("time.sleep", lambda _: None)
     monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
     monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
     monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
-    monkeypatch.setattr("gateway.run.GatewayRunner", _CleanExitRunner)
+    monkeypatch.setattr("hermes_agent.gateway.run.GatewayRunner", _CleanExitRunner)
 
-    from gateway.run import start_gateway
+    from hermes_agent.gateway.run import start_gateway
 
     ok = await start_gateway(config=GatewayConfig(), replace=True, verbosity=None)
 
@@ -338,7 +338,7 @@ async def test_start_gateway_replace_clears_marker_on_permission_denied(
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     def write_marker(target_pid: int) -> bool:
-        from gateway.status import _get_takeover_marker_path, _write_json_file
+        from hermes_agent.gateway.status import _get_takeover_marker_path, _write_json_file
         _write_json_file(_get_takeover_marker_path(), {
             "target_pid": target_pid,
             "target_start_time": 0,
@@ -350,11 +350,11 @@ async def test_start_gateway_replace_clears_marker_on_permission_denied(
     def raise_permission(pid, force=False, **kwargs):
         raise PermissionError("simulated EPERM")
 
-    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 42)
+    monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda: 42)
     # Ownership guard (#89315): a bound same-home record for target pid 42, so the replace flow
     # actually reaches the SIGTERM (and its EPERM) instead of refusing on unprovable ownership.
     monkeypatch.setattr(
-        "gateway.status._read_pid_record",
+        "hermes_agent.gateway.status._read_pid_record",
         lambda path=None: {
             "pid": 42,
             "kind": "hermes-gateway",
@@ -364,16 +364,16 @@ async def test_start_gateway_replace_clears_marker_on_permission_denied(
         },
     )
     monkeypatch.setattr(
-        "gateway.status._get_process_start_time", lambda pid: 0 if pid == 42 else None
+        "hermes_agent.gateway.status._get_process_start_time", lambda pid: 0 if pid == 42 else None
     )
-    monkeypatch.setattr("gateway.status.write_takeover_marker", write_marker)
-    monkeypatch.setattr("gateway.status.terminate_pid", raise_permission)
-    monkeypatch.setattr("gateway.run.os.getpid", lambda: 100)
+    monkeypatch.setattr("hermes_agent.gateway.status.write_takeover_marker", write_marker)
+    monkeypatch.setattr("hermes_agent.gateway.status.terminate_pid", raise_permission)
+    monkeypatch.setattr("hermes_agent.gateway.run.os.getpid", lambda: 100)
     monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
     monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
     monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
 
-    from gateway.run import start_gateway
+    from hermes_agent.gateway.run import start_gateway
 
     # Should return False due to permission error
     ok = await start_gateway(config=GatewayConfig(), replace=True, verbosity=None)
@@ -406,7 +406,7 @@ async def test_runner_degrades_gracefully_when_all_adapters_missing(monkeypatch,
     # missing credentials — no connection attempt ever made).
     monkeypatch.setattr(runner, "_create_adapter", lambda platform, cfg: None)
     # ...because no plugin registered them, so the reconnect watcher may still heal them.
-    monkeypatch.setattr("gateway.platform_registry.platform_registry.is_registered", lambda name: False)
+    monkeypatch.setattr("hermes_agent.gateway.platform_registry.platform_registry.is_registered", lambda name: False)
 
     import logging
     with caplog.at_level(logging.WARNING):
@@ -493,7 +493,7 @@ async def test_start_gateway_propagates_fatal_config_exit_code(monkeypatch, tmp_
 
     class _FatalConfigRunner:
         def __init__(self, config):
-            from gateway.session import SessionStore
+            from hermes_agent.gateway.session import SessionStore
             from hermes_agent.hermes_state import SessionDB
             from hermes_constants import get_hermes_home
             self.session_store = SessionStore(get_hermes_home() / 'sessions', config)
@@ -513,13 +513,13 @@ async def test_start_gateway_propagates_fatal_config_exit_code(monkeypatch, tmp_
             self.session_store.close_all_db_handles()
             self._session_db.close()
 
-    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+    monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda: None)
     monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
     monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
     monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
-    monkeypatch.setattr("gateway.run.GatewayRunner", _FatalConfigRunner)
+    monkeypatch.setattr("hermes_agent.gateway.run.GatewayRunner", _FatalConfigRunner)
 
-    from gateway.run import start_gateway
+    from hermes_agent.gateway.run import start_gateway
 
     with pytest.raises(SystemExit) as exc_info:
         await start_gateway(config=GatewayConfig(), replace=False, verbosity=0)
@@ -564,7 +564,7 @@ async def test_live_foreign_token_lock_at_startup_exits_ex_config(monkeypatch, t
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
     # A live foreign holder: acquire_scoped_lock reports (False, record).
     monkeypatch.setattr(
-        "gateway.status.acquire_scoped_lock",
+        "hermes_agent.gateway.status.acquire_scoped_lock",
         lambda scope, identity, metadata=None: (
             False,
             {"pid": 424242, "start_time": 1, "hermes_home": "/other/home", "profile": "other"},
@@ -599,7 +599,7 @@ async def test_token_lock_plus_retryable_peer_stays_alive(monkeypatch, tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
     monkeypatch.setattr(
-        "gateway.status.acquire_scoped_lock",
+        "hermes_agent.gateway.status.acquire_scoped_lock",
         lambda scope, identity, metadata=None: (False, {"pid": 424242, "start_time": 1}),
     )
     config = GatewayConfig(

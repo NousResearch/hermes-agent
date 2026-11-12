@@ -18,7 +18,7 @@ from functools import partial
 import logging
 import time
 
-from gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 from hermes_cli.observability.shared_metrics_busy import note_busy_merged, settle_busy_arrival, stamp_busy_arrival
 
 logger = logging.getLogger(__name__)
@@ -78,8 +78,8 @@ async def burst_gate(adapter, event, session_key):
 async def dispatch_busy_burst(adapter, event, session_key):
     """``dispatch_shared_busy`` for one busy input, merging a same-sender PHOTO+PHOTO or
     queue-mode TEXT+TEXT burst first."""
-    from gateway.platforms.base import merge_pending_message_event
-    from gateway.session_ingress import dispatch_shared_busy
+    from hermes_agent.gateway.platforms.base import merge_pending_message_event
+    from hermes_agent.gateway.session_ingress import dispatch_shared_busy
     stamp_busy_arrival(adapter, event)
     kind, bursts = _kind(adapter, event), _state(adapter, '_shared_bursts')
     while (burst := bursts.get(session_key)) is not None:
@@ -147,7 +147,7 @@ def _flush(adapter, session_key, burst):
 
 
 async def _commit(adapter, session_key, burst, previous):
-    from gateway.session_ingress import dispatch_shared_busy
+    from hermes_agent.gateway.session_ingress import dispatch_shared_busy
     if previous is not None:
         await asyncio.wait({previous})
     try:

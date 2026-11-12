@@ -321,7 +321,7 @@ def request_elicitation_consent(message: str, description: str, *,
 
     # api_server is an unattended *platform* for the dangerous-command gate, but a live ``/v1/runs`` run
     # registers an approval notify callback and answers via ``POST /v1/runs/{id}/approval``
-    # (gateway/platforms/api_server_runs.py), so its per-call MCP consent takes the gateway path too.
+    # (hermes_agent/gateway/platforms/api_server_runs.py), so its per-call MCP consent takes the gateway path too.
     # A run without a callback still fails closed below; cron and ``-q`` workers stay excluded.
     api_run_context = (
         _ctx._get_session_platform() == "api_server"

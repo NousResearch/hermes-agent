@@ -5,7 +5,7 @@ toggled by ``/footer on|off``. Fields: ``model`` (vendor prefix dropped), ``cont
 occupancy), ``latency`` (turn wall-clock, opt-in — NOT in the default set so an unset ``fields``
 renders exactly as before), ``served_model`` (opt-in, ``alias → served``: the deployment a routing
 proxy reported via ``x-litellm-model-id`` / ``x-litellm-model-api-base``, or Hermes' own fallback
-route; skipped when the served model is the requested one), ``cwd`` (home-relative). ``gateway/run.py`` appends the footer to the
+route; skipped when the served model is the requested one), ``cwd`` (home-relative). ``hermes_agent/gateway/run.py`` appends the footer to the
 final response only (never to tool-progress or streaming partials); when streaming already
 delivered the text, it goes out as a trailing message via ``send_trailing_footer()``."""
 
@@ -107,7 +107,7 @@ def build_footer_line(*, user_config: dict[str, Any] | None, platform_key: str |
                       model: Optional[str], context_tokens: int, context_length: Optional[int],
                       cwd: Optional[str] = None, turn_seconds: Optional[float] = None,
                       requested_model: Optional[str] = None, served_model: Optional[str] = None) -> str:
-    """Entry point for gateway/run.py: footer text, or "" when disabled / no data. Callers append it
+    """Entry point for hermes_agent/gateway/run.py: footer text, or "" when disabled / no data. Callers append it
     to the final response themselves, preserving a single blank line of separation.
     ``turn_seconds`` is the caller-measured (``time.monotonic()``) run duration; ``None`` skips the
     ``latency`` field."""

@@ -498,7 +498,7 @@ class S6ServiceManager:
         profile's own env (``API_SERVER_PORT``, default 8642); two profiles that both leave it
         unset collide.
 
-        Port selection: the gateway binds the port resolved by ``gateway/config.py`` from the profile's own
+        Port selection: the gateway binds the port resolved by ``hermes_agent/gateway/config.py`` from the profile's own
         environment — ``API_SERVER_PORT`` (or ``platforms.api_server.extra.port`` in that profile's
         ``config.yaml``), defaulting to 8642. There is no ``[gateway] port`` key and no Python-side
         allocator: because each supervised profile gateway loads its own ``HERMES_HOME``, two profiles that
@@ -530,7 +530,7 @@ class S6ServiceManager:
         # WebUI helper) grabs the PID lock first; the slot then hits "Another gateway instance is
         # already running", exits non-zero, and s6 restarts it forever — a log-flooding loop that
         # never binds. ``--replace`` reaps the stale holder (marker + SIGTERM→SIGKILL-with-
-        # confirmation + scoped-lock cleanup, see gateway/run.py) so s6 always wins; the sentinel
+        # confirmation + scoped-lock cleanup, see hermes_agent/gateway/run.py) so s6 always wins; the sentinel
         # above prevents the run→start→run recursion. s6 guarantees one supervised instance per
         # slot, so there is no legitimate sibling for ``--replace`` to clobber.
         if profile == "default":
@@ -554,7 +554,7 @@ class S6ServiceManager:
         gateway exit into a reconnect loop (the ashriel-discord storm in #76435 — 1,000+ connections and a
         provider token reset). See #51228, #76435.
         """
-        from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+        from hermes_agent.gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
         code = GATEWAY_FATAL_CONFIG_EXIT_CODE
         return (
             "#!/command/with-contenv sh\n"
@@ -647,7 +647,7 @@ class S6ServiceManager:
         pid = self._supervised_pid(name)
         if pid is not None:
             try:
-                from gateway.status import write_planned_stop_marker
+                from hermes_agent.gateway.status import write_planned_stop_marker
                 write_planned_stop_marker(pid)
             except Exception:
                 pass

@@ -7,7 +7,7 @@ and hands the recording to one background worker so the caller's loop never wait
 runtime build or a config read. The worker runs in a copy of the caller's context, so the profile
 the caller was scoped to (gateway multiplex, cron ``_profile_cron_scope``) owns the row.
 
-This module is imported by ``gateway/platforms/base.py`` at class-definition time: keep imports lazy.
+This module is imported by ``hermes_agent/gateway/platforms/base.py`` at class-definition time: keep imports lazy.
 """
 
 from __future__ import annotations
@@ -144,7 +144,7 @@ def delivery_failure_class(result: Any = None, exc: BaseException | None = None)
         return "rate_limited"
     kind = getattr(result, "error_kind", None)
     if kind is None:
-        from gateway.platforms.base import classify_send_error
+        from hermes_agent.gateway.platforms.base import classify_send_error
 
         kind = classify_send_error(None, str(getattr(result, "error", "") or ""))
     if kind in _SEND_KIND_CLASSES:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from gateway.run import GatewayRunner, _credential_pool_for_provider
+from hermes_agent.gateway.run import GatewayRunner, _credential_pool_for_provider
 
 
 def test_fast_session_override_includes_credential_pool(monkeypatch):
@@ -21,11 +21,11 @@ def test_fast_session_override_includes_credential_pool(monkeypatch):
     fake_pool = object()
 
     monkeypatch.setattr(
-        "gateway.run._resolve_gateway_model",
+        "hermes_agent.gateway.run._resolve_gateway_model",
         lambda _uc=None: "default-model",
     )
     monkeypatch.setattr(
-        "gateway.run._credential_pool_for_provider",
+        "hermes_agent.gateway.run._credential_pool_for_provider",
         lambda provider: fake_pool if provider == "custom:hyper" else None,
     )
 

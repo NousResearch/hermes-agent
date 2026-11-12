@@ -12,7 +12,7 @@ Hermes ships three protocols for driving the agent from external programs — ID
 |----------|-----------|----------|------------|
 | **ACP** | JSON-RPC over stdio | IDE clients (VS Code, Zed, JetBrains) that already speak the [Agent Client Protocol](https://github.com/zed-industries/agent-client-protocol) | `hermes_agent/acp_adapter/` |
 | **TUI gateway** | JSON-RPC over stdio (or WebSocket) | Custom hosts that want fine-grained control of sessions, slash commands, approvals, and streaming events | `hermes_agent/tui_gateway/server.py` |
-| **API server** | HTTP + Server-Sent Events | OpenAI-compatible frontends (Open WebUI, LobeChat, LibreChat…) and language-agnostic web clients | `gateway/platforms/api_server.py` |
+| **API server** | HTTP + Server-Sent Events | OpenAI-compatible frontends (Open WebUI, LobeChat, LibreChat…) and language-agnostic web clients | `hermes_agent/gateway/platforms/api_server.py` |
 
 All three drive the same `AIAgent` core. They differ only in wire format and which set of features they expose.
 
@@ -173,7 +173,7 @@ Every command in the Pi-mono RPC spec ([issue #360](https://github.com/NousResea
 
 ## OpenAI-Compatible API Server
 
-`gateway/platforms/api_server.py` exposes hermes over HTTP for any client that already speaks the OpenAI format. Useful when you want a web frontend, a curl-driven CI runner, or a non-Python consumer.
+`hermes_agent/gateway/platforms/api_server.py` exposes hermes over HTTP for any client that already speaks the OpenAI format. Useful when you want a web frontend, a curl-driven CI runner, or a non-Python consumer.
 
 Endpoints:
 

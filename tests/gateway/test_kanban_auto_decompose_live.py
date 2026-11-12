@@ -10,7 +10,7 @@ called every tick, reading the current config.
 from __future__ import annotations
 
 
-from gateway.kanban_watchers_common import _resolve_auto_decompose_settings
+from hermes_agent.gateway.kanban_watchers_common import _resolve_auto_decompose_settings
 
 
 

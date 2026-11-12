@@ -10,7 +10,7 @@ signing secret, which would itself be the leak on a shared bot.
 The relay package therefore MUST NOT import or call platform signature/crypto
 verification (Discord ed25519, Twilio HMAC, WeCom BizMsgCrypt, generic webhook
 signature checks). Those live in the *direct* platform adapters
-(``gateway/platforms/*``) which serve non-relay deployments; the relay receives
+(``hermes_agent/gateway/platforms/*``) which serve non-relay deployments; the relay receives
 already-trusted events. This test fails if someone bolts re-validation onto the
 relay path, re-coupling the gateway to platform secrets it must never hold.
 
@@ -26,7 +26,7 @@ from pathlib import Path
 
 from hermes_agent.compat.paths import current_path
 
-# gateway/relay package directory: tests/gateway/relay/ -> repo root parents[3].
+# hermes_agent/gateway/relay package directory: tests/gateway/relay/ -> repo root parents[3].
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _RELAY_PKG = _REPO_ROOT / current_path("gateway/relay")
 

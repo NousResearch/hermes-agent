@@ -385,7 +385,7 @@ class _ChildProgressRelay:
         # boundary under the parent's turn snapshot. The relayed event (the gateway's
         # producer, which classifies it) and the child result are never gated here.
         if kwargs.get("status") in SUBAGENT_FAILURE_STATUSES:
-            from gateway.warning_notifications import render_notification
+            from hermes_agent.gateway.warning_notifications import render_notification
             parent = self.parent_scope
             render_notification(
                 lambda: self._tree_line(format_subagent_failure_line(

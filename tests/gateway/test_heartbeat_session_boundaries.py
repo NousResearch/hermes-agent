@@ -1,7 +1,7 @@
 """Heartbeat ownership follows compression, but ends at a conversation boundary."""
 
-from gateway.config import GatewayConfig, Platform
-from gateway.session import SessionSource, SessionStore
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.session import SessionSource, SessionStore
 from hermes_cli.heartbeat import (
     HeartbeatManager,
     HeartbeatState,

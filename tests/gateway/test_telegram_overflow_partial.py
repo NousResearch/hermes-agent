@@ -5,10 +5,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.platforms.base import SendResult
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.base import SendResult
 from plugins.platforms.telegram.adapter import TelegramAdapter
-from gateway.stream_consumer import GatewayStreamConsumer
+from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer
 
 
 def _message(message_id: int | str) -> SimpleNamespace:

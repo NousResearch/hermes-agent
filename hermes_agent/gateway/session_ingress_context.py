@@ -37,7 +37,7 @@ def relay_passthrough_event(transport, forward, event):
 
 
 def _relay_connector(adapter, source):
-    from gateway.relay.ws_transport import WebSocketRelayTransport
+    from hermes_agent.gateway.relay.ws_transport import WebSocketRelayTransport
     transport = getattr(adapter, '_transport', None)
     if (not isinstance(transport, WebSocketRelayTransport)
             or not transport._gateway_id or not transport._upgrade_secret
@@ -60,7 +60,7 @@ def _relay_seal(transport, source, provenance):
 
 def reseal_relay(adapter, source, provenance):
     """*provenance* bound to the stored *source* dict instead; only for a seal the caller verified."""
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.session import SessionSource
     stored = SessionSource.from_dict(source)
     stored.is_bot = source['is_bot']
     base = {key: value for key, value in provenance.items() if key != 'relay'}
@@ -131,7 +131,7 @@ def _runtime_profile(runner, source, profile, owner_name, homes, relay):
 
 def _binding(runner, source, profile):
     registries = [(None, runner.adapters), *getattr(runner, '_profile_adapters', {}).items()]
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     relay = source.delivered_via_upstream_relay is True
     platform = Platform.RELAY if relay else source.platform
     candidates = [(owner, mapping.get(platform)) for owner, mapping in registries]
@@ -176,7 +176,7 @@ def _binding(runner, source, profile):
             raise RuntimeStoreError('profile_mismatch')
     # A configured/transport home is NOT proof of a runtime DB owner: the runtime home must be
     # one this process reserved and built an authority for, never a borrowed launch DB.
-    from gateway.session_authorities import authority_for_home
+    from hermes_agent.gateway.session_authorities import authority_for_home
     authority = authority_for_home(runner, runtime_home)
     if authority is None:
         raise RuntimeStoreError('profile_mismatch')
@@ -230,7 +230,7 @@ def restore_provenance(runner, source, provenance):
     source._transport_adapter_ref = weakref.ref(adapter)
     # Re-pin the identity ingress resolved: the drained turn's route records the receiving bot from it
     # (``SessionEntry.transport_profile``), so after a restart its session still answers through that bot.
-    from gateway.session_identity import canonical_identity
+    from hermes_agent.gateway.session_identity import canonical_identity
     canonical_identity(source, runner=runner, adapter=adapter, transport_profile=provenance.get('transport_profile'))
     source._authorization_profile_home = home
     return runtime_home
@@ -249,7 +249,7 @@ async def reauthorize_roles(runner, source, provenance):
     check = getattr(type(adapter), 'reauthorize_native_roles', None)
     if check is None:
         raise RuntimeStoreError('permission_denied')
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
     with _profile_runtime_scope(Path(provenance['transport_home'])):
         allowed = await check(adapter, source)
     # A registry/profile/credential change during SDK I/O cannot borrow its result.

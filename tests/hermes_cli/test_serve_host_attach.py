@@ -13,8 +13,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import host_rendezvous as hr
-from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+from hermes_agent.gateway import host_rendezvous as hr
+from hermes_agent.gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
 from hermes_cli.main_dashboard import _attach_to_host_backend
 
 

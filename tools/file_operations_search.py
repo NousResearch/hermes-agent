@@ -621,7 +621,7 @@ class SearchMixin:
         # poll and the kill below, and on macOS a not-yet-reaped child has no pgid any more.
         with contextlib.suppress(ProcessLookupError):
             proc._hermes_pgid = os.getpgid(proc.pid)
-            from gateway.status import get_process_start_time
+            from hermes_agent.gateway.status import get_process_start_time
             proc._hermes_pgid_start = get_process_start_time(proc.pid)
 
         # Drain on a thread so a silent rg (huge tree, no hits yet) cannot pin the

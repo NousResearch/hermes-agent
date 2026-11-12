@@ -16,7 +16,7 @@ import time
 
 import pytest
 
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.run import GatewayRunner
 
 
 class _FakeRelayAdapter:
@@ -108,7 +108,7 @@ def _runner_with(
             "https://portal.example.com/api/agents/i/sleep?t=s",
         )
     monkeypatch.setattr(
-        "gateway.scale_to_zero.self_suspend_available",
+        "hermes_agent.gateway.scale_to_zero.self_suspend_available",
         lambda *a, **k: can_self_suspend,
     )
     return r, adapter
@@ -155,12 +155,12 @@ async def test_watcher_quiesces_then_suspends_on_either_lever(
 ):
     """Flip first, freeze second, re-dial held across it: the ordering the feature rests on."""
     r, adapter = _runner_with(monkeypatch, idle=True, **kwargs)
-    monkeypatch.setattr("gateway.scale_to_zero.suspend_self", lambda *a, **k: True)
+    monkeypatch.setattr("hermes_agent.gateway.scale_to_zero.suspend_self", lambda *a, **k: True)
     monkeypatch.setattr(
-        "gateway.scale_to_zero.request_brokered_suspend", lambda *a, **k: True
+        "hermes_agent.gateway.scale_to_zero.request_brokered_suspend", lambda *a, **k: True
     )
     # Not what this test is about; the freeze gap has its own case below.
-    monkeypatch.setattr("gateway.scale_to_zero.FLY_FREEZE_GRACE_S", 0.0)
+    monkeypatch.setattr("hermes_agent.gateway.scale_to_zero.FLY_FREEZE_GRACE_S", 0.0)
 
     await _run_one_iteration(r, settle=0.15)
 
@@ -186,17 +186,17 @@ async def test_self_suspend_picks_a_lever_and_releases_only_when_nothing_will_fr
     monkeypatch, in_guest, accepted, lever, redial
 ):
     r, adapter = _runner_with(monkeypatch, idle=True, can_self_suspend=in_guest)
-    monkeypatch.setattr("gateway.scale_to_zero.FLY_FREEZE_GRACE_S", 0.0)
+    monkeypatch.setattr("hermes_agent.gateway.scale_to_zero.FLY_FREEZE_GRACE_S", 0.0)
     monkeypatch.setenv(
         "GATEWAY_RELAY_SLEEP_URL", "https://portal.example.com/api/agents/i/sleep?t=s"
     )
     used = []
     monkeypatch.setattr(
-        "gateway.scale_to_zero.suspend_self",
+        "hermes_agent.gateway.scale_to_zero.suspend_self",
         lambda *a, **k: used.append("flaps") or accepted,
     )
     monkeypatch.setattr(
-        "gateway.scale_to_zero.request_brokered_suspend",
+        "hermes_agent.gateway.scale_to_zero.request_brokered_suspend",
         lambda *a, **k: used.append("brokered") or accepted,
     )
 
@@ -268,8 +268,8 @@ async def test_in_guest_release_waits_for_the_freeze_gap(monkeypatch):
     """flaps answers before the kernel freezes, so the fence spans that gap. A
     machine that never froze must still get its supervisor back."""
     r, adapter = _runner_with(monkeypatch, idle=True, can_self_suspend=True)
-    monkeypatch.setattr("gateway.scale_to_zero.suspend_self", lambda *a, **k: True)
-    monkeypatch.setattr("gateway.scale_to_zero.FLY_FREEZE_GRACE_S", 0.0)
+    monkeypatch.setattr("hermes_agent.gateway.scale_to_zero.suspend_self", lambda *a, **k: True)
+    monkeypatch.setattr("hermes_agent.gateway.scale_to_zero.FLY_FREEZE_GRACE_S", 0.0)
 
     await _run_one_iteration(r, settle=0.15)
 
@@ -281,8 +281,8 @@ async def test_in_guest_fence_still_held_inside_the_freeze_gap(monkeypatch):
     """Observed mid-gap: flaps has answered but the freeze has not landed, so the
     supervisor must still be parked."""
     r, adapter = _runner_with(monkeypatch, idle=True, can_self_suspend=True)
-    monkeypatch.setattr("gateway.scale_to_zero.suspend_self", lambda *a, **k: True)
-    monkeypatch.setattr("gateway.scale_to_zero.FLY_FREEZE_GRACE_S", 5.0)
+    monkeypatch.setattr("hermes_agent.gateway.scale_to_zero.suspend_self", lambda *a, **k: True)
+    monkeypatch.setattr("hermes_agent.gateway.scale_to_zero.FLY_FREEZE_GRACE_S", 5.0)
 
     task = asyncio.create_task(r._scale_to_zero_watcher(interval=0.01))
     await asyncio.sleep(0.15)
@@ -301,16 +301,16 @@ async def test_in_guest_fence_releases_at_once_after_a_resume(monkeypatch):
     re-dials to drain the moment it wakes instead of waiting out the remainder --
     a plain asyncio.sleep() here would cost that remainder on EVERY Fly wake."""
     r, adapter = _runner_with(monkeypatch, idle=True, can_self_suspend=True)
-    monkeypatch.setattr("gateway.scale_to_zero.FLY_FREEZE_GRACE_S", 30.0)
-    monkeypatch.setattr("gateway.scale_to_zero.FLY_FREEZE_GRACE_TICK_S", 0.01)
-    monkeypatch.setattr("gateway.scale_to_zero.suspend_self", lambda *a, **k: True)
+    monkeypatch.setattr("hermes_agent.gateway.scale_to_zero.FLY_FREEZE_GRACE_S", 30.0)
+    monkeypatch.setattr("hermes_agent.gateway.scale_to_zero.FLY_FREEZE_GRACE_TICK_S", 0.01)
+    monkeypatch.setattr("hermes_agent.gateway.scale_to_zero.suspend_self", lambda *a, **k: True)
 
     real_time = time.time
     # Read 1 sets the deadline; read 2 is the first post-"resume" check, with the
     # wall clock a freeze further on. asyncio.sleep would still owe ~30s here.
     reads = iter([1000.0, 1000.0 + 252.219])
     monkeypatch.setattr(
-        "gateway.run.time.time", lambda: next(reads, 1000.0 + 252.219)
+        "hermes_agent.gateway.run.time.time", lambda: next(reads, 1000.0 + 252.219)
     )
 
     started = real_time()
@@ -436,14 +436,14 @@ def _arm_runner(monkeypatch, platform_states, *, enabled=True, wake_url="https:/
     _scale_to_zero_should_arm. Only the env flag + wake_url resolution are stubbed."""
     from types import SimpleNamespace
 
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
 
     r = GatewayRunner.__new__(GatewayRunner)
     platforms = {p: PlatformConfig(enabled=en) for p, en in platform_states.items()}
     r.config = SimpleNamespace(platforms=platforms)
 
-    monkeypatch.setattr("gateway.scale_to_zero.scale_to_zero_enabled", lambda *a, **k: enabled)
-    monkeypatch.setattr("gateway.relay.relay_wake_url", lambda: wake_url)
+    monkeypatch.setattr("hermes_agent.gateway.scale_to_zero.scale_to_zero_enabled", lambda *a, **k: enabled)
+    monkeypatch.setattr("hermes_agent.gateway.relay.relay_wake_url", lambda: wake_url)
     return r
 
 
@@ -451,7 +451,7 @@ def test_arm_true_for_relay_only_with_disabled_placeholders(monkeypatch):
     """The F25 regression test: relay ENABLED, every other platform present but
     DISABLED (the real load_gateway_config() shape). Must arm — the disabled
     placeholders must NOT count as live direct-socket platforms."""
-    from gateway.platforms.base import Platform
+    from hermes_agent.gateway.platforms.base import Platform
 
     r = _arm_runner(
         monkeypatch,
@@ -469,7 +469,7 @@ def test_arm_true_for_relay_only_with_disabled_placeholders(monkeypatch):
 def test_no_arm_when_a_direct_platform_is_actually_enabled(monkeypatch):
     """A genuinely-enabled direct-socket platform (real Discord token) DOES disarm —
     the filter must not over-broaden to 'ignore everything but relay'."""
-    from gateway.platforms.base import Platform
+    from hermes_agent.gateway.platforms.base import Platform
 
     r = _arm_runner(
         monkeypatch,
@@ -550,7 +550,7 @@ async def test_self_suspend_noop_with_no_lever(monkeypatch):
     monkeypatch.delenv("GATEWAY_RELAY_SLEEP_URL", raising=False)
     called = []
     monkeypatch.setattr(
-        "gateway.scale_to_zero.suspend_self",
+        "hermes_agent.gateway.scale_to_zero.suspend_self",
         lambda *a, **k: called.append(1) or True,
     )
 
@@ -563,7 +563,7 @@ async def test_self_suspend_noop_with_no_lever(monkeypatch):
 # ── non-messaging platforms must not disarm (the api_server-key regression) ──
 #
 # The Docker stage2 hook now generates API_SERVER_KEY for every container, and
-# key presence force-enables the api_server platform (gateway/config.py). The
+# key presence force-enables the api_server platform (hermes_agent/gateway/config.py). The
 # arm gate counted every enabled platform, so `api_server` (a loopback
 # listener, not a messaging socket) made messaging_is_relay_only_or_absent
 # False on EVERY hosted instance — silently disarming scale-to-zero. The gate
@@ -572,7 +572,7 @@ async def test_self_suspend_noop_with_no_lever(monkeypatch):
 
 
 def test_arm_true_with_api_server_enabled(monkeypatch):
-    from gateway.platforms.base import Platform
+    from hermes_agent.gateway.platforms.base import Platform
 
     r = _arm_runner(
         monkeypatch,
@@ -586,7 +586,7 @@ def test_arm_true_with_api_server_enabled(monkeypatch):
 
 
 def test_arm_true_with_all_non_messaging_surfaces_enabled(monkeypatch):
-    from gateway.platforms.base import Platform
+    from hermes_agent.gateway.platforms.base import Platform
 
     r = _arm_runner(
         monkeypatch,
@@ -603,7 +603,7 @@ def test_arm_true_with_all_non_messaging_surfaces_enabled(monkeypatch):
 def test_direct_platform_still_disarms_alongside_api_server(monkeypatch):
     """The messaging-only filter must not over-broaden: a genuinely enabled
     direct-socket platform still disarms even with api_server also enabled."""
-    from gateway.platforms.base import Platform
+    from hermes_agent.gateway.platforms.base import Platform
 
     r = _arm_runner(
         monkeypatch,
@@ -751,7 +751,7 @@ def _work_count_runner(monkeypatch, *, agents=0, cron_ids=(), api_runs=0):
         "hermes_agent.cron.scheduler.get_running_job_ids", lambda: set(cron_ids)
     )
     api_adapter = SimpleNamespace(active_agent_work_count=lambda: api_runs)
-    from gateway.platforms.base import Platform
+    from hermes_agent.gateway.platforms.base import Platform
 
     r.adapters = {Platform.API_SERVER: api_adapter}
     return r
@@ -792,7 +792,7 @@ def test_unreadable_api_source_fails_awake(monkeypatch):
         raise RuntimeError("adapter wedged")
 
     r = _work_count_runner(monkeypatch)
-    from gateway.platforms.base import Platform
+    from hermes_agent.gateway.platforms.base import Platform
 
     r.adapters = {Platform.API_SERVER: SimpleNamespace(active_agent_work_count=_boom)}
     assert r._scale_to_zero_is_idle() is False

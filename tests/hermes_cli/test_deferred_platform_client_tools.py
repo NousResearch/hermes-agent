@@ -146,7 +146,7 @@ def clean_registry():
     too — otherwise the next test's ``import_module`` returns the previous
     test's cached submodule instead of reading the new file.
     """
-    from gateway.platform_registry import platform_registry
+    from hermes_agent.gateway.platform_registry import platform_registry
     from tools.registry import registry
 
     before_tools = set(registry._tools)
@@ -291,7 +291,7 @@ class TestDeferredPlatformToolPreregistration:
         the gateway later materializes the adapter, ``_load_plugin`` reuses
         that module instead of re-running its body.
         """
-        from gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.platform_registry import platform_registry
         from hermes_cli.plugins import PluginManager
 
         manifest = _write_platform_plugin(tmp_path, "probeplat", with_tools_module=True)
@@ -315,7 +315,7 @@ class TestDeferredPlatformToolPreregistration:
         ``register()``. Tools registered at discovery are already in the
         "before" snapshot, so the diff alone would report zero.
         """
-        from gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.platform_registry import platform_registry
         from hermes_cli.plugins import PluginManager
 
         manifest = _write_platform_plugin(tmp_path, "probeplat", with_tools_module=True)
@@ -408,7 +408,7 @@ class TestDeferredPlatformToolPreregistration:
 
         ``enabled`` stays False on purpose: the adapter genuinely did not load.
         """
-        from gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.platform_registry import platform_registry
         from hermes_cli.plugins import PluginManager
         from toolsets import resolve_toolset
 
@@ -436,7 +436,7 @@ class TestDeferredPlatformToolPreregistration:
         """A platform whose first deferred load raises (e.g. a load-deadline overrun under startup I/O) is
         re-armed by the reconnect watcher's hook, so the next lookup imports it again and the platform
         registers, without a forced re-discovery (#126356)."""
-        from gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.platform_registry import platform_registry
         from hermes_cli.plugins import PluginManager
 
         manifest = _write_platform_plugin(tmp_path, "probeplat", with_tools_module=False)

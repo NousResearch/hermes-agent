@@ -132,8 +132,8 @@ def test_spawn_resolves_claimed_task_policy(
     expected_model, expected_provider, expected_reasoning,
 ):
     """The worker passes identity, while the owner reads overrides from SQLite."""
-    from gateway.session_contract import SessionActor
-    from gateway.session_kanban import build_kanban_policy
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_kanban import build_kanban_policy
     from hermes_cli import kanban_worker_client
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
 

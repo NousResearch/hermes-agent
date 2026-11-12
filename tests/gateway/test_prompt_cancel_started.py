@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 # Imported before the home-I/O guard: the drain's lazy import of it probes the checkout root.
-import gateway.session_managed_worker
+import hermes_agent.gateway.session_managed_worker
 
 from tests.gateway.test_canonical_stop_hard_cancel import Agent
 from tests.gateway.test_session_authority_cancel_settlement import REF, _authority, _submit, _wire_turn_agent
@@ -13,8 +13,8 @@ from tests.gateway.test_session_authority_cancel_settlement import REF, _authori
 
 @pytest.mark.asyncio
 async def test_prompt_cancel_stops_a_started_turn_without_a_follow_up_interrupt(tmp_path, monkeypatch):
-    from gateway import session_finite
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway import session_finite
+    from hermes_agent.gateway.session_controls import AuthorityConnection
 
     db, authority = _authority(tmp_path, monkeypatch)
     agent = Agent()
@@ -48,7 +48,7 @@ async def test_prompt_cancel_of_a_transferred_steer_is_refused_and_leaves_its_re
     from tests.gateway.test_prompt_queued_controls import _call, _connection, _ledger, interactive
     from tests.gateway.test_prompt_queued_transfer import BufferedAgent, _drained
     from tests.waiting import async_wait_until
-    from gateway import session_finite
+    from hermes_agent.gateway import session_finite
 
     class StoppableAgent(BufferedAgent):  # the real steer buffer, plus the stops a Stop would make
         def __init__(self):

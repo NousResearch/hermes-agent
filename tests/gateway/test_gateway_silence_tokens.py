@@ -6,11 +6,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import gateway.run as gateway_run
-from gateway.config import GatewayConfig, Platform
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionEntry, SessionSource
-from gateway.response_filters import (
+import hermes_agent.gateway.run as gateway_run
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionEntry, SessionSource
+from hermes_agent.gateway.response_filters import (
     is_intentional_silence_agent_result,
     is_intentional_silence_response,
 )
@@ -273,7 +273,7 @@ async def test_queued_terminal_turn_owns_the_silence_verdict(monkeypatch, tmp_pa
 ])
 def test_one_turn_answering_several_messages_is_addressed_if_any_was(opener, absorbed, merged):
     """A merged pending message answers both texts, so an addressed one keeps the fallback."""
-    from gateway.platforms.base import merge_pending_message_event
+    from hermes_agent.gateway.platforms.base import merge_pending_message_event
 
     pending = {"k": _event(reply_expected=opener)}
     merge_pending_message_event(pending, "k", _event(reply_expected=absorbed), merge_text=True)

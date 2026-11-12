@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionEntry, SessionSource, build_session_key
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionEntry, SessionSource, build_session_key
 
 
 def _make_source() -> SessionSource:
@@ -37,7 +37,7 @@ def _make_history() -> list[dict[str, str]]:
 
 
 def _make_runner(history: list[dict[str, str]]):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
@@ -92,8 +92,8 @@ async def test_compress_command_works_when_auto_compaction_disabled():
         return 100 if messages == history else 60
 
     with (
-        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
-        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
+        patch("hermes_agent.gateway.run._resolve_gateway_model", return_value="test-model"),
         patch("run_agent.AIAgent", return_value=agent_instance),
         patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate),
     ):
@@ -112,7 +112,7 @@ async def test_compress_command_surfaces_aux_model_failure_even_when_recovered(t
     but compression recovers by retrying on the main model, /compress must
     STILL inform the user.  Silent recovery hides broken config the user
     needs to fix."""
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
     (tmp_path / "config.yaml").write_text(f"display: {{warning_notifications: {str(warning_notifications).lower()}}}")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     history = _make_history()
@@ -153,8 +153,8 @@ async def test_compress_command_surfaces_aux_model_failure_even_when_recovered(t
         raise AssertionError(f"unexpected transcript: {messages!r}")
 
     with (
-        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
-        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
+        patch("hermes_agent.gateway.run._resolve_gateway_model", return_value="test-model"),
         patch("run_agent.AIAgent", return_value=agent_instance),
         patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate),
     ):
@@ -209,8 +209,8 @@ async def test_compress_command_in_place_skips_destructive_rewrite():
         raise AssertionError(f"unexpected transcript: {messages!r}")
 
     with (
-        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
-        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
+        patch("hermes_agent.gateway.run._resolve_gateway_model", return_value="test-model"),
         patch("run_agent.AIAgent", return_value=agent_instance),
         patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate),
     ):
@@ -245,8 +245,8 @@ async def test_compress_command_preserves_platform_and_gateway_session_key():
     agent_instance._compression_skipped_due_to_lock = False
 
     with (
-        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
-        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
+        patch("hermes_agent.gateway.run._resolve_gateway_model", return_value="test-model"),
         patch("run_agent.AIAgent", return_value=agent_instance) as mock_agent,
         patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100),
     ):
@@ -280,9 +280,9 @@ async def test_compress_command_agent_receives_configured_reasoning():
     agent_instance._compression_skipped_due_to_lock = False
 
     with (
-        patch("gateway.run._load_gateway_config", return_value={"agent": {"reasoning_effort": "none"}}),
-        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
-        patch("gateway.run._resolve_gateway_model", return_value="gpt-4o-mini"),
+        patch("hermes_agent.gateway.run._load_gateway_config", return_value={"agent": {"reasoning_effort": "none"}}),
+        patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
+        patch("hermes_agent.gateway.run._resolve_gateway_model", return_value="gpt-4o-mini"),
         patch("run_agent.AIAgent", return_value=agent_instance) as mock_agent,
         patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100),
     ):
@@ -325,8 +325,8 @@ async def test_compress_command_passes_tool_messages_to_compressor():
     agent_instance._compress_context.return_value = (list(history), "")
 
     with (
-        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
-        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
+        patch("hermes_agent.gateway.run._resolve_gateway_model", return_value="test-model"),
         patch("run_agent.AIAgent", return_value=agent_instance),
         patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100),
     ):
@@ -406,8 +406,8 @@ async def test_compress_command_multiplexed_runs_under_profile_secret_scope(tmp_
     ss.set_multiplex_active(True)
     try:
         with (
-            patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
-            patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+            patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
+            patch("hermes_agent.gateway.run._resolve_gateway_model", return_value="test-model"),
             patch("run_agent.AIAgent", return_value=agent_instance),
             patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100),
         ):
@@ -532,8 +532,8 @@ def test_rotated_compress_keeps_atomically_published_foreign_tail(tmp_path, monk
     ``profiles/fitness/state.db`` before the routing index knows the child id.
     """
     from hermes_agent import hermes_state
-    from gateway.slash_commands_session import GatewaySessionCommandsMixin
-    from gateway.session import AsyncSessionStore, SessionStore
+    from hermes_agent.gateway.slash_commands_session import GatewaySessionCommandsMixin
+    from hermes_agent.gateway.session import AsyncSessionStore, SessionStore
 
     root = tmp_path / "hermes"
     (root / "profiles" / "fitness").mkdir(parents=True)

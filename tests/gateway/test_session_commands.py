@@ -142,10 +142,10 @@ def test_ordinary_daemon_slash_skill_uses_durable_fifo(tmp_path):
 
 @pytest.mark.asyncio
 async def test_command_authority_precedes_resolution_and_mutation(tmp_path, monkeypatch):
-    from gateway.config import Platform
-    from gateway.session import SessionSource
-    from gateway.session_authority import SessionAuthority, LiveSession
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session import SessionSource
+    from hermes_agent.gateway.session_authority import SessionAuthority, LiveSession
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     from agent import skill_commands
 
     runner = SimpleNamespace(_draining=False)

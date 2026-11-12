@@ -16,7 +16,7 @@ class PendingControls:
         self.remote_responders = {}
 
     def register(self, session_id, route, generation, data, *, timeout_s=None):
-        from gateway.run import _redact_approval_command
+        from hermes_agent.gateway.run import _redact_approval_command
         with self.events.lock:
             prompt_id = data['request_id']
             choices = ['once', 'deny']
@@ -38,7 +38,7 @@ class PendingControls:
             self.events.publish(session_id, prompt, event_type='approval.request')
 
     def register_clarify(self, session_id, generation, entry, *, timeout_s=None):
-        from gateway.run import _redact_approval_command
+        from hermes_agent.gateway.run import _redact_approval_command
         with self.events.lock:
             prompt = {"kind": "clarify", "prompt_id": entry.clarify_id,
                       "execution_generation": generation,

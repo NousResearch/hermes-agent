@@ -16,8 +16,8 @@ from tests.waiting import async_wait_until, wait_until
 
 async def _reload(desktop):
     """The renderer reloads: its socket closes and a new one connects and resumes."""
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_local_migration import bind_native_transport
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_local_migration import bind_native_transport
     await desktop.connection.close()
     identity = {"user_id": "uid:1", "provider": "local", "profile_id": desktop.authority.profile_id,
                 "instance_id": "owner", "native_bootstrap": True}
@@ -29,7 +29,7 @@ async def _reload(desktop):
 
 @pytest.mark.asyncio
 async def test_a_resumed_viewer_gets_the_waiting_setup_card_and_its_answer_unblocks_the_turn(tmp_path, monkeypatch):
-    from gateway.session_server_requests import ask_viewer_result, waiting
+    from hermes_agent.gateway.session_server_requests import ask_viewer_result, waiting
     desktop = await _desktop(tmp_path, monkeypatch, [])
     try:
         stored = (await _request(desktop, 1, "onboarding.start", {"rerun": True}))["result"]["stored_session_id"]
@@ -58,8 +58,8 @@ async def test_a_resumed_viewer_gets_the_waiting_setup_card_and_its_answer_unblo
 def test_an_automatic_window_request_is_not_handed_to_a_reconnecting_viewer():
     """A preview click still in flight at a reconnect would run twice if replayed; a card is replayed."""
     import threading
-    from gateway.session_events import SessionEvents
-    from gateway.session_server_requests import ask_viewer, ask_viewer_result, open_requests, waiting, withdraw
+    from hermes_agent.gateway.session_events import SessionEvents
+    from hermes_agent.gateway.session_server_requests import ask_viewer, ask_viewer_result, open_requests, waiting, withdraw
     events = SessionEvents()
     events.fanout.attach(_Transport())
     asks = [threading.Thread(target=ask_viewer, args=(events, "s1", "preview.act", {"action": "click"}),

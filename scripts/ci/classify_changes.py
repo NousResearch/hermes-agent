@@ -312,7 +312,7 @@ _UPDATE_PIPELINE = (
     "hermes_dir_acl.py",  # update restores the Windows user ACL on the home after elevation
     "gateway/status.py",  # code_sha stamp the fleet verify reads
     "gateway/status_inline_source.py",  # the Windows pause identifies inline-bootstrapped gateways
-    "gateway/status_lock_dir.py",  # gateway/status.py imports it at module level
+    "gateway/status_lock_dir.py",  # hermes_agent/gateway/status.py imports it at module level
     "gateway/control_socket.py",  # pause-for-update verb
     "gateway/code_skew.py",
     "gateway/host_rendezvous.py",

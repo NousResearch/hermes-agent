@@ -15,11 +15,11 @@ import pytest
 
 
 def _owner(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import SessionAuthority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     import hermes_agent.hermes_state_runtime as rt
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
@@ -39,7 +39,7 @@ def _owner(tmp_path, monkeypatch):
 
 
 def _local(authority, owner, tmp_path, source):
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_local import create_local_session
     return create_local_session(authority, owner.actor, dict(
         request_id='m', source=source, cwd=str(tmp_path), model='frozen', toolsets=[]))
 
@@ -81,14 +81,14 @@ async def _acp_detach(authority, owner, tmp_path, db):
 
 
 async def _acp_idle_exit(authority, owner, tmp_path, db):
-    from gateway.session_contract import Submission
+    from hermes_agent.gateway.session_contract import Submission
     ref = _local(authority, owner, tmp_path, 'acp')
     await authority.submit(owner.actor, Submission('acp', ref, {'text': 'ACP'}, 'queue'))
     return authority.sessions[ref.session_id].task
 
 
 async def _claim_reopen(authority, owner, tmp_path, db):
-    from gateway.session_contract import Submission
+    from hermes_agent.gateway.session_contract import Submission
     ref = _local(authority, owner, tmp_path, 'cli')
     db.end_session(ref.session_id, 'tui_shutdown')
     await authority.submit(owner.actor, Submission('first', ref, {'text': 'FIRST'}, 'queue'))
@@ -113,7 +113,7 @@ CASES = [
 @pytest.mark.parametrize('case,module,name,drive', CASES, ids=[c[0] for c in CASES])
 async def test_retirement_answers_true_only_once_its_off_loop_writes_ended(
         tmp_path, monkeypatch, case, module, name, drive):
-    from gateway.run_runtime import _retire_profile_authority
+    from hermes_agent.gateway.run_runtime import _retire_profile_authority
     store, authority, owner = _owner(tmp_path, monkeypatch)
     db = store._db
     writer = _HeldWriter(str(db.db_path))
@@ -138,7 +138,7 @@ async def test_retirement_answers_true_only_once_its_off_loop_writes_ended(
 
 @pytest.mark.asyncio
 async def test_close_gate_counts_a_detach_write_its_cancelled_ws_handler_left(tmp_path, monkeypatch, caplog):
-    from gateway.run_runtime import managed_turn_count
+    from hermes_agent.gateway.run_runtime import managed_turn_count
     store, authority, owner = _owner(tmp_path, monkeypatch)
     db = store._db
     writer = _HeldWriter(str(db.db_path))

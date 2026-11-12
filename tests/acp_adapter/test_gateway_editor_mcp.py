@@ -166,7 +166,7 @@ async def test_native_cold_editor_rebind_applies_changed_secret(daemon, specs, t
     os.kill(owned.pid, signal.SIGINT)
     await asyncio.to_thread(owned.wait, 20)
     with (tmp_path / 'cold.log').open('w') as log:
-        process = subprocess.Popen([sys.executable, '-m', 'gateway.run'], cwd=root, env=env,  # noqa: ASYNC220 -- Popen returns immediately; the test drives the child through its handle
+        process = subprocess.Popen([sys.executable, '-m', 'hermes_agent.gateway.run'], cwd=root, env=env,  # noqa: ASYNC220 -- Popen returns immediately; the test drives the child through its handle
             stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
         try:
             deadline = time.monotonic() + 40
@@ -329,6 +329,6 @@ async def test_editor_mcp_mutation_is_fenced_idle_only_and_secret_free(daemon, s
         events = json.dumps(frames)
         assert 'OWNED_RESULT_C' in events
         assert 'opaque-secret-' not in events and 'BORROWED_TOKEN' not in events
-    from gateway.session_local_mcp import fingerprint
+    from hermes_agent.gateway.session_local_mcp import fingerprint
     (frozen,) = _policies(daemon[0], sid)
     assert frozen['fingerprint'] == fingerprint([changed])

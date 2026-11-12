@@ -2,7 +2,7 @@
 
 Two problems, one mechanism:
 
-* Detached children escape every handle the test holds. ``gateway/shutdown_forensics.py``
+* Detached children escape every handle the test holds. ``hermes_agent/gateway/shutdown_forensics.py``
   runs a ``timeout 5 bash -c ...`` diagnostic in its own session on every gateway shutdown,
   ``ptyprocess`` makes each TUI a session leader, MCP stdio servers ``setsid``. When their parent
   dies they are reparented, by default to init.

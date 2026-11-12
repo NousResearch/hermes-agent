@@ -28,10 +28,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.api_server import APIServerAdapter, ResponseStore
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.run import GatewayRunner, _dispose_unused_adapter
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.api_server import APIServerAdapter, ResponseStore
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.run import GatewayRunner, _dispose_unused_adapter
 
 
 def _make_runner() -> GatewayRunner:

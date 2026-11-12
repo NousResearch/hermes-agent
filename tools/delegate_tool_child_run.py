@@ -419,7 +419,7 @@ def _register_child(
         return None
     if owner_session_id is None:
         with _quiet(None):
-            from gateway.session_context import get_session_env
+            from hermes_agent.gateway.session_context import get_session_env
             owner_session_id = get_session_env("HERMES_UI_SESSION_ID", "") or None
     if owner_session_id and (owner_transport is None or owner_session_record is None):
         owner_transport, owner_session_record = _capture_gateway_steer_authority(owner_session_id)

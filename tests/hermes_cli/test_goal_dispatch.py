@@ -23,8 +23,8 @@ def _surface(surface, mgr, monkeypatch, prompts=None):
                 prompts.append(cli._pending_input.get_nowait())
         return execute
     if surface == "gateway":
-        from gateway.run_busy import GatewayBusySessionMixin
-        from gateway.slash_commands_goals import GatewayGoalCommandsMixin
+        from hermes_agent.gateway.run_busy import GatewayBusySessionMixin
+        from hermes_agent.gateway.slash_commands_goals import GatewayGoalCommandsMixin
 
         class Runner(GatewayBusySessionMixin, GatewayGoalCommandsMixin):
             pass

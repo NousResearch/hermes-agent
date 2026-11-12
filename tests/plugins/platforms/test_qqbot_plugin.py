@@ -15,7 +15,7 @@ def _clear_qq(monkeypatch):
 
 def test_register_shape():
     """The plugin registers the same identity/env/routing the core table carried."""
-    from gateway.platform_registry import PlatformEntry
+    from hermes_agent.gateway.platform_registry import PlatformEntry
     from plugins.platforms.qqbot import register
     from plugins.platforms.qqbot.adapter import QQAdapter, check_qq_requirements
     from plugins.platforms.qqbot.register import setup_qqbot, standalone_send
@@ -42,7 +42,7 @@ def test_is_connected_needs_both_credentials(monkeypatch):
     _clear_qq(monkeypatch)
     import hermes_cli.gateway as gateway_mod
     monkeypatch.setattr(gateway_mod, "get_env_value", lambda name: None)
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
     from plugins.platforms.qqbot.register import is_connected
 
     assert is_connected(PlatformConfig(enabled=True, extra={"app_id": "a"})) is False
@@ -54,7 +54,7 @@ def test_is_connected_needs_both_credentials(monkeypatch):
 
 def test_qqbot_platform_hint_comes_from_its_platform_entry():
     from agent.system_prompt import _default_platform_hint
-    from gateway.platform_registry import platform_registry
+    from hermes_agent.gateway.platform_registry import platform_registry
     from hermes_cli.plugins import discover_plugins
 
     discover_plugins()
@@ -70,7 +70,7 @@ def test_qqbot_is_a_builtin_deliver_target():
         _resolve_home_env_var,
         _home_env_lookup,
     )
-    from gateway.platforms.webhook import _is_known_platform
+    from hermes_agent.gateway.platforms.webhook import _is_known_platform
 
     assert _is_known_platform("qqbot") is True
     assert _is_known_delivery_platform("qqbot") is True
@@ -97,7 +97,7 @@ def test_cron_deliver_qqbot_without_a_live_gateway():
 @pytest.mark.asyncio
 async def test_standalone_sender_reports_missing_credentials(monkeypatch):
     _clear_qq(monkeypatch)
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
     from plugins.platforms.qqbot.register import standalone_send
 
     result = await standalone_send(PlatformConfig(enabled=True, extra={}), "chat-1", "hi")

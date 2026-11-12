@@ -4,12 +4,12 @@ import asyncio
 import pytest
 
 from evals.heartbeat_idle_wire import WireAdapter
-from gateway.config import Platform, PlatformConfig
-from gateway.kanban_watchers_notifier import _KanbanNotification, _notifier_collect
-from gateway.platforms.event import MessageEvent
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource, build_session_key
-from gateway.wake import admit_internal_event, deliver_wake
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.kanban_watchers_notifier import _KanbanNotification, _notifier_collect
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource, build_session_key
+from hermes_agent.gateway.wake import admit_internal_event, deliver_wake
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn

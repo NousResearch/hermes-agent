@@ -11,10 +11,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import run_idle_exit
-from gateway.config import Platform
-from gateway.runtime_bootstrap import TicketStore
-from gateway.session_authorities import SessionAuthorities
+from hermes_agent.gateway import run_idle_exit
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.runtime_bootstrap import TicketStore
+from hermes_agent.gateway.session_authorities import SessionAuthorities
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import admit_session_input, begin_runtime_epoch, cancel_session_input
 
@@ -37,7 +37,7 @@ def _runner(tmp_path, monkeypatch, *, window=0.2):
         session_runtime_descriptor={"state": "ready", "capabilities": ["x"]}, _exit_reason=None,
         _active_work_count=lambda: 0, _scale_to_zero_has_live_background_work=lambda: False, stop=stop)
     monkeypatch.setattr(run_idle_exit, "idle_exit_seconds", lambda r: window)
-    monkeypatch.setattr("gateway.run._cron_tick_profile_homes", lambda config: [("default", home)])
+    monkeypatch.setattr("hermes_agent.gateway.run._cron_tick_profile_homes", lambda config: [("default", home)])
     monkeypatch.setattr(run_idle_exit, "_kanban_busy", lambda: None)
     monkeypatch.setattr(run_idle_exit, "_store_gates_busy", lambda homes: None)
     run_idle_exit.note_client_activity(runner)

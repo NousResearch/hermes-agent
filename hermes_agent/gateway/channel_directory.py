@@ -131,7 +131,7 @@ def _report_slack_failure(team_id: str, error_code: Optional[str], detail: str) 
 
 async def build_channel_directory(adapters: dict[Any, Any]) -> dict[str, Any]:
     """Build the directory from connected adapters + session data and persist it."""
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     platforms: dict[str, list[dict[str, str]]] = {}
     for platform, adapter in adapters.items():
         try:
@@ -160,7 +160,7 @@ async def build_channel_directory(adapters: dict[Any, Any]) -> dict[str, Any]:
     # Plugin platforms are dynamic enum members missing from Platform.__members__. Only connected
     # adapters are discovered, so loaded entries suffice (never import an unused adapter here).
     with contextlib.suppress(Exception):
-        from gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.platform_registry import platform_registry
         for entry in platform_registry.loaded_entries():
             await _discover(entry.name)
     _merge_configured_channels(adapters, platforms)
@@ -219,7 +219,7 @@ def _build_discord(adapter) -> list[dict[str, str]]:
         import discord as _discord
     except ImportError:
         return channels
-    from gateway.platforms.helpers import is_discord_channel_obfuscated
+    from hermes_agent.gateway.platforms.helpers import is_discord_channel_obfuscated
 
     for guild in client.guilds:
         # Forum channels (type 15): creating a message auto-spawns a thread post.

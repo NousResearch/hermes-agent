@@ -5,11 +5,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.session import SessionSource, SessionStore
-from gateway.session_authority import LiveSession, initialize_session_authority
-from gateway.session_contract import SessionRef, Submission
-from gateway.session_controls import AuthorityConnection
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.session import SessionSource, SessionStore
+from hermes_agent.gateway.session_authority import LiveSession, initialize_session_authority
+from hermes_agent.gateway.session_contract import SessionRef, Submission
+from hermes_agent.gateway.session_controls import AuthorityConnection
 from hermes_agent.hermes_state_runtime import RuntimeStoreError, claim_session_input, list_session_admissions
 from tests.waiting import async_wait_until
 
@@ -30,7 +30,7 @@ async def _restarted_owner_with_unknown_head(tmp_path, monkeypatch, executed):
     db = store._db
 
     async def answer(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         executed.append(event.text)
         execution_result.get()['result'] = {'final_response': 'ACK_' + event.text, 'completed': True, 'messages': []}
         return 'ACK_' + event.text

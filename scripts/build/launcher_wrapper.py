@@ -92,7 +92,7 @@ def configure(here, environ=None):
     # on sys.path, which is what makes `import pywintypes` resolve, and
     # without that portalocker's Win32Locker dies and
     # concurrent-log-handler silently drops every file-log record (the
-    # same trap gateway/run.py's MCP venv bootstrap works around). Keep
+    # same trap hermes_agent/gateway/run.py's MCP venv bootstrap works around). Keep
     # site-packages directly after the repo, ahead of .pth-added dirs.
     site.addsitedir(site_entry)
     if site_entry in sys.path:

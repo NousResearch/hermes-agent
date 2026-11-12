@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from gateway.kanban_watchers_common import (
+from hermes_agent.gateway.kanban_watchers_common import (
     _acquire_singleton_lock,
     _kanban_dispatch_allowed,
     _release_singleton_lock,
@@ -24,8 +24,8 @@ from gateway.kanban_watchers_common import (
     _to_thread_process_service,
     logger,
 )
-from gateway.kanban_watchers_notifier import _KanbanNotification, _notifier_collect
-from gateway.kanban_watchers_dispatcher import (
+from hermes_agent.gateway.kanban_watchers_notifier import _KanbanNotification, _notifier_collect
+from hermes_agent.gateway.kanban_watchers_dispatcher import (
     _KanbanDispatcher,
     _log_spawn_results,
     _resolve_dispatcher_settings,
@@ -80,7 +80,7 @@ class GatewayKanbanWatchersMixin:
             logger.info("kanban notifier: disabled via config kanban.notify_in_gateway=false")
             return
 
-        from gateway.config import Platform as _Platform
+        from hermes_agent.gateway.config import Platform as _Platform
         try:
             from hermes_cli import kanban_db as _kb
         except Exception:
@@ -181,7 +181,7 @@ class GatewayKanbanWatchersMixin:
         if not candidates:
             return
 
-        from gateway.platforms.base import BasePlatformAdapter
+        from hermes_agent.gateway.platforms.base import BasePlatformAdapter
         candidates = BasePlatformAdapter.filter_local_delivery_paths(candidates)
         if not candidates:
             return

@@ -8,7 +8,7 @@ import pytest
 import hermes_yaml as yaml
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
-from gateway.session_tui_config import _set_display, _write_profile_config
+from hermes_agent.gateway.session_tui_config import _set_display, _write_profile_config
 
 
 @pytest.fixture
@@ -72,7 +72,7 @@ def test_owner_global_reasoning_level_is_refused_before_anything_changes(home, m
     """``config.set reasoning <level> scope=global`` saves agent.reasoning_effort: a pinned one is refused
     before the session's level is committed or config.yaml is written. A session level writes no config key."""
     import asyncio
-    from gateway import session_setting_commands, session_tui_config
+    from hermes_agent.gateway import session_setting_commands, session_tui_config
     from hermes_cli import managed_scope
     if pins_effort:
         (home.parent / "managed" / "config.yaml").write_text("agent:\n  reasoning_effort: low\n")
@@ -106,7 +106,7 @@ def test_owner_global_reasoning_level_is_refused_before_anything_changes(home, m
 def test_owner_approval_mode_refusal_names_a_pinned_key(home, monkeypatch, pins_mode):
     """A refused ``approvals.mode`` write reports ``permission_denied`` naming the key when the managed
     scope pins it; any other refusal keeps ``storage_unavailable``. Nothing is written either way."""
-    from gateway import session_tui_config
+    from hermes_agent.gateway import session_tui_config
     from hermes_cli import approval_mode, managed_scope
     if pins_mode:
         (home.parent / "managed" / "config.yaml").write_text("approvals:\n  mode: manual\n")

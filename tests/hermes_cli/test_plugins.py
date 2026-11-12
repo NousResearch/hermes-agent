@@ -2405,7 +2405,7 @@ class TestPluginCommands:
         """set_hermes_home_override() must get its own manager per profile.
 
         This is the production path used by the gateway multiplexer
-        (``gateway/run.py``'s ``_profile_scope`` context manager) and by
+        (``hermes_agent/gateway/run.py``'s ``_profile_scope`` context manager) and by
         subagent/embedded callers: it swaps ``HERMES_HOME`` via a
         context-local ContextVar, which — per
         ``hermes_constants.set_hermes_home_override`` — deliberately does

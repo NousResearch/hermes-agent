@@ -1,6 +1,6 @@
 """Disband drops the room's recorded member homes with its tombstone: they never pile up per room."""
-from gateway import hosted_rooms
-from gateway.session_hosted_member_homes import _recorded_homes, record_member_home
+from hermes_agent.gateway import hosted_rooms
+from hermes_agent.gateway.session_hosted_member_homes import _recorded_homes, record_member_home
 from hermes_agent.hermes_state import SessionDB
 
 

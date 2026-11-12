@@ -9,7 +9,7 @@ import logging
 import os
 import time
 
-from gateway.platforms.base import describe_proxy_error, env_proxy_for_redaction  # httpx reads HTTPS_PROXY itself
+from hermes_agent.gateway.platforms.base import describe_proxy_error, env_proxy_for_redaction  # httpx reads HTTPS_PROXY itself
 from tools.send_message_senders import _AUDIO_EXTS, _IMAGE_EXTS, _VIDEO_EXTS, _VOICE_EXTS, _error, _success
 
 logger = logging.getLogger("tools.send_message_tool")
@@ -169,7 +169,7 @@ async def send_qqbot(pconfig, chat_id, message, media_files=None, caption=None, 
         return _error("QQBot direct send requires httpx. Run: hermes pm repair")
 
     # Profile-scoped lookup so a multiplex profile never borrows another's QQ credentials.
-    from gateway.platforms._shared import get_scoped_secret
+    from hermes_agent.gateway.platforms._shared import get_scoped_secret
     from .constants import FILE_UPLOAD_TIMEOUT
     extra = pconfig.extra or {}
     appid = extra.get("app_id") or get_scoped_secret("QQ_APP_ID", "")

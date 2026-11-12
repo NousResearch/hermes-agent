@@ -323,8 +323,8 @@ GATEWAY_PLATFORMS = _CatalogValues(*_PLATFORM_CATALOGS, extra=_CORE_GATEWAY_PLAT
 def _gateway_adapter_platforms() -> frozenset[str]:
     """The gateway's own adapter vocabulary: ``Platform``'s declared members (relay, msgraph_webhook
     and api_server are adapters but not setup-wizard platforms; plugin pseudo-members are not
-    declared). Loaded on first use: gateway.config is too heavy for this module's import."""
-    from gateway.config import Platform
+    declared). Loaded on first use: hermes_agent.gateway.config is too heavy for this module's import."""
+    from hermes_agent.gateway.config import Platform
 
     return frozenset(member.value for member in Platform)
 

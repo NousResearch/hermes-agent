@@ -1,6 +1,6 @@
 """Unit tests for boot-time relay self-provisioning.
 
-Covers gateway.relay.self_provision_relay() + the relay_endpoint() /
+Covers hermes_agent.gateway.relay.self_provision_relay() + the relay_endpoint() /
 relay_route_keys() config readers. The connector HTTP POST is monkeypatched
 (the cross-repo E2E exercises the real /relay/provision); these prove the
 TRIGGER logic, in-process env wiring, and fail-soft boot behaviour.
@@ -19,8 +19,8 @@ import os
 import pytest
 
 from agent import secret_scope
-from gateway import relay
-from gateway.run_startup import GatewayStartupMixin
+from hermes_agent.gateway import relay
+from hermes_agent.gateway.run_startup import GatewayStartupMixin
 
 
 @pytest.fixture(autouse=True)
@@ -39,7 +39,7 @@ def _clean_env(monkeypatch):
     ):
         monkeypatch.delenv(k, raising=False)
     # Never read config.yaml off disk in these tests.
-    monkeypatch.setattr("gateway.run._load_gateway_config", dict, raising=False)
+    monkeypatch.setattr("hermes_agent.gateway.run._load_gateway_config", dict, raising=False)
 
 
 def _stub_post(captured: dict):
@@ -328,7 +328,7 @@ def test_startup_idp_secret_ref_keeps_launch_env_value_when_multiplexed(tmp_path
     monkeypatch.setenv("HERMES_HOME", str(launch_home))
     # The autouse fixture stubs config reads; this test needs the real ``${VAR}`` expansion.
     from hermes_cli.config_effective import load_user_config_effective
-    monkeypatch.setattr("gateway.run._load_gateway_config",
+    monkeypatch.setattr("hermes_agent.gateway.run._load_gateway_config",
                         lambda config_path=None: load_user_config_effective(launch_home / "config.yaml"))
     monkeypatch.setenv("RELAY_IDP_SECRET", "injected-launch-secret")
     for name in ("GATEWAY_RELAY_IDP_TOKEN_URL", "GATEWAY_RELAY_IDP_CLIENT_ID",

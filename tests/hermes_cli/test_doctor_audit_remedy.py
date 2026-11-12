@@ -84,7 +84,7 @@ def test_root_audit_row_is_not_mislabeled_as_agent_browser(monkeypatch, tmp_path
     """The root package.json row (js-yaml, semver, eslint tooling) names itself, not a browser
     driver it never audits (#122223)."""
     import hermes_cli.doctor as doctor_mod
-    from gateway.platforms import whatsapp_common
+    from hermes_agent.gateway.platforms import whatsapp_common
 
     project = tmp_path / "project"
     (project / "node_modules").mkdir(parents=True)

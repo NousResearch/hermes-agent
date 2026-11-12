@@ -18,7 +18,7 @@ from agent.runtime_self_protection import split_entry
 logger = logging.getLogger(__name__)
 
 # ``TERMINAL_CWD`` values that mean "not configured" ("." from a stale config;
-# "auto"/"cwd" are wizard placeholders). gateway/run.py sanitizes the same set.
+# "auto"/"cwd" are wizard placeholders). hermes_agent/gateway/run.py sanitizes the same set.
 _TERMINAL_CWD_SENTINELS = frozenset({"", ".", "./", "auto", "cwd"})
 _CONTAINER_PATH_BACKENDS_FALLBACK = frozenset({"docker", "modal", "daytona", "vercel_sandbox"})
 # Backend name inferred from the live environment's class name (first match wins).

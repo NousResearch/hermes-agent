@@ -19,8 +19,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import PlatformConfig
-from gateway.platforms.api_server import APIServerAdapter
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.api_server import APIServerAdapter
 from hermes_cli.subcommands import peer as peer_mod
 from hermes_agent.hermes_state import SessionDB
 
@@ -167,7 +167,7 @@ def test_peer_dm_reports_a_turn_queued_in_the_open_bot_chat_as_delivered(monkeyp
 async def test_gateway_shutdown_reports_a_live_owned_run_as_interrupted(tmp_path):
     """A `peer run` whose turn is a live Bot Chat's is still a run of THIS gateway: shutdown publishes
     ``interrupted`` and the task cancel that follows must not rewrite it as a bare ``cancelled``."""
-    from gateway.platforms import api_server_runs as runs_mod
+    from hermes_agent.gateway.platforms import api_server_runs as runs_mod
 
     adapter = APIServerAdapter(PlatformConfig(enabled=True))
     queue: asyncio.Queue = asyncio.Queue()

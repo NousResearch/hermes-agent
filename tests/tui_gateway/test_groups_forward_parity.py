@@ -43,8 +43,8 @@ def _gateway(monkeypatch, state: str) -> None:
 
 def _hand_room_to_gateway(monkeypatch):
     """A Group Chat created on the standalone backend, then imported (and fenced) by the gateway."""
-    from gateway.hosted_rooms import default_db_path
-    from gateway.hosted_rooms_gateway_import import import_standalone_rooms
+    from hermes_agent.gateway.hosted_rooms import default_db_path
+    from hermes_agent.gateway.hosted_rooms_gateway_import import import_standalone_rooms
     _gateway(monkeypatch, "absent")
     created = srv._methods["groups.create"](1, {"room_id": "room-desk", "name": "Desk", "members": MEMBERS})
     assert "error" not in created, created
@@ -57,7 +57,7 @@ def _hand_room_to_gateway(monkeypatch):
 
 
 def test_every_gateway_room_method_reaches_the_owning_gateway(home, monkeypatch):
-    from gateway.session_group_controls import GROUP_METHODS
+    from hermes_agent.gateway.session_group_controls import GROUP_METHODS
     from hermes_agent.tui_gateway.contracts.registry import METHODS
     _hand_room_to_gateway(monkeypatch)
     reached = []
@@ -78,9 +78,9 @@ def test_every_gateway_room_method_reaches_the_owning_gateway(home, monkeypatch)
 
 
 def test_a_file_attached_to_a_handed_room_lands_in_the_gateway_copy(home, monkeypatch):
-    from gateway.hosted_room_attachments import HostedRoomAttachmentStore
-    from gateway.hosted_rooms import default_db_path
-    from gateway.session_hosted_attachments import store_upload
+    from hermes_agent.gateway.hosted_room_attachments import HostedRoomAttachmentStore
+    from hermes_agent.gateway.hosted_rooms import default_db_path
+    from hermes_agent.gateway.session_hosted_attachments import store_upload
     target = _hand_room_to_gateway(monkeypatch)
     calls = []
 

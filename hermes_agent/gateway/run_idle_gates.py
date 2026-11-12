@@ -12,7 +12,7 @@ import logging
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 
 def _profile_session_db_probe(profile_home: Path) -> Optional[Any]:

@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import PlatformConfig, Platform
+from hermes_agent.gateway.config import PlatformConfig, Platform
 from plugins.platforms.telegram.telegram_ids import (
     normalize_telegram_chat_id,
 )

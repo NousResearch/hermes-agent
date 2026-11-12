@@ -101,7 +101,7 @@ def resolve_argv(
     *, home: Path, requested_cwd: Optional[str] = None,
 ) -> tuple[list[str], str, dict[str, str], str]:
     """Return argv/cwd/env/name for Webapp's authenticated host terminal in ``home``."""
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
     from hermes_cli import __version__
     from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
     from hermes_constants import (

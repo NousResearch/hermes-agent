@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import PlatformConfig, Platform
+from hermes_agent.gateway.config import PlatformConfig, Platform
 
 
 # -- Fake telegram modules (minimal stubs) --------------------------------

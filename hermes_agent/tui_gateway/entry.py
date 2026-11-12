@@ -309,7 +309,7 @@ def _claim_launch_home():
     home's ``state.db`` as a writer, so it must be the home's only owner: the gateway's
     ``gateway.lock`` reservation refuses it beside a live gateway (or a second entry), and holding
     that lock keeps a gateway from starting on the home while this process writes."""
-    from gateway.runtime_ownership import OwnershipConflict, process_ownership
+    from hermes_agent.gateway.runtime_ownership import OwnershipConflict, process_ownership
     home = server._launch_home()
     try:
         process_ownership.reserve([home])
@@ -326,7 +326,7 @@ def main():
     try:
         _serve()
     finally:
-        from gateway.runtime_ownership import process_ownership
+        from hermes_agent.gateway.runtime_ownership import process_ownership
         process_ownership.release(home)
 
 

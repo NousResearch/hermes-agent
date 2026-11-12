@@ -26,7 +26,7 @@ def test_slash_review_dispatches_under_the_parent_session_identity(monkeypatch):
     seen = {}
 
     def fake_start_review(agent, snapshot, prompt):
-        from gateway.session_context import get_session_env
+        from hermes_agent.gateway.session_context import get_session_env
         seen["ui_session_id"] = get_session_env("HERMES_UI_SESSION_ID", "")
         seen["authority"] = server._current_session_steer_authority(sid)
         return {"status": "dispatched", "delegation_id": "deleg_x"}
@@ -38,7 +38,7 @@ def test_slash_review_dispatches_under_the_parent_session_identity(monkeypatch):
             patch("agent.review_engine.start_review", fake_start_review),
         ):
             out = server._live_slash_command_output(sid, session, "review", "")
-        from gateway.session_context import get_session_env
+        from hermes_agent.gateway.session_context import get_session_env
         assert get_session_env("HERMES_UI_SESSION_ID", "") == ""  # scope cleared after dispatch
         assert server._current_runtime_session_record.get() is None
     finally:

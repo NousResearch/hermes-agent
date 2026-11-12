@@ -318,7 +318,7 @@ Trigger the matching slash command from the TUI, then `nc 127.0.0.1 4444` in ano
 ### `_SlashWorker` subprocess
 Same pattern — `remote-pdb` with `set_trace()` inside the worker's `exec` path. The worker is persistent across slash commands, so the first trigger blocks until you connect; subsequent slash commands pass through normally unless you re-arm.
 
-### Gateway (`gateway/run.py`)
+### Gateway (`hermes_agent/gateway/run.py`)
 Long-lived. Use `remote-pdb` at a handler, or `debugpy` with `--wait-for-client` if you're restarting the gateway anyway.
 
 ## Common Pitfalls

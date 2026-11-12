@@ -15,12 +15,12 @@ class _Owner:
     """A real SessionAuthority behind the client ``rpc`` surface the viewers use."""
 
     def __init__(self, tmp_path, monkeypatch):
-        from gateway import run
-        from gateway.config import GatewayConfig
-        from gateway.session import SessionStore
-        from gateway.session_authority import SessionAuthority
-        from gateway.session_controls import AuthorityConnection
-        from gateway.session_local import create_local_session
+        from hermes_agent.gateway import run
+        from hermes_agent.gateway.config import GatewayConfig
+        from hermes_agent.gateway.session import SessionStore
+        from hermes_agent.gateway.session_authority import SessionAuthority
+        from hermes_agent.gateway.session_controls import AuthorityConnection
+        from hermes_agent.gateway.session_local import create_local_session
         from hermes_cli import model_cost_guard, model_switch
         import hermes_agent.hermes_state_runtime as rt
         monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {})

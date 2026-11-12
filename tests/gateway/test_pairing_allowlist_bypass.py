@@ -18,7 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session import Platform, SessionSource
+from hermes_agent.gateway.session import Platform, SessionSource
 
 
 @pytest.fixture(autouse=True)
@@ -43,7 +43,7 @@ def _isolate_env(monkeypatch):
 # --------------------------------------------------------------------------
 
 def _make_runner(*, paired: bool):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.pairing_store = SimpleNamespace(is_approved=lambda *_a, **_kw: paired)
@@ -87,7 +87,7 @@ def store(tmp_path, monkeypatch):
     (tmp_path / ".hermes").mkdir(parents=True, exist_ok=True)
     import importlib
 
-    import gateway.pairing as pairing_mod
+    import hermes_agent.gateway.pairing as pairing_mod
     importlib.reload(pairing_mod)
     return pairing_mod.PairingStore()
 
@@ -227,10 +227,10 @@ def test_revoke_whatsapp_sole_entry_denies_live_adapter_without_restart(
     """
     from types import SimpleNamespace
 
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
-    from gateway.run import GatewayRunner
-    import gateway.run as gateway_run
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
+    from hermes_agent.gateway.run import GatewayRunner
+    import hermes_agent.gateway.run as gateway_run
     import hermes_cli.config as cfg
 
     monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15551234567")
@@ -312,7 +312,7 @@ def test_whatsapp_live_allowlist_keeps_explicit_config_over_env(monkeypatch):
     lower-precedence WHATSAPP_ALLOWED_USERS entry must not authorize (or
     replace) an explicit config allowlist.
     """
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
     from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15550000002")
@@ -341,7 +341,7 @@ def test_whatsapp_live_allowlist_keeps_explicit_config_over_env(monkeypatch):
 
 def test_whatsapp_explicit_empty_allow_from_blocks_env_grant(monkeypatch):
     """allow_from: [] is present config — must not fall through to env grants."""
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
     from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15550000002")
@@ -363,7 +363,7 @@ def test_whatsapp_explicit_empty_allow_from_blocks_env_grant(monkeypatch):
 
 def test_whatsapp_live_allowlist_rereads_env_when_env_seeded(monkeypatch):
     """Env-seeded adapters still pick up pairing allowlist mutations live."""
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
     from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15551234567")
@@ -381,7 +381,7 @@ def test_whatsapp_live_allowlist_rereads_env_when_env_seeded(monkeypatch):
 
 def test_whatsapp_live_allowlist_denies_when_env_key_removed(monkeypatch):
     """Sole-entry revoke pops the env key — must not revive the construction snapshot."""
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
     from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15551234567")
@@ -401,8 +401,8 @@ async def test_matrix_pairing_revoke_denies_live_message_and_approval_without_re
     """The runner's live pairing verdict must gate both Matrix messages and approvals."""
     from unittest.mock import AsyncMock, patch
 
-    from gateway.config import GatewayConfig, PlatformConfig
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.config import GatewayConfig, PlatformConfig
+    from hermes_agent.gateway.run import GatewayRunner
     from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt
 
     user_id = "@paired:example.org"
@@ -470,8 +470,8 @@ async def test_matrix_pairing_revoke_denies_live_message_and_approval_without_re
 
 def test_matrix_pairing_revoke_purges_live_allowlist_snapshot(store, monkeypatch):
     """A live Matrix adapter must not retain an allowlist entry removed by pairing revoke."""
-    from gateway.config import PlatformConfig
-    import gateway.run as gateway_run
+    from hermes_agent.gateway.config import PlatformConfig
+    import hermes_agent.gateway.run as gateway_run
     import hermes_cli.config as cfg
     from plugins.platforms.matrix.adapter import MatrixAdapter
 

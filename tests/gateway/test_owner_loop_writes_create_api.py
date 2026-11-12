@@ -19,7 +19,7 @@ async def _create(authority, owner, tmp_path, api):
 
 
 async def _api_turn(authority, owner, tmp_path, api):
-    from gateway.session_api_turn import admit_api_turn_async
+    from hermes_agent.gateway.session_api_turn import admit_api_turn_async
     _, ref, row = await admit_api_turn_async(api, session_id='api', user_message='hi', conversation_history=[])
     await authority._drain(ref)
     from hermes_agent.hermes_state_runtime import get_session_admission
@@ -53,7 +53,7 @@ def _record(monkeypatch, prefix):
 
 
 async def _handle(event):
-    from gateway.session_results import execution_result
+    from hermes_agent.gateway.session_results import execution_result
     execution_result.get()['result'] = {'final_response': 'ok', 'messages': []}
     return 'ok'
 

@@ -66,8 +66,8 @@ def test_gateway_owned_oneshot_session_keeps_skill_manage_and_takes_its_prompt_f
     one-shot by its frozen ``oneshot`` source, so it gets the one-shot skills prompt; its tool list still offers
     skill_manage (one-shots may author skills). An interactive session's policy wins over a stray daemon env
     marker, keeping its system prompt (the prompt-cache prefix) unchanged."""
-    from gateway.session_local_inventory import _policy_tools
-    from gateway.session_policy import build_policy, policy_scope
+    from hermes_agent.gateway.session_local_inventory import _policy_tools
+    from hermes_agent.gateway.session_policy import build_policy, policy_scope
 
     monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION", raising=False)
     skills = _skills_dir(tmp_path)

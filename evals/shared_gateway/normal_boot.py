@@ -63,7 +63,7 @@ def main():
                    PYTHONPATH=str(repo), PYTHONUNBUFFERED='1')
         with args.output.with_suffix('.log').open('w', encoding='utf-8') as log:
             process = subprocess.Popen(
-                [str(args.python.absolute()), '-m', 'gateway.run'], cwd=repo, env=env,
+                [str(args.python.absolute()), '-m', 'hermes_agent.gateway.run'], cwd=repo, env=env,
                 stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                 start_new_session=True)
             try:

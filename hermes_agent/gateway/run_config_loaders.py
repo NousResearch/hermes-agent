@@ -1,8 +1,8 @@
 """Config/env loaders (busy modes, reasoning, service tier, timeouts, fallback) for GatewayRunner.
 
-Split out of ``gateway/run.py``; bound onto ``GatewayRunner`` via the MRO.
-``gateway.run`` internals are imported lazily inside method bodies (import cycle),
-so ``patch("gateway.run.X")`` keeps intercepting them at call time.
+Split out of ``hermes_agent/gateway/run.py``; bound onto ``GatewayRunner`` via the MRO.
+``hermes_agent.gateway.run`` internals are imported lazily inside method bodies (import cycle),
+so ``patch("hermes_agent.gateway.run.X")`` keeps intercepting them at call time.
 """
 
 from __future__ import annotations
@@ -15,8 +15,8 @@ from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from gateway.config import Platform
-from gateway.restart import (
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, DEFAULT_GATEWAY_POST_INTERRUPT_GRACE_TIMEOUT,
     DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT, DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT, parse_cron_drain_timeout,
@@ -24,18 +24,18 @@ from gateway.restart import (
     launchd_service_label, parse_signal_interrupt_grace_timeout, read_launchd_exit_timeout_s,
     resolve_launchd_capped_drain,
 )
-from gateway.session import SessionSource
-from gateway.session_state import SERVICE_TIER_UNSET as _SERVICE_TIER_UNSET
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.session_state import SERVICE_TIER_UNSET as _SERVICE_TIER_UNSET
 from hermes_cli.config import cfg_get, resolve_ephemeral_system_prompt_from_config
 from hermes_cli.fallback_config import get_fallback_chain
 from utils import is_truthy_value
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner
-    from gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 DEFAULT_HUMAN_DELAY_RANGE_MS: tuple[int, int] = (800, 2500)
 
@@ -48,7 +48,7 @@ class GatewayConfigLoadersMixin:
     @staticmethod
     def _cfg_str(section: str, key: str) -> str:
         """``<section>.<key>`` from the gateway runtime config as a stripped string ("" when unset)."""
-        from gateway.run import _load_gateway_config
+        from hermes_agent.gateway.run import _load_gateway_config
         return str(cfg_get(_load_gateway_config(), section, key, default="") or "").strip()
 
     @classmethod
@@ -63,7 +63,7 @@ class GatewayConfigLoadersMixin:
         HERMES_PREFILL_MESSAGES_FILE env wins, then top-level prefill_messages_file in config.yaml,
         then legacy agent.prefill_messages_file. Relative paths resolve from ~/.hermes/.
         """
-        from gateway.run import _gateway_config_home, _load_gateway_config
+        from hermes_agent.gateway.run import _gateway_config_home, _load_gateway_config
         file_path = os.getenv("HERMES_PREFILL_MESSAGES_FILE", "")
         if not file_path:
             cfg = _load_gateway_config()
@@ -94,7 +94,7 @@ class GatewayConfigLoadersMixin:
         """HERMES_EPHEMERAL_SYSTEM_PROMPT env first (a local session's: its client's), then
         ``display.personality`` / ``agent.system_prompt``."""
         from agent.session_client_env import session_env
-        from gateway.run import _load_gateway_config
+        from hermes_agent.gateway.run import _load_gateway_config
         prompt = session_env("HERMES_EPHEMERAL_SYSTEM_PROMPT")
         if prompt:
             return prompt
@@ -102,7 +102,7 @@ class GatewayConfigLoadersMixin:
 
     def _channel_override(self, platform: Platform, chat_id: str, thread_id, parent_id):
         """``channel_overrides`` entry for this channel/thread, or None (also when no config is bound)."""
-        from gateway.run import _get_channel_override
+        from hermes_agent.gateway.run import _get_channel_override
         config = getattr(self, "config", None)
         if not config:
             return None
@@ -110,17 +110,17 @@ class GatewayConfigLoadersMixin:
 
     def _silence_allowed_for_source(self, source, display_kind, reply_expected, agent_result) -> bool:
         """Evaluate existing exemptions before consulting the optional room permission."""
-        from gateway.response_filters import silence_allowed
+        from hermes_agent.gateway.response_filters import silence_allowed
         return silence_allowed(display_kind, reply_expected) or silence_allowed(
             display_kind, reply_expected, allow_silence=self._room_allow_silence(source),
             agent_result=agent_result)
 
     def _room_allow_silence(self, source: SessionSource) -> Optional[bool]:
         """Resolve the room policy in the serving profile, never the launch snapshot for a route."""
-        from gateway.config import GatewayConfig
-        from gateway.config_loader import merge_platform_sections, platform_section
-        from gateway.run import _get_channel_override, _load_gateway_config
-        from gateway.session_identity import identity_of
+        from hermes_agent.gateway.config import GatewayConfig
+        from hermes_agent.gateway.config_loader import merge_platform_sections, platform_section
+        from hermes_agent.gateway.run import _get_channel_override, _load_gateway_config
+        from hermes_agent.gateway.session_identity import identity_of
         config = getattr(self, "config", None)
         identity = identity_of(source)
         runtime = identity.runtime_profile if identity is not None else (source.profile or None)
@@ -161,7 +161,7 @@ class GatewayConfigLoadersMixin:
         API server so the surfaces cannot diverge). No session tier here: session /model overrides
         are applied later by ``_apply_session_model_override``.
         """
-        from gateway.run import _resolve_gateway_model
+        from hermes_agent.gateway.run import _resolve_gateway_model
         from hermes_cli.model_switch import resolve_effective_model
         return resolve_effective_model(
             None,  # session tier applied downstream (_apply_session_model_override)
@@ -199,7 +199,7 @@ class GatewayConfigLoadersMixin:
 
         Closes #21256.
         """
-        from gateway.run import _load_gateway_config
+        from hermes_agent.gateway.run import _load_gateway_config
         from hermes_constants import resolve_reasoning_config
         return resolve_reasoning_config(_load_gateway_config(), model)
 
@@ -231,7 +231,7 @@ class GatewayConfigLoadersMixin:
             _r_state = self._peek_session_state(resolved_session_key)
             if _r_state is not None and _r_state.conversation.reasoning_override is not None:
                 return _r_state.conversation.reasoning_override
-        from gateway.session_setting_commands import local_policy
+        from hermes_agent.gateway.session_setting_commands import local_policy
         if (policy := local_policy(self, source)) is not None:
             # A local session runs its frozen (or followed) level, not the profile's.
             return policy.current_reasoning_config(self, resolved_session_key)
@@ -257,7 +257,7 @@ class GatewayConfigLoadersMixin:
             _t_state = self._peek_session_state(resolved_session_key)
             if _t_state is not None and _t_state.conversation.service_tier_override is not _SERVICE_TIER_UNSET:
                 return _t_state.conversation.service_tier_override
-        from gateway.session_setting_commands import local_live_for_route, local_policy
+        from hermes_agent.gateway.session_setting_commands import local_live_for_route, local_policy
         live = local_live_for_route(self, resolved_session_key)
         if live is not None and (policy := local_policy(self, live.source)) is not None:
             return policy.current_service_tier(self, resolved_session_key)  # its frozen tier, not config.yaml's
@@ -285,7 +285,7 @@ class GatewayConfigLoadersMixin:
         approved account's own access (OpenAI: no third-party or downstream use), and a messaging platform's
         chats, a hosted room or an A2A peer can be other people. LOCAL is the canonical transport, not the
         owner, so the route's frozen launch policy decides."""
-        from gateway.session_policy import DAYBREAK_LABELS, policy_for_source
+        from hermes_agent.gateway.session_policy import DAYBREAK_LABELS, policy_for_source
         if getattr(source, "platform", None) != Platform.LOCAL:
             return False
         try:
@@ -298,13 +298,13 @@ class GatewayConfigLoadersMixin:
         """``agent.daybreak`` (off unless explicitly true) for a turn from ``source``, on the owner's own chats
         only. Read per turn so the Desktop switch reaches the next turn of a running chat without rebuilding
         its cached agent."""
-        from gateway.run import _load_gateway_config
+        from hermes_agent.gateway.run import _load_gateway_config
         return self._daybreak_surface(source) and cfg_get(_load_gateway_config(), "agent", "daybreak") is True
 
     @staticmethod
     def _load_show_reasoning() -> bool:
         """``display.show_reasoning`` toggle."""
-        from gateway.run import _load_gateway_config
+        from hermes_agent.gateway.run import _load_gateway_config
         return is_truthy_value(cfg_get(_load_gateway_config(), "display", "show_reasoning"), default=False)
 
     @classmethod
@@ -320,7 +320,7 @@ class GatewayConfigLoadersMixin:
         ``busy_input_mode`` is the source of truth (default ``interrupt``); legacy ``busy_text_mode``
         is honored only when explicitly set so existing queue setups keep working.
         """
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
         legacy = cls._env_or_cfg_str("HERMES_GATEWAY_BUSY_TEXT_MODE", "display", "busy_text_mode").lower()
         if legacy in {"interrupt", "queue"}:
             return legacy
@@ -345,7 +345,7 @@ class GatewayConfigLoadersMixin:
         """``display.busy_text_debounce_seconds`` / ``display.busy_text_hard_cap_seconds`` for one
         profile, without consulting process env (#116893). A non-numeric or negative value is
         rejected with a warning naming the key, never silently coerced."""
-        from gateway.platforms.base import DEFAULT_BUSY_TEXT_DEBOUNCE_SECONDS, DEFAULT_BUSY_TEXT_HARD_CAP_SECONDS
+        from hermes_agent.gateway.platforms.base import DEFAULT_BUSY_TEXT_DEBOUNCE_SECONDS, DEFAULT_BUSY_TEXT_HARD_CAP_SECONDS
         out = []
         for key, default in (("busy_text_debounce_seconds", DEFAULT_BUSY_TEXT_DEBOUNCE_SECONDS),
                              ("busy_text_hard_cap_seconds", DEFAULT_BUSY_TEXT_HARD_CAP_SECONDS)):
@@ -491,7 +491,7 @@ class GatewayConfigLoadersMixin:
         """Env var (non-empty) else ``agent.<cfg_key>``; warn once when a supplied value fails to parse.
 
         ``0`` is a valid value; the parser falls back to ``default`` on garbage."""
-        from gateway.run import _load_gateway_config
+        from hermes_agent.gateway.run import _load_gateway_config
         env_raw = os.getenv(env_var)
         if env_raw is not None and str(env_raw).strip() != "":
             raw: object = env_raw
@@ -524,7 +524,7 @@ class GatewayConfigLoadersMixin:
     @classmethod
     def _load_signal_interrupt_grace_timeout(cls) -> float:
         """``gateway.signal_interrupt_grace_timeout``: unexpected-signal post-interrupt grace in seconds."""
-        from gateway.run import _load_gateway_config
+        from hermes_agent.gateway.run import _load_gateway_config
         raw = cfg_get(_load_gateway_config(), "gateway", "signal_interrupt_grace_timeout", default=None)
         value = parse_signal_interrupt_grace_timeout(raw)
         if raw is not None and raw != "":
@@ -546,8 +546,8 @@ class GatewayConfigLoadersMixin:
         the AMBIENT profile — callers deciding for another profile's event enter its scope first
         (``_completion_event_scope``). The env override reads through the secret scope so a served
         secondary sees its own ``.env`` value, not the launch profile's ``os.environ``."""
-        from gateway.run import _load_gateway_config
-        from gateway.platforms._shared import platform_gate_env as _platform_gate_env
+        from hermes_agent.gateway.run import _load_gateway_config
+        from hermes_agent.gateway.platforms._shared import platform_gate_env as _platform_gate_env
         mode = _platform_gate_env("HERMES_BACKGROUND_NOTIFICATIONS")
         if not mode:
             raw = cfg_get(_load_gateway_config(), "display", "background_process_notifications")
@@ -564,7 +564,7 @@ class GatewayConfigLoadersMixin:
     @staticmethod
     def _load_provider_routing() -> dict:
         """OpenRouter provider routing preferences (canonical fail-open loader: managed overlay + ${VAR})."""
-        from gateway.run import _load_gateway_config
+        from hermes_agent.gateway.run import _load_gateway_config
         try:
             return _load_gateway_config().get("provider_routing", {}) or {}
         except Exception:
@@ -573,7 +573,7 @@ class GatewayConfigLoadersMixin:
     @staticmethod
     def _load_fallback_model() -> list | None:
         """Fallback chain: ``fallback_providers`` (kept first) merged with legacy ``fallback_model``."""
-        from gateway.run import _load_gateway_config
+        from hermes_agent.gateway.run import _load_gateway_config
         try:
             # Canonical gateway loader (fail-open): managed overlay + ${VAR} expansion apply here too.
             return get_fallback_chain(_load_gateway_config()) or None
@@ -597,7 +597,7 @@ class GatewayConfigLoadersMixin:
         home handed every secondary profile the default profile's fallback chain.
         """
         from hermes_cli.config_backend import config_exists
-        from gateway.run import _gateway_config_home
+        from hermes_agent.gateway.run import _gateway_config_home
         from hermes_constants import hermes_home_key
         home = _gateway_config_home()
         by_home = getattr(self, "_fallback_model_by_home", None)

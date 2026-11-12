@@ -106,7 +106,7 @@ def set_approval_callback(cb):
 def _current_session_key() -> str:
     """Active gateway/WebUI session key, or "" outside sessions (ContextVar with
     the ``get_session_env`` os.environ fallback for CLI/cron/tests)."""
-    from gateway.session_context import get_session_env
+    from hermes_agent.gateway.session_context import get_session_env
 
     return get_session_env("HERMES_SESSION_KEY", "")
 
@@ -114,7 +114,7 @@ def _current_session_key() -> str:
 def _current_session_profile() -> str:
     """Active session's Hermes profile name, or "" (same lookup discipline as
     :func:`_current_session_key`)."""
-    from gateway.session_context import get_session_env
+    from hermes_agent.gateway.session_context import get_session_env
 
     return get_session_env("HERMES_SESSION_PROFILE", "")
 
@@ -566,7 +566,7 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
 
 def workspace_key_for(cwd: str) -> str:
     """The ``:ws:`` digest of a host workspace: computed ONCE when the session binds it
-    (``gateway.session_policy.bind_turn_workspace``), so container keying never depends on live
+    (``hermes_agent.gateway.session_policy.bind_turn_workspace``), so container keying never depends on live
     filesystem state at lookup time."""
     import hashlib
     resolved = os.path.realpath(os.path.expanduser(cwd))
@@ -578,7 +578,7 @@ def _workspace_container_key(base: str, task_id: Optional[str]) -> str:
     (profile, workspace), not per profile (#140665).
 
     A gateway-owned CLI/Desktop session registers its client cwd as a ``cwd_source: "session"``
-    override (``gateway.session_policy.bind_turn_workspace``). Keyed by profile alone, every
+    override (``hermes_agent.gateway.session_policy.bind_turn_workspace``). Keyed by profile alone, every
     concurrent session shared the container bound to whichever workspace created it first; sessions
     in the same folder still share one. Sessions with no registered workspace keep the profile key,
     and so does every session while ``docker_mount_cwd_to_workspace`` is off: nothing is bound into

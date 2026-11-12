@@ -60,7 +60,7 @@ def test_prompt_title_reaches_the_plain_prompt_and_only_title_aware_callbacks(mo
 def test_every_surface_renders_the_timeout_window_with_one_formatter(monkeypatch):
     """CLI notice, tool user_summary and gateway card must agree on the wording of the same window."""
     from tools import approval, approval_context as ctx
-    from gateway.platforms.base_exec_approval import format_approval_timed_out_notice
+    from hermes_agent.gateway.platforms.base_exec_approval import format_approval_timed_out_notice
     monkeypatch.setattr(ctx, "_get_approval_timeout", lambda: 90)
     window = ctx.format_approval_window(90)
     assert window in ctx.approval_timeout_notice_kwargs()["waited"]

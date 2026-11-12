@@ -360,7 +360,7 @@ class GatewaySessionStore:
 
     # -- banner --------------------------------------------------------------------------
     def banner_inventory(self):
-        """The current session snapshot's banner fields (``gateway/session_local_inventory``), as
+        """The current session snapshot's banner fields (``hermes_agent/gateway/session_local_inventory``), as
         ``build_welcome_banner`` kwargs; None until a session is open."""
         info = (self.current or {}).get("info") or {}
         if "tools" not in info:
@@ -418,7 +418,7 @@ class SurfaceLabelReader:
         name of a gui/desktop pair, so a row that has not been peer-refreshed (``source='gui'``)
         still matches ``--source desktop``.
         """
-        from gateway.session_policy import SURFACE_GROUPS
+        from hermes_agent.gateway.session_policy import SURFACE_GROUPS
         wanted = {requested} if isinstance(requested, str) else set(requested or ())
         created = set()
         live = set(wanted)

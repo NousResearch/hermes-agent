@@ -336,7 +336,7 @@ def real_s6(monkeypatch: pytest.MonkeyPatch):
 def marker_calls(monkeypatch: pytest.MonkeyPatch):
     marked: list[int] = []
     monkeypatch.setattr(
-        "gateway.status.write_planned_stop_marker", lambda pid: marked.append(pid) or True
+        "hermes_agent.gateway.status.write_planned_stop_marker", lambda pid: marked.append(pid) or True
     )
     return marked
 
@@ -381,7 +381,7 @@ def test_s6_stop_marker_write_failure_still_stops(
         attempted.append(pid)
         raise OSError("disk gone")
 
-    monkeypatch.setattr("gateway.status.write_planned_stop_marker", _boom)
+    monkeypatch.setattr("hermes_agent.gateway.status.write_planned_stop_marker", _boom)
 
     S6ServiceManager(scandir=s6_scandir).stop("gateway-coder")
 

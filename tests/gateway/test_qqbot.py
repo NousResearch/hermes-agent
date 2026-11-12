@@ -8,7 +8,7 @@ from unittest import mock
 import httpx
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +100,7 @@ class TestVoiceAttachmentSSRFProtection:
 
 
     def test_connect_uses_redirect_guard_hook(self):
-        from gateway.platforms.base import ssrf_redirect_guard
+        from hermes_agent.gateway.platforms.base import ssrf_redirect_guard
         from plugins.platforms.qqbot.adapter import QQAdapter
 
         client = mock.AsyncMock()
@@ -445,7 +445,7 @@ class TestQQTimeoutErrorNormalization:
 
     @pytest.mark.asyncio
     async def test_send_chunk_preserves_read_timeout_type(self, monkeypatch):
-        from gateway.platforms.base import BasePlatformAdapter
+        from hermes_agent.gateway.platforms.base import BasePlatformAdapter
         import plugins.platforms.qqbot.adapter as qq_adapter_mod
 
         # Skip the real 1s+2s retry backoff.
@@ -932,7 +932,7 @@ class TestProfileNamespaceApprovalAuthz:
 
     ``build_session_key`` namespaces named-profile keys as ``agent:<profile>:...``
     while the default profile keeps the legacy ``agent:main`` prefix
-    (``gateway/session.py::_session_key_namespace``). The interaction authz
+    (``hermes_agent/gateway/session.py::_session_key_namespace``). The interaction authz
     parser used to require the literal ``main`` in the namespace slot, so
     every approval button click in a named profile was rejected as
     unauthorized and the pending approval timed out (fail-closed block).
@@ -1069,7 +1069,7 @@ class TestSendUpdatePrompt:
         captured = {}
 
         async def fake_swk(chat_id, content, keyboard, reply_to=None):
-            from gateway.platforms.base import SendResult
+            from hermes_agent.gateway.platforms.base import SendResult
             captured["chat_id"] = chat_id
             captured["content"] = content
             captured["keyboard"] = keyboard

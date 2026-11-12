@@ -9,10 +9,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import GatewayConfig, PlatformConfig
-from gateway.platforms.event import MessageType
-from gateway.session import build_session_context, build_session_key
-from gateway.session_context import _UNSET, _VAR_MAP
+from hermes_agent.gateway.config import GatewayConfig, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageType
+from hermes_agent.gateway.session import build_session_context, build_session_key
+from hermes_agent.gateway.session_context import _UNSET, _VAR_MAP
 from tests.gateway.test_approval_requester_binding import DEFAULT, write_approvers
 from tests.gateway.test_telegram_group_gating import _group_message, _make_adapter, _mention_entity
 
@@ -36,7 +36,7 @@ def _observed_event(adapter, uid, name, body):
 
 def _approval_raised_in(event):
     """The approval the agent raises inside *event*'s turn, through the gateway's real session binding."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
     from tools import approval as approval_mod
     from tools.approval_gateway_wait import _ApprovalEntry
 
@@ -58,7 +58,7 @@ def _observe_adapter():
 
 @pytest.mark.asyncio
 async def test_an_observed_group_approval_belongs_to_the_member_who_asked():
-    from gateway.approval_actor import approval_refusal
+    from hermes_agent.gateway.approval_actor import approval_refusal
     from tests.gateway.test_approval_requester_binding import _runner
 
     write_approvers([])
@@ -79,8 +79,8 @@ async def test_an_observed_group_approval_belongs_to_the_member_who_asked():
 
 def test_an_approval_with_no_requester_is_answered_only_by_approvers_and_admins():
     """No requester recorded (a turn merged from two members) fails closed: never "anyone"."""
-    from gateway.approval_actor import approval_refusal, refusal_text
-    from gateway.platforms.base import merge_pending_message_event
+    from hermes_agent.gateway.approval_actor import approval_refusal, refusal_text
+    from hermes_agent.gateway.platforms.base import merge_pending_message_event
 
     adapter = _observe_adapter()
     pending = {}
@@ -116,7 +116,7 @@ def test_an_approval_with_no_requester_is_answered_only_by_approvers_and_admins(
     ("dm", "22", True),       # DM admin on a DM approval
 ])
 async def test_discord_buttons_use_the_approvals_own_admin_scope(chat_type, clicker, allowed, monkeypatch):
-    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
     from plugins.platforms.discord.adapter import DiscordAdapter
     from tests.gateway.test_discord_exec_approval_content import _capture_channel
     from tools import approval as approval_mod

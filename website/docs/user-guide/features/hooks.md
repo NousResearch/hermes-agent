@@ -25,7 +25,7 @@ Gateway hooks fire automatically during gateway operation (Telegram, Discord, Sl
 
 The hooks directory is a **trusted-by-placement** extension point — the documented contract since `3988c3c245f` (April 2026), when the comparison table below first recorded its consent model as "Implicit (dir trust)". It has no enable list, and `plugins.enabled` / `plugins.disabled` do not apply to it — gateway hooks are not plugins. Exactly what loads:
 
-- **When:** once, at gateway startup (`HookRegistry.discover_and_load()`, called from `gateway/run_startup.py`). Under [multi-profile gateways](../multi-profile-gateways.md), each served profile's own `hooks/` is loaded the first time an event fires inside that profile. The CLI, TUI, Desktop and cron never load gateway hooks.
+- **When:** once, at gateway startup (`HookRegistry.discover_and_load()`, called from `hermes_agent/gateway/run_startup.py`). Under [multi-profile gateways](../multi-profile-gateways.md), each served profile's own `hooks/` is loaded the first time an event fires inside that profile. The CLI, TUI, Desktop and cron never load gateway hooks.
 - **What:** every subdirectory of `<profile home>/hooks/` (`~/.hermes/hooks/` for the default profile) that contains both a `HOOK.yaml` parsing to a mapping with a non-empty `events` list **and** a `handler.py`. Directories missing either file are skipped silently; an invalid manifest or an empty `events` list is skipped with a `[hooks] Skipping …` log line.
 - **How:** `handler.py` is imported in-process — its module body runs at import, and its `handle` function is registered for the declared events. It runs as the gateway process with the same access as the gateway itself (loaded credentials, tools, plugin state). There is no sandbox, no first-use prompt, and `HERMES_SAFE_MODE` does not skip this loader.
 
@@ -280,7 +280,7 @@ def _run_boot_agent(content: str) -> None:
     against custom endpoints, aggregators, and OAuth-based providers alike.
     """
     try:
-        from gateway.run import _resolve_gateway_model, _resolve_runtime_agent_kwargs
+        from hermes_agent.gateway.run import _resolve_gateway_model, _resolve_runtime_agent_kwargs
         from run_agent import AIAgent
 
         agent = AIAgent(
@@ -974,7 +974,7 @@ def my_callback(session_id: str, platform: str, reason: str, **kwargs):
 | `platform` | `str` | The surface that created it: `cli`, `tui`, `desktop`, `acp`, ... |
 | `reason` | `str` | `create` while the session has no messages yet (a new chat), `resume` once it has a conversation (a stored chat being reopened) |
 
-**Fires:** In the gateway (`gateway/session_open.py`), when a client connection attaches to a local session it was not already attached to. Once per open: a client re-reading a session it already has open, or reconnecting after a dropped socket, does not fire it again. Two clients opening the same session fire it twice. It runs in the profile that owns the session, so on a gateway serving several profiles each profile's plugins see only their own sessions. The callback runs on its own thread: opening the session never waits for it, but the session's next turn does, for up to 5 s or `plugins.hook_callback_timeout` if that is longer; past that the turn proceeds and the callback keeps running. While a callback for a session is still running, further opens of that session wait behind it as a single call: they fire once when it ends, with the latest open's details. `--safe-mode` / `--ignore-user-config` sessions fire nothing. Messaging chats (Telegram, Discord, ...) do not fire it: their first message starts the session, so use `on_session_start` there.
+**Fires:** In the gateway (`hermes_agent/gateway/session_open.py`), when a client connection attaches to a local session it was not already attached to. Once per open: a client re-reading a session it already has open, or reconnecting after a dropped socket, does not fire it again. Two clients opening the same session fire it twice. It runs in the profile that owns the session, so on a gateway serving several profiles each profile's plugins see only their own sessions. The callback runs on its own thread: opening the session never waits for it, but the session's next turn does, for up to 5 s or `plugins.hook_callback_timeout` if that is longer; past that the turn proceeds and the callback keeps running. While a callback for a session is still running, further opens of that session wait behind it as a single call: they fire once when it ends, with the latest open's details. `--safe-mode` / `--ignore-user-config` sessions fire nothing. Messaging chats (Telegram, Discord, ...) do not fire it: their first message starts the session, so use `on_session_start` there.
 
 **Return value:** Ignored.
 
@@ -1225,7 +1225,7 @@ def my_callback(session_key: str, platform: str, reason: str, invalidation_reaso
 | `reason` | `str` | Why the agent was interrupted (e.g. `"user_stop"`, the reset/new reason). |
 | `invalidation_reason` | `str` | Why queued session state was invalidated (e.g. `"stop_command"`, `"stop_command_thread_sibling"`, `"stop_command_chat_scope"`, `"reset_command"`). |
 
-**Fires:** In `gateway/run_agent_cache.py::_interrupt_and_clear_session`, immediately after `request_hard_interrupt()` interrupts the running agent. Only when a real agent was running — the pending-sentinel `/stop` path (no agent loop yet started) does **not** fire this hook, since there is no in-flight work to drop. On the slow `/new` reset path, `on_session_finalize` fires later in `_handle_reset_command` instead.
+**Fires:** In `hermes_agent/gateway/run_agent_cache.py::_interrupt_and_clear_session`, immediately after `request_hard_interrupt()` interrupts the running agent. Only when a real agent was running — the pending-sentinel `/stop` path (no agent loop yet started) does **not** fire this hook, since there is no in-flight work to drop. On the slow `/new` reset path, `on_session_finalize` fires later in `_handle_reset_command` instead.
 
 **Return value:** Ignored.
 
@@ -1373,8 +1373,8 @@ def my_callback(event, gateway, session_store, **kwargs):
 
 | Path | When the hook runs |
 |------|--------------------|
-| Platform adapters (Telegram, Discord, Slack, …) and relay slash commands | In `GatewayRunner._handle_message()` (`_hm_admit_event` in `gateway/run_inbound.py`), **before** auth/pairing, so a plugin can handle unauthorized senders. |
-| Webhook deliveries and relay messages | In `admit_producer` (`gateway/platforms/webhook_ingress.py`), **after** the delivery's authorization and **before** its admission commits: a refused sender never reaches the hook, a skipped delivery is never admitted, and a rewrite is what gets admitted. A provider retry or relay re-send of a delivery that was already admitted resolves to that admission without calling the hook again. On the relay, admission with a registered hook runs off the relay socket reader, so a callback may await `gateway.adapters[...].send(...)`; one chat's messages still wait for each other, in arrival order. |
+| Platform adapters (Telegram, Discord, Slack, …) and relay slash commands | In `GatewayRunner._handle_message()` (`_hm_admit_event` in `hermes_agent/gateway/run_inbound.py`), **before** auth/pairing, so a plugin can handle unauthorized senders. |
+| Webhook deliveries and relay messages | In `admit_producer` (`hermes_agent/gateway/platforms/webhook_ingress.py`), **after** the delivery's authorization and **before** its admission commits: a refused sender never reaches the hook, a skipped delivery is never admitted, and a rewrite is what gets admitted. A provider retry or relay re-send of a delivery that was already admitted resolves to that admission without calling the hook again. On the relay, admission with a registered hook runs off the relay socket reader, so a callback may await `gateway.adapters[...].send(...)`; one chat's messages still wait for each other, in arrival order. |
 | Local CLI, TUI, Desktop and API-server turns | Never. |
 | A queued admission when it executes (first run or restart replay) | Never: the message already passed the hook at ingress, so a `skip` can't drop admitted input. |
 
@@ -1954,7 +1954,7 @@ Use shell hooks when you want a drop-in, single-file script (Bash, Python, anyth
 - **Inject context into the next LLM turn** — prepend `git status` output, the current weekday, or retrieved documents to the user message (see [`pre_llm_call`](#pre_llm_call)).
 - **Observe lifecycle events** — write a log line when a subagent completes (`subagent_stop`) or a session starts (`on_session_start`).
 
-Shell hooks are registered by calling `agent.shell_hooks.register_from_config(cfg)` at both CLI startup (`hermes_cli/main.py`) and gateway startup (`gateway/run.py`). They compose naturally with Python plugin hooks — both flow through the same dispatcher.
+Shell hooks are registered by calling `agent.shell_hooks.register_from_config(cfg)` at both CLI startup (`hermes_cli/main.py`) and gateway startup (`hermes_agent/gateway/run.py`). They compose naturally with Python plugin hooks — both flow through the same dispatcher.
 
 ### Comparison at a glance
 

@@ -52,14 +52,14 @@ def _room_identity(source: dict[str, Any], *, coerce: bool = False) -> dict[str,
 def request_target_profile(_api_request_profile) -> str:
     """The served profile this request runs as: its ``/p/<profile>/`` prefix, else the listener's
     own profile (``default`` on a multiplexed host, the launch profile of a single-profile one)."""
-    from gateway.session_authorities import served_profile_name
+    from hermes_agent.gateway.session_authorities import served_profile_name
     from hermes_constants import get_hermes_home
     return _api_request_profile.get() or served_profile_name(get_hermes_home())
 
 
 def _local_target(claims: dict[str, Any] | None, _api_request_profile) -> tuple[str, str]:
     """Return ``(profile, installation_id)`` for this gateway; *claims* must target it."""
-    from gateway import hosted_rooms
+    from hermes_agent.gateway import hosted_rooms
     profile = request_target_profile(_api_request_profile)
     installation_id = hosted_rooms.local_authority_gateway_id()
     if claims is not None and (claims["target_profile"], claims["target_install_id"]) != (profile, installation_id):
@@ -69,8 +69,8 @@ def _local_target(claims: dict[str, Any] | None, _api_request_profile) -> tuple[
 
 def _local_room_catalog(self, profile: str, installation_id: str) -> tuple[dict, dict]:
     """Return ``(execution_policy, catalog)`` for this gateway's *profile*."""
-    from gateway.hosted_room_peer import PROTOCOL_VERSION, catalog_mapping
-    from gateway.hosted_room_execution_policy import execution_policy_mapping
+    from hermes_agent.gateway.hosted_room_peer import PROTOCOL_VERSION, catalog_mapping
+    from hermes_agent.gateway.hosted_room_execution_policy import execution_policy_mapping
     with self._profile_scope(profile):
         execution_policy = execution_policy_mapping(target_profile=profile)
     catalog = catalog_mapping(
@@ -101,13 +101,13 @@ def _room_grant_token(request: web.Request) -> str:
 
 
 def _room_grant_secret(self) -> bytes:
-    from gateway.hosted_room_peer import gateway_room_grant_secret
+    from hermes_agent.gateway.hosted_room_peer import gateway_room_grant_secret
     return gateway_room_grant_secret()
 
 
 def _decode_request_grant(self, request: web.Request, *, permission: str) -> dict[str, Any]:
     """Signature/scope/horizon check only (no revocation lookup)."""
-    from gateway.hosted_room_peer import decode_room_grant
+    from hermes_agent.gateway.hosted_room_peer import decode_room_grant
     token = self._room_grant_token(request)
     if not token:
         raise ValueError("room grant is missing")
@@ -116,7 +116,7 @@ def _decode_request_grant(self, request: web.Request, *, permission: str) -> dic
 
 def _room_grant_claims(self, request: web.Request, *, permission: str) -> dict[str, Any]:
     claims = _decode_request_grant(self, request, permission=permission)
-    from gateway import hosted_rooms
+    from hermes_agent.gateway import hosted_rooms
     db_path = hosted_rooms.default_db_path()
     if hosted_rooms.room_grant_is_revoked(db_path, claims=claims):
         raise RoomGrantReauthorizationRequired("room grant is revoked")
@@ -128,7 +128,7 @@ def _room_grant_claims(self, request: web.Request, *, permission: str) -> dict[s
 def room_run_claims(self, request: web.Request, *, permission: str) -> dict[str, Any]:
     """Claims of a grant presented to a run route: it answers only on its own profile's route
     (``/p/<target_profile>/``), so the runs, stops and approvals it reaches are that profile's."""
-    from gateway.platforms.api_server import _api_request_profile
+    from hermes_agent.gateway.platforms.api_server import _api_request_profile
     claims = self._room_grant_claims(request, permission=permission)
     _local_target(claims, _api_request_profile)
     return claims
@@ -159,8 +159,8 @@ async def _handle_room_member_invitation(
 
 def _issue_invitation(self, body: dict[str, Any], profile: str) -> dict[str, Any]:
     """Mint and reserve one room grant for *profile*: the API-key route and ``groups.peer.invite``."""
-    from gateway import hosted_rooms
-    from gateway.hosted_room_peer import decode_room_grant, issue_room_grant
+    from hermes_agent.gateway import hosted_rooms
+    from hermes_agent.gateway.hosted_room_peer import decode_room_grant, issue_room_grant
     target_install_id = hosted_rooms.local_authority_gateway_id()
     ttl = float(body.get("ttl_seconds", 3600))
     if not 60 <= ttl <= 24 * 60 * 60:
@@ -208,8 +208,8 @@ async def _handle_room_member_grant_refresh(
             _openai_error, "Grant refresh accepts only ttl_seconds.",
             code="invalid_room_grant_refresh", status=400)
     try:
-        from gateway.hosted_room_peer import MAX_DISPATCH_GRANT_TTL_SECONDS, issue_room_grant
-        from gateway.hosted_room_execution_policy import execution_policy_mapping
+        from hermes_agent.gateway.hosted_room_peer import MAX_DISPATCH_GRANT_TTL_SECONDS, issue_room_grant
+        from hermes_agent.gateway.hosted_room_execution_policy import execution_policy_mapping
         # A status-only bearer must never mint dispatch authority: renewal needs live "dispatch".
         claims = self._room_grant_claims(request, permission="dispatch")
         profile, installation_id = _local_target(claims, _api_request_profile)
@@ -246,7 +246,7 @@ async def _handle_room_member_grant_revoke(
         return _json_error(
             _openai_error, "Grant revoke accepts no fields.",
             code="invalid_room_grant_revoke", status=400)
-    from gateway import hosted_rooms
+    from hermes_agent.gateway import hosted_rooms
     try:
         # Idempotent: a response-lost retry authenticates with the grant just denylisted, so
         # verify signature/scope/horizon directly (not _room_grant_claims) and upsert the id.
@@ -272,8 +272,8 @@ async def _handle_room_member_run_close(self, request: web.Request) -> web.Respo
     which would start the turn on a member that never had it. A closed key answers any later
     POST /v1/runs under it with ``idempotency_key_conflict``. Rides the grant's ``stop``
     permission and its own run namespace, as POST /v1/runs/{id}/stop does."""
-    from gateway.platforms.api_server import _api_request_profile, _openai_error
-    from gateway.platforms.api_server_runs import room_run_scope
+    from hermes_agent.gateway.platforms.api_server import _api_request_profile, _openai_error
+    from hermes_agent.gateway.platforms.api_server_runs import room_run_scope
     try:
         claims = self._room_grant_claims(request, permission="stop")
         _local_target(claims, _api_request_profile)

@@ -7,7 +7,7 @@ a media-fallback notice through the adapter's no-op ``send``, so the audio is
 dropped. Nothing plays, the provider is still billed, and Ink's ``/voice off``
 does not clear the owner's mode.
 
-The gateway daemon is real (``python -m gateway.run``). The model and the TTS
+The gateway daemon is real (``python -m hermes_agent.gateway.run``). The model and the TTS
 endpoint are one loopback HTTP server that records every request path.
 """
 import asyncio
@@ -40,7 +40,7 @@ class RecordingModel(Model):
 
 def test_local_voice_tts_is_refused_and_other_voice_forms_stay():
     """``/voice tts`` is a named refusal. ``/voice on|off|status`` stay controls."""
-    from gateway.session_commands import command_verdict
+    from hermes_agent.gateway.session_commands import command_verdict
 
     assert command_verdict('voice', 'tts') == 'refused'
     assert command_verdict('voice', ' TTS ') == 'refused'
@@ -51,7 +51,7 @@ def test_local_voice_tts_is_refused_and_other_voice_forms_stay():
 def test_local_voice_refusal_reads_the_argument_as_the_handler_does():
     """Only the argument the handler stores as mode ``all`` is refused. Any other text, an
     unbalanced quote included, still reaches the handler instead of failing the request."""
-    from gateway.session_commands import command_verdict
+    from hermes_agent.gateway.session_commands import command_verdict
 
     for arg in ("it's", '"tts', 'tts now'):
         assert command_verdict('voice', arg) == 'control', arg

@@ -61,7 +61,7 @@ def explicit_multiplex_flag(default_home: Path) -> Optional[bool]:
     written in its config.yaml; ``None`` when neither is set. Raw read on purpose: the callers are
     other processes (``hermes -p X ...`` has X's config loaded) asking about the default's file."""
     from hermes_cli.config_backend import config_exists
-    from gateway.config import _bool_token, _env_multiplex_profiles_override
+    from hermes_agent.gateway.config import _bool_token, _env_multiplex_profiles_override
     env = _env_multiplex_profiles_override()
     if env is not None:
         return env
@@ -295,7 +295,7 @@ def record_multiplex_decision(decision: MultiplexDecision) -> None:
     holds the lock the decision stays pending; ``publish_pending_multiplex_decision`` writes it once
     the claim succeeds, and a launch that loses the claim never writes it."""
     try:
-        from gateway.status import owns_gateway_runtime_lock, write_runtime_status
+        from hermes_agent.gateway.status import owns_gateway_runtime_lock, write_runtime_status
         if not owns_gateway_runtime_lock():
             _pending_decision[:] = [decision]
             return
@@ -369,7 +369,7 @@ def recorded_standalone_reason(state_path: Path | None = None) -> str | None:
     """The guard refusal a LIVE standalone gateway published in its ``gateway_state.json`` (this
     home's, or *state_path*), else ``None``. A stopped, failed or dead record's reason is history."""
     try:
-        from gateway.status import read_runtime_status, runtime_status_pid_is_live
+        from hermes_agent.gateway.status import read_runtime_status, runtime_status_pid_is_live
         record = read_runtime_status(state_path) or {}
         if record.get("gateway_state") in (None, "stopped", "startup_failed"):
             return None

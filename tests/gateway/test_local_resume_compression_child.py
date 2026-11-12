@@ -12,8 +12,8 @@ import pytest
 
 
 def _runner(tmp_path):
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None)
@@ -32,7 +32,7 @@ def _compress(db, parent, child, source):
 
 
 async def _resume(authority, user_id, sid):
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     # The private native bootstrap identity: the subject is the bare principal the session was made by.
     connection = AuthorityConnection(authority, object(), {
         'provider': 'local', 'user_id': user_id, 'profile_id': 'fixture', 'instance_id': authority.instance_id,
@@ -41,10 +41,10 @@ async def _resume(authority, user_id, sid):
 
 
 async def _compressed(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import SessionActor
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_local import create_local_session
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     authority = await initialize_session_authority(_runner(tmp_path), profile_id='fixture', instance_id='first')
@@ -65,7 +65,7 @@ async def _compressed(tmp_path, monkeypatch):
 
 
 async def _cold(compressed):
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_authority import initialize_session_authority
     return await initialize_session_authority(_runner(compressed.tmp_path), profile_id='fixture',
                                               instance_id='second')
 

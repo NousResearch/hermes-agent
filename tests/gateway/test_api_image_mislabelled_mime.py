@@ -3,7 +3,7 @@ common SDK default) is admitted under the sniffed type, as main forwarded it to 
 import base64
 from pathlib import Path
 
-from gateway.session_api_turn import admit_api_turn
+from hermes_agent.gateway.session_api_turn import admit_api_turn
 
 JPEG = b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xd9'
 

@@ -2,8 +2,8 @@
 
 import os
 
-from gateway import status
-from gateway.status_scoped_locks import _scoped_lock_record_is_stale
+from hermes_agent.gateway import status
+from hermes_agent.gateway.status_scoped_locks import _scoped_lock_record_is_stale
 
 
 def test_live_process_owner_does_not_need_gateway_argv():

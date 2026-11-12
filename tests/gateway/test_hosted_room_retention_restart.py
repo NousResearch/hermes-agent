@@ -7,8 +7,8 @@ import sys
 from contextlib import closing
 
 import pytest
-from gateway import hosted_rooms
-from gateway.hosted_room_attachments import HostedRoomAttachmentStore, UNCOMMITTED_TTL_SECONDS
+from hermes_agent.gateway import hosted_rooms
+from hermes_agent.gateway.hosted_room_attachments import HostedRoomAttachmentStore, UNCOMMITTED_TTL_SECONDS
 
 
 def test_accepted_file_survives_fresh_process_after_staging_expiry(tmp_path):
@@ -33,8 +33,8 @@ def test_accepted_file_survives_fresh_process_after_staging_expiry(tmp_path):
         hosted_rooms.append_event(db, **{**args, 'expected_latest_seq':1})
     hosted_rooms.append_event(db, **args)
     script = '''import json,sys
-from gateway.hosted_room_attachments import HostedRoomAttachmentStore
-from gateway import hosted_rooms
+from hermes_agent.gateway.hosted_room_attachments import HostedRoomAttachmentStore
+from hermes_agent.gateway import hosted_rooms
 store=HostedRoomAttachmentStore(sys.argv[1],clock=lambda:float(sys.argv[3]))
 data=store.read(room_id='room',attachment_id=sys.argv[2],recipient_member_id='member').data
 print(json.dumps({'data':data.decode(),'events':len(hosted_rooms.read_events(sys.argv[1],room_id='room')['events']),'pruned':store.prune()}))

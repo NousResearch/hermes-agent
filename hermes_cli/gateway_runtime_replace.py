@@ -68,7 +68,7 @@ def _within_install(home: Path, root: Path) -> bool:
 
 
 def _verified_owner(control: Path, payload: dict) -> tuple[int, Any] | str:
-    from gateway.status import _GATEWAY_KIND, _pid_exists, get_process_start_time, start_time_fingerprints_match
+    from hermes_agent.gateway.status import _GATEWAY_KIND, _pid_exists, get_process_start_time, start_time_fingerprints_match
     protocol = payload.get("runtime_protocol")
     if type(protocol) is int and protocol > 1:
         return "owner_newer"
@@ -90,7 +90,7 @@ def _verified_owner(control: Path, payload: dict) -> tuple[int, Any] | str:
 def _write_planned_stop(control: Path, pid: int, start_time: Any) -> None:
     """The marker ``hermes gateway stop`` writes, in the OWNER's home (it reads its own), so the old
     gateway exits as a planned stop: clean exit, ``stopped`` persisted, no supervisor revival."""
-    from gateway.status import _PLANNED_STOP_MARKER_FILENAME, _utc_now_iso, _write_marker
+    from hermes_agent.gateway.status import _PLANNED_STOP_MARKER_FILENAME, _utc_now_iso, _write_marker
     _write_marker(control / _PLANNED_STOP_MARKER_FILENAME, {
         "target_pid": pid, "target_start_time": start_time,
         "stopper_pid": os.getpid(), "written_at": _utc_now_iso(),
@@ -98,7 +98,7 @@ def _write_planned_stop(control: Path, pid: int, start_time: Any) -> None:
 
 
 def _wait_gone(pid: int, seconds: float) -> bool:
-    from gateway.status import _pid_exists
+    from hermes_agent.gateway.status import _pid_exists
     end = time.monotonic() + max(seconds, 0.0)
     while _pid_exists(pid):
         if time.monotonic() >= end:
@@ -110,7 +110,7 @@ def _wait_gone(pid: int, seconds: float) -> bool:
 def replace_incompatible_owner(home: Path, *, deadline: float) -> str | None:
     """Stop the older-Hermes gateway answering for *home*; None once it is gone, else a refusal code
     (see :data:`REFUSAL_DETAIL`). Never starts anything: the caller's ensure loop does that."""
-    from gateway.status import terminate_pid
+    from hermes_agent.gateway.status import terminate_pid
     budget = deadline - time.monotonic()
     if budget <= 0:
         return "owner_unreachable"

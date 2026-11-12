@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform
+from hermes_agent.gateway.config import Platform
 
 FIELDS = {'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens', 'prompt_tokens',
           'completion_tokens', 'total_tokens', 'reasoning_tokens', 'api_calls', 'last_prompt_tokens',
@@ -30,7 +30,7 @@ def _agent():
 
 
 def test_usage_stats_is_exactly_the_frozen_field_list():
-    from gateway.session_usage import usage_stats
+    from hermes_agent.gateway.session_usage import usage_stats
     stats = usage_stats(_agent())
     assert set(stats) == FIELDS
     assert stats['input_tokens'] == 100 and stats['api_calls'] == 2 and stats['total_tokens'] == 155
@@ -42,7 +42,7 @@ def test_usage_stats_is_exactly_the_frozen_field_list():
 
 
 def _turn(platform, published, agent):
-    from gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
     turn = object.__new__(TurnRunner)
     turn._ctx = SimpleNamespace(source=SimpleNamespace(platform=platform, chat_id='chat'), _step_callback_sync=None,
                                 _run_still_current=lambda: True, agent_holder=[agent],
@@ -60,7 +60,7 @@ def test_each_api_step_publishes_usage_only_for_local_viewers(platform):
     turn._step_callback_sync(2, [])
     kinds = [kind for kind, _ in published]
     if platform == Platform.LOCAL:
-        from gateway.session_usage import usage_stats
+        from hermes_agent.gateway.session_usage import usage_stats
         from hermes_agent.tui_gateway.contracts.registry import EVENTS
         frame = next(payload for kind, payload in published if kind == 'session.usage')
         # One frame, both views: the loose counters the classic CLI / TUI mirror reads, and the TUI
@@ -75,7 +75,7 @@ def test_each_api_step_publishes_usage_only_for_local_viewers(platform):
 
 @pytest.mark.asyncio
 async def test_session_stats_returns_the_same_dict(tmp_path, monkeypatch):
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     from tests.gateway.test_surface_admission import _authority
     from hermes_agent.tui_gateway.contracts.registry import CANONICAL_METHODS
 
@@ -89,7 +89,7 @@ async def test_session_stats_returns_the_same_dict(tmp_path, monkeypatch):
         await connection.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': 's'}})
         reply = await connection.dispatch({'id': 2, 'method': 'session.stats', 'params': {'session_id': 's'}})
         assert 'result' in reply, reply
-        from gateway.session_usage import usage_stats
+        from hermes_agent.gateway.session_usage import usage_stats
         assert reply['result'] == usage_stats(agent)
         CANONICAL_METHODS['session.stats'].result.model_validate(reply['result'])
     finally:
@@ -99,8 +99,8 @@ async def test_session_stats_returns_the_same_dict(tmp_path, monkeypatch):
 def test_completion_carries_main_tui_usage_from_the_turn_end_stats():
     """``message.complete.usage`` on a local-viewer turn is main's TUI ``Usage`` (``_get_usage``):
     context used/max/percent, ◷ latency, t/s, compressions — what the status bar paints."""
-    from gateway.session_settlement_recovery import completion_payload
-    from gateway.session_usage import usage_stats
+    from hermes_agent.gateway.session_settlement_recovery import completion_payload
+    from hermes_agent.gateway.session_usage import usage_stats
     from hermes_agent.tui_gateway.contracts.registry import EVENTS
     row = {'admission_id': 'a1', 'request_id': 'r1'}
     captured = {'result': {'final_response': 'hi'}, 'session_usage': usage_stats(_agent())}
@@ -116,8 +116,8 @@ def test_completion_carries_main_tui_usage_from_the_turn_end_stats():
 
 
 def test_local_viewer_turn_end_records_stats_for_the_completion():
-    from gateway.session_results import execution_result
-    from gateway.session_usage import publish_usage
+    from hermes_agent.gateway.session_results import execution_result
+    from hermes_agent.gateway.session_usage import publish_usage
     published = []
     turn = _turn(Platform.LOCAL, published, _agent())
     captured = {}
@@ -138,7 +138,7 @@ def test_usage_frame_carries_the_tui_view_the_desktop_status_bar_reads():
     the session-cumulative counters alone leaves its context / cache-hit / tokens-per-second meters
     at the empty placeholder for the whole turn, because the embedded backend's tick
     (``server._start_usage_ticker``) is the only producer of the nested view."""
-    from gateway.session_usage import usage_frame, usage_stats
+    from hermes_agent.gateway.session_usage import usage_frame, usage_stats
     from hermes_agent.tui_gateway.contracts.registry import EVENTS
     frame = usage_frame(usage_stats(_agent()))
     EVENTS['session.usage'].payload.model_validate(frame)
@@ -166,7 +166,7 @@ def test_published_usage_view_matches_the_embedded_ticker(agent):
     """An older Desktop bundle reads only ``payload.usage`` off ``session.usage``, as the embedded
     backend's ticker sends it (``{'usage': server._get_usage(agent)}``). The gateway frame's nested
     view is that same object, computed from the same agent."""
-    from gateway.session_usage import publish_usage
+    from hermes_agent.gateway.session_usage import publish_usage
     from hermes_agent.tui_gateway.server import _get_usage
     published = []
     publish_usage(_turn(Platform.LOCAL, published, agent), agent)
@@ -180,7 +180,7 @@ def test_a_window_plans_gauge_rides_the_canonical_usage_feed():
     ticks and turn-end usage come from the gateway (``usage_frame`` / ``tui_usage``), not ``_get_usage``."""
     from agent.credits_tracker import CreditsState
     from agent.usage_gauges import WindowGauge
-    from gateway.session_usage import publish_usage, tui_usage, usage_stats
+    from hermes_agent.gateway.session_usage import publish_usage, tui_usage, usage_stats
     from hermes_agent.tui_gateway.contracts.registry import CANONICAL_METHODS, EVENTS
     from hermes_agent.tui_gateway.server import _get_usage
 
@@ -200,14 +200,14 @@ def test_a_window_plans_gauge_rides_the_canonical_usage_feed():
 def test_turn_end_publishes_the_agents_banner_info():
     """Main re-emitted ``session.info`` at every turn end; the first turn's carries the built agent's
     ``system_prompt`` (the banner's ``▸ System Prompt — N chars`` row, FINDINGS row 2) and tools."""
-    from gateway.session_local_inventory import publish_settled_info
+    from hermes_agent.gateway.session_local_inventory import publish_settled_info
     published = []
     agent = _agent()
     agent._cached_system_prompt = 'You are Hermes.' * 10
     agent.tools = [{'function': {'name': 'terminal'}}]
     turn = _turn(Platform.LOCAL, published, agent)
     turn._approval_owner = (SimpleNamespace(profile_id='p'), 's', 1)
-    from gateway import session_local
+    from hermes_agent.gateway import session_local
     original = session_local.local_session_info
     session_local.local_session_info = lambda authority, ref: {'model': 'fake-model', 'lazy': False}
     try:
@@ -224,8 +224,8 @@ def test_turn_end_publishes_the_agents_banner_info():
 @pytest.mark.asyncio
 async def test_local_viewer_admission_settles_with_tui_usage_on_message_complete(tmp_path, monkeypatch):
     """End-to-end through ``session_ingress``: ``publish_usage(record=True)`` writes ``captured['session_usage']`` during the turn, and the admission packing carries it into ``pending_results`` so ``completion_payload`` attaches ``usage`` to ``message.complete``."""
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_usage import publish_usage
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_usage import publish_usage
     from tests.gateway.test_surface_admission import _authority
 
     published = []
@@ -259,7 +259,7 @@ async def test_local_viewer_admission_settles_with_tui_usage_on_message_complete
 def test_resume_snapshot_carries_the_resident_agents_own_readouts():
     """A viewer switching to a session paints that session's cache-hit / t/s from the resume snapshot: the
     live agent's once it has called the model, else the stored row's (no t/s: latency is not stored)."""
-    from gateway.session_usage import snapshot_usage
+    from hermes_agent.gateway.session_usage import snapshot_usage
     row = {'input_tokens': 150, 'output_tokens': 40, 'cache_read_tokens': 800, 'cache_write_tokens': 50,
            'api_call_count': 3, 'model': 'm'}
     authority = SimpleNamespace(sessions={'s': SimpleNamespace(compression_count=0)},

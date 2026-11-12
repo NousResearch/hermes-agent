@@ -5,7 +5,7 @@ import threading
 
 import pytest
 
-from gateway import hosted_room_links, hosted_rooms
+from hermes_agent.gateway import hosted_room_links, hosted_rooms
 from tests.gateway.test_hosted_room_disband_publication import _surface
 from tests.gateway.test_session_group_peers import (
     gateway as gateway_fixture, linked_peer as linked_peer_fixture, linked_room, _seat, invite, call,

@@ -1117,7 +1117,7 @@ def _reclaim_host_from_orphaned_owner(role: str) -> bool:
     only when the spawn ledger proves it is a dead session's orphan. Anything else returns
     False and the caller stays observe-only. Never raises.
     """
-    from gateway import host_rendezvous as hr
+    from hermes_agent.gateway import host_rendezvous as hr
     from hermes_cli.process_identity import reap_orphaned_backend_owner
 
     try:
@@ -1152,7 +1152,7 @@ def _publish_host_rendezvous(host: str, port: int) -> None:
     # the private child on every restart (#119824): the attach/refuse ladder reads ROLE_SERVE
     # only. They still publish under their own role so `hermes plugins install` from a terminal
     # can reach the backend hosting the open chats on a Desktop-only box (#119644).
-    from gateway import host_rendezvous as hr
+    from hermes_agent.gateway import host_rendezvous as hr
 
     desktop_child = is_desktop_owned_backend()
     role = hr.ROLE_DESKTOP_SERVE if desktop_child else hr.ROLE_SERVE

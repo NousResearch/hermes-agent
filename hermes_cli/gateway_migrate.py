@@ -205,7 +205,7 @@ class MigrationPlan:
 @contextlib.contextmanager
 def _home_env(home: Path) -> Iterator[None]:
     """Run service-manager helpers as if ``home`` were the active HERMES_HOME. Both the contextvar
-    override (``get_hermes_home``) and ``os.environ`` (``gateway.status`` identity files, unit
+    override (``get_hermes_home``) and ``os.environ`` (``hermes_agent.gateway.status`` identity files, unit
     generation) are switched, then restored.
 
     The process keeps its LAUNCH identity while swapped (``pin_process_hermes_home``): ``os.environ``
@@ -253,20 +253,20 @@ def _live_gateway_pid(home: Path) -> Optional[int]:
     not abort a migration plan).
 
     Topology REPORTING, not ownership: ``live_gateway_pid_for_home`` deliberately answers with the
-    host multiplexer's PID for every home it serves (``gateway.status._host_gateway_serves_home``),
+    host multiplexer's PID for every home it serves (``hermes_agent.gateway.status._host_gateway_serves_home``),
     so "this profile is being served" reads as a live PID. Use :func:`_own_gateway_pid` for the
     question this command acts on.
     """
-    from gateway.status import live_gateway_pid_for_home
+    from hermes_agent.gateway.status import live_gateway_pid_for_home
     with contextlib.suppress(Exception):
         return live_gateway_pid_for_home(home)
     return None
 
 
 def _host_gateway_owner():
-    """The ONE live host gateway (``gateway.host_attach.HostGateway``) or None. Never raises."""
+    """The ONE live host gateway (``hermes_agent.gateway.host_attach.HostGateway``) or None. Never raises."""
     with contextlib.suppress(Exception):
-        from gateway.host_attach import host_gateway
+        from hermes_agent.gateway.host_attach import host_gateway
         return host_gateway()
     return None
 
@@ -285,7 +285,7 @@ def _own_gateway_pid(home: Path, owner) -> Optional[int]:
     if pid is None or owner is None or pid != owner.pid:
         return pid
     with contextlib.suppress(Exception):
-        from gateway.status import _same_hermes_home
+        from hermes_agent.gateway.status import _same_hermes_home
         return pid if _same_hermes_home(Path(owner.home), Path(home)) else None
     return None
 
@@ -439,8 +439,8 @@ def _profile_gateway_config(home: Path):
     plugin-defined platforms fall out of the guard — their credentials cannot be evaluated without
     importing the plugin; builtin bot tokens still collide.
     """
-    from gateway.config import load_gateway_config
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.config import load_gateway_config
+    from hermes_agent.gateway.run import _profile_runtime_scope
     from hermes_cli.plugins_discovery import suppress_plugin_discovery
     from hermes_cli.profiles import profile_is_parked
     scope = suppress_plugin_discovery() if profile_is_parked(home) else contextlib.nullcontext()
@@ -472,7 +472,7 @@ def _credential_probe(platform_config) -> SimpleNamespace:
 
 def _credential_claims(config) -> dict[tuple, str]:
     """``(platform, fingerprint)`` for every enabled platform with a discoverable credential."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
     claims: dict[tuple, str] = {}
     for platform, platform_config in config.platforms.items():
         if not platform_config.enabled:
@@ -537,15 +537,15 @@ def platform_serves_profile_prefix(platform_value: str) -> bool:
     """True when the adapter for ``platform_value`` declares ``serves_profile_prefix`` (it answers
     ``/p/<profile>/...`` on the default listener). Read from the adapter CLASS — builtin table or the
     plugin registry entry — never from a hand-kept list, so new ingress adapters count automatically."""
-    from gateway.platforms.base import BasePlatformAdapter
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
     def _declares(cls) -> bool:
         return isinstance(cls, type) and issubclass(cls, BasePlatformAdapter) and bool(
             getattr(cls, "serves_profile_prefix", False))
 
     with contextlib.suppress(Exception):
-        from gateway.config import Platform
-        from gateway.run import _BUILTIN_ADAPTERS, _builtin_adapter_import
+        from hermes_agent.gateway.config import Platform
+        from hermes_agent.gateway.run import _BUILTIN_ADAPTERS, _builtin_adapter_import
         spec = _BUILTIN_ADAPTERS.get(Platform(platform_value))
         if spec is not None:
             adapter_cls, _ok = _builtin_adapter_import(spec[0], spec[1], spec[2])
@@ -555,7 +555,7 @@ def platform_serves_profile_prefix(platform_value: str) -> bool:
         # after discovery; a bare CLI process has not run it yet.
         from hermes_cli.plugins import discover_plugins
         discover_plugins()  # idempotent
-        from gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.platform_registry import platform_registry
         entry = platform_registry.get(platform_value)
         if entry is not None:
             factory = entry.adapter_factory
@@ -569,7 +569,7 @@ def platform_serves_profile_prefix(platform_value: str) -> bool:
 
 
 def _listener_url(default_cfg, platform_value: str, profile: str) -> str:
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     extra = {}
     with contextlib.suppress(Exception):
         extra = (default_cfg.platforms.get(Platform(platform_value)) or SimpleNamespace(extra={})).extra or {}
@@ -586,7 +586,7 @@ def _listener_url(default_cfg, platform_value: str, profile: str) -> str:
 def _check_secondary_port_binders(plan: MigrationPlan, configs: dict[str, object]) -> None:
     """BLOCKER when a secondary enables a port-binding platform with no ``/p/<profile>/`` ingress
     (the multiplexer skips the whole profile); NOTICE (URL changes) when the ingress exists."""
-    from gateway.config import platform_binds_port
+    from hermes_agent.gateway.config import platform_binds_port
     default_cfg = configs.get("default")
     for profile in plan.secondaries:
         cfg = configs.get(profile.name)
@@ -861,7 +861,7 @@ def _write_manifest(default_home: Path, data: dict) -> None:
 
 def _reconcile_standalone_runtime(default_home: Path, secondary_names: set[str]) -> None:
     """Remove only status owned by multiplexing, without re-stamping gateway identity."""
-    from gateway.status import read_runtime_status
+    from hermes_agent.gateway.status import read_runtime_status
     from utils import atomic_json_write
 
     path = default_home / "gateway_state.json"
@@ -1116,7 +1116,7 @@ def rollback_migration(default_home: Optional[Path] = None) -> bool:
     Not a user-facing rollback and deliberately NOT a fleet restore. It used to reinstall and
     start every recorded per-profile gateway, which the host gateway lock now forbids by
     construction: this function clears the multiplex-owned served record first, so
-    ``gateway.host_attach`` tells each secondary to "start normally" and the flock loser exits 75
+    ``hermes_agent.gateway.host_attach`` tells each secondary to "start normally" and the flock loser exits 75
     into a supervisor respawn loop (observed live: a secondary won the race while the default's
     unit sat at ``NRestarts=38, ExecMainStatus=75``, respawning every 5 s — ``StartLimitIntervalSec=0``
     defeats the limiter). Under multiplex-only a restored fleet is not a state we want to be able

@@ -6,9 +6,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionEntry, SessionSource, build_session_key
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionEntry, SessionSource, build_session_key
 from tools import approval as approval_mod
 from tools import slash_confirm as slash_confirm_mod
 from tools.approval import approve_session, enable_session_yolo, is_approved, is_session_yolo_enabled
@@ -62,7 +62,7 @@ def _make_entry(session_id: str, source: SessionSource | None = None) -> Session
 
 
 def _make_resume_runner():
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     source = _make_source()
     session_key = build_session_key(source)
@@ -89,7 +89,7 @@ def _make_resume_runner():
 
 
 def _make_branch_runner():
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     source = _make_source()
     session_key = build_session_key(source)
@@ -120,7 +120,7 @@ def test_clear_session_boundary_security_state_is_scoped():
     Also exercises the /new reset path indirectly: /new calls this helper,
     so if the helper is scoped correctly, /new's clearing is correct too.
     """
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner._pending_skills_reload_notes = {}
@@ -180,7 +180,7 @@ def test_clear_session_boundary_security_state_is_scoped():
 
 def test_clear_session_boundary_security_state_wakes_blocked_approvals():
     """Boundary cleanup must cancel blocked approval waiters immediately."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
 

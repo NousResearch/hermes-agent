@@ -10,14 +10,14 @@ import pytest
 
 
 def assignment(tmp_path, monkeypatch, *, finite=True, unattended=False, yolo=False):
-    from gateway.session_local import _bypass_policy
-    from gateway.session_managed_worker import _bootstrap
+    from hermes_agent.gateway.session_local import _bypass_policy
+    from hermes_agent.gateway.session_managed_worker import _bootstrap
     from tools.approval import clear_session
     clear_session('managed-contract')
     policy = _bypass_policy({'cwd': str(tmp_path), 'model': 'fixture', 'provider': 'custom',
                             'base_url': 'http://127.0.0.1:9/v1', 'ignore_user_config': True}, private_secrets={})
     policy = replace(policy, request_json=json.dumps({**json.loads(policy.request_json), 'yolo': yolo}))
-    monkeypatch.setattr('gateway.session_policy.launch_key', lambda *args: None)
+    monkeypatch.setattr('hermes_agent.gateway.session_policy.launch_key', lambda *args: None)
     live = SimpleNamespace(source=SimpleNamespace(user_id='u', chat_id='c'), route='managed-contract')
     authority = SimpleNamespace(sessions={'sid': live}, runner=None, profile_id=str(tmp_path))
     ref = SimpleNamespace(session_id='sid')
@@ -30,7 +30,7 @@ def assignment(tmp_path, monkeypatch, *, finite=True, unattended=False, yolo=Fal
 @pytest.mark.parametrize('unattended', [False, True])
 def test_child_executes_under_finite_policy_and_preserves_receipt(tmp_path, monkeypatch, unattended):
     from agent import managed_worker as worker
-    from gateway.session_finite import finite_turn_required, unattended_turn
+    from hermes_agent.gateway.session_finite import finite_turn_required, unattended_turn
     from tools.approval import _yolo_active, clear_session
     frame, _ = assignment(tmp_path, monkeypatch, unattended=unattended)
     observed, frames = [], []
@@ -94,11 +94,11 @@ def test_child_executes_under_finite_policy_and_preserves_receipt(tmp_path, monk
 
 
 def test_current_yolo_revocation_overrides_frozen_launch(tmp_path, monkeypatch):
-    from gateway.session_managed_worker import _bootstrap
+    from hermes_agent.gateway.session_managed_worker import _bootstrap
     from tools.approval import disable_session_yolo, clear_session, is_session_yolo_enabled
     frame, args = assignment(tmp_path, monkeypatch, yolo=True)
     assert json.loads(frame['policy']['request_json'])['turn_v1']['yolo'] is True
-    from gateway.session_managed_worker import worker_turn_scope
+    from hermes_agent.gateway.session_managed_worker import worker_turn_scope
     disable_session_yolo('managed-contract')
     assert json.loads(_bootstrap(*args)['policy']['request_json'])['turn_v1']['yolo'] is False
     clear_session('managed-contract')
@@ -110,11 +110,11 @@ def test_current_yolo_revocation_overrides_frozen_launch(tmp_path, monkeypatch):
 
 def test_committed_surface_crosses_the_bootstrap_validated_and_one_turn_only(tmp_path, monkeypatch):
     from agent.managed_worker import validate_bootstrap
-    from gateway.session_kanban import run_worker_turns
+    from hermes_agent.gateway.session_kanban import run_worker_turns
     from tools.voice_live import VOICE_LIVE_TURN_NOTE
     frame, (authority, ref, row, policy, scope) = assignment(tmp_path, monkeypatch)
     surface = {'surface': 'voice-live', 'voice_context': 'User: UNIQUE_PRIOR_CONTEXT', 'voice_turn': True}
-    from gateway.session_managed_worker import _bootstrap
+    from hermes_agent.gateway.session_managed_worker import _bootstrap
     voiced = validate_bootstrap(json.loads(json.dumps(_bootstrap(
         authority, ref, {'payload': {**row['payload'], 'surface_v1': surface}}, policy, scope))))
     seen = []
@@ -135,7 +135,7 @@ def test_committed_surface_crosses_the_bootstrap_validated_and_one_turn_only(tmp
 
 @pytest.mark.asyncio
 async def test_stop_during_environment_preparation_prevents_bootstrap(tmp_path, monkeypatch):
-    from gateway import session_managed_worker as managed
+    from hermes_agent.gateway import session_managed_worker as managed
     started, release = threading.Event(), threading.Event()
     frames = []
     def env(authority):
@@ -173,11 +173,11 @@ async def test_stop_during_environment_preparation_prevents_bootstrap(tmp_path, 
 
 
 def test_shared_tool_events_bound_large_content_without_losing_error_or_path():
-    from gateway.run_turn_progress import _tool_lifecycle_payload
+    from hermes_agent.gateway.run_turn_progress import _tool_lifecycle_payload
     start = _tool_lifecycle_payload('call', 'write_file', {'path': 'report.txt', 'content': 'x' * 1_000_000})
     assert start['tool_id'] == 'call' and start['args']['path'] == 'report.txt'
     assert len(json.dumps(start)) < 100_000
-    from gateway.run_turn_progress import _tool_complete_payload
+    from hermes_agent.gateway.run_turn_progress import _tool_complete_payload
     complete = _tool_complete_payload('call', 'write_file', {}, {'error': 'bad output ' + 'x' * 1_000_000})
     assert complete['is_error'] is True
     assert 'error' in json.loads(complete['result'])

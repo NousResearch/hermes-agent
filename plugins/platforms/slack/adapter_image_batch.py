@@ -5,7 +5,7 @@ import logging
 import os
 from typing import Any
 
-from gateway.platforms.base import read_httpx_body_with_limit, ssrf_redirect_guard
+from hermes_agent.gateway.platforms.base import read_httpx_body_with_limit, ssrf_redirect_guard
 
 logger = logging.getLogger("plugins.platforms.slack.adapter")
 

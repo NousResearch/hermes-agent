@@ -9,17 +9,17 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_authority import SessionAuthority
-from gateway.session_controls import AuthorityConnection
-from gateway.session_local import create_local_session
+from hermes_agent.gateway.session_authority import SessionAuthority
+from hermes_agent.gateway.session_controls import AuthorityConnection
+from hermes_agent.gateway.session_local import create_local_session
 import hermes_agent.hermes_state_runtime as rt
 
 
 @pytest.mark.asyncio
 async def test_branch_through_a_middle_message_excludes_later_and_concurrent_rows(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
 
     monkeypatch.setattr(run, '_load_gateway_config', dict)
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())

@@ -21,7 +21,7 @@ from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Optional
 
-from gateway.memory_status import _parse_iso
+from hermes_agent.gateway.memory_status import _parse_iso
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 

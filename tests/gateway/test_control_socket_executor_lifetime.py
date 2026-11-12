@@ -6,7 +6,7 @@ import threading
 
 import pytest
 
-from gateway.control_socket import GatewayControlServer, query_gateway_control, resolve_client_socket_path
+from hermes_agent.gateway.control_socket import GatewayControlServer, query_gateway_control, resolve_client_socket_path
 from tests.waiting import async_wait_until
 
 pytestmark = pytest.mark.platforms('posix')
@@ -30,7 +30,7 @@ async def _exchange(home, raw):
 
 @pytest.mark.asyncio
 async def test_concurrent_producers_can_call_back_with_the_default_pool_busy(tmp_path, monkeypatch):
-    from gateway import control_dispatch
+    from hermes_agent.gateway import control_dispatch
 
     # One worker per dependency layer: a single shared replacement pool would deadlock too.
     monkeypatch.setattr(control_dispatch, 'ThreadPoolExecutor',
@@ -86,7 +86,7 @@ async def test_stop_drains_dispatch_workers_and_listener_can_restart(tmp_path):
 
 @pytest.mark.asyncio
 async def test_dispatch_shutdown_cancels_queued_work_without_waiting_for_running_handler(monkeypatch):
-    from gateway import control_dispatch
+    from hermes_agent.gateway import control_dispatch
 
     monkeypatch.setattr(control_dispatch, 'ThreadPoolExecutor',
         lambda **kwargs: ThreadPoolExecutor(max_workers=1, **kwargs))

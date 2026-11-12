@@ -34,17 +34,17 @@ else:
         HTTPX_AVAILABLE = False
         httpx = None
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms._shared import coerce_port as _coerce_port
-from gateway.platforms._shared import (
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms._shared import coerce_port as _coerce_port
+from hermes_agent.gateway.platforms._shared import (
     extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
     seed_extra_from_env as _seed_extra_from_env, send_error
 )
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
-from gateway.platforms.helpers import MessageDeduplicator, bounded_put, cancel_task
-from gateway.platforms.send_targets import regex_stripped_parser
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.platforms.helpers import compile_mention_patterns, strip_markdown
+from hermes_agent.gateway.platforms.helpers import MessageDeduplicator, bounded_put, cancel_task
+from hermes_agent.gateway.platforms.send_targets import regex_stripped_parser
 from utils import atomic_json_write
 
 from .auth import load_project_credentials
@@ -153,7 +153,7 @@ def _sidecar_pid_alive(pid: Any) -> bool:
     if pid_int <= 0:
         return False
     try:
-        from gateway.status import _pid_exists  # psutil-backed, Windows-safe
+        from hermes_agent.gateway.status import _pid_exists  # psutil-backed, Windows-safe
         return bool(_pid_exists(pid_int))
     except Exception:
         pass
@@ -539,7 +539,7 @@ def _attachment_label(kind: str, name: str) -> str:
 async def _record_sent_text_async(chat_id: Optional[str], message_id: Optional[str], text: Optional[str]) -> None:
     """Remember what we sent so a later threaded reply to it carries the quoted text. Never raises."""
     try:
-        from gateway import rich_sent_store
+        from hermes_agent.gateway import rich_sent_store
         await rich_sent_store.record_async(_sent_text_key(chat_id), message_id, text)
     except Exception:
         logger.debug("[photon] sent-text index record failed", exc_info=True)
@@ -547,7 +547,7 @@ async def _record_sent_text_async(chat_id: Optional[str], message_id: Optional[s
 
 def _lookup_sent_text(chat_id: Optional[str], message_id: Optional[str]) -> Optional[str]:
     try:
-        from gateway import rich_sent_store
+        from hermes_agent.gateway import rich_sent_store
         return rich_sent_store.lookup(_sent_text_key(chat_id), message_id)
     except Exception:
         logger.debug("[photon] sent-text index lookup failed", exc_info=True)
@@ -1300,7 +1300,7 @@ class PhotonAdapter(BasePlatformAdapter):
     async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None,
                          reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> SendResult:
         try:
-            from gateway.platforms.base import cache_image_from_url
+            from hermes_agent.gateway.platforms.base import cache_image_from_url
             local_path = await cache_image_from_url(image_url)
         except Exception:  # couldn't fetch — send the URL as text
             return await super().send_image(chat_id, image_url, caption, reply_to)
@@ -1589,7 +1589,7 @@ def _cache_inbound_attachment(content: dict[str, Any], name: str, mime: str, *,
     except (ValueError, TypeError) as exc:
         logger.warning("[photon] failed to decode inbound attachment bytes: %s", exc)
         return None
-    from gateway.platforms.base import cache_audio_from_bytes, cache_document_from_bytes, cache_image_from_bytes
+    from hermes_agent.gateway.platforms.base import cache_audio_from_bytes, cache_document_from_bytes, cache_image_from_bytes
     mime = (mime or "").lower()
     suffix = Path(name).suffix if name else ""  # prefer the real extension
     try:

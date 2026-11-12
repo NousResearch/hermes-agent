@@ -272,7 +272,7 @@ def _registered_live_pids(home: Path) -> set[int]:
                 elif stamp is None:
                     alive = psutil.pid_exists(pid)
                 else:
-                    from gateway.status import get_process_start_time
+                    from hermes_agent.gateway.status import get_process_start_time
 
                     alive = get_process_start_time(pid) == stamp
             except (psutil.Error, OSError, TypeError, ValueError):

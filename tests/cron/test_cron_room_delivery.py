@@ -8,7 +8,7 @@ from contextlib import closing
 import pytest
 
 from hermes_agent.cron import scheduler_delivery as delivery
-from gateway import hosted_rooms
+from hermes_agent.gateway import hosted_rooms
 from hermes_constants import get_hermes_home
 
 ROOM_ID = "room-cron"
@@ -69,7 +69,7 @@ def test_post_skips_the_unserved_session_store_copy_left_by_the_shared_store_imp
 
 
 def test_post_goes_to_the_session_store_when_its_gateway_owns_the_room(room_store):
-    from gateway.session_hosted_service import _OWNER
+    from hermes_agent.gateway.session_hosted_service import _OWNER
     owned = _create(get_hermes_home() / "state.db")
     with closing(sqlite3.connect(owned)) as conn, conn:
         conn.execute("CREATE TABLE IF NOT EXISTS state_meta (key TEXT PRIMARY KEY, value TEXT)")
@@ -84,7 +84,7 @@ def test_post_goes_to_the_session_store_when_its_gateway_owns_the_room(room_stor
 def test_named_profile_target_reaches_a_room_the_root_gateway_imported(room_store):
     """The root gateway imported the standalone room (shared copy fenced, its own state.db owns it);
     Room settings in the research view advertises room:<id>@research, which must post to that store."""
-    from gateway.hosted_rooms_gateway_import import import_standalone_rooms
+    from hermes_agent.gateway.hosted_rooms_gateway_import import import_standalone_rooms
     root_store = hosted_rooms.default_db_path().with_name("state.db")
     with closing(sqlite3.connect(root_store)) as conn, conn:  # the root gateway's SessionDB owner table
         conn.execute("CREATE TABLE state_meta (key TEXT PRIMARY KEY, value TEXT)")
@@ -100,7 +100,7 @@ def test_named_profile_target_reaches_a_room_the_root_gateway_imported(room_stor
 
 
 def test_room_a_profile_gateway_took_over_names_the_profile_remedy(room_store):
-    from gateway.hosted_room_replicas import demote_room
+    from hermes_agent.gateway.hosted_room_replicas import demote_room
     state = hosted_rooms.room_state(room_store, room_id=ROOM_ID)
     demote_room(room_store, room_id=ROOM_ID, observed_gateway_id=state["authority_gateway_id"] + ":gateway-store",
                 observed_epoch=int(state["authority_epoch"]) + 1)

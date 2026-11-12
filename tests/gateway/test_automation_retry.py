@@ -7,11 +7,11 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_coalesced_siblings_survive_lost_ack_and_owner_restart(tmp_path, monkeypatch):
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.platforms.event import MessageEvent
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority, SessionAuthority
-    from gateway.session_ingress_context import native_callback
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import initialize_session_authority, SessionAuthority
+    from hermes_agent.gateway.session_ingress_context import native_callback
     from hermes_agent.hermes_state_runtime import list_session_admissions
     from tests.gateway.test_completion_admission import pending
     from plugins.platforms.discord.adapter import DiscordAdapter
@@ -58,11 +58,11 @@ async def test_coalesced_siblings_survive_lost_ack_and_owner_restart(tmp_path, m
 
 @pytest.mark.asyncio
 async def test_unowned_completion_refunds_every_sibling_without_consuming_budget(tmp_path, monkeypatch):
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.platforms.event import MessageEvent
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority, SessionAuthority
-    from gateway.session_ingress_context import native_callback
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import initialize_session_authority, SessionAuthority
+    from hermes_agent.gateway.session_ingress_context import native_callback
     from hermes_constants import get_hermes_home
     from hermes_agent.hermes_state_runtime import list_session_admissions
     from tests.gateway.test_completion_admission import pending

@@ -145,7 +145,7 @@ def begin_process(kind: str) -> None:
             for directory in (markers_dir(home), setup_markers_dir(home), latches):  # likewise pending exits/setups
                 shutil.rmtree(directory, ignore_errors=True)
             return
-        from gateway.status import get_process_start_time
+        from hermes_agent.gateway.status import get_process_start_time
 
         home = get_hermes_home()
         directory = markers_dir(home)
@@ -170,7 +170,7 @@ def current_process_kind() -> str:
 
 
 def _claimer_alive(path: Path) -> bool:
-    from gateway.status import runtime_status_pid_is_live
+    from hermes_agent.gateway.status import runtime_status_pid_is_live
 
     try:
         claimer = int(path.name.rsplit(".", 2)[-2])
@@ -181,7 +181,7 @@ def _claimer_alive(path: Path) -> bool:
 
 def _claim(path: Path) -> Path | None:
     """Rename a reportable marker so exactly one reporter owns it; None when not reportable."""
-    from gateway.status import runtime_status_pid_is_live
+    from hermes_agent.gateway.status import runtime_status_pid_is_live
 
     if path.name.endswith(_REPORTING):
         if _claimer_alive(path):

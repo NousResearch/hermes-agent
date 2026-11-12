@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import web_server
-import gateway.status as _gw_status
+import hermes_agent.gateway.status as _gw_status
 import hermes_cli.web_server_gateway as _web_server_gateway
 from hermes_cli.web_server_gateway import _collect_profile_gateway_topology, _profile_platform_ports
 
@@ -57,7 +57,7 @@ def _patch_topology(monkeypatch, homes, running, runtimes):
     live gateway; ``runtimes``: {name: runtime dict}.
     """
     import hermes_cli.profiles as profiles_mod
-    import gateway.status as status_mod
+    import hermes_agent.gateway.status as status_mod
 
     monkeypatch.setattr(profiles_mod, "profiles_to_serve", lambda multiplex, **kw: homes)
     monkeypatch.setattr(
@@ -344,7 +344,7 @@ class TestStatusEndpointTopology:
         # one profile the record stores un-prefixed reported ``gateway_platforms: {}`` and
         # ``components.platforms.configured: 0`` while its adapters were up and delivering
         # (#123088).
-        from gateway.status import GatewayLiveness
+        from hermes_agent.gateway.status import GatewayLiveness
         import hermes_cli.web_routers.status as status_router
 
         record = {
@@ -389,7 +389,7 @@ class TestStatusEndpointTopology:
         # fabricated ``/p/<basename>/...`` ingress URLs for a profile that does not exist.
         from contextlib import nullcontext
 
-        from gateway.status import GatewayLiveness
+        from hermes_agent.gateway.status import GatewayLiveness
         import hermes_cli.web_routers.status as status_router
         from hermes_cli import web_server_profiles
 
@@ -446,7 +446,7 @@ class TestStatusEndpointTopology:
     def _scope_to_served_profile(self, monkeypatch, tmp_path, *, own_runtime, lock_pid, mux_pid, mux_runtime):
         from contextlib import nullcontext
 
-        from gateway.status import GatewayLiveness
+        from hermes_agent.gateway.status import GatewayLiveness
         import hermes_cli.web_routers.status as status_router
         from hermes_cli import web_server_profiles
 
@@ -588,7 +588,7 @@ class TestStatusEndpointTopology:
     def test_remote_health_liveness_never_borrows_the_local_multiplexer_record(self, monkeypatch, tmp_path):
         # A health-probe answer carries the REMOTE container's PID, which can equal an unrelated
         # local host-record PID; only a PID proven on this host may select the local record.
-        from gateway.status import GatewayLiveness
+        from hermes_agent.gateway.status import GatewayLiveness
         import hermes_cli.web_routers.status as status_router
 
         mux_runtime = {
@@ -624,8 +624,8 @@ class TestStatusEndpointTopology:
     def _status_on_the_host(self, monkeypatch, record):
         # The default profile's own backend on the host: its gateway_state.json is the live
         # multiplexer's record, and the real lookup (host record + default root) resolves to it.
-        from gateway import host_topology
-        from gateway.status import GatewayLiveness
+        from hermes_agent.gateway import host_topology
+        from hermes_agent.gateway.status import GatewayLiveness
         import hermes_cli.web_routers.status as status_router
         from hermes_constants import get_process_hermes_home
 

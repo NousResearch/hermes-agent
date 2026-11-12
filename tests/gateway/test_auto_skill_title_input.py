@@ -7,11 +7,11 @@ from unittest.mock import AsyncMock
 import pytest
 
 from agent import title_generator
-from gateway.config import GatewayConfig, Platform
-from gateway.platforms.event import MessageEvent
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource, SessionEntry
-from gateway.turn_context import TurnContext
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource, SessionEntry
+from hermes_agent.gateway.turn_context import TurnContext
 from run_agent import AIAgent
 
 
@@ -28,7 +28,7 @@ async def test_gateway_titles_original_request_without_changing_model_input(tmp_
     monkeypatch.setattr("agent.skill_commands._load_skill_payload", lambda name, **kw: (
         {"name": name, "content": payloads[name]}, tmp_path / name, name,
     ))
-    monkeypatch.setattr("gateway.run._load_gateway_config", dict)
+    monkeypatch.setattr("hermes_agent.gateway.run._load_gateway_config", dict)
     monkeypatch.setattr("hermes_cli.config.load_config_readonly", dict)
     source = SessionSource(platform=Platform.DISCORD, chat_id="channel", user_id="user", user_name="Example")
     event = MessageEvent(text=question, source=source, auto_skill=skills,

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.discord.adapter import DiscordAdapter
 
 
@@ -84,7 +84,7 @@ async def test_voice_message_carries_ogg_opus_bytes_and_their_real_duration(tmp_
     assert post["payload"]["attachments"][0]["duration_secs"] == 3.0
     assert post["file"]["value"] == opus.read_bytes()
 
-    monkeypatch.setattr("gateway.platforms.base.transcode_to_ogg_opus", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base.transcode_to_ogg_opus", lambda *a, **k: None)
     mp3 = tmp_path / "spoken.mp3"
     mp3.write_bytes(b"ID3\x04" + b"\x00" * 64)
     assert (await adapter.send_voice("222", str(mp3), **flag)).success
@@ -109,7 +109,7 @@ async def test_non_opus_voice_reply_is_transcoded_with_the_converted_streams_dur
         converted.write_bytes(opus)
         return str(converted)
 
-    monkeypatch.setattr("gateway.platforms.base.transcode_to_ogg_opus", fake_transcode)
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base.transcode_to_ogg_opus", fake_transcode)
 
     assert (await adapter.send_voice("222", str(mp3))).success
     assert calls == [str(mp3)]

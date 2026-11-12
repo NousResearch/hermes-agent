@@ -15,7 +15,7 @@ from tests.gateway.fixtures.local_recovery_probe import Model, child_env, daemon
 
 
 def test_memory_review_verbs_are_local_session_controls():
-    from gateway.session_commands import command_verdict
+    from hermes_agent.gateway.session_commands import command_verdict
 
     assert command_verdict('memory', '') == 'read'
     assert command_verdict('memory', 'pending') == 'read'

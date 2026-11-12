@@ -7,10 +7,10 @@ from typing import Any, cast
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.platforms.base import BasePlatformAdapter
-from gateway.run import GatewayRunner, _profile_runtime_scope
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.run import GatewayRunner, _profile_runtime_scope
+from hermes_agent.gateway.session import SessionSource
 from tools import async_delegation as ad
 from tools.process_registry import process_registry
 

@@ -5,7 +5,7 @@ responds to the gateway's next send with ``Thread not found``.  The
 adapter falls back to a plain send (no ``message_thread_id``), but
 prior to this fix it left the corresponding row in
 ``telegram_dm_topic_bindings`` untouched.
-``gateway.run._recover_telegram_topic_thread_id`` then walked the
+``hermes_agent.gateway.run._recover_telegram_topic_thread_id`` then walked the
 user's bindings newest-first on every later inbound message and
 cheerfully redirected them back to the deleted topic — tool
 progress, approvals and replies all silently landed in the wrong
@@ -141,7 +141,7 @@ def _bare_adapter(db: SessionDB | None = None):
     # python-telegram-bot import-graph here.  ``name`` is a
     # property that delegates to ``platform.value.title()``, so
     # we set ``platform`` rather than poking ``name`` directly.
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     from plugins.platforms.telegram.adapter import TelegramAdapter
 
     adapter = object.__new__(TelegramAdapter)
@@ -191,9 +191,9 @@ class TestRecoveryAfterPrune:
         # ``_recover_telegram_topic_thread_id`` walks bindings
         # newest-first, so without the prune it would pick the
         # one we just removed.
-        from gateway.config import GatewayConfig, Platform, PlatformConfig
-        from gateway.run import GatewayRunner
-        from gateway.session import SessionSource, build_session_key
+        from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+        from hermes_agent.gateway.run import GatewayRunner
+        from hermes_agent.gateway.session import SessionSource, build_session_key
 
         db = SessionDB(db_path=tmp_path / "state.db")
         db.enable_telegram_topic_mode(

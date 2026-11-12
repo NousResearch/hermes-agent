@@ -20,7 +20,7 @@ def _proc_session():
 
 
 def _install_runner(monkeypatch, runner):
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
     monkeypatch.setattr(gateway_run, "_gateway_runner_ref", lambda: runner)
 
 

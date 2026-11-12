@@ -100,7 +100,7 @@ def test_lifecycle_verb_refuses_a_user_unit_pinning_another_home(tmp_path, monke
 
 def _live_gateway(monkeypatch, work):
     """A gateway answering the ``active-work`` control verb with *work*."""
-    from gateway import control_socket
+    from hermes_agent.gateway import control_socket
     monkeypatch.setattr(control_socket, "query_gateway_control",
                         lambda home, verb, **kw: work if verb == "active-work" else None)
     monkeypatch.setattr(gw, "_host_multiplexer_for_all_verb", lambda: None)
@@ -138,8 +138,8 @@ def test_stop_refuses_while_sessions_are_live_and_names_them(monkeypatch, record
 
 def test_restart_refuses_on_the_published_active_agents_of_an_older_gateway(monkeypatch, recorded, capsys):
     """A gateway without the control verb still publishes ``active_agents`` in gateway_state.json."""
-    from gateway import control_socket
-    from gateway.status import write_runtime_status
+    from hermes_agent.gateway import control_socket
+    from hermes_agent.gateway.status import write_runtime_status
     write_runtime_status(gateway_state="running", active_agents=1)
     monkeypatch.setattr(control_socket, "query_gateway_control", lambda *a, **k: None)
     monkeypatch.setattr(gw, "_host_multiplexer_for_all_verb", lambda: None)
@@ -172,7 +172,7 @@ def test_stop_all_leaves_another_homes_gateway_process_alone(monkeypatch, record
 def test_dashboard_stop_refuses_while_sessions_are_live(monkeypatch):
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
-    from gateway import host_attach
+    from hermes_agent.gateway import host_attach
     from hermes_cli import web_server, web_server_gateway
 
     _live_gateway(monkeypatch, _WORK)
@@ -209,7 +209,7 @@ def test_sudo_system_stop_checks_the_units_home_not_roots(tmp_path, monkeypatch,
     monkeypatch.delenv("HERMES_HOME", raising=False)
     monkeypatch.setattr(hermes_constants, "_account_home", lambda: root_home)
     _live_gateway(monkeypatch, None)
-    from gateway import control_socket
+    from hermes_agent.gateway import control_socket
     monkeypatch.setattr(control_socket, "query_gateway_control", lambda home, verb, **kw: (
         _WORK if verb == "active-work" and Path(home).resolve() == user_home.resolve() else None))
     monkeypatch.setattr(gw, "_served_by_another_host_gateway", lambda: None)
@@ -229,7 +229,7 @@ def test_sudo_system_stop_checks_the_units_home_not_roots(tmp_path, monkeypatch,
 def test_host_served_profile_refuses_before_unserving_its_live_turns(tmp_path, monkeypatch, capsys, verb):
     """``hermes -p coder gateway stop|restart`` on a profile the host serves unserves it in the host,
     which Stops its executing turns: the live-work policy applies first, scoped to that profile."""
-    from gateway import control_socket
+    from hermes_agent.gateway import control_socket
     from hermes_cli import gateway_profile_lifecycle as gpl
     profile_home, host_home = tmp_path / "profiles" / "coder", tmp_path / "root"
     profile_home.mkdir(parents=True)
@@ -265,7 +265,7 @@ def test_host_served_profile_refuses_before_unserving_its_live_turns(tmp_path, m
 
 def test_active_work_verb_scoped_to_a_profile_names_only_its_turns(monkeypatch):
     """The host's ``active-work`` verb with ``{"profile": "coder"}`` answers only what unserving coder stops."""
-    from gateway.run_active_work_verb import active_work_verb
+    from hermes_agent.gateway.run_active_work_verb import active_work_verb
     from tools import async_delegation
     monkeypatch.setattr(async_delegation, "list_async_delegations", list)
     units = [{"kind": "chat", "session": "agent:coder:telegram:dm:7", "pid": 1},
@@ -284,7 +284,7 @@ def test_active_work_verb_scoped_to_a_profile_names_only_its_turns(monkeypatch):
 def test_active_work_verb_counts_a_profiles_side_agent_and_reads_it_on_the_loop(monkeypatch):
     """A profile whose only work is a running /bg side agent is not idle (unserving it interrupts the
     agent), and every live read happens inside the loop callback, never on the socket thread."""
-    from gateway.run_active_work_verb import active_work_verb
+    from hermes_agent.gateway.run_active_work_verb import active_work_verb
     from tools import async_delegation
     monkeypatch.setattr(async_delegation, "list_async_delegations", list)
     on_loop = []

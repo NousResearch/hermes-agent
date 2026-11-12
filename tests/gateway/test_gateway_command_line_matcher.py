@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from gateway.status import (
+from hermes_agent.gateway.status import (
     gateway_spawn_intent_subcommand as spawn_intent,
     looks_like_gateway_command_line as matches,
     looks_like_gateway_runtime_command_line as matches_runtime,

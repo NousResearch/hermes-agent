@@ -7,12 +7,12 @@ from unittest.mock import patch
 
 import pytest
 
-from gateway.config import Platform
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.session import SessionSource
 
 
 def _runner(command):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
 
@@ -33,7 +33,7 @@ def _runner(command):
 
 @pytest.mark.asyncio
 async def test_unavailable_skill_scan_skips_known_commands_and_runs_off_loop():
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     source = SessionSource(platform=Platform.DISCORD, chat_id="c1")
     event = SimpleNamespace(text="/x", get_command_args=lambda: "")

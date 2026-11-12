@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from gateway import status
+from hermes_agent.gateway import status
 import hermes_constants
 
 _LIVE_PID = 4242
@@ -64,7 +64,7 @@ def test_a_copied_dir_with_no_identity_files_borrows_neither_the_process_record_
     (fake_root / "gateway_state.json").write_text(json.dumps(_live_record(fake_root)), encoding="utf-8")
     copied = tmp_path / "sandbox-root" / "profiles" / "eagle"
     copied.mkdir(parents=True)
-    from gateway import host_topology
+    from hermes_agent.gateway import host_topology
     monkeypatch.setattr(
         host_topology, "host_gateway_topology",
         lambda: host_topology.HostGatewayTopology(pid=_LIVE_PID, profiles=("default", "eagle"), source="test"),

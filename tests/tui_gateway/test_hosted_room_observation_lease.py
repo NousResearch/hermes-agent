@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import hosted_room_driver as state, hosted_rooms
+from hermes_agent.gateway import hosted_room_driver as state, hosted_rooms
 from hermes_agent.tui_gateway import hosted_room_driver as runtime_module
 from tests.tui_gateway.test_hosted_room_driver_runtime import (
     BINDING, PROFILE, FakeSessionRPC, RecordingTurnLocks, _admit, _identity, _runtime,

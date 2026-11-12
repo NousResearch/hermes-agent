@@ -12,9 +12,9 @@ import json
 import logging
 import os
 
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource
-from gateway.session_ingress_media import capture_native_media, restore_native_media
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.session_ingress_media import capture_native_media, restore_native_media
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
@@ -151,7 +151,7 @@ def _validate_native(runner, event, provenance=None, fresh_roles=False):
     if (clause := _event_clause(runner, event, provenance, fresh_roles)) is not None:
         _refuse(event, 'invalid_params', clause)
     if provenance is not None:
-        from gateway.session_ingress_context import restore_provenance
+        from hermes_agent.gateway.session_ingress_context import restore_provenance
         restore_provenance(runner, source, provenance)
     delegated = fresh_roles or bool(provenance and 'relay' in provenance)
     if not delegated:
@@ -188,13 +188,13 @@ def _validate_native(runner, event, provenance=None, fresh_roles=False):
 
 
 def snapshot_native(runner, event):
-    from gateway.session_ingress_context import capture_provenance
+    from hermes_agent.gateway.session_ingress_context import capture_provenance
     provenance = capture_provenance(runner, event)
     return _snapshot_native(runner, _adapter_event(event), provenance)
 
 
 async def prepare_native(runner, event):
-    from gateway.session_ingress_context import capture_provenance, reauthorize_roles
+    from hermes_agent.gateway.session_ingress_context import capture_provenance, reauthorize_roles
     provenance = capture_provenance(runner, event)
     # Freeze caller-owned identity and content before the first network yield.
     # Preserve dynamic trust fields too: validation must reject forged ones,
@@ -206,8 +206,8 @@ async def prepare_native(runner, event):
     # copied context carries the admission's capture lease.
     media = None
     if frozen.media_urls:
-        from gateway.session_ingress_media import _lease_scope, abandon_capture, release_abandoned_capture
-        from gateway.session_runtime_workers import track_mutation
+        from hermes_agent.gateway.session_ingress_media import _lease_scope, abandon_capture, release_abandoned_capture
+        from hermes_agent.gateway.session_runtime_workers import track_mutation
         scope = _lease_scope.get()
         work = asyncio.to_thread(capture_native_media, frozen.media_urls)
         capture = (track_mutation(scope.authority, work) if scope is not None and scope.authority is not None
@@ -239,7 +239,7 @@ def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_sourc
                 'event': deepcopy({name: getattr(event, name) for name in _EVENT_FIELDS}),
                 'timestamp': event.timestamp.isoformat()}
     if event.source.platform.value == 'webhook':
-        from gateway.platforms.webhook_delivery import route_digest, snapshot_destination
+        from hermes_agent.gateway.platforms.webhook_delivery import route_digest, snapshot_destination
         adapter = runner._adapter_for_source(event.source)
         if provenance is None:
             raise RuntimeStoreError('permission_denied')
@@ -274,7 +274,7 @@ def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_sourc
     # ordinary admissions must bind homes too, including execution after restart.
     if provenance is not None and not getattr(runner.config, 'multiplex_profiles', False):
         from hermes_agent.hermes_state_runtime import list_session_admissions
-        from gateway.session_authorities import active_authority
+        from hermes_agent.gateway.session_authorities import active_authority
         authority = active_authority(runner)
         entry = runner.session_store.lookup_by_session_key(envelope['route'])
         if entry is not None:
@@ -295,7 +295,7 @@ def restore_native_source(payload, runner=None):
     # Private descriptor requests a fresh check, never supplies the verdict.
     source.role_authorized = envelope.get('reauthorize') == 'roles'
     if 'provenance' in envelope:
-        from gateway.session_ingress_context import callback_runner, restore_provenance
+        from hermes_agent.gateway.session_ingress_context import callback_runner, restore_provenance
         runner = runner or callback_runner()
         if runner is not None:
             restore_provenance(runner, source, envelope['provenance'])
@@ -320,7 +320,7 @@ def restore_native(payload, runner=None):
             event._heartbeat_session_id = envelope['automation']['heartbeat']
         event.metadata = {'gateway_session_key': envelope['route'],
                           'gateway_session_id': envelope['automation']['owner']}
-        from gateway.session_automation import automation_display_metadata, automation_notification_metadata
+        from hermes_agent.gateway.session_automation import automation_display_metadata, automation_notification_metadata
         event.metadata.update(automation_notification_metadata(envelope['automation']))
         event.metadata.update(automation_display_metadata(envelope['automation']))
     return event
@@ -329,11 +329,11 @@ def restore_native(payload, runner=None):
 async def check_native_route(runner, payload, session_id, available_source, adapter):
     """Read-only preflight: route/auth rejection must never consume a queued row."""
     if 'automation' in payload['native_text_v1']:
-        from gateway.session_automation import check_automation_route
+        from hermes_agent.gateway.session_automation import check_automation_route
         return check_automation_route(runner, payload, session_id, available_source, adapter)
     event = restore_native(payload, runner)
     # Validate the stored sender without recapturing files or trusting the binding caller.
-    from gateway.session_ingress_context import reauthorize_roles
+    from hermes_agent.gateway.session_ingress_context import reauthorize_roles
     provenance = payload['native_text_v1'].get('provenance')
     fresh_roles = await reauthorize_roles(runner, event.source, provenance)
     _validate_native(runner, event, provenance, fresh_roles)
@@ -348,7 +348,7 @@ async def check_native_route(runner, payload, session_id, available_source, adap
     if adapter is None or runner._adapter_for_source(event.source) is not adapter:
         raise RuntimeStoreError('not_found')
     if event.source.platform.value == 'webhook':
-        from gateway.platforms.webhook_delivery import route_digest, validate_destination
+        from hermes_agent.gateway.platforms.webhook_delivery import route_digest, validate_destination
         envelope = payload['native_text_v1']
         validate_destination(envelope.get('webhook_delivery'))
         if envelope.get('webhook_route') != route_digest(adapter, event.source.chat_id):

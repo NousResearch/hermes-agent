@@ -541,7 +541,7 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
             persist_override=False, count_switch=False)
     except Exception as e:
         logger.warning("Configured model %s could not be adopted for session %s: %s", model, sid, e)
-        from gateway.warning_notifications import render_notification
+        from hermes_agent.gateway.warning_notifications import render_notification
         render_notification(
             lambda: _emit("error", sid, {"message": f"Could not switch to configured model {model}: {e}"}),
             platform="tui", user_config=getattr(session.get("agent"), "_notification_config", None))

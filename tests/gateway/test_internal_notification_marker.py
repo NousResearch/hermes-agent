@@ -24,10 +24,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import gateway.run as gateway_run
-from gateway.config import GatewayConfig, Platform
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionEntry, SessionSource
+import hermes_agent.gateway.run as gateway_run
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionEntry, SessionSource
 
 SESSION_KEY = "agent:main:telegram:group:-1001:12345"
 

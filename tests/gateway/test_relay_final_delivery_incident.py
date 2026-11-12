@@ -23,8 +23,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.run import GatewayRunner
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 
 # ---------------------------------------------------------------------------

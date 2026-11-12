@@ -24,7 +24,7 @@ def test_agent_cron_is_transport_only_and_refuses_without_owner(monkeypatch):
 
 
 def test_owner_ticker_uses_direct_admission_without_loopback(monkeypatch):
-    from gateway import session_cron
+    from hermes_agent.gateway import session_cron
     from types import SimpleNamespace
     from hermes_constants import get_hermes_home
     import threading

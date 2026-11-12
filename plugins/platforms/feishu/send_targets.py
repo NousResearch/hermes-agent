@@ -2,7 +2,7 @@
 
 import re
 
-from gateway.platforms.send_targets import StandaloneSendPolicy, regex_groups_parser
+from hermes_agent.gateway.platforms.send_targets import StandaloneSendPolicy, regex_groups_parser
 
 _SEND_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::([-A-Za-z0-9_]+))?\s*$")
 

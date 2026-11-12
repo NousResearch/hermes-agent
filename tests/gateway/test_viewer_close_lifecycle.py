@@ -15,11 +15,11 @@ from tests.waiting import async_wait_until
 
 
 async def _owner(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.run_shutdown_session_end import GatewaySessionEndMixin
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.run_shutdown_session_end import GatewaySessionEndMixin
+    from hermes_agent.gateway.session_authority import initialize_session_authority
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
@@ -47,7 +47,7 @@ async def _owner(tmp_path, monkeypatch):
 
 
 def _viewer(authority, tmp_path):
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     return AuthorityConnection(authority, SimpleNamespace(write=lambda frame: None), {
         'provider': 'local', 'user_id': 'native', 'profile_id': str(tmp_path), 'instance_id': 'owner'})
 
@@ -109,7 +109,7 @@ async def test_a_viewer_new_resets_the_session_on_the_owner_after_finalize(tmp_p
 
 @pytest.mark.asyncio
 async def test_close_while_a_turn_is_queued_completes_when_the_fifo_goes_idle(tmp_path, monkeypatch):
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_contract import SessionRef
     from hermes_agent.hermes_state_runtime import admit_session_input, cancel_session_input
 
     db, authority, calls = await _owner(tmp_path, monkeypatch)
@@ -131,8 +131,8 @@ async def test_close_while_a_turn_is_queued_completes_when_the_fifo_goes_idle(tm
 
 @pytest.mark.asyncio
 async def test_a_turn_queued_during_a_slow_finalize_starts_after_it(tmp_path, monkeypatch):
-    from gateway import session_finite
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway import session_finite
+    from hermes_agent.gateway.session_contract import SessionRef
     from hermes_agent.hermes_state_runtime import admit_session_input
 
     db, authority, _calls = await _owner(tmp_path, monkeypatch)
@@ -169,7 +169,7 @@ async def test_a_turn_queued_during_a_slow_finalize_starts_after_it(tmp_path, mo
 
 def _gate_busy_check(monkeypatch):
     """Hold every settler inside its off-loop idle check until the test releases it."""
-    import gateway.session_viewer_close as viewer_close
+    import hermes_agent.gateway.session_viewer_close as viewer_close
     entered, release = [], threading.Event()
 
     def busy(*args):
@@ -222,7 +222,7 @@ async def test_a_close_stamps_the_row_only_once_it_is_claimed(tmp_path, monkeypa
 
 def _gate_stamp(monkeypatch):
     """Hold the stamp's write (past its viewer check) until the test releases it."""
-    import gateway.session_acp_lifecycle as lifecycle
+    import hermes_agent.gateway.session_acp_lifecycle as lifecycle
     stamp, entered, release = lifecycle.end_idle_local_session, [], threading.Event()
 
     def gated(*args, **kwargs):
@@ -255,7 +255,7 @@ async def test_a_viewer_reattaching_during_the_stamp_keeps_the_session_live(tmp_
 
 @pytest.mark.asyncio
 async def test_input_admitted_during_the_stamp_defers_the_close_to_the_idle_point(tmp_path, monkeypatch):
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_contract import SessionRef
     from hermes_agent.hermes_state_runtime import admit_session_input, cancel_session_input
 
     db, authority, calls = await _owner(tmp_path, monkeypatch)
@@ -283,7 +283,7 @@ async def test_input_admitted_during_the_stamp_defers_the_close_to_the_idle_poin
 
 @pytest.mark.asyncio
 async def test_concurrent_settlers_run_the_close_lifecycle_once(tmp_path, monkeypatch):
-    from gateway.session_viewer_close import settle_viewer_close
+    from hermes_agent.gateway.session_viewer_close import settle_viewer_close
 
     db, authority, calls = await _owner(tmp_path, monkeypatch)
     viewer, subscription = await _open(db, authority, tmp_path)
@@ -304,7 +304,7 @@ async def test_concurrent_settlers_run_the_close_lifecycle_once(tmp_path, monkey
 
 def _stored(db):
     import json
-    from gateway.session_viewer_close import CLOSE_PREFIX
+    from hermes_agent.gateway.session_viewer_close import CLOSE_PREFIX
     record = db.get_meta(CLOSE_PREFIX + 'chat')
     if record is None:
         return None
@@ -325,7 +325,7 @@ async def _restarted_owner(tmp_path, monkeypatch, db):
 async def test_a_close_pending_at_gateway_stop_completes_after_restart(tmp_path, monkeypatch):
     """#134889 LC-6b, independent review P2-4: Ctrl+D mid-turn, then the gateway stops before the
     turn's idle point. The deferred close lived only in memory, so the row stayed open forever."""
-    from gateway.session_local_recovery import recover_local_sessions
+    from hermes_agent.gateway.session_local_recovery import recover_local_sessions
     from hermes_agent.hermes_state_runtime import admit_session_input, cancel_session_input
 
     db, authority, _calls = await _owner(tmp_path, monkeypatch)
@@ -347,8 +347,8 @@ async def test_a_close_pending_at_gateway_stop_completes_after_restart(tmp_path,
 
 @pytest.mark.asyncio
 async def test_a_viewer_reattaching_cancels_the_persisted_close(tmp_path, monkeypatch):
-    from gateway.session_local_recovery import recover_local_sessions
-    from gateway.session_viewer_close import CLOSE_PREFIX
+    from hermes_agent.gateway.session_local_recovery import recover_local_sessions
+    from hermes_agent.gateway.session_viewer_close import CLOSE_PREFIX
     from hermes_agent.hermes_state_runtime import admit_session_input, cancel_session_input
 
     db, authority, _calls = await _owner(tmp_path, monkeypatch)
@@ -373,7 +373,7 @@ async def test_a_viewer_reattaching_cancels_the_persisted_close(tmp_path, monkey
 
 def _gate_persist(monkeypatch, reason):
     """Hold *reason*'s close after its real SQLite commit, before its off-loop write returns."""
-    import gateway.session_viewer_close as close
+    import hermes_agent.gateway.session_viewer_close as close
     original = close._persist_close
     entered, release = threading.Event(), threading.Event()
 
@@ -391,7 +391,7 @@ async def test_a_cancelled_older_close_keeps_the_newer_close_durable(tmp_path, m
     """#134889 LC-6b, independent review round 2: close A commits, a viewer reattaches (cancelling A)
     and closes again as B; A's late continuation deleted B's stored close by key, so a restart
     before the idle point left the row open for good."""
-    from gateway.session_local_recovery import recover_local_sessions
+    from hermes_agent.gateway.session_local_recovery import recover_local_sessions
     from hermes_agent.hermes_state_runtime import admit_session_input, cancel_session_input
 
     db, authority, _calls = await _owner(tmp_path, monkeypatch)
@@ -448,7 +448,7 @@ async def test_the_newer_close_settles_and_the_older_one_leaves_no_trace(tmp_pat
 
 @pytest.mark.asyncio
 async def test_a_reattach_during_the_close_write_cancels_it_durably(tmp_path, monkeypatch):
-    from gateway.session_local_recovery import recover_local_sessions
+    from hermes_agent.gateway.session_local_recovery import recover_local_sessions
     from hermes_agent.hermes_state_runtime import admit_session_input, cancel_session_input
 
     db, authority, calls = await _owner(tmp_path, monkeypatch)
@@ -475,7 +475,7 @@ async def test_a_reattach_during_the_close_write_cancels_it_durably(tmp_path, mo
 async def test_a_stale_owner_cannot_delete_a_stored_close(tmp_path, monkeypatch):
     """Compare-and-delete is epoch-fenced: an owner that lost the store leaves its successor's close."""
     import json
-    from gateway.session_viewer_close import CLOSE_PREFIX, forget_persisted_close
+    from hermes_agent.gateway.session_viewer_close import CLOSE_PREFIX, forget_persisted_close
 
     db, authority, _calls = await _owner(tmp_path, monkeypatch)
     record = json.dumps({'op': 'x', 'reason': 'cli_close'})
@@ -513,7 +513,7 @@ async def test_a_close_stored_before_a_hard_kill_ends_the_row_past_the_unknown_t
     ``unknown``, the drain pauses on ``unknown_execution`` before the idle point, and the stored close
     never applied: the row stayed open forever. Nobody is left to Discard the turn (the viewer closed
     the session), so the owner resolves it as interrupted (never replayed) and the close completes."""
-    from gateway.session_local_recovery import recover_local_sessions
+    from hermes_agent.gateway.session_local_recovery import recover_local_sessions
     from hermes_agent.hermes_state_runtime import get_session_admission
 
     db2, restarted, calls2, row = await _hard_killed_mid_turn(tmp_path, monkeypatch)
@@ -531,14 +531,14 @@ async def test_a_viewer_back_before_the_unknown_is_resolved_keeps_the_turn_for_i
     """The owner only resolves an unknown turn for a close nobody cancelled: a viewer that attached
     after the restart cancels the close and decides about the turn itself (Discard)."""
     from hermes_agent.hermes_state_runtime import get_session_admission
-    from gateway.session_viewer_close import rearm_persisted_closes
+    from hermes_agent.gateway.session_viewer_close import rearm_persisted_closes
 
     db2, restarted, calls2, row = await _hard_killed_mid_turn(tmp_path, monkeypatch)
-    from gateway.session_local_recovery import restore_local_session
+    from hermes_agent.gateway.session_local_recovery import restore_local_session
     restore_local_session(restarted, 'chat')
     await _call(_viewer(restarted, tmp_path), 'session.resume', session_id='chat')
     assert rearm_persisted_closes(restarted) == [] and restarted.pending_closes == {}
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_contract import SessionRef
     restarted._schedule(SessionRef(restarted.profile_id, 'chat'))
     await asyncio.wait_for(restarted.sessions['chat'].task, 10)  # the drain pauses on the unknown turn
     assert get_session_admission(db2, admission_id=row['admission_id'])['status'] == 'unknown'
@@ -553,7 +553,7 @@ async def test_attaching_a_session_restored_on_demand_cancels_its_stored_close(t
     restored by ``authorize`` on first use) has a stored close that never reached memory. Left in
     place, the next boot would close a session its viewer came back to."""
     import json
-    from gateway.session_viewer_close import CLOSE_PREFIX
+    from hermes_agent.gateway.session_viewer_close import CLOSE_PREFIX
 
     db, authority, _calls = await _owner(tmp_path, monkeypatch)
     viewer, subscription = await _open(db, authority, tmp_path)

@@ -34,10 +34,10 @@ os.environ['TZ'] = 'UTC'
 socket.socket.connect = lambda *a, **k: (_ for _ in ()).throw(RuntimeError('network prohibited in review probe'))
 from cli import HermesCLI
 from hermes_cli import cli_commands_mixin, goals
-from gateway.slash_commands_goals import GatewayGoalCommandsMixin
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource
+from hermes_agent.gateway.slash_commands_goals import GatewayGoalCommandsMixin
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.session import SessionSource
 from hermes_agent.tui_gateway import server
 
 assert str(Path(cli_commands_mixin.__file__).resolve()).startswith(repo)

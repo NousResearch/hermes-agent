@@ -9,13 +9,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.run import GatewayRunner
-from gateway.run_runtime import initialize_gateway_runtime
-from gateway.runtime_ownership import process_ownership
-from gateway.session_authorities import active_authority
-from gateway.session_ingress import admit_message
-from gateway.session_ingress_context import native_callback, register_transport_home
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.run_runtime import initialize_gateway_runtime
+from hermes_agent.gateway.runtime_ownership import process_ownership
+from hermes_agent.gateway.session_authorities import active_authority
+from hermes_agent.gateway.session_ingress import admit_message
+from hermes_agent.gateway.session_ingress_context import native_callback, register_transport_home
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from tests.gateway.test_telegram_documents import _make_document, _make_message
 from tests.waiting import async_wait_until
@@ -77,7 +77,7 @@ async def _admit(tmp_path, monkeypatch, event):
 @pytest.mark.parametrize("items", [lambda: [_zip("here it is")],
                                    lambda: [_zip("here it is", "mg"), _zip(None, "mg")]], ids=["single", "album"])
 async def test_oversized_file_message_passes_native_admission(tmp_path, monkeypatch, items):
-    monkeypatch.setattr("gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "docs")
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "docs")
     built = items()
     event = await _dispatched(built)
     assert event.text.count("here it is") == 1 and event.text.count("too large") == len(built), event.text

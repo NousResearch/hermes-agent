@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_policy import build_policy, bind_launch_key, policy_scope, restore_policy
+from hermes_agent.gateway.session_policy import build_policy, bind_launch_key, policy_scope, restore_policy
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
@@ -54,7 +54,7 @@ def test_opposing_editors_freeze_tools_and_release_only_their_session(server_spe
 
 
 def test_cold_editor_rebind_requires_exact_borrowed_config(server_spec, tmp_path):
-    from gateway.session_local_mcp import attach_editor_mcp
+    from hermes_agent.gateway.session_local_mcp import attach_editor_mcp
     from tools.registry import registry
     original = policy(owner(), 'cold', server_spec, tmp_path)
     cold = restore_policy(json.loads(json.dumps(asdict(original))))

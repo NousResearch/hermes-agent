@@ -171,8 +171,8 @@ class TestRoutedForeignHomeScope:
         guard the desktop backend and routed turns use) installs the home override +
         secret scope together. Inside it, a miss must not borrow launch env, while
         the foreign profile's own .env resolves and the adapter-facing reader agrees."""
-        from gateway.platforms._shared import get_scoped_secret
-        from gateway.run import _profile_runtime_scope
+        from hermes_agent.gateway.platforms._shared import get_scoped_secret
+        from hermes_agent.gateway.run import _profile_runtime_scope
 
         foreign = tmp_path / "profiles" / "team_b"
         foreign.mkdir(parents=True)
@@ -210,7 +210,7 @@ class TestScopeSetupRecovery:
     the caller's context."""
 
     def test_profile_runtime_scope_setup_failure_restores_override(self, monkeypatch, tmp_path):
-        from gateway.run import _profile_runtime_scope
+        from hermes_agent.gateway.run import _profile_runtime_scope
         from hermes_constants import get_hermes_home_override
 
         foreign = tmp_path / "profiles" / "b"
@@ -463,7 +463,7 @@ class TestApiServerListenerGlobals:
 
 class TestRelayRoutingStampGlobals:
     """GATEWAY_RELAY_* ROUTING stamps are deployment config, not profile
-    secrets: config's relay enablement/sweep and gateway.relay's readers
+    secrets: config's relay enablement/sweep and hermes_agent.gateway.relay's readers
     (relay_url(), registration, self-provision) must resolve the same
     process-env value under any scope, or the gateway enters a split-brain
     state (adapter registered but Platform.RELAY absent from config, or vice

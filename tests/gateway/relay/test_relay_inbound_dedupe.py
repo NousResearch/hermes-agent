@@ -17,11 +17,11 @@ import asyncio
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import SessionSource
-from gateway.platforms.event import MessageEvent
-from gateway.relay.adapter import RelayAdapter
-from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import SessionSource
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.relay.adapter import RelayAdapter
+from hermes_agent.gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
 from tests.gateway.relay.stub_connector import StubConnector
 
 
@@ -163,7 +163,7 @@ class TestWireLevelReplayDedupe:
         adapter._localize_inbound_media = lambda e: _none_coro()
 
     def _decode(self, **overrides):
-        from gateway.relay.ws_transport import _event_from_wire
+        from hermes_agent.gateway.relay.ws_transport import _event_from_wire
 
         raw = {**self.WIRE, **overrides}
         if "source" in overrides:

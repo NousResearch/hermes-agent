@@ -27,19 +27,19 @@ except ImportError:  # pragma: no cover - dependency gate
     default_backend = Cipher = algorithms = modes = None  # type: ignore[assignment]
 CRYPTO_AVAILABLE = Cipher is not None
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import MessageDeduplicator, cancel_task, greedy_pack_blocks
-from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.helpers import MessageDeduplicator, cancel_task, greedy_pack_blocks
+from hermes_agent.gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 from agent.i18n import t
-from gateway.platforms.base import (
+from hermes_agent.gateway.platforms.base import (
     _IMAGE_EXTS, _VIDEO_EXTS, gateway_trust_env, BasePlatformAdapter, SendResult, describe_proxy_error, env_proxy_for_redaction,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
 )
-from gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
-from gateway.platforms._shared import env_is_connected, extra_or_secret as _extra_or_env, get_scoped_secret as _wx_secret
-from gateway.platforms.send_targets import StandaloneSendPolicy, regex_groups_parser
+from hermes_agent.gateway.platforms._shared import env_is_connected, extra_or_secret as _extra_or_env, get_scoped_secret as _wx_secret
+from hermes_agent.gateway.platforms.send_targets import StandaloneSendPolicy, regex_groups_parser
 
 
 def _extra_or_secret(extra: dict[str, Any], key: str, default: str = "") -> str:
@@ -353,7 +353,7 @@ async def _upload_ciphertext(session: aiohttp.ClientSession, *, ciphertext: byte
 
 
 async def _download_bytes(session: aiohttp.ClientSession, *, url: str, timeout_seconds: float = 60.0) -> bytes:
-    from gateway.platforms.base import read_httpx_body_with_limit
+    from hermes_agent.gateway.platforms.base import read_httpx_body_with_limit
 
     async def _do() -> bytes:
         async with session.get(url) as response:
@@ -548,11 +548,11 @@ def _extract_text(item_list: list[dict[str, Any]]) -> str:
     for item in item_list:
         if item.get("type") == ITEM_VOICE:
             # Tencent's ``voice_item.text`` is their STT output and is wrong for non-Chinese audio.
-            # When raw audio exists return "" so gateway/run.py's central STT transcribes the download;
+            # When raw audio exists return "" so hermes_agent/gateway/run.py's central STT transcribes the download;
             # otherwise use Weixin's transcript but mark its voice origin.
             # #27300: Tencent Cloud's `voice_item.text` is their STT output, which is wrong for any
             # non-Chinese audio (the original report was a Russian voice message that came back as English
-            # gibberish). Return empty so the central STT pipeline in ``gateway/run.py`` produces the body
+            # gibberish). Return empty so the central STT pipeline in ``hermes_agent/gateway/run.py`` produces the body
             # from the downloaded audio instead.
             voice_item = item.get("voice_item") or {}
             # Use it, but preserve the voice origin so the agent can distinguish this from text the user
@@ -928,7 +928,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
     async def _download_media(self, item: dict[str, Any], spec: tuple[Any, ...]) -> tuple[Optional[str], str]:
         """Download + decrypt one inbound media item -> (cached path or None, mime). Voice is always downloaded
-        (never trust Tencent's ``voice_item.text``) so gateway/run.py's central STT re-transcribes."""
+        (never trust Tencent's ``voice_item.text``) so hermes_agent/gateway/run.py's central STT re-transcribes."""
         item_key, timeout_seconds, cache_fn, mime, label = spec
         payload = item.get(item_key) or {}
         media = payload.get("media") or {}
@@ -941,7 +941,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             # #27300: previously short-circuited when ``voice_item.text`` was set on the assumption that
             # Tencent Cloud's STT was good enough. For non-Chinese audio that text is garbage (e.g. a
             # Russian message comes back as English phonemes) — we must always download the raw audio so
-            # ``gateway/run.py``'s central STT pipeline can re-transcribe with the user's configured
+            # ``hermes_agent/gateway/run.py``'s central STT pipeline can re-transcribe with the user's configured
             # mlx-whisper / whisper.cpp / faster-whisper backend.
             data = await _download_and_decrypt_media(
                 self._poll_session, cdn_base_url=self._cdn_base_url, encrypted_query_param=media.get("encrypt_query_param"),
@@ -1259,7 +1259,7 @@ async def send_weixin_direct(
 
 
 # ---------------------------------------------------------------------------
-# Plugin wiring (formerly core: gateway/run.py _BUILTIN_ADAPTERS row, tools/send_message_senders.py
+# Plugin wiring (formerly core: hermes_agent/gateway/run.py _BUILTIN_ADAPTERS row, tools/send_message_senders.py
 # ``_send_weixin``, hermes_cli/gateway_setup_wizard.py ``_setup_weixin``).
 # ---------------------------------------------------------------------------
 
@@ -1276,7 +1276,7 @@ def _config_connected(config: Any) -> bool:
 
 
 def _is_connected(config: Any) -> bool:
-    """Account ID AND token, from ``config`` or the scoped ``WEIXIN_*`` env (``gateway/config.py``'s
+    """Account ID AND token, from ``config`` or the scoped ``WEIXIN_*`` env (``hermes_agent/gateway/config.py``'s
     Weixin connected check reads the same pair), else ``.env``, which a plain CLI process never loads
     into the environment (the old static setup row read it)."""
     extra = getattr(config, "extra", None) or {}
@@ -1290,7 +1290,7 @@ async def _standalone_send(pconfig: Any, chat_id: str, message: str, *, thread_i
     """Out-of-process ``send_message``/cron sender: native text + media via :func:`send_weixin_direct`.
     ``thread_id``/``force_document`` are signature parity only (iLink has neither). Imports nothing from
     other plugins, so an unrelated optional SDK (e.g. lark-oapi) can never block Weixin delivery."""
-    from gateway.platforms._shared import send_error
+    from hermes_agent.gateway.platforms._shared import send_error
     if not check_weixin_requirements():
         return send_error("Weixin requirements not met. Need aiohttp + cryptography.")
     try:
@@ -1418,7 +1418,7 @@ _SEND_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
-    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
+    from . import gateway_env  # env -> GatewayConfig bridge (hermes_agent.gateway.config_env)
     ctx.register_platform(
         target_ref_syntax_fn=regex_groups_parser(_SEND_TARGET_RE, thread_group=False),
         standalone_send=StandaloneSendPolicy(label="Weixin", media=True),

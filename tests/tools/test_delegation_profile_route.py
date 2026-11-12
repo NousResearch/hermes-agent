@@ -366,7 +366,7 @@ def test_profile_child_uses_the_target_profiles_persistent_container(two_profile
     """Persistent Docker keys its container by profile: a child routed to ``coder`` inside a launch-profile
     session runs in coder's container (coder's image, mounts, env), while the session's delivery identity
     (HERMES_SESSION_PROFILE, read by notifications) stays the parent's."""
-    from gateway.session_context import clear_session_vars, get_session_env, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, get_session_env, set_session_vars
     from tools import terminal_tool
     from tools.delegate_tool_routes import delegated_profile_scope
 
@@ -384,7 +384,7 @@ def test_profile_child_uses_the_target_profiles_persistent_container(two_profile
 def test_child_routed_back_to_the_launch_profile_uses_the_launch_profiles_container(two_profiles):
     """A ``coder`` chat on a default-launched gateway (its turn bound to coder, HERMES_SESSION_PROFILE=coder) routing
     a child to ``default`` runs that child in default's persistent container, not the parent chat's."""
-    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
     from tools import terminal_tool
     from tools.delegate_tool_routes import delegated_profile_scope
 

@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gateway.session import Platform, SessionSource
+from hermes_agent.gateway.session import Platform, SessionSource
 
 
 @pytest.fixture(autouse=True)
@@ -23,7 +23,7 @@ def _isolate_telegram_env(monkeypatch):
 
 
 def _make_bare_runner():
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.pairing_store = SimpleNamespace(is_approved=lambda *_a, **_kw: False)
@@ -97,7 +97,7 @@ def _build_telegram_message(*, is_bot: bool):
 
 
 def _capture_build_source_is_bot(is_bot: bool):
-    from gateway.platforms.event import MessageType
+    from hermes_agent.gateway.platforms.event import MessageType
     from plugins.platforms.telegram.adapter import TelegramAdapter
 
     adapter = object.__new__(TelegramAdapter)

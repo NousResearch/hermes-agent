@@ -8,13 +8,13 @@ from types import SimpleNamespace
 import pytest
 import pytest_asyncio
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import SendResult
-from gateway.platforms.event import MessageEvent
-from gateway.run import GatewayRunner
-from gateway.session_authority import SessionAuthority, initialize_session_authority
-from gateway.session_contract import SessionRef
-from gateway.session_ingress_context import native_callback
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session_authority import SessionAuthority, initialize_session_authority
+from hermes_agent.gateway.session_contract import SessionRef
+from hermes_agent.gateway.session_ingress_context import native_callback
 from hermes_constants import get_hermes_home
 from hermes_agent.hermes_state_runtime import list_session_admissions
 from plugins.platforms.discord.adapter import DiscordAdapter
@@ -40,7 +40,7 @@ async def native(monkeypatch):
     try:
         yield SimpleNamespace(runner=runner, adapter=adapter, authority=authority, source=source)
     finally:
-        from gateway.session_runtime_workers import mutation_tasks
+        from hermes_agent.gateway.session_runtime_workers import mutation_tasks
         await asyncio.gather(*mutation_tasks(authority))
         authority.db.close()
 
@@ -53,7 +53,7 @@ async def _admit(native, text, event=None):
 
 @pytest.mark.asyncio
 async def test_exhaustion_reset_runs_queued_native_messages_on_the_fresh_session(native, monkeypatch):
-    from gateway.session_results import execution_result
+    from hermes_agent.gateway.session_results import execution_result
     runner, authority, db = native.runner, native.authority, native.authority.db
     admitted = [await _admit(native, text) for text in ("A", "B", "C")]
     old = admitted[0][1].ref
@@ -100,7 +100,7 @@ async def test_exhaustion_reset_is_ordered_with_redelivery_and_cleanup(native, m
     """A redelivery of queued B that resolves the route to the fresh session mid-reset dedupes onto
     the moved row (no UNIQUE collision rolling the whole move back); and the reset schedules the
     moved rows only after the conversation cleanup and topic binding sync."""
-    from gateway.session_results import execution_result
+    from hermes_agent.gateway.session_results import execution_result
     runner, authority, db = native.runner, native.authority, native.authority.db
     loop = asyncio.get_running_loop()
     admitted = [await _admit(native, text) for text in ("A", "B", "C")]
@@ -158,7 +158,7 @@ async def test_no_scheduler_starts_the_fresh_fifo_before_reset_cleanup_finishes(
     """With the real scheduler, a redelivery of B while the topic binding sync is still running
     (it schedules the fresh FIFO itself) must not start B there before the reset finishes."""
     import threading
-    from gateway.session_results import execution_result
+    from hermes_agent.gateway.session_results import execution_result
     runner, authority = native.runner, native.authority
     loop = asyncio.get_running_loop()
     admitted = [await _admit(native, text) for text in ("A", "B", "C")]
@@ -215,7 +215,7 @@ async def test_admission_reserved_on_the_old_route_commits_on_the_fresh_session(
     deduped onto its moved row (same admission id); D, the chat's next input, waits for it at the
     route's admission turn and queues behind it there."""
     import threading
-    from gateway.session_results import execution_result
+    from hermes_agent.gateway.session_results import execution_result
     runner, authority, db = native.runner, native.authority, native.authority.db
     loop = asyncio.get_running_loop()
     admitted = [await _admit(native, text) for text in ("A", "B", "C")]

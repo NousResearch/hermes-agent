@@ -63,7 +63,7 @@ import plugins.platforms.slack.adapter as _slack_mod
 _slack_mod.SLACK_AVAILABLE = True
 
 from plugins.platforms.slack.adapter import SlackAdapter
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 ADAPTER_LOGGER = "plugins.platforms.slack.adapter"
 
@@ -114,7 +114,7 @@ def _connect_and_capture_handlers():
             _slack_mod, "AsyncSocketModeHandler", return_value=socket_mode_handler
         ),
         patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}),
-        patch("gateway.status.acquire_scoped_lock", return_value=(True, None)),
+        patch("hermes_agent.gateway.status.acquire_scoped_lock", return_value=(True, None)),
         patch("asyncio.create_task", side_effect=_fake_create_task),
     ):
         asyncio.run(adapter.connect())

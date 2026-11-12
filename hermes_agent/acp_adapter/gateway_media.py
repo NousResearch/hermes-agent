@@ -18,7 +18,7 @@ async def _fetch_remote_image(url):
     staged bytes, so the adapter downloads it through the gateway's SSRF-guarded image fetcher
     (pre-flight and per-redirect address checks, the inbound media size cap) and stages the bytes
     like any other image (#134889 ACP-16)."""
-    from gateway.platforms.base import cache_image_from_url
+    from hermes_agent.gateway.platforms.base import cache_image_from_url
     try:
         path = await cache_image_from_url(url, ".img", retries=0)
     except Exception:
@@ -61,8 +61,8 @@ async def stage_user_content(content, home=None):
             reset_hermes_home_override(token)
     import base64
     import binascii
-    from gateway.platforms.base import cache_image_from_bytes
-    from gateway.session_ingress_media import _ATTACHMENT_LIMIT, _IMAGE_EXT, sniff_image_mime
+    from hermes_agent.gateway.platforms.base import cache_image_from_bytes
+    from hermes_agent.gateway.session_ingress_media import _ATTACHMENT_LIMIT, _IMAGE_EXT, sniff_image_mime
     texts, attachments = [], []
     for part in content:
         if part.get('type') == 'text':

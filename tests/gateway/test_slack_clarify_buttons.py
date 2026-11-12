@@ -48,7 +48,7 @@ def _ensure_slack_mock():
 _ensure_slack_mock()
 
 from plugins.platforms.slack.adapter import SlackAdapter
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 
 def _make_adapter():
@@ -359,7 +359,7 @@ class TestSlackClarifyOtherFlow:
 class TestBaseAdapterClarifyFallbackUnchanged:
     @pytest.mark.asyncio
     async def test_base_numbered_text_fallback(self):
-        from gateway.platforms.base import BasePlatformAdapter, SendResult
+        from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
 
         class _Stub(BasePlatformAdapter):
             name = "stub"

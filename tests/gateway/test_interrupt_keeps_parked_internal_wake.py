@@ -8,11 +8,11 @@ import asyncio
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import _INTERRUPT_REASON_RESET, _INTERRUPT_REASON_STOP, GatewayRunner
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import _INTERRUPT_REASON_RESET, _INTERRUPT_REASON_STOP, GatewayRunner
+from hermes_agent.gateway.session import SessionSource
 
 # (interrupt_reason, invalidation_reason) as passed by _busy_stop_command, _handle_stop_command
 # (pending sentinel) and _busy_new_command.

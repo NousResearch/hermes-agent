@@ -7,7 +7,7 @@ from urllib.parse import unquote
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 gar = pytest.importorskip("google.auth.transport.requests")
 

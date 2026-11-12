@@ -5,10 +5,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.run_turn_prepare import GatewayTurnPrepareMixin
+from hermes_agent.gateway.run_turn_prepare import GatewayTurnPrepareMixin
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.tui_gateway.server import _session_info, _stored_session_runtime_overrides, _runtime_model_config
-from gateway.session_local_inventory import agent_inventory
+from hermes_agent.gateway.session_local_inventory import agent_inventory
 
 
 SHARED_URL = "https://relay.example/v1"
@@ -121,8 +121,8 @@ def test_tui_non_custom_adapter_keeps_adapter_identity(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_canonical_session_info_snapshot_uses_named_custom_identity(tmp_path, monkeypatch):
-    from gateway.session_contract import SessionRef
-    from gateway.session_local_inventory import snapshot_info
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_local_inventory import snapshot_info
     from tests.gateway.test_surface_admission import _authority
 
     from hermes_cli.config import atomic_config_write, get_config_path

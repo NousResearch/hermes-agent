@@ -111,7 +111,7 @@ class TestStillConfigurable:
         monkeypatch.setenv("DISCORD_HOME_CHANNEL", "999")
         monkeypatch.setenv("DISCORD_REPLY_TO_MODE", "off")
 
-        from gateway.config import Platform, load_gateway_config
+        from hermes_agent.gateway.config import Platform, load_gateway_config
 
         discord = load_gateway_config().platforms[Platform.DISCORD]
         assert discord.home_channel is not None

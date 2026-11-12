@@ -13,13 +13,13 @@ from typing import Any
 
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent
-from gateway.session_transcript import TranscriptReadError
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session_transcript import TranscriptReadError
 from hermes_cli.status_report import build_status_fields
 
-# Log-record parity with gateway/run.py and the origin module.
-logger = logging.getLogger("gateway.run")
+# Log-record parity with hermes_agent/gateway/run.py and the origin module.
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 _LIST_CAP = 12  # /agents shows at most this many rows per section
 
@@ -81,7 +81,7 @@ def history_unreadable() -> str:
 
 def _configured_provider() -> str:
     """``model.provider`` from the gateway config ("" when unset)."""
-    from gateway.run import _load_gateway_config
+    from hermes_agent.gateway.run import _load_gateway_config
     user_config = _load_gateway_config()
     model_cfg = user_config.get("model", {}) if isinstance(user_config, dict) else {}
     return _clean_str(model_cfg.get("provider")) if isinstance(model_cfg, dict) else ""
@@ -106,7 +106,7 @@ def _status_model_route(
     lookup queries the endpoint that serves the displayed model (never a losing route's endpoint);
     a winner without a ``base_url`` leaves the lookup on the default runtime route.
     """
-    from gateway.run import _AGENT_PENDING_SENTINEL, _load_gateway_config, _resolve_gateway_model
+    from hermes_agent.gateway.run import _AGENT_PENDING_SENTINEL, _load_gateway_config, _resolve_gateway_model
     context_used = context_total = 0
     routes: list[tuple[str, str, dict]] = []
     if status_agent is not None and status_agent is not _AGENT_PENDING_SENTINEL:
@@ -242,7 +242,7 @@ class GatewayStatusCommandsMixin:
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from hermes_agent.gateway.run import _AGENT_PENDING_SENTINEL
         source = event.source
         session_entry = await self.async_session_store.get_or_create_session(source)
         session_key = session_entry.session_key
@@ -427,7 +427,7 @@ class GatewayStatusCommandsMixin:
     async def _resolve_route_context(self, source, model_name: str, route: dict | None = None):
         """``_resolve_gateway_model_context`` for a non-resident session, run off the event loop inside
         the profile serving ``source`` (multiplex). Fail-open: None on any error."""
-        from gateway.run import _profile_runtime_scope, _resolve_gateway_model_context
+        from hermes_agent.gateway.run import _profile_runtime_scope, _resolve_gateway_model_context
 
         def _resolve():
             if getattr(getattr(self, "config", None), "multiplex_profiles", False):
@@ -438,7 +438,7 @@ class GatewayStatusCommandsMixin:
 
     async def _handle_agents_command(self, event: MessageEvent) -> str:
         """Handle /agents command - list active agents and running tasks."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from hermes_agent.gateway.run import _AGENT_PENDING_SENTINEL
         from tools.process_registry import format_uptime_short, process_registry
         now = time.time()
         current_session_key = self._session_key_for_source(event.source)

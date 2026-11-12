@@ -1,7 +1,7 @@
 """Desktop/TUI first-contact profile-build onboarding via tui_gateway (#82750).
 
 The messaging gateway stages the consent-gated profile-build offer on the
-install's very first message (gateway/run_turn.py ``_hmwa_first_contact_notes``);
+install's very first message (hermes_agent/gateway/run_turn.py ``_hmwa_first_contact_notes``);
 the TUI/Desktop surface must do the same through
 ``_stage_first_contact_onboarding_note`` in the prompt turn.
 """

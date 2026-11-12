@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 CLEAN_PROXY = "http://proxy.example.com:3128"
 DETAIL = "proxy refused CONNECT: 407 Proxy Authentication Required"

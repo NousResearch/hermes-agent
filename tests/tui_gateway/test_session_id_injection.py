@@ -11,7 +11,7 @@ set_current_session_id().
 """
 import pytest
 
-from gateway.session_context import (
+from hermes_agent.gateway.session_context import (
     get_session_env,
     _VAR_MAP,
     _UNSET,

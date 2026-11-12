@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock
 import pytest
 from telegram.error import BadRequest, RetryAfter
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 MARKERS = {f"{i:04d}" for i in range(180)}
@@ -46,7 +46,7 @@ def _bot(refuse):
 
 def _held_bubble(bot, items):
     """A progress bubble (message 7) holding ``items``, held by a flood window a content reset closes."""
-    from gateway.run_turn_progress import GatewayTurnProgressMixin
+    from hermes_agent.gateway.run_turn_progress import GatewayTurnProgressMixin
 
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token", typing_indicator=False))
     adapter._bot = bot

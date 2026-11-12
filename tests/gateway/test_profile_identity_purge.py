@@ -18,8 +18,8 @@ import pytest
 
 
 def _make_store(tmp_path):
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir(exist_ok=True)
     store = SessionStore(
@@ -32,8 +32,8 @@ def _make_store(tmp_path):
 
 
 def _entry(session_key, chat_id, profile):
-    from gateway.session import SessionEntry, SessionSource, Platform
-    from gateway.session_lifecycle import _now
+    from hermes_agent.gateway.session import SessionEntry, SessionSource, Platform
+    from hermes_agent.gateway.session_lifecycle import _now
     now = _now()
     return SessionEntry(
         session_key=session_key, session_id=f"sid-{chat_id}",
@@ -73,7 +73,7 @@ async def test_unserve_profile_keeps_identity_for_a_rename_to_rekey(tmp_path):
     ``migrate-profile-identity`` still has to find that identity to rekey it. A purge inside
     ``_unserve_profile()`` would delete it first and break the rename it runs beside.
     """
-    from gateway.run_profile_reconcile import GatewayProfileReconcileMixin
+    from hermes_agent.gateway.run_profile_reconcile import GatewayProfileReconcileMixin
     store = _make_store(tmp_path)
     with store._lock:
         store._entries["agent:oldname:feishu:dm:chatA"] = _entry(
@@ -99,7 +99,7 @@ async def test_unserve_profile_keeps_identity_for_a_rename_to_rekey(tmp_path):
 
 def test_purge_verb_drops_routing_identity_and_reports_ok(tmp_path):
     """The delete-only verb settles identity in the process that owns the routing index."""
-    from gateway.run_profile_reconcile import purge_profile_identity_verb
+    from hermes_agent.gateway.run_profile_reconcile import purge_profile_identity_verb
     store = _make_store(tmp_path)
     with store._lock:
         store._entries["agent:gone:feishu:dm:chatA"] = _entry(

@@ -196,8 +196,8 @@ def _render_platforms(ctx):
     """One row per platform, judged by the gateway (same verdict as the summary's Platforms line)."""
     _section("Messaging Platforms")
     try:
-        from gateway.config import load_gateway_config
-        from gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.config import load_gateway_config
+        from hermes_agent.gateway.platform_registry import platform_registry
         from hermes_cli.plugins import discover_plugins
         discover_plugins()  # labels come from the plugin entries
         cfg = load_gateway_config()
@@ -352,12 +352,12 @@ def _render_footer(ctx):
 
 def _connected_platforms() -> list:
     """Platforms the gateway would start (``GatewayConfig.get_connected_platforms``)."""
-    from gateway.config import load_gateway_config
+    from hermes_agent.gateway.config import load_gateway_config
     return load_gateway_config().get_connected_platforms()
 
 
 def _connected_platform_labels() -> list:
-    from gateway.platform_registry import platform_registry
+    from hermes_agent.gateway.platform_registry import platform_registry
     return [getattr(platform_registry.get(p.value), "label", p.value) for p in _connected_platforms()]
 
 

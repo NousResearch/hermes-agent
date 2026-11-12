@@ -52,8 +52,8 @@ class TestGatewayPinningFailsClosed:
     def _entry(session_id):
         from datetime import datetime
 
-        from gateway.config import Platform
-        from gateway.session import SessionEntry
+        from hermes_agent.gateway.config import Platform
+        from hermes_agent.gateway.session import SessionEntry
 
         return SessionEntry(
             session_key="agent:main:telegram:group:-100:4",
@@ -72,8 +72,8 @@ class TestGatewayPinningFailsClosed:
         compression_error=None,
         switched_entry=None,
     ):
-        from gateway.run import GatewayRunner
-        from gateway.session import AsyncSessionStore
+        from hermes_agent.gateway.run import GatewayRunner
+        from hermes_agent.gateway.session import AsyncSessionStore
 
         runner = object.__new__(GatewayRunner)
         db = MagicMock()
@@ -172,8 +172,8 @@ class TestGatewayPinningFailsClosed:
 
     @pytest.mark.asyncio
     async def test_compression_parent_follows_real_sessiondb_lineage(self, tmp_path):
-        from gateway.run import GatewayRunner
-        from gateway.session import AsyncSessionStore
+        from hermes_agent.gateway.run import GatewayRunner
+        from hermes_agent.gateway.session import AsyncSessionStore
         from hermes_agent.hermes_state import AsyncSessionDB, SessionDB
 
         session_db = SessionDB(db_path=tmp_path / "state.db")
@@ -214,9 +214,9 @@ async def test_pending_pin_respects_concurrent_boundary(tmp_path, boundary):
     import asyncio
     from types import SimpleNamespace
 
-    from gateway.config import GatewayConfig, Platform
-    from gateway.run import GatewayRunner
-    from gateway.session import AsyncSessionStore, SessionSource, SessionStore
+    from hermes_agent.gateway.config import GatewayConfig, Platform
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import AsyncSessionStore, SessionSource, SessionStore
 
     store = SessionStore(tmp_path / "sessions", GatewayConfig())
     source = SessionSource(platform=Platform.TELEGRAM, chat_id="test-chat", chat_type="dm", user_id="test-user")
@@ -266,10 +266,10 @@ async def test_compression_uncertainty_keeps_durable_completion_retryable(
     from types import SimpleNamespace
     from typing import Any, cast
 
-    from gateway.config import GatewayConfig, Platform
-    from gateway.platforms.base import BasePlatformAdapter
-    from gateway.run import GatewayRunner, _profile_runtime_scope
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.config import GatewayConfig, Platform
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter
+    from hermes_agent.gateway.run import GatewayRunner, _profile_runtime_scope
+    from hermes_agent.gateway.session import SessionSource
 
     with _profile_runtime_scope(tmp_path):
         runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
@@ -456,10 +456,10 @@ async def test_delegate_completion_preserves_real_route_ownership(
     from types import SimpleNamespace
     from typing import Any, cast
 
-    from gateway.platforms.base import BasePlatformAdapter
-    from gateway.config import GatewayConfig, Platform
-    from gateway.run import GatewayRunner, _profile_runtime_scope
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter
+    from hermes_agent.gateway.config import GatewayConfig, Platform
+    from hermes_agent.gateway.run import GatewayRunner, _profile_runtime_scope
+    from hermes_agent.gateway.session import SessionSource
     from tools import async_delegation as ad
 
     with _profile_runtime_scope(tmp_path):

@@ -16,8 +16,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import PlatformConfig
-from gateway.platforms.api_server import APIServerAdapter
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.api_server import APIServerAdapter
 from tests.fakes.fake_llm_provider import FakeLLMServer
 from tests.fakes.redactor_plugin import REWRITE, raw_leaks, redactor_home, redactor_turn
 

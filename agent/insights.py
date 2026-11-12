@@ -79,7 +79,7 @@ def _day(ts: Any) -> str:
 
 # A source filter also matches the gateway's ``local`` rows that surface created: interactive local
 # sessions are stored as ``local`` with the surface kept in ``created_source``
-# (gateway/session_a2a.storage_source), so ``--source cli`` still finds the classic CLI's sessions.
+# (hermes_agent/gateway/session_a2a.storage_source), so ``--source cli`` still finds the classic CLI's sessions.
 _LOCAL_SURFACE = " OR ({a}source = 'local' AND {a}created_source = ?)"
 
 

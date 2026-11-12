@@ -13,10 +13,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter
-from gateway.run import GatewayRunner
-from gateway.status import flush_runtime_status_async, read_runtime_status
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.status import flush_runtime_status_async, read_runtime_status
 from tests.waiting import async_wait_until
 
 
@@ -68,7 +68,7 @@ def _runner(monkeypatch, tmp_path, platforms, create_adapter) -> GatewayRunner:
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     # Only the bundled bluebubbles plugin counts as registered here, so a None adapter elsewhere is the
     # "plugin never registered" case and a None bluebubbles adapter is "registered but failed".
-    monkeypatch.setattr("gateway.platform_registry.platform_registry.is_registered",
+    monkeypatch.setattr("hermes_agent.gateway.platform_registry.platform_registry.is_registered",
                         lambda name: name == "bluebubbles")
     runner = GatewayRunner(GatewayConfig(platforms=platforms, sessions_dir=tmp_path / "sessions"))
     monkeypatch.setattr(runner, "_create_adapter", create_adapter)
@@ -198,7 +198,7 @@ async def test_last_platform_parked_during_an_external_drain_keeps_draining_unti
     """Parking must not overwrite an active drain: status stays ``draining`` while the dashboard's
     drain holds, and the release reports ``degraded`` (not ``running``)."""
     drain = {"requested": True}
-    monkeypatch.setattr("gateway.drain_control.drain_requested", lambda: drain["requested"])
+    monkeypatch.setattr("hermes_agent.gateway.drain_control.drain_requested", lambda: drain["requested"])
     adapter = _LostMidRunAdapter()
     runner = _runner(
         monkeypatch, tmp_path, {Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")},
@@ -336,7 +336,7 @@ async def test_adapterless_platform_heals_once_its_adapter_appears(monkeypatch, 
         runner._failed_platforms[slack] = runner._startup_retry_entry(
             slack, None, PlatformConfig(enabled=True, token="***"),
         )
-        monkeypatch.setattr("gateway.platform_registry.platform_registry.is_registered", lambda name: True)
+        monkeypatch.setattr("hermes_agent.gateway.platform_registry.platform_registry.is_registered", lambda name: True)
         await runner._reconnect_failed_platform(slack, time.monotonic() + 3600)
         assert slack not in runner._failed_platforms
         assert await flush_runtime_status_async()  # status writes are queued off-thread

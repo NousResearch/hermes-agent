@@ -46,7 +46,7 @@ import plugins.platforms.slack.adapter as _slack_mod
 
 _slack_mod.SLACK_AVAILABLE = True
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.slack.adapter import SlackAdapter
 
 

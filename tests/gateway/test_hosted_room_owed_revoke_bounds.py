@@ -4,7 +4,7 @@ import base64
 import json
 import time
 
-from gateway import hosted_rooms
+from hermes_agent.gateway import hosted_rooms
 
 
 def _grant(expires_at: float, nonce: str) -> str:
@@ -21,7 +21,7 @@ def _rows(db):
 
 
 def _owe(db, grant, *, member="peer", room="ended", expires_at=None):
-    from gateway.hosted_room_peer import room_grant_hard_expiry
+    from hermes_agent.gateway.hosted_room_peer import room_grant_hard_expiry
     hosted_rooms.owe_room_grant_revoke(
         db, room_id=room, member_id=member, target_url="http://127.0.0.1:9", grant=grant,
         expires_at=room_grant_hard_expiry(grant) if expires_at is None else expires_at)

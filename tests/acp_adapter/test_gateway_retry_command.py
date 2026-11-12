@@ -12,10 +12,10 @@ import acp
 import pytest
 
 from hermes_agent.acp_adapter.gateway_server import GatewayACPAgent
-from gateway.config import GatewayConfig
-from gateway.session import SessionStore
-from gateway.session_authority import initialize_session_authority
-from gateway.session_controls import AuthorityConnection
+from hermes_agent.gateway.config import GatewayConfig
+from hermes_agent.gateway.session import SessionStore
+from hermes_agent.gateway.session_authority import initialize_session_authority
+from hermes_agent.gateway.session_controls import AuthorityConnection
 from hermes_cli.gateway_client import GatewayClientError
 from tests.acp_adapter.test_gateway_unacked_slash import SlashWire
 
@@ -45,13 +45,13 @@ async def _editor(tmp_path, monkeypatch, wire_class=SlashWire):
     executed = []
 
     async def answer(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         executed.append(event.text)
         execution_result.get()['result'] = {'final_response': 'ACK_' + event.text, 'completed': True, 'messages': []}
         return 'ACK_' + event.text
 
-    from gateway import run
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.session_local import create_local_session
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'acp': []}})
     runner = SimpleNamespace(_session_db=store._db, session_store=store, _draining=False, adapters={},
                              _handle_message=answer, _adapter_for_source=lambda source: None,

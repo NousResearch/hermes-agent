@@ -98,10 +98,10 @@ async def test_container_session_refuses_host_rollback_on_every_surface(tmp_path
     """A host checkpoint left by an earlier local session is never restored or diffed from a
     container-backed session: CLI /rollback + /diff session, gateway /rollback + /diff session,
     and the rollback.restore RPC all answer with the backend reason instead."""
-    from gateway import run as gateway_run
-    from gateway.config import Platform
-    from gateway.platforms.event import MessageEvent
-    from gateway.session import SessionSource
+    from hermes_agent.gateway import run as gateway_run
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.session import SessionSource
     from hermes_cli.cli_commands_mixin import CLICommandsMixin
     from hermes_agent.tui_gateway import server
 

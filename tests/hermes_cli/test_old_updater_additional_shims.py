@@ -19,7 +19,7 @@ from tests.compat.old_updater_support import (
     ("", None), ("hermes -p ops gateway run", "ops"), ("hermes --profile=ops gateway run", "ops"),
 ])
 def test_live_profile_parser_does_no_external_work(command, profile, no_external_work):
-    from gateway.status import profile_flag_value
+    from hermes_agent.gateway.status import profile_flag_value
 
     # This classifier still protects current gateway identity checks.
     assert profile_flag_value(command) == profile

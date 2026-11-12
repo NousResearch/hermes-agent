@@ -9,11 +9,11 @@ import json
 
 import pytest
 
-from gateway import run_runtime
-from gateway.platforms.api_server import _openai_error
-from gateway.platforms.api_server_authority_runs import store_error_response
-from gateway.session_api_turn import AdmissionQueued, observe_api_turn
-from gateway.session_contract import Submission
+from hermes_agent.gateway import run_runtime
+from hermes_agent.gateway.platforms.api_server import _openai_error
+from hermes_agent.gateway.platforms.api_server_authority_runs import store_error_response
+from hermes_agent.gateway.session_api_turn import AdmissionQueued, observe_api_turn
+from hermes_agent.gateway.session_contract import Submission
 from hermes_agent.hermes_state_runtime import RuntimeStoreError, get_session_admission
 from tests.gateway.test_profile_retire_stops_turns import ACTOR, REF, _Agent, _authority
 from tests.waiting import async_wait_until
@@ -22,12 +22,12 @@ from tests.waiting import async_wait_until
 async def _observe_queued_then(tmp_path, monkeypatch, release):
     """One running turn holds the authority busy; a second session's API admission is queued and
     observed. ``release(authority, admission_id)`` ends the observation; returns (outcome, row)."""
-    from gateway import session_finite
+    from hermes_agent.gateway import session_finite
     agent = _Agent()
     db, authority, execute, _returned = _authority(tmp_path, agent)
     monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
     monkeypatch.setattr(run_runtime, 'TURN_SETTLE_SECONDS', 1.0, raising=False)
-    monkeypatch.setattr('gateway.session_cron.unbind_owner', lambda authority: None)
+    monkeypatch.setattr('hermes_agent.gateway.session_cron.unbind_owner', lambda authority: None)
     try:
         with db:
             await authority.submit(ACTOR, Submission(request_id='running', ref=REF, payload={'text': 'a'}, intent='queue'))

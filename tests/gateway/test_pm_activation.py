@@ -10,7 +10,7 @@ import pytest
 def test_gateway_main_survives_pm_failure(monkeypatch, tmp_path):
     monkeypatch.setattr("pm.paths.install_root", lambda: tmp_path)
     import pm
-    import gateway.run as gateway
+    import hermes_agent.gateway.run as gateway
 
     failed = []
     def broken():
@@ -38,7 +38,7 @@ async def test_start_gateway_never_prompts_for_a_lazy_install_on_an_inherited_tt
     import sys
     from types import SimpleNamespace
 
-    import gateway.run_bootstrap as bootstrap
+    import hermes_agent.gateway.run_bootstrap as bootstrap
     from pm import client, extras
 
     prompts, synced = [], []
@@ -53,6 +53,6 @@ async def test_start_gateway_never_prompts_for_a_lazy_install_on_an_inherited_tt
         return True
 
     monkeypatch.setattr(bootstrap, "_start_gateway_runtime", runtime)
-    import gateway.run as gateway
+    import hermes_agent.gateway.run as gateway
     assert await gateway.start_gateway() is True
     assert prompts == [] and synced == [["fal"]]

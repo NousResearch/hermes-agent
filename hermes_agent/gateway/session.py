@@ -14,13 +14,13 @@ from typing import Dict, List, Optional, Any
 
 from .config import Platform, GatewayConfig, HomeChannel
 from .whatsapp_identity import canonical_whatsapp_identifier
-from gateway.session_detached import detached_route_of
-from gateway.session_identity import transport_profile_of
-from gateway.session_persistence import SessionPersistenceMixin, _DB_UNPINNED
-from gateway.session_prompt_pin import SessionPromptPinMixin, sanitize_prompt_pin
-from gateway.session_recovery import SessionRecoveryMixin
-from gateway.session_lifecycle import SessionLifecycleMixin, _iso, _new_session_id, _now, _parse_iso
-from gateway.session_transcript import SessionTranscriptMixin
+from hermes_agent.gateway.session_detached import detached_route_of
+from hermes_agent.gateway.session_identity import transport_profile_of
+from hermes_agent.gateway.session_persistence import SessionPersistenceMixin, _DB_UNPINNED
+from hermes_agent.gateway.session_prompt_pin import SessionPromptPinMixin, sanitize_prompt_pin
+from hermes_agent.gateway.session_recovery import SessionRecoveryMixin
+from hermes_agent.gateway.session_lifecycle import SessionLifecycleMixin, _iso, _new_session_id, _now, _parse_iso
+from hermes_agent.gateway.session_transcript import SessionTranscriptMixin
 # Inverse of _session_key_namespace, defined storage-side (hermes_state must not import gateway).
 from hermes_agent.hermes_state_keys import profile_from_session_key_namespace
 
@@ -105,7 +105,7 @@ class SessionSource:
     # ``relay``, so authz must key upstream trust off THIS flag.
     delivered_via_upstream_relay: bool = False
     # Wire-INVISIBLE: the key of a conversation its chat moved past, still run from the apps
-    # (gateway/session_detached.py). It replaces the chat's key, so nothing keyed by route reaches
+    # (hermes_agent/gateway/session_detached.py). It replaces the chat's key, so nothing keyed by route reaches
     # the chat's current conversation, and delivery goes nowhere.
     detached_route: Optional[str] = field(default=None, repr=False, compare=False)
 
@@ -215,7 +215,7 @@ def _should_redact_pii(platform: Platform, enabled: bool) -> bool:
     if not enabled or platform in _PII_SAFE_PLATFORMS:
         return enabled
     try:
-        from gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.platform_registry import platform_registry
         entry = platform_registry.get(platform.value)
         return bool(entry and entry.pii_safe)
     except Exception:
@@ -864,9 +864,9 @@ class SessionStore(
         # compression child row is written before its reroute is published).
         self._session_owner_hints: dict[str, str] = {}
         # Called with (key, session id, origin) once a route names another conversation; the owner
-        # wires it so a conversation its chat moved past detaches at once (gateway/session_detached.py).
+        # wires it so a conversation its chat moved past detaches at once (hermes_agent/gateway/session_detached.py).
         self.route_named = None
-        from gateway.session_db_recovery import RecoverableHandleCache
+        from hermes_agent.gateway.session_db_recovery import RecoverableHandleCache
 
         self._db_handle_cache = RecoverableHandleCache(
             handles=self._db_handles, lock=self._db_handles_lock
@@ -924,7 +924,7 @@ class SessionStore(
         concurrent ``force_new``) share the owner's result so only one transition and SQLite row is
         created. ``touch_activity=False`` (internal events) preserves the user-activity clock."""
         if detached_route_of(source):
-            from gateway.session_detached import detached_entry
+            from hermes_agent.gateway.session_detached import detached_entry
             return detached_entry(self, source)
         session_key = self._generate_session_key(source)
         inflight_lock = self._lazy("_inflight_lock", threading.Lock)
@@ -1190,7 +1190,7 @@ class SessionStore(
             now = _now()
             session_id = _new_session_id(now)
             if old_entry.origin and old_entry.origin.platform == Platform.LOCAL:
-                from gateway.session_local_recovery import reset_local_session
+                from hermes_agent.gateway.session_local_recovery import reset_local_session
                 return reset_local_session(self, old_entry, session_id, now, display_name)
             db_create_kwargs = self._session_create_kwargs(
                 session_id=session_id, session_key=session_key, origin=old_entry.origin,

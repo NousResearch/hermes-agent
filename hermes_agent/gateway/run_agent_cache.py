@@ -1,6 +1,6 @@
 """Agent cache, session model overrides, turn leases, run generations and conversation-scope reset
-for GatewayRunner (MRO mixin). ``gateway.run`` internals are imported lazily inside method bodies
-(import cycle), so ``patch("gateway.run.X")`` keeps intercepting them at call time."""
+for GatewayRunner (MRO mixin). ``hermes_agent.gateway.run`` internals are imported lazily inside method bodies
+(import cycle), so ``patch("hermes_agent.gateway.run.X")`` keeps intercepting them at call time."""
 
 from __future__ import annotations
 
@@ -13,20 +13,20 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.interrupt_compat import _accepts_keyword
-from gateway.config import Platform
-from gateway.session import SessionSource, build_session_context_prompt
-from gateway.session_prompt_pin import PROMPT_PIN_VERSION, sanitize_prompt_pin
-from gateway.run_shutdown import _log_suppressed
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.session import SessionSource, build_session_context_prompt
+from hermes_agent.gateway.session_prompt_pin import PROMPT_PIN_VERSION, sanitize_prompt_pin
+from hermes_agent.gateway.run_shutdown import _log_suppressed
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES
 from hermes_cli.observability.shared_metrics_busy import observe_running_chats
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner
-    from gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 # Override fields layered onto runtime kwargs when non-None (partial overrides don't clobber defaults).
 _OVERRIDE_APPLY_KEYS = (
@@ -150,7 +150,7 @@ class GatewayAgentCacheMixin:
         """Lazily restore a persisted /model override after a gateway restart: non-secret parts
         (model/provider/base_url) are written through on /model and read back on first use; api_key
         is never persisted and is re-resolved. No-op when an in-memory override or nothing exists."""
-        from gateway.run import _resolve_runtime_agent_kwargs_for_provider
+        from hermes_agent.gateway.run import _resolve_runtime_agent_kwargs_for_provider
         store = getattr(self, "session_store", None)
         if self._session_model_override(session_key) is not None or store is None:
             return
@@ -199,7 +199,7 @@ class GatewayAgentCacheMixin:
     def _apply_session_model_override(self, session_key: str, model: str, runtime_kwargs: dict) -> tuple:
         """Apply /model session overrides (precedence over config.yaml defaults; ``None`` fields skipped
         so partial overrides don't clobber defaults), returning (model, runtime_kwargs)."""
-        from gateway.run import _credential_pool_for_provider
+        from hermes_agent.gateway.run import _credential_pool_for_provider
         override = self._session_model_override(session_key)
         if not override:
             return model, runtime_kwargs
@@ -265,7 +265,7 @@ class GatewayAgentCacheMixin:
         policy model, then channel_overrides on the chat, thread or parent, then the global model),
         canonicalized as ``AIAgent.__init__`` did on the agent's PRIMARY route. The route a fallback
         moved it to would make that fallback look primary."""
-        from gateway.run import _resolve_gateway_model
+        from hermes_agent.gateway.run import _resolve_gateway_model
         primary = getattr(agent, "_primary_runtime", None) or {}
         provider = primary.get("provider", getattr(agent, "provider", "")) or ""
         # An override whose provider was unavailable this turn ran on the default route instead.
@@ -299,7 +299,7 @@ class GatewayAgentCacheMixin:
         Passes ONLY ``active_agents`` so the read-merge-write keeps lifecycle state (gateway_state=None
         would clobber it). Best-effort: a failed write must never disrupt a turn. The running-turn
         set also feeds the day's peak of chats running at once (in memory, see shared_metrics_busy)."""
-        from gateway.run import _write_runtime_status_quiet
+        from hermes_agent.gateway.run import _write_runtime_status_quiet
         _write_runtime_status_quiet(active_agents=self._active_work_count())
         observe_running_chats(key for key, _ in self._running_agent_items())
 
@@ -317,7 +317,7 @@ class GatewayAgentCacheMixin:
         state = self._peek_session_state(session_key)
         if state is not None:
             if state.turn.lease is not None:
-                from gateway.active_lease_io import release_soon
+                from hermes_agent.gateway.active_lease_io import release_soon
                 release_soon(state.turn.lease)
             # One structured reset instead of a drifting pop-list. Turn-lease tokens are deliberately NOT
             # cleared here — _release_turn_lease owns them.
@@ -413,7 +413,7 @@ class GatewayAgentCacheMixin:
         restore snapshot). Adding a new conversation-scoped dict now means adding its attribute name to
         _CONVERSATION_SCOPED_STATE below; every boundary picks it up automatically.
         """
-        from gateway.run import _CONVERSATION_SCOPED_STATE
+        from hermes_agent.gateway.run import _CONVERSATION_SCOPED_STATE
         if not session_key:
             return
         state = self._peek_session_state(session_key)
@@ -511,7 +511,7 @@ class GatewayAgentCacheMixin:
         ``tool_reason`` names a system issuer (eviction); ``None`` keeps the user attribution of /stop and /new.
         Returns the post-bump generation."""
         from contextvars import copy_context
-        from gateway.run import _AGENT_PENDING_SENTINEL, _reap_gateway_turn_processes, request_hard_interrupt
+        from hermes_agent.gateway.run import _AGENT_PENDING_SENTINEL, _reap_gateway_turn_processes, request_hard_interrupt
         state = self._peek_session_state(session_key)
         running_agent = state.turn.agent if state else None
         _process_task_id, _process_baseline = "", None
@@ -553,7 +553,7 @@ class GatewayAgentCacheMixin:
         _generation_at_interrupt = self._interrupt_running_turn(
             session_key, interrupt_reason=interrupt_reason, invalidation_reason=invalidation_reason,
         )
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from hermes_agent.gateway.run import _AGENT_PENDING_SENTINEL
         # The turn's hard interrupt reaches only its in-turn children; background delegations were
         # detached at dispatch and would otherwise run to completion and wake the session later.
         # Each interrupted unit still returns as a completion (status=interrupted, partial output).
@@ -620,7 +620,7 @@ class GatewayAgentCacheMixin:
         But the snapshot is taken at agent-BUILD time — before this turn writes its own user + assistant (+
         tool) rows — and the cache entry is never rewritten on a reuse. See #45966.
         """
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from hermes_agent.gateway.run import _AGENT_PENDING_SENTINEL
         _cache_lock = getattr(self, "_agent_cache_lock", None)
         _cache = getattr(self, "_agent_cache", None)
         if self._session_db is None or not session_id or not _cache_lock or _cache is None:
@@ -777,7 +777,7 @@ class GatewayAgentCacheMixin:
             return channel_prompt, source
         pinned_prompt, pinned_parent = pin
         if pinned_parent and not source.parent_chat_id:
-            from gateway.session_identity import replace_source
+            from hermes_agent.gateway.session_identity import replace_source
             source = replace_source(source, parent_chat_id=pinned_parent)
         return pinned_prompt, source
 
@@ -795,7 +795,7 @@ class GatewayAgentCacheMixin:
         discord_ids: tuple = ()
         discord_tools = ""
         if src.platform == Platform.DISCORD:
-            from gateway.session import _discord_tools_loaded
+            from hermes_agent.gateway.session import _discord_tools_loaded
             discord_tools = "1" if _discord_tools_loaded() else "0"
             # message_id is not rendered (value nor presence): it arrives per-turn in the user message.
             discord_ids = (
@@ -806,7 +806,7 @@ class GatewayAgentCacheMixin:
         # flip re-renders once instead of serving a stale pinned note for the rest of the session.
         slack_tools = ""
         if src.platform == Platform.SLACK:
-            from gateway.session import _slack_tools_loaded
+            from hermes_agent.gateway.session import _slack_tools_loaded
             slack_tools = "1" if _slack_tools_loaded() else "0"
         try:
             from hermes_constants import display_hermes_home
@@ -844,7 +844,7 @@ class GatewayAgentCacheMixin:
         ``release_after_turn``: an agent still mid-turn is released when that turn's running slot
         clears (``_release_running_agent_state``) instead of being left to the garbage collector.
         """
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from hermes_agent.gateway.run import _AGENT_PENDING_SENTINEL
         # Prompt-stability state rides the agent-cache lifecycle: a fresh agent must re-render its
         # session-context bytes (the pin) and re-see the current voice-channel state once.
         state = self._peek_session_state(session_key)
@@ -911,7 +911,7 @@ class GatewayAgentCacheMixin:
         from agent.secret_scope import current_secret_scope, is_multiplex_active
         scope = nullcontext()
         if is_multiplex_active():
-            from gateway.run import _profile_runtime_scope
+            from hermes_agent.gateway.run import _profile_runtime_scope
             from hermes_constants import get_default_hermes_root, get_hermes_home, hermes_home_key
             owner = None
             store = getattr(self, "session_store", None)
@@ -977,10 +977,10 @@ class GatewayAgentCacheMixin:
     def _agent_cache_bounds(self):
         """Operator-configured agent-cache bounds, resolved once per process (lazily, not in
         ``__init__``, so ``__new__``-constructed test / slash-command runners work too)."""
-        from gateway.run import _load_gateway_config
+        from hermes_agent.gateway.run import _load_gateway_config
         bounds = getattr(self, "_agent_cache_bounds_cache", None)
         if bounds is None:
-            from gateway.agent_cache_pressure import resolve_agent_cache_bounds
+            from hermes_agent.gateway.agent_cache_pressure import resolve_agent_cache_bounds
             try:
                 bounds = resolve_agent_cache_bounds(_load_gateway_config())
             except Exception as _e:
@@ -994,12 +994,12 @@ class GatewayAgentCacheMixin:
 
     def _agent_cache_cap(self) -> int:
         """Effective LRU cap — the configured override, else the default."""
-        from gateway.run import _AGENT_CACHE_MAX_SIZE
+        from hermes_agent.gateway.run import _AGENT_CACHE_MAX_SIZE
         return self._agent_cache_bounds().max_size or _AGENT_CACHE_MAX_SIZE
 
     def _agent_cache_idle_ttl(self) -> float:
         """Effective idle TTL in seconds — configured override, else default."""
-        from gateway.run import _AGENT_CACHE_IDLE_TTL_SECS
+        from hermes_agent.gateway.run import _AGENT_CACHE_IDLE_TTL_SECS
         return self._agent_cache_bounds().idle_ttl_secs or _AGENT_CACHE_IDLE_TTL_SECS
 
     def _sweep_agent_cache_under_pressure(self) -> int:
@@ -1015,8 +1015,8 @@ class GatewayAgentCacheMixin:
         Pressure eviction bounds that heap before the cgroup throttles and SIGTERM can
         no longer flush inside systemd's stop timeout (#80764).
         """
-        from gateway.run import _AGENT_PENDING_SENTINEL
-        from gateway.agent_cache_pressure import (
+        from hermes_agent.gateway.run import _AGENT_PENDING_SENTINEL
+        from hermes_agent.gateway.agent_cache_pressure import (
             plan_pressure_evictions, read_anon_rss_mb, transcript_persistence_caught_up
         )
         bounds = self._agent_cache_bounds()

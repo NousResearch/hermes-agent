@@ -20,8 +20,8 @@ def approval_text_prompt(adapter: Any, chat_id: str, session_key: str, request_i
     """The plain-text approval prompt for ``adapter``. An adapter that splits long messages gets the
     default layout; one whose send cuts text gets ``_cutting_text_prompt``, and when even that cannot
     show the whole command the request is marked Deny-only like a card that could not."""
-    from gateway.platforms.base_exec_approval import send_cannot_prove_whole
-    from gateway.run import _format_exec_approval_fallback
+    from hermes_agent.gateway.platforms.base_exec_approval import send_cannot_prove_whole
+    from hermes_agent.gateway.run import _format_exec_approval_fallback
     if getattr(adapter, "splits_long_messages", True):
         text = _format_exec_approval_fallback(command, description, prefix, **flags)
         if not send_cannot_prove_whole(adapter, chat_id, text):  # a capped split drops the instructions too
@@ -39,8 +39,8 @@ def _cutting_text_prompt(adapter: Any, chat_id: str, command: str, description: 
     """``(prompt, deny_only)``: instructions and deadline ahead of the command, so a cut can only
     shorten the command; when the whole prompt does not fit, a shortened command and Deny alone.
     LINE has no ``MAX_MESSAGE_LENGTH``, so its 4096 default is used: conservative, never cut."""
-    from gateway.platforms.base import fit_prefix
-    from gateway.platforms.base_exec_approval import (
+    from hermes_agent.gateway.platforms.base import fit_prefix
+    from hermes_agent.gateway.platforms.base_exec_approval import (
         approval_timeout_seconds, code_fence, ea_header_text, fit_fenced, ea_reason_label_text, format_approval_deadline_line)
     limit = adapter.max_message_length_for_chat(chat_id)
     measure = adapter.message_len_fn_for_chat(chat_id)

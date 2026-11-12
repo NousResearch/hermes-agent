@@ -160,7 +160,7 @@ def _socket_path(home: Path) -> Path:
     target = Path(data.decode("utf-8").strip())
     if not target.is_absolute():
         raise DiscoveryError("invalid_control_pointer")
-    from gateway.control_socket import _home_hash
+    from hermes_agent.gateway.control_socket import _home_hash
     # The owner may have a different TMPDIR (notably launchd/native apps).
     # Authenticate its private pointer and profile-specific directory, not our
     # process-local temporary-root preference.
@@ -174,7 +174,7 @@ def _socket_path(home: Path) -> Path:
 def query_identify(home: Path, *, timeout: float) -> dict:
     """Unlike diagnostic queries, retain timeout/access/protocol failures."""
     if os.name == "nt":
-        from gateway.runtime_bootstrap_windows import query_runtime_control
+        from hermes_agent.gateway.runtime_bootstrap_windows import query_runtime_control
         return _identify_response(query_runtime_control(
             home, b'{"protocol":1,"verb":"identify","id":1}\n', timeout))
     deadline = time.monotonic() + timeout
@@ -221,7 +221,7 @@ def _private_lock(lock: Path) -> None:
     except DiscoveryError as exc:
         if exc.reason != "unsafe_control_permissions":
             raise
-        from gateway.runtime_ownership import tighten_lock_mode
+        from hermes_agent.gateway.runtime_ownership import tighten_lock_mode
         fd = os.open(lock, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)  # windows-footgun: ok — POSIX lock only
         try:
             tighten_lock_mode(fd)
@@ -232,7 +232,7 @@ def _private_lock(lock: Path) -> None:
 
 def missing_owner_state(home: Path) -> Literal["starting", "absent", "inaccessible"]:
     """A reservation before PID/control publication already excludes a new owner."""
-    from gateway.status import _is_gateway_runtime_lock_active_strict
+    from hermes_agent.gateway.status import _is_gateway_runtime_lock_active_strict
     lock = home / "gateway.lock"
     try:
         if os.name != "nt":

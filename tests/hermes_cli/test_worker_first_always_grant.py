@@ -27,17 +27,17 @@ KEY = "recursive delete"
 
 def _snapshot(home, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
-    from gateway.run import _load_gateway_config
-    from gateway.session_managed_worker import _worker_config
-    from gateway.session_policy import build_policy
+    from hermes_agent.gateway.run import _load_gateway_config
+    from hermes_agent.gateway.session_managed_worker import _worker_config
+    from hermes_agent.gateway.session_policy import build_policy
     policy = build_policy({"source": "cli", "cwd": str(home)}, _load_gateway_config(home / "config.yaml"))
     return _worker_config(SimpleNamespace(profile_id=str(home)), policy)
 
 
 def _bypass_snapshot(home, monkeypatch, *, safe_mode):
     monkeypatch.setenv("HERMES_HOME", str(home))
-    from gateway.session_local import _bypass_policy
-    from gateway.session_managed_worker import _worker_config
+    from hermes_agent.gateway.session_local import _bypass_policy
+    from hermes_agent.gateway.session_managed_worker import _worker_config
     params = {"source": "cli", "cwd": str(home), "model": "m"}
     if safe_mode:
         params["safe_mode"] = True

@@ -10,10 +10,10 @@ import pytest
 
 def test_slack_pause_notice_names_the_registered_umbrella_command():
     from types import SimpleNamespace
-    from gateway.config import Platform
-    from gateway.session import SessionSource
-    from gateway.session_contract import SessionRef
-    from gateway.session_ingress import pause_notice
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session import SessionSource
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_ingress import pause_notice
     from hermes_cli.commands_platforms import slack_native_slashes, slack_subcommand_map
     assert 'discard' not in [row[0].lstrip('/') for row in slack_native_slashes()]
     assert slack_subcommand_map().get('discard')
@@ -28,20 +28,20 @@ def test_slack_pause_notice_names_the_registered_umbrella_command():
 async def test_discard_after_resume_into_a_cold_conversation_resolves_its_lost_turn(tmp_path, monkeypatch, suspended):
     """``suspended``: startup's stuck-loop guard suspends a route active across repeated restarts, which
     the get-or-create lookup rotates to a NEW session; /discard must act on the peeked one instead."""
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.platforms.base import SendResult
-    from gateway.platforms.event import MessageEvent
-    from gateway.run import GatewayRunner
-    from gateway.run_runtime import recover_profile_native_sessions
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_ingress_context import native_callback, register_transport_home
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.base import SendResult
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.run_runtime import recover_profile_native_sessions
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_ingress_context import native_callback, register_transport_home
     from hermes_constants import get_hermes_home
     from hermes_agent.hermes_state_runtime import claim_session_input, get_session_admission
     from tests.gateway.test_command_bypass_active_session import _StubAdapter
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setenv('TELEGRAM_ALLOWED_USERS', '42')
-    monkeypatch.setattr('gateway.run._hermes_home', tmp_path)
+    monkeypatch.setattr('hermes_agent.gateway.run._hermes_home', tmp_path)
     monkeypatch.setattr('hermes_agent.hermes_state.DEFAULT_DB_PATH', tmp_path / 'state.db')  # conftest repoints it per test
     runner = GatewayRunner(GatewayConfig(multiplex_profiles=False, sessions_dir=tmp_path / 'sessions'))
     adapter = _StubAdapter(PlatformConfig(enabled=True, token='fixture', typing_indicator=False), Platform.TELEGRAM)

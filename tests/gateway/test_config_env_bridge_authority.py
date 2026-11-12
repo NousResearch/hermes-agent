@@ -1,4 +1,4 @@
-"""Regression tests for the config.yaml → env var bridge in gateway/run.py.
+"""Regression tests for the config.yaml → env var bridge in hermes_agent/gateway/run.py.
 
 Guards against the 60-vs-500 bug where a stale `.env HERMES_MAX_ITERATIONS=60`
 entry silently shadowed `agent.max_turns: 500` in config.yaml because the
@@ -24,7 +24,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 def _run_gateway_import(
     hermes_home: Path, initial_env: dict[str, str], routed_home: Path | None = None
 ) -> dict[str, str]:
-    """Import gateway.run in a clean subprocess and return the post-import env.
+    """Import hermes_agent.gateway.run in a clean subprocess and return the post-import env.
 
     The bridge runs at module-import time, so simply importing is enough
     to exercise it. Running in a subprocess isolates the test from other
@@ -192,7 +192,7 @@ def test_default_turn_lease_timeout_matches_the_runtime_fallback() -> None:
     Invariant, not a snapshot: whatever the default becomes, config and the
     lease registry's DEFAULT_LEASE_WAIT must move together.
     """
-    from gateway.turn_lease import DEFAULT_LEASE_WAIT
+    from hermes_agent.gateway.turn_lease import DEFAULT_LEASE_WAIT
     from hermes_cli.config import DEFAULT_CONFIG
 
     assert (
@@ -228,7 +228,7 @@ def test_env_platform_connect_timeout_wins_over_config(hermes_home: Path) -> Non
 
 
 def test_first_import_under_a_routed_override_bridges_the_process_home(tmp_path: Path) -> None:
-    """A multiplexed backend first imports gateway.run lazily inside a routed profile's session;
+    """A multiplexed backend first imports hermes_agent.gateway.run lazily inside a routed profile's session;
     the import-time bridge must still write the LAUNCH home's config into the process env."""
     from utils import atomic_yaml_write
 

@@ -11,7 +11,7 @@ def _compressing_app(api, owner, calls):
     compression child is published, the route advances to it and the turn reports the child's
     physical id, as the TurnRunner does."""
     async def handle(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         calls.append(event.text)
         root = event.source.chat_id
         result = {'final_response': 'answer ' + event.text, 'messages': []}

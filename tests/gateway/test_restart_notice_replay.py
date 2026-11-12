@@ -12,10 +12,10 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from gateway import delivery
-import gateway.run as gateway_run
-from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
-from gateway.platforms.base import SendResult
+from hermes_agent.gateway import delivery
+import hermes_agent.gateway.run as gateway_run
+from hermes_agent.gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import SendResult
 
 ONLINE_NOTICE = "♻️ Gateway online — Hermes is back and ready."
 
@@ -52,7 +52,7 @@ def boot_notice(tmp_path, monkeypatch):
     runner._update_platform_runtime_status = Mock()
     runner._redeliver_failed_obligations_for_platform = AsyncMock()
     runner._schedule_resume_pending_sessions = Mock()
-    monkeypatch.setattr("gateway.channel_directory.build_channel_directory", AsyncMock())
+    monkeypatch.setattr("hermes_agent.gateway.channel_directory.build_channel_directory", AsyncMock())
     # Unrelated conversation recovery is isolated.
     runner._claim_pending_obligations = AsyncMock(return_value=[])
     runner._redeliver_claimed_obligations = AsyncMock(return_value=0)

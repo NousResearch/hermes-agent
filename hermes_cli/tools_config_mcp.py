@@ -234,7 +234,7 @@ def _known_tool_platforms() -> set[str]:
     known = set(PLATFORMS)
     try:
         from hermes_cli.plugins import discover_plugins
-        from gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.platform_registry import platform_registry
         discover_plugins()  # idempotent
         known.update(platform_registry.registered_names())
     except Exception:

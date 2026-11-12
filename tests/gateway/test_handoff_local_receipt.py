@@ -16,7 +16,7 @@ from tests.gateway.test_authority_cold_route_recovery import _Runner, _source
 
 @pytest.fixture(autouse=True)
 def _home(tmp_path, monkeypatch):
-    from gateway import run
+    from hermes_agent.gateway import run
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda *_path: {'platform_toolsets': {'cli': []}, 'model': {'default': 'fixture'}})
 
@@ -36,8 +36,8 @@ def _compress(authority, sid):
 
 async def _handoff(runner, authority, sid, source):
     """The handoff watcher's repoint (``GatewayStartupMixin._handoff_repoint``) on the real store."""
-    from gateway.run_startup import GatewayStartupMixin
-    from gateway.session import AsyncSessionStore
+    from hermes_agent.gateway.run_startup import GatewayStartupMixin
+    from hermes_agent.gateway.session import AsyncSessionStore
     from hermes_agent.hermes_state import AsyncSessionDB
     route = runner.session_store._generate_session_key(source)
     gateway = SimpleNamespace(_session_db=AsyncSessionDB(authority.db), session_authority=authority,
@@ -61,12 +61,12 @@ async def test_a_handed_off_bot_chat_opens_on_its_lane_after_a_restart(tmp_path,
     handoff carries the conversation the user is looking at: the lane continues the post-``/new``
     segment (the title follows it), and the earlier segment is that lane's (detached) history, never a
     local row no receipt restores."""
-    from gateway.config import Platform
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import SessionActor, SessionRef
-    from gateway.session_local import create_local_session
-    from gateway.session_local_recovery import transcript_target
-    from gateway.session_local_title import resolve_titled_session
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionActor, SessionRef
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_local_recovery import transcript_target
+    from hermes_agent.gateway.session_local_title import resolve_titled_session
     from hermes_agent.hermes_state_local import POLICY_PREFIX, local_receipt
     from hermes_agent.hermes_state_local_migration import LEGACY_PREFIX
 
@@ -130,9 +130,9 @@ async def test_a_receipt_whose_current_segment_is_still_local_is_never_released(
     """An older build handed off a chat's FIRST segment after a local ``/new``: that row moved, but
     the receipt names the post-``/new`` segment, still local. Releasing it would leave that
     transcript reachable from nowhere, so the boot heal keeps it and the conversation still opens."""
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import SessionActor
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_local import create_local_session
     from hermes_agent.hermes_state_local import local_receipt
     runner = _Runner(tmp_path)
     warm = await initialize_session_authority(runner, profile_id='fixture', instance_id='warm')
@@ -154,9 +154,9 @@ async def test_a_receipt_whose_current_segment_is_still_local_is_never_released(
 
 async def _handed_off_bot_chat(tmp_path):
     """A Bot Chat the Desktop minted and a ``/handoff`` moved to Telegram, still open in that Desktop."""
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import SessionActor
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_local import create_local_session
     runner = _Runner(tmp_path)
     warm = await initialize_session_authority(runner, profile_id='fixture', instance_id='warm')
     owner = SessionActor('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control',
@@ -174,9 +174,9 @@ async def _handed_off_bot_chat(tmp_path):
 async def test_a_handed_off_bot_chat_stays_the_bots_chat_while_its_lane_holds_it(tmp_path):
     """Bot Mode's one canonical chat per profile: a Bot or cron delivery after the restart goes to
     the handed-off Bot Chat on its lane; it is never renamed aside for a freshly minted one."""
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_bot import _target, displaceable_bot_chat
-    from gateway.session_local_title import resolve_titled_session
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_bot import _target, displaceable_bot_chat
+    from hermes_agent.gateway.session_local_title import resolve_titled_session
     _runner, _warm, owner, ref, _telegram, route = await _handed_off_bot_chat(tmp_path)
     cold = await initialize_session_authority(_Runner(tmp_path), profile_id='fixture', instance_id='cold')
     assert displaceable_bot_chat(cold, cold.db.get_session_by_title('Bot Chat')) is None
@@ -192,7 +192,7 @@ async def _bot_row(authority, actor):
     title="Bot Chat"`` its click runs. ``canonical-chat.ts`` refuses to mint when the lookup is
     empty but the roster names a chat, so the two must agree."""
     from pathlib import Path
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     from hermes_agent.tui_gateway.server import _profile_session_fields
     from hermes_agent.tui_gateway.profile_roster_cache import invalidate
     invalidate()
@@ -213,9 +213,9 @@ async def test_a_handed_off_bot_chat_whose_lane_moved_on_is_moved_aside(tmp_path
     title moves aside at once, so the Bots row's roster and its registry lookup agree at every step
     (warm, cold) and its click mints a fresh Bot Chat; the Desktop still viewing the old one is
     detached onto its own key (Teknium's ruling: still writable, never reaching the chat)."""
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_bot import _target
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_bot import _target
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     runner, warm, owner, ref, telegram, route = await _handed_off_bot_chat(tmp_path)
     assert await _bot_row(warm, owner) == ref.session_id
     runner.session_store.reset_session(route)  # Telegram's /new
@@ -236,7 +236,7 @@ async def test_a_handed_off_bot_chat_whose_lane_moved_on_is_moved_aside(tmp_path
                    'model': 'frozen', 'toolsets': [], 'hidden': True})
         fresh = opened['session_id']
     else:  # the bot's own delivery, as the Desktop's principal (whose roster reads it)
-        from gateway.session_contract import SessionActor
+        from hermes_agent.gateway.session_contract import SessionActor
         desktop = AuthorityConnection(cold, object(), {'user_id': owner.subject}).actor
         fresh = (await _target(cold, SessionActor(desktop.subject, 'fixture', owner.capabilities, 'socket')))[0].session_id
     assert fresh not in (ref.session_id, newer.session_id)
@@ -250,8 +250,8 @@ async def test_a_second_chat_handed_off_to_the_same_home_chat_supersedes_the_fir
     """Desktop A handed off its Bot Chat H to the Telegram home chat; Desktop B then hands off its
     own open chat Y there. The lane names Y now: H is history, detached for the Desktop still
     viewing it (a Stop or turn through it would act on Y), and its canonical title moves aside."""
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_local import create_local_session
     runner, warm, owner, ref, telegram, route = await _handed_off_bot_chat(tmp_path)
     other = create_local_session(warm, owner, {'request_id': 'other-chat', 'source': 'gui', 'cwd': str(tmp_path),
                                                'model': 'frozen', 'toolsets': []})
@@ -279,9 +279,9 @@ async def test_the_bots_own_bot_chat_after_a_reset_handoff_and_the_lanes_new_is_
     """The Bot Chat a delivery minted (its automatic creation id), reset locally, handed off, then the
     platform's ``/new``: the next delivery mints the next generation. The handed-off creation row
     (its name went to the head) is spent, never reused as an unfinished creation."""
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_bot import _target
-    from gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_bot import _target
+    from hermes_agent.gateway.session_contract import SessionActor
     runner = _Runner(tmp_path)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
     runner._cached_agent_for = lambda route: None
@@ -306,7 +306,7 @@ async def test_a_delivery_racing_the_lanes_new_mints_the_fresh_bot_chat(tmp_path
     """The lane's ``/new`` frees the handed-off Bot Chat's title from the store's worker thread,
     outside the titled-create lock. A delivery it lands in the middle of still lands in exactly one
     canonical Bot Chat, a fresh one, instead of failing on the title that vanished under it."""
-    from gateway import session_bot
+    from hermes_agent.gateway import session_bot
     runner, warm, owner, ref, _telegram, route = await _handed_off_bot_chat(tmp_path)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
     runner._cached_agent_for = lambda route: None
@@ -334,7 +334,7 @@ async def test_a_delivery_racing_the_lanes_new_mints_the_fresh_bot_chat(tmp_path
 def _resume_gateway(runner, authority):
     """The platform's ``/resume`` handler (``GatewayRunner._handle_resume_command``) on the real store,
     run by an admin (``--all`` widens it to every titled conversation)."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
     from hermes_agent.hermes_state import AsyncSessionDB
     gateway = object.__new__(GatewayRunner)
     gateway.adapters, gateway.config, gateway._voice_mode, gateway._running_agents = {}, runner.config, {}, {}
@@ -350,11 +350,11 @@ async def test_a_platform_resume_of_a_local_conversation_continues_its_current_h
     ``/resume --all Bot Chat`` on Telegram: the title still names X, the first segment. The lane
     continues the conversation's head, as ``/handoff`` carries it, so X2 never stays a local row
     whose receipt was released (refused ``storage_unavailable`` after a restart)."""
-    from gateway.platforms.event import MessageEvent
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import SessionActor, SessionRef
-    from gateway.session_local import create_local_session
-    from gateway.session_local_title import resolve_titled_session
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionActor, SessionRef
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_local_title import resolve_titled_session
     from hermes_agent.hermes_state_local import local_receipt
     runner = _Runner(tmp_path)
     warm = await initialize_session_authority(runner, profile_id='fixture', instance_id='warm')
@@ -389,10 +389,10 @@ async def test_a_moved_conversation_stays_writable_once_its_lane_is_taken_over(t
     was mounted: the Desktop that followed it, a viewer or the lane's inbound after a restart. Its
     route was the lane's, so it detaches onto its own key (Teknium's ruling): read, submit and control
     stay open and act on it alone, warm and after a restart."""
-    from gateway.platforms.event import MessageEvent
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import SessionActor, SessionRef
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionActor, SessionRef
+    from hermes_agent.gateway.session_local import create_local_session
     from hermes_agent.hermes_state_local import local_receipt
     runner = _Runner(tmp_path)
     warm = await initialize_session_authority(runner, profile_id='fixture', instance_id='warm')
@@ -445,17 +445,17 @@ async def test_a_moved_conversation_mounted_by_startup_recovery_stays_writable_o
     startup recovery is what mounts A, and the lane's next inbound reuses that mount. Once another
     chat is handed off to the lane, A is its history, detached: a viewer's turn runs on A alone."""
     from datetime import datetime, timedelta
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.platforms.event import MessageEvent
-    from gateway.run import GatewayRunner
-    from gateway.run_runtime import recover_profile_native_sessions
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import SessionActor
-    from gateway.session_ingress_context import native_callback, register_transport_home
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.run_runtime import recover_profile_native_sessions
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_ingress_context import native_callback, register_transport_home
+    from hermes_agent.gateway.session_local import create_local_session
     from tests.gateway.test_command_bypass_active_session import _StubAdapter
     monkeypatch.setenv('TELEGRAM_ALLOWED_USERS', '42')
-    monkeypatch.setattr('gateway.run._hermes_home', tmp_path)
+    monkeypatch.setattr('hermes_agent.gateway.run._hermes_home', tmp_path)
     monkeypatch.setattr('hermes_agent.hermes_state.DEFAULT_DB_PATH', tmp_path / 'state.db')
 
     def boot():
@@ -510,10 +510,10 @@ async def test_a_moved_conversation_resumed_on_another_chat_moves_there(tmp_path
     history now), then an admin's ``/resume --all Chat A`` brings A to chat 77. Its mount follows it:
     a turn or a Stop through it acts on chat 77, never on B, which holds 4242; and once chat 77 moves
     on (its ``/new``) A is that chat's history, detached again."""
-    from gateway.platforms.event import MessageEvent
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import SessionActor
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_local import create_local_session
     runner = _Runner(tmp_path)
     warm = await initialize_session_authority(runner, profile_id='fixture', instance_id='warm')
     owner = SessionActor('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control',
@@ -549,9 +549,9 @@ async def test_a_moved_conversation_resumed_on_another_chat_moves_there(tmp_path
 
 @pytest.mark.asyncio
 async def test_a_moved_receipt_with_a_malformed_lineage_never_stops_the_boot(tmp_path, monkeypatch):
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import SessionActor
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_local import create_local_session
     from hermes_agent.hermes_state_local import POLICY_PREFIX
     runner = _Runner(tmp_path)
     warm = await initialize_session_authority(runner, profile_id='fixture', instance_id='warm')
@@ -589,9 +589,9 @@ def _serve(tmp_path, monkeypatch):
 
 async def _boot(root, bot):
     """One gateway process: a real runner whose runtime builds one authority per served home."""
-    from gateway.config import GatewayConfig
-    from gateway.run import GatewayRunner
-    from gateway.run_runtime import initialize_gateway_runtime
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.run_runtime import initialize_gateway_runtime
     config = GatewayConfig()
     config.multiplex_profiles = True
     config._runtime_profile_homes = (('default', root), ('bot', bot))
@@ -616,14 +616,14 @@ async def test_a_named_profiles_handed_off_bot_chat_opens_on_its_lane_after_a_re
     the lane ``agent:bot:...``; after a restart the Webapp still finds and opens it there."""
     import sqlite3
     from unittest.mock import AsyncMock
-    from gateway.config import Platform
-    from gateway.run import _async_profile_runtime_scope
-    from gateway.runtime_ownership import process_ownership
-    from gateway.session_authorities import active_authority
-    from gateway.session_contract import SessionActor
-    from gateway.session_local import create_local_session
-    from gateway.session_local_recovery import transcript_target
-    from gateway.session_local_title import resolve_titled_session
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.run import _async_profile_runtime_scope
+    from hermes_agent.gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.session_authorities import active_authority
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_local_recovery import transcript_target
+    from hermes_agent.gateway.session_local_title import resolve_titled_session
     from hermes_agent.hermes_state_local import POLICY_PREFIX
     from hermes_agent.hermes_state_local_migration import LEGACY_PREFIX
 

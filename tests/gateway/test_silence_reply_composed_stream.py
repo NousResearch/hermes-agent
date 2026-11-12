@@ -11,10 +11,10 @@ import pytest
 
 import hermes_yaml as yaml
 import run_agent
-from gateway.config import Platform, StreamingConfig
-from gateway.platforms.base import SendResult
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform, StreamingConfig
+from hermes_agent.gateway.platforms.base import SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionSource
 from tests.agent import test_empty_response_recovery_persistence as recovery
 from tests.gateway.test_gateway_silence_tokens import _runner
 from tests.gateway.test_run_progress_topics import ProgressCaptureAdapter

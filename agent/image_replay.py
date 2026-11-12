@@ -77,7 +77,7 @@ def _retained_data_url(ref: str) -> Optional[str]:
     if not ref:
         return None
     from agent.image_routing import _file_to_data_url
-    from gateway.session_ingress_media import native_inputs_root
+    from hermes_agent.gateway.session_ingress_media import native_inputs_root
 
     path = Path(ref)
     try:

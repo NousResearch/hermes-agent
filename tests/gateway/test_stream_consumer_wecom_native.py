@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.stream_consumer import (
+from hermes_agent.gateway.stream_consumer import (
     GatewayStreamConsumer,
     StreamConsumerConfig,
 )
@@ -38,7 +38,7 @@ def _make_native_streaming_adapter(
 
     Records every ``send_stream_frame`` call on ``adapter.frames`` for assertions.
     """
-    from gateway.platforms.base import BasePlatformAdapter
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
     NativeStreamingAdapter = type(
         "NativeStreamingAdapter",
@@ -102,7 +102,7 @@ class TestNativeStreamingResolver:
 
     def test_class_attribute_required(self):
         """Adapter without SUPPORTS_NATIVE_STREAMING class attr returns False."""
-        from gateway.platforms.base import BasePlatformAdapter
+        from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
         Bare = type("Bare", (BasePlatformAdapter,), {"MAX_MESSAGE_LENGTH": 4096})
         Bare.__abstractmethods__ = frozenset()
@@ -699,7 +699,7 @@ class TestClarifyEagerReseed:
         per-tick fragments on a non-editable platform."""
         # Make the SECOND seed (the eager re-seed) fail while the initial seed
         # succeeds, so we actually reach the reopen-pending state first.
-        from gateway.platforms.base import BasePlatformAdapter
+        from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
         NativeStreamingAdapter = type(
             "NativeStreamingAdapter2",
@@ -859,7 +859,7 @@ class TestClarifyEagerReseed:
         直接验证 review (b).4 的结论。
         """
         # 复用 Point 5 的降级 adapter：第一次空 seed 成功、第二次（eager 再 seed）失败。
-        from gateway.platforms.base import BasePlatformAdapter
+        from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
         NativeStreamingAdapter = type(
             "NativeStreamingAdapter2b",

@@ -5,7 +5,7 @@ import types
 
 import pytest
 
-from gateway.run_api import GatewayDashboardMount
+from hermes_agent.gateway.run_api import GatewayDashboardMount
 
 
 def test_close_during_lifespan_entry_unmounts_and_exits_the_lifespan(monkeypatch):

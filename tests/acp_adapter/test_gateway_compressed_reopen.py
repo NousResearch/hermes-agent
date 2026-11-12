@@ -34,12 +34,12 @@ class _Editor:
 
 @pytest.mark.asyncio
 async def test_compressed_acp_chat_lists_and_reopens_under_its_logical_id(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_local import create_local_session
     from hermes_agent.acp_adapter.gateway_server import GatewayACPAgent
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))

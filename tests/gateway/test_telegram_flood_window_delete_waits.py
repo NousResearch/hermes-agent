@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.telegram import telegram_flood_window as fw
 from plugins.platforms.telegram.adapter import _FLOOD_INLINE_WAIT_CAP_SECS, TelegramAdapter
 from plugins.platforms.telegram.telegram_media_flood import _MAX_WINDOW_WAITS

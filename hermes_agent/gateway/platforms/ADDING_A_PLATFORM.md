@@ -27,7 +27,7 @@ status display, gateway setup, and more.
 - `apply_yaml_config_fn: (yaml_cfg, platform_cfg) -> Optional[dict]` —
   translate this platform's `config.yaml` keys into env vars and seed
   `PlatformConfig.extra`.  Lets a plugin own its YAML schema instead of
-  growing core `gateway/config.py` boilerplate per platform.  Declare a
+  growing core `hermes_agent/gateway/config.py` boilerplate per platform.  Declare a
   `(yaml_key, ENV_VAR, kind)` table and return
   `_shared.apply_yaml_bridge(platform_cfg, TABLE)`: it writes env only when
   unset (env > YAML), never under a multiplexed secondary profile's scope,
@@ -66,7 +66,7 @@ APIs, polling vs websocket, library A vs library B — the right
 structure is two adapters that share a behavior mixin. WhatsApp does
 this: `plugins/platforms/whatsapp/adapter.py` (Baileys bridge) and
 `plugins/platforms/whatsapp_cloud/adapter.py` (Meta Cloud API) both inherit
-from `WhatsAppBehaviorMixin` in `gateway/platforms/whatsapp_common.py`.
+from `WhatsAppBehaviorMixin` in `hermes_agent/gateway/platforms/whatsapp_common.py`.
 The mixin owns gating, allow-lists, mention parsing, broadcast
 filters, and the WhatsApp-flavored markdown conversion — everything
 that's platform-protocol-agnostic. Each adapter owns its transport.
@@ -88,7 +88,7 @@ Plugin-registered native handlers (`ctx.register_platform_handler(<platform>, fa
 class then handles plugins that load mid-run — the runner calls `rewire_plugin_handlers()` on every
 plugin-loaded event and only factories not yet wired on that native client run. Override it only when your
 adapter keeps a second plugin registry (Slack action handlers) or dispatches by registration order with a
-catch-all last (Telegram hoists late handlers ahead of core); see `gateway/run_plugin_rewire.py`.
+catch-all last (Telegram hoists late handlers ahead of core); see `hermes_agent/gateway/run_plugin_rewire.py`.
 
 ## Built-in Path (Core Contributors Only)
 
@@ -101,7 +101,7 @@ functionality, missing features, or inconsistent behavior.
 
 ## 1. Core Adapter (`gateway/platforms/<platform>.py`)
 
-The adapter is a subclass of `BasePlatformAdapter` from `gateway/platforms/base.py`.
+The adapter is a subclass of `BasePlatformAdapter` from `hermes_agent/gateway/platforms/base.py`.
 
 ### Required methods
 
@@ -158,7 +158,7 @@ def check_<platform>_requirements() -> bool:
 - Use `MessageEvent`, `MessageType` from `gateway.platforms.event` and `SendResult` from base
 - Use `cache_image_from_bytes`, `cache_audio_from_bytes`, `cache_document_from_bytes` for attachments
 - Filter self-messages (prevent reply loops)
-- Drop redelivered inbound IDs with `MessageDeduplicator` (`gateway/platforms/helpers.py`) held as an adapter
+- Drop redelivered inbound IDs with `MessageDeduplicator` (`hermes_agent/gateway/platforms/helpers.py`) held as an adapter
   attribute; the runner's reconnect copies its live IDs into the rebuilt adapter, a hand-rolled cache starts empty
 - Filter sync/echo messages if the platform has them
 - Redact sensitive identifiers (phone numbers, tokens) in all log output
@@ -167,7 +167,7 @@ def check_<platform>_requirements() -> bool:
 
 ---
 
-## 2. Platform Enum (`gateway/config.py`)
+## 2. Platform Enum (`hermes_agent/gateway/config.py`)
 
 Add the platform to the `Platform` enum:
 
@@ -180,7 +180,7 @@ class Platform(Enum):
 Env credentials reach the config through the plugin's own `gateway_env.py` (the template is
 `plugins/platforms/telegram/gateway_env.py`), passed to `ctx.register_platform` as
 `env_overrides=gateway_env.ENV_OVERRIDES` and `env_enable_credentials=gateway_env.ENV_ENABLE_CREDENTIALS`.
-Steps run in order; `EnvCred` (`gateway/platform_env.py`) enables the platform when the named env
+Steps run in order; `EnvCred` (`hermes_agent/gateway/platform_env.py`) enables the platform when the named env
 vars resolve and copies them into `extra`. Import only `gateway.*` there: core reads the file
 directly, without the adapter, when the plugin is not loaded.
 
@@ -192,7 +192,7 @@ ENV_OVERRIDES = (
 )
 ```
 
-Every read goes through `gateway/config.py::_getenv` (the active profile's secret scope when one
+Every read goes through `hermes_agent/gateway/config.py::_getenv` (the active profile's secret scope when one
 is bound, `os.environ` otherwise). **Never `os.getenv` here and never write `os.environ`**: under
 `gateway.multiplex_profiles` the process env is the DEFAULT profile's, so a raw read enables your
 platform for the wrong profile with the wrong credentials, and a write pins one profile's policy
@@ -205,13 +205,13 @@ reads it.
 
 ---
 
-## 3. Adapter Factory (`gateway/run.py`)
+## 3. Adapter Factory (`hermes_agent/gateway/run.py`)
 
 Add to `_instantiate_adapter()`:
 
 ```python
 elif platform == Platform.YOUR_PLATFORM:
-    from gateway.platforms.your_platform import YourAdapter, check_your_requirements
+    from hermes_agent.gateway.platforms.your_platform import YourAdapter, check_your_requirements
     if not check_your_requirements():
         logger.warning("Your Platform: dependencies not met")
         return None
@@ -225,7 +225,7 @@ before `connect()`.
 
 ---
 
-## 4. Authorization Maps (`gateway/pairing.py`, `gateway/authz_mixin.py`)
+## 4. Authorization Maps (`hermes_agent/gateway/pairing.py`, `hermes_agent/gateway/authz_mixin.py`)
 
 Declare the allowlist names in the plugin's `gateway_env.py` and pass them with
 `**gateway_env.AUTHZ`; pairing, the authz ladder, the dashboard and the startup policy gate read
@@ -246,7 +246,7 @@ answers from the routed profile's secret scope under multiplex — never add an 
 
 ---
 
-## 5. Session Source (`gateway/session.py`)
+## 5. Session Source (`hermes_agent/gateway/session.py`)
 
 If your platform needs extra identity fields (e.g., Signal's UUID alongside
 phone number), add them to the `SessionSource` dataclass with `Optional` defaults,
@@ -342,7 +342,7 @@ platform as a delivery option.
 
 ---
 
-## 11. Channel Directory (`gateway/channel_directory.py`)
+## 11. Channel Directory (`hermes_agent/gateway/channel_directory.py`)
 
 If your platform can't enumerate chats (most can't), add it to the
 session-based discovery list:

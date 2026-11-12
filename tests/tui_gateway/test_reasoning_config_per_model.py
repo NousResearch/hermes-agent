@@ -62,7 +62,7 @@ class TestTUIPerModelReasoningConfig:
 
     def test_parity_with_gateway_loader(self, monkeypatch):
         """TUI and gateway loaders return identical results for same config."""
-        import gateway.run as gateway_run
+        import hermes_agent.gateway.run as gateway_run
 
         fake_cfg = {
             "model": {"default": "openrouter/anthropic/claude-sonnet-4.6"},

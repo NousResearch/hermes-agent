@@ -8,7 +8,7 @@ from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
 def request_binding(adapter, request, durable_key):
-    from gateway.platforms.api_server import _make_request_fingerprint
+    from hermes_agent.gateway.platforms.api_server import _make_request_fingerprint
     return _make_request_fingerprint({'request': durable_key[1],
         'declared_session_key': adapter._parse_session_key_header(request)[0]},
         keys=('request', 'declared_session_key'))
@@ -33,7 +33,7 @@ def _lookup_admission(authority, store, durable_key, request_id):
     The compact pointer survives response-cache eviction and transcript retirement. A process
     loss between the authority commit and pointer commit is repaired from that exact request id.
     """
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_contract import SessionRef
     from hermes_agent.hermes_state_runtime import get_session_admission, _row
     admission_id = store.request_admission(durable_key[0])
     if admission_id:
@@ -61,8 +61,8 @@ def _lookup_admission(authority, store, durable_key, request_id):
 def _restore_admitted(found):
     """The owner-loop half of a found admission: a live one's session is restored and checked."""
     if found is not None and found[2]['status'] in {'queued', 'started'}:
-        from gateway.session_api import restore_api_session
-        from gateway.session_api_turn import check_api_turn
+        from hermes_agent.gateway.session_api import restore_api_session
+        from hermes_agent.gateway.session_api_turn import check_api_turn
         authority, ref, row = found
         restore_api_session(authority, ref.session_id)
         check_api_turn(authority, ref, row['payload'])
@@ -71,7 +71,7 @@ def _restore_admitted(found):
 
 def _lookup_call(adapter, durable_key, request_id):
     """-> ``(store, call)``: ``store.atomically(*call)`` is one ``_lookup_admission`` unit."""
-    from gateway.session_authorities import require_active_authority
+    from hermes_agent.gateway.session_authorities import require_active_authority
     authority = require_active_authority(adapter.gateway_runner, lambda: adapter._ensure_session_db())
     store = adapter._current_response_store()
     return store, (_lookup_admission, authority, store, durable_key, request_id)
@@ -84,11 +84,11 @@ async def find_admission(adapter, durable_key, request_id):
 
 
 def admitted_context(admitted, *, replay=False):
-    from gateway.session_api_turn import observe_api_turn
+    from hermes_agent.gateway.session_api_turn import observe_api_turn
     _, ref, row = admitted
     payload = row['payload']
     data = payload.get('api_turn_v1', {})
-    from gateway.session_api_media import rehydrate_api_images
+    from hermes_agent.gateway.session_api_media import rehydrate_api_images
     return dict(session_id=ref.session_id, user_message=rehydrate_api_images(payload.get('text', ''), data.get('media')),
                 conversation_history=data.get('history') or [],
                 instructions=data.get('settings', {}).get('ephemeral_system_prompt'),
@@ -100,7 +100,7 @@ def _admit_steps(adapter, durable_key, request_id, binding, run_kwargs, model):
     """The final lookup and the admission are one API admission drive (``run_steps_off_loop``
     serializes them per authority): simultaneous observers converge on one admission. Every
     store call is a yielded step, so a worker runs it: only the session restore stays on the loop."""
-    from gateway.session_api_turn import admit_api_steps
+    from hermes_agent.gateway.session_api_turn import admit_api_steps
     store, lookup = _lookup_call(adapter, durable_key, request_id)
     if not (yield partial(store.bind_request_key, durable_key[0], binding, model=model)):
         raise RuntimeStoreError('admission_conflict')
@@ -122,7 +122,7 @@ def _admit_steps(adapter, durable_key, request_id, binding, run_kwargs, model):
 
 
 async def _admit(adapter, durable_key, request_id, binding, run_kwargs, model):
-    from gateway.session_api_turn import admit_api_turn_async
+    from hermes_agent.gateway.session_api_turn import admit_api_turn_async
     *admitted, replay = await admit_api_turn_async(
         adapter, _admit_steps(adapter, durable_key, request_id, binding, run_kwargs, model))
     return admitted_context(tuple(admitted), replay=replay)
@@ -133,7 +133,7 @@ def _stored_owner(adapter, session_id):
     compression child after an out-of-place compression. The canonical admission owner is
     the lineage root (the API binding, route and FIFO stay there), so a chained turn admits
     on that root; the legacy in-process path still continues the physical tip itself."""
-    from gateway.session_authorities import active_authority
+    from hermes_agent.gateway.session_authorities import active_authority
     authority = active_authority(adapter.gateway_runner) if session_id else None
     return authority.logical_owner(session_id) if authority is not None else session_id
 
@@ -142,8 +142,8 @@ async def _bind_successor(adapter, session_id, run_kwargs):
     """Bind the session a chain moved to before any response starts. A streaming request has
     answered 200 by the time its turn admits, so the bind's retryable ``chain_moved`` refusal must
     happen here to reach the caller as a 503. The admission's own bind then finds this binding."""
-    from gateway.session_api import bind_api_steps, run_steps_off_loop
-    from gateway.session_authorities import active_authority
+    from hermes_agent.gateway.session_api import bind_api_steps, run_steps_off_loop
+    from hermes_agent.gateway.session_authorities import active_authority
     authority = active_authority(adapter.gateway_runner)
     if authority is not None:
         try:
@@ -162,9 +162,9 @@ async def _bind_successor(adapter, session_id, run_kwargs):
 async def prepare_context(adapter, request, body, gateway_session_key, durable_key, scope, key):
     """Validate first-time requests; exact retries use the accepted payload and result only."""
     import asyncio
-    from gateway.platforms.api_server import (
+    from hermes_agent.gateway.platforms.api_server import (
         _auto_truncate_response_history, _content_has_visible_payload, _error_response)
-    from gateway.platforms.api_server_openai_routes import _parse_responses_input, _parse_conversation_history
+    from hermes_agent.gateway.platforms.api_server_openai_routes import _parse_responses_input, _parse_conversation_history
     request_id = f'responses:{scope}:{key}' if durable_key else None
     if durable_key:
         admitted = await find_admission(adapter, durable_key, request_id)
@@ -190,7 +190,7 @@ async def prepare_context(adapter, request, body, gateway_session_key, durable_k
             return None, _error_response(f'Previous response not found: {previous}', 404)
         history = list(stored.get('conversation_history', []))
         chain_root = await asyncio.to_thread(_stored_owner, adapter, stored.get('session_id'))
-        from gateway.platforms.api_server_authority_runs import continued_session
+        from hermes_agent.gateway.platforms.api_server_authority_runs import continued_session
         stored_session_id, error = await continued_session(adapter, chain_root, request_id)
         if error is not None:
             return None, error
@@ -211,7 +211,7 @@ async def prepare_context(adapter, request, body, gateway_session_key, durable_k
         gateway_session_key=gateway_session_key, model_alias=body.get('model'))
     if error is not None:
         return None, error
-    from gateway.platforms.api_server import _request_relay_metadata
+    from hermes_agent.gateway.platforms.api_server import _request_relay_metadata
     run_kwargs = dict(user_message=user_message, conversation_history=history,
         ephemeral_system_prompt=instructions, session_id=session_id,
         gateway_session_key=gateway_session_key, bind_declared_conversation=declared_selected,

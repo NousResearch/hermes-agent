@@ -10,16 +10,16 @@ from types import SimpleNamespace
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import PlatformConfig
-from gateway.platforms.api_server import APIServerAdapter
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.api_server import APIServerAdapter
 
 
 @pytest_asyncio.fixture
 async def door(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     from hermes_agent.hermes_state import SessionDB

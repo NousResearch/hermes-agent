@@ -4,8 +4,8 @@ import time
 
 import pytest
 
-from gateway import hosted_room_discussion as discussion
-from gateway import hosted_room_driver as driver
+from hermes_agent.gateway import hosted_room_discussion as discussion
+from hermes_agent.gateway import hosted_room_driver as driver
 from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService
 from tests.tui_gateway.test_hosted_room_service import _FakeRPC, _server
 

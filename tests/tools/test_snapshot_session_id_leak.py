@@ -39,7 +39,7 @@ def test_regex_matches_bridged_session_vars():
     rx = re.compile(_SNAPSHOT_EXCLUDED_ENV_REGEX)
     # Every var the gateway bridges, and the delegate_task marker, must be excluded.
     from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
-    from gateway.session_context import _VAR_MAP
+    from hermes_agent.gateway.session_context import _VAR_MAP
 
     for name in (*_VAR_MAP, DELEGATED_CHILD_ENV_MARKER):
         line = f'declare -x {name}="whatever"'
@@ -56,7 +56,7 @@ def test_regex_matches_bridged_session_vars():
 def test_shared_snapshot_no_cross_session_leak(tmp_path):
     import threading
 
-    from gateway.session_context import _VAR_MAP, _UNSET, set_session_vars
+    from hermes_agent.gateway.session_context import _VAR_MAP, _UNSET, set_session_vars
     from tools.environments.local import LocalEnvironment
 
     env = LocalEnvironment(cwd=str(tmp_path), timeout=30)
@@ -103,7 +103,7 @@ def test_export_dump_drops_every_bridged_var_and_the_delegation_marker():
     """Run the real dump: nothing the gateway bridges per command, nor the
     delegate_task marker, may survive ``export -p``; ordinary exports must."""
     from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
-    from gateway.session_context import _VAR_MAP
+    from hermes_agent.gateway.session_context import _VAR_MAP
 
     scoped = [*_VAR_MAP, DELEGATED_CHILD_ENV_MARKER]
     exports = "; ".join([f'export {n}="x"' for n in scoped] + ['export HERMES_HOME="/h"', 'export MYVAR="keep"'])

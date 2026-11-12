@@ -113,7 +113,7 @@ WindowsApps 软件包中的可执行文件可能无法由包外 Python 启动，
 
 Python 在 Windows 上的默认 stdio 使用控制台的活动代码页（通常是 cp1252 或 cp437）。Hermes 的横幅、斜杠命令列表、工具输出、Rich 面板和技能描述均包含 Unicode 字符。若不加干预，任何此类内容都会导致 `UnicodeEncodeError: 'charmap' codec can't encode character…` 崩溃。
 
-修复逻辑位于 `hermes_cli/stdio.py::configure_windows_stdio()`，在每个入口点（`cli.py::main`、`hermes_cli/main.py::main`、`gateway/run.py::main`）的早期调用。它会：
+修复逻辑位于 `hermes_cli/stdio.py::configure_windows_stdio()`，在每个入口点（`cli.py::main`、`hermes_cli/main.py::main`、`hermes_agent/gateway/run.py::main`）的早期调用。它会：
 
 1. 通过 `kernel32.SetConsoleCP` / `SetConsoleOutputCP` 将控制台代码页切换为 CP_UTF8（65001）。
 2. 使用 `errors='replace'` 将 `sys.stdout` / `sys.stderr` / `sys.stdin` 重新配置为 UTF-8。
@@ -268,7 +268,7 @@ hermes uninstall
 
 在 Linux 和 macOS 上，POSIX 惯用法 `os.kill(pid, 0)` 是一个无操作的权限检查："这个 PID 是否存活且我能向它发信号？"在 Windows 上，Python 的 `os.kill` 将 `sig=0` 映射到 `CTRL_C_EVENT`——两者在整数值 0 上发生碰撞——并通过 `GenerateConsoleCtrlEvent(0, pid)` 将 Ctrl+C 广播到包含目标 PID 的**整个控制台进程组**。这是 [bpo-14484](https://bugs.python.org/issue14484)，自 2012 年起一直未修复，因为修改它会破坏依赖当前行为的脚本。
 
-后果：任何通过 `os.kill(pid, 0)` 检查"此 PID 是否存活"的代码路径，在 Windows 上都会静默地杀死目标进程。Hermes 已将所有此类位置（11 个文件中的 14 处）迁移到 `gateway.status._pid_exists()`，该函数使用 `psutil.pid_exists()`（在 Windows 上底层使用 `OpenProcess + GetExitCodeProcess`——无信号）。如果你在编写插件或补丁，请直接使用 `psutil.pid_exists()` 或 `gateway.status._pid_exists()`——永远不要用 `os.kill(pid, 0)`。
+后果：任何通过 `os.kill(pid, 0)` 检查"此 PID 是否存活"的代码路径，在 Windows 上都会静默地杀死目标进程。Hermes 已将所有此类位置（11 个文件中的 14 处）迁移到 `hermes_agent.gateway.status._pid_exists()`，该函数使用 `psutil.pid_exists()`（在 Windows 上底层使用 `OpenProcess + GetExitCodeProcess`——无信号）。如果你在编写插件或补丁，请直接使用 `psutil.pid_exists()` 或 `hermes_agent.gateway.status._pid_exists()`——永远不要用 `os.kill(pid, 0)`。
 
 `scripts/check-windows-footguns.py` 在 CI 中强制执行此规则：任何新的 `os.kill(pid, 0)` 调用都会导致 `Windows footguns (blocking)` 检查失败，除非该行带有 `# windows-footgun: ok — <reason>` 标记。
 

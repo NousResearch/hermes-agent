@@ -15,10 +15,10 @@ import pytest_asyncio
 
 @pytest_asyncio.fixture
 async def owner(tmp_path, monkeypatch):
-    from gateway.config import GatewayConfig, Platform
-    from gateway.session import SessionSource, SessionStore
-    from gateway.session_authority import LiveSession, initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.config import GatewayConfig, Platform
+    from hermes_agent.gateway.session import SessionSource, SessionStore
+    from hermes_agent.gateway.session_authority import LiveSession, initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
@@ -43,7 +43,7 @@ async def owner(tmp_path, monkeypatch):
         return {row['id']: row for row in reply['result']['sessions']}
 
     async def submit(text):
-        from gateway.session_contract import SessionRef, Submission
+        from hermes_agent.gateway.session_contract import SessionRef, Submission
         await authority.submit(connection.actor, Submission(text, SessionRef('live', 'chat'), {'text': text}, 'queue'))
         await asyncio.wait_for(started.wait(), 5)
 

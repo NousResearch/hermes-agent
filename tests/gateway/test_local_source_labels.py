@@ -5,14 +5,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_controls import AuthorityConnection
+from hermes_agent.gateway.session_controls import AuthorityConnection
 
 
 async def _authority(tmp_path, monkeypatch):
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway import run
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {'default': 'fixture'}, 'platform_toolsets': {'cli': []}})
     monkeypatch.setattr(run, '_resolve_gateway_model', lambda config: 'fixture')

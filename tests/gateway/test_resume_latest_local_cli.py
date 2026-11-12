@@ -11,15 +11,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_policy import SURFACES
+from hermes_agent.gateway.session_policy import SURFACES
 
 
 def _owner(home, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import SessionAuthority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     import hermes_agent.hermes_state_runtime as rt
     home.mkdir(parents=True, exist_ok=True)
     (home / 'config.yaml').write_text(json.dumps({'model': {'default': 'm'}}))
@@ -108,7 +108,7 @@ def _set_created(db, sid, value):
 
 
 def _reset(authority, store, sid, child):
-    from gateway.session import SessionEntry
+    from hermes_agent.gateway.session import SessionEntry
     from hermes_agent.hermes_state_local import local_receipt
     from hermes_agent.hermes_state_local_lineage import reset_local_target
 

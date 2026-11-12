@@ -9,8 +9,8 @@ from types import SimpleNamespace
 import pytest
 
 from agent.session_activity import ActivityProvenance, build_activity_snapshot
-from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
-from gateway.session_stall import (
+from hermes_agent.gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
+from hermes_agent.gateway.session_stall import (
     resolve_session_idle_seconds_from_activity,
     should_clear_session_stall_notification,
     should_emit_session_stall_notification,
@@ -156,8 +156,8 @@ def _runner_for_stall(adapter: _FakeAdapter) -> GatewayRunner:
 
 
 def _pending_event(chat_id: str = "chat-1", thread_id: str | None = None):
-    from gateway.session import SessionSource
-    from gateway.config import Platform
+    from hermes_agent.gateway.session import SessionSource
+    from hermes_agent.gateway.config import Platform
     source = SessionSource(chat_id=chat_id, thread_id=thread_id, platform=Platform.TELEGRAM)
     return SimpleNamespace(text="follow-up", source=source, timestamp=time.time())
 
@@ -394,7 +394,7 @@ async def test_check_session_stalls_retries_after_soft_send_failure():
             self.calls = 0
 
         async def send(self, chat_id, content, metadata=None):
-            from gateway.platforms.base import SendResult
+            from hermes_agent.gateway.platforms.base import SendResult
 
             self.calls += 1
             if self.calls == 1:
@@ -482,7 +482,7 @@ async def test_check_session_stalls_bounds_wedged_send(monkeypatch):
     completes so the watcher keeps ticking, and a healthy sibling candidate
     still receives its notification in the same pass.
     """
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     monkeypatch.setattr(
         gateway_run, "_STALL_NOTIFY_SEND_TIMEOUT_SECONDS", 0.1

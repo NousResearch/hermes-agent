@@ -1,4 +1,4 @@
-"""Live hot-serve contract of a real ``python -m gateway.run`` multiplexer (Linux; loopback model).
+"""Live hot-serve contract of a real ``python -m hermes_agent.gateway.run`` multiplexer (Linux; loopback model).
 
 A profile created under the running multiplexer is served by it without a restart: ``identify``
 lists the new home, a ticket minted for it opens a session owned by this process, and ``profiles/``
@@ -30,7 +30,7 @@ pytestmark = [pytest.mark.platforms("linux"), pytest.mark.spawns_gateway_lookali
 
 def control(home, verb, params=None, timeout=10):
     request = json.dumps({'protocol': 1, 'id': 1, 'verb': verb, 'params': params or {}}).encode() + b'\n'
-    from gateway.control_socket import resolve_client_socket_path
+    from hermes_agent.gateway.control_socket import resolve_client_socket_path
     path = resolve_client_socket_path(home)
     if path is None:
         raise FileNotFoundError('control socket absent')
@@ -86,7 +86,7 @@ def mux(tmp_path, peer):
 
 def start_daemon(mux, timeout=90, *, extra_args=()):
     """Boot the multiplexer the way ``hermes gateway run`` does; the canonical gateway command-line
-    matcher (``gateway.status.looks_like_gateway_command_line``) is what the CLI's liveness probes
+    matcher (``hermes_agent.gateway.status.looks_like_gateway_command_line``) is what the CLI's liveness probes
     apply to the recorded PID, so the fixture must spawn a recognisable launcher."""
     log = mux['log'].open('a+', encoding='utf-8', errors='replace')
     proc = subprocess.Popen([sys.executable, '-m', 'hermes_cli.main', 'gateway', 'run', '--quiet', *extra_args], cwd=ROOT,

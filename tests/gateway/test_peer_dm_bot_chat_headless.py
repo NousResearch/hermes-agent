@@ -13,18 +13,18 @@ import pytest_asyncio
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import PlatformConfig
-from gateway.platforms.api_server import APIServerAdapter
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.api_server import APIServerAdapter
 
 AUTHOR = {"id": "bot:cto", "name": "cto", "is_bot": True}
 
 
 @pytest_asyncio.fixture
 async def headless(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig, Platform
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig, Platform
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     # A following Bot Chat reads the profile config by path.
@@ -48,7 +48,7 @@ async def headless(tmp_path, monkeypatch):
         executed.append((ref.session_id, row['principal_id'], row['payload']['text']))
         return 'pong'
 
-    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    monkeypatch.setattr('hermes_agent.gateway.session_finite.execute_finite_admission', execute)
     app = web.Application()
     app.router.add_post("/api/sessions", adapter._handle_create_session)
     app.router.add_post("/api/sessions/{session_id}/chat", adapter._handle_session_chat)
@@ -190,8 +190,8 @@ async def test_local_bot_relay_delivery_moves_an_api_bot_chat_aside(headless):
     # MSG-21 on the local door: ``bot_relay.deliver`` / a cron delivery found the API row by title
     # and failed adoption with ``not_found``, permanently.
     from pathlib import Path
-    from gateway.session_authorities import served_profile_name
-    from gateway.session_bot import deliver
+    from hermes_agent.gateway.session_authorities import served_profile_name
+    from hermes_agent.gateway.session_bot import deliver
     from tests.waiting import async_wait_until
     db = headless.authority.db
     old = _api_bot_chat(db)
@@ -209,9 +209,9 @@ async def test_a_submit_only_delivery_never_moves_the_api_bot_chat(headless):
     # Owner recovery and other submit-only principals cannot create the replacement, so the title
     # stays where it is (still ``not_found``): moving it would leave the profile with no Bot Chat.
     from pathlib import Path
-    from gateway.session_authorities import served_profile_name
-    from gateway.session_bot import deliver
-    from gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_authorities import served_profile_name
+    from hermes_agent.gateway.session_bot import deliver
+    from hermes_agent.gateway.session_contract import SessionActor
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     db = headless.authority.db
     old = _api_bot_chat(db)
@@ -248,10 +248,10 @@ async def _peer_minted(headless):
 
 def _local_owner(authority, user_id='uid:1000'):
     """The Desktop/CLI's own connection: an interactive ticket redeemed on the loopback socket
-    (``gateway/run_api.py``), the identity ``hermes chat``, the Desktop and ``bot_relay.deliver`` use.
+    (``hermes_agent/gateway/run_api.py``), the identity ``hermes chat``, the Desktop and ``bot_relay.deliver`` use.
     *user_id*: the login a same-user peer forwards on that ticket (control socket, #138915)."""
-    from gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     return AuthorityConnection(authority, object(), {
         'user_id': user_id, 'provider': 'local', 'profile_id': authority.profile_id,
         'instance_id': authority.instance_id, 'capabilities': sorted(_PURPOSE_CAPABILITIES['interactive']),
@@ -292,8 +292,8 @@ async def test_peer_minted_bot_chat_resumes_by_title_and_admits_a_local_turn(hea
 @pytest.mark.asyncio
 async def test_local_bot_relay_delivery_lands_in_the_peer_minted_bot_chat(headless):
     from pathlib import Path
-    from gateway.session_authorities import served_profile_name
-    from gateway.session_bot import deliver
+    from hermes_agent.gateway.session_authorities import served_profile_name
+    from hermes_agent.gateway.session_bot import deliver
     from tests.waiting import async_wait_until
     session_id = await _peer_minted(headless)
     profile = served_profile_name(Path(headless.authority.db.db_path).parent.resolve())
@@ -312,8 +312,8 @@ async def test_local_delivery_into_the_peer_minted_bot_chat_keeps_its_transient_
     # The local operator's delivery was admitted on ``session:operator`` (the chat is api-peer's);
     # its one transient-failure retry must be admitted on that same access, not refused.
     from pathlib import Path
-    from gateway.session_authorities import served_profile_name
-    from gateway.session_bot import deliver
+    from hermes_agent.gateway.session_authorities import served_profile_name
+    from hermes_agent.gateway.session_bot import deliver
     from tests.waiting import async_wait_until
     from tools.bot_live_delivery import read_delivery_result
     session_id = await _peer_minted(headless)
@@ -328,7 +328,7 @@ async def test_local_delivery_into_the_peer_minted_bot_chat_keeps_its_transient_
             return ''
         return 'pong'
 
-    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    monkeypatch.setattr('hermes_agent.gateway.session_finite.execute_finite_admission', execute)
     home = Path(headless.authority.db.db_path).parent.resolve()
     key = 'b' * 32
     await deliver(_local_owner(headless.authority),
@@ -350,9 +350,9 @@ async def test_a_receipt_without_recorded_operator_access_retries_as_before(head
     # A receipt written before ``operator`` was recorded (or by a non-operator actor) never gains
     # that access on retry: the retry into api-peer's chat is still refused, nothing is widened.
     from pathlib import Path
-    from gateway import session_bot_mailbox
-    from gateway.session_authorities import served_profile_name
-    from gateway.session_bot import deliver
+    from hermes_agent.gateway import session_bot_mailbox
+    from hermes_agent.gateway.session_authorities import served_profile_name
+    from hermes_agent.gateway.session_bot import deliver
     from tests.waiting import async_wait_until
     from tools.bot_live_delivery import read_delivery_result
     await _peer_minted(headless)
@@ -371,7 +371,7 @@ async def test_a_receipt_without_recorded_operator_access_retries_as_before(head
         return real(home, {k: v for k, v in record.items() if k != 'operator'}, expect)
 
     monkeypatch.setattr(session_bot_mailbox, '_write_receipt', old_shape)
-    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    monkeypatch.setattr('hermes_agent.gateway.session_finite.execute_finite_admission', execute)
     home = Path(headless.authority.db.db_path).parent.resolve()
     key = 'd' * 32
     await deliver(_local_owner(headless.authority),
@@ -386,7 +386,7 @@ async def test_a_receipt_without_recorded_operator_access_retries_as_before(head
 @pytest.mark.asyncio
 async def test_peer_minted_bot_chat_is_the_local_rosters_canonical_session(headless):
     from pathlib import Path
-    from gateway.session_group_controls import _profiles
+    from hermes_agent.gateway.session_group_controls import _profiles
     session_id = await _peer_minted(headless)
     # ``profiles.list``'s roster row (the Desktop Bots roster's canonical-session discovery).
     home = Path(headless.authority.db.db_path).parent
@@ -450,8 +450,8 @@ async def test_a_messaging_bot_chat_moved_aside_is_labelled_by_its_platform(head
     # A messaging row that took the canonical title is moved aside too, but it is no API conversation:
     # its new name says where it came from.
     from pathlib import Path
-    from gateway.session_authorities import served_profile_name
-    from gateway.session_bot import deliver
+    from hermes_agent.gateway.session_authorities import served_profile_name
+    from hermes_agent.gateway.session_bot import deliver
     db = headless.authority.db
     db.create_session('tg_row', 'telegram')
     db.set_session_title('tg_row', 'Bot Chat')
@@ -465,7 +465,7 @@ async def test_a_messaging_bot_chat_moved_aside_is_labelled_by_its_platform(head
 
 def test_a_local_bot_chat_is_never_displaceable_without_a_lineage_read(headless, monkeypatch):
     # Every delivery asks; a bound local chat answers from its own row, before any tip or session read.
-    from gateway.session_bot import displaceable_bot_chat
+    from hermes_agent.gateway.session_bot import displaceable_bot_chat
     db = headless.authority.db
     reads = []
     monkeypatch.setattr(db, 'get_compression_tip', lambda sid: reads.append(sid) or sid)

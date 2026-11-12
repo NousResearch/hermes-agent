@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_contract import SessionActor, SessionRef
+from hermes_agent.gateway.session_contract import SessionActor, SessionRef
 
 CHILD = """import json, os, sys, time, psutil
 from hermes_cli.process_identity import worker_birth
@@ -36,10 +36,10 @@ time.sleep(60)  # interpreter teardown that outlives the owner's exit wait
 @pytest.mark.platforms("linux")
 @pytest.mark.parametrize(('exit_shape', 'rotate'), [('nonzero', False), ('lingering', False), ('nonzero', True)])
 def test_finished_worker_keeps_its_result_on_slow_or_nonzero_exit(tmp_path, monkeypatch, exit_shape, rotate):
-    from gateway import session_managed_worker as managed
-    from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import Submission
-    from gateway.session_policy import build_policy
+    from hermes_agent.gateway import session_managed_worker as managed
+    from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_agent.gateway.session_contract import Submission
+    from hermes_agent.gateway.session_policy import build_policy
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import begin_runtime_epoch, claim_session_input
 
@@ -94,7 +94,7 @@ def test_finished_worker_keeps_its_result_on_slow_or_nonzero_exit(tmp_path, monk
     assert status == 'started', 'the finished turn was marked unknown instead of reaching settlement'
     assert spawned[0].poll() is not None, "close() did not reap the worker"
     # A local viewer's message.complete gets the billing banner and turn-end usage, as in process.
-    from gateway.session_settlement_recovery import completion_payload
+    from hermes_agent.gateway.session_settlement_recovery import completion_payload
     complete = completion_payload(row, {'outcome': 'completed'}, response, captured)
     assert complete['billing']['message'] == 'Add credits' and complete['failure_reason'] == 'billing'
     if rotate:

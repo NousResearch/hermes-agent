@@ -143,7 +143,7 @@ def test_computer_use_cache_files_owner_only(tmp_path, monkeypatch):
 def test_gateway_media_cache_dirs_created_owner_only(tmp_path, monkeypatch, getter_name):
     """The gateway's inbound-media caches (photos/voice notes/documents users sent)
     land 0700 at creation and heal a legacy 0755 dir."""
-    import gateway.platforms.base as gw
+    import hermes_agent.gateway.platforms.base as gw
     home = tmp_path / "hh"
     _no_managed(monkeypatch, home)
     monkeypatch.setattr(gw, "get_hermes_dir", lambda new, old: home / new)
@@ -157,7 +157,7 @@ def test_gateway_media_cache_dirs_created_owner_only(tmp_path, monkeypatch, gett
 
 def test_gateway_media_cache_files_owner_only(tmp_path, monkeypatch):
     """Inbound media bytes written into the gateway cache land 0600."""
-    import gateway.platforms.base as gw
+    import hermes_agent.gateway.platforms.base as gw
     home = tmp_path / "hh"
     _no_managed(monkeypatch, home)
     monkeypatch.setattr(gw, "get_hermes_dir", lambda new, old: home / new)

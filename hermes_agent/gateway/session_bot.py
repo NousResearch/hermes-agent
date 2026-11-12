@@ -11,14 +11,14 @@ import time
 
 from agent.turn_author import parse_turn_author
 
-from gateway.session_contract import SessionActor, SessionRef
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session_contract import SessionActor, SessionRef
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent
 from hermes_agent.hermes_state_runtime import RuntimeStoreError, get_session_admission
 from tools.bot_failure_reasons import HELD_NOT_SENT, UNKNOWN
 from tools.bot_live_delivery import _TERMINAL, _delivery_id, _read
 logger = logging.getLogger(__name__)
-from gateway.session_bot_mailbox import (mailbox_lock, read_receipt, write_receipt,
+from hermes_agent.gateway.session_bot_mailbox import (mailbox_lock, read_receipt, write_receipt,
     scan_receipts, remember_receipt, track_receipt_task, withdraw_pin, refuse_pin, requeue_pin)
 
 
@@ -169,7 +169,7 @@ def _legacy_order(path, record):
 
 
 def _home(authority, actor, profile):
-    from gateway.session_authorities import served_profile_name
+    from hermes_agent.gateway.session_authorities import served_profile_name
     from tools.bot_mode_probe import _handle, _hermes_root, _roster
     home = Path(authority.db.db_path).parent.resolve()
     name = served_profile_name(home)
@@ -198,8 +198,8 @@ async def _target(authority, actor):
         target = authority.db.get_session(tip)
         if target is None:
             raise RuntimeStoreError('not_found')
-        from gateway.session_local_migration import resolve_local_target
-        from gateway.session_route_recovery import handed_off_ref
+        from hermes_agent.gateway.session_local_migration import resolve_local_target
+        from hermes_agent.gateway.session_route_recovery import handed_off_ref
         # A Bot Chat handed off to a messaging lane stays the bot's chat there: delivery follows it.
         ref = lane = handed_off_ref(authority, target['id'])
         if ref is None:
@@ -226,7 +226,7 @@ def displaceable_bot_chat(authority, row, subject=None):
         return None  # every delivery asks: a bound local chat answers from its own row, with no read
     db = authority.db
     tip = db.get_session(db.get_compression_tip(row['id']) or row['id'])
-    from gateway.session_route_recovery import handed_off_ref, superseded_hand_off
+    from hermes_agent.gateway.session_route_recovery import handed_off_ref, superseded_hand_off
     if tip is not None and (lane := handed_off_ref(authority, tip['id'])) is not None:
         # Handed off (``/handoff``): still the bot's chat while its lane holds it; history once that
         # lane moved on (``/new``), so a fresh Bot Chat takes the title (#143286).
@@ -251,7 +251,7 @@ def release_superseded_bot_chat(db, store, route, session_id):
     canonical title at once (``_displace_bot_chat``), so the Bots roster and its registry lookup both
     stop naming it and the next click or delivery mints a fresh Bot Chat (#143286). Every route
     transition calls this, and so does boot (an older build's transition)."""
-    from gateway.session_route_recovery import _messaging_platform
+    from hermes_agent.gateway.session_route_recovery import _messaging_platform
     from hermes_agent.hermes_state_local_migration import LEGACY_LOCAL_SOURCES
     root = (db.get_compression_lineage(session_id) or [session_id])[0]
     row = db.get_session(root)
@@ -283,8 +283,8 @@ def _kept_local_history(db, row, subject=None):
     label) is not: kept, it held the title and refused every delivery for good (#141243, #143715).
     *subject* None: the row's own ``auth:v1`` or owner-label stamp is the adopter, as a peer DM's
     turn enters the chat."""
-    from gateway.owner_identity import host_owner_subject, same_owner
-    from gateway.session_identity import parse_authenticated_subject
+    from hermes_agent.gateway.owner_identity import host_owner_subject, same_owner
+    from hermes_agent.gateway.session_identity import parse_authenticated_subject
     from hermes_agent.hermes_state_local_migration import LEGACY_LOCAL_SOURCES, legacy_account_label, validate_legacy_row
     if row.get('source') not in LEGACY_LOCAL_SOURCES:
         return False
@@ -344,10 +344,10 @@ async def _create_bot_chat(authority, actor, *, displace=None):
     principal (owner recovery) still gets ``not_found``."""
     if 'session:create' not in actor.capabilities:
         raise RuntimeStoreError('not_found')
-    from gateway.session_local import stage_local_session, staged_creation_follows
-    from gateway.session_local_recovery import restore_local_session
-    from gateway.session_local_title import title_new_session
-    from gateway.session_runtime_workers import tracked_write
+    from hermes_agent.gateway.session_local import stage_local_session, staged_creation_follows
+    from hermes_agent.gateway.session_local_recovery import restore_local_session
+    from hermes_agent.gateway.session_local_title import title_new_session
+    from hermes_agent.gateway.session_runtime_workers import tracked_write
     from hermes_agent.hermes_state_local import commit_local_session
     lock = getattr(authority, '_titled_create_lock', None)
     if lock is None:
@@ -389,8 +389,8 @@ def _bot_chat_creation_id(authority, actor):
     same identity. An existing UNtitled local session is the same creation interrupted before its
     title: it is reused, unless archived: a deliberate Archive retires the Bot Chat by clearing its
     title, and reusing that row would put the next delivery into the archived chat (#139779)."""
-    from gateway.session_local_recovery import local_identity
-    from gateway.session_route_recovery import _messaging_platform
+    from hermes_agent.gateway.session_local_recovery import local_identity
+    from hermes_agent.gateway.session_route_recovery import _messaging_platform
     from hermes_agent.hermes_state_mutation_retirement import first_generation
     base = 'bot-chat:' + authority.profile_id
     request_id = lambda generation: base if generation == 0 else f'{base}:{generation}'
@@ -410,7 +410,7 @@ def _admission_outcome(authority, admission_id, fallback=None):
     row = get_session_admission(authority.db, admission_id=admission_id)
     if row is None:
         return _expired_outcome(authority, fallback)
-    from gateway.session_results import admission_result
+    from hermes_agent.gateway.session_results import admission_result
     saved = admission_result(authority.db, admission_id)
     if saved is not None and row['status'] != 'terminal':
         # The settlement committed (from its worker thread) between these two reads. Its result and
@@ -428,13 +428,13 @@ def _admission_outcome(authority, admission_id, fallback=None):
         # A turn stopped mid-run (the sender's message_agent cancel, or a Stop on the target) did
         # not fail: the sender hears ``cancelled``, never a failure to retry or report as broken.
         status = {'completed': 'settled', 'interrupted': 'cancelled'}.get(row['outcome'], 'failed')
-        from gateway.session_bot_outcome import owner_stopped
+        from hermes_agent.gateway.session_bot_outcome import owner_stopped
         if status == 'cancelled' and owner_stopped(saved['result']):
             status = 'failed'  # its gateway stopped mid-turn: never re-run, and nobody cancelled it
         # A successful bare silence marker is a delivery decision (same rule as the gateway and
         # the live Bot Chat completion): the turn stays in the target's transcript, the sender
         # never sees the marker as prose.
-        from gateway.response_filters import is_intentional_silence_response, strip_trailing_silence_marker
+        from hermes_agent.gateway.response_filters import is_intentional_silence_response, strip_trailing_silence_marker
         if status == 'settled':
             reply = '' if is_intentional_silence_response(reply) else strip_trailing_silence_marker(reply)
     elif fallback is not None and fallback.get('status') in {'settled', 'failed'}:
@@ -493,7 +493,7 @@ def _result(authority, record):
         if status == 'failed' and (record.get('retry') or {}).get('refused') == 'cancelled':
             status = 'cancelled'  # its sender withdrew it (``session_bot_cancel``); its retry never ran
     if status == 'settled' and not reply:
-        from gateway.session_bot_outcome import forgotten_reply
+        from hermes_agent.gateway.session_bot_outcome import forgotten_reply
         reply = forgotten_reply(authority, current, record) or ''
     error = reason = None
     if status == 'failed':
@@ -515,10 +515,10 @@ def _failure(authority, admission_id):
     """``(error, reason)`` of a failed admission from its committed result: the raw provider error
     and the turn loop's typed verdict, classified like every other Bot lane. A refusal that never
     ran (no result) has no provider text: ``unknown``."""
-    from gateway.session_results import admission_result
+    from hermes_agent.gateway.session_results import admission_result
     from tools.bot_failure_reasons import classify_agent_error, turn_failure_text
     saved = (admission_result(authority.db, admission_id) or {}).get('result') or {}
-    from gateway.session_bot_outcome import OWNER_STOPPED_ERROR, owner_stopped
+    from hermes_agent.gateway.session_bot_outcome import OWNER_STOPPED_ERROR, owner_stopped
     if owner_stopped(saved):
         return OWNER_STOPPED_ERROR, UNKNOWN  # never a retryable class: its steps may already have run
     error = saved.get('error') or saved.get('final_response') or 'Bot Chat delivery failed'
@@ -566,7 +566,7 @@ def _retry_eligible(authority, record):
     row = get_session_admission(authority.db, admission_id=record['admission_id'])
     if row is None or row['status'] != 'terminal' or row['outcome'] != 'failed':
         return False
-    from gateway.session_results import admission_result
+    from hermes_agent.gateway.session_results import admission_result
     saved = admission_result(authority.db, record['admission_id'])
     if saved is None:
         return False
@@ -613,7 +613,7 @@ async def _maybe_retry(authority, home, path, record):
         return
     event = MessageEvent(text=record['message'], source=live.source, internal=True,
         message_id=identity, metadata={'gateway_session_key': live.route, 'gateway_session_id': entry.session_id})
-    from gateway.session_automation import automation_notification_metadata
+    from hermes_agent.gateway.session_automation import automation_notification_metadata
     event.metadata.update(automation_notification_metadata(record))
     if record.get('author') is not None:
         event.metadata['turn_author'] = dict(record['author'])
@@ -672,7 +672,7 @@ async def refresh_receipt(authority, home, key):
 
 def relay_operation(connection, operation, params):
     authority, actor = connection.authority, connection.actor
-    from gateway.session_authorities import require_serving, served_profile_name
+    from hermes_agent.gateway.session_authorities import require_serving, served_profile_name
     require_serving(authority)  # the outbox/roster/replies belong to the home's next owner
     home = Path(authority.db.db_path).parent.resolve()
     name = served_profile_name(home)
@@ -784,8 +784,8 @@ def _watch_reply(authority, home, key, admission_id):
 
 
 async def deliver(connection, params):
-    from gateway.session_runtime_workers import track_mutation
-    from gateway.session_bot_state import bot_chat_state
+    from hermes_agent.gateway.session_runtime_workers import track_mutation
+    from hermes_agent.gateway.session_bot_state import bot_chat_state
     connection.authority._require_admission_open()
     answer = await asyncio.shield(track_mutation(connection.authority, _deliver(connection, params)))
     # Not part of the receipt (it is stale a second later): the sender's ack and its runner's replays.
@@ -795,7 +795,7 @@ async def deliver(connection, params):
 def _require_same_delivery(record, actor, message, author, category):
     """A delivery id names one delivery: the same message, principal, author and category (the
     mailbox writer's identity), whether its receipt is admission-backed or refused."""
-    from gateway.owner_identity import same_owner
+    from hermes_agent.gateway.owner_identity import same_owner
     if (record['message'] != message or not same_owner(record['principal_id'], actor.subject)
             or record.get('author') != author
             or record.get('notification_category', 'result') != category):
@@ -808,7 +808,7 @@ def _delivery_params(authority, actor, params):
     home = _home(authority, actor, params.get('profile'))
     if set(params) - {'id', 'profile', 'message', 'session_id', 'author', 'notification_category'}:
         raise RuntimeStoreError('invalid_params')
-    from gateway.session_automation import automation_notification_metadata
+    from hermes_agent.gateway.session_automation import automation_notification_metadata
     notification = automation_notification_metadata(params)
     category = notification.get('notification_category', 'result')
     try:
@@ -879,8 +879,8 @@ async def _deliver(connection, params):
 
 
 async def settle(connection, params):
-    from gateway.session_authorities import require_serving
-    from gateway.session_runtime_workers import track_mutation
+    from hermes_agent.gateway.session_authorities import require_serving
+    from hermes_agent.gateway.session_runtime_workers import track_mutation
     # Retirement joins tracked work but cannot fence a later write: receipts carry no epoch and
     # mailbox_lock is this authority's own, so a stale connection is refused before it schedules.
     require_serving(connection.authority)
@@ -926,7 +926,7 @@ def _not_sent_record(authority, actor, home, key, message, author, category):
     row = authority.db.get_session_by_title('Bot Chat')
     if admitted is not None or row is None:
         raise RuntimeStoreError('unknown_execution')
-    from gateway.session_automation import automation_notification_metadata
+    from hermes_agent.gateway.session_automation import automation_notification_metadata
     record = dict(delivery_id=key, profile_home=str(home), session_id=authority.db.get_compression_tip(row['id']),
                   principal_id=actor.subject, message=message, status='failed', refused=True, reply='',
                   error='Settled as not sent after a session-writer refusal', reason=HELD_NOT_SENT)
@@ -954,7 +954,7 @@ async def _held_by_another_writer(home, key, exc):
 
 async def _admit(authority, actor, home, root, key, message, ref, live, entry, author=None, legacy=None,
                  notification_category='result'):
-    from gateway.session_automation import automation_notification_metadata
+    from hermes_agent.gateway.session_automation import automation_notification_metadata
     notification = automation_notification_metadata({'notification_category': notification_category})
     path = root / f'{key}.json'
     event = MessageEvent(text=message, source=live.source, internal=True,

@@ -7,13 +7,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform
+from hermes_agent.gateway.config import Platform
 
 
 @pytest.mark.asyncio
 async def test_session_info_carries_the_classic_cli_fields(tmp_path, monkeypatch):
-    from gateway.session_contract import SessionRef
-    from gateway.session_local import local_session_info
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_local import local_session_info
     from tests.gateway.test_surface_admission import _authority
 
     async def answer(event):
@@ -34,7 +34,7 @@ async def test_session_info_carries_the_classic_cli_fields(tmp_path, monkeypatch
 
 
 def test_local_viewer_title_republishes_session_info(monkeypatch):
-    from gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
     published = []
     live = SimpleNamespace(event_stream=SimpleNamespace(
         publish=lambda sid, payload, event_type: published.append((event_type, payload))))
@@ -46,7 +46,7 @@ def test_local_viewer_title_republishes_session_info(monkeypatch):
                                    _is_telegram_topic_lane=lambda s: False,
                                    _is_discord_auto_thread_lane=lambda s: False,
                                    _is_relay_discord_channel_lane=lambda s: False)
-    from gateway import session_local
+    from hermes_agent.gateway import session_local
     monkeypatch.setattr(session_local, 'local_session_info', lambda authority, ref: {'title': 'Auto'})
     agent = SimpleNamespace(session_id='s')
     turn._attach_session_title_callback(agent, turn._ctx)

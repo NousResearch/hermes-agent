@@ -137,7 +137,7 @@ class TestAgentCacheMemoryLifecycle:
         """/new gives up waiting on its cleanup worker after the timeout and then evicts the same agent.
         The worker is still inside on_session_end(), so the eviction must not shut the providers
         down under that extraction, and the providers must be shut down exactly once, after it."""
-        import gateway.slash_commands_session as session_cmds
+        import hermes_agent.gateway.slash_commands_session as session_cmds
         from tests.waiting import wait_until
 
         events = []
@@ -175,7 +175,7 @@ class TestAgentCacheMemoryLifecycle:
     async def test_eviction_while_reset_cleanup_is_still_flushing_leaves_shutdown_to_it(self, monkeypatch):
         """/new's cleanup job can still be in its pre-extraction flush (up to 10 s) when /new stops
         waiting and evicts the agent; that eviction must not shut the providers down first."""
-        import gateway.slash_commands_session as session_cmds
+        import hermes_agent.gateway.slash_commands_session as session_cmds
         from tests.waiting import wait_until
 
         events = []

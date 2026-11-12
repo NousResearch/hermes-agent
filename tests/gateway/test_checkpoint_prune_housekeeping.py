@@ -5,7 +5,7 @@ delayed the control socket, adapters and the code_sha stamp, so the first restar
 ``hermes update`` one) looked hung and failed fleet verification.
 """
 
-import gateway.run as gateway_run
+import hermes_agent.gateway.run as gateway_run
 
 
 class _OneTickStopEvent:

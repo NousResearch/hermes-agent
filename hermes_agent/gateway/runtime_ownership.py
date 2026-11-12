@@ -72,7 +72,7 @@ def _unlink_stale_lock(path: Path) -> bool:
     ``gateway.pid`` names a live process and anything not provably unheld are left in place (False).
     An inode this user cannot even open is refused with the recovery command: an unheld snapshot
     (``/proc/locks``) does not stop a holder locking it between the read and the unlink."""
-    from gateway.status import _live_pid_from_record, _read_pid_record
+    from hermes_agent.gateway.status import _live_pid_from_record, _read_pid_record
     if os.name == 'nt':
         return False  # a sharing violation is a live holder there
     info = os.lstat(path)
@@ -160,7 +160,7 @@ class ProfileOwnership:
     def reserve(self, homes, *, purpose: str | None = None) -> None:
         """``purpose`` marks a maintenance reservation in the lock record, so a contender can tell
         a short maintenance holder from a gateway runtime owner (:func:`live_runtime_owner`)."""
-        from gateway.status import _try_acquire_file_lock, _build_pid_record
+        from hermes_agent.gateway.status import _try_acquire_file_lock, _build_pid_record
         with self._mutex:
             added = []
             try:
@@ -197,7 +197,7 @@ class ProfileOwnership:
             return canonical_home(home) in self._handles
 
     def release(self, home: Path) -> None:
-        from gateway.status import _release_file_lock
+        from hermes_agent.gateway.status import _release_file_lock
         with self._mutex:
             handle = self._handles.pop(canonical_home(home), None)
             if handle is not None:
@@ -229,7 +229,7 @@ def maintenance_holder(home: Path, purpose: str) -> dict | None:
     """The live holder record of *home*'s ``gateway.lock`` when it is a ``purpose`` maintenance
     reservation (see :meth:`ProfileOwnership.reserve`), else None. Advisory only: it names the
     holder for a refusal or a short wait, it never grants the lock."""
-    from gateway.status import _live_pid_from_record, _read_gateway_lock_record
+    from hermes_agent.gateway.status import _live_pid_from_record, _read_gateway_lock_record
     record = _read_gateway_lock_record(canonical_home(home) / 'gateway.lock')
     if not record or record.get('purpose') != purpose or _live_pid_from_record(record) is None:
         return None
@@ -244,12 +244,12 @@ def lock_record_unpublished(home: Path) -> bool:
     caller's own rolled-back attempt (an all-or-nothing reserve writes each home's record before a
     later home refuses), so whoever holds the flock now has not published either. Advisory only,
     never grants the lock."""
-    from gateway.status import _live_pid_from_record, _read_gateway_lock_record
+    from hermes_agent.gateway.status import _live_pid_from_record, _read_gateway_lock_record
     record = _read_gateway_lock_record(canonical_home(home) / 'gateway.lock')
     return not record or _live_pid_from_record(record) in (None, os.getpid())
 
 
-# A client's discovery probe (gateway.status._probe_lock_file) holds a gateway.lock flock for an
+# A client's discovery probe (hermes_agent.gateway.status._probe_lock_file) holds a gateway.lock flock for an
 # instant; the next attempt after this pause normally finds it gone.
 PROBE_RETRY_BACKOFF_S = 0.015
 TRANSIENT_HOLDER_POLL_S = 0.1
@@ -317,7 +317,7 @@ def reserve_waiting_out_transient_holders(ownership, homes, *, wait_s: float,
 def live_runtime_owner(home: Path) -> int | None:
     """PID of a live runtime owner of *home* (a gateway, or a reservation that is not marked as
     maintenance), else None. A purpose-marked maintenance holder is never an owner."""
-    from gateway.status import _live_pid_from_record, _read_gateway_lock_record, get_running_pid
+    from hermes_agent.gateway.status import _live_pid_from_record, _read_gateway_lock_record, get_running_pid
     home = canonical_home(home)
     record = _read_gateway_lock_record(home / 'gateway.lock')
     live = _live_pid_from_record(record) if record else None

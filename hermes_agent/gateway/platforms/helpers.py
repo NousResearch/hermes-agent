@@ -13,7 +13,7 @@ import time
 import unicodedata
 from pathlib import Path
 from typing import Any, MutableMapping, Optional
-from gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.platforms.event import MessageEvent
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -365,7 +365,7 @@ async def send_chunks(chunks: list, send_one) -> Any:
     ``BasePlatformAdapter._is_partial_delivery`` reads, so no caller (send retry, plain-text
     fallback, cron standalone fallback) re-sends the head the recipient already has.
     """
-    from gateway.platforms.base import SendResult
+    from hermes_agent.gateway.platforms.base import SendResult
     result = SendResult(success=False, error="nothing to send")
     for delivered, chunk in enumerate(chunks):
         result = await send_one(chunk)
@@ -507,7 +507,7 @@ def compile_mention_patterns(raw, *, log_prefix: str, platform_label: str | None
 
 
 # ─── Fence-Aware Markdown Chunking ───────────────────────────────────────────
-# Shared core for gateway/stream_consumer.py (``prefer_paragraphs=False, balance_fences=True``),
+# Shared core for hermes_agent/gateway/stream_consumer.py (``prefer_paragraphs=False, balance_fences=True``),
 # paragraph mode (``prefer_paragraphs=True, balance_fences=False``, derived from the Yuanbao adapter,
 # now a plugin) and weixin (``greedy_pack_blocks``).
 
@@ -545,7 +545,7 @@ def _cp_budget(text, budget, len_fn):
     (callers guarantee ``len_fn(text) > budget``, so plain ``len`` needs no search)."""
     if len_fn is len:
         return budget
-    from gateway.platforms.base import _custom_unit_to_cp  # heavyweight; lazy
+    from hermes_agent.gateway.platforms.base import _custom_unit_to_cp  # heavyweight; lazy
     return _custom_unit_to_cp(text, budget, len_fn)
 
 
@@ -803,8 +803,8 @@ def platform_http_client(**kwargs: Any) -> Any:
     (``gateway.platforms.base.ssrf_redirect_guard``, run before any caller ``response`` hooks) and the
     shared keepalive pool limits (``platform_httpx_limits()``; pass ``limits=None`` for httpx's
     defaults). Defaults ``timeout=30.0`` and ``follow_redirects=True``; other kwargs go to httpx."""
-    from gateway.platforms._http_client_limits import platform_httpx_limits
-    from gateway.platforms.base import ssrf_redirect_guard
+    from hermes_agent.gateway.platforms._http_client_limits import platform_httpx_limits
+    from hermes_agent.gateway.platforms.base import ssrf_redirect_guard
     from tools.url_safety import create_ssrf_safe_async_client
     hooks = dict(kwargs.pop("event_hooks", None) or {})
     hooks["response"] = [ssrf_redirect_guard, *hooks.get("response", ())]

@@ -10,9 +10,9 @@ import os
 from typing import Any, Optional
 from urllib.parse import quote
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from agent.i18n import t
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from hermes_agent.gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
 
 import httpx
 

@@ -8,7 +8,7 @@ user") and a site's emailed or texted code could not be entered at all. Here the
 frames (``hermes_agent/tui_gateway/contracts/server_requests.py``) to the viewers attached to the session's event stream and
 blocks the agent thread until one answers, the turn is interrupted, or it times out. Passwords and codes are
 never published, journaled or logged: they travel only in the viewer's response frame. The request registry
-itself is ``gateway/session_server_requests.py``.
+itself is ``hermes_agent/gateway/session_server_requests.py``.
 """
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ def release_unlocks(session_id) -> None:
 def vault_prompt_scope(turn, agent):
     """Install the vault callbacks on this (agent) thread for a local viewer's turn; restore after.
     Tool workers inherit them through ``tools.thread_context.propagate_context_to_thread``."""
-    from gateway.run_turn_progress import local_viewer_turn
+    from hermes_agent.gateway.run_turn_progress import local_viewer_turn
     if not local_viewer_turn(turn):
         yield
         return
@@ -46,7 +46,7 @@ def vault_prompt_scope(turn, agent):
     authority, session_id, _generation = turn._approval_owner
 
     def ask(method, params, timeout):
-        from gateway.session_server_requests import ask_viewer
+        from hermes_agent.gateway.session_server_requests import ask_viewer
         live = authority.sessions.get(session_id)
         if live is None:
             return ""

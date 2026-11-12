@@ -35,15 +35,15 @@ except ImportError:
     AIOHTTP_AVAILABLE = False
     web = None  # type: ignore[assignment]
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms.tcp_site import start_tcp_site
-from gateway.platforms.webhook_coalesce import WebhookCoalescer, validate_coalesce_config
-from gateway.platforms.webhook_filters import DEFAULT_SCRIPT_TIMEOUT_SECONDS, WebhookRouteProcessor
-from gateway.platforms.webhook_mcp_events import (
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.platforms.tcp_site import start_tcp_site
+from hermes_agent.gateway.platforms.webhook_coalesce import WebhookCoalescer, validate_coalesce_config
+from hermes_agent.gateway.platforms.webhook_filters import DEFAULT_SCRIPT_TIMEOUT_SECONDS, WebhookRouteProcessor
+from hermes_agent.gateway.platforms.webhook_mcp_events import (
     handle_mcp_event_control, mcp_event_delivery_id, render_mcp_event_prompt)
-from gateway.response_filters import is_autonomous_silence_response
+from hermes_agent.gateway.response_filters import is_autonomous_silence_response
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +157,7 @@ def _is_known_platform(name: str) -> bool:
     if name in _BUILTIN_DELIVER_PLATFORMS:
         return True
     with suppress(Exception):
-        from gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.platform_registry import platform_registry
         return platform_registry.is_registered(name)
     return False
 
@@ -299,7 +299,7 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.error("[webhook] Could not bind %s:%d: %s. Set a different host or port in config.yaml under "
                          "platforms.webhook.extra.", self._host or "all IPv4+IPv6 interfaces", self._port, exc)
             return False
-        from gateway.platforms.shared_ingress import listener_base_url
+        from hermes_agent.gateway.platforms.shared_ingress import listener_base_url
         self._mark_connected(listener_base=listener_base_url(self._host, self._port))
         logger.info("[webhook] Listening on %s:%d — routes: %s", self._host or "* (all interfaces, IPv4+IPv6)",
                     self._port, ", ".join(self._routes.keys()) or "(none configured)")
@@ -324,7 +324,7 @@ class WebhookAdapter(BasePlatformAdapter):
         if is_autonomous_silence_response(content):
             logger.info("[webhook] Response for %s is a silence marker — not delivering", chat_id)
             return SendResult(success=True)
-        from gateway.platforms.webhook_delivery import retained_destination
+        from hermes_agent.gateway.platforms.webhook_delivery import retained_destination
         try:
             delivery = retained_destination(self, chat_id)
         except Exception:
@@ -487,7 +487,7 @@ class WebhookAdapter(BasePlatformAdapter):
         profile = self._resolve_request_profile(request)
         if profile is _PROFILE_REJECTED or profile is None:
             return _json_error("Unknown or unconfigured profile", 404)
-        from gateway.platforms.shared_ingress import dispatch_profile_ingress
+        from hermes_agent.gateway.platforms.shared_ingress import dispatch_profile_ingress
         return await dispatch_profile_ingress(
             self.gateway_runner, profile, request.match_info.get("tail", ""), request)
 
@@ -527,7 +527,7 @@ class WebhookAdapter(BasePlatformAdapter):
         """Runtime scope for a resolved ``/p/<profile>/`` prefix; bare routes get a no-op."""
         if not profile or not isinstance(profile, str):
             return nullcontext()
-        from gateway.run import _profile_runtime_scope
+        from hermes_agent.gateway.run import _profile_runtime_scope
         from hermes_cli.profiles import get_profile_dir
         return _profile_runtime_scope(get_profile_dir(profile))
 
@@ -675,7 +675,7 @@ class WebhookAdapter(BasePlatformAdapter):
         delivery_id = _header_delivery_id(headers)
         # A parked profile is retried, before any delivery id is recorded. The check resolves
         # ``profile_routes`` against the very source admission builds for this delivery.
-        from gateway.platforms.webhook_ingress import parked_profile_refusal
+        from hermes_agent.gateway.platforms.webhook_ingress import parked_profile_refusal
         error_response = parked_profile_refusal(
             self.gateway_runner, profile, route_config,
             lambda: self._admission_source(route_name, profile, delivery_id))
@@ -811,7 +811,7 @@ class WebhookAdapter(BasePlatformAdapter):
         source = self._admission_source(route_name, profile, delivery_id)
         event = MessageEvent(text=prompt, message_type=MessageType.TEXT, source=source, raw_message=payload,
                              message_id=delivery_id, timestamp=datetime.fromtimestamp(0, UTC))
-        from gateway.platforms.webhook_ingress import admit_producer
+        from hermes_agent.gateway.platforms.webhook_ingress import admit_producer
         try:
             receipt = await admit_producer(self, event)
         except Exception:
@@ -824,11 +824,11 @@ class WebhookAdapter(BasePlatformAdapter):
             # reply goes to the destination this request just validated, not a retained row.
             reply = getattr(event, '_consumer_reply', None)
             if reply:
-                from gateway.platforms.webhook_delivery import snapshot_destination
+                from hermes_agent.gateway.platforms.webhook_delivery import snapshot_destination
                 await self._deliver_to(snapshot_destination(self, self._delivery_info.get(session_chat_id)),
                                        session_chat_id, reply)
             return "accepted"
-        from gateway.session_authorities import active_authority, authority_for_profile_id
+        from hermes_agent.gateway.session_authorities import active_authority, authority_for_profile_id
         runner = self._message_handler.__self__
         authority = authority_for_profile_id(runner, receipt.ref.profile_id) or active_authority(runner)
         task = asyncio.create_task(self._finalize_delivery(event, authority, receipt))
@@ -851,7 +851,7 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.exception("[webhook] Could not finalize admitted delivery %s", receipt.admission_id)
 
     async def _end_webhook_session(self, event: MessageEvent, session_chat_id: str) -> None:
-        from gateway.platforms.webhook_ingress import finalize_webhook
+        from hermes_agent.gateway.platforms.webhook_ingress import finalize_webhook
         binding = getattr(event, '_webhook_receipt', None)
         if binding is not None:
             authority, receipt = binding
@@ -1044,7 +1044,7 @@ class WebhookAdapter(BasePlatformAdapter):
         """Gateway config of the profile a delivery is bound to (call inside ``_profile_scope``)."""
         if not profile or not isinstance(profile, str):
             return self.gateway_runner.config
-        from gateway.config import load_gateway_config
+        from hermes_agent.gateway.config import load_gateway_config
         return load_gateway_config()
 
     def _mirror_delivery(self, platform_name: str, chat_id: str, content: str, delivery: dict,
@@ -1065,7 +1065,7 @@ class WebhookAdapter(BasePlatformAdapter):
             return
         route = delivery.get("route") or "webhook"
         try:
-            from gateway.mirror import mirror_to_session
+            from hermes_agent.gateway.mirror import mirror_to_session
             ok = mirror_to_session(platform_name, chat_id, f"[Webhook delivery: {route}]\n{content}",
                                    source_label="webhook", thread_id=thread_id, role="user")
             logger.log(logging.INFO if ok else logging.DEBUG,

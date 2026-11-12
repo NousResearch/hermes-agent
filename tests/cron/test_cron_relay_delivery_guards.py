@@ -109,7 +109,7 @@ class TestPreflightRelayFronted:
     def test_relay_fronted_slack_accepted(self, monkeypatch):
         """Relay-only topology fronting slack: slack:CHAT passes preflight."""
         monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "slack")
-        with patch("gateway.config.load_gateway_config",
+        with patch("hermes_agent.gateway.config.load_gateway_config",
                    return_value=_gateway_config({"relay"})):
             assert _preflight_check_delivery(
                 {"deliver": "slack:D0BJTDCSR7C"}) is None
@@ -117,7 +117,7 @@ class TestPreflightRelayFronted:
     def test_unfronted_platform_still_rejected(self, monkeypatch):
         """The relay fronting slack does not whitelist other platforms."""
         monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "slack")
-        with patch("gateway.config.load_gateway_config",
+        with patch("hermes_agent.gateway.config.load_gateway_config",
                    return_value=_gateway_config({"relay"})):
             reason = _preflight_check_delivery({"deliver": "discord:12345"})
             assert reason is not None
@@ -126,7 +126,7 @@ class TestPreflightRelayFronted:
     def test_native_strictness_without_relay(self, monkeypatch):
         """No relay configured: the native credential check is unchanged."""
         monkeypatch.delenv("GATEWAY_RELAY_PLATFORMS", raising=False)
-        with patch("gateway.config.load_gateway_config",
+        with patch("hermes_agent.gateway.config.load_gateway_config",
                    return_value=_gateway_config({"telegram"})):
             reason = _preflight_check_delivery(
                 {"deliver": "slack:D0BJTDCSR7C"})
@@ -139,7 +139,7 @@ class TestPreflightRelayFronted:
         _slack_home(monkeypatch)
         monkeypatch.setattr(sched_delivery, "_iter_home_target_platforms",
                             lambda: ["slack", "telegram"])
-        with patch("gateway.config.load_gateway_config",
+        with patch("hermes_agent.gateway.config.load_gateway_config",
                    return_value=_gateway_config({"relay"})):
             ids = {t["id"] for t in cron_delivery_targets()}
         assert "slack" in ids

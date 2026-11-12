@@ -20,8 +20,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig, Platform
-from gateway.run_plugin_rewire import GatewayPluginRewireMixin
+from hermes_agent.gateway.config import PlatformConfig, Platform
+from hermes_agent.gateway.run_plugin_rewire import GatewayPluginRewireMixin
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest, discover_plugins, get_plugin_manager
 from plugins.platforms.telegram.adapter import TelegramAdapter
 

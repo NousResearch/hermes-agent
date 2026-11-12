@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 
 def _ensure_discord_mock():
@@ -461,7 +461,7 @@ async def test_oversized_upload_rejected_before_send(tmp_path, monkeypatch, meth
     async def base_must_not_run(*_a, **_k):
         raise AssertionError("base adapter fallback must not run for a preflight reject")
 
-    monkeypatch.setattr(f"gateway.platforms.base.BasePlatformAdapter.{method}", base_must_not_run)
+    monkeypatch.setattr(f"hermes_agent.gateway.platforms.base.BasePlatformAdapter.{method}", base_must_not_run)
     send = AsyncMock(return_value=SimpleNamespace(id=999))
     http = SimpleNamespace(request=AsyncMock(side_effect=AssertionError("raw upload must not run")))
     adapter = _preflight_adapter(SimpleNamespace(id=555, guild=None, send=send))

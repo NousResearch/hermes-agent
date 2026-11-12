@@ -240,7 +240,7 @@ def _consume_typed_stop_phrase(text, sid=None, *, emit: bool = True) -> bool:
     """End *sid*'s voice chat when *text* is a bare stop phrase TYPED while its voice mode is on
     (typed twin of the spoken stop phrase) -> True; False for a normal message. *emit* sends the
     ``voice.transcript`` stop event to the voice client; the canonical ``prompt.submit`` path
-    (``gateway/session_controls.py``) answers its submitter in the reply instead (TUI-26)."""
+    (``hermes_agent/gateway/session_controls.py``) answers its submitter in the reply instead (TUI-26)."""
     if not (isinstance(text, str) and _session_voice_enabled(sid)):
         return False
     try:
@@ -296,7 +296,7 @@ def _legacy_group_fence_error(rid, session, params):
     if not room_id:
         return None
     try:
-        from gateway.hosted_rooms import (
+        from hermes_agent.gateway.hosted_rooms import (
             HostedRoomError, RoomProbeUnavailableError, default_db_path, probe_hosted_room,
             probe_peer_room_reservation)
         hosted = probe_hosted_room(default_db_path(), room_id=room_id)
@@ -813,8 +813,8 @@ def _lock_in_submit_turn(
 
 
 # Per-turn client surfaces that carry a model-bound note (session_notifications._hud_surface_note);
-# the canonical admission path shares the same set (gateway.session_surface).
-from gateway.session_surface import SURFACES as _CLIENT_SURFACES
+# the canonical admission path shares the same set (hermes_agent.gateway.session_surface).
+from hermes_agent.gateway.session_surface import SURFACES as _CLIENT_SURFACES
 
 
 @method("prompt.submit")
@@ -1410,7 +1410,7 @@ def _final_response_text(result) -> str:
 
 def _preview_restart_prompt(url: str, cwd: str, context: str, has_history: bool) -> str:
     """The hidden restart agent's task, shared by this transport and the gateway's
-    (``gateway/session_tui_side.py``) so the two cannot drift."""
+    (``hermes_agent/gateway/session_tui_side.py``) so the two cannot drift."""
     return "\n".join(line for line in [
         "The desktop preview pane cannot load a local server URL.", f"Preview URL: {url.strip()}",
         f"Current working directory: {cwd or '(unknown)'}",

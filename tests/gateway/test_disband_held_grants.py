@@ -7,8 +7,8 @@ import time
 
 import pytest
 
-from gateway import hosted_room_links, hosted_rooms
-from gateway.session_hosted_service import CanonicalHostedRoomService
+from hermes_agent.gateway import hosted_room_links, hosted_rooms
+from hermes_agent.gateway.session_hosted_service import CanonicalHostedRoomService
 from tests.gateway.test_hosted_room_disband_publication import _surface
 from tests.gateway.test_hosted_room_owed_revoke_cap import _fill
 from tests.gateway.test_session_group_peers import (

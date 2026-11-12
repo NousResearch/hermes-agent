@@ -11,7 +11,7 @@ import pytest
 
 
 def _server(home):
-    from gateway.control_socket import GatewayControlServer
+    from hermes_agent.gateway.control_socket import GatewayControlServer
     descriptor = {'runtime_protocol': 1, 'state': 'ready', 'instance_id': 'test',
                   'authority_epoch': 1, 'served_profiles': [{'home': str(home), 'profile_id': str(home)}],
                   'capabilities': ['session-authority-v1'], 'api_origin': 'http://127.0.0.1:1',
@@ -20,11 +20,11 @@ def _server(home):
 
 
 def test_authenticated_owner_transport_rechecks_source_and_cold_binding(hosted_owner, tmp_path):
-    from gateway.session_hosted_transport import (
+    from hermes_agent.gateway.session_hosted_transport import (
         HostedRoomOwnerRPC, install_hosted_transport, check_remote_hosted_admission,
         owner_request,
     )
-    from gateway.hosted_room_driver import TaskIdentity
+    from hermes_agent.gateway.hosted_room_driver import TaskIdentity
     from hermes_agent.hermes_state_runtime import list_session_admissions, RuntimeStoreError
     authority, loop, _, _ = hosted_owner
     source, target = tmp_path / 'source', tmp_path / 'target'
@@ -59,7 +59,7 @@ def test_authenticated_owner_transport_rechecks_source_and_cold_binding(hosted_o
         assert rpc.submit(**args)['admission_id'] == receipt['admission_id']
         rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
         assert len(rows) == 1
-        from gateway.session_contract import SessionRef
+        from hermes_agent.gateway.session_contract import SessionRef
         ref = SessionRef(authority.profile_id, sid)
         assert check_remote_hosted_admission(authority, ref, rows[0]) is True
         # Recreate server routing to lose all process-local producer caches.
@@ -96,16 +96,16 @@ class _SourceTask:
                  prompt='frozen'):
         import time
         from types import SimpleNamespace
-        from gateway.session_hosted_service import CanonicalHostedRoomService
-        from gateway import hosted_room_driver as tasks
-        from gateway.hosted_rooms import create_room, local_authority_gateway_id
-        from gateway.hosted_room_attachments import HostedRoomAttachmentStore
+        from hermes_agent.gateway.session_hosted_service import CanonicalHostedRoomService
+        from hermes_agent.gateway import hosted_room_driver as tasks
+        from hermes_agent.gateway.hosted_rooms import create_room, local_authority_gateway_id
+        from hermes_agent.gateway.hosted_room_attachments import HostedRoomAttachmentStore
         from hermes_agent.hermes_state import SessionDB
         from hermes_agent.hermes_state_runtime import begin_runtime_epoch
-        import gateway.run
+        import hermes_agent.gateway.run
         monkeypatch.setenv('HERMES_HOME', str(tmp_path))
         self.homes = {'other': str(tmp_path / 'profiles' / 'other')}
-        monkeypatch.setattr(gateway.run, '_load_gateway_config', lambda: {'hosted_rooms': {'profiles': self.homes}})
+        monkeypatch.setattr(hermes_agent.gateway.run, '_load_gateway_config', lambda: {'hosted_rooms': {'profiles': self.homes}})
         self.db = db = SessionDB(tmp_path / 'state.db')
         self.authority = SimpleNamespace(db=db, profile_id=str(tmp_path), epoch=begin_runtime_epoch(db, instance_id='test'))
         self.service = CanonicalHostedRoomService(self.authority, None)
@@ -137,8 +137,8 @@ class _SourceTask:
 @pytest.mark.parametrize('prompt_bytes', [41339, 128 * 1024 - 1])
 def test_large_cjk_prompt_crosses_owner_sockets_once(hosted_owner, tmp_path, monkeypatch, prompt_bytes):
     """A legal source prompt plus chunked files reaches one fenced target admission."""
-    from gateway import session_hosted_transport as transport
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway import session_hosted_transport as transport
+    from hermes_agent.gateway.session_contract import SessionRef
     from hermes_agent.hermes_state_runtime import list_session_admissions
     authority, loop, _, _ = hosted_owner
     target = tmp_path / 'profiles' / 'other'
@@ -210,7 +210,7 @@ def test_source_attestation_binds_bytes_to_task_member_and_current_home(tmp_path
     import base64
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     from hermes_agent.tui_gateway.hosted_room_driver import HostedRoomBinding
-    from gateway.session_hosted_transport import _CHUNK_BYTES
+    from hermes_agent.gateway.session_hosted_transport import _CHUNK_BYTES
     source = _SourceTask(tmp_path, monkeypatch, b'owned source bytes' * 4000)
     with source.db:
         service, data, bound, task, gateway, homes, authority = (
@@ -224,7 +224,7 @@ def test_source_attestation_binds_bytes_to_task_member_and_current_home(tmp_path
             result = service.attest(selector, 'attachment', {**params, 'index': 0, 'offset': offset})
             chunks.append(base64.b64decode(result['data_base64']))
         assert b''.join(chunks) == data
-        from gateway.session_hosted_transport import install_hosted_transport, _attachment_data
+        from hermes_agent.gateway.session_hosted_transport import install_hosted_transport, _attachment_data
         # The same chunk protocol crosses a real private socket; the target never
         # receives a filesystem path or opens the source database.
         loop = asyncio.new_event_loop()
@@ -262,8 +262,8 @@ def test_source_chunk_reads_only_the_requested_slice(tmp_path, monkeypatch):
     target still refuses a blob whose bytes drifted from the attested digest."""
     import base64
     import hashlib
-    from gateway.hosted_room_attachments import HostedRoomAttachmentStore
-    from gateway import session_hosted_transport as transport
+    from hermes_agent.gateway.hosted_room_attachments import HostedRoomAttachmentStore
+    from hermes_agent.gateway import session_hosted_transport as transport
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     source = _SourceTask(tmp_path, monkeypatch, bytes(range(256)) * (4 * transport._CHUNK_BYTES // 256 + 1),
                          name='blob.bin', mime='application/octet-stream')
@@ -296,9 +296,9 @@ def test_attachment_chunks_fill_the_response_line_without_overflowing_it(tmp_pat
     the Windows pipe, never overflow it even with a long owner subject, and the transfer
     spends round-trips proportional to size / chunk."""
     import math
-    from gateway.control_socket import _MAX_RESPONSE_BYTES
-    from gateway import session_hosted_transport as transport
-    from gateway.session_hosted_transport import _CHUNK_BYTES
+    from hermes_agent.gateway.control_socket import _MAX_RESPONSE_BYTES
+    from hermes_agent.gateway import session_hosted_transport as transport
+    from hermes_agent.gateway.session_hosted_transport import _CHUNK_BYTES
     size = 2 * _CHUNK_BYTES + 1
     source = _SourceTask(tmp_path, monkeypatch, bytes(range(256)) * (size // 256 + 1),
                          name='blob.bin', mime='application/octet-stream')
@@ -336,9 +336,9 @@ def test_preflight_verifies_by_attested_digest_and_refuses_changed_source_bytes(
     """check_remote_hosted_admission proves the durable row still matches the source's
     bound input from source-attested digests, transferring no bytes; a source attachment
     re-pointed at different bytes (same id, name and size) is still refused."""
-    from gateway import session_hosted_transport as transport
-    from gateway.session_hosted_transport import HostedRoomOwnerRPC, check_remote_hosted_admission
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway import session_hosted_transport as transport
+    from hermes_agent.gateway.session_hosted_transport import HostedRoomOwnerRPC, check_remote_hosted_admission
+    from hermes_agent.gateway.session_contract import SessionRef
     from hermes_agent.hermes_state_runtime import list_session_admissions, RuntimeStoreError
     authority, loop, _, _ = hosted_owner
     target_home = tmp_path / 'profiles' / 'other'
@@ -397,9 +397,9 @@ def test_preflight_refuses_a_retained_document_corrupted_or_missing_at_the_desti
     them: the digest-only preflight must itself refuse ``storage_unavailable`` when the
     destination bytes no longer match the source-attested digest (same-size mutation) or
     are gone, still without transferring bytes from the source. Images are unaffected."""
-    from gateway import session_hosted_transport as transport
-    from gateway.session_hosted_transport import HostedRoomOwnerRPC, check_remote_hosted_admission
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway import session_hosted_transport as transport
+    from hermes_agent.gateway.session_hosted_transport import HostedRoomOwnerRPC, check_remote_hosted_admission
+    from hermes_agent.gateway.session_contract import SessionRef
     from hermes_agent.hermes_state_runtime import list_session_admissions, RuntimeStoreError
     authority, loop, _, _ = hosted_owner
     target_home = tmp_path / 'profiles' / 'other'

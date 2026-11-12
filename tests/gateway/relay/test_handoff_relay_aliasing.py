@@ -19,8 +19,8 @@ from __future__ import annotations
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.delivery import resolve_delivery_transport
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.delivery import resolve_delivery_transport
 
 
 class _RelayStub:
@@ -67,7 +67,7 @@ class TestCliHandoffFrontedSet:
     def test_fronted_set_from_env(self, monkeypatch):
         monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "discord,telegram")
         monkeypatch.delenv("GATEWAY_RELAY_BOT_IDS", raising=False)
-        from gateway.relay import relay_platform_identities
+        from hermes_agent.gateway.relay import relay_platform_identities
 
         fronted = {p for p, _ in relay_platform_identities()}
         assert "discord" in fronted

@@ -800,7 +800,7 @@ def _inside_tree(worktree_path: str):
 # an active /loop, /heartbeat or /goal (its continuation) row (``hermes_cli.loops`` / ``heartbeat`` /
 # ``goals``, keyed by the stored session id, status ``active`` when the field is absent), and a row
 # no viewer close ended: Ink's exit detaches with ``tui_shutdown`` and the owner ends the idle row
-# only once no other viewer holds it (``gateway/session_viewer_close.py``).
+# only once no other viewer holds it (``hermes_agent/gateway/session_viewer_close.py``).
 _SERVED_TREE_SQL = (
     "SELECT 1 FROM sessions s WHERE hermes_inside_tree(s.cwd) AND (s.ended_at IS NULL OR EXISTS ("
     "SELECT 1 FROM state_meta m WHERE m.key IN ('loop:'||s.id, 'heartbeat:'||s.id, 'goal:'||s.id) "
@@ -942,7 +942,7 @@ def _worktree_lock_is_live(repo_root: str, worktree_path: str, timeout: int = 10
         if int(pid) == os.getpid():
             return "live"
         try:
-            from gateway.status import _pid_exists
+            from hermes_agent.gateway.status import _pid_exists
             if _pid_exists(int(pid)):
                 return "live"
         except Exception:

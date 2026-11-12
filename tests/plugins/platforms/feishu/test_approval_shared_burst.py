@@ -2,11 +2,11 @@
 
 import pytest
 
-from gateway.approval_actor import approval_refusal, refusal_text
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource, build_session_context
+from hermes_agent.gateway.approval_actor import approval_refusal, refusal_text
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource, build_session_context
 from plugins.platforms.feishu.adapter import FeishuAdapter
 from tests.gateway.test_approval_requester_binding import write_approvers
 from tools import approval as approval_mod

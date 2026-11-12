@@ -1,8 +1,8 @@
 """Recovered UTC routes coexist with legacy local-time routes."""
 from datetime import datetime, timedelta, timezone, UTC
 
-from gateway.config import GatewayConfig, Platform
-from gateway.session import SessionSource, SessionStore
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.session import SessionSource, SessionStore
 
 
 def test_list_sessions_orders_and_filters_mixed_clock_routes(tmp_path):

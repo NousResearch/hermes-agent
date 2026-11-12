@@ -52,7 +52,7 @@ def _webapp_block(home: Path) -> dict:
 
 
 def test_a_standalone_profile_without_a_port_gets_a_free_one_that_every_surface_uses(machine):
-    from gateway.webapp_listener import dial_origin, listener_plan
+    from hermes_agent.gateway.webapp_listener import dial_origin, listener_plan
 
     assert webapp_access.gateway_home() == machine["solo"]
     planned = webapp_access.plan("lan")
@@ -114,7 +114,7 @@ def test_a_port_the_user_set_is_never_replaced(machine, configured):
 def test_a_port_the_managed_scope_sets_is_the_one_the_callback_names(machine, tmp_path):
     """An administrator's ``webapp.port`` wins over the profile's config when the gateway loads it, and
     saving never writes over it: Start registers the callback on that port and writes none."""
-    from gateway.webapp_listener import listener_plan
+    from hermes_agent.gateway.webapp_listener import listener_plan
     from hermes_cli import managed_scope
 
     managed = _write(tmp_path / "managed", "webapp:\n  port: 9555\n")

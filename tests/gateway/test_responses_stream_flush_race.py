@@ -6,7 +6,7 @@ import threading
 
 import pytest
 
-from gateway.platforms.api_server_openai_routes import _ResponsesStream
+from hermes_agent.gateway.platforms.api_server_openai_routes import _ResponsesStream
 
 
 class _Sink:

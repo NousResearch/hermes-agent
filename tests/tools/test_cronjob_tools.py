@@ -612,7 +612,7 @@ class TestLocalDeliveryNotice:
             "HERMES_SESSION_CHAT_NAME",
         ):
             monkeypatch.delenv(var, raising=False)
-        from gateway.session_context import clear_session_vars, set_session_vars
+        from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
 
         tokens = set_session_vars()  # reset ContextVars to empty
         yield
@@ -631,7 +631,7 @@ class TestLocalDeliveryNotice:
     def test_gateway_origin_no_notice(self, monkeypatch):
         # With a captured gateway origin, omitted deliver becomes origin and
         # resolves to that chat — nothing to warn about.
-        from gateway.session_context import set_session_vars
+        from hermes_agent.gateway.session_context import set_session_vars
 
         set_session_vars(platform="telegram", chat_id="999")
         created = json.loads(

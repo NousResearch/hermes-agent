@@ -21,9 +21,9 @@ from pathlib import Path
 
 import pytest
 
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.relay.media import RelayMediaClient
-from gateway.relay.ws_transport import _event_from_wire
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.relay.media import RelayMediaClient
+from hermes_agent.gateway.relay.ws_transport import _event_from_wire
 
 REHOST = "https://conn.example/relay/media/"
 PDF = b"%PDF-1.4 fixture bytes"
@@ -68,7 +68,7 @@ def _fake_http(monkeypatch, routes):
 
 
 def _relay_adapter():
-    from gateway.relay.adapter import RelayAdapter
+    from hermes_agent.gateway.relay.adapter import RelayAdapter
 
     adapter = RelayAdapter.__new__(RelayAdapter)
     client = RelayMediaClient("https://conn.example", "gw1", "sec")
@@ -78,7 +78,7 @@ def _relay_adapter():
 
 
 def _notes(event):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     return GatewayRunner._prepend_inbound_document_notes(event, "file these")
 
@@ -197,7 +197,7 @@ def test_a_failed_download_does_not_shift_the_survivors(monkeypatch, _cleanup):
 
 
 def test_merging_a_named_event_with_an_unnamed_one_keeps_names_on_their_files():
-    from gateway.platforms.base import merge_pending_message_event
+    from hermes_agent.gateway.platforms.base import merge_pending_message_event
 
     unnamed = MessageEvent(text="", message_type=MessageType.DOCUMENT,
                            media_urls=["/c/doc_aaaaaaaaaaaa_old.pdf"], media_types=["application/pdf"])
@@ -265,7 +265,7 @@ def test_hostile_name_cannot_break_out_of_the_note():
 
 
 def test_native_cache_path_display_is_unchanged():
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     display, _path = GatewayRunner._inbound_attachment_display_name("/c/doc_0123456789ab_Q3 plan.pdf")
     assert display == "Q3 plan.pdf"
@@ -275,7 +275,7 @@ def test_native_cache_path_display_is_unchanged():
 
 
 def test_audio_and_video_file_notes_use_the_original_name():
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     names = {"/tmp/relay_media_a.mp3": "standup.mp3", "/tmp/relay_media_v.mp4": ""}
     text = GatewayRunner._prepend_inbound_media_file_notes(
@@ -292,10 +292,10 @@ def test_audio_and_video_file_notes_use_the_original_name():
 async def test_native_admission_envelope_round_trips_the_names(tmp_path, monkeypatch):
     from dataclasses import replace
 
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_envelope import restore_native, snapshot_native
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_envelope import restore_native, snapshot_native
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 

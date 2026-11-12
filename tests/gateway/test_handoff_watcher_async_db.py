@@ -20,7 +20,7 @@ import types
 
 import pytest
 
-from gateway import run
+from hermes_agent.gateway import run
 
 
 class _RecordingSessionDB:

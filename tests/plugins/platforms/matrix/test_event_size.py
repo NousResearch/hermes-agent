@@ -7,7 +7,7 @@ import types
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 # The homeserver rejects an event whose canonical JSON exceeds 65,536 bytes (M_TOO_LARGE). E2EE
 # base64-inflates the content by 4/3, and the envelope (ids, hashes, signatures) needs room too.
@@ -42,7 +42,7 @@ def _make_adapter():
 
 @pytest.mark.asyncio
 async def test_sends_and_budget_sized_edits_fit_one_event():
-    from gateway.platforms.base import SendResult, _custom_unit_to_cp
+    from hermes_agent.gateway.platforms.base import SendResult, _custom_unit_to_cp
 
     adapter = _make_adapter()
     sent, edits = [], []

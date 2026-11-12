@@ -10,9 +10,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.session import SessionSource
 from tests.gateway.test_approval_requester_binding import write_approvers
 
 SESSION = "agent:main:telegram:group:-100:9"
@@ -20,7 +20,7 @@ SESSION = "agent:main:telegram:group:-100:9"
 
 def _raise_as_alice(kind):
     """Register the prompt inside Alice's turn, as the gateway does; returns a 'was it answered' probe."""
-    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
     from tools import clarify_gateway, slash_confirm
 
     ran = []
@@ -55,9 +55,9 @@ def _clean():
 @pytest.mark.parametrize("kind", ["slash_confirm", "clarify"])
 @pytest.mark.parametrize(("clicker", "answered"), [("bob", False), ("alice", True)])
 async def test_relay_prompt_answer_bound_to_requester(kind, clicker, answered, monkeypatch):
-    import gateway.run as gateway_run
-    from gateway.config import GatewayConfig
-    from gateway.relay.adapter import RelayAdapter
+    import hermes_agent.gateway.run as gateway_run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.relay.adapter import RelayAdapter
     from tests.gateway.relay.stub_connector import StubConnector
     from tests.gateway.relay.test_relay_interactive import make_desc
 
@@ -107,9 +107,9 @@ async def test_telegram_prompt_tap_bound_to_requester(kind, tapper, answered, mo
 async def test_voice_reply_settles_only_the_clarify_it_was_checked_against():
     """Alice's question expires while her voice note transcribes and Bob's turn asks its own: her
     transcript is her own message, never the answer to Bob's question."""
-    from gateway.config import GatewayConfig
-    from gateway.run import GatewayRunner
-    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
     from tools import clarify_gateway
 
     _raise_as_alice("clarify")

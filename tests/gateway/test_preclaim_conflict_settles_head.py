@@ -9,8 +9,8 @@ from tests.gateway.test_session_authority_cancel_settlement import REF, _authori
 
 @pytest.mark.asyncio
 async def test_conflicted_head_settles_with_its_refusal_and_the_successor_runs(tmp_path, monkeypatch):
-    from gateway import session_api_turn, session_finite
-    from gateway.config import Platform
+    from hermes_agent.gateway import session_api_turn, session_finite
+    from hermes_agent.gateway.config import Platform
 
     db, authority = _authority(tmp_path, monkeypatch, platform=Platform.API_SERVER)
     executed = []
@@ -45,8 +45,8 @@ async def test_conflicted_head_settles_with_its_refusal_and_the_successor_runs(t
 async def test_refusal_write_storage_error_retries_and_still_settles_that_head(tmp_path, monkeypatch):
     import sqlite3
 
-    from gateway import session_api_turn, session_authority, session_finite
-    from gateway.config import Platform
+    from hermes_agent.gateway import session_api_turn, session_authority, session_finite
+    from hermes_agent.gateway.config import Platform
 
     db, authority = _authority(tmp_path, monkeypatch, platform=Platform.API_SERVER)
     monkeypatch.setattr(session_authority, '_CLAIM_RETRY_MIN_S', 0.0)
@@ -92,8 +92,8 @@ async def test_refusal_write_storage_error_retries_and_still_settles_that_head(t
 async def test_storage_error_after_the_refusal_commits_still_publishes_its_completion_once(tmp_path, monkeypatch):
     import sqlite3
 
-    from gateway import session_api_turn, session_authority, session_finite, session_queued_controls
-    from gateway.config import Platform
+    from hermes_agent.gateway import session_api_turn, session_authority, session_finite, session_queued_controls
+    from hermes_agent.gateway.config import Platform
 
     db, authority = _authority(tmp_path, monkeypatch, platform=Platform.API_SERVER)
     monkeypatch.setattr(session_authority, '_CLAIM_RETRY_MIN_S', 0.0)

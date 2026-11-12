@@ -49,7 +49,7 @@ from typing import Any, Dict, Optional, Set
 
 from agent.i18n import t
 from agent.secret_scope import get_secret
-from gateway.platforms._shared import (
+from hermes_agent.gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret,
     get_scoped_secret as _get_scoped_secret, send_error
 )
@@ -71,14 +71,14 @@ except ImportError:
         "PRIVATE": "private_chat", "PUBLIC": "public_chat", "TRUSTED_PRIVATE": "trusted_private_chat"})
     TrustState = type("_TrustStateStub", (), {"UNVERIFIED": 0, "VERIFIED": 1})  # type: ignore[misc,assignment]
 
-from gateway.approval_actor import approval_refusal, picker_refusal, refusal_text
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import (
+from hermes_agent.gateway.approval_actor import approval_refusal, picker_refusal, refusal_text
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, transcode_to_ogg_opus,
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, safe_proxy_url_for_log, ssrf_redirect_guard, describe_proxy_error,
 )
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
-from gateway.platforms.helpers import ThreadParticipationTracker
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from hermes_agent.gateway.platforms.helpers import ThreadParticipationTracker
 from plugins.platforms.matrix.session_proxy import matrix_redaction_proxy
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
 
@@ -399,7 +399,7 @@ def _resolve_max_message_length(config) -> int:
     raw = _extra_or_secret(getattr(config, "extra", None), "max_message_length", "MATRIX_MAX_MESSAGE_LENGTH", None)
     if raw is None or not str(raw).strip():
         with suppress(Exception):
-            from gateway.platform_registry import platform_registry
+            from hermes_agent.gateway.platform_registry import platform_registry
             entry = platform_registry.get("matrix")
             if entry and entry.max_message_length:
                 raw = entry.max_message_length
@@ -2302,7 +2302,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 logger.warning("[Matrix] Encrypted media event missing decryption metadata for %s", event_id)
                 return None
             file_bytes = decrypt_attachment(file_bytes, key_value, hash_value, iv_value)
-        from gateway.platforms.base import (
+        from hermes_agent.gateway.platforms.base import (
             cache_audio_from_bytes_async,
             cache_document_from_bytes_async,
             cache_image_from_bytes_async,
@@ -3273,7 +3273,7 @@ def register(ctx) -> None:
     from .adapter_hint import PLATFORM_HINT
     from .send_targets import SEND_ENTRY_KWARGS
     from .dashboard_card import DASHBOARD_CARD
-    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
+    from . import gateway_env  # env -> GatewayConfig bridge (hermes_agent.gateway.config_env)
     ctx.register_platform(
         **SEND_ENTRY_KWARGS,  # send_message target syntax + routing
         name="matrix", label="Matrix", adapter_factory=MatrixAdapter, check_fn=matrix_deps_present,

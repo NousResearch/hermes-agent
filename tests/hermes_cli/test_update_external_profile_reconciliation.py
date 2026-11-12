@@ -61,7 +61,7 @@ def external_profile_host(tmp_path, monkeypatch):
     monkeypatch.setattr(update_receipt, "_code_identity", lambda refresh=False: {"sha": SHA, "version": "1.0"})
     monkeypatch.setattr(update_receipt, "_socket_identity", lambda _home: None)
     live = {root.resolve(): 1111, other_home.resolve(): 4242}
-    monkeypatch.setattr("gateway.status.live_gateway_pid_for_home", lambda home: live.get(Path(home).resolve()))
+    monkeypatch.setattr("hermes_agent.gateway.status.live_gateway_pid_for_home", lambda home: live.get(Path(home).resolve()))
     monkeypatch.setattr(fleet_verify, "_time", SimpleNamespace(sleep=lambda _s: None, monotonic=time.monotonic))
     monkeypatch.setattr(fleet_verify, "_print_legacy_units_warning", lambda: None)
     monkeypatch.setattr("hermes_cli.update_cmd._finish_dashboard_update_cleanup", lambda *a, **k: None)

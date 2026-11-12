@@ -30,7 +30,7 @@ def diagnostic_process_event(event: dict) -> bool:
 
 def notification_config_snapshot():
     """Read the owning effective config once per turn (the loader already returns a fresh copy)."""
-    from gateway.warning_notifications import effective_user_config
+    from hermes_agent.gateway.warning_notifications import effective_user_config
     return effective_user_config()
 
 

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway import host_rendezvous as hr
+from hermes_agent.gateway import host_rendezvous as hr
 
 _CHILD = """
 import json, os, sys, time
@@ -76,7 +76,7 @@ def test_two_homes_take_their_own_per_home_lock_but_only_one_host_lock(host_dir,
         assert first == {"per_home": True, "host": True}
 
         monkeypatch.setenv("HERMES_HOME", str(home_b))
-        from gateway import status
+        from hermes_agent.gateway import status
 
         assert status.acquire_gateway_runtime_lock() is True, "second home must get its OWN lock"
         assert hr.claim_host_lock(hr.ROLE_GATEWAY)[0] is hr.HostLockOutcome.HELD_BY_OTHER, \
@@ -84,7 +84,7 @@ def test_two_homes_take_their_own_per_home_lock_but_only_one_host_lock(host_dir,
     finally:
         child.kill()
         child.wait(timeout=10)
-        from gateway import status
+        from hermes_agent.gateway import status
 
         status.release_gateway_runtime_lock()
 
@@ -126,7 +126,7 @@ def test_live_host_record_survives_wall_clock_create_time_drift(host_dir, monkey
     assert hr.liveness_is_proven(drifted) is True
 
     assert record.start_time is not None
-    from gateway import status
+    from hermes_agent.gateway import status
 
     monkeypatch.setattr(
         status, "get_process_start_time",
@@ -146,7 +146,7 @@ def test_reused_early_pid_after_reboot_is_not_the_gateway(host_dir):
     """
     import psutil
 
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway.status import get_process_start_time
 
     child = subprocess.Popen(["sleep", "30"])
     try:
@@ -185,7 +185,7 @@ def test_live_legacy_owner_survives_a_clock_step_past_its_create_time(host_dir):
     (boot time is wall clock minus uptime). The host lock is held, so the owner stays live."""
     import psutil
 
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway.status import get_process_start_time
 
     env = {**os.environ, "HERMES_HOME": str(host_dir / "home"), "HERMES_GATEWAY_LOCK_DIR": str(host_dir / "locks")}
     child = subprocess.Popen(
@@ -327,7 +327,7 @@ def test_relative_xdg_state_home_is_ignored(monkeypatch, tmp_path):
     """XDG spec: a relative ``$XDG_STATE_HOME`` is invalid and must be ignored. Honouring one made
     the host lock dir CWD-relative, so two serves started from different directories would each
     take their own "host" lock."""
-    from gateway import status
+    from hermes_agent.gateway import status
 
     monkeypatch.delenv("HERMES_GATEWAY_LOCK_DIR", raising=False)
     monkeypatch.setenv("XDG_STATE_HOME", "relative/state")
@@ -373,8 +373,8 @@ def test_free_host_lock_means_attach_does_not_treat_a_recycled_pid_as_owner(host
     If the flock is free, that pid is not the owner, and ``decide()`` must START instead of the
     never-expiring transient refuse that wedged supervised units in #138343 / #133744.
     """
-    from gateway.host_attach import START, decide, invalidate_host_gateway_cache
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway.host_attach import START, decide, invalidate_host_gateway_cache
+    from hermes_agent.gateway.status import get_process_start_time
 
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:
@@ -389,7 +389,7 @@ def test_free_host_lock_means_attach_does_not_treat_a_recycled_pid_as_owner(host
         )
         hr.ensure_host_state_dir()
         hr.record_path(hr.ROLE_GATEWAY).write_text(json.dumps(record.to_json()), encoding="utf-8")
-        monkeypatch.setattr("gateway.host_attach._identify", lambda home: None)
+        monkeypatch.setattr("hermes_agent.gateway.host_attach._identify", lambda home: None)
         invalidate_host_gateway_cache()
         decision = decide(home)
         assert decision.outcome == START
@@ -413,7 +413,7 @@ def test_null_create_time_record_on_a_recycled_pid_starts_instead_of_refusing_fo
 
     ``decide()`` must START (take the host over), not the transient REFUSE a supervisor retries forever.
     """
-    from gateway.host_attach import START, decide, invalidate_host_gateway_cache
+    from hermes_agent.gateway.host_attach import START, decide, invalidate_host_gateway_cache
 
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:
@@ -423,7 +423,7 @@ def test_null_create_time_record_on_a_recycled_pid_starts_instead_of_refusing_fo
         record = dataclasses.replace(record, updated_at="2020-01-01T00:00:00+00:00")
         hr.ensure_host_state_dir()
         hr.record_path(hr.ROLE_GATEWAY).write_text(json.dumps(record.to_json()), encoding="utf-8")
-        monkeypatch.setattr("gateway.host_attach._identify", lambda home: None)
+        monkeypatch.setattr("hermes_agent.gateway.host_attach._identify", lambda home: None)
         invalidate_host_gateway_cache()
         assert decide(home).outcome == START
     finally:
@@ -436,7 +436,7 @@ def test_discard_dead_record_retracts_a_live_looking_pid_only_once_the_host_lock
 
     Lock held: the recorded owner may be alive, keep the record. Lock free: the owner is gone.
     """
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway.status import get_process_start_time
 
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:
@@ -478,7 +478,7 @@ def test_another_process_holding_the_host_lock_is_observed_and_its_exit_frees_th
     Held by a child: the probe reports held and restart cleanup keeps a live-looking record.
     Child killed: the same lock file still exists, reads free, and the cleanup retracts the record.
     """
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway.status import get_process_start_time
 
     tree = _tree()
     sleeper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
@@ -535,7 +535,7 @@ def test_restart_cleanup_never_deletes_a_gateway_that_claimed_the_lock_mid_clean
     The restart's record cleanup then deleted the NEW owner's record and token while it held
     the host lock. A gateway holding the lock must always have its record and token on disk.
     """
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway.status import get_process_start_time
     from hermes_cli.gateway_host_record import _discard_dead_host_record
 
     tree = _tree()

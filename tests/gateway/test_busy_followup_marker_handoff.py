@@ -16,11 +16,11 @@ from tests.gateway.test_shared_busy_receive_loop import Adapter, _statuses, _wai
 
 @pytest.mark.asyncio
 async def test_busy_followup_keeps_its_marker_until_the_reply_is_ledgered(monkeypatch):
-    from gateway.config import GatewayConfig, Platform
-    from gateway.platforms.event import MessageEvent
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_results import execution_result
+    from hermes_agent.gateway.config import GatewayConfig, Platform
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_results import execution_result
 
     monkeypatch.setenv('TELEGRAM_ALLOWED_USERS', 'fixture-user')
     runner = GatewayRunner(GatewayConfig())

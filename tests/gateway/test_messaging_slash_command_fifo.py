@@ -14,9 +14,9 @@ from tests.waiting import async_wait_until
 
 
 def _owner(monkeypatch, mode=None):
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.platforms.base import SendResult
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.base import SendResult
+    from hermes_agent.gateway.run import GatewayRunner
     from plugins.platforms.discord.adapter import DiscordAdapter
 
     monkeypatch.setenv('DISCORD_ALLOWED_USERS', '42')
@@ -62,10 +62,10 @@ async def _start_a(monkeypatch, mode=None, *, agent=True):
     ``(message_id, where)``: True when the drain executed it as an admission, 'inside A' when it
     ran from the in-process slot inside the running turn. Without ``agent`` A stays on the
     pending sentinel (an agent still being built)."""
-    from gateway.platforms.event import MessageEvent
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_ingress import executing_admission
-    from gateway.session_results import execution_result
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_ingress import executing_admission
+    from hermes_agent.gateway.session_results import execution_result
 
     runner, adapter, sent = _owner(monkeypatch, mode)
     authority = await initialize_session_authority(runner, profile_id='default', instance_id='owner')
@@ -105,7 +105,7 @@ def _rows(rig):
 
 async def _run_a_then(monkeypatch, mode, command, *, before_finish=None, settled=lambda: False):
     """A runs; B (plain text) is admitted behind it; then *command* arrives. Returns the turns."""
-    from gateway.platforms.event import MessageEvent, MessageType
+    from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 
     rig = await _start_a(monkeypatch, mode)
     await rig.adapter.handle_message(MessageEvent(text='B', source=rig.source, message_id='B'))
@@ -143,12 +143,12 @@ async def test_busy_skill_slash_runs_after_the_turn_already_admitted(monkeypatch
 async def test_idle_rewrite_waits_behind_a_queued_row(monkeypatch, command):
     """Between turns (slot released, the drain has not claimed B yet), a slash command rewritten
     into a turn is admitted behind B instead of running in-process ahead of it."""
-    from gateway.platforms.event import MessageEvent, MessageType
-    from gateway.session_authority import SessionAuthority, initialize_session_authority
-    from gateway.session_contract import SessionRef
-    from gateway.session_ingress import admit_message, executing_admission
-    from gateway.session_ingress_context import native_callback
-    from gateway.session_results import execution_result
+    from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+    from hermes_agent.gateway.session_authority import SessionAuthority, initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_ingress import admit_message, executing_admission
+    from hermes_agent.gateway.session_ingress_context import native_callback
+    from hermes_agent.gateway.session_results import execution_result
     from hermes_constants import get_hermes_home
     from hermes_agent.hermes_state_runtime import list_session_admissions
 
@@ -191,8 +191,8 @@ async def test_an_admitted_turn_never_answers_a_pending_prompt(monkeypatch, prom
     /update prompt, a clarify) never takes the executing turn as its answer: the turn runs. A
     restart replays the row as a plain restored event, which is checked directly."""
     from tools import clarify_gateway, slash_confirm
-    from gateway.platforms.event import MessageEvent
-    from gateway.session_ingress import executing_admission
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.session_ingress import executing_admission
 
     answered = []
 
@@ -230,11 +230,11 @@ async def test_queued_turn_keeps_the_relay_callback(monkeypatch, command):
     can queue; the strict identity check in ``capture_provenance`` still holds."""
     from pathlib import Path
     from unittest.mock import AsyncMock
-    from gateway import session_ingress_context as ctx
-    from gateway.config import Platform
-    from gateway.platforms.event import MessageEvent, MessageType
-    from gateway.run_busy import GatewayBusySessionMixin
-    from gateway.session import SessionSource
+    from hermes_agent.gateway import session_ingress_context as ctx
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+    from hermes_agent.gateway.run_busy import GatewayBusySessionMixin
+    from hermes_agent.gateway.session import SessionSource
 
     accepted, transport, home = [], object(), Path.cwd()
 
@@ -277,7 +277,7 @@ async def test_stop_during_a_busy_skill_rewrite_drops_it(monkeypatch, caller, ki
     ``adapter``: the adapter's busy handler; ``runner``: the runner's busy path (no adapter guard)."""
     import threading
     import agent.skill_bundles as bundles
-    from gateway.platforms.event import MessageEvent, MessageType
+    from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 
     _skill(monkeypatch)
     started, gate = threading.Event(), threading.Event()
@@ -314,8 +314,8 @@ async def test_queued_ack_follows_the_commit(monkeypatch, command, agent, ack):
     waits behind an earlier one of its chat). The "Queued" reply follows the commit, not that
     release: none before it, one once it lands."""
     from agent.i18n import t
-    import gateway.session_ingress as ingress
-    from gateway.platforms.event import MessageEvent, MessageType
+    import hermes_agent.gateway.session_ingress as ingress
+    from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 
     real, held = ingress.admit_message, asyncio.Event()
 
@@ -348,7 +348,7 @@ async def test_queued_approval_word_is_a_turn_never_an_approval(monkeypatch):
     async def approve(self, event):
         approved.append(event.text)
         return 'approved'
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
     monkeypatch.setattr(GatewayRunner, '_handle_approve_command', approve)
     order = await _run_a_then(monkeypatch, 'queue', '/queue yes')
     assert approved == [] and 'C' in [m for m, _ in order], (approved, order)
@@ -362,10 +362,10 @@ async def test_reset_during_an_idle_skill_rewrite_drops_it(monkeypatch, reset):
     already counts the reset and the old command commits into the fresh conversation."""
     import threading
     import agent.skill_commands as skills
-    from gateway.platforms.event import MessageEvent, MessageType
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_ingress import executing_admission
-    from gateway.session_results import execution_result
+    from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_ingress import executing_admission
+    from hermes_agent.gateway.session_results import execution_result
 
     _skill(monkeypatch)
     started, gate = threading.Event(), threading.Event()

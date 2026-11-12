@@ -14,10 +14,10 @@ from pathlib import Path
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig, StreamingConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform, PlatformConfig, StreamingConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.session import SessionSource
 from tests.fakes.fake_llm_provider import FakeLLMServer
 from tests.fakes.redactor_plugin import REWRITE, raw_leaks, redactor_home, redactor_turn
 from tests.gateway.test_run_progress_topics import _make_runner
@@ -71,7 +71,7 @@ class _NativeStreamChat(_Chat):
 
 def _relay_slack():
     """Slack fronted by the relay: native ``chat.*Stream`` drafts ARE the message."""
-    from gateway.relay.adapter import RelayAdapter
+    from hermes_agent.gateway.relay.adapter import RelayAdapter
     from tests.gateway.relay.stub_connector import StubConnector
     from tests.gateway.relay.test_relay_slack_dm_streaming import _slack_desc
 
@@ -97,7 +97,7 @@ CHATS = {
 
 
 async def _deliver(chat, *, hold, monkeypatch):
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
     from hermes_cli import plugins
 
     home = Path(os.environ["HERMES_HOME"])

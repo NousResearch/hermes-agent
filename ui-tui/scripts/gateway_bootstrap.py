@@ -32,7 +32,7 @@ def bootstrap(start: bool, recover: bool = False) -> dict:
 
     # Ink runs this on HERMES_PYTHON with PYTHONPATH=<root> only. On a source install that is PM's
     # store Python, which owns no packages, and the no-owner discovery fallback already imports one
-    # (gateway.status -> utils -> hermes_yaml -> ruamel): boot the committed generation first, as
+    # (hermes_agent.gateway.status -> utils -> hermes_yaml -> ruamel): boot the committed generation first, as
     # hermes_bootstrap does for every other entry point.
     try:
         activate_dependencies(python_root())

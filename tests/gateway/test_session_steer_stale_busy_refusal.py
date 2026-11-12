@@ -16,14 +16,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_busy_controls import correct
+from hermes_agent.gateway.session_busy_controls import correct
 from tests.gateway.test_session_authority_cancel_settlement import (
     ACTOR, REF, _authority, _submit, _wire_turn_agent)
 
 
 async def _claim_without_agent(authority, monkeypatch, request_id='building'):
     """Submit a turn and hold it at the claim, before the turn wires its agent."""
-    from gateway import session_finite
+    from hermes_agent.gateway import session_finite
 
     claimed, release = asyncio.Event(), asyncio.Event()
 

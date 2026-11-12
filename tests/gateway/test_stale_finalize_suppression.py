@@ -28,10 +28,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig, StreamingConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.session import SessionSource
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from hermes_agent.gateway.config import Platform, PlatformConfig, StreamingConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +133,7 @@ class CompleteStreamAgent:
 
 
 def _make_runner(adapter):
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     runner = object.__new__(gateway_run.GatewayRunner)
     runner.adapters = {adapter.platform: adapter}
     runner._voice_mode = {}
@@ -184,7 +184,7 @@ async def _run_streaming_turn(monkeypatch, tmp_path, agent_cls, session_id):
 
     adapter = FinalizeCaptureAdapter()
     runner = _make_runner(adapter)
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(
         gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
@@ -312,8 +312,8 @@ async def test_payload_less_split_does_not_suppress_complete_response(
     fake_run_agent.AIAgent = StalePrefixAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
-    gateway_run = importlib.import_module("gateway.run")
-    stream_consumer_mod = importlib.import_module("gateway.stream_consumer")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
+    stream_consumer_mod = importlib.import_module("hermes_agent.gateway.stream_consumer")
     # run.py imports GatewayStreamConsumer locally inside _run_agent — patch
     # the defining module so the local import picks up the sabotage subclass.
     monkeypatch.setattr(

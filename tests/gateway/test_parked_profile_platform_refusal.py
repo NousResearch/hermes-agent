@@ -11,10 +11,10 @@ import weakref
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
-from gateway.profile_routing import ProfileRoute
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from hermes_agent.gateway.profile_routing import ProfileRoute
+from hermes_agent.gateway.session import SessionSource
 from tests.gateway.test_parked_profile_ingress import _admissions, _close, _homes, _runner_with_beta_parked
 
 

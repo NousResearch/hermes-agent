@@ -16,7 +16,7 @@ break an update (every public entry point is exception-swallowing):
 
 2. **Fleet version verification** — after the restart phase, read every
    profile's ``gateway_state.json``, compare each live gateway's stamped
-   ``code_sha`` (written by ``gateway/status.py`` on every runtime-status
+   ``code_sha`` (written by ``hermes_agent/gateway/status.py`` on every runtime-status
    write) against the freshly-updated checkout's HEAD, and print a fleet
    version matrix. Mixed-version fleets (#88654, #69754, #77553, #56717)
    become a loud, actionable report instead of a latent state.
@@ -1040,7 +1040,7 @@ def _socket_identity(home: Path) -> Optional[tuple[int, dict]]:
     try:
         # Prefer the gateway-owned control socket (#92091): identity declared by the process itself,
         # including its own supervisor provenance — no argv/PID inference. Scan fallback below.
-        from gateway.control_socket import identify_gateway
+        from hermes_agent.gateway.control_socket import identify_gateway
 
         identity = identify_gateway(home)
         return (int(identity.get("pid")), identity) if identity else None
@@ -1075,7 +1075,7 @@ def _gateway_code_root(pid: int, home: Path) -> Optional[Path]:
     # status record already carries sys.argv (whose first item is the resolved
     # module path for ``python -m`` launches).
     with suppress(Exception):
-        from gateway.status import read_runtime_status
+        from hermes_agent.gateway.status import read_runtime_status
 
         record = read_runtime_status(home / "gateway_state.json") or {}
         if int(record.get("pid")) == pid:
@@ -1179,7 +1179,7 @@ def collect_fleet_versions(
     expected_sha = _code_identity(refresh=True).get("sha")
     expected_root = _updater_code_root()
     try:
-        from gateway.status import (
+        from hermes_agent.gateway.status import (
             live_gateway_pid_for_home,
             read_runtime_status,
             runtime_status_pid_is_live,

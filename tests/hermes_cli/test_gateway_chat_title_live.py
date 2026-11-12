@@ -71,7 +71,7 @@ finally:
     title = "wave36 titled thread"
     log_path = tmp_path / "gateway.log"
     with log_path.open("w") as log:
-        daemon = subprocess.Popen([sys.executable, "-m", "gateway.run"], cwd=root, env=env,
+        daemon = subprocess.Popen([sys.executable, "-m", "hermes_agent.gateway.run"], cwd=root, env=env,
                                   stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
         try:
             deadline = time.monotonic() + 40

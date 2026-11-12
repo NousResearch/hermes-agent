@@ -11,11 +11,11 @@ import subprocess
 
 import pytest
 
-import gateway.run as gateway_run
+import hermes_agent.gateway.run as gateway_run
 import tools.checkpoint_manager as cpm
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionSource
 
 pytestmark = pytest.mark.skipif(
     shutil.which("git") is None, reason="git required for /diff"

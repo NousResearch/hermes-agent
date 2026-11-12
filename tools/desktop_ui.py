@@ -15,7 +15,7 @@ the frame on the correct transcript transport (#80678).
 import json
 from typing import Callable, FrozenSet, Optional
 
-from gateway.session_context import get_session_env
+from hermes_agent.gateway.session_context import get_session_env
 from tools.registry import tool_error
 
 # (sid, event, payload) sink, installed by the desktop gateway.

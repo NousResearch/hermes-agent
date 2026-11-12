@@ -46,7 +46,7 @@ def _offline_model_inventory(monkeypatch):
 
 @pytest.fixture
 def daemon(tmp_path, model_peer, request):
-    """An ordinary isolated ``gateway.run`` process: ``(home, descriptor, env, root)``."""
+    """An ordinary isolated ``hermes_agent.gateway.run`` process: ``(home, descriptor, env, root)``."""
     from tests.gateway.test_normal_runtime_boot import control
 
     home = tmp_path / "state"
@@ -75,12 +75,12 @@ def daemon(tmp_path, model_peer, request):
                PYTHONPATH=str(root), PYTHONUNBUFFERED="1",
                OPENAI_API_KEY="loopback-only", OPENAI_BASE_URL=model_url,
                HERMES_ACP_SKIP_CONFIGURED_MCP="1")
-    command = [sys.executable, "-m", "gateway.run"]
+    command = [sys.executable, "-m", "hermes_agent.gateway.run"]
     if getattr(request, 'param', None) == 'proposed-acp-descriptor':
         # API-owner handoff only: execution/create/policy stay unmodified. This
         # fixture explicitly distinguishes the proposed advert from shipped HEAD.
         command = [sys.executable, '-c', '''
-from gateway.session_controls import AuthorityConnection
+from hermes_agent.gateway.session_controls import AuthorityConnection
 original = AuthorityConnection.describe
 async def describe(self, ref, params):
     result = await original(self, ref, params)
@@ -89,7 +89,7 @@ async def describe(self, ref, params):
     return result
 AuthorityConnection.describe = describe
 import runpy
-runpy.run_module('gateway.run', run_name='__main__')
+runpy.run_module('hermes_agent.gateway.run', run_name='__main__')
 ''']
     log_path = tmp_path / "gateway.log"
     with log_path.open("w") as log:

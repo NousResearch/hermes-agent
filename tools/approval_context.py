@@ -89,7 +89,7 @@ def is_local_interactive_session() -> bool:
     froze at ``session.create`` (never a per-turn client flag). Kanban, cron and forwarded routes keep
     their own sources and stay out."""
     try:
-        from gateway.session_policy import active_policy
+        from hermes_agent.gateway.session_policy import active_policy
     except ImportError:  # install without the gateway package: no local session can be running
         return False
     policy = active_policy()
@@ -103,7 +103,7 @@ def is_viewer_turn_with_approver() -> bool:
     ``inject_message`` turn, a delegation completion, a background-process or watch notice, a /loop tick, a
     heartbeat or a hosted-room task is never a viewer turn."""
     try:
-        from gateway.session_ingress import viewer_turn
+        from hermes_agent.gateway.session_ingress import viewer_turn
     except ImportError:  # install without the gateway package: no admission is executing
         return False
     live = viewer_turn.get()
@@ -144,7 +144,7 @@ def get_current_session_key(default: str = "default") -> str:
     """Return the active session key: approval contextvar → session_context → os.environ."""
     if session_key := _approval_session_key.get():
         return session_key
-    from gateway.session_context import get_session_env
+    from hermes_agent.gateway.session_context import get_session_env
     return get_session_env("HERMES_SESSION_KEY", default)
 
 
@@ -153,7 +153,7 @@ def _session_env(name: str) -> str:
     unrelated gateway/API/TUI turns in the same process; process env is the
     fallback for CLI tests and older entrypoints."""
     try:
-        from gateway.session_context import get_session_env
+        from hermes_agent.gateway.session_context import get_session_env
         return get_session_env(name, "") or ""
     except Exception:
         return os.getenv(name, "") or ""
@@ -161,7 +161,7 @@ def _session_env(name: str) -> str:
 
 def prompt_authority(requester_id: str | None = None, requester_name: str | None = None,
                      chat_type: str | None = None) -> dict:
-    """Who may answer a chat prompt raised now (``gateway.approval_actor.may_answer``): its requester,
+    """Who may answer a chat prompt raised now (``hermes_agent.gateway.approval_actor.may_answer``): its requester,
     ``approvals.approvers`` read here in the caller's profile scope (click callbacks run off-turn), and
     the chat type picking the admin scope. Omitted fields are the current turn's ACTOR (who asked):
     empty once another sender's input joined the turn, which leaves only approvers and admins."""
@@ -217,7 +217,7 @@ def _is_single_query_approval_context() -> bool:
     carries the same fact as the submission's ``finite`` flag (``hermes -z`` / ``chat -q``
     over the daemon): the viewer detaches on the first prompt, so nobody answers there either."""
     try:
-        from gateway.session_finite import finite_turn_required
+        from hermes_agent.gateway.session_finite import finite_turn_required
     except ImportError:  # install without the gateway package: no admitted turn to carry the flag
         pass
     else:
@@ -267,7 +267,7 @@ def _resolve_cli_approval_callback(approval_callback=None):
 def _should_fall_through_to_cli_approval(*, is_cli: bool, approval_callback, notify_cb) -> bool:
     """Prefer the CLI Dangerous Command panel over a silent pending approval:
     ``HERMES_EXEC_ASK`` (or a platform marker) can leak into an interactive CLI
-    process (historically via ``import gateway.run``), and without a gateway notify
+    process (historically via ``import hermes_agent.gateway.run``), and without a gateway notify
     listener the ask branch used to return ``pending_approval`` immediately and
     skip the panel the user can actually answer."""
     return bool(is_cli and approval_callback is not None and notify_cb is None)
@@ -307,7 +307,7 @@ def _get_approval_config() -> dict:
 def _get_approval_mode() -> str:
     """Return 'manual', 'smart', or 'off' (a hosted-room policy overrides config)."""
     try:
-        from gateway.hosted_room_execution_policy import current_room_execution_policy
+        from hermes_agent.gateway.hosted_room_execution_policy import current_room_execution_policy
         if (room_policy := current_room_execution_policy()) is not None:
             return room_policy.approval_mode
     except Exception:

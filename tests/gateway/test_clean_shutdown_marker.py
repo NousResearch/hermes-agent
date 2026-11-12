@@ -9,8 +9,8 @@ from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
-from gateway.config import GatewayConfig, Platform
-from gateway.session import SessionSource, SessionStore
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.session import SessionSource, SessionStore
 
 
 # ---------------------------------------------------------------------------
@@ -35,12 +35,12 @@ class TestCleanShutdownMarker:
 
     def test_marker_written_on_graceful_stop(self, tmp_path, monkeypatch):
         """stop() should write .clean_shutdown marker."""
-        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        monkeypatch.setattr("hermes_agent.gateway.run._hermes_home", tmp_path)
         marker = tmp_path / ".clean_shutdown"
         assert not marker.exists()
 
         # Create a minimal runner and call the shutdown logic directly
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
         runner = object.__new__(GatewayRunner)
         runner._restart_requested = False
         runner._restart_detached = False
@@ -60,10 +60,10 @@ class TestCleanShutdownMarker:
         runner.config = GatewayConfig()
 
         # Mock heavy dependencies
-        with patch("gateway.run.GatewayRunner._drain_active_agents", new_callable=AsyncMock, return_value=([], False)), \
-             patch("gateway.run.GatewayRunner._finalize_shutdown_agents"), \
-             patch("gateway.run.GatewayRunner._update_runtime_status"), \
-             patch("gateway.status.remove_pid_file"), \
+        with patch("hermes_agent.gateway.run.GatewayRunner._drain_active_agents", new_callable=AsyncMock, return_value=([], False)), \
+             patch("hermes_agent.gateway.run.GatewayRunner._finalize_shutdown_agents"), \
+             patch("hermes_agent.gateway.run.GatewayRunner._update_runtime_status"), \
+             patch("hermes_agent.gateway.status.remove_pid_file"), \
              patch("tools.process_registry.process_registry") as mock_proc_reg, \
              patch("tools.terminal_tool.cleanup_all_environments"), \
              patch("tools.browser_session_lifecycle.cleanup_all_browsers"):

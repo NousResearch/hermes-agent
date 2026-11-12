@@ -17,12 +17,12 @@ _FRAME = {"type": "passthrough_forward", "bufferId": "b1", "forward": {
 
 @pytest.mark.asyncio
 async def test_relayed_modal_admitted_only_with_reader_proof(tmp_path, monkeypatch):
-    import gateway.run as gr
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.platforms.base import SendResult
-    from gateway.relay.adapter import RelayAdapter
-    from gateway.relay.ws_transport import WebSocketRelayTransport, _passthrough_from_wire
-    from gateway.session_authority import initialize_session_authority
+    import hermes_agent.gateway.run as gr
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.base import SendResult
+    from hermes_agent.gateway.relay.adapter import RelayAdapter
+    from hermes_agent.gateway.relay.ws_transport import WebSocketRelayTransport, _passthrough_from_wire
+    from hermes_agent.gateway.session_authority import initialize_session_authority
     from tests.gateway.relay.test_relay_passthrough import _desc
     from tests.waiting import async_wait_until
 

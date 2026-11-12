@@ -1,8 +1,8 @@
 """Busy-session queueing, slot claims, slash dispatch tables and destructive-slash confirmation
 for GatewayRunner (mixin bound via the MRO).
 
-``gateway.run`` internals are imported lazily inside method bodies (import cycle), so
-``patch("gateway.run.X")`` keeps intercepting them at call time.
+``hermes_agent.gateway.run`` internals are imported lazily inside method bodies (import cycle), so
+``patch("hermes_agent.gateway.run.X")`` keeps intercepting them at call time.
 """
 
 from __future__ import annotations
@@ -18,16 +18,16 @@ import os
 import time
 from agent.i18n import DEFAULT_LANGUAGE, t
 from agent.session_activity import format_iteration_progress
-from gateway.config import Platform
-from gateway.platforms.base import EphemeralReply
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource
-from gateway.whatsapp_identity import canonical_whatsapp_identifier
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.base import EphemeralReply
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.whatsapp_identity import canonical_whatsapp_identifier
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner
-    from gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
 
 
 def approval_input_words(input_key: str) -> tuple[str, ...]:
@@ -47,9 +47,9 @@ def approval_input_words(input_key: str) -> tuple[str, ...]:
 
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
-# A local session's ``pre_command`` (gateway/session_commands.py), awaited by the mid-run dispatch once it
+# A local session's ``pre_command`` (hermes_agent/gateway/session_commands.py), awaited by the mid-run dispatch once it
 # accepts a command and before it acts, so a refused one fires nothing. Unset on messaging.
 BUSY_ACCEPTED: contextvars.ContextVar = contextvars.ContextVar("busy_accepted", default=None)
 
@@ -393,7 +393,7 @@ class GatewayBusySessionMixin:
     def _agent_has_active_subagents(running_agent: Any) -> bool:
         """True when *running_agent* is driving subagents (callers demote interrupt → queue;
         ``interrupt()`` would cascade through ``_active_children``). Fail-safe False on any error."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from hermes_agent.gateway.run import _AGENT_PENDING_SENTINEL
         if running_agent is None or running_agent is _AGENT_PENDING_SENTINEL:
             return False
         children = getattr(running_agent, "_active_children", None)
@@ -500,7 +500,7 @@ class GatewayBusySessionMixin:
     )
 
     def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
-        from gateway.platforms.base import merge_pending_message_event
+        from hermes_agent.gateway.platforms.base import merge_pending_message_event
         adapter = self._delivery_adapter_for(event.source)
         if not adapter:
             return
@@ -584,8 +584,8 @@ class GatewayBusySessionMixin:
             "source_message_id": source.message_id,
         }
         origin = {key: value for key, value in origin.items() if value not in (None, "")}
-        from gateway.run import _load_gateway_config
-        from gateway.session import _hash_chat_id, _hash_id, _hash_sender_id, _should_redact_pii
+        from hermes_agent.gateway.run import _load_gateway_config
+        from hermes_agent.gateway.session import _hash_chat_id, _hash_id, _hash_sender_id, _should_redact_pii
 
         # Adapter busy callbacks can bypass the routed normal-message scope.
         with self._profile_scope_for_source(source):
@@ -620,7 +620,7 @@ class GatewayBusySessionMixin:
     async def _send_busy_reply(self, event: MessageEvent, adapter, content: str, *, plain_anchor: bool = False) -> None:
         """Send a busy-path reply anchored to the event (thread metadata included). Never to a bot:
         an ack, redirect or drain notice is a new inbound message for its turn loop (#137027)."""
-        from gateway.bot_peer_notices import automatic_notices_allowed
+        from hermes_agent.gateway.bot_peer_notices import automatic_notices_allowed
         if not automatic_notices_allowed(event.source):
             logger.debug("Busy-path notice suppressed for bot-authored message in %s", event.source.chat_id)
             return
@@ -714,7 +714,7 @@ class GatewayBusySessionMixin:
         self, event: MessageEvent, session_key: str, effective_mode: str, running_agent: Any
     ) -> GatewayRunner._BusySteerOutcome:
         """Apply interrupt->queue demotions, then attempt steer (steer mode) or redirect (interrupt mode)."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from hermes_agent.gateway.run import _AGENT_PENDING_SENTINEL
         # Steer injects mid-run via running_agent.steer(), falling back to queue (nothing lost) when
         # the agent isn't running yet, lacks steer(), or the payload is empty. Interrupt is demoted
         # to queue while subagents run (interrupt() would abort them); /stop and /new still cancel all.
@@ -824,7 +824,7 @@ class GatewayBusySessionMixin:
 
     async def _interrupt_running_agent_for_busy_event(self, event: MessageEvent, adapter, running_agent) -> None:
         """Interrupt mode: abort in-flight tool calls; the agent loop exits at its next check point."""
-        from gateway.run import _build_media_placeholder
+        from hermes_agent.gateway.run import _build_media_placeholder
         try:
             _interrupt_text = event.text
             _media_urls = getattr(event, "media_urls", None) or []
@@ -840,8 +840,8 @@ class GatewayBusySessionMixin:
 
     def _busy_steer_ack_enabled(self, event: MessageEvent, session_key: str) -> bool:
         # Some mobile chat setups want silent steering — keep the behavior, drop the bubble.
-        from gateway.run import _load_gateway_config, _platform_config_key
-        from gateway.display_config import resolve_display_setting
+        from hermes_agent.gateway.run import _load_gateway_config, _platform_config_key
+        from hermes_agent.gateway.display_config import resolve_display_setting
         steer_ack_env = os.environ.get("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED")
         if steer_ack_env is not None:
             steer_ack_enabled = steer_ack_env.strip().lower() in {"1", "true", "yes", "on"}
@@ -865,10 +865,10 @@ class GatewayBusySessionMixin:
         is_steer_mode: bool, is_queue_mode: bool, is_redirect_mode: bool,
         demoted_for_subagents: bool, demoted_for_compression: bool,
     ) -> str:
-        from gateway.run import (
+        from hermes_agent.gateway.run import (
             _AGENT_PENDING_SENTINEL, _hermes_home, _load_gateway_config, _platform_config_key
         )
-        from gateway.display_config import resolve_display_setting
+        from hermes_agent.gateway.display_config import resolve_display_setting
 
         # Terse by default; iteration/tool detail opts in via display.platforms.<p>.busy_ack_detail.
         status_parts = []
@@ -950,7 +950,7 @@ class GatewayBusySessionMixin:
 
         # Same authorization gate as the cold path, else unauthorized users in shared threads
         # inject messages into a session they don't own.
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from hermes_agent.gateway.run import _AGENT_PENDING_SENTINEL
         # See #17775. A primary transport can route a turn into a secondary
         # profile, so authorize in the stamped transport scope.
         if not self._is_user_authorized_for_source(event.source):
@@ -1014,7 +1014,7 @@ class GatewayBusySessionMixin:
     async def _busy_interrupt_and_ack(self, event, session_key, adapter, _busy_state, running_agent, _steer) -> None:
         """Interrupt-mode abort (voice transcribed) and the busy ack, after the steer/redirect resolution.
         Shared by the in-process busy handler and the session authority's busy preempt."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from hermes_agent.gateway.run import _AGENT_PENDING_SENTINEL
         effective_mode, redirected = _steer.effective_mode, _steer.redirected
         is_queue_mode = effective_mode == "queue"
         is_steer_mode = effective_mode == "steer"
@@ -1080,11 +1080,11 @@ class GatewayBusySessionMixin:
 
     async def _send_command_ack(self, source, text: str, label: str) -> None:
         """Best-effort acknowledgment for a slash command that falls through to agent processing."""
-        from gateway.session_command_sink import active_sink
+        from hermes_agent.gateway.session_command_sink import active_sink
         if (sink := active_sink()) is not None:
             sink.notices.append(text)  # a local slash.exec: the ack rides the client's directive
             return
-        from gateway.bot_peer_notices import automatic_notices_allowed
+        from hermes_agent.gateway.bot_peer_notices import automatic_notices_allowed
         try:
             adapter = self._delivery_adapter_for(source) if automatic_notices_allowed(source) else None
             if adapter:
@@ -1180,7 +1180,7 @@ class GatewayBusySessionMixin:
 
     async def _busy_stop_command(self, event: MessageEvent, quick_key: str, source):
         # Hard-kill: a soft interrupt can't reach a truly hung executor thread.
-        from gateway.run import _INTERRUPT_REASON_STOP
+        from hermes_agent.gateway.run import _INTERRUPT_REASON_STOP
         await _busy_accepted()
         await self._interrupt_and_clear_session(
             quick_key, source, interrupt_reason=_INTERRUPT_REASON_STOP, invalidation_reason="stop_command",
@@ -1191,7 +1191,7 @@ class GatewayBusySessionMixin:
     async def _busy_new_command(self, event: MessageEvent, quick_key: str, source):
         # /reset and /new bypass the running-agent guard (else they'd queue as user text and replay
         # into the same broken history); clear pending messages so the old text doesn't replay.
-        from gateway.run import _INTERRUPT_REASON_RESET
+        from hermes_agent.gateway.run import _INTERRUPT_REASON_RESET
         await _busy_accepted()
         # Interrupt the agent first, then clear the adapter's pending queue so the stale "/reset" text
         # doesn't get re-processed as a user message after the interrupt completes. See #2170.
@@ -1233,7 +1233,7 @@ class GatewayBusySessionMixin:
     async def _busy_steer_command(self, event: MessageEvent, quick_key: str, source):
         # /steer lands BETWEEN tool-call iterations of the same run (appended to the last tool
         # result) — no interrupt, no new user turn, no role-alternation violation.
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from hermes_agent.gateway.run import _AGENT_PENDING_SENTINEL
         steer_text = event.get_command_args().strip()
         if not steer_text:
             return t("gateway.steer.usage")
@@ -1285,8 +1285,8 @@ class GatewayBusySessionMixin:
         still a command, an internal event, an executing admission and a turn carrying a one-turn
         model (``/moa``, which would otherwise land on whichever admitted turn runs next) stay
         in-process, as without an authority."""
-        from gateway.session_authorities import active_authority
-        from gateway.session_ingress import executing_admission
+        from hermes_agent.gateway.session_authorities import active_authority
+        from hermes_agent.gateway.session_ingress import executing_admission
         if active_authority(self) is None or executing_admission.get() or event.internal or event.get_command():
             return False
         state = self._peek_session_state(session_key)
@@ -1295,7 +1295,7 @@ class GatewayBusySessionMixin:
     def _route_stop_epoch(self, session_key: str) -> int:
         """How many messaging /stop and /new fenced *session_key*: the authority's one per-route epoch
         (``fence_route``, bumped by ``_hm_stop_owner_turn``), shared with inputs still capturing."""
-        from gateway.session_authorities import active_authority
+        from hermes_agent.gateway.session_authorities import active_authority
         authority = active_authority(self)
         return authority.route_epoch(session_key) if authority is not None else 0
 
@@ -1324,8 +1324,8 @@ class GatewayBusySessionMixin:
         if not self._command_turn_admitted(event, session_key):
             self._enqueue_fifo(session_key, event, adapter)
             return False
-        from gateway.session_ingress import dispatch_shared_busy
-        from gateway.session_ingress_context import carry_callback
+        from hermes_agent.gateway.session_ingress import dispatch_shared_busy
+        from hermes_agent.gateway.session_ingress_context import carry_callback
         carry_callback(command, event)  # the native or relay callback authenticated the command's event
         epoch = self._route_stop_epoch(session_key) if stop_epoch is None else stop_epoch
         if ack:
@@ -1349,8 +1349,8 @@ class GatewayBusySessionMixin:
         turn's reply when admitted inline; with ``adapter``, the busy handler's, it is committed in
         the background). ``(False, None)`` leaves a plugin, quick or unknown command to the busy path.
         It keeps the /stop and /new epoch it arrived under across the (slow) rewrite."""
-        from gateway.session_authorities import active_authority
-        from gateway.session_ingress import executing_admission
+        from hermes_agent.gateway.session_authorities import active_authority
+        from hermes_agent.gateway.session_ingress import executing_admission
         from hermes_cli.commands import is_gateway_known_command
         command = event.get_command()
         if (not command or event.internal or active_authority(self) is None or executing_admission.get()
@@ -1396,7 +1396,7 @@ class GatewayBusySessionMixin:
     def _check_slash_access(self, source: SessionSource, canonical_cmd: str) -> Optional[str]:
         """Denial message if ``source`` cannot run ``canonical_cmd``, else None (both dispatch paths
         use it so an in-flight agent can't bypass admin gating; no ``allow_admin_from`` → None)."""
-        from gateway.slash_access import policy_for_runner_source
+        from hermes_agent.gateway.slash_access import policy_for_runner_source
         if not canonical_cmd:
             return None
         policy = policy_for_runner_source(self, source)
@@ -1489,7 +1489,7 @@ class GatewayBusySessionMixin:
         /restart with update_id <= that value is a redelivery when this process booted from that
         restart; otherwise the marker must be < 5 minutes old. Telegram only (numeric ordering).
         """
-        from gateway.run import _hermes_home
+        from hermes_agent.gateway.run import _hermes_home
         if event is None or event.source is None or event.platform_update_id is None:
             return False
         try:
@@ -1539,7 +1539,7 @@ class GatewayBusySessionMixin:
 
     async def _handle_suggestions_command(self, event: MessageEvent) -> str:
         """/suggestions via the shared handler (origin = event source so jobs deliver back here)."""
-        from gateway.run import _command_origin_for_source
+        from hermes_agent.gateway.run import _command_origin_for_source
         try:
             from hermes_cli.suggestions_cmd import handle_suggestions_command
             return handle_suggestions_command(
@@ -1552,7 +1552,7 @@ class GatewayBusySessionMixin:
 
     async def _handle_blueprint_command(self, event: MessageEvent):
         """/blueprint via the shared handler (origin = event source so jobs deliver back here)."""
-        from gateway.run import _command_origin_for_source
+        from hermes_agent.gateway.run import _command_origin_for_source
         try:
             from hermes_cli.blueprint_cmd import handle_blueprint_command
             return handle_blueprint_command(
@@ -1677,7 +1677,7 @@ class GatewayBusySessionMixin:
                 # a code-only decline has no marker colon in its rendered text,
                 # and an ambiguous result must not be treated as a definite
                 # refusal.
-                from gateway.relay.egress import declined_send
+                from hermes_agent.gateway.relay.egress import declined_send
 
                 _confirm_err = getattr(button_result, "error", None)
                 if declined_send(button_result):

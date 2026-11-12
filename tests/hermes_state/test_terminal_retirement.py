@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 from hermes_agent.hermes_state import SessionDB
 import hermes_agent.hermes_state_runtime as rt
-from gateway.session_results import retain_result, admission_result
+from hermes_agent.gateway.session_results import retain_result, admission_result
 
 
 def test_used_history_retirement_is_atomic_and_exact(tmp_path, monkeypatch):

@@ -26,9 +26,9 @@ class Peer:
 
 @pytest.mark.asyncio
 async def test_overflowed_subscriber_is_detached_and_told_to_resume(tmp_path):
-    from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import SessionRef
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import begin_runtime_epoch
     from hermes_agent.tui_gateway.transport import FanoutTransport

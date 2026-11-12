@@ -8,14 +8,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import hermes_yaml as yaml
 
-from gateway.config import GatewayConfig, Platform
-from gateway.platforms.base import (
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.platforms.base import (
     BasePlatformAdapter,
     PlatformConfig,
 )
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
-from gateway.session import SessionEntry, SessionSource, SessionStore, build_session_key
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionEntry, SessionSource, SessionStore, build_session_key
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 
 
@@ -421,7 +421,7 @@ def test_scheduler_rejects_submission_failure():
     def _reject(coro, _target_loop, **_kwargs):
         coro.close()
 
-    with patch("gateway.run.safe_schedule_threadsafe", side_effect=_reject):
+    with patch("hermes_agent.gateway.run.safe_schedule_threadsafe", side_effect=_reject):
         assert (
             runner._schedule_plugin_message_injection(
                 session_key="key",
@@ -461,7 +461,7 @@ async def test_under_a_session_authority_injection_enters_the_durable_fifo(monke
     """With an authority serving the scope, a plugin turn is committed as a trusted producer
     admission into the session's FIFO; it never runs on the in-process adapter lane, and a
     refused admission is reported as not routed instead of falling back to that lane."""
-    import gateway.session_authorities as authorities
+    import hermes_agent.gateway.session_authorities as authorities
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     adapter = SimpleNamespace(handle_message=AsyncMock())

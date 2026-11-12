@@ -16,7 +16,7 @@ import asyncio
 
 import pytest
 
-from gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
 
 class _FakeAdapter:

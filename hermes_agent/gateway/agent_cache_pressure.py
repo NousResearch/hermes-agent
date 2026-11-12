@@ -32,7 +32,7 @@ _OFF_WORDS = frozenset({"", "off", "none", "false", "disabled"})
 @dataclass(frozen=True)
 class AgentCacheBounds:
     """Operator-facing bounds.  ``max_size``/``idle_ttl_secs`` are ``None`` when unset
-    so ``gateway/run.py`` keeps its defaults; ``memory_high_mb`` ``None`` = pressure eviction off."""
+    so ``hermes_agent/gateway/run.py`` keeps its defaults; ``memory_high_mb`` ``None`` = pressure eviction off."""
 
     max_size: Optional[int] = None
     idle_ttl_secs: Optional[float] = None
@@ -74,7 +74,7 @@ def _cgroup_limit_bytes() -> Optional[int]:
     if sys.platform != "linux":
         return None
     try:
-        from gateway.cgroup_cleanup import _own_cgroup_path
+        from hermes_agent.gateway.cgroup_cleanup import _own_cgroup_path
 
         own = _own_cgroup_path()
     except Exception:
@@ -152,7 +152,7 @@ def _cgroup_anon_bytes() -> Optional[int]:
     if sys.platform != "linux":
         return None
     try:
-        from gateway.cgroup_cleanup import _own_cgroup_path
+        from hermes_agent.gateway.cgroup_cleanup import _own_cgroup_path
 
         own = _own_cgroup_path()
         if not own or own == "/":

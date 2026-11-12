@@ -17,7 +17,7 @@ import asyncio
 
 import pytest
 
-from gateway.relay.ws_transport import WebSocketRelayTransport
+from hermes_agent.gateway.relay.ws_transport import WebSocketRelayTransport
 
 
 def _transport():
@@ -75,7 +75,7 @@ async def test_disconnect_still_bounded_when_connector_silent():
 def test_drain_grace_clamps_to_disconnect_budget(monkeypatch):
     """Drain + the three sequential teardown awaits must fit the runner's
     adapter-disconnect budget (default 5s): grace = budget - 3*1.0s - margin."""
-    from gateway.relay import ws_transport as wt
+    from hermes_agent.gateway.relay import ws_transport as wt
 
     monkeypatch.delenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", raising=False)
     grace = wt._disconnect_drain_grace_s()
@@ -90,7 +90,7 @@ def test_drain_grace_clamps_to_disconnect_budget(monkeypatch):
 
 
 def test_drain_grace_honors_env_budget(monkeypatch):
-    from gateway.relay import ws_transport as wt
+    from hermes_agent.gateway.relay import ws_transport as wt
 
     monkeypatch.setenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "12")
     assert wt._disconnect_drain_grace_s() == wt._DISCONNECT_DRAIN_GRACE_S

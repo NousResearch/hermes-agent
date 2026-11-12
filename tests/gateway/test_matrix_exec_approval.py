@@ -3,7 +3,7 @@ import types
 import pytest
 from unittest.mock import AsyncMock, patch
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 
 class TestMatrixExecApprovalReactions:

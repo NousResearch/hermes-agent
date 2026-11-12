@@ -957,7 +957,7 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "known_plugin_toolsets", # hermes_cli/tools_config.py toolset-save flow
     "known_builtin_toolsets",  # ditto — builtin toolsets a platform's checklist has offered
     "tool_gateway_declined_tools",  # per-tool Tool Gateway offer declines
-    # Top-level forms read/bridged by gateway/config.py:
+    # Top-level forms read/bridged by hermes_agent/gateway/config.py:
     "group_sessions_per_user", "thread_sessions_per_user",
     "stt_echo_transcripts", "reset_triggers", "always_log_local", "filter_silence_narration",
     "multiplex_profiles", "profile_routes", "platforms", "require_mention",
@@ -1413,7 +1413,7 @@ def _env_ref_lookup(name: str) -> Optional[str]:
     through ``agent.secret_scope.get_secret`` so the ref resolves against *that* profile's ``.env``: under
     multiplexing a miss is a miss, never another profile's ``os.environ`` value (#84079 — every profile
     "had" the default profile's ``${MATRIX_ACCESS_TOKEN}`` and fanned out). Same policy as
-    ``gateway.config._getenv`` and ``get_env_value``.
+    ``hermes_agent.gateway.config._getenv`` and ``get_env_value``.
     """
     try:
         from agent.secret_scope import current_secret_scope, get_secret as _get_secret
@@ -2816,7 +2816,7 @@ def get_env_value(key: str) -> Optional[str]:
     raw ``os.environ`` value. ``get_secret`` encodes the whole policy: global vars pass through; scope is
     authoritative under multiplexing (miss -> None, no environ fallthrough); when multiplexing is off it
     behaves exactly like the legacy ``os.environ`` read. Its siblings ``get_env_value_prefer_dotenv`` and
-    ``gateway.config._getenv`` already work this way — this was the last scope-blind reader of the trio
+    ``hermes_agent.gateway.config._getenv`` already work this way — this was the last scope-blind reader of the trio
     (#67027).
     """
     val = _scoped_environ_get(key)
@@ -3230,7 +3230,7 @@ def _redirect_platform_display_key(key: str) -> tuple[str, Optional[str]]:
     if len(segs) != 3 or segs[0] != "platforms":
         return key, note
     try:
-        from gateway.display_config import OVERRIDEABLE_KEYS as _display_keys
+        from hermes_agent.gateway.display_config import OVERRIDEABLE_KEYS as _display_keys
     except Exception:
         return key, note
     if segs[2] not in _display_keys:

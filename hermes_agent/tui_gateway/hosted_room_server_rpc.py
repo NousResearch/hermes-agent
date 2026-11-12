@@ -11,7 +11,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable
 
-from gateway import hosted_room_driver as state
+from hermes_agent.gateway import hosted_room_driver as state
 
 _LockType = type(threading.Lock())
 
@@ -80,8 +80,8 @@ class HostedRoomServerRPC:
         if not attachments:
             return self._submit(profile, session_id, prompt, source, task, execution_generation,
                                 on_terminal, member_id, images=())
-        from gateway.session_hosted_attachments import bound_submission_payload, prepare_before_submit
-        from gateway.session_ingress_media import capture_lease
+        from hermes_agent.gateway.session_hosted_attachments import bound_submission_payload, prepare_before_submit
+        from hermes_agent.gateway.session_ingress_media import capture_lease
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
         home = self.server._profile_home(profile)
         # The member's own caches receive its files (the gateway route's owner scope), and the

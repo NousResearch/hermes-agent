@@ -17,7 +17,7 @@ class OpenModel(Result):
 
 
 class PlanGauge(Result):
-    """``gateway/session_usage.py::plan_gauge``: a window plan's allowance for the status bar."""
+    """``hermes_agent/gateway/session_usage.py::plan_gauge``: a window plan's allowance for the status bar."""
 
     id: str
     label: str

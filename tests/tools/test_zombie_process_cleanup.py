@@ -196,8 +196,8 @@ class TestGatewayCleanupWiring:
         import threading
         from unittest.mock import MagicMock, patch
 
-        from gateway.config import GatewayConfig
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.config import GatewayConfig
+        from hermes_agent.gateway.run import GatewayRunner
 
         runner = object.__new__(GatewayRunner)
         runner._running = True
@@ -235,8 +235,8 @@ class TestGatewayCleanupWiring:
 
         loop = asyncio.new_event_loop()
         try:
-            with patch("gateway.status.remove_pid_file"), \
-                 patch("gateway.status.write_runtime_status"), \
+            with patch("hermes_agent.gateway.status.remove_pid_file"), \
+                 patch("hermes_agent.gateway.status.write_runtime_status"), \
                  patch("tools.terminal_tool.cleanup_all_environments"), \
                  patch("tools.browser_session_lifecycle.cleanup_all_browsers"):
                 loop.run_until_complete(GatewayRunner.stop(runner))
@@ -252,7 +252,7 @@ class TestGatewayCleanupWiring:
         import threading
         from unittest.mock import MagicMock
 
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         runner = object.__new__(GatewayRunner)
         runner._agent_cache_lock = threading.Lock()

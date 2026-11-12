@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import Platform
+from hermes_agent.gateway.config import Platform
 
 LIMIT = {
     "gauge_id": "day", "scope": "all", "limit_name": "daily", "resets_at_ms": 4_000_000_000_000,
@@ -28,7 +28,7 @@ class _ButtonAdapter(_TextAdapter):
 
 
 def _runner(adapter, *, prefix="/", picker_ok=True):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner._delivery_adapter_for = lambda source: adapter
@@ -107,7 +107,7 @@ def test_the_offer_waits_for_the_reply_to_land():
 
 @pytest.mark.asyncio
 async def test_a_tap_switches_this_session_only_then_resends_like_retry(monkeypatch):
-    from gateway import slash_commands_model as scm
+    from hermes_agent.gateway import slash_commands_model as scm
 
     adapter = _ButtonAdapter()
     adapter.handle_message = AsyncMock()
@@ -144,7 +144,7 @@ async def test_a_tap_switches_this_session_only_then_resends_like_retry(monkeypa
 
 @pytest.mark.asyncio
 async def test_a_failed_switch_does_not_resend(monkeypatch):
-    from gateway import slash_commands_model as scm
+    from hermes_agent.gateway import slash_commands_model as scm
 
     adapter = _ButtonAdapter()
     runner = _runner(adapter)
@@ -164,7 +164,7 @@ async def test_a_failed_switch_does_not_resend(monkeypatch):
 @pytest.mark.asyncio
 async def test_a_switch_that_fails_at_commit_does_not_resend(monkeypatch):
     # The real error replies read "Error: …" (no ✗ glyph); the override is what says the switch landed.
-    from gateway import slash_commands_model as scm
+    from hermes_agent.gateway import slash_commands_model as scm
 
     adapter = _ButtonAdapter()
     runner = _runner(adapter)
@@ -188,9 +188,9 @@ def test_the_limit_line_and_the_heads_up_stay_off_messaging():
     credits notice still reaches the chat."""
     from unittest.mock import patch
 
-    from gateway.run_turn_runner import TurnRunner
-    from gateway.session import SessionSource
-    from gateway.turn_context import TurnContext
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.session import SessionSource
+    from hermes_agent.gateway.turn_context import TurnContext
 
     scheduled = []
     ctx = TurnContext(source=SessionSource(platform=Platform.TELEGRAM, chat_id="c1"), user_config={},
@@ -198,7 +198,7 @@ def test_the_limit_line_and_the_heads_up_stay_off_messaging():
     holder = SimpleNamespace(_ctx=ctx, _status_live=lambda: True,
                              _schedule=lambda coro, *args: scheduled.append(coro),
                              _runner=SimpleNamespace(_deliver_platform_notice=lambda *args: "notice-send"))
-    with patch("gateway.run.render_notice_line", lambda notice: notice.text):
+    with patch("hermes_agent.gateway.run.render_notice_line", lambda notice: notice.text):
         TurnRunner._notice_callback_sync(holder, SimpleNamespace(level="error", text="limit", key="credits.window_limit"))
         TurnRunner._notice_callback_sync(holder, SimpleNamespace(level="warn", text="91%", key="credits.window.day"))
         assert scheduled == []
@@ -227,7 +227,7 @@ async def test_a_tap_after_a_newer_turn_changes_nothing():
 async def test_a_turn_that_ran_during_the_switch_is_not_retried(monkeypatch):
     """The tap was current, but a newer turn ran while the switch awaited model resolution: the
     /retry would rewind that turn, so it is not sent."""
-    from gateway import slash_commands_model as scm
+    from hermes_agent.gateway import slash_commands_model as scm
 
     adapter = _ButtonAdapter()
     adapter.handle_message = AsyncMock()

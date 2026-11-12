@@ -28,7 +28,7 @@ def _process_hermes_home() -> Path:
     """HERMES_HOME for process-level identity files (ignore task overrides)."""
     from hermes_constants import get_hermes_home, get_process_hermes_home
 
-    # get_process_hermes_home expands ``~``/``$VAR`` (python -m gateway.run skips the CLI normalizer).
+    # get_process_hermes_home expands ``~``/``$VAR`` (python -m hermes_agent.gateway.run skips the CLI normalizer).
     return get_process_hermes_home() if os.environ.get("HERMES_HOME", "").strip() else get_hermes_home()
 
 
@@ -114,7 +114,7 @@ def _pid_is_sentinel_owner(pid: Any, start_time: Any, create_time: Any) -> bool:
 
     Identity is the psutil ``create_time`` the sentinel stamps at claim (epoch seconds, same
     producer on both sides). The sentinel's ``start_time`` is the ledger claim time and is NOT
-    comparable with ``gateway.status.get_process_start_time`` (proc ticks on Linux, centiseconds
+    comparable with ``hermes_agent.gateway.status.get_process_start_time`` (proc ticks on Linux, centiseconds
     elsewhere) — the old comparison never matched, so every ``--replace`` handover read as an
     unclean death. A pre-stamp sentinel (no ``create_time``) still has ``start_time`` in epoch
     seconds: the owner was born BEFORE it claimed, a PID reuser AFTER the owner died, so a birth
@@ -122,7 +122,7 @@ def _pid_is_sentinel_owner(pid: Any, start_time: Any, create_time: Any) -> bool:
     try:
         pid_int = int(pid)
         # NOT os.kill(pid, 0): on Windows that sends CTRL_C_EVENT to the target's console group.
-        from gateway.status import _pid_exists
+        from hermes_agent.gateway.status import _pid_exists
 
         if pid_int <= 0 or not _pid_exists(pid_int):
             return False
@@ -143,7 +143,7 @@ def _pid_is_sentinel_owner(pid: Any, start_time: Any, create_time: Any) -> bool:
 def _suspected_oom(mem: dict[str, Any]) -> bool:
     """Heuristic only (classification stays with the reader); thresholds are
     memory_status' "critical" tier so a live warning and a post-mortem verdict agree."""
-    from gateway.memory_status import _CRITICAL_AVAILABLE_FRACTION, _CRITICAL_AVAILABLE_KIB
+    from hermes_agent.gateway.memory_status import _CRITICAL_AVAILABLE_FRACTION, _CRITICAL_AVAILABLE_KIB
 
     total, avail = mem.get("mem_total_kib"), mem.get("mem_available_kib")
     if not isinstance(avail, int):
@@ -166,7 +166,7 @@ def detect_unclean_exit(home: Optional[Path] = None) -> Optional[dict[str, Any]]
     }
     # Enrich with the last heartbeat: last proven liveness and memory at that moment.
     try:
-        from gateway.shutdown_watchdog import get_loop_heartbeat_path
+        from hermes_agent.gateway.shutdown_watchdog import get_loop_heartbeat_path
 
         hb = _read_json(get_loop_heartbeat_path(home)) or {}
     except Exception:
@@ -362,7 +362,7 @@ def run_deferred_integrity_check(
     Appends ``{"tag": "gateway.state_db_integrity", "deferred": true, "state_db_integrity":
     <verdict>, "prior_pid": ...}`` and logs the existing ERROR text on a bad verdict.  NEVER
     raises -- a forensic scan must not disturb a running gateway (the alerting path is the
-    bounded per-poll readiness probe ``gateway/readiness.py::_probe_state_db``).
+    bounded per-poll readiness probe ``hermes_agent/gateway/readiness.py::_probe_state_db``).
 
     Only a WAL store is scanned: in rollback-journal mode (``database.journal_mode: delete``,
     or a silent WAL fallback) the scan's SHARED lock would block every live commit for its

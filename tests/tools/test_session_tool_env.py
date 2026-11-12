@@ -141,11 +141,11 @@ def test_execute_code_runs_each_sessions_own_interpreter(tmp_path):
 
 
 async def _owner(home, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     monkeypatch.setattr(run, '_hermes_home', home)
     monkeypatch.setenv('HERMES_HOME', str(home))
     store = SessionStore(home / 'sessions', GatewayConfig())
@@ -159,8 +159,8 @@ async def _owner(home, monkeypatch):
 @pytest.mark.asyncio
 async def test_a_sessions_terminal_runs_with_its_clients_path(tmp_path, monkeypatch, daemon_env):
     """Two CLI sessions on one gateway: each terminal command sees its own client's PATH and venv."""
-    from gateway.session_local import create_local_session
-    from gateway.session_policy import restore_policy
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_policy import restore_policy
     from hermes_agent.hermes_state_local import local_receipt
     home = tmp_path / 'home'
     home.mkdir()
@@ -201,8 +201,8 @@ def _overlapping_terminal_turns(owner, policies):
     with the SAME task id, both turns alive at once, each twice so the second hits the cache."""
     import json
     import threading
-    from gateway.session_context import clear_session_vars, set_session_vars
-    from gateway.session_policy import policy_scope
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_policy import policy_scope
     from tools.terminal_tool import terminal_tool
     barrier, outputs, errors = threading.Barrier(len(policies)), {}, []
 

@@ -386,7 +386,7 @@ def _recover_one_payload(session_db, path: Path, payload: dict[str, Any], *,
     # Cap-dropped transcript payloads carry the full message dict keyed by session_id: replay it
     # directly (#78182). This handles spool files that were never drained before a restart.
     if payload.get("reason") == TRANSCRIPT_CAP_DROP_REASON:
-        from gateway.session_transcript import transcript_append_kwargs
+        from hermes_agent.gateway.session_transcript import transcript_append_kwargs
         data = payload.get("data", {}) or {}
         spooled_sid, message = data.get("session_id", ""), data.get("message")
         if not spooled_sid or not isinstance(message, dict):
@@ -449,7 +449,7 @@ def recover_gateway_pending(runner) -> int:
     store ``recover_pending_spool`` opens is that profile's state.db (#123584). The sessions a pass
     holds back are marked on the session store, so their next live row drains the spool first.
     """
-    from gateway.run import _multiplex_profile_homes
+    from hermes_agent.gateway.run import _multiplex_profile_homes
     from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
     store = runner.session_store

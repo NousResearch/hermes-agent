@@ -5,7 +5,7 @@ from hermes_agent.hermes_state_local_lineage import validate_local_lineage
 from hermes_agent.hermes_state_mutation_guards import require_target_advanceable
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
-# A model pick made while a turn ran, committed at the next turn boundary (gateway/session_deferred_pick.py).
+# A model pick made while a turn ran, committed at the next turn boundary (hermes_agent/gateway/session_deferred_pick.py).
 DEFERRED_PICK_PREFIX = 'gateway.deferred_pick.v1.'
 
 

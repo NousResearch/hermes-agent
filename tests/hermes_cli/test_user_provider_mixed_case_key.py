@@ -48,7 +48,7 @@ def _key(monkeypatch):
 @pytest.mark.parametrize("key", ["Axonhub", "OpenAI"])
 def test_gateway_picker_slug_switches_to_the_configured_endpoint(key):
     """The Telegram picker forwards the configured key verbatim (``mp:<key>``) to the gateway switch."""
-    from gateway.slash_commands_model import GatewayModelCommandsMixin, _ModelSwitchContext
+    from hermes_agent.gateway.slash_commands_model import GatewayModelCommandsMixin, _ModelSwitchContext
 
     config_path, base_url = _write_config(key)
     ctx = _ModelSwitchContext(session_key="s", source=None, config_path=config_path, persist_global=False)

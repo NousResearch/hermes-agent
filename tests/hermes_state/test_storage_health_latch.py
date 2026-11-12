@@ -139,7 +139,7 @@ class TestPeerWritesAfterLatch:
 
 
 def test_readiness_state_db_and_session_store_agree_on_corrupt(_isolate_hermes_home):
-    from gateway.readiness import collect_runtime_readiness
+    from hermes_agent.gateway.readiness import collect_runtime_readiness
     from hermes_constants import get_hermes_home
 
     path = get_hermes_home() / "state.db"
@@ -156,7 +156,7 @@ def test_readiness_state_db_and_session_store_agree_on_corrupt(_isolate_hermes_h
 
 
 def test_readiness_probe_latches_a_file_that_is_not_a_database(_isolate_hermes_home):
-    from gateway.readiness import _probe_state_db
+    from hermes_agent.gateway.readiness import _probe_state_db
     from hermes_constants import get_hermes_home
 
     home = get_hermes_home()

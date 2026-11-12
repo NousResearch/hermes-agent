@@ -11,11 +11,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.session import SessionSource, SessionStore
-from gateway.session_authority import LiveSession, initialize_session_authority
-from gateway.session_contract import SessionRef, Submission
-from gateway.session_controls import AuthorityConnection
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.session import SessionSource, SessionStore
+from hermes_agent.gateway.session_authority import LiveSession, initialize_session_authority
+from hermes_agent.gateway.session_contract import SessionRef, Submission
+from hermes_agent.gateway.session_controls import AuthorityConnection
 from hermes_agent.hermes_state_keys import CRON_PRINCIPAL_ID
 from hermes_agent.hermes_state_runtime import admit_session_input, claim_session_input, list_session_admissions
 from tests.waiting import async_wait_until
@@ -35,7 +35,7 @@ def _runner(tmp_path, monkeypatch, executed):
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
 
     async def answer(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         executed.append(event.text)
         execution_result.get()['result'] = {'final_response': 'ACK_' + event.text, 'completed': True, 'messages': []}
         return 'ACK_' + event.text
@@ -178,8 +178,8 @@ async def test_automation_fenced_unknown_in_this_owner_settles_on_the_drain(tmp_
 async def test_messaging_pause_notice_names_discard_and_discard_resumes_the_fifo(tmp_path, monkeypatch):
     """Messaging: the paused notice says why and offers `/discard` in the chat; `/discard` there
     resolves the person's lost turn through the same ``resolve_unknown`` and the follower runs."""
-    from gateway.session_ingress import pause_notice
-    from gateway.slash_commands_session import discard_lost_turns
+    from hermes_agent.gateway.session_ingress import pause_notice
+    from hermes_agent.gateway.slash_commands_session import discard_lost_turns
     executed = []
     store, authority, head_id, _follower_id = await _lost_head_then_restart(tmp_path, monkeypatch, executed, _person_head)
     try:
@@ -201,9 +201,9 @@ async def test_captured_completed_automation_result_gets_no_restart_notice(tmp_p
     """Review #141357 F6: an automation turn fenced ``unknown`` only because its settlement write
     failed, while this owner holds its completed result, commits that result as completed. Its
     transcript must not also claim the turn was interrupted by a restart."""
-    from gateway.session_results import admission_result
-    from gateway.session_settlement_recovery import recover_failed_settlement
-    from gateway.session_unattended_unknown import settle_unattended_unknown
+    from hermes_agent.gateway.session_results import admission_result
+    from hermes_agent.gateway.session_settlement_recovery import recover_failed_settlement
+    from hermes_agent.gateway.session_unattended_unknown import settle_unattended_unknown
     store, runner = _runner(tmp_path, monkeypatch, [])
     db = store._db
     db.create_session('s', source='telegram')
@@ -232,8 +232,8 @@ async def test_lost_automation_worker_settles_on_its_own_exit_and_runs_the_queue
     """Review #141357 F2: a managed worker lost mid-turn fences its automation head ``unknown`` and
     raises ManagedExecutionUnknown. That same drain settles it and runs the follower already queued,
     without waiting for an unrelated wake."""
-    from gateway.session_managed_worker import ManagedExecutionUnknown
-    from gateway.session_settlement_recovery import recover_failed_settlement
+    from hermes_agent.gateway.session_managed_worker import ManagedExecutionUnknown
+    from hermes_agent.gateway.session_settlement_recovery import recover_failed_settlement
     store, runner = _runner(tmp_path, monkeypatch, [])
     db = store._db
     db.create_session('s', source='telegram')
@@ -253,7 +253,7 @@ async def test_lost_automation_worker_settles_on_its_own_exit_and_runs_the_queue
                 raise ManagedExecutionUnknown('managed_worker_unknown')
             ran.append(row['payload']['text'])
             return 'ACK'
-        monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+        monkeypatch.setattr('hermes_agent.gateway.session_finite.execute_finite_admission', execute)
         del authority._schedule
         authority._schedule(ref)
         live = authority.sessions['s']

@@ -18,10 +18,10 @@ def test_signed_webhook_storage_failure_is_retryable(tmp_path):
 
 async def probe(peer):
     import aiohttp
-    from gateway.config import Platform, PlatformConfig
-    from gateway.platforms.webhook import WebhookAdapter
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.config import Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.webhook import WebhookAdapter
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import initialize_session_authority
     from hermes_agent.hermes_state_runtime import list_session_admissions
     from tests.waiting import async_wait_until
 

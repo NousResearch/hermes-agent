@@ -7,7 +7,7 @@ precisely the cue to run the plain-text fallback into the chat the connector
 had just refused. The adapter fix improved the error STRING while the
 user-visible behaviour stayed identical to base.
 
-These tests drive the real `gateway.run` classifier and the real
+These tests drive the real `hermes_agent.gateway.run` classifier and the real
 `tools.slash_confirm` registry; only the SendResult (the connector's answer)
 is constructed.
 """
@@ -40,7 +40,7 @@ def _result(*, success: bool, error: str | None = None):
 
 def test_decline_is_not_classified_as_failed():
     """`failed` is the fallback cue; a decline must not wear it."""
-    from gateway.run import _approval_send_outcome
+    from hermes_agent.gateway.run import _approval_send_outcome
 
     outcome = _approval_send_outcome(
         _future(_result(success=False, error=DECLINE_ERROR)), timeout=5
@@ -50,7 +50,7 @@ def test_decline_is_not_classified_as_failed():
 
 def test_genuine_lane_failure_still_falls_back():
     """The guard must not swallow real failures: those still re-ask."""
-    from gateway.run import _approval_send_outcome
+    from hermes_agent.gateway.run import _approval_send_outcome
 
     outcome = _approval_send_outcome(
         _future(_result(success=False, error=LANE_ERROR)), timeout=5
@@ -60,7 +60,7 @@ def test_genuine_lane_failure_still_falls_back():
 
 def test_success_and_timeout_verdicts_unchanged():
     """No collateral change to the two settled verdicts."""
-    from gateway.run import _approval_send_outcome
+    from hermes_agent.gateway.run import _approval_send_outcome
 
     assert (
         _approval_send_outcome(_future(_result(success=True)), timeout=5) == "sent"
@@ -88,7 +88,7 @@ def test_decline_recognised_across_lanes(error):
     a decline and must not be treated as one. My first version of this test
     asserted that invented form and failed — the test was wrong, not the code.
     """
-    from gateway.run import _approval_send_outcome
+    from hermes_agent.gateway.run import _approval_send_outcome
 
     assert (
         _approval_send_outcome(_future(_result(success=False, error=error)), timeout=5)
@@ -102,7 +102,7 @@ def test_non_decline_error_text_is_not_laundered_into_declined():
     Without this, a permissive marker check would silence genuine failures —
     turning a lane outage into a silent no-fallback.
     """
-    from gateway.run import _approval_send_outcome
+    from hermes_agent.gateway.run import _approval_send_outcome
 
     for error in (
         "connection reset by peer",
@@ -125,7 +125,7 @@ def test_non_decline_error_text_is_not_laundered_into_declined():
 
 
 def _result_raw(raw, *, error=None):
-    from gateway.relay.egress import decline_error
+    from hermes_agent.gateway.relay.egress import decline_error
 
     return SimpleNamespace(
         success=False, error=error if error is not None else decline_error(raw),
@@ -140,7 +140,7 @@ def test_code_only_decline_is_declined_not_failed():
     so a string-based check returns `failed`, which is the fallback cue. This
     is the shape the connector actually sends when it has no human text.
     """
-    from gateway.run import _approval_send_outcome
+    from hermes_agent.gateway.run import _approval_send_outcome
 
     raw = {"success": False, "code": "egress_declined"}
     assert _approval_send_outcome(_future(_result_raw(raw)), timeout=5) == "declined"
@@ -154,7 +154,7 @@ def test_ambiguous_result_is_never_a_definite_failure():
     that may already be on the user's screen — the duplicate-card bug the
     ambiguous verdict was introduced to prevent.
     """
-    from gateway.run import _approval_send_outcome
+    from hermes_agent.gateway.run import _approval_send_outcome
 
     raw = {"success": False, "ambiguous": True, "error": "lost ack"}
     assert _approval_send_outcome(_future(_result_raw(raw)), timeout=5) == "ambiguous"
@@ -166,7 +166,7 @@ def test_ambiguous_wins_over_decline_text():
     Order matters: a mid-write drop whose partial error happens to contain the
     marker must not be reported as a definite refusal.
     """
-    from gateway.run import _approval_send_outcome
+    from hermes_agent.gateway.run import _approval_send_outcome
 
     raw = {
         "success": False,
@@ -178,7 +178,7 @@ def test_ambiguous_wins_over_decline_text():
 
 def test_structured_lane_failure_still_falls_back():
     """A structured NON-decline failure keeps its fallback."""
-    from gateway.run import _approval_send_outcome
+    from hermes_agent.gateway.run import _approval_send_outcome
 
     raw = {"success": False, "error": "connection reset"}
     assert _approval_send_outcome(_future(_result_raw(raw)), timeout=5) == "failed"
@@ -186,7 +186,7 @@ def test_structured_lane_failure_still_falls_back():
 
 def test_legacy_connector_without_raw_response_still_classified():
     """No `raw_response` (older connector) falls back to the wire sentence."""
-    from gateway.run import _approval_send_outcome
+    from hermes_agent.gateway.run import _approval_send_outcome
 
     legacy = SimpleNamespace(success=False, error=DECLINE_ERROR, raw_response=None)
     assert _approval_send_outcome(_future(legacy), timeout=5) == "declined"
@@ -202,8 +202,8 @@ def test_declined_clarify_aborts_instead_of_waiting_for_a_reply():
     """
     from types import SimpleNamespace
 
-    from gateway.relay.egress import EGRESS_DECLINE_CODE
-    from gateway.run_turn_runner_clarify_delivery import _clarify_send_disposition
+    from hermes_agent.gateway.relay.egress import EGRESS_DECLINE_CODE
+    from hermes_agent.gateway.run_turn_runner_clarify_delivery import _clarify_send_disposition
 
     cleared = []
     clarify_mod = SimpleNamespace(
@@ -233,7 +233,7 @@ def test_ambiguous_clarify_still_waits():
     """Control: a possibly-delivered card must STAY armed for a late reply."""
     from types import SimpleNamespace
 
-    from gateway.run_turn_runner_clarify_delivery import _clarify_send_disposition
+    from hermes_agent.gateway.run_turn_runner_clarify_delivery import _clarify_send_disposition
 
     cleared = []
     clarify_mod = SimpleNamespace(

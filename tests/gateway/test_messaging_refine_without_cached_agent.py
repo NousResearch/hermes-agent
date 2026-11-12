@@ -7,7 +7,7 @@ first." It now refines the stored conversation, sends the summary into the same 
 request carries what a resident agent's carries. Both run as the user's own request (``explicit``), so a
 memory removal is applied, not staged as an unattended proposal, as on the CLI, TUI and local sessions.
 
-Real ``python -m gateway.run``, a real user-plugin messaging platform (the chaos fake), a loopback
+Real ``python -m hermes_agent.gateway.run``, a real user-plugin messaging platform (the chaos fake), a loopback
 model that answers the review with a ``memory`` tool call. A gateway restart drops the cached agent
 here because the idle sweep's first pass is a minute in.
 """

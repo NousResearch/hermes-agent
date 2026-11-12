@@ -6,7 +6,7 @@ code it imported at startup against a tree that has moved on, and lazily imports
 an old process. The idle watchdog (``web_server_idle_exit``) only fires once every client has left,
 which a connected Desktop never does.
 
-This watchdog polls ``gateway.code_skew`` (the boot revision the serve lifespan records, compared
+This watchdog polls ``hermes_agent.gateway.code_skew`` (the boot revision the serve lifespan records, compared
 with the checkout on disk) and, once no update is in flight and the retirement fence proves the
 backend idle (and closes admission so no turn can start mid-teardown), exits cleanly. The client's
 reconnect path respawns it from the new code. Every uncertain read (unknown revision, busy or
@@ -81,7 +81,7 @@ def start_code_skew_watchdog(server, *, skew_fn: Optional[Callable[[], Skew]] = 
     """Daemon thread that sets ``server.should_exit`` once the loaded code is provably stale and
     the backend is provably idle. ``max_polls`` bounds the loop for tests only."""
     if skew_fn is None:
-        from gateway.code_skew import detect_code_skew
+        from hermes_agent.gateway.code_skew import detect_code_skew
 
         skew_fn = detect_code_skew
     read_skew: Callable[[], Skew] = skew_fn

@@ -5,8 +5,8 @@ import secrets
 import pytest
 from aiohttp import ClientSession
 
-from gateway.config import PlatformConfig
-from gateway.platforms.api_server import APIServerAdapter, _STATIC_FEATURE_FLAGS
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.api_server import APIServerAdapter, _STATIC_FEATURE_FLAGS
 
 
 @pytest.mark.asyncio

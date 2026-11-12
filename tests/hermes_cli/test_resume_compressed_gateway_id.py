@@ -18,8 +18,8 @@ import pytest
 
 
 def _runner(tmp_path):
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None)
@@ -38,9 +38,9 @@ def _compress(db, parent, child, source):
 
 
 async def _compressed(tmp_path):
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import SessionActor
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_local import create_local_session
     authority = await initialize_session_authority(_runner(tmp_path), profile_id='fixture', instance_id='first')
     actor = SessionActor('owner', 'fixture', frozenset({'session:create', 'session:read'}), 'socket')
     ref = create_local_session(authority, actor, dict(request_id='row10', source='cli', cwd=str(tmp_path),
@@ -57,7 +57,7 @@ async def _compressed(tmp_path):
 def _gateway_store(loop, authority, tmp_path):
     """A ``GatewaySessionStore`` whose verbs run on the real authority (no socket) and whose reads use
     the real read-only state.db reader, as the classic CLI's does."""
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     from hermes_cli.gateway_client import GatewayClientError
     from hermes_cli.gateway_connection import GatewayConnection, SessionState
     from hermes_cli.gateway_session_store import GatewaySessionStore
@@ -98,7 +98,7 @@ def _cli(store, session_id):
 
 @pytest.fixture
 def rig(tmp_path, monkeypatch):
-    from gateway import run
+    from hermes_agent.gateway import run
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     loop = asyncio.new_event_loop()
@@ -115,7 +115,7 @@ def rig(tmp_path, monkeypatch):
 def _gateway_accepts(rig, session_id):
     """The admission/mutation gate every turn, /undo and /rollback reach: ``authorize`` restores the
     local session from its stored receipt (``restore_local_session`` -> ``local_receipt``)."""
-    from gateway.session_contract import SessionActor, SessionRef
+    from hermes_agent.gateway.session_contract import SessionActor, SessionRef
     actor = SessionActor('owner', 'fixture', frozenset({'session:read', 'session:control'}), 'socket')
     rig.authority.authorize(actor, SessionRef('fixture', session_id), 'session:control')
 

@@ -16,7 +16,7 @@ from tools.async_delegation import _initialize_schema
 
 
 def test_lost_ack_reopens_owner_and_replays_same_ledger_receipt(tmp_path):
-    from gateway.session_worker_delegation import persist_worker_delegation
+    from hermes_agent.gateway.session_worker_delegation import persist_worker_delegation
     path = tmp_path / 'state.db'
     db = SessionDB(path)
     db.create_session('parent', source='cli')
@@ -66,7 +66,7 @@ def test_lost_ack_reopens_owner_and_replays_same_ledger_receipt(tmp_path):
 
 
 def test_receipt_fences_wrong_session_generation_and_owner_epoch(tmp_path):
-    from gateway.session_worker_delegation import persist_worker_delegation
+    from hermes_agent.gateway.session_worker_delegation import persist_worker_delegation
     db = SessionDB(tmp_path / 'state.db')
     try:
         db.create_session('parent', source='cli')

@@ -30,7 +30,7 @@ async def _moved_on(monkeypatch):
 async def test_the_chats_context_exhaustion_reset_moves_the_old_conversation_off_the_chat(monkeypatch):
     """F1: the auto-reset after context exhaustion rotates the chat to B without a /new. The app's
     next prompt on A runs in A, and the chat gets nothing of it."""
-    from gateway.session_results import execution_result
+    from hermes_agent.gateway.session_results import execution_result
     runner, adapter, authority, source, sent, ran, _gates = await _gateway(monkeypatch)
     lane = runner.session_store._generate_session_key(source)
     await _chat(adapter, source, sent, 'hello')
@@ -58,8 +58,8 @@ async def test_the_chats_context_exhaustion_reset_moves_the_old_conversation_off
 async def test_what_the_old_conversation_schedules_for_here_names_the_app_not_the_chat(monkeypatch):
     """F3: a detached turn binds the session variables a Desktop session's turn binds, so a reminder,
     kanban subscription or send_message origin it creates never names the chat."""
-    from gateway.session import build_session_context
-    from gateway.session_context import get_session_env
+    from hermes_agent.gateway.session import build_session_context
+    from hermes_agent.gateway.session_context import get_session_env
     from tools.cronjob_job_args import _origin_from_env
     runner, _adapter, authority, _source, _sent, _ran, _gates, _lane, ref_a = await _moved_on(monkeypatch)
     live = authority.sessions[ref_a.session_id]
@@ -86,8 +86,8 @@ async def test_the_old_conversation_is_live_again_once_the_app_uses_it(monkeypat
 async def test_a_stop_from_either_side_reaches_the_apps_turn_after_the_chat_resumes_it(monkeypatch):
     """F5: the app's turn on A is running when the chat ``/resume``s A. That turn keeps its own key;
     the app's Stop and the chat's /stop both still reach it."""
-    from gateway.platforms.event import MessageEvent
-    from gateway.session_contract import Submission
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.session_contract import Submission
     runner, adapter, authority, source, sent, ran, gates, lane, ref_a = await _moved_on(monkeypatch)
     stops = []
     agent = SimpleNamespace(interrupt=lambda *a, **k: stops.append('interrupt'), session_id=ref_a.session_id)
@@ -130,8 +130,8 @@ async def test_the_chats_resume_drops_the_agent_the_app_cached_for_the_old_conve
 def _process_event(runner, live, session_id, kind='completion', **fields):
     """A process event as the registry records it for a process the turn on *live* started."""
     import time
-    from gateway.session import build_session_context
-    from gateway.session_context import get_session_env
+    from hermes_agent.gateway.session import build_session_context
+    from hermes_agent.gateway.session_context import get_session_env
     entry = runner.session_store.get_or_create_session(live.source)
     with runner._session_env_scope(build_session_context(live.source, runner.config, entry)):
         env = {name: get_session_env(f'HERMES_SESSION_{name}') for name in ('KEY', 'PLATFORM', 'CHAT_ID', 'CHAT_TYPE')}
@@ -182,7 +182,7 @@ async def test_a_background_result_of_the_old_conversation_reaches_the_app_not_t
 async def test_a_result_queued_on_the_old_conversation_still_runs_once_the_chat_resumes_it(monkeypatch):
     """The result is queued behind the app's running turn when the chat ``/resume``s A: it runs as A's
     turn on the chat's route, not refused as admitted under another route."""
-    from gateway.session_contract import Submission
+    from hermes_agent.gateway.session_contract import Submission
     runner, adapter, authority, source, sent, ran, gates, lane, ref_a = await _moved_on(monkeypatch)
     await authority.attach(_app(), ref_a)
     live = authority.sessions[ref_a.session_id]
@@ -208,8 +208,8 @@ async def test_a_result_queued_on_the_old_conversation_still_runs_once_the_chat_
 async def test_the_old_conversations_finished_process_withdraws_its_waiting_heartbeat(monkeypatch):
     """A liveness tick of A's process waits behind the app's running turn; the process's completion
     cancels it, as on any route, instead of leaving a stale "still running" turn queued."""
-    from gateway.session_automation import deliver_heartbeat
-    from gateway.session_contract import Submission
+    from hermes_agent.gateway.session_automation import deliver_heartbeat
+    from hermes_agent.gateway.session_contract import Submission
     runner, _adapter, authority, _source, _sent, ran, gates, _lane, ref_a = await _moved_on(monkeypatch)
     live = authority.sessions[ref_a.session_id]
     gates['slow app turn'] = asyncio.Event()
@@ -231,7 +231,7 @@ async def test_a_reminder_the_app_set_on_the_old_conversation_fires_into_it(monk
     """A reminder created from the app on A names A (``platform: local``): its fire is written into A,
     never refused for a local session A never was, and never sent to the chat."""
     from pathlib import Path
-    from gateway.session_cron import deliver_to_local_chat
+    from hermes_agent.gateway.session_cron import deliver_to_local_chat
     _runner, _adapter, authority, _source, sent, _ran, _gates, _lane, ref_a = await _moved_on(monkeypatch)
     chat_before = len(sent)
     home = Path(authority.db.db_path).parent

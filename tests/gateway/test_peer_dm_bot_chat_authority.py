@@ -2,7 +2,7 @@
 
 ``hermes peer dm`` / ``peer run`` reach the API edge; under the unified runtime the Bot Chat is
 a LOCAL session whose only writer is the authority FIFO, so the turn goes through the
-``bot_relay.deliver`` door (``gateway/session_bot.py``) and the reply is its admission's
+``bot_relay.deliver`` door (``hermes_agent/gateway/session_bot.py``) and the reply is its admission's
 receipt. Binding the chat as an API conversation would be a second writer (``permission_denied``).
 """
 import asyncio
@@ -14,21 +14,21 @@ import pytest_asyncio
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import PlatformConfig
-from gateway.platforms.api_server import APIServerAdapter
-from gateway.session_contract import SessionActor
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.api_server import APIServerAdapter
+from hermes_agent.gateway.session_contract import SessionActor
 
 AUTHOR = {"id": "bot:cto", "name": "cto", "is_bot": True}
 
 
 @pytest_asyncio.fixture
 async def peer(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_local import create_local_session
-    from gateway.session_local_title import title_new_session
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_local_title import title_new_session
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
@@ -47,7 +47,7 @@ async def peer(tmp_path, monkeypatch):
     adapter = APIServerAdapter(PlatformConfig(enabled=True))
     adapter.gateway_runner = runner
     adapter._session_db = authority.db
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     runner.adapters[Platform.API_SERVER] = adapter
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
     executed = []
@@ -59,7 +59,7 @@ async def peer(tmp_path, monkeypatch):
             raise RuntimeError('provider said 429')
         return 'pong'
 
-    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    monkeypatch.setattr('hermes_agent.gateway.session_finite.execute_finite_admission', execute)
     app = web.Application()
     app.router.add_post("/api/sessions/{session_id}/chat", adapter._handle_session_chat)
     app.router.add_post("/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream)

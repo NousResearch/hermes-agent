@@ -125,7 +125,7 @@ def test_owner_start_lists_a_legacy_compressed_chain_once(tmp_path, root_created
     """A chain compressed before write-time stamping (unset root, stamped tip) and never written
     since is hidden from ``--source cli``. The owner's start stamps it once; a second start has
     nothing left to do."""
-    from gateway.session_authority import backfill_compression_created_sources
+    from hermes_agent.gateway.session_authority import backfill_compression_created_sources
     from hermes_cli.gateway_session_store import SurfaceLabelReader
 
     db = SessionDB(db_path=tmp_path / "state.db")
@@ -154,7 +154,7 @@ def test_owner_start_lists_a_legacy_compressed_chain_once(tmp_path, root_created
 def test_owner_start_keeps_known_provenance(tmp_path):
     """The repair copies only along a compression continuation onto an unset row: a root on another
     surface, a branch child's surface and a chain with nothing stamped are all left as they are."""
-    from gateway.session_authority import backfill_compression_created_sources
+    from hermes_agent.gateway.session_authority import backfill_compression_created_sources
 
     db = SessionDB(db_path=tmp_path / "state.db")
     try:
@@ -178,7 +178,7 @@ def test_owner_start_keeps_known_provenance(tmp_path):
 def test_owner_start_skips_a_branch_child_of_an_unset_compression_parent(tmp_path):
     """A branch child is no continuation: the stamp never follows it, so it is no repair candidate
     either, and a later start does not walk its unset compression parent again."""
-    from gateway.session_authority import backfill_compression_created_sources
+    from hermes_agent.gateway.session_authority import backfill_compression_created_sources
     from hermes_agent.hermes_state_compression import _UNSTAMPED_EDGE_CHILD_SQL
 
     db = SessionDB(db_path=tmp_path / "state.db")

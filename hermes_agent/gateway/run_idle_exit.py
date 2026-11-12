@@ -27,7 +27,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 DEFAULT_IDLE_EXIT_SECONDS = 600.0
 IDLE_EXIT_REASON = "idle_exit"
@@ -40,7 +40,7 @@ _KANBAN_DUE_STATUSES = ("scheduled", "ready", "running", "review")
 
 def idle_exit_seconds(runner) -> float:
     """``gateway.unmanaged_idle_exit_seconds`` from the launch home; 0 disables, junk keeps the default."""
-    from gateway.run import _load_gateway_config
+    from hermes_agent.gateway.run import _load_gateway_config
     section = (_load_gateway_config() or {}).get("gateway")
     value = section.get("unmanaged_idle_exit_seconds") if isinstance(section, dict) else None
     if value is None:
@@ -71,7 +71,7 @@ def attached_client(runner):
 
 
 def _messaging_busy(runner) -> str | None:
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     live = list(getattr(runner, "adapters", None) or {})
     for adapters in (getattr(runner, "_profile_adapters", None) or {}).values():
         live.extend(adapters)
@@ -86,8 +86,8 @@ def _messaging_busy(runner) -> str | None:
 
 
 def _served_homes(runner) -> list[Path]:
-    from gateway.run import _cron_tick_profile_homes
-    from gateway.session_authorities import all_authorities
+    from hermes_agent.gateway.run import _cron_tick_profile_homes
+    from hermes_agent.gateway.session_authorities import all_authorities
     homes = {Path(a.profile_id) for a in all_authorities(runner)}
     homes.update(Path(h) for _name, h in _cron_tick_profile_homes(runner.config))
     return sorted(homes)
@@ -123,7 +123,7 @@ def _kanban_busy() -> str | None:
 
 
 def _ledger_busy(runner) -> str | None:
-    from gateway.session_authorities import all_authorities
+    from hermes_agent.gateway.session_authorities import all_authorities
     for authority in all_authorities(runner):
         db = authority.db
         if db._read_all("SELECT 1 FROM session_admissions WHERE status IN ('queued','started') LIMIT 1"):
@@ -148,7 +148,7 @@ def _profile_start_busy(runner) -> str | None:
 
 
 def _store_gates_busy(homes) -> str | None:
-    from gateway.run_idle_gates import (
+    from hermes_agent.gateway.run_idle_gates import (
         profile_has_active_heartbeat, profile_has_active_loop, profile_has_pending_handoff)
     for home in homes:
         for label, gate in (("heartbeat", profile_has_active_heartbeat), ("loop", profile_has_active_loop),
@@ -272,7 +272,7 @@ async def unmanaged_idle_exit_watcher(runner) -> None:
 
 def arm_unmanaged_idle_exit(runner) -> bool:
     """Start the watcher for an ``--idle-exit`` launch that no supervisor owns. Returns whether it armed."""
-    from gateway.control_socket import _detect_supervisor
+    from hermes_agent.gateway.control_socket import _detect_supervisor
     supervisor = _detect_supervisor()
     if supervisor != "manual":
         logger.info("Auto-started gateway idle exit not armed: supervised by %s", supervisor)

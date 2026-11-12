@@ -10,8 +10,8 @@ import threading
 from unittest.mock import MagicMock, patch
 
 from hermes_agent.cron.scheduler import _deliver_result
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import SendResult
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import SendResult
 
 
 class _RecordingTelegram:
@@ -49,9 +49,9 @@ def test_named_dm_topic_resolves_through_live_adapter_for_text_and_media(tmp_pat
     worker = threading.Thread(target=loop.run_forever, daemon=True)
     worker.start()
     try:
-        with patch("gateway.config.load_gateway_config", return_value=config), \
+        with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
              patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
-             patch("gateway.platforms.base.BasePlatformAdapter.filter_media_delivery_paths",
+             patch("hermes_agent.gateway.platforms.base.BasePlatformAdapter.filter_media_delivery_paths",
                    side_effect=lambda files: files):
             error = _deliver_result(
                 {"id": "j1", "name": "brief", "deliver": "telegram:722341991:Debug"},

@@ -3,7 +3,7 @@
 import asyncio
 from typing import TYPE_CHECKING, Any
 
-from gateway.platforms.base import SendResult
+from hermes_agent.gateway.platforms.base import SendResult
 
 if TYPE_CHECKING:
     from .adapter import TelegramAdapter

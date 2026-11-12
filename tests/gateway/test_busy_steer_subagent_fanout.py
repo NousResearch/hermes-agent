@@ -10,10 +10,10 @@ import threading
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource
 
 class _Agent:
     def __init__(self, children=()):
@@ -32,7 +32,7 @@ def _event(text="focus on rows 10-20"):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("route", ["busy_steer_mode", "priority", "explicit_command"])
 async def test_busy_steer_fans_out_to_active_subagents(route, tmp_path, monkeypatch):
-    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    monkeypatch.setattr("hermes_agent.gateway.run._hermes_home", tmp_path)
     runner = GatewayRunner(config=GatewayConfig())
     child_a, child_b = _Agent(), _Agent()
     parent = _Agent(children=[child_a, child_b])

@@ -681,7 +681,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         """Resolve the destination home channel via the live gateway config; None (after printing
         the reason) when the platform is unknown, disabled, or has no home channel."""
         try:
-            from gateway.config import load_gateway_config, Platform
+            from hermes_agent.gateway.config import load_gateway_config, Platform
         except Exception as exc:  # pragma: no cover — gateway pkg always shipped
             return _cp(f"  {_t('handoff.config_load_failed', error=exc)}")
         try:
@@ -698,7 +698,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             # is deliverable. UX pre-check only — the gateway watcher re-checks before dispatch.
             relay_fronts = False
             with suppress(Exception):
-                from gateway.relay import relay_platform_identities
+                from hermes_agent.gateway.relay import relay_platform_identities
                 relay_cfg = gw_config.platforms.get(Platform.RELAY)
                 if relay_cfg and relay_cfg.enabled:
                     relay_fronts = platform_name in {p for p, _ in relay_platform_identities()}
@@ -926,7 +926,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         if not self._session_db:
             return _cp(_db_unavailable_line())
         # CLI has no threads: always in place; strip the gateway's ``--here`` so it is never a title.
-        from gateway.slash_commands_branch_thread import parse_branch_args
+        from hermes_agent.gateway.slash_commands_branch_thread import parse_branch_args
         _, branch_name = parse_branch_args(_command_arg(cmd_original))
         now = datetime.now()
         from tools.approval_yolo import transfer_session_yolo, with_session_yolo
@@ -1280,7 +1280,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             # No live agent store (e.g. Desktop GUI): use a fresh on-disk store, as the gateway
             # does — same MEMORY/USER.md, same configured char limits.
             # Apply against a freshly loaded on-disk store, mirroring the gateway path
-            # (gateway/slash_commands.py): it persists to the same MEMORY/USER.md and creates MEMORY.md on
+            # (hermes_agent/gateway/slash_commands.py): it persists to the same MEMORY/USER.md and creates MEMORY.md on
             # the first approved write. Without this the shared handler returns "memory store unavailable".
             # See #46783.
             from tools.memory_tool import load_on_disk_store
@@ -1361,7 +1361,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
 
         def produce():
             from agent.vault_backends.unlock import set_code_prompt_callback, set_save_login_prompt_callback, set_unlock_prompt_callback
-            from gateway.session_context import declare_stateless_channel
+            from hermes_agent.gateway.session_context import declare_stateless_channel
             declare_stateless_channel()  # nothing drains a bg_* session's completions later: delegations join (#140569)
             set_sudo_password_callback(self._sudo_password_callback)
             set_approval_callback(self._approval_callback)

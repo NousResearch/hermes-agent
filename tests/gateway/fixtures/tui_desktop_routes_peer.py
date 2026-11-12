@@ -23,10 +23,10 @@ quick_commands:
 
 
 async def probe(mode):
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority
-    from gateway.run_api import start_gateway_api, stop_gateway_api
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.run_api import start_gateway_api, stop_gateway_api
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     from hermes_cli import web_server
     from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
     from tests.gateway.fixtures.local_recovery_probe import rpc
@@ -71,8 +71,8 @@ async def _call(reader, method, **params):
 
 async def _react(authority, ws, reader, sid, marker, receipt):
     from tests.gateway.fixtures.local_recovery_probe import rpc
-    from gateway.session_ancillary import physical_target
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_ancillary import physical_target
+    from hermes_agent.gateway.session_contract import SessionRef
     target = physical_target(authority, SessionRef(authority.profile_id, sid))
     user_row = authority.db.append_message(target, 'user', 'REACT_USER_TEXT')
     authority.db.append_message(target, 'assistant', 'REACT_ASSISTANT_TEXT')
@@ -155,7 +155,7 @@ async def _commands(authority, ws, reader, sid, marker, receipt):
     calls = []
 
     def plugin(args):
-        from gateway.session_context import get_session_env
+        from hermes_agent.gateway.session_context import get_session_env
         calls.append(args)
         return f'PLUGIN_OK {args} platform={get_session_env("HERMES_SESSION_PLATFORM")}'
     _ensure_plugins_discovered()._plugin_commands['probe-plugin'] = {
@@ -218,7 +218,7 @@ async def _connection_card(authority, ws, reader, sid, marker, receipt):
     """RT-2: the manage_connections card's calls reach the session's own open operation, with the legacy handlers' policy and error shape."""
     from pathlib import Path
     from tests.gateway.fixtures.local_recovery_probe import rpc
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
     from tools.connectors import live, run
     from tools.connectors.contract import Actor, TargetState
     from tools import connectors
@@ -245,7 +245,7 @@ async def _connection_card(authority, ws, reader, sid, marker, receipt):
     seen = {}
 
     def rerun(op, names):
-        from gateway.session_context import get_session_env
+        from hermes_agent.gateway.session_context import get_session_env
         seen.update(names=names, key=get_session_env('HERMES_SESSION_KEY'), platform=get_session_env('HERMES_SESSION_PLATFORM'))
         op.transition('linear', TargetState.initiated, Actor.user)
 

@@ -104,7 +104,7 @@ class PersistentState:
     # no disk flush (unlike `pending_command_text` above, #72680), so a gateway restart drops escalation
     # back to rung 1 while the DB-backed deadline itself survives (#74136). Keying on `session_key` rather
     # than `session_id` is what buys correctness across compaction ROTATION (the sid changes, the chat does
-    # not). gateway.run mirrors this value to the DB keyed by session_key so the same semantics also survive
+    # not). hermes_agent.gateway.run mirrors this value to the DB keyed by session_key so the same semantics also survive
     # gateway restarts.
     hygiene_failure_streak: int = 0
 

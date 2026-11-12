@@ -15,7 +15,7 @@ import time
 
 import pytest
 
-from gateway import status
+from hermes_agent.gateway import status
 
 
 @pytest.fixture

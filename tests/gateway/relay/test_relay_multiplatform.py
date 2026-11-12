@@ -17,7 +17,7 @@ import json
 
 import pytest
 
-from gateway import relay
+from hermes_agent.gateway import relay
 
 
 @pytest.fixture(autouse=True)
@@ -33,7 +33,7 @@ def _clean_env(monkeypatch):
         "GATEWAY_RELAY_BOT_IDS",
     ):
         monkeypatch.delenv(k, raising=False)
-    monkeypatch.setattr("gateway.run._load_gateway_config", dict, raising=False)
+    monkeypatch.setattr("hermes_agent.gateway.run._load_gateway_config", dict, raising=False)
 
 
 # ─────────────────────────── identity parsing ───────────────────────────
@@ -99,11 +99,11 @@ def test_self_provision_loops_per_platform(monkeypatch):
 @pytest.mark.asyncio
 async def test_adapter_stamps_per_frame_platform_from_inbound(monkeypatch):
     """An inbound from a concrete platform makes the reply egress tagged for it."""
-    from gateway.config import Platform, PlatformConfig
-    from gateway.platforms.event import MessageEvent, MessageType
-    from gateway.relay.adapter import RelayAdapter
-    from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.config import Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+    from hermes_agent.gateway.relay.adapter import RelayAdapter
+    from hermes_agent.gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+    from hermes_agent.gateway.session import SessionSource
 
     from tests.gateway.relay.stub_connector import StubConnector
 

@@ -4,16 +4,16 @@
 returns. When the only in-flight tool is a blocking ``clarify`` waiting for the same user,
 accepting the steer deadlocks the session until ``agent.clarify_timeout`` expires, and the
 ack promises an arrival that cannot happen. The prose lane already releases a clarify it
-cannot answer (``gateway/run_inbound.py::_hm_clarify_reply``); a recognized slash command is
+cannot answer (``hermes_agent/gateway/run_inbound.py::_hm_clarify_reply``); a recognized slash command is
 *not* an answer, so it stays armed, but the steer it carries must still be able to land.
 """
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.platforms.event import MessageEvent
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource
 from tools import clarify_gateway
 
 SESSION_KEY = "key"
@@ -46,7 +46,7 @@ def _no_leaked_clarify():
 
 
 def _runner(tmp_path, monkeypatch, receiver=None):
-    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    monkeypatch.setattr("hermes_agent.gateway.run._hermes_home", tmp_path)
     runner = GatewayRunner(config=GatewayConfig())
     if receiver is not None:
         runner._session_state(SESSION_KEY).turn.agent = receiver

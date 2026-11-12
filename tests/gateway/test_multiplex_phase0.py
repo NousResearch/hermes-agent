@@ -14,8 +14,8 @@ from unittest.mock import patch
 import hermes_yaml as yaml
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-from gateway.config import GatewayConfig, Platform
-from gateway.session import SessionSource, SessionStore, build_session_key
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.session import SessionSource, SessionStore, build_session_key
 
 
 def _src(**kw) -> SessionSource:
@@ -72,8 +72,8 @@ class TestMultiplexConfigFlag:
         literal ``default``) as the shared-adapter owner or rex's own jobs fall to the fail-closed map."""
         import asyncio
         from types import SimpleNamespace
-        from gateway import run as run_mod
-        from gateway import run_bootstrap
+        from hermes_agent.gateway import run as run_mod
+        from hermes_agent.gateway import run_bootstrap
         from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
 
         captured = {}
@@ -117,7 +117,7 @@ class TestSessionStoreProfileResolution:
 
     def _store(self, tmp_path, **cfg_kw):
         config = GatewayConfig(**cfg_kw)
-        with patch("gateway.session.SessionStore._ensure_loaded"):
+        with patch("hermes_agent.gateway.session.SessionStore._ensure_loaded"):
             s = SessionStore(sessions_dir=tmp_path, config=config)
         s._db = None
         s._loaded = True
@@ -147,7 +147,7 @@ class TestSessionStoreUnmultiplexedRecovery:
 
     def _store_with_row(self, tmp_path, row, **cfg_kw):
         config = GatewayConfig(**cfg_kw)
-        with patch("gateway.session.SessionStore._ensure_loaded"):
+        with patch("hermes_agent.gateway.session.SessionStore._ensure_loaded"):
             store = SessionStore(sessions_dir=tmp_path, config=config)
         store._db = _RecoveringDB(row)
         store._loaded = True

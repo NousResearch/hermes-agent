@@ -66,7 +66,7 @@ rides on the credential Hermes already holds.
 
 Where this could live in Hermes:
 
-- `gateway/platforms/api_server.py` is the precedent — it exposes the agent
+- `hermes_agent/gateway/platforms/api_server.py` is the precedent — it exposes the agent
   over a local OpenAI-compatible endpoint, but routes through the full agent
   loop (tool calls and all). The proxy variant is **pure inference
   pass-through**: no agent loop, no tools, just forward `/chat/completions`

@@ -11,8 +11,8 @@ from __future__ import annotations
 import dataclasses
 from typing import Optional
 
-from gateway.config import Platform
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.session import SessionSource
 
 # Adapters that override ``BasePlatformAdapter.create_handoff_thread`` (the base returns None).
 BRANCH_THREAD_PLATFORMS = frozenset({Platform.DISCORD, Platform.TELEGRAM, Platform.SLACK, Platform.MATRIX})

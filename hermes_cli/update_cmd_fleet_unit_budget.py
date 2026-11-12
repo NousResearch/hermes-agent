@@ -18,7 +18,7 @@ _SYSTEMCTL_RESTART_TIMEOUT_MAX = (2**31 - 1) // 1000 - 1
 def _unit_stop_start_budgets(scope_cmd: list, svc_name: str) -> tuple[float, float]:
     """``(TimeoutStopUSec, TimeoutStartUSec)`` in seconds. Unknown or infinite limits use
     systemd's usual 90s per phase so automation stays bounded."""
-    from gateway.shutdown_forensics import parse_systemd_duration_to_us
+    from hermes_agent.gateway.shutdown_forensics import parse_systemd_duration_to_us
     from hermes_cli.update_cmd_fleet import _systemctl
 
     budgets = {"TimeoutStopUSec": 90.0, "TimeoutStartUSec": 90.0}

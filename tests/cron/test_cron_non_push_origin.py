@@ -7,7 +7,7 @@ a non-push session never stamps an origin (so the creation-time local-only notic
 a job already stamped with such an origin resolves to the configured home channel instead.
 """
 
-from gateway.session_context import clear_session_vars, set_session_vars
+from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
 
 
 def test_non_push_session_stamps_no_origin_and_gets_creation_notice():

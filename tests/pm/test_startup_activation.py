@@ -87,7 +87,7 @@ def test_drift_activates_intact_chains_and_reports_the_live_verdict(checked_stor
 def test_startup_uses_one_verdict(checked_store, monkeypatch, capsys, caplog, surface, damaged):
     binaries, checks = checked_store
     if surface == "gateway":
-        from gateway import run
+        from hermes_agent.gateway import run
 
         async def started(*args, **kwargs):
             return True

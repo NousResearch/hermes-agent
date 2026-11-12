@@ -4,10 +4,10 @@ from unittest.mock import patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource
 
 
 def _make_runner() -> GatewayRunner:
@@ -20,7 +20,7 @@ def _make_runner() -> GatewayRunner:
 
 @pytest.mark.asyncio
 async def test_video_attachment_adds_path_note_not_document_note():
-    from gateway.run import _build_media_placeholder
+    from hermes_agent.gateway.run import _build_media_placeholder
 
     runner = _make_runner()
     source = SessionSource(platform=Platform.SLACK, chat_id="D123", chat_type="dm")

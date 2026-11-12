@@ -6,7 +6,7 @@ from contextlib import closing
 
 import pytest
 
-from gateway import hosted_rooms as rooms
+from hermes_agent.gateway import hosted_rooms as rooms
 
 
 def connect(path):
@@ -21,13 +21,13 @@ def create(path, room="room"):
 
 
 def test_pending_ack_survives_restart_and_fences_authority(tmp_path):
-    from gateway import hosted_room_work_records as work
+    from hermes_agent.gateway import hosted_room_work_records as work
     path = tmp_path / "state.db"
     create(path)
     rooms.append_event(path, room_id="room", event_id="input", kind="message.user",
         actor={"kind": "user", "id": "alice"}, payload={"text": "hello"},
         authority_gateway_id="owner-a", authority_epoch=1)
-    from gateway import hosted_room_driver as driver
+    from hermes_agent.gateway import hosted_room_driver as driver
     identity = driver.TaskIdentity("room", "task", "thread", "turn")
     driver.admit_task(path, identity, payload={"target_profile": "ops", "prompt": "private prompt",
         "source_event_seq": 1}, clock=lambda: 10)
@@ -78,8 +78,8 @@ def test_pending_ack_survives_restart_and_fences_authority(tmp_path):
 
 
 def test_migration_preserves_bytes_invalid_rows_and_caller_transaction(tmp_path, monkeypatch):
-    from gateway import hosted_room_work_records as work
-    from gateway import hosted_room_work_storage as storage
+    from hermes_agent.gateway import hosted_room_work_records as work
+    from hermes_agent.gateway import hosted_room_work_storage as storage
     path = tmp_path / "state.db"
     create(path)
     create(path, "healthy")

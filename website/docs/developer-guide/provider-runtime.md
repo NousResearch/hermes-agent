@@ -202,7 +202,7 @@ Hermes supports a configured fallback provider chain — a list of `(provider, m
 
 4. **Config flow**:
    - CLI: reads the fallback chain via `hermes_cli/fallback_config.get_fallback_chain()` → passes to `AIAgent(fallback_model=...)`
-   - Gateway: `gateway/run_config_loaders.py._load_fallback_model()` reads `config.yaml` → passes to `AIAgent`
+   - Gateway: `hermes_agent/gateway/run_config_loaders.py._load_fallback_model()` reads `config.yaml` → passes to `AIAgent`
    - Validation: both `provider` and `model` keys must be non-empty, or fallback is disabled
 
 ### What does NOT support fallback

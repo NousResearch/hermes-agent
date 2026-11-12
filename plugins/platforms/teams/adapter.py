@@ -54,15 +54,15 @@ AdaptiveCardActionMessageResponse = AdaptiveCardInvokeResponse = InvokeResponse 
 HttpRequest = HttpResponse = HttpRouteHandler = AdaptiveCard = ExecuteAction = TextBlock = None  # type: ignore[assignment,misc]
 HttpMethod = str  # type: ignore[assignment,misc]
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import MessageDeduplicator
-from gateway.platforms.base import (
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.helpers import MessageDeduplicator
+from hermes_agent.gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult, cache_image_from_url, cache_media_bytes_async,
     describe_proxy_error, env_proxy_for_redaction)
-from gateway.platforms.base_exec_approval import approval_timeout_seconds, format_approval_deadline_line
+from hermes_agent.gateway.platforms.base_exec_approval import approval_timeout_seconds, format_approval_deadline_line
 from agent.i18n import t
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms._shared import (
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.platforms._shared import (
     coerce_port, extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
     seed_extra_from_env as _seed_extra_from_env, send_error
 )
@@ -427,7 +427,7 @@ class TeamsAdapter(BasePlatformAdapter):
             self._wire_plugin_handlers(self._app)
             await self._app.initialize()
             # Shared-listener mode (multiplex secondary): no bind; served at /p/<profile>/api/messages.
-            from gateway.platforms.shared_ingress import bind_listener
+            from hermes_agent.gateway.platforms.shared_ingress import bind_listener
             self._runner = await bind_listener(self, aiohttp_app, self._host, self._port, _WEBHOOK_PATH)
             self._running = True
             self._mark_connected()
@@ -476,7 +476,7 @@ class TeamsAdapter(BasePlatformAdapter):
         """Download attachment bytes with SSRF protection. Connector URLs get the bot's bearer token;
         redirects and body size go through the shared guards (as the cache_*_from_url helpers)."""
         from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
-        from gateway.platforms.base import ssrf_redirect_guard, read_httpx_body_with_limit
+        from hermes_agent.gateway.platforms.base import ssrf_redirect_guard, read_httpx_body_with_limit
         if not is_safe_url(url):
             raise ValueError("Blocked unsafe attachment URL (SSRF protection)")
         headers = {"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)"}
@@ -649,7 +649,7 @@ class TeamsAdapter(BasePlatformAdapter):
         choice = _APPROVAL_CHOICES.get(hermes_action)
         if not choice:
             return self._invoke_message(t("platform.teams.approval.unknown_action"))
-        from gateway.approval_actor import approval_refusal, refusal_text
+        from hermes_agent.gateway.approval_actor import approval_refusal, refusal_text
         clicker = getattr(ctx.activity.from_, "aad_object_id", None) or getattr(ctx.activity.from_, "id", "")
         if requester := approval_refusal(session_key, clicker, extra=self.config.extra, request_id=data.get("request_id"),
                                          choice=choice):

@@ -7,7 +7,7 @@ completion, admits the notification turn (``authority.admit_automation``) and ru
 neither drains the registry nor claims delivery (IPS-086) — it only watches its session's stream.
 
 The claim's ``message.start`` carries the admission's async-result card (``display_kind`` /
-``display_text`` / model ``text``; ``gateway.session_automation.admission_display``). The idle tick
+``display_text`` / model ``text``; ``hermes_agent.gateway.session_automation.admission_display``). The idle tick
 turns it into main's ``TimelineNotification``, so main's input path paints the same ``◈ Background
 Process Finished: ...`` header, and ``GatewayAgent.run_conversation`` pumps that already-admitted
 turn (no ``prompt.submit``) through the same callbacks as a typed turn.

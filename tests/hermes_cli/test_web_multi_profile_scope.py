@@ -83,7 +83,7 @@ def test_console_send_for_named_profile_does_not_write_process_env(two_homes, mo
 
     def fake_send(args):
         from hermes_cli import send_cmd
-        from gateway.config import _getenv
+        from hermes_agent.gateway.config import _getenv
         send_cmd._load_hermes_env()
         seen["loader_sees"] = _getenv("TELEGRAM_BOT_TOKEN")
         seen["environ_has"] = "TELEGRAM_BOT_TOKEN" in os.environ

@@ -79,7 +79,7 @@ def _served(authority):
     """``(own name, name -> home, refused)`` over the local bots this process serves
     (``session_authorities.local_bots``). A bot its clients cannot address by name is refused,
     never bound; a retiring one is not seated in a new group."""
-    from gateway.session_authorities import local_bots, served_profile_name
+    from hermes_agent.gateway.session_authorities import local_bots, served_profile_name
     bots = local_bots(getattr(authority, 'runner', None))
     own = next((bot.name for bot in bots if bot.authority is authority), None)
     if own is None:
@@ -100,8 +100,8 @@ def _served(authority):
 
 def _configured(authority, own):
     """The ``hosted_rooms.profiles`` mapping; a section left with no entries is empty."""
-    from gateway.run import _load_gateway_config
-    from gateway.session_authorities import owner_scope
+    from hermes_agent.gateway.run import _load_gateway_config
+    from hermes_agent.gateway.session_authorities import owner_scope
     # The coordinator's own threads do not inherit the caller's ContextVars.
     with owner_scope(authority):
         section = _load_gateway_config().get('hosted_rooms')
@@ -115,7 +115,7 @@ def _configured(authority, own):
 def _config_entry(name, value, served, seated):
     """``(home, reason, detail)`` for one entry: ``reason`` None seats ``home``; otherwise the entry
     is refused, and a ``home`` it still carries is an alias that existing rooms keep."""
-    from gateway.hosted_rooms_common import IDENTIFIER_RE
+    from hermes_agent.gateway.hosted_rooms_common import IDENTIFIER_RE
     from hermes_constants import hermes_home_key
     if not isinstance(name, str) or not IDENTIFIER_RE.fullmatch(name) or not isinstance(value, str):
         return None, 'invalid_params', 'must map a profile name to a home'

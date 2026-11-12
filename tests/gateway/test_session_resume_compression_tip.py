@@ -6,9 +6,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.session_contract import SessionRef
-from gateway.session_events import SessionEvents
-from gateway.session_controls import AuthorityConnection
+from hermes_agent.gateway.session_contract import SessionRef
+from hermes_agent.gateway.session_events import SessionEvents
+from hermes_agent.gateway.session_controls import AuthorityConnection
 
 
 def _attach_snapshot(owner_ref):
@@ -38,7 +38,7 @@ async def test_session_resume_still_remaps_legacy_cli_source(monkeypatch):
     resolved = []
 
     monkeypatch.setattr(
-        'gateway.session_local_migration.resolve_local_target',
+        'hermes_agent.gateway.session_local_migration.resolve_local_target',
         lambda authority, actor, sid: resolved.append(sid) or owner_ref)
 
     authority = SimpleNamespace(

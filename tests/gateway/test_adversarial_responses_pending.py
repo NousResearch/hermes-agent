@@ -13,7 +13,7 @@ async def test_pending_retry_pins_named_conversation_target(api, owner):
     calls = []
 
     async def handle(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         calls.append(event.text)
         if event.text == 'slow':
             entered.set()
@@ -54,9 +54,9 @@ async def test_pending_retry_pins_named_conversation_target(api, owner):
 
 @pytest.mark.asyncio
 async def test_unknown_retry_recovers_admission_after_pointer_commit_loss(api, owner):
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_contract import SessionRef
     from hermes_agent.hermes_state_runtime import begin_runtime_epoch, recover_session_inputs
-    from gateway.platforms.api_server_response_store import ResponseStore
+    from hermes_agent.gateway.platforms.api_server_response_store import ResponseStore
     started, release = asyncio.Event(), asyncio.Event()
     calls = []
 
@@ -106,7 +106,7 @@ async def test_unknown_retry_recovers_admission_after_pointer_commit_loss(api, o
 async def test_validation_refusal_does_not_reserve_retry_key(api, owner):
     calls = []
     async def handle(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         calls.append(event.text)
         execution_result.get()['result'] = {'final_response': 'answer', 'messages': []}
         return 'answer'
@@ -127,7 +127,7 @@ async def test_validation_refusal_does_not_reserve_retry_key(api, owner):
 async def test_concurrent_exact_responses_share_terminal_envelope(api, owner):
     started, release = asyncio.Event(), asyncio.Event()
     async def handle(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         started.set()
         await release.wait()
         execution_result.get()['result'] = {'final_response': 'answer', 'messages': [
@@ -168,8 +168,8 @@ async def test_concurrent_exact_responses_share_terminal_envelope(api, owner):
 
 @pytest.mark.asyncio
 async def test_pointer_commit_loss_then_retirement_cannot_reexecute_moved_conversation(api, owner, monkeypatch):
-    from gateway.session_contract import SessionRef
-    from gateway.session_results import execution_result
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_results import execution_result
 
     calls = []
 

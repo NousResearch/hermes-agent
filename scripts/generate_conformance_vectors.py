@@ -141,7 +141,7 @@ def _oracles() -> dict[str, Callable[[str], str]]:
     from plugins.platforms.telegram.adapter import TelegramAdapter
     from plugins.platforms.slack.adapter import SlackAdapter
     from plugins.platforms.discord.adapter import DiscordAdapter
-    from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
+    from hermes_agent.gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
 
     wa = object.__new__(WhatsAppBehaviorMixin)  # format_message needs no __init__
 

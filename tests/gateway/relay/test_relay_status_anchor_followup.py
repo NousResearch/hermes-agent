@@ -14,9 +14,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.session import SessionSource
 
 FLAT_REPLIES = {'slack': {'reply_in_thread': False}}
 SESSION_KEY = 'agent:main:slack:dm:T1:D9'
@@ -40,15 +40,15 @@ def _event(message_id, text='hi'):
 
 @pytest.mark.asyncio
 async def test_queued_followup_status_stays_on_its_own_message(monkeypatch, tmp_path):
-    from gateway.relay.adapter import RelayAdapter
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.relay.adapter import RelayAdapter
+    from hermes_agent.gateway.run import GatewayRunner
     from tests.gateway.relay.stub_connector import StubConnector
     from tests.gateway.relay.test_relay_slack_prompt_dm_root import _slack_desc
 
     fake_run_agent = types.ModuleType('run_agent')
     fake_run_agent.AIAgent = _TwoTurnAgent
     monkeypatch.setitem(sys.modules, 'run_agent', fake_run_agent)
-    gateway_run = importlib.import_module('gateway.run')
+    gateway_run = importlib.import_module('hermes_agent.gateway.run')
     monkeypatch.setattr(gateway_run, '_hermes_home', tmp_path)
     monkeypatch.setattr(gateway_run, '_resolve_runtime_agent_kwargs', lambda: {'api_key': '***'})
     _TwoTurnAgent.calls = []
@@ -88,8 +88,8 @@ class _CancelledPost:
 
 @pytest.mark.asyncio
 async def test_a_cancelled_proxy_turn_leaves_no_status(monkeypatch, tmp_path):
-    from gateway.relay.adapter import RelayAdapter
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.relay.adapter import RelayAdapter
+    from hermes_agent.gateway.run import GatewayRunner
     from tests.gateway.relay.stub_connector import StubConnector
     from tests.gateway.relay.test_relay_slack_prompt_dm_root import _slack_desc
 

@@ -155,7 +155,7 @@ def _claim_before_run(scope: dict, *, assume_fresh: bool):
     from hermes_cli import anon_auth
     from hermes_cli.onboarding_run import set_run
     from hermes_cli.welcome_trial import claim_desktop_free_tier, provider_configured
-    if not anon_auth.on_local_desktop_backend():  # gateway/session_onboarding.py::_claim_before_run
+    if not anon_auth.on_local_desktop_backend():  # hermes_agent/gateway/session_onboarding.py::_claim_before_run
         raise _NoModelForTheRun("First-run onboarding starts only in the Desktop app on this machine.")
     set_run(True)
     with _session_profile_runtime_scope(scope):

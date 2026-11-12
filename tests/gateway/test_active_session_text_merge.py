@@ -29,13 +29,13 @@ sys.modules.setdefault("telegram", _tg)
 sys.modules.setdefault("telegram.constants", _tg.constants)
 sys.modules.setdefault("telegram.ext", types.ModuleType("telegram.ext"))
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import (
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import (
     BasePlatformAdapter,
     SendResult,
 )
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource, build_session_key
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.session import SessionSource, build_session_key
 
 
 def _make_event(

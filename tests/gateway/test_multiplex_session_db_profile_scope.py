@@ -32,10 +32,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gateway.config import GatewayConfig
-from gateway.platforms.base import Platform, SessionSource
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionEntry, SessionStore
+from hermes_agent.gateway.config import GatewayConfig
+from hermes_agent.gateway.platforms.base import Platform, SessionSource
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionEntry, SessionStore
 from hermes_constants import (
     get_hermes_home,
     reset_hermes_home_override,
@@ -76,7 +76,7 @@ def multiplex_homes(tmp_path, monkeypatch):
 
 
 def _make_store(root: Path) -> SessionStore:
-    with patch("gateway.session.SessionStore._ensure_loaded"):
+    with patch("hermes_agent.gateway.session.SessionStore._ensure_loaded"):
         store = SessionStore(sessions_dir=root / "sessions", config=GatewayConfig())
     store._loaded = True
     return store
@@ -112,7 +112,7 @@ def test_primary_handler_enters_routed_profile_scope_before_dispatch(multiplex_h
     before the later agent-only scope.  A handler that captures the process
     root therefore reads an empty root transcript for routed channels.
     """
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     root, profile = multiplex_homes
     (profile / "config.yaml").write_text("{}\n", encoding="utf-8")
@@ -149,8 +149,8 @@ def test_primary_handler_rejected_route_falls_back_and_marks_sentinel(multiplex_
     home, and ``_handle_message``'s ingress gate reads the same marker to drop
     the message fail-closed without re-running routing.
     """
-    from gateway.profile_routing import ProfileRouteRejected
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.profile_routing import ProfileRouteRejected
+    from hermes_agent.gateway.run import GatewayRunner
 
     root, _profile = multiplex_homes
 
@@ -196,7 +196,7 @@ def test_primary_route_keeps_transport_authorization_scope(multiplex_homes):
     live primary transport already admitted.
     """
     from agent.secret_scope import is_multiplex_active, set_multiplex_active
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     root, profile = multiplex_homes
     (root / ".env").write_text("DISCORD_ALLOWED_USERS=user-1\n", encoding="utf-8")
@@ -245,8 +245,8 @@ def test_primary_route_keeps_transport_authorization_scope(multiplex_homes):
 
 def test_two_primary_routed_turns_reload_profile_transcript(multiplex_homes):
     """A second routed turn sees the first turn in the profile database."""
-    from gateway.profile_routing import ProfileRoute
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.profile_routing import ProfileRoute
+    from hermes_agent.gateway.run import GatewayRunner
     from hermes_agent.hermes_state import SessionDB
 
     root, profile = multiplex_homes
@@ -394,7 +394,7 @@ def test_close_all_db_handles_sweeps_every_profile_handle(multiplex_homes):
     """Teardown must release every cached per-profile handle, not just the
     one the tearing-down task's own scope resolves.
 
-    Follow-up hardening for the per-path cache: ``gateway/run.py``'s
+    Follow-up hardening for the per-path cache: ``hermes_agent/gateway/run.py``'s
     teardown path closes ``store._db`` (root scope only); the sweep closes
     the rest so secondary profiles' WAL locks are released before a
     ``--replace`` restart reopens their stores.
@@ -434,7 +434,7 @@ def test_runner_session_db_follows_the_active_profile_scope(multiplex_homes):
     """
     import threading
 
-    from gateway.run import GatewayRunner, _SESSION_DB_UNPINNED
+    from hermes_agent.gateway.run import GatewayRunner, _SESSION_DB_UNPINNED
 
     root, profile = multiplex_homes
     runner = object.__new__(GatewayRunner)
@@ -494,7 +494,7 @@ def _session_end_reason(db_path: Path, session_id: str):
 
 def _multiplex_store(root: Path) -> SessionStore:
     """A store whose keys carry the profile namespace (``agent:<profile>:...``)."""
-    with patch("gateway.session.SessionStore._ensure_loaded"):
+    with patch("hermes_agent.gateway.session.SessionStore._ensure_loaded"):
         store = SessionStore(
             sessions_dir=root / "sessions",
             config=GatewayConfig(multiplex_profiles=True),
@@ -591,7 +591,7 @@ def test_cached_agent_dead_check_reads_the_routed_profile_store(multiplex_homes)
     from types import SimpleNamespace
 
     from agent.secret_scope import is_multiplex_active, set_multiplex_active
-    from gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
 
     root, profile = multiplex_homes
     store = _multiplex_store(root)
@@ -858,8 +858,8 @@ def test_profile_named_main_keeps_its_own_namespace_and_store(multiplex_homes):
     profile literally named ``main`` produced byte-identical keys to the default and, once default
     keys were pinned to the launch store, its scoped sessions were written into the ROOT
     ``state.db``. Its namespace must differ from the default's and resolve back to ``profiles/main``."""
-    from gateway.run import _parse_session_key
-    from gateway.session import build_session_key
+    from hermes_agent.gateway.run import _parse_session_key
+    from hermes_agent.gateway.session import build_session_key
 
     root, _profile = multiplex_homes
     main_home = root / "profiles" / "main"
@@ -887,8 +887,8 @@ def test_profile_named_main_keeps_its_own_namespace_and_store(multiplex_homes):
 def test_a_conversation_its_chat_moved_past_keeps_its_profile_history(multiplex_homes):
     """#144840 review F2: a secondary profile's conversation its chat moved past is found by id in
     that profile's store, so its turn loads its history and writes its transcript there."""
-    from gateway.session_detached import detached_key
-    from gateway.session_identity import replace_source
+    from hermes_agent.gateway.session_detached import detached_key
+    from hermes_agent.gateway.session_identity import replace_source
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     root, profile = multiplex_homes
     store = _multiplex_store(root)

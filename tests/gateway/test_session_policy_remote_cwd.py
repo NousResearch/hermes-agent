@@ -21,7 +21,7 @@ LAUNCH = object()  # the client's host launch folder
     ({"backend": "ssh", "cwd": "/srv/app"}, {"cwd_explicit": True}, (LAUNCH, None)),
 ])
 def test_terminal_cwd_follows_the_backend(tmp_path, monkeypatch, terminal, params, expected):
-    from gateway.session_policy import build_policy, policy_scope, restore_policy
+    from hermes_agent.gateway.session_policy import build_policy, policy_scope, restore_policy
     from tools.terminal_tool import _get_env_config
 
     home = tmp_path / "home"

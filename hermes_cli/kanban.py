@@ -109,7 +109,7 @@ def _check_dispatcher_presence(hermes_home: Optional[Path] = None) -> tuple[bool
     keep the existing process-level behavior.
     """
     try:
-        from gateway.status import resolve_gateway_liveness  # type: ignore
+        from hermes_agent.gateway.status import resolve_gateway_liveness  # type: ignore
 
         # Same ladder as the dashboard status endpoints so PID-file-less / cross-container gateways
         # aren't misreported; use_cache=False because this one-shot probe must see the state now.

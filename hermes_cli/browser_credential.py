@@ -3,7 +3,7 @@
 The browser credential is the dashboard session token (``hermes_cli.web_server._SESSION_TOKEN``). A
 loopback Webapp tab holds it; behind the sign-in gate each Webapp login is bound to it
 (``hermes_cli.webapp_sign_in``). The gateway keeps the Webapp's credential in its home
-(``gateway.webapp_listener.browser_session_token``) and sets it when its listener starts.
+(``hermes_agent.gateway.webapp_listener.browser_session_token``) and sets it when its listener starts.
 
 Every grant a browser gets under the credential records the credential's generation, a SHA-256 digest
 of it, when the grant is made, and is honoured only while :func:`is_current` says that generation is

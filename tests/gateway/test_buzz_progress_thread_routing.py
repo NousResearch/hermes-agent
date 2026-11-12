@@ -1,6 +1,6 @@
 """Buzz progress/status thread-routing regressions."""
 
-from gateway.run import _resolve_progress_thread_id
+from hermes_agent.gateway.run import _resolve_progress_thread_id
 
 
 def test_buzz_progress_without_source_thread_uses_triggering_event():

@@ -15,11 +15,11 @@ import pytest_asyncio
 
 @pytest_asyncio.fixture
 async def owner(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
 
     home = tmp_path / 'home'
     home.mkdir()
@@ -122,7 +122,7 @@ async def test_cron_writes_run_on_the_classic_cli_command_socket_whatever_surfac
     to the session, the CLI's own command socket (GatewayConnection.call_until), even for a session a TUI
     created and the CLI resumed (main's CLI wrote the store there too)."""
     import json
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     jobs = owner.home / 'cron' / 'jobs.json'
     sid = (await owner.call('session.create', request_id='t', source='tui', cwd=str(owner.workdir)))['session_id']
     command_socket = AuthorityConnection(owner.authority, object(), {'user_id': 'human'})
@@ -179,9 +179,9 @@ async def test_concurrent_cron_runs_never_wait_on_the_pool_their_jobs_need(owner
     from types import MethodType
     import hermes_agent.cron.scheduler
     from hermes_agent.cron.jobs import create_job, get_job
-    from gateway.run import GatewayRunner
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_cron import current_execution
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_cron import current_execution
     runner = owner.authority.runner
     runner._get_executor = MethodType(GatewayRunner._get_executor, runner)
     runner._run_in_executor_with_context = MethodType(GatewayRunner._run_in_executor_with_context, runner)
@@ -215,7 +215,7 @@ async def test_concurrent_cron_runs_never_wait_on_the_pool_their_jobs_need(owner
 
 @pytest.mark.asyncio
 async def test_other_surfaces_keep_the_gateway_handlers(owner):
-    from gateway.session_tui_reads import tui_read
+    from hermes_agent.gateway.session_tui_reads import tui_read
     for source in ('cli', 'gui', 'acp'):
         policy = SimpleNamespace(source=source)
         assert tui_read(policy, 'status', '') is None and tui_read(policy, 'context', '') is None
@@ -264,7 +264,7 @@ async def test_context_breakdown_is_reused_until_the_transcript_moves(owner, mon
     first = await owner.call('session.context_breakdown', session_id=sid)
     again = await owner.call('session.context_breakdown', session_id=sid)
     assert computed == [0] and again == first
-    from gateway.session_tui_reads import _stored_id
+    from hermes_agent.gateway.session_tui_reads import _stored_id
     stored = _stored_id(owner.authority, SimpleNamespace(session_id=sid))
     owner.authority.db.append_message(stored, 'user', 'hello')
     moved = await owner.call('session.context_breakdown', session_id=sid)
@@ -290,7 +290,7 @@ async def test_context_breakdown_follows_an_in_place_row_rewrite(owner, monkeypa
                 'model': 'fake-model'}
     monkeypatch.setattr(context_breakdown, 'compute_session_context_breakdown', compute)
     monkeypatch.setattr(context_file_sources, 'context_file_sources_for_agent', lambda a: [])
-    from gateway.session_tui_reads import _stored_id
+    from hermes_agent.gateway.session_tui_reads import _stored_id
     stored = _stored_id(owner.authority, SimpleNamespace(session_id=sid))
     db = owner.authority.db
     row_id = db.append_message(stored, 'user', 'explain @file:big.py')

@@ -8,13 +8,13 @@ import asyncio
 
 import pytest
 
-from gateway.session_api_turn import admit_api_turn, observe_api_controls, observe_api_turn
+from hermes_agent.gateway.session_api_turn import admit_api_turn, observe_api_controls, observe_api_turn
 from tests.waiting import async_wait_until
 
 
 def _answer(owner, replies, check=None):
     async def handle(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         if check is not None:
             check()
         replies.append(event.text)
@@ -88,6 +88,6 @@ async def test_deleting_an_idle_api_session_evicts_its_cached_agent(api, owner):
     route = owner.sessions['conv'].route
     await asyncio.wait_for(observe_api_turn(admitted), 10)
     await async_wait_until(lambda: 'conv' not in owner.sessions, timeout=10, what='the idle API session to retire')
-    from gateway.session_mutations import retire_live_sessions
+    from hermes_agent.gateway.session_mutations import retire_live_sessions
     retire_live_sessions(owner, ['conv'])  # the delete / prune primitive
     assert evicted == [route]

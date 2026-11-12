@@ -23,7 +23,7 @@ SIBLINGS = {'providers': {
 
 @pytest.fixture
 def home(monkeypatch):
-    from gateway import run
+    from hermes_agent.gateway import run
     from hermes_constants import get_hermes_home
     profile = get_hermes_home()
     profile.mkdir(parents=True, exist_ok=True)
@@ -36,7 +36,7 @@ def home(monkeypatch):
     ({'base_url': RELAY, 'model': 'deepseek-v4.1-flash'}, 'custom:deepseek'),
 ], ids=['profile-entry', 'sibling-on-shared-url'])
 def test_a_bare_custom_launch_pick_freezes_the_configured_entry(tmp_path, pick, provider):
-    from gateway.session_policy import build_policy
+    from hermes_agent.gateway.session_policy import build_policy
     config = {'model': {'default': 'glm-5.3', 'provider': 'custom:glm', 'base_url': RELAY,
                         'key_env': 'RELAY_KEY'}, **SIBLINGS}
     params = dict(cwd=str(tmp_path), provider='custom', **({'model': 'unlisted-model'} | pick))
@@ -53,7 +53,7 @@ def test_a_disabled_entry_on_the_url_never_names_the_route(home):
 
 @pytest.mark.asyncio
 async def test_the_model_picker_marks_the_entry_a_session_runs_on_current(home, monkeypatch):
-    from gateway import session_config
+    from hermes_agent.gateway import session_config
     (home / 'config.yaml').write_text(json.dumps(SIBLINGS))
     # deepseek runs glm's model: the first entry on the shared URL (and the one listing it) is not the route.
     agent = SimpleNamespace(model='glm-5.3', provider='custom', requested_provider='custom:deepseek', base_url=RELAY)
@@ -67,9 +67,9 @@ async def test_the_model_picker_marks_the_entry_a_session_runs_on_current(home, 
 
 @pytest.mark.asyncio
 async def test_a_following_session_switches_model_with_an_inline_secret_outside_its_followed_sections(home):
-    from gateway.run_turn_prepare import GatewayTurnPrepareMixin
-    from gateway.session_bot import _target
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.run_turn_prepare import GatewayTurnPrepareMixin
+    from hermes_agent.gateway.session_bot import _target
+    from hermes_agent.gateway.session_policy import policy_for_source
     _profile(home, 'old-model', 1, 'old-key', tts={'openai': {'api_key': 'tts-key'}})
     store, runner, authority, owner = _owner(home)
     runner._peek_session_state = lambda key: None

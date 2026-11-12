@@ -22,7 +22,7 @@ from unittest.mock import MagicMock, patch
 
 
 def _make_email_adapter(address="hermes@test.com"):
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
 
     with patch.dict(os.environ, {
         "EMAIL_ADDRESS": address,
@@ -94,7 +94,7 @@ class TestWeixinPollSessionRecycle(unittest.TestCase):
     """The weixin poll loop must recycle its session after a failure streak."""
 
     def _make_adapter(self):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.weixin.adapter import WeixinAdapter
 
         return WeixinAdapter(

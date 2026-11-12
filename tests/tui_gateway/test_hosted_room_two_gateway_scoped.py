@@ -12,9 +12,9 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
-from gateway.config import PlatformConfig
-from gateway.hosted_rooms import local_authority_gateway_id
-from gateway.platforms.api_server import APIServerAdapter
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.hosted_rooms import local_authority_gateway_id
+from hermes_agent.gateway.platforms.api_server import APIServerAdapter
 from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
 from hermes_agent.tui_gateway.hosted_room_peer_transport import PeerMemberRoute
 from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService
@@ -72,7 +72,7 @@ async def test_in_process_scoped_transport_contract_finishes_headlessly(
         PlatformConfig(enabled=True, extra={"key": "target-peer-key-1234567890"})
     )
     target._run_idempotency_store.close()
-    from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+    from hermes_agent.gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 
     target._run_idempotency_store = RunIdempotencyStore(
         str(tmp_path / "target-runs.db")

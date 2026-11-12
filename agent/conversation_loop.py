@@ -777,7 +777,7 @@ def _refresh_bot_chat_tools(agent) -> None:
     gateway keeps agents alive across turns; every other surface builds a fresh agent whose
     tools[] already reflects config. No prefix preservation: a disabled toolset must drop,
     and the prompt rebuild this rides on already breaks the cache."""
-    from gateway.session_policy import active_policy
+    from hermes_agent.gateway.session_policy import active_policy
     policy = active_policy()
     platform = getattr(agent, "platform", None)
     if policy is None and platform not in ("desktop", "tui"):

@@ -4,7 +4,7 @@ Enumeration sites must skip them. #90154"""
 
 from types import SimpleNamespace
 
-from gateway.platforms.helpers import (
+from hermes_agent.gateway.platforms.helpers import (
     DISCORD_CHANNEL_OBFUSCATED_FLAG,
     DISCORD_OBFUSCATED_CHANNEL_NAME,
     is_discord_channel_obfuscated,
@@ -24,7 +24,7 @@ def test_flag_or_sentinel_name_marks_obfuscated():
 
 
 def test_build_discord_filters_hidden_channels(monkeypatch):
-    from gateway import channel_directory as cd
+    from hermes_agent.gateway import channel_directory as cd
 
     guild = SimpleNamespace(
         name="TestGuild",

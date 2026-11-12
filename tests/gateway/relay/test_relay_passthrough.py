@@ -17,10 +17,10 @@ import json
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.relay.adapter import RelayAdapter
-from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
-from gateway.relay.ws_transport import PassthroughForward, _passthrough_from_wire
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.relay.adapter import RelayAdapter
+from hermes_agent.gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+from hermes_agent.gateway.relay.ws_transport import PassthroughForward, _passthrough_from_wire
 
 from tests.gateway.relay.stub_connector import StubConnector
 

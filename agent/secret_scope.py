@@ -200,7 +200,7 @@ _GLOBAL_ENV_EXACT = frozenset({
     "API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_PORT",
     "API_SERVER_CORS_ORIGINS",
     # Relay-connector ROUTING stamps injected by managed deploys. Every reader
-    # (gateway.config, relay_url()/registration/self-provision) must resolve
+    # (hermes_agent.gateway.config, relay_url()/registration/self-provision) must resolve
     # the SAME value or the adapter registers while the platform is absent
     # from config. GATEWAY_RELAY_SECRET/_ID/_DELIVERY_KEY and IDP_* are auth
     # material and deliberately stay profile-scoped.
@@ -416,9 +416,9 @@ def build_profile_secret_scope(hermes_home: Path) -> dict[str, str]:
         external_secrets = {}
     secrets.update((k, v) for k, v in external_secrets.items() if not _is_global_env(k))
     # The DEFAULT profile's config.yaml allow_all_users grant lives only in os.environ (bridged by
-    # gateway.config_loader); scoped gate readers under multiplex never fall to os.environ, so seed it
+    # hermes_agent.gateway.config_loader); scoped gate readers under multiplex never fall to os.environ, so seed it
     # into that profile's own mapping. A secondary never inherits it (#80099 class).
-    from gateway.config_loader import bridged_allow_all_users
+    from hermes_agent.gateway.config_loader import bridged_allow_all_users
     bridged = bridged_allow_all_users()
     if bridged is not None and _is_process_home(hermes_home):
         secrets.setdefault("GATEWAY_ALLOW_ALL_USERS", bridged)

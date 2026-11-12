@@ -1,9 +1,9 @@
-"""Regression tests for own-policy open startup gate in gateway/run.py."""
+"""Regression tests for own-policy open startup gate in hermes_agent/gateway/run.py."""
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.run import GatewayRunner
 
 
 @pytest.mark.asyncio

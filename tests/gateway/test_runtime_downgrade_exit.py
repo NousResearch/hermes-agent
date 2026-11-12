@@ -10,8 +10,8 @@ service-restart code so the supervisor relaunches and the settled tree on disk s
 import asyncio
 import subprocess
 
-from gateway import runtime_downgrade_exit as rde
-from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
+from hermes_agent.gateway import runtime_downgrade_exit as rde
+from hermes_agent.gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
 
 _SKEW = ("aaaaaaaaaa", "bbbbbbbbbb")
 
@@ -50,7 +50,7 @@ def test_a_confirmed_move_to_a_pre_runtime_tree_stops_without_a_restart(tmp_path
     assert _watch([_SKEW, None, _SKEW, None]).stopped == 0
     assert _watch([_SKEW, _SKEW, _SKEW], update=True).stopped == 0
     assert _watch([_SKEW, _SKEW], predates=lambda: False).stopped == 0
-    # Live: the stop lazily imported gateway.session_acp_lifecycle, absent at v0.21.6, and raised;
+    # Live: the stop lazily imported hermes_agent.gateway.session_acp_lifecycle, absent at v0.21.6, and raised;
     # the shutdown event was never set and the process idled on holding its profile lock.
     exits = []
 
@@ -89,7 +89,7 @@ def test_the_tree_probe_reads_the_checkout_on_disk(tmp_path):
 def test_the_downgrade_exit_code_reaches_the_process_exit():
     """The bootstrap's exit verdict raises the runner's code, so launchd (SuccessfulExit=false) sees 75."""
     import pytest
-    from gateway.run_shutdown import _resolve_gateway_exit_verdict
+    from hermes_agent.gateway.run_shutdown import _resolve_gateway_exit_verdict
     runner = _watch([_SKEW, _SKEW])
     runner.should_exit_with_failure, runner._restart_requested, runner._restart_via_service = False, False, False
     with pytest.raises(SystemExit) as exc:

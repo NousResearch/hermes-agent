@@ -31,14 +31,14 @@ from urllib.parse import unquote
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import (
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import (
     BasePlatformAdapter,
     SendResult,
 )
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner, _collect_auto_append_media_tags, _collect_history_media_paths
-from gateway.session import SessionSource, build_session_key
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner, _collect_auto_append_media_tags, _collect_history_media_paths
+from hermes_agent.gateway.session import SessionSource, build_session_key
 
 
 class _DummyAdapter(BasePlatformAdapter):
@@ -121,7 +121,7 @@ def _allowed_file(tmp_path, monkeypatch, name: str):
     f = root / name
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_bytes(b"payload")
-    monkeypatch.setattr("gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS", (root,))
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS", (root,))
     return f.resolve()
 
 
@@ -193,7 +193,7 @@ async def test_bare_local_path_history_dedup_survives_and_logs(tmp_path, monkeyp
     """Bare-path auto-detect (non-explicit) KEEPS the history dedup — and the
     suppression is now observable in the logs instead of silent."""
     png = _allowed_file(tmp_path, monkeypatch, "chart.png")
-    monkeypatch.setattr("gateway.platforms.base.LOCAL_DELIVERY_SAFE_ROOTS", (png.parent,), raising=False)
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base.LOCAL_DELIVERY_SAFE_ROOTS", (png.parent,), raising=False)
     adapter = _DummyAdapter()
     adapter._keep_typing = _hold_typing
     adapter.set_session_store(_StubStore([str(png)]))
@@ -209,7 +209,7 @@ async def test_bare_local_path_history_dedup_survives_and_logs(tmp_path, monkeyp
 
     adapter.set_message_handler(handler)
     event = _make_event()
-    with caplog.at_level(logging.INFO, logger="gateway.platforms.base"):
+    with caplog.at_level(logging.INFO, logger="hermes_agent.gateway.platforms.base"):
         await adapter._process_message_background(event, build_session_key(event.source))
 
     assert adapter.images_sent == [] and adapter.documents == [], (
@@ -279,7 +279,7 @@ async def test_explicit_media_response_does_not_load_transcript(tmp_path, monkey
 async def test_bare_path_history_lookup_does_not_block_event_loop(tmp_path, monkeypatch):
     """A slow transcript read must run outside the platform event loop."""
     pdf = _allowed_file(tmp_path, monkeypatch, "slow-history.pdf")
-    monkeypatch.setattr("gateway.platforms.base.LOCAL_DELIVERY_SAFE_ROOTS", (pdf.parent,), raising=False)
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base.LOCAL_DELIVERY_SAFE_ROOTS", (pdf.parent,), raising=False)
     adapter = _DummyAdapter()
     adapter._keep_typing = _hold_typing
     monkeypatch.setattr(
@@ -327,8 +327,8 @@ async def test_bare_path_history_lookup_does_not_block_event_loop(tmp_path, monk
 async def test_bare_path_history_lookup_timeout_fails_open(tmp_path, monkeypatch):
     """A wedged transcript read must not hold response delivery indefinitely."""
     pdf = _allowed_file(tmp_path, monkeypatch, "timeout-history.pdf")
-    monkeypatch.setattr("gateway.platforms.base.LOCAL_DELIVERY_SAFE_ROOTS", (pdf.parent,), raising=False)
-    monkeypatch.setattr("gateway.platforms.base._HISTORY_MEDIA_LOOKUP_TIMEOUT_SECONDS", 0.02)
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base.LOCAL_DELIVERY_SAFE_ROOTS", (pdf.parent,), raising=False)
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base._HISTORY_MEDIA_LOOKUP_TIMEOUT_SECONDS", 0.02)
     adapter = _DummyAdapter()
     adapter._keep_typing = _hold_typing
     monkeypatch.setattr(
@@ -365,9 +365,9 @@ async def test_bare_path_history_lookup_timeout_fails_open(tmp_path, monkeypatch
 @pytest.mark.asyncio
 async def test_history_lookup_saturation_fails_open_without_new_worker(monkeypatch):
     """Wedged lookups are bounded and cannot consume unbounded worker threads."""
-    monkeypatch.setattr("gateway.platforms.base._HISTORY_MEDIA_LOOKUP_TIMEOUT_SECONDS", 5.0)
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base._HISTORY_MEDIA_LOOKUP_TIMEOUT_SECONDS", 5.0)
     monkeypatch.setattr(
-        "gateway.platforms.base._HISTORY_MEDIA_LOOKUP_ADMISSION",
+        "hermes_agent.gateway.platforms.base._HISTORY_MEDIA_LOOKUP_ADMISSION",
         threading.BoundedSemaphore(2),
     )
     adapter = _DummyAdapter()
@@ -419,7 +419,7 @@ async def test_history_lookup_worker_start_failure_fails_open_and_releases_slot(
     """
     admission = threading.BoundedSemaphore(1)
     monkeypatch.setattr(
-        "gateway.platforms.base._HISTORY_MEDIA_LOOKUP_ADMISSION", admission
+        "hermes_agent.gateway.platforms.base._HISTORY_MEDIA_LOOKUP_ADMISSION", admission
     )
     adapter = _DummyAdapter()
 

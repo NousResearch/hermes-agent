@@ -3,11 +3,11 @@ import os
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.platforms.event import MessageEvent
-from gateway.run import GatewayRunner
-from gateway.session import SessionContext, SessionSource, build_session_context
-from gateway.session_context import (
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionContext, SessionSource, build_session_context
+from hermes_agent.gateway.session_context import (
     get_session_env,
     set_session_vars,
     clear_session_vars,
@@ -304,8 +304,8 @@ async def test_plugin_slash_command_sees_session_env(monkeypatch):
     contextvars an agent turn would for that event (#108698): the agent-turn path binds
     them via _set_session_env before running, but plugin command dispatch is a separate,
     earlier path that previously called the handler with nothing bound."""
-    from gateway.config import GatewayConfig, PlatformConfig
-    from gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.config import GatewayConfig, PlatformConfig
+    from hermes_agent.gateway.platforms.event import MessageEvent
 
     monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
     monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
@@ -364,9 +364,9 @@ async def test_plugin_slash_command_receives_calling_session(monkeypatch):
     from datetime import datetime
     from unittest.mock import MagicMock
 
-    from gateway.config import GatewayConfig, PlatformConfig
-    from gateway.platforms.event import MessageEvent
-    from gateway.session import SessionEntry
+    from hermes_agent.gateway.config import GatewayConfig, PlatformConfig
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.session import SessionEntry
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")})

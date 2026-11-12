@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from agent.i18n import t
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.discord import adapter as discord_adapter
 from tools import approval
 from tools.approval_gateway_wait import _ApprovalEntry
@@ -305,7 +305,7 @@ async def test_timeout_notice_fits_the_command_into_one_in_place_edit(monkeypatc
     """The gateway's notice reaches the real Discord edit as one message: the command is cut to
     the room left and cannot close the card's fence (Discord would rewrite a table after it into
     a longer bullet list), so no "(1/N)" marker and no streaming-preview state are left."""
-    from gateway import run_turn_runner_approval_settle as settle_mod
+    from hermes_agent.gateway import run_turn_runner_approval_settle as settle_mod
 
     adapter, _view, _entry, message = await _pending_card(monkeypatch)
     adapter.send = AsyncMock()

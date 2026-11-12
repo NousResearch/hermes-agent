@@ -81,9 +81,9 @@ async def dispatch_group_control(connection, method, params):
     siblings = _roster_siblings(connection, supplied) if method == 'profiles.list' else ()
 
     def invoke():
-        from gateway.run import _profile_runtime_scope
-        from gateway.hosted_rooms import HostedRoomError
-        from gateway import session_group_peers as peers
+        from hermes_agent.gateway.run import _profile_runtime_scope
+        from hermes_agent.gateway.hosted_rooms import HostedRoomError
+        from hermes_agent.gateway import session_group_peers as peers
         with _profile_runtime_scope(home):
             if method == 'profiles.list':
                 return _profiles(authority, actor, home, supplied, siblings)
@@ -114,8 +114,8 @@ def _refusal(reason, *, admitted=None):
 
 
 def _group(authority, actor, method, params, *, host_scope=False):
-    from gateway import hosted_rooms as rooms
-    from gateway.hosted_room_context import groups_state_result, set_room_context
+    from hermes_agent.gateway import hosted_rooms as rooms
+    from hermes_agent.gateway.hosted_room_context import groups_state_result, set_room_context
     if method == 'groups.disband':
         params = {**params, 'room_id': rooms._room_id(params.get('room_id'))}
     db_path = authority.db.db_path
@@ -145,7 +145,7 @@ def _group(authority, actor, method, params, *, host_scope=False):
     if method in {'groups.attachment.upload', 'groups.attachment.download'}:
         if service is None:
             raise RuntimeStoreError('runtime_coordination_required')
-        from gateway.session_hosted_attachments import upload, download
+        from hermes_agent.gateway.session_hosted_attachments import upload, download
         handler = upload if method == 'groups.attachment.upload' else download
         return handler(service, actor, params)
     if method in execution_methods:
@@ -159,12 +159,12 @@ def _group(authority, actor, method, params, *, host_scope=False):
     if method == 'groups.peer.register':
         if service is None:
             raise RuntimeStoreError('runtime_coordination_required')
-        from gateway.session_group_peers import register
+        from hermes_agent.gateway.session_group_peers import register
         return register(service, params)
 
     def capabilities():
-        from gateway.session_group_peers import room_link
-        from gateway.session_hosted_members import member_roster
+        from hermes_agent.gateway.session_group_peers import room_link
+        from hermes_agent.gateway.session_hosted_members import member_roster
         # The roster groups.create will accept from THIS caller, so a picker never offers a bot
         # (parked, retiring, a sibling a profile-bound socket cannot seat) that create refuses.
         homes, refused = member_roster(authority, siblings=host_scope)
@@ -211,8 +211,8 @@ def _group(authority, actor, method, params, *, host_scope=False):
         return {'rooms': found, 'next_offset': next_offset}
 
     def create():
-        from gateway.hosted_room_discussion import DiscussionValidationError, validate_roster
-        from gateway.session_hosted_members import member_roster, refuse_unseatable
+        from hermes_agent.gateway.hosted_room_discussion import DiscussionValidationError, validate_roster
+        from hermes_agent.gateway.session_hosted_members import member_roster, refuse_unseatable
         # Only a host-scoped grant, the one that may address siblings directly
         # (``AuthorityConnection._sibling_for``), seats served siblings with no entry; a
         # profile-bound one seats its own profile plus its hosted_rooms.profiles entries, as
@@ -255,8 +255,8 @@ def _group(authority, actor, method, params, *, host_scope=False):
 def _disband(attached, service, db_path, gateway_id, params):
     """Stop the room's work (waiting for every member's acknowledged Stop), revoke each peer
     route at its member gateway, then tombstone; any refusal leaves the room for a retry."""
-    from gateway import hosted_rooms as rooms
-    from gateway.hosted_room_driver import list_tasks
+    from hermes_agent.gateway import hosted_rooms as rooms
+    from hermes_agent.gateway.hosted_room_driver import list_tasks
     from hermes_agent.tui_gateway.hosted_room_service import disband_fence, route_publication_lock
     room_id = rooms._room_id(params.get('room_id'))
     with disband_fence(attached, room_id):
@@ -299,7 +299,7 @@ def _revoke_routes_first(service, room_id):
 
 def _execution_control(service, method, params):
     def send():
-        from gateway.hosted_rooms import user_event_id
+        from hermes_agent.gateway.hosted_rooms import user_event_id
         event = service.send(room_id=params.get('room_id'),
                              event_id=user_event_id(params.get('event_id')),
                              payload=params.get('payload'))
@@ -367,8 +367,8 @@ def _roster_siblings(connection, params):
     by its own name (no ``problem``) is the one a click on its row opens. It carries this socket's
     subject and capabilities, which is what the routed connection would carry; none is built, so
     no poll (routed or not) adds connections."""
-    from gateway.session_authorities import local_bots
-    from gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_authorities import local_bots
+    from hermes_agent.gateway.session_contract import SessionActor
     authority, actor = connection.authority, connection.actor
     if getattr(getattr(authority, 'runner', None), 'session_authorities', None) is None:
         return []
@@ -417,7 +417,7 @@ def _read_bot_sessions(db, subject, operator):
         # The named registry is not a recency window and canonical chats are hidden.
         canonical = conn.execute(f'SELECT * FROM sessions WHERE title=? AND {_LOCAL_CHAT}',
                                  ('Bot Chat', LEGACY_PREFIX)).fetchone()
-        from gateway.owner_identity import same_owner
+        from hermes_agent.gateway.owner_identity import same_owner
         if canonical and (same_owner(canonical['user_id'], subject) or operator) and not canonical['archived']:
             fields['canonical_session'] = summary(canonical)
         # The newest conversation a picker shows: a hidden row (a Bot Chat, group member plumbing)
@@ -472,7 +472,7 @@ def _profiles(authority, actor, home, params, siblings=()):
     include_sessions = params.get('include_sessions', True)
     if type(include_sessions) is not bool:
         raise RuntimeStoreError('invalid_params')
-    from gateway.session_authorities import served_profile_name
+    from hermes_agent.gateway.session_authorities import served_profile_name
     name = served_profile_name(home)
     profile = _profile_info(name, home, is_default=name == 'default')
     row = {'name': name, 'path': str(home), 'is_default': profile.is_default,

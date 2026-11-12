@@ -1165,7 +1165,7 @@ def _configured_home_channels() -> list[dict]:
     """Every platform with a home_channel, from the live GatewayConfig (so env overlays
     like ``TELEGRAM_HOME_CHANNEL`` are honored), sorted by platform."""
     try:
-        from gateway.config import load_gateway_config
+        from hermes_agent.gateway.config import load_gateway_config
         gw_cfg = load_gateway_config()
     except Exception:
         return []

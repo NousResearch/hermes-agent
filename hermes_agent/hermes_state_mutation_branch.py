@@ -33,7 +33,7 @@ def _branch_boundary(conn, target, through):
 
 def _child_policy(policy, child, prepared):
     """The parent's frozen policy, except editor MCP servers: the gateway prepared the child's own
-    selection under the child's own scope (gateway/session_local_mcp.py ``prepare_branch_editor``).
+    selection under the child's own scope (hermes_agent/gateway/session_local_mcp.py ``prepare_branch_editor``).
     Copying the parent's would share its scope, borrowed credentials and live connections.
     A branch starts at Default (``ask``), as main's ACP ``fork_session`` did."""
     if 'edit_approval_policy' in policy:
@@ -58,8 +58,8 @@ def branch_in_transaction(db, conn, session_id, payload, prepared=None):
     target = validate_local_lineage(conn, saved)
     require_idle(db, conn, list({session_id, target}))
     # Late: the routing entry/key are gateway types (the gateway imports this store at module level).
-    from gateway.session import SessionEntry, SessionSource
-    from gateway.config import Platform
+    from hermes_agent.gateway.session import SessionEntry, SessionSource
+    from hermes_agent.gateway.config import Platform
     from hermes_agent.hermes_state_keys import local_identity, profile_from_session_key
     request_id = prepared['request_id'] if prepared else 'branch:' + uuid.uuid4().hex
     child = local_identity(saved['profile_id'], saved['principal_id'], request_id)
@@ -68,9 +68,9 @@ def branch_in_transaction(db, conn, session_id, payload, prepared=None):
     # (``local_source``), and restore compares the stored origin against that exactly.
     source = SessionSource(Platform.LOCAL, child, user_id=saved['principal_id'], chat_type='dm',
                            profile=saved['entry']['origin'].get('profile'))
-    from gateway.session import build_session_key
+    from hermes_agent.gateway.session import build_session_key
     route = build_session_key(source, profile=profile_from_session_key(saved['route']))
-    from gateway.session_lifecycle import _now
+    from hermes_agent.gateway.session_lifecycle import _now
     now = _now()
     entry = SessionEntry(route, child, now, now, origin=source, platform=Platform.LOCAL)
     parent = conn.execute('SELECT * FROM sessions WHERE id=?', (target,)).fetchone()

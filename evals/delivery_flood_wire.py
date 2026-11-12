@@ -76,9 +76,9 @@ class Wire:
 
 
 async def setup(url):
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.run import GatewayRunner
-    from gateway.session import SessionStore
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import SessionStore
     from plugins.platforms.telegram.adapter import TelegramAdapter
     from telegram import Bot
     runner = object.__new__(GatewayRunner)
@@ -94,9 +94,9 @@ async def setup(url):
 
 
 async def produce(runner, adapter, chat):
-    from gateway.config import Platform
-    from gateway.platforms.event import MessageEvent
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.session import SessionSource
     source = SessionSource(platform=Platform.TELEGRAM, chat_id=chat, thread_id='77')
     entry = await runner.async_session_store.get_or_create_session(source)
     await runner.async_session_store.mark_resume_pending(entry.session_key)
@@ -123,8 +123,8 @@ async def cleanup(runner, adapter):
 
 
 async def scenario(wire, mode):
-    from gateway import delivery_ledger as dl
-    from gateway.config import Platform
+    from hermes_agent.gateway import delivery_ledger as dl
+    from hermes_agent.gateway.config import Platform
     runner, adapter = await setup(wire.url)
     try:
         if mode == 'runtime':
@@ -157,7 +157,7 @@ async def scenario(wire, mode):
         await runner._redeliver_failed_obligations_for_platform(Platform.TELEGRAM)
         final = rows()
         entry = await runner.async_session_store.get_or_create_session(
-            __import__('gateway.session', fromlist=['SessionSource']).SessionSource(
+            __import__('hermes_agent.gateway.session', fromlist=['SessionSource']).SessionSource(
                 platform=Platform.TELEGRAM, chat_id='101' if mode == 'runtime' else '201', thread_id='77'))
         return {'mode': mode, 'early': early, 'early_wire': early_calls, 'after_timer': after,
                 'final': final, 'wire': list(wire.calls), 'resume_pending': entry.resume_pending,

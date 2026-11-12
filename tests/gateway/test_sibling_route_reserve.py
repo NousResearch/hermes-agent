@@ -12,10 +12,10 @@ async def test_sibling_route_rebinds_after_the_profile_is_unserved_and_served_ag
     """The Desktop's shared socket routed ``profile=beta`` once; beta is then removed and hot-served
     again (a new authority). The cached sibling connection must not keep routing to the retired
     authority, which refuses every admission for the rest of the socket's life."""
-    from gateway.run_runtime import initialize_gateway_runtime, serve_profile_runtime, unserve_profile_runtime
-    from gateway.runtime_ownership import process_ownership
-    from gateway.session_authorities import authority_for_profile_id, owner_scope
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.run_runtime import initialize_gateway_runtime, serve_profile_runtime, unserve_profile_runtime
+    from hermes_agent.gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.session_authorities import authority_for_profile_id, owner_scope
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     root, homes = _reserve_homes(tmp_path, monkeypatch)
     process_ownership.reserve([home for _, home in homes])
     beta_home = homes[2][1]

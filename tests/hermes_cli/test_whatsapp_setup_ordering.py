@@ -117,7 +117,7 @@ def test_existing_pairing_skip_branch_enables_only_paired_identity(isolated_home
     bridge = isolated_home / "bridge"
     bridge.mkdir()
     (bridge / "bridge.js").write_text("", encoding="utf-8")
-    monkeypatch.setattr("gateway.platforms.whatsapp_common.resolve_whatsapp_bridge_dir", lambda: bridge)
+    monkeypatch.setattr("hermes_agent.gateway.platforms.whatsapp_common.resolve_whatsapp_bridge_dir", lambda: bridge)
     monkeypatch.setattr("hermes_cli.main_platform_setup._whatsapp_install_bridge", lambda path: True)
 
     buf = io.StringIO()

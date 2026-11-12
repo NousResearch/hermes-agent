@@ -14,18 +14,18 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.config import Platform, StreamingConfig
-from gateway.session import SessionSource
-from gateway.session_local import LocalSessionAdapter
-from gateway.session_results import execution_result
-from gateway.session_settlement_recovery import completion_payload
+from hermes_agent.gateway.config import Platform, StreamingConfig
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.session_local import LocalSessionAdapter
+from hermes_agent.gateway.session_results import execution_result
+from hermes_agent.gateway.session_settlement_recovery import completion_payload
 from tests.fakes.fake_llm_provider import FakeLLMServer
 from tests.fakes.redactor_plugin import REWRITE, raw_leaks, redactor_home, redactor_turn
 from tests.gateway.test_run_progress_topics import _make_runner
 
 
 async def _local_turn(*, hold, monkeypatch):
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
     from hermes_cli import plugins
 
     home = Path(os.environ["HERMES_HOME"])

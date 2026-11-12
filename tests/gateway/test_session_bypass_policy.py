@@ -7,7 +7,7 @@ import pytest
 
 def test_bypass_policy_is_typed_frozen_and_safe_implies_ignore(tmp_path):
     from dataclasses import asdict
-    from gateway.session_policy import build_policy, restore_policy, CREATE_FIELDS
+    from hermes_agent.gateway.session_policy import build_policy, restore_policy, CREATE_FIELDS
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     assert {'safe_mode', 'ignore_user_config'} <= CREATE_FIELDS
@@ -35,9 +35,9 @@ def test_bypass_session_freezes_code_defaults_without_reading_profile(tmp_path, 
     """The frozen snapshot of a bypass session is code defaults + explicit options; the profile's
     (possibly malformed) config.yaml, .env and plugin toolsets are never consulted."""
     from types import SimpleNamespace
-    from gateway.session_local import _bypass_policy
+    from hermes_agent.gateway.session_local import _bypass_policy
     from hermes_cli.config_defaults import DEFAULT_CONFIG
-    import gateway.session_policy, hermes_cli.tools_config, toolsets, tools.terminal_scope
+    import hermes_agent.gateway.session_policy, hermes_cli.tools_config, toolsets, tools.terminal_scope
     from hermes_cli.plugins import discover_plugins
 
     home = tmp_path / 'home'

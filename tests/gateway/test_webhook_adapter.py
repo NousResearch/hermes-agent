@@ -26,9 +26,9 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import SendResult
-from gateway.platforms.webhook import (
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import SendResult
+from hermes_agent.gateway.platforms.webhook import (
     WebhookAdapter,
     _INSECURE_NO_AUTH,
     _is_usable_secret,
@@ -547,7 +547,7 @@ class TestIdempotency:
             assert data["status"] == "duplicate"
 
             # Header-less deliveries in the same millisecond must not collide on a fallback id.
-            with patch("gateway.platforms.webhook.time.time", return_value=1_700_000_000.0):
+            with patch("hermes_agent.gateway.platforms.webhook.time.time", return_value=1_700_000_000.0):
                 bare = [await cli.post("/webhooks/idem", json={"a": 2}) for _ in range(2)]
             assert [r.status for r in bare] == [202, 202]
 
@@ -704,7 +704,7 @@ class TestSessionIsolation:
     async def test_delivery_tuple_is_an_unambiguous_session_identity(self, monkeypatch):
         """Route, provider delivery ID, and profile form one collision-free identity (captured at the
         durable admission seam; the HTTP ack itself waits for that admission)."""
-        from gateway.platforms import webhook_ingress
+        from hermes_agent.gateway.platforms import webhook_ingress
         adapter = _make_adapter()
         captured_events = []
 

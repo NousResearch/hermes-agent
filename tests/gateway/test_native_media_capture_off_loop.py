@@ -5,11 +5,11 @@ import threading
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
-from gateway.session_authority import SessionAuthority, initialize_session_authority
-from gateway.session_envelope import restore_native
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session_authority import SessionAuthority, initialize_session_authority
+from hermes_agent.gateway.session_envelope import restore_native
 from hermes_agent.hermes_state_runtime import get_session_admission
 from tests.waiting import async_wait_until
 
@@ -19,8 +19,8 @@ CHAT = '15551234567@s.whatsapp.net'
 @pytest.mark.asyncio
 @pytest.mark.parametrize('pause_after_publish', [False, True])
 async def test_cancelled_native_capture_releases_unadmitted_bytes(tmp_path, monkeypatch, pause_after_publish):
-    import gateway.session_envelope as envelope
-    import gateway.session_ingress_media as media
+    import hermes_agent.gateway.session_envelope as envelope
+    import hermes_agent.gateway.session_ingress_media as media
     from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
     monkeypatch.setenv('WHATSAPP_ALLOWED_USERS', '15551234567')
     runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / 'sessions'))
@@ -70,7 +70,7 @@ async def test_cancelled_native_capture_releases_unadmitted_bytes(tmp_path, monk
 
 @pytest.mark.asyncio
 async def test_native_capture_error_releases_published_bytes(tmp_path, monkeypatch):
-    import gateway.session_ingress_media as media
+    import hermes_agent.gateway.session_ingress_media as media
     from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
     monkeypatch.setenv('WHATSAPP_ALLOWED_USERS', '15551234567')
     runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / 'sessions'))
@@ -99,8 +99,8 @@ async def test_native_capture_error_releases_published_bytes(tmp_path, monkeypat
 
 @pytest.mark.asyncio
 async def test_native_media_capture_runs_off_loop_and_commits_owned_bytes(tmp_path, monkeypatch):
-    import gateway.session_envelope as envelope
-    import gateway.session_ingress_media as media
+    import hermes_agent.gateway.session_envelope as envelope
+    import hermes_agent.gateway.session_ingress_media as media
     from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
     monkeypatch.setenv('WHATSAPP_ALLOWED_USERS', '15551234567')
     monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)

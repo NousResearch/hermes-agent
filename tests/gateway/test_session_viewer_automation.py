@@ -13,12 +13,12 @@ import pytest_asyncio
 
 @pytest_asyncio.fixture
 async def owner(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_local import create_local_session
     from hermes_agent.hermes_state_local import local_receipt
     from hermes_cli import goals
 
@@ -79,7 +79,7 @@ async def test_the_goal_judge_runs_on_the_owner(owner, monkeypatch):
     assert decision['continuation_prompt'].startswith('[Continuing toward your standing goal]')
     assert json.loads(owner.db.get_meta('goal:' + owner.target))['turns_used'] == 1
 
-    from gateway.session_viewer_automation import viewer_driven
+    from hermes_agent.gateway.session_viewer_automation import viewer_driven
     assert not viewer_driven(owner.authority, owner.ref.session_id), 'no subscription: the gateway hooks run'
     owner.viewer.subscriptions[owner.ref.session_id] = 'sub-1'
     assert viewer_driven(owner.authority, owner.ref.session_id), 'the attached CLI judges; the gateway hook skips'
@@ -152,7 +152,7 @@ async def test_a_tool_that_moves_the_goal_mid_turn_repaints_the_viewers_once(own
     """A plugin tool writes goal criteria mid-turn: the turn's tool-completion callback republishes the new
     snapshot once, and a tool that changed nothing publishes nothing."""
     import asyncio
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     from hermes_cli.goals import GoalManager
     from tests.gateway.test_local_viewer_events_turn import _turn
     await owner.call('goal', 'set', 'ship it')

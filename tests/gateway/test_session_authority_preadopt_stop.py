@@ -19,7 +19,7 @@ class Agent:
 
 @pytest.mark.asyncio
 async def test_stop_before_adoption_reaches_the_rebuilt_agent_not_only_the_stale_cached_one(tmp_path, monkeypatch):
-    from gateway import session_finite
+    from hermes_agent.gateway import session_finite
 
     db, authority = _authority(tmp_path, monkeypatch)
     stale, fresh = Agent(), Agent()

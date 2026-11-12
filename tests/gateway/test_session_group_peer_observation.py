@@ -5,8 +5,8 @@ import time
 
 import pytest
 
-from gateway import hosted_room_driver as driver
-from gateway.platforms import api_server_runs
+from hermes_agent.gateway import hosted_room_driver as driver
+from hermes_agent.gateway.platforms import api_server_runs
 from tests.gateway import test_session_group_peers as peers
 from tests.tui_gateway.test_hosted_room_driver_runtime import FakeSessionRPC
 from hermes_agent.tui_gateway.hosted_room_driver import HostedRoomRuntime

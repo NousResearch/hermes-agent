@@ -30,7 +30,7 @@ def _clean_state():
 
 
 def _make_runner():
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner._running_agents = {}

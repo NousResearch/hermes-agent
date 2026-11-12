@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_controls import AuthorityConnection
+from hermes_agent.gateway.session_controls import AuthorityConnection
 from tests.gateway.test_local_source_labels import _authority, _create
 from hermes_agent.tui_gateway.contracts.registry import CANONICAL_METHODS
 

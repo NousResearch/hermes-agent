@@ -15,28 +15,28 @@ from agent.i18n import t
 from agent.session_activity import format_iteration_progress
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
-from gateway.config import Platform
-from gateway.media_repair import repair_explicit_computer_use_media_paths
-from gateway.platforms.base import BasePlatformAdapter
-from gateway.platforms.event import MessageEvent
-from gateway.session import (
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.media_repair import repair_explicit_computer_use_media_paths
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
     build_session_context,
 )
-from gateway.session_transcript import TranscriptReadError
-from gateway.turn_context import TurnContext
-from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
+from hermes_agent.gateway.session_transcript import TranscriptReadError
+from hermes_agent.gateway.turn_context import TurnContext
+from hermes_agent.gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
 from hermes_constants import get_hermes_home_override
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from utils import base_url_hostname
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner
-    from gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 # ``_resolve_turn_agent_config``'s default tier: the runner's per-turn ``_service_tier``.
 _TIER_FROM_RUNNER = object()
 
@@ -46,10 +46,10 @@ def _resolve_policy_agent_runtime(runner, policy, *, fallback=True) -> tuple[str
     config and launch credential, walking its own fallback chain on an AuthError unless
     ``fallback=False`` (a session control asking which route the session itself runs). Module-level
     so tests that bind the method onto bare namespaces still reach it."""
-    from gateway.run import _runtime_agent_kwargs
-    from gateway.session_policy import route_launch_key
-    from gateway.session_worker_construct import route_runtime
-    from gateway.session_authorities import active_authority
+    from hermes_agent.gateway.run import _runtime_agent_kwargs
+    from hermes_agent.gateway.session_policy import route_launch_key
+    from hermes_agent.gateway.session_worker_construct import route_runtime
+    from hermes_agent.gateway.session_authorities import active_authority
     authority = active_authority(runner)
     # A follow_profile_config session's route is the profile's current one, model and endpoint from one read.
     frozen, model = policy.effective(authority)
@@ -125,7 +125,7 @@ def _session_override_uses_managed_oauth(override: Optional[dict]) -> bool:
 
 
 def _resolve_session_override_runtime(override: dict, *, managed_oauth: bool) -> dict:
-    from gateway.run import _resolve_runtime_agent_kwargs_for_provider
+    from hermes_agent.gateway.run import _resolve_runtime_agent_kwargs_for_provider
 
     runtime = _resolve_runtime_agent_kwargs_for_provider(
         override["provider"], target_model=override.get("model") or None)
@@ -161,7 +161,7 @@ def _session_override_snapshot(override: dict) -> dict:
 
 
 def _resolve_channel_runtime(runner, source, model, runtime_kwargs) -> tuple[str, dict]:
-    from gateway.run import _get_channel_override, _resolve_runtime_agent_kwargs_for_provider
+    from hermes_agent.gateway.run import _get_channel_override, _resolve_runtime_agent_kwargs_for_provider
 
     cfg = getattr(runner, "config", None)
     if cfg and source is not None:
@@ -192,10 +192,10 @@ class GatewayTurnPrepareMixin:
         Priority (highest first): session ``/model`` → ``channel_overrides`` → global config/env
         (``_resolve_gateway_model(user_config)`` and default provider resolution). ``fallback=False``
         keeps a launch-policy session on its own route (see ``_resolve_policy_agent_runtime``)."""
-        from gateway.run import (
+        from hermes_agent.gateway.run import (
             _credential_pool_for_provider, _resolve_gateway_model, _resolve_runtime_agent_kwargs,
         )
-        from gateway.session_policy import policy_for_source
+        from hermes_agent.gateway.session_policy import policy_for_source
         # Every exit path starts clean: a stale notice must never attach to another session's next
         # turn (#74349). Set again below only when THIS resolution fell back.
         self._pre_agent_fallback_notice = None
@@ -293,7 +293,7 @@ class GatewayTurnPrepareMixin:
         ``request_overrides`` are deep-merged OVER the per-provider ones so both reach the model.
         ``tier`` defaults to the runner's per-turn ``_service_tier``; an off-turn builder (a cold
         ``/review``) passes the session's own instead of writing that shared slot."""
-        from gateway.run import _deep_merge_request_overrides
+        from hermes_agent.gateway.run import _deep_merge_request_overrides
         from agent.fast_mode import STATIC_TIERS
         from hermes_cli.models import resolve_fast_mode_overrides
         # Tests bind this method onto bare namespaces, so no class-level tables here.
@@ -424,7 +424,7 @@ class GatewayTurnPrepareMixin:
         session_key = session_entry.session_key
         claim = getattr(event, "_claimed_owner", None)
         if claim is not None:
-            from gateway.session_authorities import active_authority
+            from hermes_agent.gateway.session_authorities import active_authority
             authority, (owner, generation) = active_authority(self), claim
             # /new and /reset latch a Stop for the claimed generation before they move the route;
             # /resume, /branch and compression don't, so those turns run where the route points.
@@ -434,7 +434,7 @@ class GatewayTurnPrepareMixin:
                 # It settles interrupted, as that Stop would have, and never runs on the fresh one.
                 logger.warning("Dropping a stopped claimed turn: its route moved from %s to %s before it ran",
                                owner, session_entry.session_id)
-                from gateway.session_results import execution_result
+                from hermes_agent.gateway.session_results import execution_result
                 captured = execution_result.get()
                 if captured is not None:
                     captured['result'] = {'final_response': '', 'messages': [], 'interrupted': True}
@@ -447,7 +447,7 @@ class GatewayTurnPrepareMixin:
         self._cache_session_source(session_key, source)
         if await asyncio.to_thread(self._is_telegram_topic_lane, source):
             session_entry = await self._hmwa_heal_telegram_topic_binding(source, session_entry, session_key)
-        from gateway.run_heartbeat_acceptance import resolve_heartbeat_owner
+        from hermes_agent.gateway.run_heartbeat_acceptance import resolve_heartbeat_owner
         if not await resolve_heartbeat_owner(self, event, session_entry):
             return
         return source, session_entry, session_key
@@ -556,7 +556,7 @@ class GatewayTurnPrepareMixin:
 
     async def _hmwa_deliver_auto_reset_notice(self, session_entry, source, turn_sidecar_notes):
         """Stage the auto-reset sidecar note for the agent and notify the user (policy-gated)."""
-        from gateway.run import _AUTO_RESET_CONTEXT_NOTES
+        from hermes_agent.gateway.run import _AUTO_RESET_CONTEXT_NOTES
         reset_reason = getattr(session_entry, 'auto_reset_reason', None) or 'suspended'
         context_note = _AUTO_RESET_CONTEXT_NOTES.get(reset_reason, _AUTO_RESET_CONTEXT_NOTES["suspended"])
         # Long-lived channels: point the agent at the prior same-channel session for session_search.
@@ -571,7 +571,7 @@ class GatewayTurnPrepareMixin:
         turn_sidecar_notes.append(context_note)
 
         try:
-            from gateway.bot_peer_notices import automatic_notices_allowed
+            from hermes_agent.gateway.bot_peer_notices import automatic_notices_allowed
             should_notify = reset_reason == "suspended" and automatic_notices_allowed(source)
             adapter = self._delivery_adapter_for(source) if should_notify else None
             if adapter:
@@ -620,7 +620,7 @@ class GatewayTurnPrepareMixin:
         the same session waits for the prior flush. Fail-closed on timeout (outer dispatch returns
         a resend notice). Released in _handle_message's finally, granted per (routing key, run
         generation) so a stale unwind can't release a newer turn's."""
-        from gateway.run import _float_env
+        from hermes_agent.gateway.run import _float_env
         _lease_registry = getattr(self, "_turn_leases", None)
         if _lease_registry is None:
             return
@@ -640,7 +640,7 @@ class GatewayTurnPrepareMixin:
         """First-ever-message onboarding note + one-time 'no home channel' prompt (both only when
         the session has no history). Delivered on the user message (sidecar), NOT the ephemeral
         system prompt: present-on-turn-1/absent-on-turn-2 was a guaranteed prompt diff + rebuild."""
-        from gateway.run import _gateway_config_home, _home_target_env_var, _load_gateway_config
+        from hermes_agent.gateway.run import _gateway_config_home, _home_target_env_var, _load_gateway_config
         if history or internal:  # internal = plugin/system turn: no human made first contact
             return
         # LOCAL sessions (one-shot, chat -q, ACP, TUI attach) are the classic in-process CLI's
@@ -683,7 +683,7 @@ class GatewayTurnPrepareMixin:
         # Secondary-profile platforms may only exist under that profile's config — re-read in scope.
         if not home_env:
             with suppress(Exception):
-                from gateway.config import load_gateway_config as _lgc
+                from hermes_agent.gateway.config import load_gateway_config as _lgc
                 prof = (getattr(source, "profile", None) or "").strip()
                 if prof and prof != "default" and _lgc().get_home_channel(source.platform):
                     home_env = "set"
@@ -699,13 +699,13 @@ class GatewayTurnPrepareMixin:
         clean — strip any leading timestamp prefix and the Discord triggering-message note (a
         model instruction, not authored text) — regardless of the toggle; only the in-context
         RENDER is gated behind gateway.message_timestamps.enabled (default OFF)."""
-        from gateway.run import _load_gateway_config, _message_timestamps_enabled
-        from gateway.run_inbound import strip_discord_triggering_note
+        from hermes_agent.gateway.run import _load_gateway_config, _message_timestamps_enabled
+        from hermes_agent.gateway.run_inbound import strip_discord_triggering_note
         persist_user_message = None
         persist_user_timestamp = None
         try:
             from hermes_time import get_timezone as _get_evt_tz
-            from gateway.message_timestamps import (
+            from hermes_agent.gateway.message_timestamps import (
                 coerce_message_timestamp as _coerce_msg_ts,
                 render_user_content_with_timestamp as _render_msg_ts,
                 strip_leading_message_timestamps as _strip_msg_ts,
@@ -745,7 +745,7 @@ class GatewayTurnPrepareMixin:
         ``(_PreparedTurn, env_tokens)``; a ``str`` first element is a reply to send instead of
         running (history unreadable, a local turn's refused ``@`` references); ``None`` drops the turn
         (inbound text rejected)."""
-        from gateway.run import _load_gateway_config
+        from hermes_agent.gateway.run import _load_gateway_config
         from tools.approval_yolo import restore_gateway_yolo
         _was_auto_reset, _is_new_session = await self._hmwa_open_session(session_entry, session_key, source)
         restore_gateway_yolo(session_key, session_entry.yolo)  # None: TurnRunner seeds the launch policy
@@ -753,7 +753,7 @@ class GatewayTurnPrepareMixin:
         # Session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
         # Self-injected turns (internal=True) persist with a DB-only display_kind: timeline notices, not user bubbles.
-        from gateway.response_filters import display_kind_for_event
+        from hermes_agent.gateway.response_filters import display_kind_for_event
         persist_user_display_kind = display_kind_for_event(event)
         _redact_pii = False  # privacy.redact_pii, re-read per message
         with suppress(Exception):
@@ -804,7 +804,7 @@ class GatewayTurnPrepareMixin:
             )
         except TranscriptReadError:
             self._clear_session_env(_session_env_tokens)
-            from gateway.session_results import record_unexecuted_failure
+            from hermes_agent.gateway.session_results import record_unexecuted_failure
             return record_unexecuted_failure(t("gateway.errors.history_unavailable")), _session_env_tokens
 
         await self._hmwa_first_contact_notes(source, history, turn_sidecar_notes, internal=event.internal)

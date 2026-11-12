@@ -13,7 +13,7 @@ those contexts.
 """
 from types import SimpleNamespace
 
-from gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.config import Platform, PlatformConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 

@@ -7,17 +7,17 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.platforms import api_server as _api_server
-from gateway.platforms.api_server_runs import _RunLaunch, _execute_run
-from gateway.session_api_turn import admit_api_turn
-from gateway.session_ingress import execute_admission
+from hermes_agent.gateway.platforms import api_server as _api_server
+from hermes_agent.gateway.platforms.api_server_runs import _RunLaunch, _execute_run
+from hermes_agent.gateway.session_api_turn import admit_api_turn
+from hermes_agent.gateway.session_ingress import execute_admission
 from tests.waiting import async_wait_until
 
 PNG = base64.b64encode(b'\x89PNG\r\n\x1a\n' + b'\x00' * 64).decode()
 
 
 def _turn_runner(owner, ref):
-    from gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
     turn = object.__new__(TurnRunner)
     turn._ctx = SimpleNamespace(_native_slack_task_cards=False, _voice_ack_guild=[None], progress_mode='off')
     turn._approval_owner = (owner, ref.session_id, owner.db.get_session(ref.session_id)['runtime_generation'])
@@ -55,8 +55,8 @@ async def test_api_images_are_committed_media_in_canonical_history(api, owner):
     seen = {}
 
     async def handle(event):
-        from gateway.session_api_turn import api_execution
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_api_turn import api_execution
+        from hermes_agent.gateway.session_results import execution_result
         seen['text'] = event.text
         seen['content'] = api_execution.get()['content']
         execution_result.get()['result'] = {'final_response': 'ok'}
@@ -91,7 +91,7 @@ async def test_run_sse_carries_controls_tool_payloads_and_authoritative_cancella
     tool_payloads = []
 
     async def handle(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         turn = _turn_runner(owner, ref)
         entry = clarify_gateway.register('clarify-1', 'api', 'Which one?', ['a', 'b'])
         owner.register_clarify(ref.session_id, turn._approval_owner[2], entry)
@@ -117,7 +117,7 @@ async def test_run_sse_carries_controls_tool_payloads_and_authoritative_cancella
 
 
 def _wrap(api, run_id, loop, sink):
-    from gateway.platforms.api_server_runs import _make_run_event_callback
+    from hermes_agent.gateway.platforms.api_server_runs import _make_run_event_callback
     inner = _make_run_event_callback(api, run_id, loop, _api_server=_api_server)
 
     def callback(event_type, tool_name=None, preview=None, args=None, **kwargs):
@@ -128,7 +128,7 @@ def _wrap(api, run_id, loop, sink):
 
 def _wired_agent(turn):
     """The agent's tool sinks as TurnRunner wires them for an API admission."""
-    from gateway.session_api_turn import wire_api_observers
+    from hermes_agent.gateway.session_api_turn import wire_api_observers
     agent = SimpleNamespace(tool_progress_callback=None, status_callback=None, interim_assistant_callback=None,
                             tool_start_callback=turn.combined_tool_start_callback,
                             tool_complete_callback=turn.combined_tool_complete_callback)
@@ -138,13 +138,13 @@ def _wired_agent(turn):
 
 @pytest.mark.asyncio
 async def test_responses_streaming_projects_real_tool_arguments_and_results(api, owner):
-    from gateway.session_api_turn import observe_api_turn
+    from hermes_agent.gateway.session_api_turn import observe_api_turn
     admitted = admit_api_turn(api, session_id='stream', user_message='hello', conversation_history=[])
     _, ref, _ = admitted
     seen = []
 
     async def handle(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         turn = _turn_runner(owner, ref)
         progress_cb = _wired_agent(turn).tool_progress_callback
         if progress_cb:  # the executor fires it only when wired
@@ -164,7 +164,7 @@ async def _session_stream_tool_frames(api, owner, produce):
     import json
 
     async def handle(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         produce(_turn_runner(owner, SimpleNamespace(session_id=event.source.chat_id)))
         execution_result.get()['result'] = {'final_response': 'done', 'messages': []}
         return 'done'
@@ -206,7 +206,7 @@ async def test_session_chat_stream_keeps_a_bounded_worker_failure(api, owner):
     the stream reports the frame's own verdict, tool.failed."""
     import json
     from agent.managed_worker import tool_frame
-    from gateway.run_turn_progress import publish_worker_tool_event
+    from hermes_agent.gateway.run_turn_progress import publish_worker_tool_event
 
     def produce(turn):
         authority, session_id, generation = turn._approval_owner
@@ -224,7 +224,7 @@ async def test_exact_responses_retry_replays_before_conversation_expansion(api, 
     calls = []
 
     async def handle(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         calls.append(event.text)
         execution_result.get()['result'] = {'final_response': 'reply', 'messages': []}
         return 'reply'
@@ -246,7 +246,7 @@ async def test_cancelled_observer_is_unregistered_and_never_breaks_the_survivor(
     """Two request tasks observe one admission. Cancelling one (client disconnect) must drop
     exactly its observer entry; the other keeps streaming, and a raising callback on the
     owner path is isolated from canonical execution."""
-    from gateway.session_api_turn import observe_api_turn
+    from hermes_agent.gateway.session_api_turn import observe_api_turn
     admitted = admit_api_turn(api, session_id='observers', user_message='hello', conversation_history=[])
     _, ref, row = admitted
     started, release = asyncio.Event(), asyncio.Event()
@@ -256,7 +256,7 @@ async def test_cancelled_observer_is_unregistered_and_never_breaks_the_survivor(
         raise RuntimeError('client sink is gone')
 
     async def handle(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         started.set()
         await release.wait()
         turn = _turn_runner(owner, ref)
@@ -287,9 +287,9 @@ async def test_room_grant_answers_the_clarify_prompt_its_run_raised(api, owner, 
     """A room-scoped run's clarify prompt is answerable by the same room grant that dispatched
     it (no gateway API key), and a revoked grant can no longer answer."""
     import time
-    from gateway import hosted_rooms
-    from gateway.hosted_room_peer import decode_room_grant, issue_room_grant
-    from gateway.platforms.api_server_authority_runs import run_projection
+    from hermes_agent.gateway import hosted_rooms
+    from hermes_agent.gateway.hosted_room_peer import decode_room_grant, issue_room_grant
+    from hermes_agent.gateway.platforms.api_server_authority_runs import run_projection
     from tools import clarify_gateway
     api._api_key = 'sk-secret'
     now = time.time()
@@ -309,7 +309,7 @@ async def test_room_grant_answers_the_clarify_prompt_its_run_raised(api, owner, 
     api._run_owners['run_room'] = api._run_idempotency_scope(scope_request)
 
     async def handle(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         turn = _turn_runner(owner, ref)
         entry = clarify_gateway.register('clarify-room', 'api', 'Which one?', ['a', 'b'])
         owner.register_clarify(ref.session_id, turn._approval_owner[2], entry)
@@ -339,7 +339,7 @@ async def test_room_grant_answers_the_clarify_prompt_its_run_raised(api, owner, 
 def test_run_status_reports_waiting_for_approval_while_a_prompt_is_pending(api, owner):
     """GET /v1/runs/{id} said `running` while an approval was pending; the documented run state
     (and main's in-memory run store) is `waiting_for_approval`, which UIs key their prompt on."""
-    from gateway.platforms.api_server_authority_runs import run_projection
+    from hermes_agent.gateway.platforms.api_server_authority_runs import run_projection
     from hermes_agent.hermes_state_runtime import claim_session_input
     _, ref, _ = admit_api_turn(api, session_id='approval-status', request_id='run_wait', user_message='hello',
                                conversation_history=[])
@@ -362,11 +362,11 @@ def test_run_status_reports_waiting_for_approval_while_a_prompt_is_pending(api, 
 async def test_canonical_sse_projects_the_turn_reasoning(api, owner, path, body, marker):
     """Chat and Responses SSE under the authority get the agent's reasoning, like the direct
     path: the real per-turn wiring hands the admission's observers the reasoning callback."""
-    from gateway.run_turn_runner import TurnRunner
-    from gateway.session_api_turn import api_execution
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.session_api_turn import api_execution
 
     async def handle(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         sid = event.source.chat_id
         turn = _turn_runner(owner, SimpleNamespace(session_id=sid))
         agent = SimpleNamespace(reasoning_callback=None)  # AIAgent's own default

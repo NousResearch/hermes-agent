@@ -29,7 +29,7 @@ from unittest.mock import MagicMock
 def _make_adapter():
     """Construct a DiscordAdapter without going through __init__ / token checks."""
     from plugins.platforms.discord.adapter import DiscordAdapter
-    from gateway.platforms.base import Platform
+    from hermes_agent.gateway.platforms.base import Platform
     adapter = object.__new__(DiscordAdapter)
     adapter.config = MagicMock()
     adapter.config.extra = {}
@@ -103,7 +103,7 @@ class TestHandleReloadSkillsCallsRefreshSkillGroup:
 
         # Import without constructing a real runner — test the method
         # directly against an ``object.__new__`` instance.
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
         runner = object.__new__(GatewayRunner)
 
         sync_refresh = MagicMock(return_value=(5, 0))

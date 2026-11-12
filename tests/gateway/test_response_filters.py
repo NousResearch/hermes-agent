@@ -1,4 +1,4 @@
-from gateway.response_filters import (
+from hermes_agent.gateway.response_filters import (
     is_autonomous_silence_response,
     is_intentional_silence_agent_result,
     is_intentional_silence_response,

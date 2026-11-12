@@ -3,8 +3,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_authority import LiveSession, SessionAuthority
-from gateway.session_contract import SessionActor, SessionRef, Submission
+from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+from hermes_agent.gateway.session_contract import SessionActor, SessionRef, Submission
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import RuntimeStoreError, begin_runtime_epoch, list_session_admissions
 
@@ -24,7 +24,7 @@ def _authority(tmp_path, monkeypatch):
 
 
 def _staged(tmp_path, name, size):
-    from gateway.platforms.base import get_image_cache_dir
+    from hermes_agent.gateway.platforms.base import get_image_cache_dir
     path = get_image_cache_dir() / name
     path.write_bytes(PNG + b'\x00' * max(0, size - len(PNG)))
     return {'path': str(path), 'mime': 'image/png'}
@@ -38,7 +38,7 @@ def _submit(authority, request_id, attachments):
 
 @pytest.mark.asyncio
 async def test_attachment_cap_is_per_admission_not_per_file(tmp_path, monkeypatch):
-    from gateway.platforms import base
+    from hermes_agent.gateway.platforms import base
     monkeypatch.setattr(base, 'get_inbound_media_max_bytes', lambda: 3 * 1024)
     db, authority = _authority(tmp_path, monkeypatch)
     with db:
@@ -53,7 +53,7 @@ async def test_attachment_cap_is_per_admission_not_per_file(tmp_path, monkeypatc
 
 @pytest.mark.asyncio
 async def test_retained_bytes_are_released_after_cancel_and_settlement(tmp_path, monkeypatch):
-    from gateway.session_ingress_media import _media_root, admission_media_references
+    from hermes_agent.gateway.session_ingress_media import _media_root, admission_media_references
     db, authority = _authority(tmp_path, monkeypatch)
     actor = SessionActor('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
     ref = SessionRef('owned', 's')
@@ -69,7 +69,7 @@ async def test_retained_bytes_are_released_after_cancel_and_settlement(tmp_path,
         await authority.cancel_queued(actor, ref, first.admission_id)
         assert Path(retained).exists()
         # Settling the last live referent (through the real drain loop) releases them.
-        from gateway import session_finite
+        from hermes_agent.gateway import session_finite
         async def execute(authority, ref, row):
             assert Path(retained).exists(), 'bytes must survive until the turn has settled'
             return 'done'
@@ -78,7 +78,7 @@ async def test_retained_bytes_are_released_after_cancel_and_settlement(tmp_path,
         settled = next(r for r in list_session_admissions(db, session_id='s', pending_only=False)
                        if r['admission_id'] == second.admission_id)
         assert settled['status'] == 'terminal' and settled['outcome'] == 'completed'
-        from gateway.session_runtime_workers import join_authority_work
+        from hermes_agent.gateway.session_runtime_workers import join_authority_work
         await join_authority_work(authority, timeout=5)
         assert not Path(retained).exists()
         assert not Path(retained).parent.exists()

@@ -107,7 +107,7 @@ def routed_profile_fire(home=None) -> bool:
     ``override=True`` and a scope miss read the launch profile's credentials (#107692).
     ``hermes_agent.cron.scheduler._install_fire_secret_scope`` turns this into multiplex semantics for exactly
     the span the profile's secret scope covers, and the restart-safe handoff marks the worker
-    payload with it. The launch identity is ``get_routing_process_hermes_home()`` (gateway/AGENTS.md
+    payload with it. The launch identity is ``get_routing_process_hermes_home()`` (hermes_agent/gateway/AGENTS.md
     "One launch-home identity")."""
     from hermes_constants import get_hermes_home, get_routing_process_hermes_home, hermes_home_key
 

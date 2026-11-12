@@ -6,7 +6,7 @@ compression is in flight (#56391), the same as
 Both code paths handle a message arriving while an agent is already running
 for the session. ``_handle_active_session_busy_message`` (the
 ``busy_session_handler`` callback most platform adapters register via
-``gateway/platforms/base.py``) demotes ``interrupt`` -> ``queue`` for two
+``hermes_agent/gateway/platforms/base.py``) demotes ``interrupt`` -> ``queue`` for two
 independent reasons:
 
   * active subagents (#30170)
@@ -31,9 +31,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionEntry, SessionSource, build_session_key
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionEntry, SessionSource, build_session_key
 
 
 def _make_source() -> SessionSource:
@@ -58,7 +58,7 @@ def _make_runner(*, compression_in_flight: bool):
     extended with the compression-lock plumbing
     _session_has_compression_in_flight reads.
     """
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(

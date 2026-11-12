@@ -4,10 +4,10 @@ import hashlib
 from contextlib import nullcontext, suppress
 from pathlib import Path
 
-from gateway.session_contract import SessionActor
-from gateway.session_authorities import active_authority, all_authorities, owner_scope, serving_authorities
-from gateway.session_hosted_controls import HostedControls
-from gateway.owner_identity import same_owner
+from hermes_agent.gateway.session_contract import SessionActor
+from hermes_agent.gateway.session_authorities import active_authority, all_authorities, owner_scope, serving_authorities
+from hermes_agent.gateway.session_hosted_controls import HostedControls
+from hermes_agent.gateway.owner_identity import same_owner
 from hermes_agent.hermes_state_runtime import RuntimeStoreError, _epoch
 from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService
 
@@ -37,7 +37,7 @@ def retired_attempt_conflict():
 def probe_native_room_owner(db_path, *, room_id) -> bool:
     """Non-blocking, read-only: does the gateway owning this session store serve ``room_id``? Only rooms
     with an owner entry are in ``CanonicalHostedRoomService.bindings``."""
-    from gateway.hosted_rooms import _probe
+    from hermes_agent.gateway.hosted_rooms import _probe
     return _probe(Path(db_path), 'state_meta', 'SELECT 1 FROM state_meta WHERE key=? LIMIT 1',
                   (_OWNER + str(room_id),), 'native room ownership is temporarily unavailable')
 
@@ -54,7 +54,7 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         return self
 
     def profile_homes(self):
-        from gateway.session_hosted_members import member_roster
+        from hermes_agent.gateway.session_hosted_members import member_roster
         return member_roster(self.authority)[0]
 
     def local_profiles(self):
@@ -71,7 +71,7 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
 
     def attest(self, selector, operation, params):
         from dataclasses import asdict
-        from gateway.hosted_room_driver import list_tasks
+        from hermes_agent.gateway.hosted_room_driver import list_tasks
         if set(selector) != {'room_id', 'member_id', 'profile'}:
             raise RuntimeStoreError('invalid_params')
         room_id, member, profile = (selector[k] for k in ('room_id', 'member_id', 'profile'))
@@ -95,14 +95,14 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
             # The exact attempt is over (deferred, finished, or retried as a newer generation): its
             # queued input can never run. Say so with the committed input, so the target still
             # hard-denies a changed row or owner before letting the member's queue move on.
-            from gateway.hosted_room_driver import get_task, TaskIdentity
+            from hermes_agent.gateway.hosted_room_driver import get_task, TaskIdentity
             with suppress(KeyError, TypeError, ValueError):
                 stored = get_task(self.db_path, TaskIdentity(**params.get('task')))
                 if (stored['identity'].room_id == room_id
                         and stored['payload'].get('target_member_id', stored['payload']['target_profile']) == member
                         and stored['payload']['target_profile'] == profile
                         and attempt_retired(stored, params.get('execution_generation'))):
-                    from gateway.session_hosted_transport import source_attachment_digests
+                    from hermes_agent.gateway.session_hosted_transport import source_attachment_digests
                     manifest = stored['payload'].get('attachments', [])
                     return {**result, 'retired': True, 'prompt': stored['payload']['prompt'], 'attachments': manifest,
                             'attachment_digests': source_attachment_digests(self, member, room_id, manifest)}
@@ -121,17 +121,17 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
             if len(matches) != 1:
                 raise RuntimeStoreError('permission_denied')
             if operation == 'submit':
-                from gateway.session_hosted_member_homes import record_attempt_home
+                from hermes_agent.gateway.session_hosted_member_homes import record_attempt_home
                 record_attempt_home(self.authority.db, room_id, member, matches[0]['identity'].task_id,
                                     matches[0]['execution_generation'], target_home)
             payload = matches[0]['payload']
             if operation == 'attachment':
                 # Bytes only: the prompt/manifest already attested for the submit would
                 # otherwise compete with the chunk for the bounded response line.
-                from gateway.session_hosted_transport import source_attachment_chunk
+                from hermes_agent.gateway.session_hosted_transport import source_attachment_chunk
                 result.update(source_attachment_chunk(self, member, room_id, payload.get('attachments', []), params))
             else:
-                from gateway.session_hosted_transport import source_attachment_digests
+                from hermes_agent.gateway.session_hosted_transport import source_attachment_digests
                 manifest = payload.get('attachments', [])
                 result.update(prompt=payload['prompt'], attachments=manifest,
                               attachment_digests=source_attachment_digests(self, member, room_id, manifest))
@@ -150,7 +150,7 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
     def authorize_room(self, actor_subject, room_id, *, create=False, conn=None):
         """Check (or, with ``create``, claim) room ownership. A ``conn`` runs the claim inside
         the caller's room-creation transaction, so owner and room commit or roll back together."""
-        from gateway.hosted_rooms_common import IDENTIFIER_RE
+        from hermes_agent.gateway.hosted_rooms_common import IDENTIFIER_RE
         if (not isinstance(actor_subject, str) or not actor_subject
                 or not isinstance(room_id, str) or len(room_id) > 128
                 or not IDENTIFIER_RE.fullmatch(room_id)):
@@ -182,12 +182,12 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
     def _resolve_member_transport(self, binding, task):
         if self._member_is_peer(binding.room_id, str(task['payload'].get('target_member_id') or task['payload'].get('target_profile'))):
             return super()._resolve_member_transport(binding, task)
-        from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+        from hermes_agent.gateway.session_hosted_rpc import HostedRoomAuthorityRPC
         payload = task['payload']
         member = str(payload.get('target_member_id') or payload.get('target_profile'))
         profile = payload['target_profile']
         owner = self._owner(binding.room_id)
-        from gateway.session_hosted_member_homes import stopping_attempt_home
+        from hermes_agent.gateway.session_hosted_member_homes import stopping_attempt_home
         # A Stop is asked where its attempt was admitted, wherever the profile points now.
         home = (stopping_attempt_home(self.authority.db, binding.room_id, member, task)
                 or self.profile_homes().get(profile))
@@ -195,13 +195,13 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
             raise RuntimeStoreError('permission_denied')
         key = binding.room_id, member, profile, owner, str(home)
         if home != Path(self.authority.profile_id):
-            from gateway.session_hosted_member_homes import record_member_home
+            from hermes_agent.gateway.session_hosted_member_homes import record_member_home
             # Every resolve, not only a new transport: a profile re-added to hosted_rooms.profiles
             # reuses its cached transport, and its home must still be recorded.
             record_member_home(self.authority.db, binding.room_id, member, home)
         if key not in self.member_rpcs:
             if home != Path(self.authority.profile_id):
-                from gateway.session_hosted_transport import HostedRoomOwnerRPC
+                from hermes_agent.gateway.session_hosted_transport import HostedRoomOwnerRPC
                 self.member_rpcs[key] = HostedRoomOwnerRPC(home=home,
                     source_home=self.authority.profile_id, room_id=binding.room_id,
                     member_id=member, profile=profile)
@@ -209,8 +209,8 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
             def authorized(conn, operation, identity, generation):
                 # Admission checks must share the FIFO writer's snapshot. Opening
                 # another transaction here would reintroduce the revocation race.
-                from gateway.hosted_rooms import _room_from_row
-                from gateway.hosted_room_driver import _task_from_row
+                from hermes_agent.gateway.hosted_rooms import _room_from_row
+                from hermes_agent.gateway.hosted_room_driver import _task_from_row
                 _epoch(conn, self.authority.epoch)
                 owned = conn.execute('SELECT value FROM state_meta WHERE key=?',
                                      (_OWNER + binding.room_id,)).fetchone()
@@ -262,13 +262,13 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         return self.member_rpcs[key]
 
     def _stopping_attempt_homes(self, room_id, member, task_id=None):
-        from gateway.session_hosted_member_homes import legacy_stop_homes, stopping_attempt_homes
+        from hermes_agent.gateway.session_hosted_member_homes import legacy_stop_homes, stopping_attempt_homes
         db = self.authority.db
         return stopping_attempt_homes(db, room_id, member) | legacy_stop_homes(db, room_id, member, task_id)
 
     def _stop_pending_refusal(self, room_id, deferred):
         """Name an unconfigured member profile whose unknown home keeps a turn deferred."""
-        from gateway.session_hosted_member_homes import unknown_home_refusal
+        from hermes_agent.gateway.session_hosted_member_homes import unknown_home_refusal
         from hermes_agent.tui_gateway.hosted_room_service import task_member_id
         return unknown_home_refusal(self, room_id, [
             task for task in deferred if not self._member_is_peer(room_id, task_member_id(task))])
@@ -276,7 +276,7 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
     def _stop_deferred_peer(self, room_id, task):
         """Also settle a local member's deferred turn once its profile is no longer served here and
         nothing on this host can run it (``unserved_member_stopped``): its daemon never answers."""
-        from gateway.session_hosted_member_homes import unsettled_legacy_homes, unserved_member_stopped
+        from hermes_agent.gateway.session_hosted_member_homes import unsettled_legacy_homes, unserved_member_stopped
         if super()._stop_deferred_peer(room_id, task):
             return not unsettled_legacy_homes(self, room_id, task)
         from hermes_agent.tui_gateway.hosted_room_service import task_member_id
@@ -286,8 +286,8 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
     def check_admission(self, ref, row):
         """Reconstruct the private producer from durable task state before claim."""
         import json
-        from gateway.hosted_room_driver import TaskIdentity, list_tasks
-        from gateway.session_hosted_attachments import committed_submission_payload
+        from hermes_agent.gateway.hosted_room_driver import TaskIdentity, list_tasks
+        from hermes_agent.gateway.session_hosted_attachments import committed_submission_payload
         from hermes_agent.tui_gateway.hosted_room_driver import HostedRoomBinding
         try:
             if not row['request_id'].startswith('hosted:'):
@@ -339,12 +339,12 @@ async def _ensure_hosted_service(runner, authority):
         service = getattr(authority, 'hosted_room_service', None)
         if service is None:
             loop = asyncio.get_running_loop()
-            from gateway.hosted_rooms_gateway_import import import_standalone_rooms
+            from hermes_agent.gateway.hosted_rooms_gateway_import import import_standalone_rooms
             await asyncio.to_thread(import_standalone_rooms, Path(authority.db.db_path), runtime_epoch=authority.epoch)
             service = await asyncio.to_thread(CanonicalHostedRoomService, authority, loop)
             authority.hosted_room_service = service
         if not getattr(service, '_transport_installed', False):
-            from gateway.session_hosted_transport import install_hosted_transport
+            from hermes_agent.gateway.session_hosted_transport import install_hosted_transport
             install_hosted_transport(runner.session_control_server, authority, asyncio.get_running_loop(),
                                      attest=service.attest)
             service._transport_installed = True
@@ -361,7 +361,7 @@ def start_ready_hosted_services(runner):
     for service in services:
         # start() only releases its thread; preparation and disk access happened above.
         service.start()
-    from gateway.hosted_rooms_gateway_import import import_after_ready
+    from hermes_agent.gateway.hosted_rooms_gateway_import import import_after_ready
     import_after_ready(serving_authorities(runner))
 
 

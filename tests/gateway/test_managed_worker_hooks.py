@@ -52,8 +52,8 @@ def test_managed_turn_fires_shell_hooks_and_webhooks_in_the_worker(tmp_path):
 
 
 def test_worker_hook_registration_follows_the_session_policy(tmp_path, monkeypatch):
-    from gateway.session_local import _bypass_policy
-    from gateway.session_policy import build_policy, register_worker_hooks
+    from hermes_agent.gateway.session_local import _bypass_policy
+    from hermes_agent.gateway.session_policy import build_policy, register_worker_hooks
     calls = []
     monkeypatch.setattr('agent.shell_hooks.register_from_config',
                         lambda cfg, accept_hooks=False: calls.append(('shell', cfg['hooks'], accept_hooks)))

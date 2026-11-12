@@ -34,8 +34,8 @@ def _fleet_homes(monkeypatch, tmp_path, records: dict[str, dict]) -> None:
     monkeypatch.setattr("hermes_cli.version_info.get_code_identity", lambda refresh=False: {"sha": HEAD, "version": "1.0"})
     monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: root)
     monkeypatch.setattr("hermes_cli.profiles._get_profiles_root", lambda: root / "profiles")
-    monkeypatch.setattr("gateway.control_socket.identify_gateway", lambda h, **k: None)
-    monkeypatch.setattr("gateway.status.live_gateway_pid_for_home", lambda h: by_home.get(str(h)))
+    monkeypatch.setattr("hermes_agent.gateway.control_socket.identify_gateway", lambda h, **k: None)
+    monkeypatch.setattr("hermes_agent.gateway.status.live_gateway_pid_for_home", lambda h: by_home.get(str(h)))
     monkeypatch.setattr(ur, "_gateway_code_root", lambda pid, home: None)
 
 

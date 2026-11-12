@@ -4,7 +4,7 @@ import threading
 
 
 async def acquire_process(spawn, *args, **kwargs):
-    from gateway.session_managed_worker import ManagedWorker
+    from hermes_agent.gateway.session_managed_worker import ManagedWorker
     lock = threading.Lock()
     state = {'cancelled': False, 'process': None}
 

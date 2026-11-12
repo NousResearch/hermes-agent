@@ -1,4 +1,4 @@
-"""Voice-clip transcription for inbound messages (moved out of ``gateway/run_inbound.py``)."""
+"""Voice-clip transcription for inbound messages (moved out of ``hermes_agent/gateway/run_inbound.py``)."""
 
 from __future__ import annotations
 
@@ -8,10 +8,10 @@ import logging
 import os
 from typing import Optional
 
-from gateway.run_common import _UNSET
+from hermes_agent.gateway.run_common import _UNSET
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 
 def _dedupe_audio_paths(audio_paths: list[str]) -> list[str]:
@@ -52,7 +52,7 @@ class GatewayInboundTranscriptionMixin:
         ``(enriched_text, successful_transcripts)``; the transcripts (input order; empty if every clip
         failed or STT is disabled) let callers echo them back before the agent loop. ``clip_memo``
         (path → ``_transcribe_one_clip`` result) skips clips an earlier pass already transcribed."""
-        from gateway.run import _probe_audio_duration
+        from hermes_agent.gateway.run import _probe_audio_duration
         audio_paths = await asyncio.to_thread(_dedupe_audio_paths, audio_paths)
         if not getattr(self.config, "stt_enabled", True):
             notes = []
@@ -97,7 +97,7 @@ class GatewayInboundTranscriptionMixin:
 
     def _pending_event_audio_paths(self, event) -> list[str]:
         """Return STT-eligible paths from a pending voice message."""
-        from gateway.run import _event_media_is_stt_input
+        from hermes_agent.gateway.run import _event_media_is_stt_input
         return [
             path for i, path in enumerate(getattr(event, "media_urls", None) or [])
             if _event_media_is_stt_input(event, i)

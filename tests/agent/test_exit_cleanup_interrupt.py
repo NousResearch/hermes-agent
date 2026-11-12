@@ -10,8 +10,8 @@ import pytest
 @pytest.mark.asyncio
 async def test_keyboard_interrupt_in_end_session_does_not_skip_close(tmp_path, monkeypatch):
     """Exercise owner execution and release its borrowed store despite Ctrl+C."""
-    from gateway.session_contract import SessionRef
-    from gateway.session_cron import current_execution, execute
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_cron import current_execution, execute
     from hermes_agent.hermes_state_registry import acquire, release
 
     home = tmp_path / "owner"

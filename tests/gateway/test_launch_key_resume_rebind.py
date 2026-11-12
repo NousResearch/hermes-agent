@@ -7,13 +7,13 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_resume_rebinds_only_the_launch_key_after_restart(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_local import create_local_session
-    from gateway.session_policy import launch_key, policy_for_source
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_policy import launch_key, policy_for_source
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a, **k: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())

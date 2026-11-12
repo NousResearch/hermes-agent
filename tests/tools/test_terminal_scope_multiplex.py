@@ -91,11 +91,11 @@ def test_routed_turn_reads_every_terminal_consumer_from_profile(
     terminal_tool config, container key resolution, docker media translation,
     file_tools/runtime_cwd cwd anchors, and the browser/env_probe backend
     checks — with none of launch profile A's docker policy showing through."""
-    import gateway.run as gw
+    import hermes_agent.gateway.run as gw
     import tools.terminal_tool as tt
     from agent import runtime_cwd
-    from gateway.platforms import base as gbase
-    from gateway.platforms.docker_media_paths import _docker_sandbox_dir_candidates
+    from hermes_agent.gateway.platforms import base as gbase
+    from hermes_agent.gateway.platforms.docker_media_paths import _docker_sandbox_dir_candidates
     from tools import env_probe, file_tools_paths
 
     b_cwd = tmp_path / "b-work"
@@ -132,7 +132,7 @@ def test_routed_turn_reads_every_terminal_consumer_from_profile(
 def test_profile_omitting_keys_gets_defaults_not_launch_values(tmp_path):
     """#101132/#95470: a docker profile that does NOT set docker_volumes or
     docker_shared_container_key must not inherit the launch profile's."""
-    import gateway.run as gw
+    import hermes_agent.gateway.run as gw
     import tools.terminal_tool as tt
 
     home = _profile(tmp_path, "bee", "terminal:\n  backend: docker\n")
@@ -149,9 +149,9 @@ def test_profile_omitting_keys_gets_defaults_not_launch_values(tmp_path):
 def test_persistent_docker_routed_profile_keeps_one_container(tmp_path):
     """Persistent Docker is profile-scoped: a routed profile's session-less (cron) work must key the
     SAME container as its session-bound work, and never another profile's."""
-    import gateway.run as gw
+    import hermes_agent.gateway.run as gw
     import tools.terminal_tool as tt
-    from gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
 
     docker = "terminal:\n  backend: docker\n  container_persistent: true\n"
     keys = {}
@@ -188,7 +188,7 @@ def test_malformed_profile_config_refuses_execution(tmp_path):
 
 
 def test_gateway_runtime_scope_resets_on_error(tmp_path):
-    import gateway.run as gw
+    import hermes_agent.gateway.run as gw
 
     home = _profile(tmp_path, "qa", "terminal:\n  backend: local\n")
     with pytest.raises(RuntimeError):
@@ -242,7 +242,7 @@ def test_config_list_and_dict_values_are_json_not_repr(tmp_path):
     assert json.loads(scope["TERMINAL_DOCKER_ENV"]) == {"FOO": "bar"}
     assert json.loads(scope["TERMINAL_DOCKER_EXTRA_ARGS"]) == ["--network=host"]
 
-    import gateway.run as gw
+    import hermes_agent.gateway.run as gw
     import tools.terminal_tool as tt
 
     with gw._profile_runtime_scope(home):

@@ -49,7 +49,7 @@ def notification_kwargs(mode: str, notify: bool | None) -> dict:
 def _standalone_adapter(bot, extra: dict):
     """An unconnected ``TelegramAdapter`` over the standalone ``bot`` (no polling, no lock), so an
     out-of-process send reuses the gateway's gates, routing and fallbacks verbatim."""
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
     from plugins.platforms.telegram.adapter import TelegramAdapter
     adapter = TelegramAdapter(PlatformConfig(enabled=True, extra=dict(extra or {})))
     adapter._bot = bot

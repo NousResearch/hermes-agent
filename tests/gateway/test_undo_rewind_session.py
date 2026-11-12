@@ -13,8 +13,8 @@ from pathlib import Path
 import pytest
 
 from hermes_agent.hermes_state import SessionDB
-from gateway.config import GatewayConfig
-from gateway.session import SessionStore
+from hermes_agent.gateway.config import GatewayConfig
+from hermes_agent.gateway.session import SessionStore
 
 
 @pytest.fixture()
@@ -155,10 +155,10 @@ async def test_undo_evicts_cached_agent_under_profile_namespaced_key():
     """/undo must evict under the key the cache is keyed by. On a multiplexed gateway that is
     ``agent:<profile>:…``; a bare ``build_session_key(source)`` yields ``agent:main:…``, the
     eviction misses and the next turn reuses an agent still holding the undone turns."""
-    from gateway.platforms.base import Platform, SessionSource
-    from gateway.platforms.event import MessageEvent, MessageType
-    from gateway.run import GatewayRunner
-    from gateway.session import build_session_key
+    from hermes_agent.gateway.platforms.base import Platform, SessionSource
+    from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import build_session_key
 
     class _Entry:
         session_id = "sid"

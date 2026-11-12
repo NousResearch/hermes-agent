@@ -19,11 +19,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import hermes_constants
-from gateway import delivery_ledger as dl
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource
+from hermes_agent.gateway import delivery_ledger as dl
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.session import SessionSource
 
 SESSION_KEY = "agent:research:slack:channel:C1"
 ANSWER = "the final answer"
@@ -65,7 +65,7 @@ def launch_home(request, tmp_path, monkeypatch):
 
 
 def _runner(adapter):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
@@ -81,7 +81,7 @@ def _runner(adapter):
 
 @pytest.mark.asyncio
 async def test_boot_sweep_redelivers_a_reply_recorded_under_a_served_profile_scope(launch_home):
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
 
     adapter = _ServedAdapter()
     event = MessageEvent(

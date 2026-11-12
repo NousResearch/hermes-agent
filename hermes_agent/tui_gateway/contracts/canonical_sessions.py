@@ -200,7 +200,7 @@ class CanonicalSessionListRow(Result):
     model: str | None = None
     resolved_id: str | None = None
     root_title: str | None = None
-    # Picker fields, only with ``picker: true`` (``gateway/session_picker_fields.py``). From the
+    # Picker fields, only with ``picker: true`` (``hermes_agent/gateway/session_picker_fields.py``). From the
     # conversation's first row: ``cwd`` and ``workspace`` (its ``workspace_key``, the row the filter
     # reads). From its current segment (the compression tip, as the stored listing projects it): the
     # first prompt there (``preview``), the newest reply (``last_reply``, shortened as ``preview`` is;
@@ -235,7 +235,7 @@ class CanonicalModelOverride(Params):
     model: str
     provider: str | None = None
     # ``/model B --once --reasoning X``: this admission alone runs level X. The owner refuses a level
-    # ``parse_reasoning_effort`` cannot read (``gateway/session_cli_turn.py``).
+    # ``parse_reasoning_effort`` cannot read (``hermes_agent/gateway/session_cli_turn.py``).
     reasoning: str | None = None
 
 

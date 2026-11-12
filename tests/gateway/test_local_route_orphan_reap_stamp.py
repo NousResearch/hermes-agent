@@ -13,18 +13,18 @@ import pytest
 
 
 async def _local_session(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_local import create_local_session
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None, _adapter_for_source=lambda source: None)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='fixture')
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     connection = AuthorityConnection(authority, object(), {'user_id': 'owner'})
     ref = create_local_session(authority, connection.actor, {'request_id': 'r', 'source': 'gui',
                                                              'cwd': str(tmp_path), 'model': 'm', 'toolsets': []})

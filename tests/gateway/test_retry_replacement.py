@@ -13,10 +13,10 @@ from agent.context_compressor import (
     _SUMMARY_END_MARKER,
 )
 from agent.i18n import t
-from gateway.config import GatewayConfig
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
-from gateway.session import SessionStore
+from hermes_agent.gateway.config import GatewayConfig
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionStore
 
 
 def _composite_carrier(ask="REAL ASK"):

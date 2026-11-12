@@ -19,10 +19,10 @@ from unittest.mock import patch
 
 import pytest
 
-from gateway.config import GatewayConfig
-from gateway.run import GatewayRunner, _SESSION_DB_UNPINNED
-from gateway.session import SessionStore
-from gateway.session_db_recovery import RecoverableHandleCache
+from hermes_agent.gateway.config import GatewayConfig
+from hermes_agent.gateway.run import GatewayRunner, _SESSION_DB_UNPINNED
+from hermes_agent.gateway.session import SessionStore
+from hermes_agent.gateway.session_db_recovery import RecoverableHandleCache
 
 
 def _live_count(path) -> int:
@@ -55,7 +55,7 @@ def home(tmp_path, monkeypatch):
 
 @pytest.fixture
 def store(home):
-    with patch("gateway.session.SessionStore._ensure_loaded"):
+    with patch("hermes_agent.gateway.session.SessionStore._ensure_loaded"):
         s = SessionStore(sessions_dir=home / "sessions", config=GatewayConfig())
     s._loaded = True
     yield s
@@ -194,7 +194,7 @@ def test_api_server_profile_cache_reopens_a_handle_the_registry_tore_down(home):
     """The API adapter's per-home cache serves routed profiles under their runtime scope; the
     same ``close_all_under`` must evict its entry too."""
     import hermes_agent.hermes_state_registry as registry
-    from gateway.platforms.api_server import APIServerAdapter
+    from hermes_agent.gateway.platforms.api_server import APIServerAdapter
 
     adapter = APIServerAdapter.__new__(APIServerAdapter)
     adapter._session_dbs = {}

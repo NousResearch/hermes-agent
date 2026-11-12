@@ -26,7 +26,7 @@ _PROFILE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 
 # The @handle Bot Mode shows for a host's default profile, and the body of the 404 a peer returns for
 # a /p/<profile>/ prefix naming no profile it has (UNKNOWN_PROFILE_ERROR in
-# gateway/platforms/api_server_profile_prefix.py; a 'hermes' profile it has but does not serve differs).
+# hermes_agent/gateway/platforms/api_server_profile_prefix.py; a 'hermes' profile it has but does not serve differs).
 DEFAULT_PROFILE_HANDLE = "hermes"
 _UNKNOWN_PROFILE_ERROR = "Unknown or unconfigured profile"
 
@@ -429,7 +429,7 @@ def _peer_dm(args, message: str, peer_name: str, profile: str | None, base: str,
     # Bot Chat completion, the Desktop bot_relay.deliver RPC and the one-shot
     # local `hermes chat -Q` transport (tools/bot_mode_dm.py) — this is the
     # 4th Bot Mode delivery door and was missing the same check.
-    from gateway.response_filters import is_intentional_silence_response, strip_trailing_silence_marker
+    from hermes_agent.gateway.response_filters import is_intentional_silence_response, strip_trailing_silence_marker
     reply = "" if is_intentional_silence_response(reply) else strip_trailing_silence_marker(reply)
     payload = {"peer": peer_name, "profile": profile,
                "session_id": result.get("session_id") or session_id, "reply": reply}

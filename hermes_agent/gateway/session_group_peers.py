@@ -15,17 +15,17 @@ _GRANT_ERRORS = frozenset({'invalid_room_grant', 'room_reauthorization_required'
 
 
 def _api_server(authority):
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     adapters = getattr(getattr(authority, 'runner', None), 'adapters', None) or {}
     return adapters.get(Platform.API_SERVER)
 
 
 def room_link(authority):
     """Whether this gateway can host a member of another gateway's room; else the first missing piece."""
-    from gateway import hosted_rooms
-    from gateway.hosted_room_peer import gateway_room_grant_secret_available
-    from gateway.platforms.api_server_room_grants import _local_room_catalog
-    from gateway.session_authorities import served_profile_name
+    from hermes_agent.gateway import hosted_rooms
+    from hermes_agent.gateway.hosted_room_peer import gateway_room_grant_secret_available
+    from hermes_agent.gateway.platforms.api_server_room_grants import _local_room_catalog
+    from hermes_agent.gateway.session_authorities import served_profile_name
     # One api_server listener serves every profile; a named profile is lent through its /p/<name> mirror.
     profile = served_profile_name(Path(authority.profile_id))
     adapter = _api_server(authority)
@@ -51,7 +51,7 @@ def dispatch_target(authority, method, params):
 
 
 def _invite(authority, params):
-    from gateway.platforms.api_server_room_grants import _issue_invitation
+    from hermes_agent.gateway.platforms.api_server_room_grants import _issue_invitation
     identity = ('room_id', 'home_install_id', 'authority_gateway_id', 'member_id')
     # ``status_ttl_seconds`` is the renewal horizon (``_issue_invitation`` bounds it to ``ttl_seconds``
     # .. 30 days): the home renews the route at dispatch up to it, and never past it.
@@ -67,9 +67,9 @@ def _invite(authority, params):
 
 
 def _revoke(authority, params):
-    from gateway import hosted_rooms
-    from gateway.hosted_room_peer import HostedRoomPeerError, decode_room_grant, gateway_room_grant_secret
-    from gateway.session_authorities import served_profile_name
+    from hermes_agent.gateway import hosted_rooms
+    from hermes_agent.gateway.hosted_room_peer import HostedRoomPeerError, decode_room_grant, gateway_room_grant_secret
+    from hermes_agent.gateway.session_authorities import served_profile_name
     if not isinstance(params.get('grant'), str) or not params['grant']:
         raise RuntimeStoreError('invalid_params')
     try:
@@ -87,7 +87,7 @@ def _revoke(authority, params):
 
 def _probe(client, grant, catalog, scope):
     """Check a grant on the member's gateway: reachable, the same catalog, the same room scope."""
-    from gateway.hosted_room_peer import GatewayRoomCatalog, HostedRoomPeerError
+    from hermes_agent.gateway.hosted_room_peer import GatewayRoomCatalog, HostedRoomPeerError
     from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
     try:
         probe = client.probe(grant=grant)
@@ -102,10 +102,10 @@ def _probe(client, grant, catalog, scope):
 
 def register(service, params):
     """Bind a target grant to the room's pinned peer member, after a live scoped probe."""
-    from gateway.hosted_room_peer import (
+    from hermes_agent.gateway.hosted_room_peer import (
         GatewayRoomCatalog, HostedRoomPeerError, PROTOCOL_VERSION,
         room_grant_matches_scope, validate_room_link_url)
-    from gateway.hosted_rooms import (
+    from hermes_agent.gateway.hosted_rooms import (
         HostedRoomError, OwedRevokesFullError, RoomNotFoundError, room_state)
     from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
     from hermes_agent.tui_gateway.hosted_room_peer_transport import PeerMemberRoute, route_identity

@@ -814,7 +814,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             # rooted at the client's project and edits land outside it. ``cron_session=""`` masks
             # any leaked process-global HERMES_CRON_SESSION.
             def _session_context() -> Callable[[], None]:
-                from gateway.session_context import clear_session_vars, set_session_vars
+                from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
 
                 tokens = set_session_vars(
                     session_key=session_id, session_id=session_id, cwd=state.cwd, cron_session="",

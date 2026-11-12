@@ -76,7 +76,7 @@ def _capture(server, server_requests, skills_tool, monkeypatch, *, values):
 
 def test_secret_prompt_goes_to_active_turn_not_last_wired_session(monkeypatch):
     """While session A's turn is active, a prompt must not land on the closure sid."""
-    from gateway.session_context import get_session_env
+    from hermes_agent.gateway.session_context import get_session_env
 
     server, server_requests, skills_tool = _gateway(monkeypatch)
     server._wire_callbacks("session-A")
@@ -111,7 +111,7 @@ def test_secret_prompt_goes_to_active_turn_not_last_wired_session(monkeypatch):
 
 def test_secret_prompt_without_bound_owner_is_skipped_not_guessed(monkeypatch):
     """No UI owner in context: the wired sid is not ownership evidence, so nobody is asked."""
-    from gateway.session_context import get_session_env
+    from hermes_agent.gateway.session_context import get_session_env
 
     server, server_requests, skills_tool = _gateway(monkeypatch)
     server._wire_callbacks("only-session")

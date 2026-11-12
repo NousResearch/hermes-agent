@@ -19,7 +19,7 @@ Verified in production 2026-06-21: a ``/bug`` turn ran ``bug_thread.py whoami``
 and read a concurrent session's ticket (``cursor-captive-modals``) instead of
 its own, because its task inherited that session's bound ContextVars.
 
-The fix: ``gateway.session_context.reset_session_vars`` resets every session var
+The fix: ``hermes_agent.gateway.session_context.reset_session_vars`` resets every session var
 to ``_UNSET`` at the top of the per-message handler (``GatewayRunner._handle_message``),
 *before* any work, so an inherited identity is dropped and the pre-bind window
 strips safe instead of leaking the sibling's. The handler then binds its own
@@ -30,8 +30,8 @@ from contextvars import copy_context
 
 import pytest
 
-import gateway.session_context as sc
-from gateway.session_context import (
+import hermes_agent.gateway.session_context as sc
+from hermes_agent.gateway.session_context import (
     _SESSION_ASYNC_DELIVERY,
     _UNSET,
     _VAR_MAP,

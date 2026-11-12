@@ -38,9 +38,9 @@ def _agent(max_iterations: int | None):
 
 
 async def _busy_ack(agent) -> str:
-    import gateway.run as gr
-    from gateway.platforms.base import SessionSource, build_session_key
-    from gateway.platforms.event import MessageEvent, MessageType
+    import hermes_agent.gateway.run as gr
+    from hermes_agent.gateway.platforms.base import SessionSource, build_session_key
+    from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 
     gr._load_gateway_config = lambda: {"display": {"platforms": {"telegram": {"busy_ack_detail": True}}}}
     runner = object.__new__(gr.GatewayRunner)
@@ -67,8 +67,8 @@ async def _busy_ack(agent) -> str:
 
 
 async def _heartbeat(agent) -> str:
-    from gateway.run_turn import GatewayTurnMixin
-    from gateway.turn_context import TurnContext
+    from hermes_agent.gateway.run_turn import GatewayTurnMixin
+    from hermes_agent.gateway.turn_context import TurnContext
 
     os.environ["HERMES_AGENT_NOTIFY_INTERVAL"] = "0.01"
     mixin = GatewayTurnMixin()
@@ -85,9 +85,9 @@ async def _heartbeat(agent) -> str:
 
 
 def _timeout(agent) -> str:
-    import gateway.run as gr
-    from gateway.run_turn import GatewayTurnMixin
-    from gateway.turn_context import TurnContext
+    import hermes_agent.gateway.run as gr
+    from hermes_agent.gateway.run_turn import GatewayTurnMixin
+    from hermes_agent.gateway.turn_context import TurnContext
 
     gr.request_hard_interrupt = MagicMock()
     ctx = TurnContext(session_key="s1", agent_holder=[agent])

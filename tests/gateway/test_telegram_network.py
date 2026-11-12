@@ -300,7 +300,7 @@ class TestFallbackTransportClose:
 
 class TestConfigFallbackIps:
     def test_env_var_populates_config_extra(self, monkeypatch):
-        from gateway.config import GatewayConfig, Platform, PlatformConfig, _apply_env_overrides
+        from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig, _apply_env_overrides
 
         monkeypatch.setenv("TELEGRAM_FALLBACK_IPS", "149.154.167.220,149.154.167.221")
         config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="tok")})
@@ -331,7 +331,7 @@ class TestAdapterFallbackIps:
             for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
                 sys.modules.setdefault(name, mod)
 
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.telegram.adapter import TelegramAdapter
 
         config = PlatformConfig(enabled=True, token="test-token")

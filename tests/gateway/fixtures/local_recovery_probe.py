@@ -85,7 +85,7 @@ def seed_offline_models_dev(home):
 @contextmanager
 def daemon(root, home, env, *, barrier, fixture='local_recovery_daemon.py'):
     seed_offline_models_dev(env.get('HERMES_HOME', home))
-    command = [sys.executable, str(root / 'tests/gateway/fixtures' / fixture)] if barrier else [sys.executable, '-m', 'gateway.run']
+    command = [sys.executable, str(root / 'tests/gateway/fixtures' / fixture)] if barrier else [sys.executable, '-m', 'hermes_agent.gateway.run']
     with (home / ('first.log' if barrier else 'restart.log')).open('w+') as log:
         proc = subprocess.Popen(command, cwd=root, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
         try:

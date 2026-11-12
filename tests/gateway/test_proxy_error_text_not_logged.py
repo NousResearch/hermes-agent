@@ -12,7 +12,7 @@ from urllib.parse import unquote
 import httpx
 import pytest
 
-from gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.config import Platform, PlatformConfig
 
 # Characters yarl/httpx re-quote, non-ASCII, whitespace, a short one, a scheme word, a repeat.
 PASSWORDS = ['p{a}ss|w0rd^9"<>', "pässwörd99", "pa ss wo rd", "abc", "socks5", "qzxqzxqzx"]
@@ -61,8 +61,8 @@ def _logs(caplog):
 
 @pytest.mark.parametrize("proxy, password", CASES)
 def test_proxy_mode_turn_error(monkeypatch, caplog, proxy, password):
-    from gateway.run import GatewayRunner
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import SessionSource
 
     monkeypatch.setenv("GATEWAY_PROXY_URL", proxy)
     monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
@@ -71,7 +71,7 @@ def test_proxy_mode_turn_error(monkeypatch, caplog, proxy, password):
     runner.config = MagicMock()
     source = SessionSource(platform=Platform.MATRIX, chat_id="!r:s", chat_type="group", user_id="@u:s")
     exc = _aiohttp_error(f"{proxy}/v1/chat/completions", as_url=True)  # the upstream itself, not a proxy
-    with patch("gateway.run._load_gateway_config", return_value={}), caplog.at_level(logging.DEBUG):
+    with patch("hermes_agent.gateway.run._load_gateway_config", return_value={}), caplog.at_level(logging.DEBUG):
         reply = asyncio.run(runner._run_agent_via_proxy(
             message="hi", context_prompt="", history=[], source=source, session_id="s"))["final_response"]
     _assert_safe(reply, password, exc)
@@ -229,8 +229,8 @@ def test_error_through_a_secret_free_proxy_keeps_its_text(monkeypatch, caplog, p
 def test_proxy_mode_file_url_error_hides_the_path(monkeypatch, caplog, url):
     """A ``file:`` GATEWAY_PROXY_URL has no host to name; the media-path rule must not print its path,
     also when urlsplit only finds the ``file`` scheme after dropping a newline or control character."""
-    from gateway.run import GatewayRunner
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import SessionSource
 
     monkeypatch.setenv("GATEWAY_PROXY_URL", url)
     monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
@@ -238,7 +238,7 @@ def test_proxy_mode_file_url_error_hides_the_path(monkeypatch, caplog, url):
     runner.adapters, runner._running_agents, runner._agent_cache = {}, {}, {}
     runner.config = MagicMock()
     source = SessionSource(platform=Platform.MATRIX, chat_id="!r:s", chat_type="group", user_id="@u:s")
-    with patch("gateway.run._load_gateway_config", return_value={}), caplog.at_level(logging.DEBUG):
+    with patch("hermes_agent.gateway.run._load_gateway_config", return_value={}), caplog.at_level(logging.DEBUG):
         reply = asyncio.run(runner._run_agent_via_proxy(
             message="hi", context_prompt="", history=[], source=source, session_id="s"))["final_response"]
     for text in (reply, _logs(caplog)):

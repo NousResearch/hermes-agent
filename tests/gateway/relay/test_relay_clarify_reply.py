@@ -9,7 +9,7 @@ import asyncio
 
 import pytest
 
-from gateway.session_results import execution_result
+from hermes_agent.gateway.session_results import execution_result
 from tests.gateway.relay.test_relay_native_turn_lifecycle import _gateway, _stub_model
 from tests.waiting import async_wait_until
 

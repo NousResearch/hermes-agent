@@ -29,12 +29,12 @@ IMAGE = {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,AA=='}
     ([{'type': 'text', 'text': 'what is this?'}, IMAGE], None),
 ])
 async def test_retry_refuses_an_unresendable_turn_before_rewinding(tmp_path, monkeypatch, content, submitted):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_local import create_local_session
     from hermes_cli.gateway_chat_commands import run_command
     from hermes_cli.gateway_client import GatewayClientError
     from hermes_cli.gateway_mutations import PreparedMutations

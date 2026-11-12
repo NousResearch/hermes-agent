@@ -1,7 +1,7 @@
 """Lane-private child process for ``_drive_gateway.drive_gateway``.
 
-Runs the REAL messaging gateway entrypoint (``gateway.run.main`` — what
-``python -m gateway.run`` / the ``hermes gateway run`` service executes: host
+Runs the REAL messaging gateway entrypoint (``hermes_agent.gateway.run.main`` — what
+``python -m hermes_agent.gateway.run`` / the ``hermes gateway run`` service executes: host
 attach decision, PID claim, MCP discovery, ``GatewayRunner.start()``, signal
 handlers, the graceful shutdown tail) with exactly one substitution: the
 Telegram adapter instance is a recording fake. Everything behind the adapter
@@ -23,10 +23,10 @@ import os
 import sys
 from typing import Any, Dict, Optional
 
-from gateway.config import Platform
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
 
-import gateway.run as gateway_run
+import hermes_agent.gateway.run as gateway_run
 
 PARITY_USER_ID = os.environ.get("PARITY_GATEWAY_USER", "424242")
 PARITY_CHAT_ID = PARITY_USER_ID  # Telegram private chats use the user id as chat id

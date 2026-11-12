@@ -9,7 +9,7 @@ from hermes_agent.hermes_state_runtime import (
 
 
 def test_result_survives_restart_without_reexecuting(tmp_path):
-    from gateway.session_results import retain_result, admission_result
+    from hermes_agent.gateway.session_results import retain_result, admission_result
     path = tmp_path / 'state.db'
     db = SessionDB(path)
     db.create_session('api-session', source='api_server')
@@ -35,7 +35,7 @@ def test_result_survives_restart_without_reexecuting(tmp_path):
 
 
 def test_stale_result_cannot_overwrite_settled_or_unknown_claim(tmp_path):
-    from gateway.session_results import retain_result, admission_result
+    from hermes_agent.gateway.session_results import retain_result, admission_result
     db = SessionDB(tmp_path / 'state.db')
     try:
         db.create_session('api-session', source='api_server')
@@ -64,12 +64,12 @@ async def test_a_turn_that_failed_before_running_settles_failed_on_every_surface
     failure (a notice, a command answer) still completes."""
     import asyncio
     from types import SimpleNamespace
-    from gateway.config import Platform
-    from gateway.platforms.event import MessageEvent
-    from gateway.run import GatewayRunner
-    from gateway.session import SessionSource
-    from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import SessionActor, SessionRef, Submission
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import SessionSource
+    from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_agent.gateway.session_contract import SessionActor, SessionRef, Submission
     from hermes_agent.hermes_state_runtime import get_session_admission
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
@@ -118,11 +118,11 @@ async def test_a_finite_prompt_answered_without_running_settles_failed(tmp_path,
     command's reply IS its answer and still completes."""
     import asyncio
     from types import SimpleNamespace
-    from gateway.config import Platform
-    from gateway.session import SessionSource
-    from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import SessionActor, SessionRef, Submission
-    from gateway.session_results import admission_result
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session import SessionSource
+    from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_agent.gateway.session_contract import SessionActor, SessionRef, Submission
+    from hermes_agent.gateway.session_results import admission_result
     from hermes_cli.turn_exit import turn_exit_code
     from hermes_agent.hermes_state_runtime import get_session_admission
 

@@ -17,7 +17,7 @@ import json
 import pytest
 import pytest_asyncio
 
-from gateway.relay.ws_transport import WebSocketRelayTransport, WEBSOCKETS_AVAILABLE
+from hermes_agent.gateway.relay.ws_transport import WebSocketRelayTransport, WEBSOCKETS_AVAILABLE
 
 pytestmark = pytest.mark.skipif(not WEBSOCKETS_AVAILABLE, reason="websockets not installed")
 
@@ -370,7 +370,7 @@ async def test_provisional_4401_never_starts_a_second_dialer_while_the_superviso
     — two dialers replace each other's socket/reader and can leave the
     transport attached to the wrong socket. The supervisor's own re-dial carries
     the fresh token instead, so exactly two dials happen in total."""
-    import gateway.relay.ws_transport as mod
+    import hermes_agent.gateway.relay.ws_transport as mod
 
     class _Close4401(Exception):
         code = 4401
@@ -492,7 +492,7 @@ def _scripted_connect(monkeypatch, outcomes: list):
     """Patch websockets.connect to pop ``outcomes`` in order: an Exception is
     raised (connect-time failure), anything else is returned as the socket.
     Returns the dial log."""
-    import gateway.relay.ws_transport as mod
+    import hermes_agent.gateway.relay.ws_transport as mod
 
     dials: list = []
 

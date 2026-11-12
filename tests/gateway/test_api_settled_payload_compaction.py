@@ -3,10 +3,10 @@ import base64
 import os
 from pathlib import Path
 
-from gateway.platforms.api_server_response_admissions import admitted_context
-from gateway.session_contract import SessionRef
-from gateway.session_api_turn import admit_api_turn, recover_api_turns
-from gateway.session_ingress_media import release_admission_media
+from hermes_agent.gateway.platforms.api_server_response_admissions import admitted_context
+from hermes_agent.gateway.session_contract import SessionRef
+from hermes_agent.gateway.session_api_turn import admit_api_turn, recover_api_turns
+from hermes_agent.gateway.session_ingress_media import release_admission_media
 from hermes_agent.hermes_state_runtime import claim_session_input, get_session_admission, settle_session_input
 
 IMAGE = b'\x89PNG\r\n\x1a\n' + os.urandom(64 * 1024)

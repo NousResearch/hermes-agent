@@ -8,9 +8,9 @@ import json
 import re
 import uuid
 
-from gateway.config import Platform
-from gateway.session_api import bind_api_steps, restore_api_session, run_steps, run_steps_off_loop
-from gateway.session_results import admission_result
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.session_api import bind_api_steps, restore_api_session, run_steps, run_steps_off_loop
+from hermes_agent.gateway.session_results import admission_result
 from hermes_agent.hermes_state_runtime import RuntimeStoreError, admit_session_input, _json
 
 api_execution: ContextVar[dict | None] = ContextVar('api_execution', default=None)
@@ -91,9 +91,9 @@ def check_api_settings(adapter, settings):
     if dispatch is None and settings.get('room_execution_policy') is not None:
         raise RuntimeStoreError('permission_denied')
     if dispatch is not None:
-        from gateway.hosted_room_peer import HostedMemberDispatch, GatewayRoomCatalog
-        from gateway.platforms.api_server_room_grants import _local_room_catalog
-        from gateway import hosted_rooms
+        from hermes_agent.gateway.hosted_room_peer import HostedMemberDispatch, GatewayRoomCatalog
+        from hermes_agent.gateway.platforms.api_server_room_grants import _local_room_catalog
+        from hermes_agent.gateway import hosted_rooms
         bound = HostedMemberDispatch.from_mapping(dispatch)
         if bound.target_install_id != hosted_rooms.local_authority_gateway_id():
             raise RuntimeStoreError('permission_denied')
@@ -111,13 +111,13 @@ def api_policy_scope():
     policy = current['settings'].get('room_execution_policy') if current else None
     token = None
     if policy is not None:
-        from gateway.hosted_room_execution_policy import RoomExecutionPolicy, bind_room_execution_policy
+        from hermes_agent.gateway.hosted_room_execution_policy import RoomExecutionPolicy, bind_room_execution_policy
         token = bind_room_execution_policy(RoomExecutionPolicy.from_mapping(policy))
     try:
         yield
     finally:
         if token is not None:
-            from gateway.hosted_room_execution_policy import reset_room_execution_policy
+            from hermes_agent.gateway.hosted_room_execution_policy import reset_room_execution_policy
             reset_room_execution_policy(token)
 
 
@@ -129,7 +129,7 @@ def admit_api_turn(adapter, **kwargs):
 async def admit_api_turn_async(adapter, steps=None, **kwargs):
     """``admit_api_turn`` (or *steps*, a generator ending in ``admit_api_steps``) with every SQLite
     write off the owner loop, in admission order."""
-    from gateway.session_authorities import require_active_authority
+    from hermes_agent.gateway.session_authorities import require_active_authority
     authority = require_active_authority(adapter.gateway_runner)
     return await run_steps_off_loop(authority, steps or admit_api_steps(adapter, **kwargs), orphaned=schedule_orphan)
 
@@ -143,12 +143,12 @@ def schedule_orphan(admitted):
 
 def admit_api_steps(adapter, **kwargs):
     # ``/p/<profile>/`` middleware scoped this request; the routed home's authority admits it.
-    from gateway.session_authorities import require_active_authority
+    from hermes_agent.gateway.session_authorities import require_active_authority
     authority = require_active_authority(adapter.gateway_runner, lambda: adapter._ensure_session_db())
     sid = kwargs.get('session_id') or uuid.uuid4().hex
     declared_key = kwargs.get('gateway_session_key') if kwargs.get('bind_declared_conversation') else None
     if declared_key:
-        from gateway.session_api import declared_api_session
+        from hermes_agent.gateway.session_api import declared_api_session
         sid = declared_api_session(authority.db, declared_key) or sid
     # Every API door (chat header, runs session_id, /api/sessions/{id}/chat, Responses chain) may
     # name a compression continuation; the binding, FIFO and retry identity live on its root.
@@ -194,8 +194,8 @@ def admit_api_steps(adapter, **kwargs):
     request_id = kwargs.get('request_id') or kwargs.get('active_run_id') or uuid.uuid4().hex
     if not isinstance(kwargs['user_message'], list):
         return (yield from _admit_api_payload(authority, adapter, sid, request_id, payload, settings, declared_key, kwargs))
-    from gateway.session_api_media import commit_api_images
-    from gateway.session_ingress_media import capture_lease, drop_capture_lease, release_unheld_media
+    from hermes_agent.gateway.session_api_media import commit_api_images
+    from hermes_agent.gateway.session_ingress_media import capture_lease, drop_capture_lease, release_unheld_media
     # Content-addressed bytes another admission may name are held from capture until this one
     # commits or is refused: a concurrent release would otherwise unlink them in between.
     with capture_lease():
@@ -220,7 +220,7 @@ def _admit_api_payload(authority, adapter, sid, request_id, payload, settings, d
         session_id=sid, request_id=request_id, payload=payload)
     if row is not None:
         check_api_settings(adapter, settings)
-        from gateway.session_contract import SessionRef
+        from hermes_agent.gateway.session_contract import SessionRef
         return authority, SessionRef(authority.profile_id, sid), row
     ref = yield from bind_api_steps(authority, sid, hosted_dispatch=kwargs.get("room_dispatch"), declared_key=declared_key,
                                     caller_key=kwargs.get('gateway_session_key'), walked_from=kwargs.get('walked_from'))
@@ -262,7 +262,7 @@ def owns_api_run(adapter, run_id, owner_scope):
     """Match a caller scope against one canonical API admission, failing closed."""
     if not _valid_owner_scope(owner_scope):
         return False
-    from gateway.platforms.api_server_authority_runs import run_admission
+    from hermes_agent.gateway.platforms.api_server_authority_runs import run_admission
     try:
         owned = run_admission(adapter, run_id)
     except RuntimeStoreError:
@@ -280,7 +280,7 @@ def owns_api_run(adapter, run_id, owner_scope):
 def recover_api_turns(adapter):
     """Recover committed work only after the real API adapter is published. A parked profile's
     retained (retiring) authority is not served: its store is never read here."""
-    from gateway.session_authorities import owner_scope, serving_authorities
+    from hermes_agent.gateway.session_authorities import owner_scope, serving_authorities
     for authority in serving_authorities(adapter.gateway_runner):
         # Startup is unscoped (the launch profile's home): each profile's media root, config and
         # API bindings must pair with its own state.db, never the launch profile's.
@@ -290,10 +290,10 @@ def recover_api_turns(adapter):
 
 def recover_authority_api_turns(adapter, authority):
     from hermes_agent.hermes_state_runtime import list_session_admissions
-    from gateway.session_ingress_media import collect_unheld_api_images
+    from hermes_agent.gateway.session_ingress_media import collect_unheld_api_images
     import logging
     collect_unheld_api_images(authority.db)
-    from gateway.session_api_media import compact_settled_api_payloads
+    from hermes_agent.gateway.session_api_media import compact_settled_api_payloads
     compact_settled_api_payloads(authority.db)
     with authority.db._read_ctx() as conn:
         targets = [row[0] for row in conn.execute(
@@ -409,7 +409,7 @@ def observe_api_controls(admitted, sink):
     either in the snapshot or arrives live (never both), and one already answered is absent."""
     from hermes_agent.hermes_state_runtime import get_session_admission
     authority, ref, row = admitted
-    from gateway.session_retirement import restore_retired
+    from hermes_agent.gateway.session_retirement import restore_retired
     restore_retired(authority, ref.session_id)  # idle between its bind and this admission's commit
     live = authority.sessions.get(ref.session_id)
     if live is None:
@@ -442,7 +442,7 @@ def prepare_api_execution(authority, ref, payload):
     settings = data['settings'] if data else api_settings(authority, ref)
     content = payload['text']
     if data and isinstance(content, list):
-        from gateway.session_api_media import restore_api_images
+        from hermes_agent.gateway.session_api_media import restore_api_images
         content = restore_api_images(content, data.get('media') or [])
     return {'adapter': adapter, 'settings': settings, 'history': data['history'] if data else None,
             'content': content, 'turn_author': data.get('turn_author') if data else None,

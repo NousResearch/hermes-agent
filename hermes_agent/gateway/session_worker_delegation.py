@@ -67,7 +67,7 @@ def _dispatch(db, conn, session_id, payload, *, execution_id, worker_pid, worker
         # Exact network retries are resolved by worker_receipts before this handler.
         raise RuntimeStoreError('admission_conflict')
     import psutil
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway.status import get_process_start_time
     try:
         from hermes_cli import process_identity
         if process_identity.worker_birth(psutil.Process(worker_pid)) != worker_birth:
@@ -204,7 +204,7 @@ def persist_worker_delegation(db, *, epoch, execution_id, session_id, generation
 async def worker_delegation_request(connection, ref, params):
     """worker.persist delegation-family hook; all authentication stays mandatory."""
     import asyncio
-    from gateway.session_worker import _SCOPE, _claim, _verify
+    from hermes_agent.gateway.session_worker import _SCOPE, _claim, _verify
     if set(params) != _SCOPE | {'epoch', 'sequence', 'operation', 'payload'}:
         raise RuntimeStoreError('invalid_params')
     claim = _claim(connection, ref, params)

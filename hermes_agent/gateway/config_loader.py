@@ -13,10 +13,10 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
-from gateway.config import UNAUTHORIZED_DM_BEHAVIORS, Platform, PlatformConfig, _coerce_dict, _dict_slot, _normalize_choice
+from hermes_agent.gateway.config import UNAUTHORIZED_DM_BEHAVIORS, Platform, PlatformConfig, _coerce_dict, _dict_slot, _normalize_choice
 
-# Logger name parity with the origin module: records stay under "gateway.config".
-logger = logging.getLogger("gateway.config")
+# Logger name parity with the origin module: records stay under "hermes_agent.gateway.config".
+logger = logging.getLogger("hermes_agent.gateway.config")
 
 
 def load_legacy_gateway_json(home: Path) -> Any:
@@ -248,7 +248,7 @@ def shared_loop_targets(registry, entries=None) -> list:
     """Built-in platforms plus registered plugin platforms (so plugin authors get shared-key bridging).
 
     *entries* are the plugin entries to bridge (``load_yaml_layer`` passes only the configured
-    ones, see ``gateway.platform_activation``); None means every registered plugin platform."""
+    ones, see ``hermes_agent.gateway.platform_activation``); None means every registered plugin platform."""
     targets: list = list(Platform)
     if entries is None:
         entries = registry.plugin_entries() if registry is not None else ()
@@ -438,7 +438,7 @@ def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
     sets ``GATEWAY_ALLOW_ALL_USERS`` in its own ``.env`` like every other scoped authorization gate.
     """
     global _BRIDGED_ALLOW_ALL_USERS
-    from gateway.platforms._shared import profile_scoped
+    from hermes_agent.gateway.platforms._shared import profile_scoped
 
     skip_env_bridge = profile_scoped()
     gateway_section = yaml_cfg.get("gateway")
@@ -490,7 +490,7 @@ def read_yaml_layers(home: Path) -> dict:
     Raises on a malformed user file (the loader then falls back to env + gateway.json WITHOUT the
     managed layer). An ABSENT user file is an empty layer, not a reason to skip the administrator's
     values: a fleet host with no ``config.yaml`` must still honor them. Any pre-activation predicate
-    (``gateway.relay.relay_explicitly_disabled``) reads through here so it cannot disagree with
+    (``hermes_agent.gateway.relay.relay_explicitly_disabled``) reads through here so it cannot disagree with
     ``load_gateway_config()`` on which files count.
     """
     from hermes_cli.config_backend import config_exists, read_config_doc
@@ -528,7 +528,7 @@ def load_yaml_layer(home: Path, gw_data: dict) -> None:
     try:
         from hermes_cli.plugins import discover_plugins
         discover_plugins()  # idempotent
-        from gateway.platform_registry import platform_registry as registry
+        from hermes_agent.gateway.platform_registry import platform_registry as registry
     except Exception as e:
         logger.debug("plugin discovery skipped: %s", e)
         registry = None
@@ -537,7 +537,7 @@ def load_yaml_layer(home: Path, gw_data: dict) -> None:
     # materialized: importing every deferred adapter to read its hooks cost each cold start ~0.5 s.
     entries = None
     if registry is not None:
-        from gateway.platform_activation import activation_predicate
+        from hermes_agent.gateway.platform_activation import activation_predicate
         entries = registry.configured_entries(activation_predicate(
             yaml_cfg=yaml_cfg, platform_names=platforms_data, home=home, registry=registry))
     targets = shared_loop_targets(registry, None if entries is None else [e for e in entries if e.source == "plugin"])
@@ -558,7 +558,7 @@ def load_gateway_config_file(gateway_config_file: str):
     """``gateway --config <file>``: a ``GatewayConfig`` from an explicit local YAML file. Refused
     when the config backend has no file tooling (Remote Config: config comes only from the plane)."""
     import hermes_yaml as yaml
-    from gateway.config import GatewayConfig
+    from hermes_agent.gateway.config import GatewayConfig
     from hermes_cli.config_backend import require_file_tooling
     require_file_tooling("gateway --config <file>")
     with open(gateway_config_file, encoding="utf-8-sig") as f:

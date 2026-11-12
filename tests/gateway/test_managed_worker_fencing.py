@@ -19,8 +19,8 @@ def hello(process):
 
 
 def test_worker_loss_fences_same_generation_parent_result(tmp_path):
-    from gateway.session_worker_reservation import reserve_admission_worker, lose_admission_worker
-    from gateway.session_results import retain_result
+    from hermes_agent.gateway.session_worker_reservation import reserve_admission_worker, lose_admission_worker
+    from hermes_agent.gateway.session_results import retain_result
     with closing(SessionDB(tmp_path / 'state.db')) as db:
         db.create_session('owned', 'cli')
         epoch = begin_runtime_epoch(db, instance_id='owner')
@@ -52,8 +52,8 @@ async def test_late_bootstrap_handshake_cannot_rearm_a_recovered_admission(tmp_p
     recovered ``unknown`` admission back to ``started`` under an owner with no pipe to the child
     (which refuses the foreign epoch and exits), stranding the FIFO where Discard cannot reach it."""
     import hermes_agent.hermes_state_runtime as rt
-    from gateway.session_worker import worker_request
-    from gateway.session_worker_reservation import reserve_admission_worker
+    from hermes_agent.gateway.session_worker import worker_request
+    from hermes_agent.gateway.session_worker_reservation import reserve_admission_worker
     with closing(SessionDB(tmp_path / 'state.db')) as db:
         db.create_session('owned', 'cli')
         epoch = begin_runtime_epoch(db, instance_id='owner')

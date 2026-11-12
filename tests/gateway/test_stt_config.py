@@ -6,9 +6,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import hermes_yaml as yaml
 
-from gateway.config import GatewayConfig, Platform, load_gateway_config
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform, load_gateway_config
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.session import SessionSource
 
 
 def test_gateway_config_stt_disabled_from_dict_nested():
@@ -45,7 +45,7 @@ async def test_enrich_message_with_transcription_returns_tuple_for_empty_content
     string here raised ``ValueError: too many values to unpack`` and dropped the
     whole voice message on the floor.
     """
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = GatewayRunner.__new__(GatewayRunner)
     runner.config = GatewayConfig(stt_enabled=True)
@@ -75,7 +75,7 @@ async def test_enrich_message_with_transcription_returns_tuple_for_empty_content
 async def test_enrich_message_with_transcription_guards_empty_transcript():
     """success=True with an empty/whitespace transcript must not emit empty
     quotes — it gets a sentinel note and is excluded from transcripts (#41603)."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = GatewayRunner.__new__(GatewayRunner)
     runner.config = GatewayConfig(stt_enabled=True)

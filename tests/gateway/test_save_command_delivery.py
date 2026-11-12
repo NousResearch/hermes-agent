@@ -4,10 +4,10 @@ import asyncio
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent
-from gateway.run import GatewayRunner
-from gateway.session import SessionEntry, SessionSource, build_session_key
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionEntry, SessionSource, build_session_key
 from hermes_agent.hermes_state import AsyncSessionDB
 
 

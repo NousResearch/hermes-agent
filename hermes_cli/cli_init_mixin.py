@@ -119,7 +119,7 @@ class CLIInitMixin:
         self.console = Console()
         self.config = CLI_CONFIG
         # A local /reasoning show|hide or /footer saves the per-platform ``cli`` key: read it (T7).
-        from gateway.display_config import local_display_config
+        from hermes_agent.gateway.display_config import local_display_config
         display = local_display_config(CLI_CONFIG["display"])
         self.compact = compact if compact is not None else display.get("compact", False)
         # tool_progress: "off" | "new" | "all" | "verbose"; YAML 1.1 parses bare `off` as False.
@@ -448,7 +448,7 @@ class CLIInitMixin:
                 except Exception:
                     print(t("cli.session_store.unavailable_plain", reason=failure.gloss, action=failure.action))
             # Same automatic diagnostic the gateway gates for its home channel (run_notifications).
-            from gateway.warning_notifications import render_notification
+            from hermes_agent.gateway.warning_notifications import render_notification
             render_notification(_present_store_warning, platform="cli")
         # No state.db / checkpoint maintenance here: the gateway (the single writer) runs both.
 

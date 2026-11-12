@@ -123,7 +123,7 @@ def _ref_head(w: G.World) -> str:
 
 
 def _identify(w: G.World) -> dict | None:
-    from gateway.control_socket import identify_gateway
+    from hermes_agent.gateway.control_socket import identify_gateway
 
     with contextlib.suppress(Exception):
         return identify_gateway(w.sb.hermes_home, timeout=5.0)
@@ -137,7 +137,7 @@ def _serving(w: G.World, sha: str) -> dict | None:
 
 def _gateways(host: NamespaceHost) -> list[dict]:
     """``gateway run`` processes in the namespace, by the canonical matcher."""
-    from gateway.status import looks_like_gateway_command_line
+    from hermes_agent.gateway.status import looks_like_gateway_command_line
 
     return [p for p in host.procs() if p["state"] not in ("Z", "X")
             and looks_like_gateway_command_line(" ".join(p["cmdline"]))]

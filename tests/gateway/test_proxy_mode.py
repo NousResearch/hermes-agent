@@ -5,10 +5,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import Platform, StreamingConfig
-from gateway.platforms.base import resolve_proxy_url
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform, StreamingConfig
+from hermes_agent.gateway.platforms.base import resolve_proxy_url
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource
 
 def _make_runner(proxy_url=None):
     """Create a minimal GatewayRunner for proxy tests."""
@@ -94,14 +94,14 @@ class TestGetProxyUrl:
     def test_returns_none_when_not_configured(self, monkeypatch):
         monkeypatch.delenv("GATEWAY_PROXY_URL", raising=False)
         runner = _make_runner()
-        with patch("gateway.run._load_gateway_config", return_value={}):
+        with patch("hermes_agent.gateway.run._load_gateway_config", return_value={}):
             assert runner._get_proxy_url() is None
 
     def test_reads_from_config_yaml(self, monkeypatch):
         monkeypatch.delenv("GATEWAY_PROXY_URL", raising=False)
         runner = _make_runner()
         cfg = {"gateway": {"proxy_url": "http://10.0.0.1:8642"}}
-        with patch("gateway.run._load_gateway_config", return_value=cfg):
+        with patch("hermes_agent.gateway.run._load_gateway_config", return_value=cfg):
             assert runner._get_proxy_url() == "http://10.0.0.1:8642"
 
 class _SelectiveScope(dict):
@@ -166,13 +166,13 @@ class TestMacosProxyProbeCache:
 
     @pytest.fixture(autouse=True)
     def _isolate(self):
-        from gateway.platforms import base
+        from hermes_agent.gateway.platforms import base
         base.reset_macos_proxy_cache()
         yield
         base.reset_macos_proxy_cache()
 
     def _count_forks(self, monkeypatch):
-        from gateway.platforms import base
+        from hermes_agent.gateway.platforms import base
         calls = []
 
         def fake(*a, **kw):
@@ -252,7 +252,7 @@ class TestRunAgentViaProxy:
         )
         session = _FakeSession(resp)
 
-        with patch("gateway.run._load_gateway_config", return_value={}):
+        with patch("hermes_agent.gateway.run._load_gateway_config", return_value={}):
             with _patch_aiohttp(session):
                 with patch("aiohttp.ClientTimeout"):
                     result = await runner._run_agent_via_proxy(
@@ -305,7 +305,7 @@ class TestRunAgentViaProxy:
             async def __aexit__(self, *args):
                 pass
 
-        with patch("gateway.run._load_gateway_config", return_value={}):
+        with patch("hermes_agent.gateway.run._load_gateway_config", return_value={}):
             with _patch_aiohttp(_ErrorSession()):
                 with patch("aiohttp.ClientTimeout"):
                     result = await runner._run_agent_via_proxy(
@@ -332,7 +332,7 @@ class TestRunAgentViaProxy:
         )
         session = _FakeSession(resp)
 
-        with patch("gateway.run._load_gateway_config", return_value={}):
+        with patch("hermes_agent.gateway.run._load_gateway_config", return_value={}):
             with _patch_aiohttp(session):
                 with patch("aiohttp.ClientTimeout"):
                     await runner._run_agent_via_proxy(
@@ -380,7 +380,7 @@ class TestStreamingResilience:
         )
         session = _FakeSession(resp)
 
-        with patch("gateway.run._load_gateway_config", return_value={}):
+        with patch("hermes_agent.gateway.run._load_gateway_config", return_value={}):
             with _patch_aiohttp(session):
                 with patch("aiohttp.ClientTimeout"):
                     result = await runner._run_agent_via_proxy(
@@ -420,7 +420,7 @@ class TestStreamingResilience:
         )
         session = _FakeSession(resp)
 
-        with patch("gateway.run._load_gateway_config", return_value={}):
+        with patch("hermes_agent.gateway.run._load_gateway_config", return_value={}):
             with _patch_aiohttp(session):
                 with patch("aiohttp.ClientTimeout"):
                     result = await runner._run_agent_via_proxy(
@@ -446,7 +446,7 @@ class TestStreamingResilience:
         resp = _FakeSSEResponse(status=200, sse_chunks=[])
         session = _FakeSession(resp)
 
-        with patch("gateway.run._load_gateway_config", return_value={}):
+        with patch("hermes_agent.gateway.run._load_gateway_config", return_value={}):
             with _patch_aiohttp(session):
                 with patch("aiohttp.ClientTimeout"):
                     result = await runner._run_agent_via_proxy(
@@ -482,7 +482,7 @@ class TestStreamingResilience:
             captured.update(kwargs)
             return MagicMock()
 
-        with patch("gateway.run._load_gateway_config", return_value={}):
+        with patch("hermes_agent.gateway.run._load_gateway_config", return_value={}):
             with _patch_aiohttp(session):
                 with patch("aiohttp.ClientTimeout", side_effect=_capture_timeout):
                     await runner._run_agent_via_proxy(
@@ -531,7 +531,7 @@ class TestStreamingResilience:
         )
         session = _FakeSession(resp)
 
-        with patch("gateway.run._load_gateway_config", return_value={}):
+        with patch("hermes_agent.gateway.run._load_gateway_config", return_value={}):
             with _patch_aiohttp(session):
                 with patch("aiohttp.ClientTimeout"):
                     result = await runner._run_agent_via_proxy(

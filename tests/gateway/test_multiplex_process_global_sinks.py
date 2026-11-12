@@ -38,8 +38,8 @@ def test_env_passthrough_allowlist_follows_the_active_profile(tmp_path, monkeypa
 
 
 def test_slack_ignored_channels_use_the_routed_adapters_list(monkeypatch):
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.run import _is_slack_ignored_channel
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.run import _is_slack_ignored_channel
 
     monkeypatch.delenv("SLACK_IGNORED_CHANNELS", raising=False)
     default_cfg = GatewayConfig(platforms={Platform.SLACK: PlatformConfig(enabled=True, extra={"ignored_channels": ["C_DEFAULT"]})})

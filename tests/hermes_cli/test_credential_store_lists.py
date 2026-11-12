@@ -83,7 +83,7 @@ def test_file_tools_refuse_to_read_or_write_them(home, monkeypatch):
 
 
 def test_gateway_media_delivery_refuses_them(home, monkeypatch):
-    from gateway.platforms import base
+    from hermes_agent.gateway.platforms import base
 
     monkeypatch.setattr(base, "_HERMES_HOME", home)
     monkeypatch.setattr(base, "_HERMES_ROOT", home)

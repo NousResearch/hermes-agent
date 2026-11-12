@@ -12,7 +12,7 @@ def test_every_housekeeping_cache_cleanup_accepts_max_age_hours(tmp_path, monkey
     from tools.bot_mode_dm import cleanup_bot_dm_cache
     from tools.bot_relay import cleanup_bot_relay_artifacts
     from tools.tool_result_storage import cleanup_spillover_cache
-    from gateway.platforms.base import (
+    from hermes_agent.gateway.platforms.base import (
         cleanup_audio_cache, cleanup_document_cache, cleanup_image_cache,
         cleanup_screenshot_cache, cleanup_video_cache,
     )

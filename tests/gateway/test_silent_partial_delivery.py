@@ -37,10 +37,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig, StreamingConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.session import SessionSource
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from hermes_agent.gateway.config import Platform, PlatformConfig, StreamingConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 
 STREAMED_PREFIX = "Deploy summary: 713 items published (578 as of 08-26"
@@ -248,7 +248,7 @@ class _RecordlessFlagConsumer(GatewayStreamConsumer):
 
 
 def _make_runner(adapter):
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     runner = object.__new__(gateway_run.GatewayRunner)
     runner.adapters = {adapter.platform: adapter}
     runner._voice_mode = {}
@@ -297,9 +297,9 @@ async def _run_turn(monkeypatch, tmp_path, *, consumer_cls=None, session_id):
     fake_run_agent.AIAgent = PrefixOnlyAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     if consumer_cls is not None:
-        stream_consumer_mod = importlib.import_module("gateway.stream_consumer")
+        stream_consumer_mod = importlib.import_module("hermes_agent.gateway.stream_consumer")
         monkeypatch.setattr(
             stream_consumer_mod, "GatewayStreamConsumer", consumer_cls
         )
@@ -442,7 +442,7 @@ class TestLedgerReplaysDegradedDiscordSend:
         string) is stranded. This is the exact silent-loss mechanism from
         the #95382 field logs."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-        import gateway.delivery_ledger as dl
+        import hermes_agent.gateway.delivery_ledger as dl
 
         importlib.reload(dl)
 

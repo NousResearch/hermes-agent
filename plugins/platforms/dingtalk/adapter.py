@@ -46,16 +46,16 @@ except Exception:
     dingtalk_card_client = dingtalk_card_models = dingtalk_robot_client = dingtalk_robot_models = None
     open_api_models = tea_util_models = None
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import MessageDeduplicator, compile_mention_patterns
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.helpers import MessageDeduplicator, compile_mention_patterns
 from agent.i18n import t
-from gateway.platforms.base import BasePlatformAdapter, SendResult, describe_proxy_error, env_proxy_for_redaction
-from gateway.platforms.event import MessageEvent
-from gateway.platforms._shared import (
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult, describe_proxy_error, env_proxy_for_redaction
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, decode_json_list_literal as _decode_json_list_literal,
     extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret, send_error
 )
-from gateway.platforms.send_targets import StandaloneSendPolicy
+from hermes_agent.gateway.platforms.send_targets import StandaloneSendPolicy
 from plugins.platforms.dingtalk.inbound import collect_download_codes, extract_media, extract_text
 
 
@@ -231,7 +231,7 @@ class DingTalkAdapter(BasePlatformAdapter):
                 logger.warning("[%s] " + problem, self.name)
                 return False
         try:
-            from gateway.platforms._http_client_limits import platform_httpx_limits  # tighter keepalive: idle CLOSE_WAIT drains promptly
+            from hermes_agent.gateway.platforms._http_client_limits import platform_httpx_limits  # tighter keepalive: idle CLOSE_WAIT drains promptly
             self._http_client = httpx.AsyncClient(timeout=30.0, limits=platform_httpx_limits())
             self._stream_client = dingtalk_stream.DingTalkStreamClient(dingtalk_stream.Credential(self._client_id, self._client_secret))
             if CARD_SDK_AVAILABLE:
@@ -849,7 +849,7 @@ def _is_connected(config) -> bool:
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
-    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
+    from . import gateway_env  # env -> GatewayConfig bridge (hermes_agent.gateway.config_env)
     ctx.register_platform(
         standalone_send=StandaloneSendPolicy(text_direct=True),
         name="dingtalk", label="DingTalk", adapter_factory=DingTalkAdapter, check_fn=dingtalk_deps_present,

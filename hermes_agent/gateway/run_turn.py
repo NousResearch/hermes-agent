@@ -1,6 +1,6 @@
 """Agent-turn execution for GatewayRunner: _handle_message_with_agent, _run_agent*, proxy path,
-MCP reload. Bound onto ``GatewayRunner`` via the MRO; ``gateway.run`` internals
-are imported lazily inside method bodies (import cycle) so ``patch("gateway.run.X")`` still works.
+MCP reload. Bound onto ``GatewayRunner`` via the MRO; ``hermes_agent.gateway.run`` internals
+are imported lazily inside method bodies (import cycle) so ``patch("hermes_agent.gateway.run.X")`` still works.
 """
 
 from __future__ import annotations
@@ -21,36 +21,36 @@ from agent.session_activity import format_iteration_progress
 from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
-from gateway.bot_peer_notices import automatic_notices_allowed
-from gateway.config import Platform
-from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome, describe_proxy_error, safe_proxy_url_for_log
-from gateway.platforms.event import MessageEvent
-from gateway.platforms.helpers import typing_metadata_for_turn
-from gateway.response_filters import (
+from hermes_agent.gateway.bot_peer_notices import automatic_notices_allowed
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome, describe_proxy_error, safe_proxy_url_for_log
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.platforms.helpers import typing_metadata_for_turn
+from hermes_agent.gateway.response_filters import (
     display_kind_for_event, display_metadata_for_event, is_machinery_display_kind, persisted_user_metadata_for_event,
     reply_expected_metadata,
 )
-from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
-from gateway.session import (
+from hermes_agent.gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
+from hermes_agent.gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
     build_session_context,
 )
-from gateway.session_context import scoped_turn_actor
-from gateway.session_transcript import TranscriptReadError
-from gateway.run_turn_bubble_cleanup import register_bubble_cleanup, settle_turn_senders
-from gateway.turn_context import TurnContext
-from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
+from hermes_agent.gateway.session_context import scoped_turn_actor
+from hermes_agent.gateway.session_transcript import TranscriptReadError
+from hermes_agent.gateway.run_turn_bubble_cleanup import register_bubble_cleanup, settle_turn_senders
+from hermes_agent.gateway.turn_context import TurnContext
+from hermes_agent.gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
 from hermes_constants import get_hermes_home_override
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from utils import base_url_hostname
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner
-    from gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 _tool_call_logger_lock = threading.Lock()
 
@@ -65,7 +65,7 @@ def _tool_call_logger() -> logging.Logger:
         if not tool_logger.handlers:
             from logging.handlers import RotatingFileHandler
             from agent.redact import RedactingFormatter
-            from gateway.run import _hermes_home
+            from hermes_agent.gateway.run import _hermes_home
 
             log_dir = _hermes_home / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
@@ -163,10 +163,10 @@ def hygiene_no_commit_reason(agent) -> str:
     return "in-place commit did not complete"
 
 
-from gateway.run_turn_prepare import GatewayTurnPrepareMixin
-from gateway.run_background import GatewayBackgroundMixin
-from gateway.run_turn_hygiene import GatewayTurnHygieneMixin
-from gateway.run_turn_persistence import GatewayTurnPersistenceMixin
+from hermes_agent.gateway.run_turn_prepare import GatewayTurnPrepareMixin
+from hermes_agent.gateway.run_background import GatewayBackgroundMixin
+from hermes_agent.gateway.run_turn_hygiene import GatewayTurnHygieneMixin
+from hermes_agent.gateway.run_turn_persistence import GatewayTurnPersistenceMixin
 
 
 class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, GatewayTurnPersistenceMixin):
@@ -189,7 +189,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
     async def _hmwa_stop_typing_for_turn(self, event, source):
         """Stop the typing indicator (never raises), with the delivery path's thread/workspace routing
         metadata (Slack AI status is thread-scoped), on this turn's own message, not the chat's latest."""
-        from gateway.platforms.helpers import typing_metadata_for_turn
+        from hermes_agent.gateway.platforms.helpers import typing_metadata_for_turn
         with suppress(Exception):
             _typing_adapter = self._delivery_adapter_for(source)
             _kind = type(_typing_adapter)
@@ -236,7 +236,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
 
             # Capture the launch session id so post-run compression publication is identity-guarded
             # (a /new may move session_entry.session_id while the old run is still unwinding).
-            from gateway.run_heartbeat_acceptance import heartbeat_owner_is_current
+            from hermes_agent.gateway.run_heartbeat_acceptance import heartbeat_owner_is_current
             if not heartbeat_owner_is_current(self, event, session_key):
                 return
             _run_start_session_id = session_entry.session_id
@@ -338,8 +338,8 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         come from its secret scope (never process-global ``os.environ``). A standalone gateway
         (``multiplex_profiles`` off) still binds once a hosted room has flipped the process-wide
         credential guard — see ``_standalone_launch_scope``."""
-        from gateway.run import _profile_runtime_scope
-        from gateway.session_policy import local_desktop_turn
+        from hermes_agent.gateway.run import _profile_runtime_scope
+        from hermes_agent.gateway.session_policy import local_desktop_turn
         home = self._profile_scope_key_for_source(source)
         return local_desktop_turn(self, source, _profile_runtime_scope(home) if home is not None
                                   else self._standalone_launch_scope())
@@ -359,7 +359,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         Slash dispatch runs under the RECEIVING bot's scope (auth needs its ``.env``), which is not
         the routed runtime when a bot serves another profile's chat; every handler reading
         home-relative state (pending writes, memory store, config) binds the runtime here (#119915)."""
-        from gateway.run import _async_profile_runtime_scope
+        from hermes_agent.gateway.run import _async_profile_runtime_scope
         home = self._profile_scope_key_for_source(source)
         if home is not None:
             return _async_profile_runtime_scope(home)
@@ -392,7 +392,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         path validation reads no credentials and this runs on the event loop."""
         if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
             return nullcontext()
-        from gateway.run import _profile_runtime_scope
+        from hermes_agent.gateway.run import _profile_runtime_scope
         return _profile_runtime_scope(self._resolve_profile_home_for_source(source), {})
 
     def _reset_notice_session_info(self, source: SessionSource) -> str:
@@ -406,8 +406,8 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
     def _format_session_info(self, source: Optional[SessionSource] = None) -> str:
         """Model / provider / context-length / endpoint block so users can spot bad context detection.
         With ``source``, the chat's ``channel_overrides`` route is reported (what its turn runs)."""
-        from gateway.run import _resolve_gateway_model_context
-        from gateway.session_info_route import channel_override_route
+        from hermes_agent.gateway.run import _resolve_gateway_model_context
+        from hermes_agent.gateway.session_info_route import channel_override_route
         model, route, force_provider = channel_override_route(getattr(self, "config", None), source)
         resolved = _resolve_gateway_model_context(model=model, route=route)
         if force_provider:
@@ -494,7 +494,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
 
         See #95518.
         """
-        from gateway.run import _profile_runtime_scope
+        from hermes_agent.gateway.run import _profile_runtime_scope
         multiplex = bool(getattr(self.config, "multiplex_profiles", False))
         if multiplex and not get_hermes_home_override():
             profile_home = self._resolve_profile_home_for_source(event.source)
@@ -573,7 +573,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         Per-profile like GATEWAY_PROXY_KEY: under multiplex a raw environ read would ship a secondary's
         turns (authenticated with ITS scoped key) to the default profile's proxy. Same fallback shape as
         the key — only ``UnscopedSecretError`` (the unscoped default-profile path) reads the env."""
-        from gateway.run import _load_gateway_config
+        from hermes_agent.gateway.run import _load_gateway_config
         from agent.secret_scope import UnscopedSecretError, get_secret
         try:
             url = (get_secret("GATEWAY_PROXY_URL") or "").strip()
@@ -589,7 +589,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         """Build the shared ``StreamConsumerConfig`` and optional Telegram pause-typing closure.
         For non-editing adapters ``on_missing_cursor="fallback"`` streams with an empty cursor;
         ``"raise"`` raises ``RuntimeError`` so the caller skips streaming entirely."""
-        from gateway.stream_consumer import StreamConsumerConfig
+        from hermes_agent.gateway.stream_consumer import StreamConsumerConfig
         _pause_typing_before_finalize = None
         if source.platform == Platform.TELEGRAM and hasattr(adapter, "pause_typing_for_chat"):
             def _pause_typing_before_finalize(_adapter=adapter, _chat_id=source.chat_id) -> None:
@@ -634,23 +634,23 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
 
     def _proxy_stream_consumer(self, source: SessionSource, event_message_id, _thread_metadata, _run_still_current):
         """Platform stream consumer for the proxy path when streaming is enabled, else ``None``."""
-        from gateway.run import _load_gateway_config, _platform_config_key
+        from hermes_agent.gateway.run import _load_gateway_config, _platform_config_key
         _scfg = getattr(getattr(self, "config", None), "streaming", None)
         # #60671 — streaming TTS consumer is created on the outer event-loop thread before run_sync
         # launches.  run_sync only reads it via ``streaming_tts_consumer_holder[0]`` for delta callback
         # wiring.
         if _scfg is None:
-            from gateway.config import StreamingConfig
+            from hermes_agent.gateway.config import StreamingConfig
             _scfg = StreamingConfig()
         # Global master switch first: skips the config.yaml re-read on the default (off) path.
         if not _scfg.globally_enabled:
             return None
-        from gateway.display_config import resolve_display_setting
+        from hermes_agent.gateway.display_config import resolve_display_setting
         _plat_streaming = resolve_display_setting(_load_gateway_config(), _platform_config_key(source.platform), "streaming")
         if not _scfg.enabled_for(_plat_streaming):
             return None
         try:
-            from gateway.stream_consumer import GatewayStreamConsumer
+            from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer
             _adapter = self._delivery_adapter_for(source)
             if not _adapter:
                 return None
@@ -676,7 +676,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
 
         Lets a Docker container handle Matrix E2EE while the agent runs on the host with full
         access to local files, memory, skills, and a unified session store."""
-        from gateway.run import _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS
+        from hermes_agent.gateway.run import _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS
         try:
             from aiohttp import ClientSession as _AioClientSession, ClientTimeout
         except ImportError:
@@ -850,16 +850,16 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
 
     def _run_agent_display_settings(self, source: SessionSource) -> GatewayRunner._RunAgentDisplay:
         """Resolve per-platform display, progress, status and streaming-surface settings for a turn."""
-        from gateway.run import (
+        from hermes_agent.gateway.run import (
             _gateway_platform_value, _has_platform_display_override, _load_gateway_config,
             _platform_config_key,
         )
         from agent.secret_scope import get_secret
-        from gateway.display_config import resolve_display_setting, resolve_tool_progress
-        from gateway.status_phrases import choose_status_phrase, resolve_status_phrase_catalog
-        from gateway.session_policy import policy_for_source, policy_turn_toolsets
+        from hermes_agent.gateway.display_config import resolve_display_setting, resolve_tool_progress
+        from hermes_agent.gateway.status_phrases import choose_status_phrase, resolve_status_phrase_catalog
+        from hermes_agent.gateway.session_policy import policy_for_source, policy_turn_toolsets
         policy = policy_for_source(self, source)
-        from gateway.session_authorities import active_authority
+        from hermes_agent.gateway.session_authorities import active_authority
         user_config = policy.config(active_authority(self), secrets=False) if policy else _load_gateway_config()
         platform_key = policy.platform if policy else _platform_config_key(source.platform)
         enabled_toolsets, disabled_toolsets = self._resolve_turn_toolsets(user_config, source, platform_key)
@@ -983,7 +983,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         """Build the ``TurnContext`` and its ``TurnRunner``; ``turn_params`` (history, context_prompt,
         session_id, persist_user_*, …) are stored verbatim. Returns ``(turn_ctx, turn_runner,
         cleanup_adapter)``."""
-        from gateway.run_turn_runner import TurnRunner
+        from hermes_agent.gateway.run_turn_runner import TurnRunner
         # Discord voice "verbal ack" on the FIRST tool call (discord.voice_fx.enabled): resolve the
         # guild whose voice connection is bound to this text channel (mirrors DiscordAdapter.play_tts).
         _voice_ack_guild: list[Optional[int]] = [self._voice_ack_guild_for(source)]
@@ -1049,7 +1049,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         for status / approval / stream sends (Feishu topics need the triggering message id via the
         reply API, so carry it as a fallback). Slack and Buzz honour the user's reply_in_thread
         opt-out: never synthesise a thread for progress, or every later reply inherits it."""
-        from gateway.run import _non_conversational_metadata, _resolve_progress_thread_id
+        from hermes_agent.gateway.run import _non_conversational_metadata, _resolve_progress_thread_id
         is_buzz = str(getattr(source.platform, "value", source.platform) or "").lower() == "buzz"
         _progress_reply_in_thread = True
         _adapter = self._delivery_adapter_for(source) if source.platform == Platform.SLACK or is_buzz else None
@@ -1154,7 +1154,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         if _stts_adapter is None or not _is_voice_input or not _stts_adapter._should_auto_tts_for_chat(source.chat_id):
             return
         try:
-            from gateway.streaming_tts_consumer import StreamingTTSConsumer
+            from hermes_agent.gateway.streaming_tts_consumer import StreamingTTSConsumer
             from tools.tts_tool import _load_tts_config
             _stts_consumer = StreamingTTSConsumer(
                 adapter=_stts_adapter, chat_id=source.chat_id, tts_config=_load_tts_config(),
@@ -1214,7 +1214,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         Peek WITHOUT consuming: the event must stay for the post-run ``_dequeue_pending_event()``
         (popping races the agent finishing). Transcribe BEFORE signaling so voice interrupts carry
         the real transcript."""
-        from gateway.run import _build_media_placeholder
+        from hermes_agent.gateway.run import _build_media_placeholder
         _peek_event = adapter._pending_messages.get(session_key)
         pending_text = None
         if _peek_event is not None:
@@ -1329,7 +1329,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         *Inactivity* timeout (agent.gateway_timeout / HERMES_AGENT_TIMEOUT, env wins; 0 = unlimited),
         not wall-clock. The daemon watchdog is independent of asyncio: cgroup memory reclaim can
         starve the loop that runs the normal timeout poll."""
-        from gateway.run import _float_env, _watch_gateway_turn_inactivity
+        from hermes_agent.gateway.run import _float_env, _watch_gateway_turn_inactivity
         from tools.process_registry import process_registry
         agent_holder, session_key, run_generation = turn_ctx.agent_holder, turn_ctx.session_key, turn_ctx.run_generation
         _agent_timeout, _agent_warning = (
@@ -1385,7 +1385,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                 name=f"gateway-turn-watchdog-{_turn_task_id[:12]}",
                 daemon=True,
             ).start()
-        from gateway.session_runtime_workers import start_turn_worker
+        from hermes_agent.gateway.session_runtime_workers import start_turn_worker
         start_turn_worker(self, worker, agent_holder, _run_sync_with_timeout_lifecycle)
         return worker
 
@@ -1407,7 +1407,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
 
     async def _run_agent_inactivity_warning(self, worker, source, _status_thread_metadata) -> None:
         """Staged one-shot warning before the inactivity timeout escalates."""
-        from gateway.run import _interim_metadata
+        from hermes_agent.gateway.run import _interim_metadata
         _warn_adapter = self._delivery_adapter_for(source) if automatic_notices_allowed(source) else None
         if not _warn_adapter:
             return
@@ -1425,8 +1425,8 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
     def _run_agent_timeout_result(self, worker, turn_ctx: TurnContext) -> dict:
         """Synthetic failed run dict for an inactivity timeout, with the activity-tracker diagnostic;
         interrupts the agent if it is still running so the thread pool worker is freed."""
-        from gateway.run import _INTERRUPT_REASON_TIMEOUT, _INTERRUPT_TOOL_REASON_TIMEOUT, request_hard_interrupt
-        from gateway.session_results import record_terminal_failure
+        from hermes_agent.gateway.run import _INTERRUPT_REASON_TIMEOUT, _INTERRUPT_TOOL_REASON_TIMEOUT, request_hard_interrupt
+        from hermes_agent.gateway.session_results import record_terminal_failure
         session_key, result_holder, tools_holder = turn_ctx.session_key, turn_ctx.result_holder, turn_ctx.tools_holder
         _timed_out_agent = turn_ctx.agent_holder[0]
         _activity = self._agent_activity_summary(_timed_out_agent)
@@ -1472,7 +1472,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         """Poll the executor future (inactivity timeout + backup interrupt checks); return its result,
         or a synthetic failed run dict on inactivity timeout. Polls even with an unlimited timeout
         so the backup interrupt check runs if monitor_for_interrupt() silently died."""
-        from gateway.run import _abandon_timed_out_gateway_turn
+        from hermes_agent.gateway.run import _abandon_timed_out_gateway_turn
         agent_holder = turn_ctx.agent_holder
         _warning_fired = False
         while True:
@@ -1508,8 +1508,8 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         # A provider fallback is drift even when it serves the configured model name on another endpoint.
         if getattr(_agent, "_provider_fallback_active", False) is not True:
             # A LOCAL session runs its frozen launch policy's model, not the gateway's configured one.
-            from gateway.session_authorities import active_authority
-            from gateway.session_policy import policy_for_source
+            from hermes_agent.gateway.session_authorities import active_authority
+            from hermes_agent.gateway.session_policy import policy_for_source
             policy = policy_for_source(self, turn_ctx.source)
             _cfg_model = self._fallback_baseline_model(
                 session_key, turn_ctx.source, _agent, policy_model=policy.current_model(active_authority(self)) if policy and policy.model else None)
@@ -1544,8 +1544,8 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         """Dequeue the adapter's pending / interrupt / leftover-steer follow-up as ``(pending_event, pending)``.
 
         Keyed by session_key (not source.chat_id) to match the adapter's storage keys."""
-        from gateway.run import _build_media_placeholder, _dequeue_pending_event, _is_control_interrupt_message
-        from gateway.session_ingress import executing_admission
+        from hermes_agent.gateway.run import _build_media_placeholder, _dequeue_pending_event, _is_control_interrupt_message
+        from hermes_agent.gateway.session_ingress import executing_admission
         pending_event = None
         pending = None
         if result and adapter and session_key:
@@ -1691,7 +1691,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         response: Any, result: Any, stream_task: Any,
     ) -> Any:
         """Run the queued / interrupting follow-up as the next turn (recursive ``_run_agent``)."""
-        from gateway.run import _preserve_queued_followup_history_offset
+        from hermes_agent.gateway.run import _preserve_queued_followup_history_offset
         source, session_id, session_key, run_generation = (
             turn_ctx.source, turn_ctx.session_id, turn_ctx.session_key, turn_ctx.run_generation,
         )
@@ -1758,7 +1758,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             )
             if next_message is None:
                 return result
-            from gateway.run_inbound import strip_discord_triggering_note
+            from hermes_agent.gateway.run_inbound import strip_discord_triggering_note
             next_persist_message = strip_discord_triggering_note(pending_event, next_message)
             next_message_id = self._reply_anchor_for_event(pending_event)
             next_inbound_id = str(pending_event.message_id) if getattr(pending_event, "message_id", None) else None
@@ -1801,7 +1801,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         # guard will consult. Fail-safe in helper.
         # Acknowledge the follow-up like an idle-session message (base.py's hook site never sees an in-band
         # drain), via the adapter of its OWN source: only that profile's instance holds its reaction state.
-        from gateway.run_turn_followup_ack import _followup_cancel_outcome, _run_followup_processing_hook
+        from hermes_agent.gateway.run_turn_followup_ack import _followup_cancel_outcome, _run_followup_processing_hook
         _hook_adapter = self._intake_adapter_for(next_source) if pending_event is not None else None
         await _run_followup_processing_hook(_hook_adapter, pending_event, "on_processing_start")
         # The re-baseline sits inside the try: a /stop landing on its DB await must still close the marker
@@ -1922,7 +1922,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         Never when the agent failed (unseen error), on "(empty)", or on a finite (`-z`, `chat -q`) turn:
         its viewer prints only the completion text, never the deltas (#139666). Both flags reflect call
         success, not content: a mismatch with the recorded turn-final payload never suppresses."""
-        from gateway.session_finite import finite_turn_required
+        from hermes_agent.gateway.session_finite import finite_turn_required
         _sc, source, session_key = turn_ctx.stream_consumer_holder[0], turn_ctx.source, turn_ctx.session_key
         if not isinstance(response, dict) or response.get("failed") or finite_turn_required() is True:
             return
@@ -2031,7 +2031,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
 
         Interval: agent.gateway_notify_interval / HERMES_AGENT_NOTIFY_INTERVAL (default 180s; 0 or
         long_running_notifications=off disables)."""
-        from gateway.run import _float_env, _interim_metadata, _non_conversational_metadata
+        from hermes_agent.gateway.run import _float_env, _interim_metadata, _non_conversational_metadata
         _notify_start = time.time()
         _NOTIFY_INTERVAL = _float_env("HERMES_AGENT_NOTIFY_INTERVAL", 180)
         _long_running_mode = disp._display_surface_mode("long_running_notifications", default=True, allow_generic=True)
@@ -2121,7 +2121,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             )
             # The remote turn is this admission's executed turn (``TurnRunner.run_sync`` records
             # the local one): without it a finite run would settle as a no-execution refusal.
-            from gateway.session_results import execution_result
+            from hermes_agent.gateway.session_results import execution_result
             captured = execution_result.get()
             if captured is not None and 'result' not in captured:
                 captured['result'] = result

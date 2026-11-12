@@ -10,7 +10,7 @@ The same pattern also failed for ``MEDIA:/path/file.pngSome text`` — the
 fallback would treat the trailing text as part of the path.
 """
 
-from gateway.platforms.base import (
+from hermes_agent.gateway.platforms.base import (
     _strip_media_tag_directives,
 )
 

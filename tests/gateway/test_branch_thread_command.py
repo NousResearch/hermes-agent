@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionSource, SessionStore
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionSource, SessionStore
 from hermes_agent.hermes_state import AsyncSessionDB
 
 
@@ -34,7 +34,7 @@ def store(tmp_path, monkeypatch):
 
 
 def _runner(store, adapter):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.adapters = {Platform.DISCORD: adapter} if adapter else {}

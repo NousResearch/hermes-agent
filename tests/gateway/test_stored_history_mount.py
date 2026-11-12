@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_contract import SessionRef
+from hermes_agent.gateway.session_contract import SessionRef
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 ROWS = {
@@ -25,11 +25,11 @@ ROWS = {
 
 async def _connect(tmp_path, monkeypatch, sid, **identity):
     """A fresh gateway over a state.db holding *sid*, and a native Desktop connection to it."""
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {'default': 'm1', 'provider': 'openrouter'}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     db = store._db
@@ -64,7 +64,7 @@ async def test_old_stored_history_opens_read_only_for_its_owner(tmp_path, monkey
 @pytest.mark.asyncio
 async def test_a_caller_that_is_not_the_owner_still_finds_nothing(tmp_path, monkeypatch):
     """A remote login is not evidence of ownership, before or after the owner opened the row."""
-    from gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_contract import SessionActor
     conn, ref = await _connect(tmp_path, monkeypatch, 'cron_job1_20261001_120000')
     login = SessionActor('basic:alice', ref.profile_id, frozenset({'session:read'}), 'web-socket')
     with pytest.raises(RuntimeStoreError, match='not_found'):
@@ -147,7 +147,7 @@ async def test_the_reads_a_viewer_sends_for_an_open_chat_answer_on_a_mount(tmp_p
                            ('config.get', {**sid, 'key': 'mtime'}), ('model.options', sid)):
         reply = await conn.dispatch({'id': 1, 'method': method, 'params': params})
         assert 'result' in reply, (method, reply)
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
     runner = conn.authority.runner
     for name in ('_voice_key_for_source', '_voice_key', '_resolve_session_service_tier', '_resolve_session_key_or_none',
                  '_peek_session_state', '_load_service_tier'):
@@ -169,8 +169,8 @@ async def test_an_api_chat_opened_read_only_still_continues_through_the_api(tmp_
     that opened it keeps receiving the bound conversation's events and detaches normally."""
     import asyncio
     import queue
-    from gateway.config import Platform
-    from gateway.session_api import bind_api_session
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session_api import bind_api_session
     conn, ref = await _connect(tmp_path, monkeypatch, 'api-1')
     frames = queue.Queue()
     conn.authority.events[conn.actor.transport_id] = SimpleNamespace(write=lambda frame: frames.put(frame) or True)
@@ -215,9 +215,9 @@ async def test_a_compressed_cron_history_deletes_as_one_chat(tmp_path, monkeypat
 @pytest.mark.asyncio
 async def test_push_to_talk_reads_voice_off_on_a_mount(tmp_path, monkeypatch):
     """The TUI's push-to-talk gate on an opened stored chat raised AttributeError on the source-less mount."""
-    from gateway import run_api
-    from gateway.run import GatewayRunner
-    from gateway.session_config import local_voice_enabled
+    from hermes_agent.gateway import run_api
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_config import local_voice_enabled
     conn, ref = await _connect(tmp_path, monkeypatch, 'cron_job1_20261001_120000')
     await conn.resume(ref, {})
     runner = conn.authority.runner

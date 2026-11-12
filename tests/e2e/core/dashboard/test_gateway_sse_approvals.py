@@ -1,7 +1,7 @@
 """SSE approvals on a real gateway: one turn, one pending approval, two clients.
 
 Refs #145171 (EP-2): rebuilds the manual #134889 "SSE approvals over /v1/chat/completions" check as
-a scripted e2e test. A real ``python -m gateway.run`` serves the API-server platform from the
+a scripted e2e test. A real ``python -m hermes_agent.gateway.run`` serves the API-server platform from the
 profile ``.env`` (as a user configures it) in a sandboxed HOME; the model is ``FakeLLMServer``,
 which asks for an approval-gated terminal command (``rm -rf`` of a sandbox directory) and answers
 once the tool result comes back. ``approvals.mode: manual`` makes the gate the human prompt.

@@ -55,8 +55,8 @@ def standalone(monkeypatch: pytest.MonkeyPatch, tmp_path):
                 "all_proxy", "HERMES_TELEGRAM_NOTIFICATIONS"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
-    monkeypatch.setattr("gateway.platforms.base._detect_macos_system_proxy", lambda: None)
+    monkeypatch.setattr("hermes_agent.gateway.run._gateway_runner_ref", lambda: None)
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base._detect_macos_system_proxy", lambda: None)
     bot = MagicMock()
     bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=7))
     bot.send_document = AsyncMock(return_value=SimpleNamespace(message_id=8))
@@ -64,7 +64,7 @@ def standalone(monkeypatch: pytest.MonkeyPatch, tmp_path):
     _install_telegram_mock(monkeypatch, bot)
 
     def run(message, *, config="", extra=None, notify=None, media_files=None, thread_id=None):
-        from gateway.config import Platform, PlatformConfig
+        from hermes_agent.gateway.config import Platform, PlatformConfig
         from tools.send_message_tool import _send_to_platform
         (tmp_path / "config.yaml").write_text(config, encoding="utf-8")
         pconfig = PlatformConfig(enabled=True, token="tok", extra=extra or {})
@@ -313,7 +313,7 @@ def test_a_sender_written_to_the_earlier_contract_still_delivers(standalone, mon
     """A user plugin re-registering telegram with the documented ``standalone_sender_fn`` signature
     (no ``notify``) is reached through the real registry lookup and is never handed ``notify``; a
     sender taking ``**kwargs`` still gets it."""
-    from gateway.platform_registry import platform_registry
+    from hermes_agent.gateway.platform_registry import platform_registry
     from hermes_cli.plugins import discover_plugins
     discover_plugins()
     entry = platform_registry.get("telegram")
@@ -338,7 +338,7 @@ def test_a_sender_written_to_the_earlier_contract_still_delivers(standalone, mon
 def test_an_unhashable_callable_sender_still_delivers(standalone, monkeypatch) -> None:
     """A ``standalone_sender_fn`` that is a callable object defining ``__eq__`` (so unhashable)
     is reached through the real registry lookup and still gets ``notify``."""
-    from gateway.platform_registry import platform_registry
+    from hermes_agent.gateway.platform_registry import platform_registry
     from hermes_cli.plugins import discover_plugins
     discover_plugins()
 

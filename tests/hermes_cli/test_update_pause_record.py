@@ -713,7 +713,7 @@ def test_an_accepted_stop_the_record_could_not_checkpoint_outlives_the_request_t
     request's TTL: recovery keeps it owed. A request nobody consumed still expires (control)."""
     from datetime import datetime, timedelta, timezone
 
-    from gateway import status
+    from hermes_agent.gateway import status
     root, home = tmp_path / "root", tmp_path / "root" / "profiles" / "p"
     home.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))

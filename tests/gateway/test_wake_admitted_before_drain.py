@@ -8,8 +8,8 @@ import asyncio
 
 import pytest
 
-from gateway.platforms.event import MessageEvent
-from gateway.wake import WakeNotAccepted, deliver_wake
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.wake import WakeNotAccepted, deliver_wake
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 
 WAKE = "[kanban] Task t_1 completed."

@@ -32,7 +32,7 @@ class TestConfigEnvOverrides(unittest.TestCase):
         "EMAIL_HOME_ADDRESS": "user@test.com",
     }, clear=False)
     def test_email_home_channel_loaded(self):
-        from gateway.config import GatewayConfig, Platform, _apply_env_overrides
+        from hermes_agent.gateway.config import GatewayConfig, Platform, _apply_env_overrides
         config = GatewayConfig()
         _apply_env_overrides(config)
         home = config.platforms[Platform.EMAIL].home_channel
@@ -162,7 +162,7 @@ class TestDispatchMessage(unittest.TestCase):
 
     def _make_adapter(self):
         """Create an EmailAdapter with mocked env vars."""
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         with patch.dict(os.environ, {
             "EMAIL_ADDRESS": "hermes@test.com",
             "EMAIL_PASSWORD": "secret",
@@ -265,7 +265,7 @@ class TestDispatchMessage(unittest.TestCase):
     def test_image_attachment_sets_photo_type(self):
         """Email with image attachment should set message type to PHOTO."""
         import asyncio
-        from gateway.platforms.event import MessageType
+        from hermes_agent.gateway.platforms.event import MessageType
         adapter = self._make_adapter()
         captured_events = []
 
@@ -344,12 +344,12 @@ class TestDispatchDefersToGatewayAuthorization(unittest.TestCase):
         import asyncio
         import tempfile
         from pathlib import Path
-        from gateway.config import GatewayConfig, Platform, PlatformConfig
-        from gateway.pairing import PairingStore
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+        from hermes_agent.gateway.pairing import PairingStore
+        from hermes_agent.gateway.run import GatewayRunner
         from plugins.platforms.email.adapter import _NO_AUTH_RESULTS_REASON, EmailAdapter
         with tempfile.TemporaryDirectory() as pairing_dir, \
-                patch("gateway.pairing.PAIRING_DIR", Path(pairing_dir)), \
+                patch("hermes_agent.gateway.pairing.PAIRING_DIR", Path(pairing_dir)), \
                 patch.dict(os.environ, {"EMAIL_ADDRESS": "hermes@test.com", "EMAIL_PASSWORD": "secret",
                                         "EMAIL_IMAP_HOST": "imap.test.com", "EMAIL_SMTP_HOST": "smtp.test.com",
                                         **(env or {})}):
@@ -382,7 +382,7 @@ class TestDispatchDefersToGatewayAuthorization(unittest.TestCase):
         authserv_id pin warns once per account from connect(), including when the account first comes up via a
         reconnect after a failed initial connect."""
         import asyncio
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.email.adapter import _MISSING_AUTHSERV_REASON, _UNTRUSTED_AUTHSERV_REASON, EmailAdapter
 
         adapter_log = "plugins.platforms.email.adapter"
@@ -500,7 +500,7 @@ class TestThreadContext(unittest.TestCase):
             os.environ["EMAIL_ALLOW_ALL_USERS"] = self._prev_allow_all
 
     def _make_adapter(self):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         with patch.dict(os.environ, {
             "EMAIL_ADDRESS": "hermes@test.com",
             "EMAIL_PASSWORD": "secret",
@@ -538,7 +538,7 @@ class TestSendMethods(unittest.TestCase):
     """Test email send methods."""
 
     def _make_adapter(self):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         with patch.dict(os.environ, {
             "EMAIL_ADDRESS": "hermes@test.com",
             "EMAIL_PASSWORD": "secret",
@@ -610,7 +610,7 @@ class TestConnectDisconnect(unittest.TestCase):
     """Test IMAP/SMTP connection lifecycle."""
 
     def _make_adapter(self):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         with patch.dict(os.environ, {
             "EMAIL_ADDRESS": "hermes@test.com",
             "EMAIL_PASSWORD": "secret",
@@ -650,7 +650,7 @@ class TestFetchNewMessages(unittest.TestCase):
     """Test IMAP message fetching logic."""
 
     def _make_adapter(self):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         with patch.dict(os.environ, {
             "EMAIL_ADDRESS": "hermes@test.com",
             "EMAIL_PASSWORD": "secret",
@@ -695,7 +695,7 @@ class TestPollLoop(unittest.TestCase):
     """Test the async polling loop."""
 
     def _make_adapter(self):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         with patch.dict(os.environ, {
             "EMAIL_ADDRESS": "hermes@test.com",
             "EMAIL_PASSWORD": "secret",
@@ -977,7 +977,7 @@ class TestReconnectSeenUidsRestore(unittest.TestCase):
     """connect(is_reconnect=True) must not re-mark the whole mailbox seen."""
 
     def _make_adapter(self):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         with patch.dict(os.environ, {
             "EMAIL_ADDRESS": "hermes@test.com",
             "EMAIL_PASSWORD": "secret",
@@ -1093,7 +1093,7 @@ class TestSmtpConnectionCleanup(unittest.TestCase):
         "EMAIL_SMTP_PORT": "587",
     }, clear=False)
     def _make_adapter(self):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.email.adapter import EmailAdapter
         return EmailAdapter(PlatformConfig(enabled=True))
 
@@ -1130,7 +1130,7 @@ class TestImapConnectionCleanup(unittest.TestCase):
         "EMAIL_SMTP_HOST": "smtp.test.com",
     }, clear=False)
     def _make_adapter(self):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.email.adapter import EmailAdapter
         return EmailAdapter(PlatformConfig(enabled=True))
 
@@ -1170,7 +1170,7 @@ class TestImapIdExtensionForNetEase(unittest.TestCase):
     """
 
     def _make_adapter(self):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         with patch.dict(os.environ, {
             "EMAIL_ADDRESS": "hermes@163.com",
             "EMAIL_PASSWORD": "secret",
@@ -1216,7 +1216,7 @@ class TestConnectSmtp(unittest.TestCase):
     """Test _connect_smtp() helper: protocol selection and IPv6 fallback."""
 
     def _make_adapter(self, port="587"):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         with patch.dict(os.environ, {
             "EMAIL_ADDRESS": "hermes@test.com",
             "EMAIL_PASSWORD": "secret",
@@ -1274,7 +1274,7 @@ class TestConnectionConfigResolution(unittest.TestCase):
         """A missing host returns False without the cryptic DNS error, and marks
         the failure non-retryable so the gateway stops reconnecting (#40715)."""
         import asyncio
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.email.adapter import EmailAdapter
         with patch.dict(os.environ, {
             "EMAIL_ADDRESS": "hermes@test.com",
@@ -1442,8 +1442,8 @@ def test_oversized_cron_output_is_delivered_as_one_whole_email():
     """No 4000-char truncation footer pointing at a file on the gateway host: the router hands
     the whole cron payload to the email adapter, which sends it as a single message."""
     import asyncio
-    from gateway.config import GatewayConfig, PlatformConfig
-    from gateway.delivery import DeliveryRouter
+    from hermes_agent.gateway.config import GatewayConfig, PlatformConfig
+    from hermes_agent.gateway.delivery import DeliveryRouter
 
     with patch.dict(os.environ, {"EMAIL_ADDRESS": "hermes@test.com", "EMAIL_PASSWORD": "secret",
                                  "EMAIL_IMAP_HOST": "imap.test.com", "EMAIL_SMTP_HOST": "smtp.test.com"}):

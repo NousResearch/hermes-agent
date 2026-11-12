@@ -109,10 +109,10 @@ def test_offered_only_where_the_account_lists_it(catalog):
 
 def _owner_policies(home, monkeypatch):
     """Real launch policies, built the way each producer builds them (build_policy, then the hosted-room and
-    A2A rewrites in gateway/session_hosted_rpc.py and gateway/session_a2a.py), keyed by a LOCAL chat id."""
+    A2A rewrites in hermes_agent/gateway/session_hosted_rpc.py and hermes_agent/gateway/session_a2a.py), keyed by a LOCAL chat id."""
     from dataclasses import replace
-    from gateway import run as gateway_run
-    from gateway import session_policy
+    from hermes_agent.gateway import run as gateway_run
+    from hermes_agent.gateway import session_policy
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(gateway_run, "_hermes_home", home)  # frozen at import by an earlier test
     policies = {label: session_policy.build_policy({"source": label}, {}, private_secrets={})
@@ -129,7 +129,7 @@ def _owner_policies(home, monkeypatch):
 
 
 def _load(platform, chat_id="gui", check="_load_daybreak"):
-    from gateway.run_config_loaders import GatewayConfigLoadersMixin
+    from hermes_agent.gateway.run_config_loaders import GatewayConfigLoadersMixin
     runner = type("Runner", (GatewayConfigLoadersMixin,), {})()
     return getattr(runner, check)(SimpleNamespace(platform=platform, chat_id=chat_id))
 
@@ -137,7 +137,7 @@ def _load(platform, chat_id="gui", check="_load_daybreak"):
 def test_gateway_reads_the_profile_switch_each_turn(tmp_path, monkeypatch):
     """The owner's chat turns (Desktop, TUI, ``hermes chat``: ``Platform.LOCAL``) run in the gateway, which copies
     the switch onto the turn's agent from the profile's config.yaml, so a flip reaches the next turn of a running chat."""
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     home = tmp_path / ".hermes"
     home.mkdir()
     _owner_policies(home, monkeypatch)
@@ -153,7 +153,7 @@ def test_only_the_owners_own_chats_carry_daybreak(tmp_path, monkeypatch):
     """Daybreak is the approved account's own access (OpenAI: no third-party or downstream use). Messaging
     chats, hosted rooms, A2A peers, third-party ``tool`` integrations and editor clients can be other people,
     so with the switch on only the owner's Desktop, TUI and CLI chats carry it."""
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     home = tmp_path / ".hermes"
     home.mkdir()
     policies = _owner_policies(home, monkeypatch)
@@ -171,7 +171,7 @@ def test_delegation_sees_the_owners_gateway_chat_with_the_switch_off(tmp_path, m
     whether it is the owner's own (its launch policy) apart from ``agent.daybreak``, and delegation reads that."""
     from agent.session_source import turn_daybreak_surface
     from agent.subagent_lifecycle import bind_subagent_parent
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     home = tmp_path / ".hermes"
     home.mkdir()
     policies = _owner_policies(home, monkeypatch)

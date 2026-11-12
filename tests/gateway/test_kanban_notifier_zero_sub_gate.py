@@ -11,7 +11,7 @@ never opened writable.
 #63001 was deliberately NOT salvaged: a lock-winning default-profile gateway
 cannot deliver a secondary profile's subscriptions in standalone-profile
 deployments — profile routing fails closed in
-``gateway/authz_mixin.py::_authorization_adapter`` — so the lock could
+``hermes_agent/gateway/authz_mixin.py::_authorization_adapter`` — so the lock could
 suppress delivery entirely. The read-only probe captures the per-tick cost
 win without that risk.)
 """
@@ -20,8 +20,8 @@ import asyncio
 
 from unittest.mock import patch
 
-from gateway.config import Platform
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn

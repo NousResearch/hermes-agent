@@ -8,8 +8,8 @@ from tests.gateway.test_multiplex_hot_serve import _mkprofile, _runner
 
 @pytest.mark.asyncio
 async def test_probe_skip_keeps_a_parked_profile_parked(tmp_path, monkeypatch):
-    from gateway import run_profile_reconcile as reconcile_mod
-    from gateway.run import MultiplexConfigError
+    from hermes_agent.gateway import run_profile_reconcile as reconcile_mod
+    from hermes_agent.gateway.run import MultiplexConfigError
 
     runner, home = _runner(tmp_path, monkeypatch)
     _mkprofile(home, 'alpha', 'DISCORD_BOT_TOKEN=alpha-token\n')
@@ -24,7 +24,7 @@ async def test_probe_skip_keeps_a_parked_profile_parked(tmp_path, monkeypatch):
         assert (await runner.reconcile_served_profiles())['parked'] == ['delta']
 
         # The next cycle's own-gateway probe stalls for delta: unprovable, skipped this cycle.
-        monkeypatch.setattr('gateway.status.live_gateway_pid_for_home', lambda profile_home: None)
+        monkeypatch.setattr('hermes_agent.gateway.status.live_gateway_pid_for_home', lambda profile_home: None)
         monkeypatch.setattr(reconcile_mod, '_OWN_GATEWAY_PROBE_TIMEOUT_SECS', 0.0)
         await runner.reconcile_served_profiles(reason='watcher')
         assert 'delta' in runner.session_runtime_descriptor['parked_profiles']

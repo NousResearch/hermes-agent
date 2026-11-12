@@ -5,8 +5,8 @@ import os
 
 import pytest
 
-from gateway.session_api_media import compact_settled_api_payloads
-from gateway.session_api_turn import admit_api_turn, recover_api_turns
+from hermes_agent.gateway.session_api_media import compact_settled_api_payloads
+from hermes_agent.gateway.session_api_turn import admit_api_turn, recover_api_turns
 from hermes_agent.hermes_state_runtime import claim_session_input, settle_session_input
 
 IMAGE = b'\x89PNG\r\n\x1a\n' + os.urandom(16 * 1024)

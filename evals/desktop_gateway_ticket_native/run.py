@@ -106,7 +106,7 @@ def main():
                 encoding='utf-8')
             log = (output / f'daemon-{index}.log').open('w', encoding='utf-8')
             logs.append(log)
-            process = subprocess.Popen([python, '-m', 'gateway.run'], cwd=REPO,
+            process = subprocess.Popen([python, '-m', 'hermes_agent.gateway.run'], cwd=REPO,
                                        env={**env, 'HERMES_HOME': str(profile)},
                                        stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
             processes.append(process)

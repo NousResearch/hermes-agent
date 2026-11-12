@@ -24,7 +24,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.turn_lease import (
+from hermes_agent.gateway.turn_lease import (
     SessionTurnLeaseRegistry,
     TurnLeaseTimeoutError,
 )
@@ -459,7 +459,7 @@ def test_rebind_does_not_replace_target_during_waiter_handoff():
 
 
 def test_runner_release_turn_lease_is_token_scoped_and_bare_safe():
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     # Bare runner without __init__: must be a safe no-op (pitfall #17).

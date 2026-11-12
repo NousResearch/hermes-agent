@@ -20,23 +20,23 @@ from collections import OrderedDict
 from functools import partial
 from typing import Any, Awaitable, Callable, Dict, NamedTuple, Optional, Tuple, Union
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import (
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult,
 )
-from gateway.platforms.event import ProcessingOutcome
-from gateway.platforms.helpers import clarify_text_with_choices
+from hermes_agent.gateway.platforms.event import ProcessingOutcome
+from hermes_agent.gateway.platforms.helpers import clarify_text_with_choices
 from agent.i18n import t
-from gateway.relay.adapter_discord_interaction import RelayDiscordInteractionMixin
-from gateway.relay.descriptor import CapabilityDescriptor
-from gateway.relay.egress import (
+from hermes_agent.gateway.relay.adapter_discord_interaction import RelayDiscordInteractionMixin
+from hermes_agent.gateway.relay.descriptor import CapabilityDescriptor
+from hermes_agent.gateway.relay.egress import (
     EGRESS_DECLINE_CODE,
     decline_error,
     is_egress_decline,
     log_decline,
 )
-from gateway.relay.media import RelayMediaClient
-from gateway.relay.transport import RelayTransport
+from hermes_agent.gateway.relay.media import RelayMediaClient
+from hermes_agent.gateway.relay.transport import RelayTransport
 from datetime import UTC
 
 logger = logging.getLogger(__name__)
@@ -109,7 +109,7 @@ def _profile_from_session_key(session_key: str) -> Optional[str]:
     parts = (session_key or "").split(":")
     if len(parts) < 2 or parts[0] != "agent" or not parts[1]:
         return None
-    from gateway.session import profile_from_session_key_namespace
+    from hermes_agent.gateway.session import profile_from_session_key_namespace
     profile = profile_from_session_key_namespace(parts[1])
     return None if profile == "default" else profile
 
@@ -336,7 +336,7 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         return "task_card" in (self.descriptor.supported_ops or ())
 
     def native_task_cards_enabled(self) -> bool:
-        """TurnRunner opt-in probe (gateway/run.py calls THIS name, same contract as
+        """TurnRunner opt-in probe (hermes_agent/gateway/run.py calls THIS name, same contract as
         native Slack); without the alias the card lane silently stays text-mode."""
         return self.supports_native_task_cards()
 
@@ -815,7 +815,7 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         # the transport's own reconnect supervisor.
         if self._transport is None:
             # ``is_reconnect`` is part of the BasePlatformAdapter.connect contract: the gateway's reconnect
-            # watcher (gateway/run.py) re-establishes a platform after a fatal adapter error by building a
+            # watcher (hermes_agent/gateway/run.py) re-establishes a platform after a fatal adapter error by building a
             # fresh adapter and calling ``connect(is_reconnect=True)``. Relay MUST accept the kwarg or that
             # recovery path raises TypeError and the relay platform can never come back through the watcher.
             # The flag exists so adapters with a server-side update queue (e.g. Telegram's Bot API) preserve
@@ -923,7 +923,7 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             raise
         if native:
             from datetime import datetime
-            from gateway.relay.inbound_admission import admit_relay_delivery
+            from hermes_agent.gateway.relay.inbound_admission import admit_relay_delivery
             # The connector does not transmit a provider timestamp. Local arrival
             # time must not change the fingerprint of a retried provider identity.
             event.timestamp = datetime.fromtimestamp(0, UTC)
@@ -1040,7 +1040,7 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
 
     async def _localize_inbound_media(self, event) -> None:
         """Download connector attachments, retaining metadata for each surviving file."""
-        from gateway.relay.adapter_inbound_media import localize_inbound_media
+        from hermes_agent.gateway.relay.adapter_inbound_media import localize_inbound_media
         await localize_inbound_media(event, self._get_media_client)
 
     def prime_routing_cache(self, event) -> None:
@@ -1132,7 +1132,7 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         # the top and thread the REMAINDER down — otherwise teardown is cancelled
         # mid-drain and the transport's fail-pending loop is skipped (callers then
         # block on _OUTBOUND_TIMEOUT_S).
-        from gateway.relay.ws_transport import _env_disconnect_budget_s
+        from hermes_agent.gateway.relay.ws_transport import _env_disconnect_budget_s
         _started = time.monotonic()
         _budget = _env_disconnect_budget_s()
         # Stop the revocation monitor first so it can't fire a spurious fatal
@@ -1642,8 +1642,8 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         if self._media_client is not None:
             return self._media_client
         try:
-            from gateway.relay import relay_connection_auth, relay_url
-            from gateway.relay.media import media_base_url
+            from hermes_agent.gateway.relay import relay_connection_auth, relay_url
+            from hermes_agent.gateway.relay.media import media_base_url
 
             url = relay_url()
             gateway_id, secret = relay_connection_auth()
@@ -1997,10 +1997,10 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             )
             return True
         pending = self._pending_prompts.get(str(prompt_id)) or {}
-        from gateway.relay.prompt_resolvers import prompt_refusal
+        from hermes_agent.gateway.relay.prompt_resolvers import prompt_refusal
         actor = None
         if pending.get("kind") in ("exec_approval", "slash_confirm", "clarify"):
-            from gateway.approval_actor import runner_answer_policy
+            from hermes_agent.gateway.approval_actor import runner_answer_policy
             # Identity first: this answer is consumed before handle_message, and without the transport
             # identity the admin lookup read the routed runtime profile instead of the bot-owning one.
             self._canonicalize(event.source)
@@ -2019,7 +2019,7 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
 
         kind = state.get("kind")
         chat_id = str(state.get("chat_id") or getattr(event.source, "chat_id", ""))
-        from gateway.relay.prompt_resolvers import PROMPT_RESOLVERS
+        from hermes_agent.gateway.relay.prompt_resolvers import PROMPT_RESOLVERS
         handler = PROMPT_RESOLVERS.get(kind)
         try:
             if handler is None:

@@ -9,7 +9,7 @@ live cases run a real gateway listener in a child process (``fixtures/webapp_fal
 """
 import pytest
 
-from gateway import webapp_listener
+from hermes_agent.gateway import webapp_listener
 from hermes_cli import webapp_launcher as launcher
 from tests.gateway.fixtures.webapp_fallback_peer import free_port, run
 

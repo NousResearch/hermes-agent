@@ -1,12 +1,12 @@
 import asyncio
 
 
-from gateway.config import Platform
-from gateway.kanban_watchers_common import (
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.kanban_watchers_common import (
     _acquire_singleton_lock,
     _release_singleton_lock,
 )
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
@@ -289,7 +289,7 @@ class ReportedFailureAdapter:
 
     async def send(self, chat_id, text, metadata=None):
         self.attempts += 1
-        from gateway.platforms.base import SendResult
+        from hermes_agent.gateway.platforms.base import SendResult
         return SendResult(success=False, error="Not connected")
 
 
@@ -495,7 +495,7 @@ def test_notifier_wakeup_uses_subscription_chat_type(tmp_path, monkeypatch):
     # was that a hardcoded chat_type="group" made build_session_key() produce
     # a group-scoped key (a NEW session) instead of the ":dm:<chat_id>" shape
     # the original conversation runs under (#56580 / #68874).
-    from gateway.session import build_session_key
+    from hermes_agent.gateway.session import build_session_key
 
     wake_key = build_session_key(adapter.handled[0].source)
     assert wake_key == "agent:main:telegram:dm:chat-dm"
@@ -642,7 +642,7 @@ class _StubNotif:
 
 
 def _fmt_block_loop(payload):
-    from gateway.kanban_watchers_notifier import _EVENT_FORMATTERS
+    from hermes_agent.gateway.kanban_watchers_notifier import _EVENT_FORMATTERS
 
     msg, _, _ = _EVENT_FORMATTERS["block_loop_detected"](_StubEvent(payload), _StubNotif())
     return msg

@@ -15,8 +15,8 @@ own the session never gets a wake in anyone's store.
 import asyncio
 from types import SimpleNamespace
 
-from gateway.config import Platform
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.run import GatewayRunner
 from tests.gateway.test_kanban_notifier_served_apiserver_wake import (
     RecordingApiServerAdapter, _FakeHttpSession, _own_session, served,
 )

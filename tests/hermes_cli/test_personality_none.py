@@ -83,7 +83,7 @@ class TestGatewayPersonalityNone:
         return event
 
     def _make_runner(self, personalities=None):
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
         runner = GatewayRunner.__new__(GatewayRunner)
         runner.config = {
             "agent": {
@@ -94,10 +94,10 @@ class TestGatewayPersonalityNone:
 
     def _gateway_env(self, tmp_path):
         # The gateway reads via _load_gateway_config (rooted at
-        # gateway.run._hermes_home) and persists via persist_personality
+        # hermes_agent.gateway.run._hermes_home) and persists via persist_personality
         # (rooted at HERMES_HOME) — point both at the same tmp dir.
         return (
-            patch("gateway.run._hermes_home", tmp_path),
+            patch("hermes_agent.gateway.run._hermes_home", tmp_path),
             patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}),
         )
 

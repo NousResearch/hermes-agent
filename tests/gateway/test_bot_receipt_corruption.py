@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_bot import _migrate, recover_bot_deliveries
-from gateway.session_results import retain_result
+from hermes_agent.gateway.session_bot import _migrate, recover_bot_deliveries
+from hermes_agent.gateway.session_results import retain_result
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import (
     admit_session_input,
@@ -149,7 +149,7 @@ async def test_legacy_migration_skips_structurally_corrupt_neighbor(monkeypatch,
         entry = SimpleNamespace(session_id="tip")
         async def target(authority, actor):
             return ref, live, entry
-        monkeypatch.setattr("gateway.session_bot._target", target)
+        monkeypatch.setattr("hermes_agent.gateway.session_bot._target", target)
 
         @contextmanager
         def inactive_session(*args, **kwargs):
@@ -178,7 +178,7 @@ async def test_legacy_migration_skips_structurally_corrupt_neighbor(monkeypatch,
         ):
             migrated.append((key, message, legacy["status"]))
 
-        monkeypatch.setattr("gateway.session_bot._admit", fake_admit)
+        monkeypatch.setattr("hermes_agent.gateway.session_bot._admit", fake_admit)
 
     await _migrate(authority, object(), tmp_path, root)
 

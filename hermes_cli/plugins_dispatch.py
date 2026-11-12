@@ -45,7 +45,7 @@ _HOOK_TIMEOUT_BOUNDED_HOOKS: set[str] = {
     "pre_auxiliary_call", "post_auxiliary_call", "pre_verify", "on_session_start", "on_session_end", "on_session_open",
     # Fail-open consumer on every inbound gateway message: a hung plugin must not stall the profile.
     "post_gateway_admission",
-    # Observer on every local session's commands, fired by the gateway (gateway/session_commands.py).
+    # Observer on every local session's commands, fired by the gateway (hermes_agent/gateway/session_commands.py).
     "pre_command",
     # Fires inside the compression commit window (lease held): a hung plugin must not wedge the session.
     "post_compaction",

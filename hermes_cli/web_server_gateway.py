@@ -65,7 +65,7 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
 
 
 # ``platform-name -> (config port key, adapter default)`` for port-binding gateway platforms.
-# Mirrors PORT_BINDING_PLATFORM_VALUES (gateway/config.py) and each adapter's DEFAULT_PORT /
+# Mirrors PORT_BINDING_PLATFORM_VALUES (hermes_agent/gateway/config.py) and each adapter's DEFAULT_PORT /
 # DEFAULT_WEBHOOK_PORT. Display-only data for the topology readout, not a bind source.
 _PORT_BINDING_PLATFORM_PORTS: dict[str, tuple[str, int]] = {
     "webhook": ("port", 8644), "api_server": ("port", 8642), "msgraph_webhook": ("port", 8646),
@@ -129,7 +129,7 @@ def _profile_gateway_writer_identity(profile_home: Path, runtime: Optional[dict]
     the record, so equality is exact (no unit/clock-source mismatch).
     """
     try:
-        from gateway.status import _get_process_start_time, get_runtime_status_running_pid
+        from hermes_agent.gateway.status import _get_process_start_time, get_runtime_status_running_pid
         pid = get_runtime_status_running_pid(runtime, expected_home=profile_home)
         if pid is None:
             return None
@@ -169,7 +169,7 @@ def _collect_profile_gateway_topology() -> dict[str, Any]:
     """
     try:
         from hermes_cli.profiles import _check_gateway_running, profiles_to_serve, profile_is_parked
-        from gateway.status import read_runtime_status
+        from hermes_agent.gateway.status import read_runtime_status
         homes = profiles_to_serve(True, include_standalone=True, include_parked=True)
     except Exception:
         _log.debug("profile/gateway topology enumeration failed", exc_info=True)
@@ -262,7 +262,7 @@ def _load_configured_gateway_platforms() -> set[str]:
     """Connected platform names; synchronous by design — the first ``load_gateway_config()`` does
     platform discovery and can outlast Desktop's WS connect timeout on Windows, so ``get_status``
     runs this in Starlette's worker pool."""
-    from gateway.config import load_gateway_config
+    from hermes_agent.gateway.config import load_gateway_config
     return {platform.value for platform in load_gateway_config().get_connected_platforms()}
 
 
@@ -423,11 +423,11 @@ def _profile_action_environment(
     action_env["HERMES_NONINTERACTIVE"] = "1"
     # A config.yaml allow_all_users grant bridged into os.environ must not outlive the config that
     # produced it: drop it so the restarted child re-derives the posture from its own config.yaml.
-    from gateway.config_loader import drop_bridged_env
+    from hermes_agent.gateway.config_loader import drop_bridged_env
     drop_bridged_env(action_env)
     # The dashboard runs inside the gateway process, so os.environ carries _HERMES_GATEWAY=1;
     # inheriting it trips the child's in-process restart-loop guard (exit 1). Drop it, like
-    # the gateway's own restart watcher does (gateway/run.py, #52470).
+    # the gateway's own restart watcher does (hermes_agent/gateway/run.py, #52470).
     action_env.pop("_HERMES_GATEWAY", None)
     if env_overrides:
         action_env.update(env_overrides)
@@ -605,7 +605,7 @@ def _has_own_gateway(profile_dir: Path) -> bool:
     serves it. Gateway liveness reports a served profile as running on the multiplexer's PID (#97120),
     so reading liveness alone made every served profile look self-hosted and the refusal below never
     fired while a multiplexer was live, which is the only time it is needed."""
-    from gateway.status import get_running_pid, multiplexer_liveness_for_profile, resolve_gateway_liveness
+    from hermes_agent.gateway.status import get_running_pid, multiplexer_liveness_for_profile, resolve_gateway_liveness
     from hermes_cli.profiles import _check_gateway_running
     if not _check_gateway_running(profile_dir):
         return False
@@ -639,10 +639,10 @@ def multiplexed_profile_refusal(profile: Optional[str], verb: str) -> Optional[s
         # host record that still lists it (the host started before the key was set) is refused.
         if not served:
             return None
-        from gateway.host_attach import standalone_rescan_message
+        from hermes_agent.gateway.host_attach import standalone_rescan_message
         return standalone_rescan_message(requested)
     if verb == "start" and profile_is_parked(profile_dir):
-        from gateway.host_attach import host_gateway
+        from hermes_agent.gateway.host_attach import host_gateway
         if host_gateway() is not None:
             return None  # a live host unparks it; with no host the refusal below still applies
     if not served and verb != "start":
@@ -669,7 +669,7 @@ def live_session_refusal(profile: Optional[str], verb: str) -> Optional[str]:
     from hermes_cli.gateway_lifecycle_guards import refusal_lines
     from hermes_cli.web_server_profiles import _resolve_profile_dir
     homes = [_resolve_profile_dir(_own_profile_selector(profile) or "default")]
-    from gateway.host_attach import host_gateway
+    from hermes_agent.gateway.host_attach import host_gateway
     owner = host_gateway()
     if owner is not None:
         homes.append(Path(owner.home))

@@ -1,4 +1,4 @@
-"""Scoped-lock ownership and release, split from :mod:`gateway.status` (acquire stays there).
+"""Scoped-lock ownership and release, split from :mod:`hermes_agent.gateway.status` (acquire stays there).
 
 Helpers read status through the module at call time, preserving its patch seams.
 The acquire path imports the ownership check lazily to avoid an import cycle.
@@ -9,7 +9,7 @@ import contextlib
 import os
 from typing import Any, Optional
 
-from gateway import status as _status
+from hermes_agent.gateway import status as _status
 
 
 def _scoped_lock_record_is_stale(existing: dict[str, Any], existing_pid: Optional[int]) -> bool:

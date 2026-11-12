@@ -1,7 +1,7 @@
 """``clarify.lock`` on the session owner (#140400).
 
 The owner sends a local viewer's clarify batch as one ``clarify`` server request
-(``gateway/session_clarify_batch.py``). Ink's batch panel and Desktop's batch card answer it one
+(``hermes_agent/gateway/session_clarify_batch.py``). Ink's batch panel and Desktop's batch card answer it one
 question at a time with ``clarify.lock {request_id, question_id, answer}`` (``ClarifyLockParams`` /
 ``ClarifyLockResult``), as they did against main's sidecar; the owner had no such verb, so every
 answer was refused as an unknown method and the turn waited out ``clarify_timeout``. Only a viewer
@@ -13,7 +13,7 @@ from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
 async def clarify_lock(connection, ref, params):
-    from gateway.session_server_requests import lock_answer, may_settle
+    from hermes_agent.gateway.session_server_requests import lock_answer, may_settle
     # The dispatcher already refused unknown keys and mistyped fields against the declared
     # ``ClarifyLockParams`` (``hermes_agent/tui_gateway/contracts/canonical.py``); a missing or empty id is ours to refuse.
     # ``profile`` naming another served profile was routed to its owner by ``dispatch``.

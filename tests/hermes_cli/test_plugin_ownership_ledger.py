@@ -118,7 +118,7 @@ def test_load_force_reload_and_unload_remove_every_manager_registration(
 ):
     """A real temporary plugin has one live registration after each reload."""
     import hermes_cli.plugins as plugins_mod
-    from gateway.platform_registry import platform_registry
+    from hermes_agent.gateway.platform_registry import platform_registry
     from hermes_cli.plugins import PluginManager
     from tools.registry import registry
 
@@ -212,7 +212,7 @@ def test_load_force_reload_and_unload_remove_every_manager_registration(
 
 def test_reverse_unload_restores_an_overridden_platform_registration():
     """Reverse teardown reveals an older entry before removing it."""
-    from gateway.platform_registry import platform_registry
+    from hermes_agent.gateway.platform_registry import platform_registry
     from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 
     name = "ledger_override_platform"
@@ -589,7 +589,7 @@ def test_entrypoint_policy_uses_the_most_specific_module_prefix(tmp_path):
 
 def test_targeted_unload_does_not_resurrect_an_older_override():
     """Removing A under B tombstones A so B cannot restore it later."""
-    from gateway.platform_registry import platform_registry
+    from hermes_agent.gateway.platform_registry import platform_registry
     from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 
     name = "ledger_out_of_order_platform"
@@ -937,7 +937,7 @@ def test_registration_transaction_excludes_concurrent_disposal(monkeypatch):
 
 def test_deferred_platform_resolution_is_atomic_across_threads():
     """Concurrent first lookups both observe the materialized adapter."""
-    from gateway.platform_registry import PlatformEntry, PlatformRegistry
+    from hermes_agent.gateway.platform_registry import PlatformEntry, PlatformRegistry
 
     registry = PlatformRegistry()
     entry = PlatformEntry(
@@ -986,7 +986,7 @@ def test_deferred_platform_resolution_is_atomic_across_threads():
 
 def test_deferred_platform_recursive_lookup_does_not_deadlock():
     """A loader that asks for its own entry fails fast until registration."""
-    from gateway.platform_registry import PlatformEntry, PlatformRegistry
+    from hermes_agent.gateway.platform_registry import PlatformEntry, PlatformRegistry
 
     registry = PlatformRegistry()
     nested_results = []
@@ -1009,7 +1009,7 @@ def test_deferred_platform_recursive_lookup_does_not_deadlock():
 
 def test_resolved_deferred_platform_restores_its_displaced_loader():
     """Deferred-to-concrete loading remains one replacement chain."""
-    from gateway.platform_registry import platform_registry
+    from hermes_agent.gateway.platform_registry import platform_registry
     from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 
     name = "ledger_transfer"
@@ -1050,14 +1050,14 @@ def test_resolved_deferred_platform_restores_its_displaced_loader():
 
 def test_unload_cancels_a_deferred_platform_before_module_load():
     """Losing the in-flight race cannot publish registrations after unload."""
-    from gateway.platform_registry import platform_registry
+    from hermes_agent.gateway.platform_registry import platform_registry
     from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 
     name = "ledger_cancel"
     scope = platform_registry.current_scope_key()
     previous = platform_registry.snapshot_registration(name, scope=scope)
     def old_loader():
-        from gateway.platform_registry import PlatformEntry
+        from hermes_agent.gateway.platform_registry import PlatformEntry
 
         platform_registry.register(
             PlatformEntry(
@@ -1112,7 +1112,7 @@ def test_unload_cancels_a_deferred_platform_before_module_load():
 
 def test_direct_plugin_platform_registration_infers_immutable_scope(tmp_path):
     """The documented direct registry API cannot leak into another profile."""
-    from gateway.platform_registry import PlatformEntry, platform_registry
+    from hermes_agent.gateway.platform_registry import PlatformEntry, platform_registry
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from tools.registry import registry as tool_registry
 
@@ -1169,7 +1169,7 @@ def test_same_name_tool_and_platform_are_isolated_by_hermes_home(
 ):
     """Real A→B→A profile switching keeps dispatch and adapters isolated."""
     import hermes_cli.plugins as plugins_mod
-    from gateway.platform_registry import platform_registry
+    from hermes_agent.gateway.platform_registry import platform_registry
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_cli.plugins import PluginManager
     from tools.registry import registry
@@ -1231,7 +1231,7 @@ def test_manager_discovery_uses_its_home_not_the_ambient_profile(
 ):
     """A retained manager cannot scan another concurrently active profile."""
     import hermes_cli.plugins as plugins_mod
-    from gateway.platform_registry import platform_registry
+    from hermes_agent.gateway.platform_registry import platform_registry
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_cli.plugins import PluginManager
     from tools.registry import registry

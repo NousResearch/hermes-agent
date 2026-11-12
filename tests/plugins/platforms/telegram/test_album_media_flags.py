@@ -3,8 +3,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.platforms.event import MessageEvent
-from gateway.session_envelope import _media_clause
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session_envelope import _media_clause
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 

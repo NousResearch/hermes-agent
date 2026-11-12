@@ -15,13 +15,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.authz_mixin import GatewayAuthorizationMixin
+from hermes_agent.gateway.authz_mixin import GatewayAuthorizationMixin
 
 
 class _Runner(GatewayAuthorizationMixin):
     def __init__(self, tmp_path, multiplex=None):
-        from gateway.config import GatewayConfig
-        from gateway.session import SessionStore
+        from hermes_agent.gateway.config import GatewayConfig
+        from hermes_agent.gateway.session import SessionStore
         self.config = GatewayConfig(multiplex_profiles=multiplex)
         self.session_store = SessionStore(tmp_path / 'sessions', self.config)
         self._session_db = self.session_store._db
@@ -31,7 +31,7 @@ class _Runner(GatewayAuthorizationMixin):
     def _cached_agent_for(self, route):
         """A chat's route holds the agent of the conversation it names (a stand-in: no turn ran), so
         ``agent(ref) is None`` proves a conversation the chat moved past never reaches it."""
-        from gateway.run import _parse_session_key
+        from hermes_agent.gateway.run import _parse_session_key
         platform = (_parse_session_key(route) or {}).get('platform')
         if platform in (None, 'local'):
             return None
@@ -39,8 +39,8 @@ class _Runner(GatewayAuthorizationMixin):
 
 
 def _source(platform='telegram', chat_id='4242', profile=None, chat_name=None):
-    from gateway.config import Platform
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session import SessionSource
     source = SessionSource(platform=Platform(platform), chat_id=chat_id, user_id='u-' + chat_id, chat_type='dm',
                            chat_name=chat_name)
     if profile is not None:
@@ -55,7 +55,7 @@ def _seed(tmp_path, sid, source, *, routed=True, row_origin=_ROUTE, row_source=N
           entry_key=None, entry_source=None, transport_profile=None, multiplex=None):
     """The durable state a previous process left: a session row, and (``routed``) the routing entry
     naming it. ``row_origin`` is the row's ``origin_json`` (default: *source*; None: absent)."""
-    from gateway.session import SessionEntry
+    from hermes_agent.gateway.session import SessionEntry
     runner = _Runner(tmp_path, multiplex)
     store = runner.session_store
     route = store._generate_session_key(source)
@@ -79,9 +79,9 @@ def _seed(tmp_path, sid, source, *, routed=True, row_origin=_ROUTE, row_source=N
 
 async def _cold(tmp_path, multiplex=None, profile_name=None):
     """A fresh process: new store, new authority, nothing published."""
-    from gateway.session_authorities import SessionAuthorities
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_authorities import SessionAuthorities
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionActor
     runner = _Runner(tmp_path, multiplex)
     authority = await initialize_session_authority(runner, profile_id='fixture', instance_id='cold')
     if profile_name is not None:
@@ -92,7 +92,7 @@ async def _cold(tmp_path, multiplex=None, profile_name=None):
 
 
 def _ref(sid, profile_id='fixture'):
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_contract import SessionRef
     return SessionRef(profile_id, sid)
 
 
@@ -112,8 +112,8 @@ def _home(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_a_routed_messaging_session_mounts_on_a_cold_authority(tmp_path):
     """The lane is registered by the pre-restart process through the real write path."""
-    from gateway.config import Platform
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session_authority import initialize_session_authority
     warm = await initialize_session_authority(_Runner(tmp_path), profile_id='fixture', instance_id='warm')
     ref = warm.register(_source())
     cold = await _cold(tmp_path)
@@ -140,7 +140,7 @@ async def test_a_row_its_route_moved_past_mounts_from_its_own_origin(tmp_path):
     """Design reversal, not a new finding: before #106742 a viewer opened any messaging row, however
     old. The lane's route names a successor after ``/new``; the historic row still mounts, rebuilt
     from its own ``origin_json`` (never the successor's entry)."""
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     _seed(tmp_path, 'old', _source(chat_name='from-row'))
     cold = await _cold(tmp_path)
     successor = cold.store.get_or_create_session(_source(), force_new=True)
@@ -149,7 +149,7 @@ async def test_a_row_its_route_moved_past_mounts_from_its_own_origin(tmp_path):
     cold.authority.authorize(cold.actor, _ref('old'), 'session:read')
 
     live = cold.authority.sessions['old']
-    # Teknium's ruling: off the chat's route, on a key of its own (gateway/session_detached.py).
+    # Teknium's ruling: off the chat's route, on a key of its own (hermes_agent/gateway/session_detached.py).
     assert (live.route, live.source.platform, live.source.chat_id, live.source.chat_name) == (
         'agent:main:detached:old', Platform.TELEGRAM, '4242', 'from-row')
 
@@ -166,7 +166,7 @@ async def test_an_entry_that_names_another_key_does_not_stand_for_the_row(tmp_pa
 @pytest.mark.asyncio
 @pytest.mark.parametrize('row_origin', [None, 'not json', '{"chat_type": "dm"}'])
 async def test_a_row_without_a_usable_origin_is_rebuilt_from_its_columns(tmp_path, row_origin):
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     _seed(tmp_path, 'cols', _source(chat_name='Family chat'), routed=False, row_origin=row_origin)
     cold = await _cold(tmp_path)
     cold.authority.authorize(cold.actor, _ref('cols'), 'session:read')
@@ -228,7 +228,7 @@ async def test_a_foreign_profile_ref_is_still_refused(tmp_path):
 @pytest.mark.asyncio
 async def test_a_served_profile_mounts_its_own_lane_with_the_persisted_bot(tmp_path):
     """Under multiplex the receiving bot persisted on the entry is re-pinned, not guessed."""
-    from gateway.session_identity import identity_of
+    from hermes_agent.gateway.session_identity import identity_of
     route = _seed(tmp_path, 'lane-alpha', _source(profile='alpha'), transport_profile='alpha', multiplex=True)
     cold = await _cold(tmp_path, multiplex=True, profile_name='alpha')
     assert cold.store._named_profile_for_key(route) == 'alpha'
@@ -241,7 +241,7 @@ async def test_a_served_profile_mounts_its_own_lane_with_the_persisted_bot(tmp_p
 
 @pytest.mark.asyncio
 async def test_a_row_rebuilt_from_columns_keeps_its_profile_and_persisted_bot(tmp_path):
-    from gateway.session_identity import identity_of
+    from hermes_agent.gateway.session_identity import identity_of
     _seed(tmp_path, 'cols-alpha', _source(profile='alpha'), routed=False, row_origin=None,
           transport_profile='alpha', multiplex=True)
     cold = await _cold(tmp_path, multiplex=True, profile_name='alpha')
@@ -284,7 +284,7 @@ async def test_a_row_its_route_moved_past_stays_writable_on_its_own_key(tmp_path
     lookup or a turn on it reached the successor conversation. Teknium's ruling reverses the
     read-only answer: the row detaches onto a key of its own, so every write is accepted and acts on
     it alone; the successor's agent is never resolved through it."""
-    from gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_contract import SessionActor
     cold, _successor = await _superseded(tmp_path)
     cold.authority.authorize(cold.actor, _ref('old'), 'session:read')
     caps = frozenset({'session:read', 'session:submit', 'session:control', 'session:approve',
@@ -307,8 +307,8 @@ async def test_closing_or_deleting_a_superseded_row_leaves_the_successor_route_a
     """Viewer close interrupts/refuses delegations and evicts by route; delete evicts by route. On a
     superseded mount that route is the successor's, so neither touches it."""
     import tools.async_delegation as delegation
-    from gateway.session_mutations import retire_live_sessions
-    from gateway.session_viewer_close import close_viewer_session
+    from hermes_agent.gateway.session_mutations import retire_live_sessions
+    from hermes_agent.gateway.session_viewer_close import close_viewer_session
     cold, _successor = await _superseded(tmp_path)
     cold.authority.authorize(cold.actor, _ref('old'), 'session:read')
     touched = []
@@ -338,7 +338,7 @@ async def test_the_lane_reopening_the_row_makes_it_live_again(tmp_path):
 @pytest.mark.asyncio
 async def test_a_row_whose_lane_has_no_entry_mounts_live(tmp_path):
     """Nothing names another conversation: the row is what the lane's next inbound publishes."""
-    from gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_contract import SessionActor
     _seed(tmp_path, 'unrouted', _source(), routed=False)
     cold = await _cold(tmp_path)
     writer = SessionActor('viewer', 'fixture', frozenset({'session:read', 'session:submit'}), 'socket')
@@ -357,7 +357,7 @@ def _compressed_lane(tmp_path):
                       user_id=source.user_id, chat_type='dm', origin_json=json.dumps(source.to_dict()),
                       parent_session_id='lane-root')
     db.end_session('lane-root', 'compression')
-    from gateway.session import SessionEntry
+    from hermes_agent.gateway.session import SessionEntry
     now = datetime.now()
     entry = SessionEntry(route, 'lane-tip', now, now, origin=source, platform=source.platform)
     runner.session_store._routing_db.save_gateway_routing_entry(
@@ -375,7 +375,7 @@ async def test_a_compression_child_is_never_mounted_under_its_physical_id(tmp_pa
 
 @pytest.mark.asyncio
 async def test_resume_of_a_compression_child_attaches_to_its_logical_owner(tmp_path):
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     _compressed_lane(tmp_path)
     cold = await _cold(tmp_path)
     connection = AuthorityConnection(cold.authority, object(), {
@@ -395,8 +395,8 @@ async def test_resume_by_a_messaging_segment_shares_the_lanes_next_inbound_mount
     inbound registers, never a second LiveSession on the same route. Real authority, real SQLite
     store, real compression publish, routing peer re-stamped as the turn path does."""
     import json as _json
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     warm_runner = _Runner(tmp_path)
     warm = await initialize_session_authority(warm_runner, profile_id='fixture', instance_id='warm')
     source = _source()
@@ -429,7 +429,7 @@ async def test_resume_by_a_messaging_segment_shares_the_lanes_next_inbound_mount
 async def test_a_live_mount_detaches_when_its_lane_publishes_another_conversation(tmp_path):
     """Mounted while nothing named another conversation, then the lane's next inbound starts a fresh
     session on the same route: from then on the old mount runs on a key of its own."""
-    from gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_contract import SessionActor
     _seed(tmp_path, 'unrouted', _source(), routed=False)
     cold = await _cold(tmp_path)
     writer = SessionActor('viewer', 'fixture', frozenset({'session:read', 'session:submit'}), 'socket')

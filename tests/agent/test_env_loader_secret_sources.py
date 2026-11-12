@@ -459,7 +459,7 @@ def test_apply_external_secret_sources_dedupes_within_process(tmp_path, monkeypa
 
     # Five calls in a row, simulating module-import-time invocations from
     # cli.py, hermes_cli/main.py, run_agent.py, hermes_agent/trajectory_compressor.py,
-    # gateway/run.py.  Only the first should actually call the backend.
+    # hermes_agent/gateway/run.py.  Only the first should actually call the backend.
     for _ in range(5):
         env_loader._apply_external_secret_sources(tmp_path)
 

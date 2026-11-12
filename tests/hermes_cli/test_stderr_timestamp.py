@@ -9,7 +9,7 @@ import time
 
 import pytest
 
-from gateway.restart import (
+from hermes_agent.gateway.restart import (
     EXTERNAL_GATEWAY_SUPERVISOR_ENV,
     GATEWAY_FATAL_CONFIG_EXIT_CODE,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,

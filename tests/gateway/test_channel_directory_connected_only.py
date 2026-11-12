@@ -7,8 +7,8 @@ send_message targets."""
 import asyncio
 from unittest.mock import patch
 
-from gateway.channel_directory import build_channel_directory
-from gateway.platforms.base import Platform
+from hermes_agent.gateway.channel_directory import build_channel_directory
+from hermes_agent.gateway.platforms.base import Platform
 
 
 def test_does_not_resurrect_disconnected_platforms_from_session_history(tmp_path, monkeypatch):
@@ -20,8 +20,8 @@ def test_does_not_resurrect_disconnected_platforms_from_session_history(tmp_path
         calls.append(plat_name)
         return {"channels": [{"id": "1", "name": "old"}]}
 
-    with patch("gateway.channel_directory._build_from_sessions", side_effect=fake_build_from_sessions), \
-         patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
+    with patch("hermes_agent.gateway.channel_directory._build_from_sessions", side_effect=fake_build_from_sessions), \
+         patch("hermes_agent.gateway.channel_directory.DIRECTORY_PATH", cache_file):
         # Only telegram is connected; no discord/slack/whatsapp adapters.
         directory = asyncio.run(build_channel_directory({Platform.TELEGRAM: object()}))
 

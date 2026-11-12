@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from gateway.platforms.api_server import ThreadSafeAsyncQueue
+from hermes_agent.gateway.platforms.api_server import ThreadSafeAsyncQueue
 from tests.gateway.test_api_server_reasoning_stream import (
     _fake_writer_env, _frames, _stub_create_agent_runtime, adapter,
 )
@@ -20,7 +20,7 @@ _LADDER = "⏳ Provider temporarily unavailable — retrying automatically in 15
 async def test_chat_completions_stream_forwards_agent_status_callback(adapter, monkeypatch):
     """``_spawn_stream_agent`` wires ``status_callback`` into ``AIAgent(...)``; a status line arrives
     as an ``event: hermes.status`` frame and never as answer ``content``."""
-    import gateway.platforms.api_server as api_mod
+    import hermes_agent.gateway.platforms.api_server as api_mod
 
     class FakeAgent:
         def __init__(self, **kwargs):
@@ -50,7 +50,7 @@ async def test_chat_completions_stream_forwards_agent_status_callback(adapter, m
 
 @pytest.mark.asyncio
 async def test_responses_stream_emits_status_event_outside_output_items(adapter):
-    import gateway.platforms.api_server as api_mod
+    import hermes_agent.gateway.platforms.api_server as api_mod
     request, written, fake_response = _fake_writer_env()
     stream_q = ThreadSafeAsyncQueue()
 

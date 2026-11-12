@@ -15,18 +15,18 @@ from pathlib import Path
 import threading
 import time
 
-from gateway.hosted_room_driver import TaskIdentity
-from gateway.session_contract import SessionActor
-from gateway.session_authorities import owner_scope
-from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
-from gateway.owner_identity import same_owner
+from hermes_agent.gateway.hosted_room_driver import TaskIdentity
+from hermes_agent.gateway.session_contract import SessionActor
+from hermes_agent.gateway.session_authorities import owner_scope
+from hermes_agent.gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+from hermes_agent.gateway.owner_identity import same_owner
 from hermes_agent.hermes_state_runtime import RuntimeStoreError, _epoch
 
 _BINDING = 'gateway.hosted.transport.v1:'
 _OPERATIONS = frozenset({'resolve_exact', 'create', 'resume', 'submit', 'history', 'results',
                          'info', 'interrupt', 'discard', 'approve'})
 # One chunk per private-socket exchange. The response is a single JSON line capped at
-# gateway.control_socket._MAX_RESPONSE_BYTES (512 KiB) on both the POSIX socket and the
+# hermes_agent.gateway.control_socket._MAX_RESPONSE_BYTES (512 KiB) on both the POSIX socket and the
 # Windows pipe: 360 KiB raw -> 480 KiB base64, leaving 32 KiB for the envelope (owner
 # subject, target home, digest); the attachment attest result carries no prompt/manifest.
 _CHUNK_BYTES = 360 * 1024
@@ -57,11 +57,11 @@ def owner_request(home, verb, params, *, timeout=30):
     if len(request) > 65536:
         raise RuntimeStoreError('request_too_large')
     if os.name == 'nt':
-        from gateway.runtime_bootstrap_windows import query_runtime_control
+        from hermes_agent.gateway.runtime_bootstrap_windows import query_runtime_control
         raw = query_runtime_control(home, request, timeout)
     else:
         from hermes_cli.gateway_runtime_discovery import connect_private
-        from gateway.control_socket import _read_response_line
+        from hermes_agent.gateway.control_socket import _read_response_line
         with connect_private(home, timeout) as peer:
             peer.sendall(request)
             def read():
@@ -109,7 +109,7 @@ def source_attachment_chunk(service, member, room_id, manifest, params):
     if (type(index) is not int or not 0 <= index < len(manifest)
             or type(offset) is not int or not 0 <= offset < manifest[index]['size']):
         raise RuntimeStoreError('permission_denied')
-    from gateway.hosted_room_attachments import HostedRoomAttachmentStore
+    from hermes_agent.gateway.hosted_room_attachments import HostedRoomAttachmentStore
     item = manifest[index]
     saved = HostedRoomAttachmentStore(service.db_path).read_range(room_id=room_id,
         attachment_id=item['attachment_id'], event_id=item['event_id'], recipient_member_id=member,
@@ -126,7 +126,7 @@ def source_attachment_digests(service, member, room_id, manifest):
     Rides on the submit/execute attest result so the target can bind transferred bytes
     to the attested input and the preflight can verify the durable row without bytes.
     """
-    from gateway.hosted_room_attachments import HostedRoomAttachmentStore
+    from hermes_agent.gateway.hosted_room_attachments import HostedRoomAttachmentStore
     store = HostedRoomAttachmentStore(service.db_path)
     digests = []
     for item in manifest:
@@ -140,7 +140,7 @@ def source_attachment_digests(service, member, room_id, manifest):
 
 def _attachment_data(binding, attested, params):
     """Transfer bytes, not foreign filenames, with a task fence on every chunk."""
-    from gateway.hosted_room_driver import validate_bound_task_manifest
+    from hermes_agent.gateway.hosted_room_driver import validate_bound_task_manifest
     manifest = attested.get('attachments', [])
     if not manifest:
         return []
@@ -225,7 +225,7 @@ def install_hosted_transport(server, authority, loop, *, attest):
         selector = envelope['selector']
         if operation not in _OPERATIONS or set(selector) != {'room_id', 'member_id', 'profile'}:
             raise RuntimeStoreError('invalid_params')
-        from gateway.session_authorities import served_profile_name
+        from hermes_agent.gateway.session_authorities import served_profile_name
         profile = served_profile_name(Path(authority.profile_id))
         if selector['profile'] != profile:
             raise RuntimeStoreError('profile_mismatch')
@@ -294,14 +294,14 @@ def _check_remote_hosted_admission(authority, ref, row):
             raise ValueError('owner changed')
         # Bytes are not re-transferred here: the durable row is compared against the
         # payload the attested prompt, manifest and source-verified digests commit to.
-        from gateway.session_hosted_attachments import attested_submission_payload, verify_attested_documents
+        from hermes_agent.gateway.session_hosted_attachments import attested_submission_payload, verify_attested_documents
         if row['payload'] != attested_submission_payload(
                 attested['prompt'], attested['attachments'], attested.get('attachment_digests')):
             raise ValueError('input changed')
     except (ValueError, KeyError, TypeError) as exc:
         raise RuntimeStoreError('permission_denied') from exc
     if attested.get('retired') is True:  # the source says this unchanged attempt is over
-        from gateway.session_hosted_service import retired_attempt_conflict
+        from hermes_agent.gateway.session_hosted_service import retired_attempt_conflict
         raise retired_attempt_conflict()
     # Outside the permission_denied fold: a corrupted or missing retained document is a
     # storage fault of this destination, not a revoked source binding.
@@ -332,7 +332,7 @@ class HostedRoomOwnerRPC(HostedRoomAuthorityRPC):
         result = owner_request(self.home, 'hosted-producer', {
             **self.binding, 'operation': operation, 'params': params})
         if operation in {'create', 'resume', 'resolve_exact'} and result is not None:
-            from gateway.session_contract import SessionRef
+            from hermes_agent.gateway.session_contract import SessionRef
             self.ref = SessionRef(str(self.home), result['session_id'])
         if operation == 'submit' and callback is not None:
             with self._lock:

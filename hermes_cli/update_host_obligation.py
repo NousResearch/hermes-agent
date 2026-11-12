@@ -8,7 +8,7 @@ SHARED process, and every other profile's CLI could neither see nor discharge th
 — it simply armed its own and re-killed the same host process.
 
 The record therefore lives beside the host rendezvous record, in
-:func:`gateway.host_rendezvous.host_state_dir` (``$HERMES_GATEWAY_LOCK_DIR`` else
+:func:`hermes_agent.gateway.host_rendezvous.host_state_dir` (``$HERMES_GATEWAY_LOCK_DIR`` else
 ``$XDG_STATE_HOME/hermes/gateway-locks``) — the one cross-profile, per-OS-user state root the
 tree already has. It is written once per host and installation (keyed by the checkout), read by
 every profile's CLI, and cleared once.
@@ -55,7 +55,7 @@ def host_obligation_path() -> Path:
     clears the same record, while a second install of the same OS user (another checkout, a ZIP
     install) owes its own, so its completed restart never erases this install's debt (review S3).
     """
-    # Not ``gateway.host_rendezvous.host_state_dir``: ``gateway.status`` imports ``utils`` -> ruamel,
+    # Not ``hermes_agent.gateway.host_rendezvous.host_state_dir``: ``hermes_agent.gateway.status`` imports ``utils`` -> ruamel,
     # absent from the historical interpreter an old updater's takeover arms this record in; the
     # recovery module's stdlib copy of the rule is drift-tested against the gateway resolver.
     from hermes_cli.update_restart_recovery import _host_state_dir

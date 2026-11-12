@@ -445,7 +445,7 @@ def _is_caller_wrapper_shell(pid: int, ancestors: set[int]) -> bool:
 
 def _kill_pids_windows(pids: list[int], killed: list[int], failed: list[tuple[int, str]]) -> None:
     """``taskkill /F`` each PID after re-verifying its identity."""
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway.status import get_process_start_time
     from hermes_cli._subprocess_compat import pid_is_hermes, windows_hide_flags
     # Identity captured right after discovery: a PID reused before the kill fails the check.
     pid_start_times = {pid: get_process_start_time(pid) for pid in pids}
@@ -518,7 +518,7 @@ def _posix_descendants(roots: list[int]) -> dict[int, tuple[int, int | None]]:
     Windows #98814 hazard). The start-time fingerprint is the PID-reuse guard (same one
     ``_kill_pids_windows`` uses). Empty on scan failure → root-only kill, the historical behaviour.
     """
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway.status import get_process_start_time
     try:
         result = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,tty="], timeout=10, **_PS_RUN_KWARGS, check=False)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
@@ -552,7 +552,7 @@ def _wait_gone(pids: list[int], seconds: float) -> list[int]:
     """Poll up to *seconds*; return the PIDs still alive (zombies count as gone)."""
     import time as _time
 
-    from gateway.status import _pid_exists
+    from hermes_agent.gateway.status import _pid_exists
 
     deadline = _time.monotonic() + seconds
     alive = list(pids)
@@ -572,7 +572,7 @@ def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int,
     """
     import signal as _signal
 
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway.status import get_process_start_time
 
     descendants = _posix_descendants(pids)
 
@@ -1031,7 +1031,7 @@ def _reap_orphaned_desktop_local_serves(
     # keep the deleted state.db-wal inode open (#112631). The boot-path budget leaves no second
     # grace, and these trees already lost their Electron and their backend.
     # A root whose own kill raised (EPERM: not ours) keeps its subtree — do not orphan it half-way.
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway.status import get_process_start_time
     for pid, (root, start) in descendants.items():
         if root not in failed and start is not None and get_process_start_time(pid) == start:
             with contextlib.suppress(OSError):

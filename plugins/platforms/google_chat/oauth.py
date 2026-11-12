@@ -29,7 +29,7 @@ from hermes_constants import display_hermes_home, get_hermes_home
 from utils import atomic_write_text
 
 # Pinned legacy logger name so operator log filters keep matching (see adapter.py).
-logger = logging.getLogger("gateway.platforms.google_chat_user_oauth")
+logger = logging.getLogger("hermes_agent.gateway.platforms.google_chat_user_oauth")
 
 # Filesystem-safe key: lowercase, keep ``[a-z0-9._-@]`` so token files stay
 # human-readable under ``ls ~/.hermes/google_chat_user_tokens/``.

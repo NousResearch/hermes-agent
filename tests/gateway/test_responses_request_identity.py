@@ -14,7 +14,7 @@ async def test_concurrent_changed_conversation_cannot_replace_response_key(api, 
     calls = []
 
     async def handle(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         calls.append(event.text)
         started.set()
         if event.text == 'first':
@@ -48,8 +48,8 @@ async def test_concurrent_changed_conversation_cannot_replace_response_key(api, 
 
 
 def test_unsent_truncation_keeps_the_fingerprint_of_records_stored_before_it_was_keyed():
-    from gateway.platforms.api_server import _make_request_fingerprint
-    from gateway.platforms.api_server_openai_routes import _responses_fingerprint_keys
+    from hermes_agent.gateway.platforms.api_server import _make_request_fingerprint
+    from hermes_agent.gateway.platforms.api_server_openai_routes import _responses_fingerprint_keys
     legacy_keys = ("input", "instructions", "previous_response_id", "conversation", "conversation_history",
                    "model", "provider", "model_options", "tools")
     body = {"input": "hi", "model": "m"}

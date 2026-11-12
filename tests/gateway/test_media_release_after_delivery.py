@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import session_ingress, session_results, session_settlement_recovery as recovery
-from gateway.session_runtime_workers import mutation_tasks
+from hermes_agent.gateway import session_ingress, session_results, session_settlement_recovery as recovery
+from hermes_agent.gateway.session_runtime_workers import mutation_tasks
 from hermes_agent.hermes_state_runtime import get_session_admission
 from tests.gateway.test_session_authority_cancel_settlement import REF, _authority, _submit
 from tests.waiting import async_wait_until
@@ -36,7 +36,7 @@ async def test_delivery_precedes_slow_media_collection(tmp_path, monkeypatch, pa
         owner.pending_deliveries[row['admission_id']] = (object(), event, 'route', 'reply', None)
         return 'reply'
 
-    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    monkeypatch.setattr('hermes_agent.gateway.session_finite.execute_finite_admission', execute)
 
     async def send(adapter, event, key, response):
         assert get_session_admission(db, admission_id=event.message_id)['status'] == 'terminal'
@@ -89,7 +89,7 @@ async def test_delivery_precedes_slow_media_collection(tmp_path, monkeypatch, pa
             await async_wait_until(started.is_set, timeout=5, what='background media cleanup')
             await asyncio.wait_for(operation, 5)
             assert mutation_tasks(authority), 'cleanup must keep ownership until its worker exits'
-            from gateway.run_runtime import _retire_profile_authority
+            from hermes_agent.gateway.run_runtime import _retire_profile_authority
             assert not await _retire_profile_authority(authority, timeout=0)
         finally:
             allow_cleanup.set()
@@ -126,7 +126,7 @@ async def test_resolution_racing_recovery_releases_once(tmp_path, monkeypatch, c
     monkeypatch.setattr(recovery, '_SETTLE_RETRY_DELAYS_S', ())
     monkeypatch.setattr(session_results, 'finish_result', fail)
     monkeypatch.setattr(recovery, '_release_media', lambda owner, admission_id: released.append(admission_id))
-    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    monkeypatch.setattr('hermes_agent.gateway.session_finite.execute_finite_admission', execute)
     with db:
         receipt = await _submit(authority, 'photo')
         drain = asyncio.create_task(authority._drain(REF))
@@ -174,7 +174,7 @@ async def test_resolution_the_drain_owned_is_collected_when_its_recovery_fails(t
     monkeypatch.setattr(recovery, '_SETTLE_RETRY_DELAYS_S', ())
     monkeypatch.setattr(session_results, 'finish_result', fail)
     monkeypatch.setattr(recovery, '_release_media', lambda owner, admission_id: released.append(admission_id))
-    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    monkeypatch.setattr('hermes_agent.gateway.session_finite.execute_finite_admission', execute)
     with db:
         receipt = await _submit(authority, 'photo')
         drain = asyncio.create_task(authority._drain(REF))
@@ -207,7 +207,7 @@ async def test_resolution_of_a_retired_conversation_restores_it(tmp_path, monkey
         return 'reply'
 
     monkeypatch.setattr(session_results, 'finish_result', fail)
-    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    monkeypatch.setattr('hermes_agent.gateway.session_finite.execute_finite_admission', execute)
     restored, published = [], []
     publish = recovery._publish_completion
     monkeypatch.setattr(recovery, '_publish_completion',
@@ -225,7 +225,7 @@ async def test_resolution_of_a_retired_conversation_restores_it(tmp_path, monkey
             restored.append(session_id)
             owner.sessions.setdefault(session_id, live)
 
-        monkeypatch.setattr('gateway.session_retirement.restore_retired', restore)
+        monkeypatch.setattr('hermes_agent.gateway.session_retirement.restore_retired', restore)
         receipt_after = await authority.resolve_unknown_as_owner(REF, receipt.admission_id, row['generation'])
         assert receipt_after is not None
         assert restored and REF.session_id in authority.sessions
@@ -266,7 +266,7 @@ async def test_cancelled_drain_keeps_delivery_and_collection_owned(tmp_path, mon
 
     monkeypatch.setattr(recovery, 'commit_and_publish', commit)
     monkeypatch.setattr(recovery, '_release_media', release)
-    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    monkeypatch.setattr('hermes_agent.gateway.session_finite.execute_finite_admission', execute)
     monkeypatch.setattr(session_ingress, 'deliver_response', send)
     with db:
         receipt = await _submit(authority, 'photo')
@@ -305,7 +305,7 @@ async def test_cancelled_drain_stays_cancelled_when_its_delivery_fails(tmp_path,
         await fail.wait()
         raise RuntimeError('delivery failed')
 
-    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    monkeypatch.setattr('hermes_agent.gateway.session_finite.execute_finite_admission', execute)
     monkeypatch.setattr(session_ingress, 'deliver_settled', deliver)
     with db:
         await _submit(authority, 'photo')
@@ -351,7 +351,7 @@ async def test_media_turns_settling_together_collect_one_at_a_time(tmp_path, mon
         sent.append(event.message_id)
 
     monkeypatch.setattr(recovery, '_release_media', slow_release)
-    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    monkeypatch.setattr('hermes_agent.gateway.session_finite.execute_finite_admission', execute)
     monkeypatch.setattr(session_ingress, 'deliver_response', send)
     with db:
         receipts = [await _submit(authority, f'photo-{n}') for n in range(3)]
@@ -370,9 +370,9 @@ async def test_media_turns_settling_together_collect_one_at_a_time(tmp_path, mon
 
 @pytest.mark.asyncio
 async def test_shutdown_joins_cleanup_created_after_its_initial_snapshot(monkeypatch):
-    from gateway import run_runtime
-    from gateway import session_runtime_workers
-    from gateway.session_runtime_workers import track_mutation
+    from hermes_agent.gateway import run_runtime
+    from hermes_agent.gateway import session_runtime_workers
+    from hermes_agent.gateway.session_runtime_workers import track_mutation
 
     joining = asyncio.Event()
     original_join = session_runtime_workers.join_authority_work

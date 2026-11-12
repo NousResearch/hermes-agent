@@ -11,9 +11,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import run_idle_exit
-from gateway.config import Platform
-from gateway.runtime_bootstrap import TicketStore
+from hermes_agent.gateway import run_idle_exit
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.runtime_bootstrap import TicketStore
 from pm import environments_adopt
 from tests.waiting import async_wait_until
 

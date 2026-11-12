@@ -11,9 +11,9 @@ from functools import partial
 import hashlib
 import json
 
-from gateway.hosted_room_driver import TaskIdentity
-from gateway.owner_identity import same_owner
-from gateway.session_contract import SessionRef, Submission
+from hermes_agent.gateway.hosted_room_driver import TaskIdentity
+from hermes_agent.gateway.owner_identity import same_owner
+from hermes_agent.gateway.session_contract import SessionRef, Submission
 from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions
 
 _RESULTLESS_OUTCOMES = frozenset({'interrupted', 'cancelled'})
@@ -33,7 +33,7 @@ class HostedRoomAuthorityRPC:
         self.callbacks = {}
         binding = json.dumps([room_id, member_id, profile], separators=(',', ':'))
         self.creation_id = 'hosted:' + hashlib.sha256(binding.encode()).hexdigest()
-        from gateway.session_local_recovery import local_identity
+        from hermes_agent.gateway.session_local_recovery import local_identity
         self.ref = SessionRef(authority.profile_id, local_identity(
             authority.profile_id, principal.subject, self.creation_id))
 
@@ -51,7 +51,7 @@ class HostedRoomAuthorityRPC:
         return future.result(self.timeout)
 
     async def _dispatch(self, operation, params):
-        from gateway.session_authorities import owner_scope
+        from hermes_agent.gateway.session_authorities import owner_scope
         with owner_scope(self.authority):
             return await self._dispatch_owned(operation, params)
 
@@ -79,11 +79,11 @@ class HostedRoomAuthorityRPC:
     async def _create(self, params):
         if self.authority.db.get_session(self.ref.session_id) is not None:
             return await self._resume(params)
-        from gateway.run import _load_gateway_config, _resolve_gateway_model
-        from gateway.session_policy import build_policy
-        from gateway.session_local import stage_local_session
-        from gateway.session_local_recovery import restore_local_session
-        from gateway.session_runtime_workers import tracked_write
+        from hermes_agent.gateway.run import _load_gateway_config, _resolve_gateway_model
+        from hermes_agent.gateway.session_policy import build_policy
+        from hermes_agent.gateway.session_local import stage_local_session
+        from hermes_agent.gateway.session_local_recovery import restore_local_session
+        from hermes_agent.gateway.session_runtime_workers import tracked_write
         from hermes_agent.hermes_state_local import commit_local_session
         from agent.skill_utils import parse_config_string_list
         private = {}
@@ -135,7 +135,7 @@ class HostedRoomAuthorityRPC:
         return result
 
     def _terminal(self, row, task, generation, *, notify=True):
-        from gateway.session_results import admission_result
+        from hermes_agent.gateway.session_results import admission_result
         saved = admission_result(self.authority.db, row['admission_id'])
         # Unknown discard and queued cancellation never ran: no result exists to recover.
         if saved is None and row['outcome'] not in _RESULTLESS_OUTCOMES:
@@ -157,8 +157,8 @@ class HostedRoomAuthorityRPC:
         rows = self._rows()
         if any(row['status'] == 'unknown' for row, _, _ in rows):
             raise RuntimeStoreError('unknown_execution')
-        from gateway.session_hosted_attachments import prepare_before_submit, submission_payload
-        from gateway.session_ingress_media import capture_lease
+        from hermes_agent.gateway.session_hosted_attachments import prepare_before_submit, submission_payload
+        from hermes_agent.gateway.session_ingress_media import capture_lease
         # One lease from capture through the admission commit: documents ride in the prompt text,
         # so submit's own lease does not hold them, and an older row's release could unlink a
         # shared content-addressed capture in between.
@@ -198,7 +198,7 @@ class HostedRoomAuthorityRPC:
                 self._terminal(row, task, generation)
 
     async def _history(self, params):
-        from gateway.session_local_recovery import local_history, prepare_history
+        from hermes_agent.gateway.session_local_recovery import local_history, prepare_history
         # Authorize (restoring a cold room session) before the read names its live entry, and again after
         # the await (``_rows``): a delete in between answers not_found, never a KeyError.
         self.authority.authorize(self.principal, self.ref, 'session:read')

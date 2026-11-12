@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from gateway import hosted_room_context as context
-from gateway import hosted_room_discussion as discussion
-from gateway import hosted_rooms
+from hermes_agent.gateway import hosted_room_context as context
+from hermes_agent.gateway import hosted_room_discussion as discussion
+from hermes_agent.gateway import hosted_rooms
 
 ROOM_ID = "room-lead"
 PROFILES = ("ada", "linus", "grace")

@@ -66,7 +66,7 @@ def _write_obligation(db, monkeypatch, obligation_id, session_key, chat_id, prof
                       state="pending"):
     """delivery_obligations is created lazily by the delivery ledger against the same state.db."""
     monkeypatch.setenv("HERMES_HOME", str(db.db_path.parent))
-    from gateway import delivery_ledger
+    from hermes_agent.gateway import delivery_ledger
     monkeypatch.setattr(delivery_ledger, "_db_path", lambda: db.db_path)
     with delivery_ledger._connect() as conn:
         now = time.time()

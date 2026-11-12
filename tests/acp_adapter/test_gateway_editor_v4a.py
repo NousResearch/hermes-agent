@@ -2,7 +2,7 @@
 import pytest
 
 from hermes_agent.acp_adapter.edit_approval import build_edit_proposal
-from gateway.session_policy import build_policy, policy_scope
+from hermes_agent.gateway.session_policy import build_policy, policy_scope
 
 
 @pytest.mark.parametrize('multiple', [False, True])

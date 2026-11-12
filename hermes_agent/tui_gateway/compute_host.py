@@ -359,7 +359,7 @@ class ComputeHost:
                 # External sources first (1Password / Bitwarden / secrets.command): this isolated
                 # turn process never ran the launch dotenv path for the routed profile, so without
                 # hydration the scope is built on an empty external snapshot and a vault-only
-                # provider key fails closed. Same order as gateway/run.py::_load_profile_secret_scope
+                # provider key fails closed. Same order as hermes_agent/gateway/run.py::_load_profile_secret_scope
                 # and hermes_agent/tui_gateway/model_switch.py::_profile_runtime_scope_tokens (#119521).
                 hydrate_profile_secret_sources(Path(profile_home))
                 secret_token = set_secret_scope(

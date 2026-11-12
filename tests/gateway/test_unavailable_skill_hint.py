@@ -1,4 +1,4 @@
-"""Tests for gateway.run._check_unavailable_skill.
+"""Tests for hermes_agent.gateway.run._check_unavailable_skill.
 
 Regression coverage for the dir-name-vs-frontmatter-name drift bug.
 The hint function used to compare the skill's parent-directory name
@@ -57,13 +57,13 @@ def test_frontmatter_slug_matched_even_when_dir_name_differs(
     agent actually registers). The old dir-name-based check would have
     compared ``stable-diffusion`` to the typed command and missed.
     """
-    from gateway import run as gateway_run
+    from hermes_agent.gateway import run as gateway_run
 
     _write_skill(tmp_skills, "mlops/stable-diffusion", "Stable Diffusion Image Generation")
 
     # Config disables by declared name (matches what `hermes skills config` writes).
     monkeypatch.setattr(
-        "gateway.run._get_disabled_skill_names",
+        "hermes_agent.gateway.run._get_disabled_skill_names",
         lambda: {"Stable Diffusion Image Generation"},
         raising=False,
     )
@@ -88,7 +88,7 @@ def test_unknown_command_still_returns_none(
     tmp_skills: Path,
 ) -> None:
     """A command that matches no on-disk skill still returns None."""
-    from gateway import run as gateway_run
+    from hermes_agent.gateway import run as gateway_run
 
     _write_skill(tmp_skills, "creative/ascii-art", "ascii-art")
 

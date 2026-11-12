@@ -15,8 +15,8 @@ async def discover_commands(authority, actor, params, *, completion=False):
     scope = None
     if params.get('session_id'):
         # Project skills resolve from the session's workspace, not the gateway process cwd.
-        from gateway.session_commands import _session_workspace
-        from gateway.session_contract import SessionRef
+        from hermes_agent.gateway.session_commands import _session_workspace
+        from hermes_agent.gateway.session_contract import SessionRef
         ref = SessionRef(authority.profile_id, params['session_id'])
         authority.authorize(actor, ref, 'session:read')
         scope = _session_workspace(authority.runner, authority.sessions[ref.session_id].source)
@@ -26,7 +26,7 @@ async def discover_commands(authority, actor, params, *, completion=False):
         home = Path(authority.profile_id)
         if params.get('profile') and not profile_matches_home(params['profile'], home):
             raise RuntimeStoreError('profile_mismatch')
-        from gateway.run import _profile_runtime_scope
+        from hermes_agent.gateway.run import _profile_runtime_scope
         from hermes_agent.tui_gateway.command_discovery import command_catalog, slash_completions
         with _profile_runtime_scope(home):
             return (slash_completions(params.get('text', ''), scope=scope) if completion
@@ -45,7 +45,7 @@ async def list_plugins(authority, actor, params):
         raise RuntimeStoreError('invalid_params')
 
     def rows():
-        from gateway.run import _profile_runtime_scope
+        from hermes_agent.gateway.run import _profile_runtime_scope
         from hermes_cli.plugins import discover_plugins, get_plugin_manager
         from hermes_cli.plugins import get_plugin_toolsets
         with _profile_runtime_scope(Path(authority.profile_id)):

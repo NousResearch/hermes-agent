@@ -2,7 +2,7 @@
 
 The in-process server (``hermes_agent/acp_adapter/server.py``) gave every editor turn a reasoning sink and streamed it as
 ``agent_thought_chunk``. On the gateway path the owner publishes ``reasoning.delta`` only for a live session
-whose ``show_reasoning`` flag a viewer set (``gateway/local_viewer_events.py``), so the editor asks for it on
+whose ``show_reasoning`` flag a viewer set (``hermes_agent/gateway/local_viewer_events.py``), so the editor asks for it on
 every attach. The end-to-end test runs an actual ``hermes acp`` stdio process against an ordinary isolated
 gateway and a provider that reasons before it answers.
 """

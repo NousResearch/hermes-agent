@@ -296,7 +296,7 @@ class PluginLedgerMixin:
         # Handles are authoritative for global registries; names present in the manager-local sets without a
         # ledger entry (pre-ledger or manually set state) are swept here so they do not survive a force reload
         # as zombies.
-        from gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.platform_registry import platform_registry
         for platform_name in tuple(self._plugin_platform_names):
             platform_registry.unregister(platform_name)
         # Ledger-owned tool names are excluded: their handles already restored the previous entry, and blanket

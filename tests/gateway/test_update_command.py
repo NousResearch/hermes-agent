@@ -12,9 +12,9 @@ from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
 
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionSource
 
 
 def _make_event(text="/update", platform=Platform.TELEGRAM,
@@ -32,7 +32,7 @@ def _make_event(text="/update", platform=Platform.TELEGRAM,
 
 def _make_runner():
     """Create a bare GatewayRunner without calling __init__."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
     runner._voice_mode = {}
@@ -55,8 +55,8 @@ class TestHandleUpdateCommand:
         fake_root = tmp_path / "project"
         fake_root.mkdir()
 
-        with patch("gateway.run._hermes_home", tmp_path), \
-             patch("gateway.slash_commands.project_root_str", lambda: str(fake_root)):
+        with patch("hermes_agent.gateway.run._hermes_home", tmp_path), \
+             patch("hermes_agent.gateway.slash_commands.project_root_str", lambda: str(fake_root)):
             result = await runner._handle_update_command(event)
 
         assert "Not a git repository" in result
@@ -68,7 +68,7 @@ class TestHandleUpdateCommand:
         importable, even when PATH also offers a ``hermes`` binary (#111569: a PATH-first
         lookup would re-exec an attacker-planted executable on /update and /restart)."""
         import sys
-        from gateway.run import _resolve_hermes_bin
+        from hermes_agent.gateway.run import _resolve_hermes_bin
 
         fake_spec = MagicMock()
         with patch("shutil.which", return_value="/tmp/attacker/hermes"), \
@@ -81,7 +81,7 @@ class TestHandleUpdateCommand:
     async def test_resolve_hermes_bin_falls_back_to_path_then_none(self):
         """Without an importable hermes_cli the argv degrades to PATH, then to None — never a
         bare ``hermes`` string that a hostile PATH entry could shadow."""
-        from gateway.run import _resolve_hermes_bin
+        from hermes_agent.gateway.run import _resolve_hermes_bin
 
         with patch("shutil.which", return_value="/usr/local/bin/hermes"), \
              patch("importlib.util.find_spec", return_value=None):
@@ -105,8 +105,8 @@ class TestHandleUpdateCommand:
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
 
-        with patch("gateway.run._hermes_home", hermes_home), \
-             patch("gateway.slash_commands.project_root_str", lambda: str(fake_root)), \
+        with patch("hermes_agent.gateway.run._hermes_home", hermes_home), \
+             patch("hermes_agent.gateway.slash_commands.project_root_str", lambda: str(fake_root)), \
              patch("hermes_cli.config.detect_install_method", return_value="git"), \
              patch("shutil.which", side_effect=lambda x: "/usr/bin/hermes" if x == "hermes" else "/usr/bin/setsid"), \
              patch("subprocess.Popen"):
@@ -145,8 +145,8 @@ class TestHandleUpdateCommand:
                 return None
             return None
 
-        with patch("gateway.run._hermes_home", hermes_home), \
-             patch("gateway.slash_commands.project_root_str", lambda: str(fake_root)), \
+        with patch("hermes_agent.gateway.run._hermes_home", hermes_home), \
+             patch("hermes_agent.gateway.slash_commands.project_root_str", lambda: str(fake_root)), \
              patch("hermes_cli.config.detect_install_method", return_value="git"), \
              patch("shutil.which", side_effect=which_no_setsid), \
              patch("subprocess.Popen", mock_popen):
@@ -191,7 +191,7 @@ class TestUpdateCommandPlatformGate:
         # Make sure the plugin registry is populated so the fallback fires.
         from hermes_cli.plugins import PluginManager
         PluginManager().discover_and_load(force=True)
-        from gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.platform_registry import platform_registry
         discord_entry = platform_registry.get("discord")
         assert discord_entry is not None
         assert discord_entry.allow_update_command is True
@@ -237,7 +237,7 @@ class TestSendUpdateNotification:
         mock_adapter = AsyncMock()
         runner.adapters = {Platform.TELEGRAM: mock_adapter}
 
-        with patch("gateway.run._hermes_home", hermes_home):
+        with patch("hermes_agent.gateway.run._hermes_home", hermes_home):
             result = await runner._send_update_notification()
 
         assert result is False
@@ -261,7 +261,7 @@ class TestSendUpdateNotification:
         mock_adapter = AsyncMock()
         runner.adapters = {Platform.TELEGRAM: mock_adapter}
 
-        with patch("gateway.run._hermes_home", hermes_home):
+        with patch("hermes_agent.gateway.run._hermes_home", hermes_home):
             result = await runner._send_update_notification()
 
         assert result is True
@@ -293,7 +293,7 @@ class TestSendUpdateNotification:
         mock_adapter.send = AsyncMock()
         runner.adapters = {Platform.TELEGRAM: mock_adapter}
 
-        with patch("gateway.run._hermes_home", hermes_home):
+        with patch("hermes_agent.gateway.run._hermes_home", hermes_home):
             await runner._send_update_notification()
 
         mock_adapter.send.assert_called_once()
@@ -326,7 +326,7 @@ class TestSendUpdateNotification:
         (hermes_home / ".update_exit_code").write_text("0")
         # runner.adapters stays empty: no adapter for the target platform, ever.
 
-        with patch("gateway.run._hermes_home", hermes_home):
+        with patch("hermes_agent.gateway.run._hermes_home", hermes_home):
             result = await runner._send_update_notification()
 
         # True is the definitive answer the startup caller keys off to stop rescheduling.
@@ -357,7 +357,7 @@ class TestSendUpdateNotification:
         }))
         (hermes_home / ".update_exit_code").write_text("0")
 
-        with patch("gateway.run._hermes_home", hermes_home):
+        with patch("hermes_agent.gateway.run._hermes_home", hermes_home):
             result = await runner._send_update_notification()
 
         assert result is False
@@ -385,7 +385,7 @@ class TestSendUpdateNotification:
         mock_adapter.send.side_effect = RuntimeError("network error")
         runner.adapters = {Platform.TELEGRAM: mock_adapter}
 
-        with patch("gateway.run._hermes_home", hermes_home):
+        with patch("hermes_agent.gateway.run._hermes_home", hermes_home):
             await runner._send_update_notification()
 
         # Files should still be cleaned up (finally block)
@@ -419,7 +419,7 @@ class TestSendUpdateNotification:
         mock_adapter = AsyncMock()
         runner.adapters = {Platform.TELEGRAM: mock_adapter}
 
-        with patch("gateway.run._hermes_home", hermes_home):
+        with patch("hermes_agent.gateway.run._hermes_home", hermes_home):
             result = await runner._send_update_notification()
 
         # No send (wrong platform offline) and the result is deferred.
@@ -454,7 +454,7 @@ class TestSendUpdateNotification:
         exit_code_path.write_text("0")
 
         # First pass: target platform (discord) is still offline → defer.
-        with patch("gateway.run._hermes_home", hermes_home):
+        with patch("hermes_agent.gateway.run._hermes_home", hermes_home):
             first = await runner._send_update_notification()
 
         assert first is False
@@ -464,7 +464,7 @@ class TestSendUpdateNotification:
         mock_adapter = AsyncMock()
         runner.adapters = {Platform.DISCORD: mock_adapter}
 
-        with patch("gateway.run._hermes_home", hermes_home):
+        with patch("hermes_agent.gateway.run._hermes_home", hermes_home):
             second = await runner._send_update_notification()
 
         assert second is True
@@ -495,7 +495,7 @@ class TestSendUpdateNotification:
         mock_adapter = AsyncMock()
         runner.adapters = {Platform.DISCORD: mock_adapter}
 
-        with patch("gateway.run._hermes_home", hermes_home):
+        with patch("hermes_agent.gateway.run._hermes_home", hermes_home):
             delivered = await runner._send_update_notification()
 
         assert delivered is True
@@ -524,7 +524,7 @@ class TestSendUpdateNotification:
         mock_adapter = AsyncMock()
         runner.adapters = {Platform.DISCORD: mock_adapter}
 
-        with patch("gateway.run._hermes_home", hermes_home):
+        with patch("hermes_agent.gateway.run._hermes_home", hermes_home):
             await runner._send_update_notification()
 
         sent_text = mock_adapter.send.call_args[0][1]
@@ -558,7 +558,7 @@ class TestWatchUpdateProgress:
         mock_adapter = AsyncMock()
         runner.adapters = {Platform.TELEGRAM: mock_adapter}
 
-        with patch("gateway.run._hermes_home", hermes_home):
+        with patch("hermes_agent.gateway.run._hermes_home", hermes_home):
             await runner._watch_update_progress(poll_interval=0.01, stream_interval=0.01, timeout=1.0)
 
         sent = "\n".join(call.args[1] for call in mock_adapter.send.call_args_list)
@@ -584,7 +584,7 @@ class TestUpdateCommandInstallMethodRefusal:
         hermes_home.mkdir()
         mock_popen = MagicMock()
 
-        with patch("gateway.run._hermes_home", hermes_home), \
+        with patch("hermes_agent.gateway.run._hermes_home", hermes_home), \
              patch("hermes_cli.config.detect_install_method",
                    return_value=method), \
              patch("hermes_cli.config.recommended_update_command_for_method",
@@ -611,7 +611,7 @@ class TestDetachedUpdateExitCodePublication:
     @pytest.mark.live_system_guard_bypass  # runs the wrapper around `sh -c 'exit 3'`, never hermes
     def test_bash_wrapper_never_exposes_an_empty_exit_code(self, tmp_path, monkeypatch):
         import subprocess
-        from gateway.slash_commands import _spawn_detached_update
+        from hermes_agent.gateway.slash_commands import _spawn_detached_update
 
         output, marker, seen = tmp_path / "out.log", tmp_path / ".update_exit_code", tmp_path / "seen.log"
         spawned = MagicMock()
@@ -629,7 +629,7 @@ class TestDetachedUpdateExitCodePublication:
 
     def test_windows_helper_never_exposes_an_empty_exit_code(self, tmp_path, monkeypatch):
         import sys
-        from gateway.slash_commands import _WINDOWS_UPDATE_HELPER
+        from hermes_agent.gateway.slash_commands import _WINDOWS_UPDATE_HELPER
         from tests.file_write_observer import observe_file_writes
 
         output, marker = tmp_path / "out.log", tmp_path / ".update_exit_code"

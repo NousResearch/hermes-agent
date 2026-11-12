@@ -7,8 +7,8 @@ import json
 
 import pytest
 
-from gateway.message_timestamps import render_user_content_with_timestamp
-from gateway.run import _build_gateway_agent_history, _select_cached_agent_history
+from hermes_agent.gateway.message_timestamps import render_user_content_with_timestamp
+from hermes_agent.gateway.run import _build_gateway_agent_history, _select_cached_agent_history
 
 
 STAMP = datetime(2026, 8, 20, 12, 0, tzinfo=ZoneInfo("UTC")).timestamp()

@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from gateway import media_fetch
-from gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway import media_fetch
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 from tools.environments.base import BaseEnvironment, FileFetchError
 
 
@@ -40,8 +40,8 @@ class _FakeRemoteEnv:
 def remote_env(monkeypatch, tmp_path):
     env = _FakeRemoteEnv()
     monkeypatch.setattr(media_fetch, "_active_remote_env", lambda: env)
-    monkeypatch.setattr("gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "cache" / "documents")
-    monkeypatch.setattr("gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS", (tmp_path / "cache" / "documents",))
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "cache" / "documents")
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS", (tmp_path / "cache" / "documents",))
     return env
 
 

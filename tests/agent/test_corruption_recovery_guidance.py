@@ -28,7 +28,7 @@ def test_gateway_corruption_banner_backups_dir_follows_hermes_home(monkeypatch, 
     """
     import asyncio
 
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     custom_home = tmp_path / "custom-hermes-home"
     monkeypatch.setenv("HERMES_HOME", str(custom_home / "profiles" / "research"))
@@ -103,7 +103,7 @@ def test_corrupt_guidance_pins_the_failing_profile(tmp_path, monkeypatch):
     so with another profile active the operator would repair the wrong database."""
     import asyncio
 
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
     from hermes_agent.hermes_state import _default_db_path
     from hermes_agent.hermes_state_repair import _persistent_repair_exhausted_error
     from run_agent import AIAgent

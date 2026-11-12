@@ -102,7 +102,7 @@ class CardOwner:
 
 @pytest.mark.asyncio
 async def test_kanban_worker_settles_a_card_whose_turn_outstreams_the_client_queue(monkeypatch, tmp_path):
-    from gateway import session_kanban
+    from hermes_agent.gateway import session_kanban
     from hermes_cli import kanban_worker_client
 
     @asynccontextmanager

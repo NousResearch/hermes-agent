@@ -58,7 +58,7 @@ def test_listener_config_keeps_every_profile_log_file_writing(tmp_path, monkeypa
     (beta / "config.yaml").write_text("{}", encoding="utf-8")
     hermes_logging.setup_logging(hermes_home=root, mode="gateway", force=True)
     assert hermes_logging.enable_profile_log_routing([root, beta])
-    logger = logging.getLogger("gateway.listener_logging")
+    logger = logging.getLogger("hermes_agent.gateway.listener_logging")
 
     def log_in_every_home(marker):
         for home in (root, beta):
@@ -90,7 +90,7 @@ def test_listener_config_keeps_uvicorn_on_the_console_and_out_of_the_hermes_logs
     logging.getLogger("uvicorn.error").warning("uvicorn-console-warning")
     logging.getLogger("uvicorn.access").info(
         '%s - "%s %s HTTP/%s" %d', "127.0.0.1:50000", "GET", "/access-line", "1.1", 200)
-    logging.getLogger("gateway.listener_logging").warning("hermes-file-warning")
+    logging.getLogger("hermes_agent.gateway.listener_logging").warning("hermes-file-warning")
     hermes_logging.flush_log_queue()
 
     out, err = capsys.readouterr()

@@ -26,7 +26,7 @@ def _setup(monkeypatch, tmp_path, record: dict):
     monkeypatch.setattr(
         "hermes_cli.profiles._get_profiles_root", lambda: tmp_path / "no-profiles"
     )
-    monkeypatch.setattr("gateway.control_socket.identify_gateway", lambda h, **k: None)
+    monkeypatch.setattr("hermes_agent.gateway.control_socket.identify_gateway", lambda h, **k: None)
     (home / "gateway_state.json").write_text(json.dumps(record), encoding="utf-8")
     return home
 
@@ -35,7 +35,7 @@ def _verify_self_as_gateway(monkeypatch):
     """Without a socket answer the state file is only a claim; the fallback classifies a LIVE
     pid from it only when the home's identity resolver verifies that pid as the gateway
     (#110420). The live-pid tests write the record about pytest itself, so verify it."""
-    monkeypatch.setattr("gateway.status.live_gateway_pid_for_home", lambda h: os.getpid())
+    monkeypatch.setattr("hermes_agent.gateway.status.live_gateway_pid_for_home", lambda h: os.getpid())
 
 
 _DEAD_PID = 999999899  # never a live pid
@@ -82,7 +82,7 @@ def test_recycled_pid_is_not_reported_stale(monkeypatch, tmp_path):
     """A dead gateway's PID reused by an unrelated process (#93258) must not
     be reported STALE just because *some* process now answers to that PID.
     """
-    from gateway.status import _get_process_start_time
+    from hermes_agent.gateway.status import _get_process_start_time
 
     reused_pid = os.getpid()
     wrong_start_time = (_get_process_start_time(reused_pid) or 0) + 12345
@@ -104,7 +104,7 @@ def test_recycled_pid_is_not_reported_stale(monkeypatch, tmp_path):
 
 def test_matching_start_time_is_still_live(monkeypatch, tmp_path):
     """A record whose start_time matches the live process is not recycled."""
-    from gateway.status import _get_process_start_time
+    from hermes_agent.gateway.status import _get_process_start_time
 
     pid = os.getpid()
     _verify_self_as_gateway(monkeypatch)

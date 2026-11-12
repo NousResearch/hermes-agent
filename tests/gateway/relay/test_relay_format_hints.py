@@ -20,9 +20,9 @@ import json
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.relay.adapter import RelayAdapter
-from gateway.relay.descriptor import CapabilityDescriptor
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.relay.adapter import RelayAdapter
+from hermes_agent.gateway.relay.descriptor import CapabilityDescriptor
 
 
 def _descriptor(**overrides):
@@ -272,7 +272,7 @@ class TestMultiPlatformResolution:
 
     @pytest.mark.asyncio
     async def test_send_for_platform_stamps_hints(self):
-        """REGRESSION: the scheduled/persisted-home lane (gateway/delivery.py
+        """REGRESSION: the scheduled/persisted-home lane (hermes_agent/gateway/delivery.py
         → send_for_platform) never stamped hints at all — yet it is the cron
         delivery path, the flagship consumer of block formatting."""
         transport = self._two_platform_transport()

@@ -1,7 +1,7 @@
 """A ``message_agent`` sender's cancel by delivery id reaches the delivery's one automatic retry.
 
-``gateway/session_bot_cancel.py`` decides on the owner, under the mailbox lock that admits the
-retry (``gateway/session_bot.py::_maybe_retry``), so a cancel landing after the first attempt
+``hermes_agent/gateway/session_bot_cancel.py`` decides on the owner, under the mailbox lock that admits the
+retry (``hermes_agent/gateway/session_bot.py::_maybe_retry``), so a cancel landing after the first attempt
 failed but before its retry ran withdraws that retry for good instead of reporting "already
 finished" while the retry goes on to run.
 """
@@ -20,8 +20,8 @@ AUTHOR = {'id': 'bot:scribe', 'name': 'scribe', 'is_bot': True}
 
 @pytest.mark.asyncio
 async def test_cancel_after_a_transient_failure_withdraws_the_retry_for_good(bot, monkeypatch):
-    from gateway.session_bot import deliver, recover_bot_deliveries
-    from gateway.session_bot_cancel import cancel
+    from hermes_agent.gateway.session_bot import deliver, recover_bot_deliveries
+    from hermes_agent.gateway.session_bot_cancel import cancel
     from tools.bot_live_delivery import read_delivery_result
     admit = bot.authority.admit_automation
     blocked, full = [], [True]

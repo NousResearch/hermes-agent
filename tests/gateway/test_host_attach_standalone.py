@@ -6,11 +6,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import host_attach, host_rendezvous as hr
+from hermes_agent.gateway import host_attach, host_rendezvous as hr
 
 
 def test_boot_notice_only_labels_configured_standalone_profiles(standalone_home, monkeypatch, caplog):
-    from gateway.run import _log_standalone_profiles_at_boot
+    from hermes_agent.gateway.run import _log_standalone_profiles_at_boot
     from hermes_cli import profiles
 
     root, solo = standalone_home
@@ -72,7 +72,7 @@ def test_standalone_lock_loser_requires_known_unserved_profile(
     standalone_home, monkeypatch, capsys, served, known,
 ):
     import fcntl
-    from gateway import run
+    from hermes_agent.gateway import run
 
     root, home = standalone_home
     owner = host_attach.HostGateway(os.getpid() + 1, root,
@@ -99,7 +99,7 @@ def test_standalone_lock_loser_requires_known_unserved_profile(
 def test_standalone_owner_cannot_hide_a_live_multiplexer(standalone_home, monkeypatch, host_name):
     """A starts first, host starts beside A, then B opts out before the host rescans."""
     import fcntl
-    from gateway import run, status
+    from hermes_agent.gateway import run, status
 
     root, home = standalone_home
     first = root / "profiles" / "first"

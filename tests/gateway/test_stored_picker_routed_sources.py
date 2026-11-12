@@ -3,7 +3,7 @@
 Before the shared gateway the picker listed every source except the internal ones (kanban, tool,
 oneshot); the stored feed listed only local labels, so a Telegram conversation or a finished cron run
 could not be picked from Ink's ``/resume``. Resuming such a row is the cold mount
-(``gateway/session_route_recovery.py``); this pins that the listing offers it.
+(``hermes_agent/gateway/session_route_recovery.py``); this pins that the listing offers it.
 """
 from types import SimpleNamespace
 
@@ -11,10 +11,10 @@ import pytest
 
 
 async def _owner(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {}, 'platform_toolsets': {'cli': []}})
@@ -31,7 +31,7 @@ async def _owner(tmp_path, monkeypatch):
 async def _finished_cron_run(authority, db, tmp_path):
     """A cron fire through the owner's own path, then settled the way a finished run books it."""
     from hermes_agent.cron import jobs
-    from gateway import session_cron
+    from hermes_agent.gateway import session_cron
     from hermes_agent.hermes_state_runtime import cancel_session_input
     with jobs.use_cron_store(tmp_path / 'cron'):
         job = jobs.create_job(prompt='report', schedule='every 1h', deliver='local', model='m')
@@ -56,7 +56,7 @@ def _messaging_row(db, sid, chat_id, *, profile_name=None, platform='telegram'):
 
 @pytest.mark.asyncio
 async def test_the_stored_feed_lists_messaging_and_cron_sessions_and_hides_internal_ones(tmp_path, monkeypatch):
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
 
     authority, db = await _owner(tmp_path, monkeypatch)
     _messaging_row(db, 'tg-chat', '111')
@@ -66,7 +66,7 @@ async def test_the_stored_feed_lists_messaging_and_cron_sessions_and_hides_inter
         db.create_session(sid, source=source, model='m')
         db.append_message(sid, 'user', sid + ' question')
         db.end_session(sid, 'completed')
-    # The native local transport, as `gateway/run_api.py` admits it (a verified local operator).
+    # The native local transport, as `hermes_agent/gateway/run_api.py` admits it (a verified local operator).
     native = AuthorityConnection(authority, object(), {'provider': 'local', 'user_id': 'native',
                                                        'profile_id': str(tmp_path), 'instance_id': 'owner'},
                                  operator=True)
@@ -85,7 +85,7 @@ async def test_the_stored_feed_lists_messaging_and_cron_sessions_and_hides_inter
 @pytest.mark.asyncio
 async def test_a_compressed_messaging_conversation_is_listed_under_its_lineage_root(tmp_path, monkeypatch):
     """The listing projects a compressed lineage onto its tip; the cold mount is the root."""
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
 
     authority, db = await _owner(tmp_path, monkeypatch)
     _messaging_row(db, 'tg-root', '113')
@@ -111,7 +111,7 @@ async def test_a_compressed_messaging_conversation_is_listed_under_its_lineage_r
 async def test_a_bundled_plugin_platform_conversation_is_listed_and_resumes(tmp_path, monkeypatch, platform):
     """Plugin platforms are ``Platform`` pseudo-members that enum iteration never yields; the cold mount
     resolves them by label, so the listing must offer the same rows."""
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
 
     authority, db = await _owner(tmp_path, monkeypatch)
     _messaging_row(db, 'plugin-chat', '114', platform=platform)

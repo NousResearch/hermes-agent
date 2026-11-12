@@ -5,7 +5,7 @@ single plaintext line pushed standalone over a messaging platform (no status
 bar, unlike the TUI). Behavior contracts, not data snapshots.
 """
 from agent.credits_tracker import AgentNotice
-from gateway.run import render_notice_line
+from hermes_agent.gateway.run import render_notice_line
 
 
 def test_real_policy_notices_render_without_doubling():
@@ -71,7 +71,7 @@ def _make_source(platform_value="telegram", chat_id="555", user_id="u1"):
 
 
 def _make_runner_with_adapter(source, adapter):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.adapters = {source.platform: adapter}

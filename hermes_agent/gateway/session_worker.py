@@ -1,13 +1,13 @@
 """Execution-scoped worker operations on the ordinary authenticated authority.
 
 Only explicit local compute registrations are enabled here. A delegated child is reserved by
-the owner on its parent's receipt stream (gateway/session_worker_child.py), never registered.
+the owner on its parent's receipt stream (hermes_agent/gateway/session_worker_child.py), never registered.
 """
 import asyncio
 import hmac
 import os
 
-from gateway.session_admission import admission_fingerprint
+from hermes_agent.gateway.session_admission import admission_fingerprint
 from hermes_agent.hermes_state_runtime import (
     RuntimeStoreError, _secret_digest, adopt_worker_execution,
     mutate_worker_execution, register_worker_execution,
@@ -63,13 +63,13 @@ def _verify(connection, ref, params, claim):
 
 
 async def worker_request(connection, ref, params, *, operation):
-    from gateway.session_authorities import require_serving
+    from hermes_agent.gateway.session_authorities import require_serving
     require_serving(connection.authority)  # adopt/persist would write with the released epoch
     if operation == "persist" and isinstance(params.get("operation"), str) and params["operation"].startswith("delegation."):
-        from gateway.session_worker_delegation import worker_delegation_request
+        from hermes_agent.gateway.session_worker_delegation import worker_delegation_request
         return await worker_delegation_request(connection, ref, params)
     if operation == "persist" and params.get("operation") == "child.reserve":
-        from gateway.session_worker_child import worker_child_request
+        from hermes_agent.gateway.session_worker_child import worker_child_request
         return await worker_child_request(connection, ref, params)
     extra = {'register': {'kind'}, 'adopt': set(), 'persist': {'epoch', 'sequence', 'operation', 'payload'}}[operation]
     if set(params) != _SCOPE | extra:

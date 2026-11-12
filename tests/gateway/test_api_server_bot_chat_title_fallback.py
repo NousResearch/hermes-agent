@@ -5,7 +5,7 @@ fallback returns the titled root. It must not resurrect a deliberately archived 
 ``hermes peer dm`` routing, nor answer a ``source=`` query the row does not match."""
 import pytest
 
-from gateway.platforms import api_server_bot_chat as bot_chat
+from hermes_agent.gateway.platforms import api_server_bot_chat as bot_chat
 
 
 class FakeDB:

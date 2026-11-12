@@ -6,7 +6,7 @@ before dispatching; Telegram waits 0.3s (1.0s near a split chunk).
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.weixin.adapter import WeixinAdapter
 from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 

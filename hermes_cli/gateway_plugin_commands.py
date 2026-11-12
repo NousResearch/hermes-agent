@@ -1,7 +1,7 @@
 """Plugin slash commands of the classic CLI on the shared gateway (``slash.exec``).
 
 On main a plugin's ``/command`` ran in this process. Rewired, the plugin's hooks, tools and MCP servers
-live in the gateway, so its command runs there too (``gateway/session_commands.py``, the messaging
+live in the gateway, so its command runs there too (``hermes_agent/gateway/session_commands.py``, the messaging
 gateway's own plugin dispatch): ``ctx.call_mcp`` reaches the servers the gateway connected, and this
 process never imports the plugin to run it. The names come from the gateway's ``commands.catalog``,
 read once per session and gateway life (``/new``, resume and a redial read again) and again once when
@@ -239,7 +239,7 @@ def call_unbounded(cli, connection, name, command):
 
 def _answer_choices(cli, connection, wake, answering):
     """While the command runs, answer the ``clarify`` server requests its handler sends to this session
-    (``ctx.ask_choice``, ``gateway/plugin_command_choice.py``) with the CLI's clarify panel. No turn
+    (``ctx.ask_choice``, ``hermes_agent/gateway/plugin_command_choice.py``) with the CLI's clarify panel. No turn
     pump reads the session's frames between turns, so they are taken here; every other frame stays
     queued, in order, for the turn that owns it."""
     from hermes_cli.gateway_agent import clarify_reply

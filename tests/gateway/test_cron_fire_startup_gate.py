@@ -17,9 +17,9 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import PlatformConfig
-from gateway.platforms import api_server_fire_startup
-from gateway.platforms.api_server import APIServerAdapter, cors_middleware
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms import api_server_fire_startup
+from hermes_agent.gateway.platforms.api_server import APIServerAdapter, cors_middleware
 
 
 @pytest.fixture
@@ -56,7 +56,7 @@ async def _post_fire(adapter, runner):
     app = web.Application(middlewares=[cors_middleware])
     app["api_server_adapter"] = adapter
     app.router.add_post("/api/cron/fire", adapter._handle_cron_fire)
-    with patch("gateway.run._gateway_runner_ref", lambda: runner):
+    with patch("hermes_agent.gateway.run._gateway_runner_ref", lambda: runner):
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.post(
                 "/api/cron/fire", headers={"Authorization": "Bearer good"}, json={"job_id": "job-1"})

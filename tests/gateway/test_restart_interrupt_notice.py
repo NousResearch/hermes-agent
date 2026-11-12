@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_settlement_recovery import (
+from hermes_agent.gateway.session_settlement_recovery import (
     RESTART_INTERRUPT_NOTICE,
     SHUTDOWN_INTERRUPT_NOTICE,
     _publish_completion,
@@ -23,7 +23,7 @@ from hermes_agent.tui_gateway.contracts.registry import EVENTS
 
 
 def test_restart_drain_timeout_default_stays_zero():
-    from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+    from hermes_agent.gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     from hermes_cli.config import DEFAULT_CONFIG
 
     assert DEFAULT_CONFIG['agent']['restart_drain_timeout'] == 0
@@ -90,10 +90,10 @@ def test_classic_cli_view_prints_the_restart_notice_for_an_interrupted_turn(caps
 async def test_user_stop_is_not_relabelled_when_shutdown_starts_during_settlement(tmp_path):
     """A user Stop whose settlement a competing SQLite writer delays until after shutdown began is
     still the user's Stop: the notice follows the turn's recorded cause, not the runner's flags."""
-    from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import SessionRef
-    from gateway.session_results import admission_result
-    from gateway.session_settlement_recovery import commit_and_publish
+    from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_results import admission_result
+    from hermes_agent.gateway.session_settlement_recovery import commit_and_publish
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
 
@@ -173,11 +173,11 @@ def test_managed_worker_turn_settles_with_the_cause_of_the_stop_that_reached_it(
     none. The worker's wire result carries no cause: the owner records which stop it sent."""
     import subprocess
 
-    from gateway import session_managed_worker as managed
-    from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import SessionActor, SessionRef, Submission
-    from gateway.session_policy import build_policy
-    from gateway.session_settlement_recovery import commit_and_publish
+    from hermes_agent.gateway import session_managed_worker as managed
+    from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_agent.gateway.session_contract import SessionActor, SessionRef, Submission
+    from hermes_agent.gateway.session_policy import build_policy
+    from hermes_agent.gateway.session_settlement_recovery import commit_and_publish
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import begin_runtime_epoch, claim_session_input
     from tests.gateway.restart_test_helpers import make_restart_runner
@@ -237,7 +237,7 @@ def test_in_process_turn_keeps_the_user_stop_when_shutdown_interrupts_it_again(u
     interrupts its agent: the shutdown reason must not overwrite the pending Stop, so the turn
     records no restart cause and gets no notice. A turn only the restart stopped still gets it."""
     from agent.interrupt_compat import request_hard_interrupt
-    from gateway.session_settlement_recovery import owner_stop_notice
+    from hermes_agent.gateway.session_settlement_recovery import owner_stop_notice
     from run_agent import AIAgent
     from tests.gateway.restart_test_helpers import make_restart_runner
     from tools.interrupt import set_interrupt
@@ -289,7 +289,7 @@ def _redirect_agent():
 
 def test_restart_after_a_pending_redirect_still_gets_the_restart_notice():
     """A mid-request correction is not a Stop: the restart drops it and is the turn's cause."""
-    from gateway.session_settlement_recovery import owner_stop_notice
+    from hermes_agent.gateway.session_settlement_recovery import owner_stop_notice
     from tests.gateway.restart_test_helpers import make_restart_runner
     from tools.interrupt import set_interrupt
     agent = _redirect_agent()
@@ -330,9 +330,9 @@ def test_automation_turn_the_owner_stop_interrupted_is_never_asked_to_resend(cau
 def _settle_on_real_store(tmp_path, cause, principal='person', payload=None):
     """One claimed admission on a real SessionDB settled through commit_and_publish (the owner's
     worker-thread settlement) with *cause* recorded. Returns (db, row, frames, settlement)."""
-    from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import SessionRef
-    from gateway.session_settlement_recovery import commit_and_publish
+    from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_settlement_recovery import commit_and_publish
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
 
@@ -370,7 +370,7 @@ def test_owner_stop_reason_is_in_the_transcript_for_a_viewer_that_reconnects(tmp
     """#134889 GW-21: a viewer that reconnects after the restart reads the transcript, not the live
     frame. The reason commits as a Hermes notice in the settlement's own write, once; the live
     ``message.complete.warning`` stays."""
-    from gateway.session_results import finish_result
+    from hermes_agent.gateway.session_results import finish_result
     db, authority, row, frames, settlement = _settle_on_real_store(tmp_path, cause)
     with db:
         assert settlement['settled']['outcome'] == 'interrupted'
@@ -407,8 +407,8 @@ def _core_closed_turn(tmp_path, monkeypatch, *, principal='person', earlier_fail
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     from agent.conversation_loop import _close_durable_failed_turn
     from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE
-    from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_agent.gateway.session_contract import SessionRef
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
     from run_agent import AIAgent
@@ -444,7 +444,7 @@ def test_restart_notice_replaces_the_core_failed_turn_boundary_of_the_same_turn(
     "Send it again"; settlement replaces that boundary with the restart notice in its own write,
     so the transcript holds one Hermes boundary, and an automation row never keeps resend advice."""
     from agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE, FAILED_TURN_NOTICE
-    from gateway.session_settlement_recovery import commit_and_publish
+    from hermes_agent.gateway.session_settlement_recovery import commit_and_publish
     db, authority, live, ref, row, result = _core_closed_turn(tmp_path, monkeypatch, principal=principal)
     with db:
         assert _notices(db) == [FAILED_TURN_NOTICE]  # the real core closer wrote it
@@ -457,7 +457,7 @@ def test_restart_notice_replaces_the_core_failed_turn_boundary_of_the_same_turn(
 def test_an_earlier_turns_failed_boundary_is_kept_and_the_restart_notice_appended(tmp_path, monkeypatch):
     """A failed-turn boundary written before this claim belongs to an earlier turn: it stays."""
     from agent.turn_failure_copy import FAILED_TURN_NOTICE
-    from gateway.session_settlement_recovery import commit_and_publish
+    from hermes_agent.gateway.session_settlement_recovery import commit_and_publish
     db, authority, live, ref, row, result = _core_closed_turn(tmp_path, monkeypatch, earlier_failed=True)
     with db:
         commit_and_publish(authority, live, ref, row, '', 'interrupted', {'result': result}, {})
@@ -473,11 +473,11 @@ def test_shutdown_stop_before_the_managed_worker_spawned_carries_its_cause(tmp_p
     bootstrapped, or the cancelled spawn settles with the cause. Real child, real SQLite."""
     import subprocess
 
-    from gateway import session_managed_worker as managed
-    from gateway.run_runtime import stop_authority_turns
-    from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import SessionActor, SessionRef, Submission
-    from gateway.session_policy import build_policy
+    from hermes_agent.gateway import session_managed_worker as managed
+    from hermes_agent.gateway.run_runtime import stop_authority_turns
+    from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_agent.gateway.session_contract import SessionActor, SessionRef, Submission
+    from hermes_agent.gateway.session_policy import build_policy
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import begin_runtime_epoch, claim_session_input
     from tests.gateway.restart_test_helpers import make_restart_runner
@@ -536,12 +536,12 @@ def test_a_stop_during_context_reference_expansion_never_spawns_the_worker(tmp_p
     expansion is slowed and Popen is observed."""
     import subprocess
 
-    from gateway import session_context_refs
-    from gateway import session_managed_worker as managed
-    from gateway.run_runtime import stop_authority_turns
-    from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import SessionActor, SessionRef, Submission
-    from gateway.session_policy import build_policy
+    from hermes_agent.gateway import session_context_refs
+    from hermes_agent.gateway import session_managed_worker as managed
+    from hermes_agent.gateway.run_runtime import stop_authority_turns
+    from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_agent.gateway.session_contract import SessionActor, SessionRef, Submission
+    from hermes_agent.gateway.session_policy import build_policy
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import begin_runtime_epoch, claim_session_input
     from tests.gateway.restart_test_helpers import make_restart_runner
@@ -598,7 +598,7 @@ def test_a_stop_during_context_reference_expansion_never_spawns_the_worker(tmp_p
 
 def test_a_user_stop_first_keeps_no_shutdown_cause_before_spawn():
     """A user's Stop latched for the pending generation came first: shutdown records no cause."""
-    from gateway.run_runtime import stop_authority_turns
+    from hermes_agent.gateway.run_runtime import stop_authority_turns
     live = SimpleNamespace(event_stream=SimpleNamespace(execution={'execution_generation': 4}))
     authority = SimpleNamespace(_managed_workers={}, _managed_spawning={'s': 4}, sessions={'s': live},
                                 pending_stops={'s': 4}, pending_stop_causes={})

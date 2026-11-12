@@ -11,13 +11,13 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_automation_after_compression_and_released_media_uses_logical_owner(tmp_path, monkeypatch):
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.platforms.event import MessageEvent
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority, SessionAuthority
-    from gateway.session_ingress_context import native_callback
-    from gateway.session_ingress_media import release_admission_media
-    from gateway.session_automation import check_automation_route
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import initialize_session_authority, SessionAuthority
+    from hermes_agent.gateway.session_ingress_context import native_callback
+    from hermes_agent.gateway.session_ingress_media import release_admission_media
+    from hermes_agent.gateway.session_automation import check_automation_route
     from hermes_constants import get_hermes_home
     from hermes_agent.hermes_state_runtime import claim_session_input, settle_session_input, list_session_admissions
     from plugins.platforms.discord.adapter import DiscordAdapter
@@ -57,12 +57,12 @@ async def test_automation_after_compression_and_released_media_uses_logical_owne
 async def test_automation_for_an_unserved_scope_never_dereferences_a_missing_authority(tmp_path, monkeypatch):
     """A multiplexed registry answers an unserved home's scope with None. The admitting authority
     still resolves its own compression tip, and a late route preflight refuses instead of crashing."""
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.platforms.event import MessageEvent
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority, SessionAuthority
-    from gateway.session_ingress_context import native_callback
-    from gateway.session_automation import check_automation_route
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import initialize_session_authority, SessionAuthority
+    from hermes_agent.gateway.session_ingress_context import native_callback
+    from hermes_agent.gateway.session_automation import check_automation_route
     from hermes_constants import get_hermes_home
     from hermes_agent.hermes_state_runtime import (RuntimeStoreError, claim_session_input, list_session_admissions,
                                       settle_session_input)
@@ -87,7 +87,7 @@ async def test_automation_for_an_unserved_scope_never_dereferences_a_missing_aut
     route = runner.session_store._generate_session_key(source)
     runner.session_store.advance_compression_session(route, sid, 'child')
     # What SessionAuthorities.active answers for a scope this multiplexed runtime no longer serves.
-    monkeypatch.setattr('gateway.session_authorities.active_authority', lambda runner: None)
+    monkeypatch.setattr('hermes_agent.gateway.session_authorities.active_authority', lambda runner: None)
     event = MessageEvent(text='finished', source=source, internal=True,
         metadata={'gateway_session_key': route, 'gateway_session_id': sid})
     assert (await authority.admit_automation(adapter, event, 'completion')).ref.session_id == sid

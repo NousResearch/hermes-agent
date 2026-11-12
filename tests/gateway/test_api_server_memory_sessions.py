@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 
-from gateway.platforms.api_server_memory_sessions import ApiServerMemorySessions
+from hermes_agent.gateway.platforms.api_server_memory_sessions import ApiServerMemorySessions
 
 
 class _Manager:

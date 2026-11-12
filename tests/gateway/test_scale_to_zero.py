@@ -2,7 +2,7 @@
 
 Behaviour-contract tests (AGENTS.md): each conjunct of the idle predicate and
 each clause of the arm-gate is exercised independently, not frozen against a
-snapshot. The pure helpers in gateway/scale_to_zero.py take plain inputs so they
+snapshot. The pure helpers in hermes_agent/gateway/scale_to_zero.py take plain inputs so they
 test without a live gateway.
 """
 
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from gateway.scale_to_zero import (
+from hermes_agent.gateway.scale_to_zero import (
     DEFAULT_IDLE_TIMEOUT_MINUTES,
     SCALE_TO_ZERO_ENV,
     is_idle,
@@ -68,8 +68,8 @@ def test_no_platform_is_true():
 def test_scale_to_zero_gate_accounts_for_secondary_profile_direct_adapter(monkeypatch):
     # A direct adapter in a served profile owns an inbound socket too; the process
     # must stay awake even when the launch profile itself is relay-only.
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.run_shutdown import GatewayShutdownMixin
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.run_shutdown import GatewayShutdownMixin
 
     monkeypatch.setenv("HERMES_SCALE_TO_ZERO", "1")
     monkeypatch.setenv("GATEWAY_RELAY_WAKE_URL", "https://wake.example.test/instance")
@@ -95,8 +95,8 @@ def test_watcher_reasks_gate_before_dormant_sequence(monkeypatch):
     import asyncio
     import time
 
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.run_shutdown import GatewayShutdownMixin
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.run_shutdown import GatewayShutdownMixin
 
     monkeypatch.setenv("GATEWAY_RELAY_SLEEP_URL", "https://sleep.example.test/instance")
 
@@ -203,7 +203,7 @@ import threading
 from pathlib import Path
 
 
-from gateway.scale_to_zero import (
+from hermes_agent.gateway.scale_to_zero import (
     FLY_APP_NAME_ENV,
     FLY_MACHINE_ID_ENV,
     self_suspend_available,
@@ -313,7 +313,7 @@ def test_self_suspend_available_needs_identity_and_socket():
 # Brokered suspend: Azure's stop verb needs a credential the sandbox lacks, so
 # NAS stamps a signed sleep URL and stops the machine on our POST.
 
-from gateway.scale_to_zero import (
+from hermes_agent.gateway.scale_to_zero import (
     SLEEP_URL_ENV,
     brokered_sleep_url,
     request_brokered_suspend,
@@ -332,7 +332,7 @@ def test_brokered_sleep_url_reads_the_stamp():
 def test_malformed_sleep_url_warns_once_not_every_idle_tick(monkeypatch, caplog):
     """The watcher calls this on every tick and its own no-lever latch sits after
     it, so an unlatched warning would repeat for the life of the process."""
-    import gateway.scale_to_zero as sz
+    import hermes_agent.gateway.scale_to_zero as sz
 
     monkeypatch.setattr(sz, "_malformed_sleep_url_logged", False)
     monkeypatch.setenv("GATEWAY_RELAY_SLEEP_URL", "http://portal.example.com/x")
@@ -344,7 +344,7 @@ def test_malformed_sleep_url_warns_once_not_every_idle_tick(monkeypatch, caplog)
 
 def test_brokered_sleep_url_rejects_a_malformed_stamp(monkeypatch):
     """Validated before it is treated as a lever: otherwise the watcher marks draining, holds the re-dial and flips the connector, and only then does urllib reject the value, quiescing for a suspend that could never happen."""
-    from gateway.scale_to_zero import brokered_sleep_url
+    from hermes_agent.gateway.scale_to_zero import brokered_sleep_url
 
     for bad in ("not-a-url", "http://portal.example.com/x", "/api/agents/i/sleep"):
         monkeypatch.setenv("GATEWAY_RELAY_SLEEP_URL", bad)
@@ -356,12 +356,12 @@ def test_brokered_sleep_url_rejects_a_malformed_stamp(monkeypatch):
 def test_suspend_available_accepts_either_lever(monkeypatch):
     # No flaps socket but a broker exists, so the watcher may still quiesce.
     monkeypatch.setattr(
-        "gateway.scale_to_zero.self_suspend_available", lambda *a, **k: False
+        "hermes_agent.gateway.scale_to_zero.self_suspend_available", lambda *a, **k: False
     )
     assert suspend_available({SLEEP_URL_ENV: _SLEEP_URL}) is True
     assert suspend_available({}) is False
     monkeypatch.setattr(
-        "gateway.scale_to_zero.self_suspend_available", lambda *a, **k: True
+        "hermes_agent.gateway.scale_to_zero.self_suspend_available", lambda *a, **k: True
     )
     assert suspend_available({}) is True
 
@@ -379,8 +379,8 @@ class _FakeResponse:
 
 def test_brokered_timeout_outlasts_the_broker_and_fits_the_redial_hold():
     """Cross-repo deadline chain."""
-    from gateway.relay.ws_transport import REDIAL_HOLD_MAX_S
-    from gateway.scale_to_zero import BROKERED_SUSPEND_TIMEOUT_S
+    from hermes_agent.gateway.relay.ws_transport import REDIAL_HOLD_MAX_S
+    from hermes_agent.gateway.scale_to_zero import BROKERED_SUSPEND_TIMEOUT_S
 
     NAS_ROUTE_MAX_DURATION_S = 30.0  # mirrors the sleep route's maxDuration
     assert NAS_ROUTE_MAX_DURATION_S < BROKERED_SUSPEND_TIMEOUT_S

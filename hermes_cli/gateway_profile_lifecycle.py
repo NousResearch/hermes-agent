@@ -24,7 +24,7 @@ def ack_failure(answer):
 def mark_planned_stop(pid: int | None = None) -> None:
     """Best-effort planned-stop marker for ``pid`` (default: the recorded gateway PID)."""
     try:
-        from gateway.status import get_running_pid, write_planned_stop_marker
+        from hermes_agent.gateway.status import get_running_pid, write_planned_stop_marker
         if pid is None:
             pid = get_running_pid(cleanup_stale=False)
         if pid is not None:
@@ -55,7 +55,7 @@ def restart_all_verb_scope(owner):
     for the caller to run once the old host is gone and before the start: a marker written while the
     old host still drains can be replayed and unlinked by it, and the new host then boots silent.
     """
-    from gateway.restart_notice import write_planned_restart_marker
+    from hermes_agent.gateway.restart_notice import write_planned_restart_marker
     with host_scope_for_all_verb(owner):
         yield write_planned_restart_marker
 
@@ -63,7 +63,7 @@ def restart_all_verb_scope(owner):
 def profile_lifecycle(command: str, args) -> bool:
     """True when a named-profile command was handled (including an unconfirmed request)."""
     from hermes_cli import gateway as gw
-    from gateway.control_socket import request_unserve_profile, request_serve_profile_hot
+    from hermes_agent.gateway.control_socket import request_unserve_profile, request_serve_profile_hot
 
     name = gw._current_profile_name()
     if not name or name == "default" or getattr(args, "all", False) or getattr(args, "force", False):
@@ -158,7 +158,7 @@ def owned_gateway_pid() -> int | None:
     pid alone never authorizes a stop. Every ``find_gateway_pids()`` caller (stop, uninstall's kill,
     ``service_manager.is_running``, cron readiness, Windows start polls) reads it through here.
     """
-    from gateway.status import get_running_pid, _get_process_hermes_home
+    from hermes_agent.gateway.status import get_running_pid, _get_process_hermes_home
 
     try:
         pid = get_running_pid()
@@ -178,8 +178,8 @@ def _pid_owned_by_home(pid: int, home) -> bool:
     ``gateway status`` asks once per profile and every served profile's record names the host, so the
     host record (a file read plus an incarnation check) settles those without a dial.
     """
-    from gateway import host_attach, host_rendezvous as hr
-    from gateway.status import _same_hermes_home
+    from hermes_agent.gateway import host_attach, host_rendezvous as hr
+    from hermes_agent.gateway.status import _same_hermes_home
     from hermes_cli.dashboard_procs import _hermes_home_for_pid
 
     record = hr.read_record(hr.ROLE_GATEWAY)
@@ -206,7 +206,7 @@ def _launch_record_owns(pid: int, home) -> bool:
     on the sticky ``active_profile`` stays stoppable after the sticky choice changes, which argv and
     environment alone cannot prove.
     """
-    from gateway.status import (
+    from hermes_agent.gateway.status import (
         _GATEWAY_KIND, _get_process_start_time, _pid_from_record, _read_pid_record, _same_hermes_home)
 
     record = _read_pid_record() or {}
@@ -218,7 +218,7 @@ def _launch_record_owns(pid: int, home) -> bool:
 
 def report_profile_stop_failure() -> None:
     """Do not report absence when a live PID was refused or the probe failed."""
-    from gateway.status import get_running_pid
+    from hermes_agent.gateway.status import get_running_pid
     from hermes_cli import gateway as gw
 
     try:
@@ -237,8 +237,8 @@ def report_profile_stop_failure() -> None:
 
 def _print_host_hint() -> None:
     """Name the refused pid when it is the host gateway serving this profile (#141133)."""
-    from gateway import host_rendezvous as hr
-    from gateway.status import get_running_pid
+    from hermes_agent.gateway import host_rendezvous as hr
+    from hermes_agent.gateway.status import get_running_pid
 
     try:
         pid, record = get_running_pid(), hr.read_record(hr.ROLE_GATEWAY)

@@ -148,7 +148,7 @@ def _exit_code(receipt, params, board_db):
     from hermes_cli.gateway_client import GatewayClientError
     if receipt['status'] == 'unknown':
         raise GatewayClientError('Kanban execution unknown; retained by owner')
-    from gateway.session_kanban import worker_result
+    from hermes_agent.gateway.session_kanban import worker_result
     result = worker_result(board_db, params)
     # The attempt's reply ends the log, as a one-shot worker's did: crash diagnostics quote it.
     if result.get('last_output'):

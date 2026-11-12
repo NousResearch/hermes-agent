@@ -17,7 +17,7 @@ def store(tmp_path):
 def test_admission_retry_claim_and_restart_are_fenced(tmp_path):
     db = store(tmp_path)
     import hermes_agent.hermes_state_runtime as rt
-    from gateway.session_admission import admission_fingerprint
+    from hermes_agent.gateway.session_admission import admission_fingerprint
     assert admission_fingerprint(canonical_target='s', payload={'a': 1, 'b': 2}) == admission_fingerprint(canonical_target='s', payload={'b': 2, 'a': 1})
     with pytest.raises(ValueError):
         admission_fingerprint(canonical_target='s', payload={'a': float('nan')})

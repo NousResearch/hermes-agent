@@ -3,13 +3,13 @@ from datetime import UTC, datetime
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import SendResult
-from gateway.platforms.event import MessageEvent
-from gateway.run import GatewayRunner
-from gateway.session_authority import initialize_session_authority
-from gateway.session_ingress import admit_message
-from gateway.session_results import execution_result
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session_authority import initialize_session_authority
+from hermes_agent.gateway.session_ingress import admit_message
+from hermes_agent.gateway.session_results import execution_result
 
 CHAT = '15551234567@s.whatsapp.net'
 

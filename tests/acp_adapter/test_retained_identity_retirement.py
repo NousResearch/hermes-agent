@@ -48,12 +48,12 @@ class Wire:
 @pytest_asyncio.fixture
 async def owner(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_local import create_local_session
     from hermes_cli import model_cost_guard, model_switch
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {'platform_toolsets': {'acp': []}})
     monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(
@@ -63,7 +63,7 @@ async def owner(tmp_path, monkeypatch):
     executed = []
 
     async def answer(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         executed.append(event.text)
         execution_result.get()['result'] = {'final_response': 'ACK_' + event.text, 'completed': True, 'messages': []}
         return 'ACK_' + event.text

@@ -9,7 +9,7 @@ import json
 import re
 
 # The profile scheduler's principal admits every cron fire under ``cron:<job>:<execution>``
-# (``gateway/session_cron.py``). That request id is the pre-image of the run's ``local-*`` session
+# (``hermes_agent/gateway/session_cron.py``). That request id is the pre-image of the run's ``local-*`` session
 # id, so its admission row is the run's durable job/execution association. Runs from before the
 # unified runtime were named ``cron_{job_id}_{YYYYmmdd_HHMMSS}`` (``hermes_agent/cron/scheduler.py::run_job``).
 CRON_PRINCIPAL_ID = 'cron-owner'
@@ -75,7 +75,7 @@ def local_identity(profile_id, principal_id, request_id):
 
 
 def profile_from_session_key_namespace(namespace: str) -> str:
-    """Inverse of ``gateway.session._session_key_namespace`` for the ``<ns>`` slot of a key:
+    """Inverse of ``hermes_agent.gateway.session._session_key_namespace`` for the ``<ns>`` slot of a key:
     ``"default"`` for ``main``, ``"main"`` for the marked ``main~``, else the slot is the profile id."""
     if namespace == "main":
         return "default"

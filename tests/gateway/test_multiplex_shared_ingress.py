@@ -1,5 +1,5 @@
 """Inbound-port platforms of a SECONDARY profile are served on the default profile's shared listener
-at ``/p/<profile>/<path>`` (gateway/platforms/shared_ingress.py).
+at ``/p/<profile>/<path>`` (hermes_agent/gateway/platforms/shared_ingress.py).
 
 Invariants: the forwarded request is verified by the NAMED profile's adapter with that profile's
 secret and runs under that profile's runtime scope; the un-prefixed path is untouched; a profile
@@ -20,7 +20,7 @@ pytest.importorskip("aiohttp")
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 
 
 def _line_sig(body: bytes, secret: str) -> str:
@@ -48,7 +48,7 @@ def _line_adapter(secret: str, profile: str):
 async def _publish_line(adapter, runner) -> list[tuple[str, Path]]:
     """Wire the LINE webhook app the way ``connect()`` does, without the LINE API or a bind, and
     record the HERMES_HOME the handler ran under."""
-    from gateway.platforms.shared_ingress import bind_listener
+    from hermes_agent.gateway.platforms.shared_ingress import bind_listener
     from hermes_constants import get_hermes_home
     seen: list[tuple[str, Path]] = []
     adapter.gateway_runner = runner
@@ -84,7 +84,7 @@ def mux_home(tmp_path, monkeypatch):
 
 async def _shared_listener(runner) -> TestClient:
     """The default profile's listener as the webhook adapter builds it: bare routes + /p/ forwarding."""
-    from gateway.platforms.webhook import WebhookAdapter
+    from hermes_agent.gateway.platforms.webhook import WebhookAdapter
     listener = WebhookAdapter(PlatformConfig(enabled=True, extra={"port": 1, "routes": {}}))
     listener.gateway_runner = runner
     app = web.Application()
@@ -125,7 +125,7 @@ async def test_prefixed_line_webhook_is_verified_by_the_named_profiles_secret_un
 async def test_shared_listener_adapter_records_its_public_ingress_url(mux_home, monkeypatch):
     """Runtime status carries the /p/<profile>/ URL so `gateway status` / the dashboard can show it."""
     writes: list[dict] = []
-    monkeypatch.setattr("gateway.status.publish_runtime_status", lambda **kw: writes.append(kw))
+    monkeypatch.setattr("hermes_agent.gateway.status.publish_runtime_status", lambda **kw: writes.append(kw))
     coder = _line_adapter("secret-coder", "coder")
     coder._runtime_status_platform_key = "coder:line"
     runner = _Runner({"coder": {Platform("line"): coder}})

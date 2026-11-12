@@ -26,7 +26,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 # The consumer floors its own length budget at 500 chars, so a toy adapter limit
 # below that floor would make it legitimately emit chunks larger than the limit -
@@ -39,7 +39,7 @@ TAIL = "".join(f"tail line {i:03d} filler filler filler filler filler\n" for i i
 def _make_plain_adapter():
     """No rich tail at all: ``preferred_final_chunks`` declines, so an oversized
     payload has no atomic-chunk excuse and must be split by the consumer."""
-    from gateway.platforms.base import BasePlatformAdapter
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
     cls = type(
         "PlainAdapter",

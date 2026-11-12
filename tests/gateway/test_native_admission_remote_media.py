@@ -2,11 +2,11 @@
 always does) is dropped with a note; the message and its other media are still admitted."""
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
-from gateway.session_authority import initialize_session_authority
-from gateway.session_envelope import prepare_native
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session_authority import initialize_session_authority
+from hermes_agent.gateway.session_envelope import prepare_native
 
 CHAT = '15551234567@s.whatsapp.net'
 

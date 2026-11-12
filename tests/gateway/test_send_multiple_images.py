@@ -19,8 +19,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
 
 def _run(coro):
@@ -49,24 +49,24 @@ class _StubAdapter(BasePlatformAdapter):
         return None
 
     async def send(self, chat_id, content, reply_to=None, **kwargs):
-        from gateway.platforms.base import SendResult
+        from hermes_agent.gateway.platforms.base import SendResult
         return SendResult(success=True)
 
     async def get_chat_info(self, chat_id):
         return {}
 
     async def send_image(self, chat_id, image_url, caption=None, **kwargs):
-        from gateway.platforms.base import SendResult
+        from hermes_agent.gateway.platforms.base import SendResult
         self.sent_images.append((chat_id, image_url, caption))
         return SendResult(success=True, message_id=str(len(self.sent_images)))
 
     async def send_animation(self, chat_id, animation_url, caption=None, **kwargs):
-        from gateway.platforms.base import SendResult
+        from hermes_agent.gateway.platforms.base import SendResult
         self.sent_animations.append((chat_id, animation_url, caption))
         return SendResult(success=True, message_id=str(len(self.sent_animations)))
 
     async def send_image_file(self, chat_id, image_path, caption=None, **kwargs):
-        from gateway.platforms.base import SendResult
+        from hermes_agent.gateway.platforms.base import SendResult
         self.sent_files.append((chat_id, image_path, caption))
         return SendResult(success=True, message_id=str(len(self.sent_files)))
 

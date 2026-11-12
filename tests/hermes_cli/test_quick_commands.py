@@ -92,7 +92,7 @@ class TestGatewayQuickCommands:
 
     @pytest.mark.asyncio
     async def test_exec_command_returns_output(self):
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
         runner = GatewayRunner.__new__(GatewayRunner)
         runner.config = {"quick_commands": {"limits": {"type": "exec", "command": "echo ok"}}}
         runner._running_agents = {}
@@ -106,7 +106,7 @@ class TestGatewayQuickCommands:
     @pytest.mark.asyncio
     async def test_exec_command_does_not_leak_credentials(self):
         """Quick command exec must sanitize env — API keys must not appear in output."""
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         runner = GatewayRunner.__new__(GatewayRunner)
         runner.config = {"quick_commands": {"leak": {"type": "exec", "command": "env"}}}
@@ -124,7 +124,7 @@ class TestGatewayQuickCommands:
     @pytest.mark.asyncio
     async def test_exec_command_output_is_redacted(self, monkeypatch):
         """Quick command output must redact sensitive patterns before returning."""
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         # Ensure redaction is active regardless of host HERMES_REDACT_SECRETS state
         # or test ordering
@@ -145,7 +145,7 @@ class TestGatewayQuickCommands:
 
     @pytest.mark.asyncio
     async def test_timeout_returns_error(self):
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
         import asyncio
         runner = GatewayRunner.__new__(GatewayRunner)
         runner.config = {"quick_commands": {"slow": {"type": "exec", "command": "sleep 100"}}}
@@ -161,8 +161,8 @@ class TestGatewayQuickCommands:
 
     @pytest.mark.asyncio
     async def test_gateway_config_object_supports_quick_commands(self):
-        from gateway.config import GatewayConfig
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.config import GatewayConfig
+        from hermes_agent.gateway.run import GatewayRunner
 
         runner = GatewayRunner.__new__(GatewayRunner)
         runner.config = GatewayConfig(

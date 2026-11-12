@@ -28,12 +28,12 @@ async def shell_exec(connection, ref, params):
     if (set(params) - {'session_id', 'profile', 'command'} or not isinstance(ref.session_id, str)
             or not ref.session_id or not isinstance(command, str) or not command.strip()):
         raise RuntimeStoreError('invalid_params')
-    from gateway.session_busy_controls import authorize
+    from hermes_agent.gateway.session_busy_controls import authorize
     authorize(connection, ref, params, 'session:control')
     authority = connection.authority
     authority._require_admission_open()
-    from gateway.session_local import authorize_local_source
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_local import authorize_local_source
+    from hermes_agent.gateway.session_policy import policy_for_source
     live = authority.sessions[ref.session_id]
     # Local terminal sessions only: an API, messaging or A2A session has no composer, and running
     # commands for it would be a remote-execution surface with no human at the keyboard.

@@ -17,8 +17,8 @@ Pure unit tests: no socket, no websockets dependency.
 
 from __future__ import annotations
 
-from gateway.relay.ws_transport import _event_from_wire
-from gateway.session import build_session_key
+from hermes_agent.gateway.relay.ws_transport import _event_from_wire
+from hermes_agent.gateway.session import build_session_key
 
 
 def _wire_event(**src_overrides):

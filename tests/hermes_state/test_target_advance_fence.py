@@ -14,11 +14,11 @@ import hermes_agent.hermes_state_runtime as rt
 
 def _local_session(db, epoch, cwd):
     from hermes_agent.hermes_state_local import commit_local_session
-    from gateway.config import Platform
-    from gateway.session import SessionEntry, SessionSource
-    from gateway.session_lifecycle import _now
-    from gateway.session_local_recovery import local_identity
-    from gateway.session_policy import build_policy
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session import SessionEntry, SessionSource
+    from hermes_agent.gateway.session_lifecycle import _now
+    from hermes_agent.gateway.session_local_recovery import local_identity
+    from hermes_agent.gateway.session_policy import build_policy
     sid = local_identity('profile', 'human', 'r')
     source = SessionSource(platform=Platform.LOCAL, chat_id=sid, user_id='human', chat_type='dm')
     now = _now()

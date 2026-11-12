@@ -10,9 +10,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import SessionSource
-from gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import SessionSource
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 from tests.waiting import async_wait_until
 
 
@@ -440,7 +440,7 @@ class TestHoldInboundAcrossReconnect:
     async def test_non_retryable_fatal_discards_held_with_warning(self):
         adapter = _make_adapter()
         adapter._held_inbound_events = [_make_event("doomed")]
-        from gateway.platforms.base import BasePlatformAdapter
+        from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
         def _base_fatal(self, code, message, *, retryable):
             self._fatal_error_code = code
@@ -468,7 +468,7 @@ class TestHoldInboundAcrossReconnect:
         adapter._held_inbound_events = [_make_event("survives-network-fatal")]
         adapter._drop_delayed_deliveries = True  # fatal/disconnect already set
 
-        from gateway.platforms.base import BasePlatformAdapter
+        from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
         def _base_fatal(self, code, message, *, retryable):
             self._fatal_error_code = code
@@ -588,7 +588,7 @@ async def test_typed_voice_note_reply_answers_a_clarify_with_every_merged_chunk(
     clarify with the whole typed text: never the replied-to speech or its attachment note."""
     from types import SimpleNamespace
 
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     adapter = _make_adapter()
     cached = SimpleNamespace(path="cache/audio/voice.ogg", media_type="audio/ogg", kind="audio", display_name="voice.ogg")
@@ -603,7 +603,7 @@ async def test_typed_voice_note_reply_answers_a_clarify_with_every_merged_chunk(
 
     merged = adapter.handle_message.call_args[0][0]
     assert "saved at:" in merged.text  # the note still reaches the agent as context
-    from gateway.session_envelope import _native_metadata
+    from hermes_agent.gateway.session_envelope import _native_metadata
     assert _native_metadata(merged) is not None  # an unknown metadata key refuses the message
     runner = object.__new__(GatewayRunner)
     runner._transcribe_pending_audio_event_once = AsyncMock(return_value=("", ["replied-to speech"]))
@@ -623,8 +623,8 @@ async def test_merged_replies_answer_a_clarify_with_typed_text_and_pass_native_a
     admission (an unknown ``metadata`` key there refuses the whole message)."""
     from types import SimpleNamespace
 
-    from gateway.run import GatewayRunner
-    from gateway.session_envelope import _native_metadata
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_envelope import _native_metadata
 
     adapter = _make_adapter()
     texts = ["option B", "and keep the logs", "and the cache"][:len(replies)]
@@ -659,8 +659,8 @@ async def test_plugin_rewrite_of_a_voice_note_reply_is_the_clarify_answer(hook_r
     plugin's rewritten text is the answer, otherwise the typed text, never the replied-to speech."""
     from types import SimpleNamespace
 
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.run import GatewayRunner
     from tools import clarify_gateway
 
     adapter = _make_adapter()

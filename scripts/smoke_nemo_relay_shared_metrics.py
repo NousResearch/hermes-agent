@@ -264,7 +264,7 @@ def _stop_auto_started_gateway(home: Path, timeout: float = 60.0) -> None:
     command line, home) is signalled: a stale ``gateway.pid`` whose PID was recycled is left alone.
     """
     import psutil
-    from gateway.status import live_gateway_pid_for_home
+    from hermes_agent.gateway.status import live_gateway_pid_for_home
 
     pid = live_gateway_pid_for_home(home)
     if pid is None:

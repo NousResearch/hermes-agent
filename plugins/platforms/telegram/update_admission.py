@@ -19,8 +19,8 @@ from functools import wraps
 from telegram import Update
 from telegram.ext import Application, ApplicationHandlerStop, ConversationHandler, SimpleUpdateProcessor
 
-from gateway.platforms._shared import coerce_port
-from gateway.platforms.helpers import bounded_put
+from hermes_agent.gateway.platforms._shared import coerce_port
+from hermes_agent.gateway.platforms.helpers import bounded_put
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)

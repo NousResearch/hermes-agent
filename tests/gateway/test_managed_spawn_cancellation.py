@@ -10,7 +10,7 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_cancelled_spawn_reaps_late_child(monkeypatch):
-    from gateway import session_managed_worker as managed
+    from hermes_agent.gateway import session_managed_worker as managed
     entered, release, created = (threading.Event() for _ in range(3))
     original = subprocess.Popen
     children = []

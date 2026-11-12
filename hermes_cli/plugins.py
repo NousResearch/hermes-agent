@@ -143,9 +143,9 @@ VALID_HOOKS: set[str] = {
     # pre_gateway_dispatch: once per incoming MessageEvent, after the internal-event guard, BEFORE
     # auth/pairing and dispatch. Kwargs: event, gateway, session_store. Return {"action": "skip",
     # "reason"} -> drop; {"action": "rewrite", "text"} -> replace event.text; "allow"/None -> normal.
-    "pre_gateway_dispatch", "post_gateway_admission",  # post_*: fail-open consume, gateway/run_inbound_consumer.py
+    "pre_gateway_dispatch", "post_gateway_admission",  # post_*: fail-open consume, hermes_agent/gateway/run_inbound_consumer.py
     # agent_loop_stopped: an agent turn was interrupted mid-run (/stop, or the running-agent
-    # fast-path of /new; see gateway/run.py::_interrupt_and_clear_session). Kwargs: session_key,
+    # fast-path of /new; see hermes_agent/gateway/run.py::_interrupt_and_clear_session). Kwargs: session_key,
     # platform, reason, invalidation_reason. Return values are ignored.
     "agent_loop_stopped",
     # Approval observers (returns ignored; veto via pre_tool_call). Kwargs: command, description, pattern_key,
@@ -337,7 +337,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         # unload-all park in ``_persistent_carryover`` until force re-discovery evicts the stale ones.
         # Registration handles are kept both per plugin (ownership lookup) and globally (reverse-order
         # teardown for overrides spanning plugins). Registry overlays keyed by scope_key (see
-        # tools/registry.py and gateway/platform_registry.py) carry the profile dimension; anything still
+        # tools/registry.py and hermes_agent/gateway/platform_registry.py) carry the profile dimension; anything still
         # process-global is guarded by the identity checks. TODO(#64178): extend explicit profile keying to
         # any remaining process-global slots when the symmetric force-reload lands.
         self._ownership_ledger: dict[str, list[PluginRegistration]] = {}

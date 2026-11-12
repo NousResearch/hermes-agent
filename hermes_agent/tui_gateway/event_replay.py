@@ -172,7 +172,7 @@ def release_key(key: str, *, blocking: bool = True) -> None:
 
     Unlike :func:`forget_session` (a public sid that late frames and #100122's monotonic numbering
     still name), a private key is only ever stamped and read through its owner
-    (``gateway.session_events.SessionEvents``): that owner re-reads :func:`latest_seq` before every
+    (``hermes_agent.gateway.session_events.SessionEvents``): that owner re-reads :func:`latest_seq` before every
     publish and starts a new epoch when it finds 0, exactly as after FIFO eviction, so nothing needs
     the old counters. ``blocking=False`` is for GC finalizers, which can run on a thread that already
     holds ``_replay_lock``: the key is queued and the next lock holder purges it."""

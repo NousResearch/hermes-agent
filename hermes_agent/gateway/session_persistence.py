@@ -1,6 +1,6 @@
 """SessionStore storage plumbing: per-profile SessionDB handle resolution and the routing-index
 load/save paths (state.db gateway_routing primary, sessions.json legacy mirror). Mixin split out of
-``gateway/session.py``; bound onto ``SessionStore`` via the MRO."""
+``hermes_agent/gateway/session.py``; bound onto ``SessionStore`` via the MRO."""
 
 from __future__ import annotations
 
@@ -13,10 +13,10 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 from utils import atomic_json_write
 
 if TYPE_CHECKING:
-    from gateway.session import SessionEntry, SessionSource
+    from hermes_agent.gateway.session import SessionEntry, SessionSource
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("gateway.session")
+logger = logging.getLogger("hermes_agent.gateway.session")
 
 # "No SessionDB pinned" sentinel: lets ``_db`` distinguish "resolve from the active scope" from a
 # deliberate ``store._db = None`` (JSONL fallback).
@@ -332,7 +332,7 @@ class SessionPersistenceMixin:
     @staticmethod
     def _routing_entry_from_json(key: str, entry_json: str) -> Optional[SessionEntry]:
         """Parse one gateway_routing row; None (with a warning) when invalid."""
-        from gateway.session import SessionEntry
+        from hermes_agent.gateway.session import SessionEntry
         try:
             entry_data = json.loads(entry_json)
             if isinstance(entry_data, dict):
@@ -388,7 +388,7 @@ class SessionPersistenceMixin:
         API routes are left alone: their receipts, not the row, name their owner."""
         import sqlite3
 
-        from gateway.session_route_recovery import _messaging_platform, _row_source
+        from hermes_agent.gateway.session_route_recovery import _messaging_platform, _row_source
         db = self._db_for_key(entry.session_key)
         try:
             row = db.get_session(entry.session_id) if db is not None else None
@@ -403,7 +403,7 @@ class SessionPersistenceMixin:
     def _import_legacy_sessions_json(self, db_had_entries: bool) -> int:
         """Legacy import: sessions.json fills only keys the DB lacks. Lock held. Returns how many
         mirror entries it skipped as retired routes."""
-        from gateway.session import SessionEntry
+        from hermes_agent.gateway.session import SessionEntry
         sessions_file = self.sessions_dir / "sessions.json"
         retired = 0
         if not sessions_file.exists():
@@ -475,7 +475,7 @@ class SessionPersistenceMixin:
     def _stale_entry_verdict(self, key: str, entry, row):
         """For a routing entry whose row has ended: ``"prune"``, a replacement entry (repoint), or
         None (keep as-is)."""
-        from gateway.session_lifecycle import _now
+        from hermes_agent.gateway.session_lifecycle import _now
         local_target = self._local_receipt_target(entry)
         if local_target is not None:
             # The authority's receipt names the route's target (a compression child after a

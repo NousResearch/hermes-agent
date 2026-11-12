@@ -3,10 +3,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import gateway.run as gateway_run
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.restart import (
+import hermes_agent.gateway.run as gateway_run
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
 )
@@ -166,14 +166,14 @@ async def test_startup_aborts_when_restart_begins_during_platform_connect(tmp_pa
 
 def _patch_aborted_startup(monkeypatch, runner_cls):
     """Run start_gateway() against a runner that aborts before running mode."""
-    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
-    monkeypatch.setattr("gateway.status.acquire_gateway_runtime_lock", lambda: True)
-    monkeypatch.setattr("gateway.status.write_pid_file", lambda: None)
-    monkeypatch.setattr("gateway.status.remove_pid_file", lambda: None)
-    monkeypatch.setattr("gateway.status.release_gateway_runtime_lock", lambda: None)
+    monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda: None)
+    monkeypatch.setattr("hermes_agent.gateway.status.acquire_gateway_runtime_lock", lambda: True)
+    monkeypatch.setattr("hermes_agent.gateway.status.write_pid_file", lambda: None)
+    monkeypatch.setattr("hermes_agent.gateway.status.remove_pid_file", lambda: None)
+    monkeypatch.setattr("hermes_agent.gateway.status.release_gateway_runtime_lock", lambda: None)
     monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
     monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: None)
-    monkeypatch.setattr("gateway.run.GatewayRunner", runner_cls)
+    monkeypatch.setattr("hermes_agent.gateway.run.GatewayRunner", runner_cls)
 
 
 @pytest.mark.asyncio
@@ -189,7 +189,7 @@ async def test_start_gateway_does_not_start_cron_after_aborted_startup(tmp_path,
 
     class AbortedStartupRunner:
         def __init__(self, config):
-            from gateway.session import SessionStore
+            from hermes_agent.gateway.session import SessionStore
             from hermes_agent.hermes_state import SessionDB
             from hermes_constants import get_hermes_home
             self.session_store = SessionStore(get_hermes_home() / 'sessions', config)
@@ -220,7 +220,7 @@ async def test_start_gateway_does_not_start_cron_after_aborted_startup(tmp_path,
         cron_started = True
 
     _patch_aborted_startup(monkeypatch, AbortedStartupRunner)
-    monkeypatch.setattr("gateway.run._start_cron_ticker", fail_if_cron_starts)
+    monkeypatch.setattr("hermes_agent.gateway.run._start_cron_ticker", fail_if_cron_starts)
     monkeypatch.setattr("tools.mcp_tool_lifecycle.shutdown_mcp_servers", lambda: None)
 
     with pytest.raises(SystemExit) as exc:
@@ -241,7 +241,7 @@ async def test_start_gateway_preserves_service_restart_fallback_after_aborted_st
 
     class AbortedStartupRunner:
         def __init__(self, config):
-            from gateway.session import SessionStore
+            from hermes_agent.gateway.session import SessionStore
             from hermes_agent.hermes_state import SessionDB
             from hermes_constants import get_hermes_home
             self.session_store = SessionStore(get_hermes_home() / 'sessions', config)
@@ -273,7 +273,7 @@ async def test_start_gateway_preserves_service_restart_fallback_after_aborted_st
         cron_started = True
 
     _patch_aborted_startup(monkeypatch, AbortedStartupRunner)
-    monkeypatch.setattr("gateway.run._start_cron_ticker", fail_if_cron_starts)
+    monkeypatch.setattr("hermes_agent.gateway.run._start_cron_ticker", fail_if_cron_starts)
     monkeypatch.setattr("tools.mcp_tool_lifecycle.shutdown_mcp_servers", lambda: None)
 
     with pytest.raises(SystemExit) as exc:
@@ -301,7 +301,7 @@ async def test_start_gateway_classifies_startup_signal_exit(
 
     class AbortedStartupRunner:
         def __init__(self, config):
-            from gateway.session import SessionStore
+            from hermes_agent.gateway.session import SessionStore
             from hermes_agent.hermes_state import SessionDB
             from hermes_constants import get_hermes_home
             self.session_store = SessionStore(get_hermes_home() / 'sessions', config)
@@ -341,9 +341,9 @@ async def test_start_gateway_classifies_startup_signal_exit(
 
     _patch_aborted_startup(monkeypatch, AbortedStartupRunner)
     monkeypatch.setattr(
-        "gateway.run_bootstrap._start_gateway_make_shutdown_signal_handler", capture_signal_state
+        "hermes_agent.gateway.run_bootstrap._start_gateway_make_shutdown_signal_handler", capture_signal_state
     )
-    monkeypatch.setattr("gateway.run._start_cron_ticker", fail_if_cron_starts)
+    monkeypatch.setattr("hermes_agent.gateway.run._start_cron_ticker", fail_if_cron_starts)
     monkeypatch.setattr("tools.mcp_tool_lifecycle.shutdown_mcp_servers", lambda: None)
 
     result = await gateway_run.start_gateway(
@@ -377,7 +377,7 @@ async def test_failure_exit_still_stops_cron_housekeeping_and_mcp(monkeypatch):
     monkeypatch.setattr("hermes_cli.nous_auth_keepalive.stop_nous_auth_keepalive", lambda: None)
     runner = MagicMock(should_exit_with_failure=True, exit_reason="boom", exit_code=None)
 
-    from gateway.run_bootstrap import _start_gateway_shutdown_tail
+    from hermes_agent.gateway.run_bootstrap import _start_gateway_shutdown_tail
     result = await _start_gateway_shutdown_tail(
         runner, None, cron_stop, object(), threads[0], threads[1], watcher_stop, watcher, [False])
 

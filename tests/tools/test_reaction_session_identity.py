@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from gateway.session_context import clear_session_vars, set_session_vars
+from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
 from hermes_agent.hermes_state import SessionDB
 from tools import react_to_message_tool as reactions
 

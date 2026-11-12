@@ -29,8 +29,8 @@ from plugins.platforms.discord.adapter import (
     ClarifyChoiceView,
     DiscordAdapter,
 )
-from gateway.config import PlatformConfig
-from gateway.platforms.base import utf16_len
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.base import utf16_len
 
 
 # ---------------------------------------------------------------------------

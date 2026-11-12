@@ -25,7 +25,7 @@ from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from gateway.hosted_room_discussion import (
+    from hermes_agent.gateway.hosted_room_discussion import (
         DiscussionMember, DiscussionRoom, DiscussionTaskPlan, EventPlan, _ValidatedEvent)
 
 ASSIGNMENT_EVENT_KIND = "room.assignment"
@@ -47,8 +47,8 @@ def lead_member(room: DiscussionRoom, context: Mapping[str, str]) -> DiscussionM
 
 def routes_through_lead(discussion: _ValidatedEvent, room: DiscussionRoom, events: Sequence[_ValidatedEvent]) -> bool:
     """A human message that opens a new thread and addresses nobody goes to the lead first."""
-    from gateway.hosted_room_context import scheduled_post_kind
-    from gateway.hosted_room_discussion import _MENTION_RE
+    from hermes_agent.gateway.hosted_room_context import scheduled_post_kind
+    from hermes_agent.gateway.hosted_room_discussion import _MENTION_RE
 
     if scheduled_post_kind(discussion.actor) is not None:
         return False
@@ -134,7 +134,7 @@ def first_round_members(
 
 def validate_assignment_event(kind: str, payload: Mapping[str, Any], actor: Mapping[str, Any],
                               room: DiscussionRoom) -> Mapping[str, Any]:
-    from gateway.hosted_room_discussion import DiscussionValidationError, _exact_fields, _require_gateway_actor
+    from hermes_agent.gateway.hosted_room_discussion import DiscussionValidationError, _exact_fields, _require_gateway_actor
 
     _exact_fields(payload, label=f"{kind} payload", required=ASSIGNMENT_FIELDS)
     _require_gateway_actor(actor, room, f"{kind} requires the room gateway")
@@ -153,7 +153,7 @@ def assignment_effect(result: Any, *, task: DiscussionTaskPlan, room: Discussion
     ``first_round_members`` still gives the message to the lead, because Discard gives up one attempt, never
     the user's message (a discarded member turn in an everyone room leaves the rest of the round running).
     Stop ends the whole round through the stop fence instead."""
-    from gateway.hosted_room_discussion import EventPlan, _terminal_text
+    from hermes_agent.gateway.hosted_room_discussion import EventPlan, _terminal_text
 
     if status not in {"settled", "failed"}:
         return []

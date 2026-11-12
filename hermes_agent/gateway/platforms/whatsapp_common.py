@@ -18,11 +18,11 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from gateway.platforms._shared import (
+from hermes_agent.gateway.platforms._shared import (
     decode_json_list_literal as _decode_json_list_literal, extra_or_secret as _extra_or_wsecret,
     get_scoped_secret as _get_wsecret
 )
-from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
+from hermes_agent.gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 
 
 logger = logging.getLogger(__name__)
@@ -161,12 +161,12 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
     def _matches_whatsapp_allowlist(candidate: str, allow_from) -> bool:
         """Match a WhatsApp identifier against an allowlist across phone/LID forms. Inbound senders
         arrive as ``<id>@lid`` while allowlists hold phone numbers (or vice versa), so resolve both
-        sides through the bridge's lid-mapping files via ``gateway.whatsapp_identity``."""
+        sides through the bridge's lid-mapping files via ``hermes_agent.gateway.whatsapp_identity``."""
         if not allow_from:
             return False
         if candidate in allow_from:
             return True
-        from gateway.whatsapp_identity import expand_whatsapp_aliases, normalize_whatsapp_identifier
+        from hermes_agent.gateway.whatsapp_identity import expand_whatsapp_aliases, normalize_whatsapp_identifier
         candidate_aliases = expand_whatsapp_aliases(candidate)
         if not candidate_aliases:
             return False

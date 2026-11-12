@@ -8,7 +8,7 @@ Under ``gateway.multiplex_profiles`` those reads leak the default profile's
 credential into secondary profiles' adapters.
 
 Each migrated module now carries a module-level ``_get_scoped_secret`` helper
-mirroring ``gateway/platforms/whatsapp_common.py::_get_wsecret``:
+mirroring ``hermes_agent/gateway/platforms/whatsapp_common.py::_get_wsecret``:
 
 - scope installed → scope is authoritative; scoped miss returns the default
   (NO borrow from ``os.environ``)

@@ -16,7 +16,7 @@ import types
 
 import pytest
 
-import gateway.run as gw
+import hermes_agent.gateway.run as gw
 
 
 class _Source:

@@ -28,7 +28,7 @@ def _receipt_sizes(db):
 
 
 def test_lost_admission_worker_compacts_its_history_receipt(tmp_path):
-    from gateway.session_worker_reservation import lose_admission_worker, reserve_admission_worker
+    from hermes_agent.gateway.session_worker_reservation import lose_admission_worker, reserve_admission_worker
     with closing(SessionDB(tmp_path / 'state.db')) as db:
         db.create_session('s', 'cli')
         db.append_messages_batch('s', [{'role': 'user', 'content': 'x' * 4000}])

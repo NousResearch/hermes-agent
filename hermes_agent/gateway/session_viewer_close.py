@@ -22,7 +22,7 @@ import uuid
 from functools import partial
 from pathlib import Path
 
-from gateway.session_history_mount import is_history_mount
+from hermes_agent.gateway.session_history_mount import is_history_mount
 from hermes_agent.hermes_state_local import local_receipt
 from hermes_agent.hermes_state_mutation_retirement import VIEWER_CLOSE_PREFIX
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
@@ -183,7 +183,7 @@ def orphan_close_grace(authority, *, startup=False):
     ws_orphan_reap_grace_s: 0`` (park forever) and, for *startup* arms, ``startup_orphan_sweep: false``."""
     from hermes_cli.config_defaults import DEFAULT_CONFIG
     from hermes_cli.config_effective import load_user_config_effective
-    from gateway.session_local import profile_env_scope
+    from hermes_agent.gateway.session_local import profile_env_scope
     from utils import is_truthy_value
     default = DEFAULT_CONFIG['sessions']['orphan_end_grace_s']
     home = Path(authority.db.db_path).resolve().parent
@@ -276,7 +276,7 @@ def _fire_orphan_close(authority, session_id, reason):
     # The persisted pending close a viewer's own close uses: it completes once the turn settles, and
     # survives a restart. Never ``close_viewer_session``: that would interrupt the delegations.
     authority.pending_closes[session_id] = close = _PendingClose(reason)
-    from gateway.session_runtime_workers import track_mutation
+    from hermes_agent.gateway.session_runtime_workers import track_mutation
     track_mutation(authority, _store_and_settle(authority, session_id, live, close))
 
 
@@ -303,8 +303,8 @@ async def settle_viewer_close(authority, session_id):
     # Claimed with no await since the check: exactly one settler stamps the row and runs the
     # lifecycle, and a close cancelled before its claim never wrote ``ended_at``.
     del authority.pending_closes[session_id]
-    from gateway.session_acp_lifecycle import end_idle_viewer_session, reopen_if_reattached
-    from gateway.session_runtime_workers import tracked_write
+    from hermes_agent.gateway.session_acp_lifecycle import end_idle_viewer_session, reopen_if_reattached
+    from hermes_agent.gateway.session_runtime_workers import tracked_write
     ended = await tracked_write(authority, partial(end_idle_viewer_session, authority, session_id, close.reason),
                                 then=partial(reopen_if_reattached, authority, session_id))
     if not ended:
@@ -314,12 +314,12 @@ async def settle_viewer_close(authority, session_id):
     if live.subscribers:
         return  # a viewer reattached during the stamp; reopen_if_reattached reopened the row
     platform = (row or {}).get('source') or (live.source.platform.value if live.source else '')
-    from gateway.session_vault_prompt import release_unlocks
+    from hermes_agent.gateway.session_vault_prompt import release_unlocks
     release_unlocks(session_id)
     await _run_close_lifecycle(authority, live, target, platform, close.reason)
     if not live.subscribers:  # ended: no viewer is left to replay to; a resume refetches history
         live.event_stream.release()
-    from gateway.session_retirement import retire_closed
+    from hermes_agent.gateway.session_retirement import retire_closed
     retire_closed(authority, session_id, live, target, idle_stamp)
 
 
@@ -337,7 +337,7 @@ async def _resolve_abandoned_unknown(authority, session_id, live, close):
         return True
     if close.reason in ORPHAN_REASONS:
         return False  # nobody closed it: the turn waits for its user's own Discard
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_contract import SessionRef
     ref = SessionRef(authority.profile_id, session_id)
     for row in unknown:
         if not _still_pending(authority, session_id, live, close):

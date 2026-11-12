@@ -30,7 +30,7 @@ class _Recorder:
 
 @pytest.mark.asyncio
 async def test_relay_ws_transport_dial_races_ipv6_ipv4(monkeypatch):
-    import gateway.relay.ws_transport as mod
+    import hermes_agent.gateway.relay.ws_transport as mod
 
     rec = _Recorder()
     monkeypatch.setattr(mod.websockets, "connect", rec)

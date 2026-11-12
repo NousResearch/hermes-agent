@@ -8,13 +8,13 @@ from types import SimpleNamespace
 import psutil
 import pytest
 
-from gateway.session_contract import SessionActor, SessionRef
+from hermes_agent.gateway.session_contract import SessionActor, SessionRef
 from tests.waiting import async_wait_until
 
 
 @pytest.mark.platforms("linux")
 def test_stop_before_hello_terminates_child_and_settles_interrupted(monkeypatch):
-    from gateway import session_managed_worker as managed
+    from hermes_agent.gateway import session_managed_worker as managed
     spawned = []
     original = subprocess.Popen
 
@@ -73,11 +73,11 @@ def test_stop_acknowledged_during_spawn_never_bootstraps_the_worker(tmp_path, mo
     (no worker registered yet, so the authority latches it for the generation) must keep the child
     from ever receiving its bootstrap; the admission settles interrupted, never as a late turn."""
     import threading
-    from gateway import session_managed_worker as managed
-    from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import Submission
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_policy import build_policy
+    from hermes_agent.gateway import session_managed_worker as managed
+    from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_agent.gateway.session_contract import Submission
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_policy import build_policy
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import begin_runtime_epoch, claim_session_input
 

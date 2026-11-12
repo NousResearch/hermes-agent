@@ -9,7 +9,7 @@ from functools import partial
 from pathlib import Path
 import sys
 
-from gateway.session_busy_controls import authorize
+from hermes_agent.gateway.session_busy_controls import authorize
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
@@ -71,8 +71,8 @@ async def show_tools(connection, ref, params):
     if ref.session_id not in authority.sessions:
         raise RuntimeStoreError('not_found')
     authorize(connection, ref, params, 'session:read')
-    from gateway.session_authorities import owner_scope
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_authorities import owner_scope
+    from hermes_agent.gateway.session_policy import policy_for_source
     policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
     agent = authority.agent(ref)
 
@@ -115,8 +115,8 @@ async def reload_skills(connection, ref, params):
     if ref.session_id not in authority.sessions:
         raise RuntimeStoreError('not_found')
     authorize(connection, ref, params, 'session:control')
-    from gateway.session_authorities import owner_scope
-    from gateway.session_policy import policy_for_source, policy_scope
+    from hermes_agent.gateway.session_authorities import owner_scope
+    from hermes_agent.gateway.session_policy import policy_for_source, policy_scope
     policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
 
     def rescan():
@@ -153,7 +153,7 @@ async def attach_file(connection, ref, params):
     authorize(connection, ref, params, 'session:submit')
     if staged_upload is not None and not _reachable_upload_home(connection, staged_upload.get('profile_home')):
         raise RuntimeStoreError('permission_denied')
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_policy import policy_for_source
     authority = connection.authority
     policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
     if policy is None:
@@ -330,7 +330,7 @@ async def reload_mcp(connection, ref, params):
     result, failed, ready = await asyncio.to_thread(reconcile)
     # ``added`` is what reconcile attempted: only those now registered (live or lazy) changed anything.
     result = {**result, 'added': [name for name in result.get('added', []) if name not in failed]}
-    from gateway.session_authorities import served_profile_name
+    from hermes_agent.gateway.session_authorities import served_profile_name
     runner = connection.authority.runner
     multiplex = bool(getattr(runner.config, 'multiplex_profiles', False))
     runner._mcp_reload_refresh_cached_agents(multiplex, served_profile_name(connection.authority.profile_id))
@@ -364,14 +364,14 @@ async def _held_mcp_rev(connection, ref):
     live = connection.authority.sessions.get(sid) if sid else None
     if live is None or live.source is None:
         return ''
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_policy import policy_for_source
     policy = policy_for_source(connection.authority.runner, live.source)
     return await asyncio.to_thread(_mcp_revision_in_scope, Path(connection.authority.profile_id), policy)
 
 
 def _mcp_revision_in_scope(home, policy):
-    from gateway.run import _profile_runtime_scope
-    from gateway.session_config import mcp_revision
+    from hermes_agent.gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.session_config import mcp_revision
     from hermes_cli.config import load_config
     with _profile_runtime_scope(home):
         return mcp_revision(policy, load_config())
@@ -382,7 +382,7 @@ def _session_servers(authority, sid, ready):
     (live or lazy): a server connected for the profile is not one a chat with ``no_mcp``, an explicit pick or
     a platform allowlist enabled, and one the policy names but that parked serves the chat nothing."""
     import json
-    from gateway.session_policy import restore_policy
+    from hermes_agent.gateway.session_policy import restore_policy
     from hermes_cli.tools_config import enabled_mcp_server_names
     from hermes_agent.hermes_state_local import local_receipt
     policy = restore_policy(local_receipt(authority.db, sid)['policy'])
@@ -392,13 +392,13 @@ def _session_servers(authority, sid, ready):
 async def _commit_session_mcp(connection, ref, params):
     """The calling local session's MCP servers as a gateway-committed generation (``commit_refresh``):
     never a running or queued turn's, never another session's."""
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     authority, sid = connection.authority, getattr(ref, 'session_id', None)
     live = authority.sessions.get(sid) if sid else None
     if live is None or live.source is None or live.source.platform != Platform.LOCAL:
         return None
     authorize(connection, ref, params, 'session:control')
-    from gateway.session_policy_refresh import commit_refresh
+    from hermes_agent.gateway.session_policy_refresh import commit_refresh
     try:
         return 'applied' if await commit_refresh(authority, ref, mcp_only=True) else 'unchanged'
     except RuntimeStoreError as exc:
@@ -450,7 +450,7 @@ def _owner_objects(authority, ref, *, include_fallback_evicted=False):
     """``(agent, subagent records)`` of this in-process session. Process-local registries cannot
     describe (or stop) another interpreter's live objects: a managed worker is refused rather than
     answered with an empty success."""
-    from gateway.session_managed_worker import managed_policy
+    from hermes_agent.gateway.session_managed_worker import managed_policy
     if managed_policy(authority, ref) is not None:
         raise RuntimeStoreError('unsupported_projection')
     agent = authority.agent(ref)
@@ -463,7 +463,7 @@ def _owner_objects(authority, ref, *, include_fallback_evicted=False):
 
 
 def physical_target(authority, ref):
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     source = authority.sessions[ref.session_id].source  # None: a history mount
     if source is not None and source.platform == Platform.LOCAL:
         from hermes_agent.hermes_state_local import local_receipt

@@ -19,11 +19,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import SendResult
-from gateway.platforms.event import MessageEvent
-from gateway.run import GatewayRunner
-from gateway.session import SessionEntry, SessionSource, build_session_key
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionEntry, SessionSource, build_session_key
 from hermes_cli.version_info import _reset_version_info_cache
 
 # E2E tests compare against real hermes processes, which resolve the checkout's real
@@ -218,7 +218,7 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> Gatew
     runner._restart_task_started = False
     runner._restart_detached = False
     runner._restart_via_service = False
-    from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+    from hermes_agent.gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     runner._restart_drain_timeout = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     runner._stop_task = None
     runner._busy_input_mode = "interrupt"
@@ -273,7 +273,7 @@ def make_adapter(platform: Platform, runner=None):
     config = PlatformConfig(enabled=True, token="e2e-test-token")
 
     if platform == Platform.DISCORD:
-        from gateway.platforms.helpers import ThreadParticipationTracker
+        from hermes_agent.gateway.platforms.helpers import ThreadParticipationTracker
         with patch.object(ThreadParticipationTracker, "_load", return_value=set()):
             adapter = DiscordAdapter(config)
         platform_key = Platform.DISCORD
@@ -434,7 +434,7 @@ def _make_discord_adapter_wired(runner=None):
         runner = make_runner(Platform.DISCORD)
 
     config = PlatformConfig(enabled=True, token="e2e-test-token")
-    from gateway.platforms.helpers import ThreadParticipationTracker
+    from hermes_agent.gateway.platforms.helpers import ThreadParticipationTracker
     with patch.object(ThreadParticipationTracker, "_load", return_value=set()):
         adapter = DiscordAdapter(config)
 

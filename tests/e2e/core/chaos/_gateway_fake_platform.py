@@ -2,7 +2,7 @@
 
 The chaos test writes ``$HERMES_HOME/plugins/chaos-fake/`` (``kind: platform``) whose
 ``register`` is this module's, enables it in config.yaml, and runs the real
-``python -m gateway.run`` entry point. The gateway then discovers the plugin, builds this
+``python -m hermes_agent.gateway.run`` entry point. The gateway then discovers the plugin, builds this
 adapter through the platform registry, connects it and installs its own message handler
 — the same path every third-party adapter takes. Nothing in the runner is patched.
 
@@ -27,9 +27,9 @@ import time
 import uuid
 from typing import Any, Dict, Optional
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 
 PLATFORM_NAME = "chaosfake"
 PLUGIN_DIR_NAME = "chaos-fake"

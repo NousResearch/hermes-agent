@@ -13,9 +13,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import GatewayConfig
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource
 from hermes_agent.hermes_state import AsyncSessionDB, SessionDB
 from tests.gateway.test_telegram_group_gating import _bot_command_entity, _group_message, _make_adapter
 

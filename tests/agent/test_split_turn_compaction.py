@@ -290,10 +290,10 @@ _LONG_QUOTE = "Earlier assistant answer. " * 80
 
 def _gateway_reply(text: str, *, own: bool = False, discord_id: str | None = None) -> str:
     """Build the row exactly as the gateway does, so a pointer format change fails here."""
-    from gateway.config import Platform
-    from gateway.platforms.event import MessageEvent
-    from gateway.run import GatewayRunner
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import SessionSource
 
     platform = Platform.DISCORD if discord_id else Platform.TELEGRAM
     source = SessionSource(platform=platform, chat_id="1", chat_type="dm")
@@ -301,7 +301,7 @@ def _gateway_reply(text: str, *, own: bool = False, discord_id: str | None = Non
         text=text, source=source, message_id=discord_id,
         reply_to_message_id="7", reply_to_text=_LONG_QUOTE, reply_to_is_own_message=own,
     )
-    with patch("gateway.session._discord_tools_loaded", return_value=True):
+    with patch("hermes_agent.gateway.session._discord_tools_loaded", return_value=True):
         return GatewayRunner._prepend_inbound_reply_context(event, source, text)
 
 

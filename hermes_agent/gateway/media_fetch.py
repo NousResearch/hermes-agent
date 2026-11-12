@@ -25,7 +25,7 @@ import uuid
 from pathlib import Path, PurePosixPath
 from typing import Optional
 
-from gateway.platforms.base import (
+from hermes_agent.gateway.platforms.base import (
     _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS, _MEDIA_DELIVERY_DENIED_PREFIXES, _ROOT_CREDENTIAL_PATHS)
 
 logger = logging.getLogger(__name__)
@@ -66,8 +66,8 @@ def _active_remote_env():
     """The live remote BaseEnvironment for the current session, or None (local backend / no env yet).
     Keyed by the session id the turn registered its sandbox under (falls back to the session key)."""
     from agent.prompt_builder import _REMOTE_TERMINAL_BACKENDS, _plugin_backend_is_remote
-    from gateway.platforms.base import _tenv
-    from gateway.session_context import get_session_env
+    from hermes_agent.gateway.platforms.base import _tenv
+    from hermes_agent.gateway.session_context import get_session_env
     from tools.terminal_tool_lifecycle import get_active_env
     backend = _tenv("TERMINAL_ENV", "local").strip().lower()
     if backend not in _REMOTE_TERMINAL_BACKENDS and not _plugin_backend_is_remote(backend):
@@ -78,13 +78,13 @@ def _active_remote_env():
 def fetch_remote_media(path: str) -> Optional[str]:
     """Host path of a validated copy of sandbox file ``path``, or None (never raises). Only fires
     when a remote backend is active; the caller has already failed local validation."""
-    from gateway.media_policy import media_delivery_strict
+    from hermes_agent.gateway.media_policy import media_delivery_strict
     if media_delivery_strict():
         return None
     env = _active_remote_env()
     if env is None:
         return None
-    from gateway.platforms.base import (
+    from hermes_agent.gateway.platforms.base import (
         DOCUMENT_CACHE_DIR, _log_safe_path, _normalize_media_tag_path, validate_media_delivery_path)
     from tools.environments.base import FileFetchError
 

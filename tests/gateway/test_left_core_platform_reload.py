@@ -7,8 +7,8 @@ installed by this very start but served it only on the next one.
 
 import pytest
 
-import gateway.run as gateway_run
-from gateway.config import GatewayConfig, Platform, PlatformConfig
+import hermes_agent.gateway.run as gateway_run
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 
 
 @pytest.mark.asyncio
@@ -32,17 +32,17 @@ async def test_a_platform_installed_by_this_start_is_in_the_runners_config(tmp_p
             seen["platforms"] = set(config.platforms)
             raise SystemExit(0)
 
-    monkeypatch.setattr("gateway.run.load_gateway_config_for_runner", load_config)
-    monkeypatch.setattr("gateway.config.load_gateway_config", load_config)
+    monkeypatch.setattr("hermes_agent.gateway.run.load_gateway_config_for_runner", load_config)
+    monkeypatch.setattr("hermes_agent.gateway.config.load_gateway_config", load_config)
     monkeypatch.setattr("hermes_cli.left_core_migration.recover_at_startup", recover_at_startup)
-    monkeypatch.setattr("gateway.run._host_attach_or_none", lambda replace, force: _none())
-    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
-    monkeypatch.setattr("gateway.status.acquire_gateway_runtime_lock", lambda: True)
-    monkeypatch.setattr("gateway.status.write_pid_file", lambda: None)
-    monkeypatch.setattr("gateway.status.remove_pid_file", lambda: None)
-    monkeypatch.setattr("gateway.status.release_gateway_runtime_lock", lambda: None)
+    monkeypatch.setattr("hermes_agent.gateway.run._host_attach_or_none", lambda replace, force: _none())
+    monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda: None)
+    monkeypatch.setattr("hermes_agent.gateway.status.acquire_gateway_runtime_lock", lambda: True)
+    monkeypatch.setattr("hermes_agent.gateway.status.write_pid_file", lambda: None)
+    monkeypatch.setattr("hermes_agent.gateway.status.remove_pid_file", lambda: None)
+    monkeypatch.setattr("hermes_agent.gateway.status.release_gateway_runtime_lock", lambda: None)
     monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: None)
-    monkeypatch.setattr("gateway.run.GatewayRunner", Runner)
+    monkeypatch.setattr("hermes_agent.gateway.run.GatewayRunner", Runner)
 
     with pytest.raises(SystemExit):
         await gateway_run.start_gateway(replace=False, verbosity=None)
@@ -90,15 +90,15 @@ async def test_a_named_launch_stays_standalone_across_the_reload(tmp_path, monke
         return installed
 
     monkeypatch.setattr("hermes_cli.left_core_migration.recover_at_startup", recover_at_startup)
-    monkeypatch.setattr("gateway.run._host_attach_or_none", lambda replace, force: _none())
-    monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **kw: None)
-    monkeypatch.setattr("gateway.status.acquire_gateway_runtime_lock", lambda: True)
-    monkeypatch.setattr("gateway.status.write_pid_file", lambda: None)
-    monkeypatch.setattr("gateway.status.remove_pid_file", lambda: None)
-    monkeypatch.setattr("gateway.status.release_gateway_runtime_lock", lambda: None)
-    monkeypatch.setattr("gateway.run._write_runtime_status_quiet", lambda **kw: None)
+    monkeypatch.setattr("hermes_agent.gateway.run._host_attach_or_none", lambda replace, force: _none())
+    monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda *a, **kw: None)
+    monkeypatch.setattr("hermes_agent.gateway.status.acquire_gateway_runtime_lock", lambda: True)
+    monkeypatch.setattr("hermes_agent.gateway.status.write_pid_file", lambda: None)
+    monkeypatch.setattr("hermes_agent.gateway.status.remove_pid_file", lambda: None)
+    monkeypatch.setattr("hermes_agent.gateway.status.release_gateway_runtime_lock", lambda: None)
+    monkeypatch.setattr("hermes_agent.gateway.run._write_runtime_status_quiet", lambda **kw: None)
     monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: None)
-    monkeypatch.setattr("gateway.run.GatewayRunner", Runner)
+    monkeypatch.setattr("hermes_agent.gateway.run.GatewayRunner", Runner)
 
     try:
         with pytest.raises(SystemExit):
@@ -137,15 +137,15 @@ async def test_a_default_launch_keeps_its_reserved_homes_across_the_reload(tmp_p
     monkeypatch.setattr("agent.secret_scope._AUTO_PINNED_HOME", None)
     monkeypatch.setattr("hermes_cli.left_core_migration.recover_at_startup",
                         lambda *, say=None, gateway_start=False: ["yuanbao"])
-    monkeypatch.setattr("gateway.run._host_attach_or_none", lambda replace, force: _none())
-    monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **kw: None)
-    monkeypatch.setattr("gateway.status.acquire_gateway_runtime_lock", lambda: True)
-    monkeypatch.setattr("gateway.status.write_pid_file", lambda: None)
-    monkeypatch.setattr("gateway.status.remove_pid_file", lambda: None)
-    monkeypatch.setattr("gateway.status.release_gateway_runtime_lock", lambda: None)
-    monkeypatch.setattr("gateway.run._write_runtime_status_quiet", lambda **kw: None)
+    monkeypatch.setattr("hermes_agent.gateway.run._host_attach_or_none", lambda replace, force: _none())
+    monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda *a, **kw: None)
+    monkeypatch.setattr("hermes_agent.gateway.status.acquire_gateway_runtime_lock", lambda: True)
+    monkeypatch.setattr("hermes_agent.gateway.status.write_pid_file", lambda: None)
+    monkeypatch.setattr("hermes_agent.gateway.status.remove_pid_file", lambda: None)
+    monkeypatch.setattr("hermes_agent.gateway.status.release_gateway_runtime_lock", lambda: None)
+    monkeypatch.setattr("hermes_agent.gateway.run._write_runtime_status_quiet", lambda **kw: None)
     monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: None)
-    monkeypatch.setattr("gateway.run.GatewayRunner", Runner)
+    monkeypatch.setattr("hermes_agent.gateway.run.GatewayRunner", Runner)
 
     try:
         with pytest.raises(SystemExit):
@@ -180,7 +180,7 @@ def test_the_launch_homes_migration_reads_its_own_secrets_on_a_multiplexing_star
         return []
 
     monkeypatch.setattr("hermes_cli.left_core_migration.recover_at_startup", recover_at_startup)
-    from gateway.run_startup import recover_left_core_at_gateway_start
+    from hermes_agent.gateway.run_startup import recover_left_core_at_gateway_start
     previous = is_multiplex_active()
     set_multiplex_active(True)
     try:

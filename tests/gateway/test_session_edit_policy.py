@@ -3,7 +3,7 @@
 Main's in-process ACP kept the mode on its own session (``hermes_agent/acp_adapter/server.py`` ``_MODES``). On the
 shared owner it is a field of the session's frozen LocalSessionPolicy, written by a revision-fenced
 ``session.mutate edit_policy``, read back by every viewer's ``session.info``, restored after an owner
-restart, and enforced where the edit runs (``gateway/session_local_editor.py``): sensitive paths ask.
+restart, and enforced where the edit runs (``hermes_agent/gateway/session_local_editor.py``): sensitive paths ask.
 """
 import asyncio
 from dataclasses import replace
@@ -36,12 +36,12 @@ async def _info(connection, sid):
 
 @pytest.mark.asyncio
 async def test_edit_policy_is_a_durable_session_setting_every_viewer_reads(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_policy import policy_for_source
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     db = store._db
@@ -95,11 +95,11 @@ async def test_edit_policy_is_a_durable_session_setting_every_viewer_reads(tmp_p
 @pytest.mark.asyncio
 async def test_a_branch_of_a_dont_ask_session_starts_at_ask(tmp_path, monkeypatch):
     """A branch/fork starts at Default, as main's ``fork_session`` did; the parent keeps its policy."""
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     db = store._db
@@ -127,8 +127,8 @@ async def test_a_prepared_branch_stamps_its_secret_reference_with_the_childs_ask
     (``ask``), never the parent's Don't Ask."""
     from dataclasses import asdict
     from hermes_agent import hermes_state_local
-    from gateway import session_local_mcp, session_policy_credentials as creds
-    from gateway.session_policy import build_policy
+    from hermes_agent.gateway import session_local_mcp, session_policy_credentials as creds
+    from hermes_agent.gateway.session_policy import build_policy
     parent = replace(build_policy({'source': 'acp', 'cwd': str(tmp_path), 'model': 'fixture'}, {}),
                      edit_approval_policy='session', editor_mcp_json='{"scope": "p"}',
                      config_secret_ref=creds.PREFIX + '{}')
@@ -152,8 +152,8 @@ def test_a_policy_stored_before_the_field_restores_as_ask_with_its_identity_unch
     """A receipt main minted has no ``edit_approval_policy``: it restores as ``ask`` and its credential
     reference (a whole-policy hash) still matches, so no stored session loses its launch secrets."""
     from dataclasses import asdict
-    from gateway.session_policy import build_policy, restore_policy
-    from gateway.session_policy_credentials import policy_identity
+    from hermes_agent.gateway.session_policy import build_policy, restore_policy
+    from hermes_agent.gateway.session_policy_credentials import policy_identity
     policy = build_policy({'source': 'acp', 'cwd': str(tmp_path), 'model': 'fixture'}, {})
     stored = asdict(policy)
     stored.pop('edit_approval_policy')
@@ -175,7 +175,7 @@ def test_a_policy_stored_before_the_field_restores_as_ask_with_its_identity_unch
 ])
 async def test_the_owners_edit_guard_enforces_the_sessions_policy(tmp_path, name, policy, asks):
     from hermes_agent.acp_adapter.edit_approval import maybe_require_edit_approval
-    from gateway.session_policy import build_policy, policy_scope
+    from hermes_agent.gateway.session_policy import build_policy, policy_scope
     from tools.approval import register_gateway_notify, unregister_gateway_notify
     from tools.approval_context import reset_current_session_key, set_current_session_key
 

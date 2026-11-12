@@ -1,7 +1,7 @@
 """``bot_relay.cancel``: a ``message_agent`` sender withdraws its own delivery by ``delivery_id``.
 
 The cancel runs on the delivery's owner under the same mailbox lock that admits the delivery's one
-automatic retry (``gateway/session_bot.py::_maybe_retry``), so it always sees which admission is the
+automatic retry (``hermes_agent/gateway/session_bot.py::_maybe_retry``), so it always sees which admission is the
 request now. A sender that picked an admission from the receipt file could race that retry: the
 first attempt already failed, the retry not yet recorded, and "nothing to cancel" while it runs.
 
@@ -10,23 +10,23 @@ it refused ``cancelled``), so no later wake, re-delivery or owner restart admits
 """
 import asyncio
 
-from gateway.session_contract import SessionRef
+from hermes_agent.gateway.session_contract import SessionRef
 from hermes_agent.hermes_state_runtime import RuntimeStoreError, get_session_admission
 
 _FIELDS = frozenset({'id', 'profile', 'author_id'})
 
 
 async def cancel(connection, params):
-    from gateway.session_authorities import require_serving
-    from gateway.session_runtime_workers import track_mutation
+    from hermes_agent.gateway.session_authorities import require_serving
+    from hermes_agent.gateway.session_runtime_workers import track_mutation
     require_serving(connection.authority)
     return await asyncio.shield(track_mutation(connection.authority, _cancel(connection, params)))
 
 
 async def _cancel(connection, params):
-    from gateway.session_bot import (_delivery_id, _delivery_result, _home, _retry_admission, _retry_eligible,
+    from hermes_agent.gateway.session_bot import (_delivery_id, _delivery_result, _home, _retry_admission, _retry_eligible,
                                      _retry_identity)
-    from gateway.session_bot_mailbox import mailbox_lock, read_receipt, remember_receipt, write_receipt
+    from hermes_agent.gateway.session_bot_mailbox import mailbox_lock, read_receipt, remember_receipt, write_receipt
     authority, actor = connection.authority, connection.actor
     if set(params) - _FIELDS:
         raise RuntimeStoreError('invalid_params')

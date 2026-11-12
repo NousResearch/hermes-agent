@@ -25,7 +25,7 @@ def _request_reasoning_config(model_options: Any) -> Optional[dict[str, Any]]:
     effort_norm = str(effort).strip().lower() if effort is not None else ""
     if enabled is False or effort_norm == "none":
         return {"enabled": False}
-    from gateway.platforms.api_server import _REASONING_EFFORTS
+    from hermes_agent.gateway.platforms.api_server import _REASONING_EFFORTS
 
     if effort_norm in _REASONING_EFFORTS and effort_norm != "none":
         return {"enabled": True, "effort": effort_norm}
@@ -36,7 +36,7 @@ def _request_reasoning_config(model_options: Any) -> Optional[dict[str, Any]]:
 
 def _request_service_tier(model_options: Any) -> Any:
     """Return a per-request service_tier override or _REQUEST_OPTION_MISSING."""
-    from gateway.platforms.api_server import _REQUEST_OPTION_MISSING, _clean_request_string, _coerce_request_bool
+    from hermes_agent.gateway.platforms.api_server import _REQUEST_OPTION_MISSING, _clean_request_string, _coerce_request_bool
 
     if not isinstance(model_options, dict):
         return _REQUEST_OPTION_MISSING

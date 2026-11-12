@@ -42,8 +42,8 @@ class ApiServerMemorySessions:
 
     def _bounds(self) -> tuple[int, float]:
         if self._max_size is None or self._idle_ttl_secs is None:
-            from gateway.run import _AGENT_CACHE_IDLE_TTL_SECS, _AGENT_CACHE_MAX_SIZE, _load_gateway_config
-            from gateway.agent_cache_pressure import resolve_agent_cache_bounds
+            from hermes_agent.gateway.run import _AGENT_CACHE_IDLE_TTL_SECS, _AGENT_CACHE_MAX_SIZE, _load_gateway_config
+            from hermes_agent.gateway.agent_cache_pressure import resolve_agent_cache_bounds
             configured = None
             with suppress(Exception):
                 configured = resolve_agent_cache_bounds(_load_gateway_config())
@@ -129,7 +129,7 @@ class ApiServerMemorySessions:
         with suppress(Exception):
             from agent.secret_scope import is_multiplex_active
             if owner is not None and is_multiplex_active():
-                from gateway.run import _profile_runtime_scope
+                from hermes_agent.gateway.run import _profile_runtime_scope
                 scope = _profile_runtime_scope(owner)
         try:
             with scope:

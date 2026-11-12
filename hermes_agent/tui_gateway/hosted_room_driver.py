@@ -1,6 +1,6 @@
 """Runtime adapter for gateway-owned hosted room turns.
 
-The durable state machine lives in :mod:`gateway.hosted_room_driver`; this module owns the
+The durable state machine lives in :mod:`hermes_agent.gateway.hosted_room_driver`; this module owns the
 process-local worker and an injected session adapter, never the gateway server or agents.
 One bounded supervisor schedules independent room workers: profile turn locks serialize Bots
 sharing a profile while a room waiting for approval cannot stall unrelated rooms. Member
@@ -19,7 +19,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, ContextManager, Protocol, cast
 
-from gateway import hosted_room_driver as state
+from hermes_agent.gateway import hosted_room_driver as state
 from hermes_agent.tui_gateway.hosted_room_lease_keeper import LeaseKeeper
 
 logger = logging.getLogger(__name__)

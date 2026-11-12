@@ -21,24 +21,24 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
-from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
-from gateway.platforms.base import _custom_unit_to_cp
-from gateway.config import (
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
+from hermes_agent.gateway.platforms.base import _custom_unit_to_cp
+from hermes_agent.gateway.config import (
     DEFAULT_STREAMING_EDIT_INTERVAL as _DEFAULT_STREAMING_EDIT_INTERVAL,
     DEFAULT_STREAMING_BUFFER_THRESHOLD as _DEFAULT_STREAMING_BUFFER_THRESHOLD,
     DEFAULT_STREAMING_CURSOR as _DEFAULT_STREAMING_CURSOR)
-from gateway.response_filters import (
+from hermes_agent.gateway.response_filters import (
     is_intentional_silence_response as _is_intentional_silence_response,
     is_partial_silence_marker as _is_partial_silence_marker,
     ends_with_partial_silence_marker as _ends_with_partial_silence_marker,
     strip_trailing_silence_marker as _strip_trailing_silence_marker)
-from gateway.stream_consumer_directives import has_pending_media_directive, strip_image_tags_for_display
-from gateway.stream_consumer_fences import ensure_closed_code_fences
-from gateway.stream_consumer_transport import StreamTransportMixin
-from gateway.stream_consumer_fallback import StreamFallbackMixin
-from gateway.stream_consumer_think import StreamThinkFilterMixin
+from hermes_agent.gateway.stream_consumer_directives import has_pending_media_directive, strip_image_tags_for_display
+from hermes_agent.gateway.stream_consumer_fences import ensure_closed_code_fences
+from hermes_agent.gateway.stream_consumer_transport import StreamTransportMixin
+from hermes_agent.gateway.stream_consumer_fallback import StreamFallbackMixin
+from hermes_agent.gateway.stream_consumer_think import StreamThinkFilterMixin
 
-logger = logging.getLogger("gateway.stream_consumer")
+logger = logging.getLogger("hermes_agent.gateway.stream_consumer")
 
 # Queue sentinels (see _drain_queue()).  Bare: _DONE, _NEW_SEGMENT (finalize, start a
 # fresh message), _REOPEN_SEED (EAGER native re-seed after a clarify answer — WeCom
@@ -1034,7 +1034,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
     @staticmethod
     # Strip MEDIA:<path> tags before display. Uses the shared anchored MEDIA_TAG_CLEANUP_RE from
-    # gateway/platforms/base.py — only tags whose path ends in a deliverable extension are removed, so an
+    # hermes_agent/gateway/platforms/base.py — only tags whose path ends in a deliverable extension are removed, so an
     # unknown-extension path stays visible instead of being silently dropped (issue #34517). Streaming and
     # non-streaming paths share the same regex, so a tag is treated identically whichever path delivered the
     # text.

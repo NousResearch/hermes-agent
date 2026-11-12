@@ -13,7 +13,7 @@ import contextlib
 
 import pytest
 
-from gateway import code_skew
+from hermes_agent.gateway import code_skew
 import hermes_cli.web_routers.models as _rt_models
 import hermes_cli.web_server_config as _web_server_config
 import hermes_cli.web_server_profiles as _web_server_profiles
@@ -53,7 +53,7 @@ class TestShort:
 class TestModelSwitchSkewGuard:
 
     def test_guard_message_names_revs_and_restart(self, monkeypatch):
-        from gateway import slash_commands_model as slash_commands
+        from hermes_agent.gateway import slash_commands_model as slash_commands
 
         monkeypatch.setattr(code_skew, "detect_code_skew", lambda: ("abc1234567", "def4567890"))
         msg = slash_commands._model_switch_skew_guard()

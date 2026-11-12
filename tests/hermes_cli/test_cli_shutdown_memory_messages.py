@@ -6,7 +6,7 @@ Before the fix, ``_run_cleanup`` called
 ``shutdown_memory_provider(getattr(agent, 'conversation_history', None) or [])``.
 ``AIAgent`` has no ``conversation_history`` attribute — so the ``or []``
 branch always fired and providers got an empty list on CLI exit. This
-mirrors the gateway bug fixed in the same commit (gateway/run.py uses
+mirrors the gateway bug fixed in the same commit (hermes_agent/gateway/run.py uses
 ``_session_messages``, which IS set on ``AIAgent``).
 
 The fix reads ``_session_messages`` (same attribute the gateway path uses)

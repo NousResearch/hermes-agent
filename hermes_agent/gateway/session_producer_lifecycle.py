@@ -17,7 +17,7 @@ own adapter task already brackets it):
 import asyncio
 from contextlib import asynccontextmanager
 
-from gateway.platforms.event import ProcessingOutcome
+from hermes_agent.gateway.platforms.event import ProcessingOutcome
 
 
 def _turns(authority):
@@ -37,8 +37,8 @@ def mark_producer_admission(authority, event, row):
 
 class _Bracket:
     def __init__(self, adapter, event, hooks):
-        from gateway.platforms.base import _reply_anchor_for_event, _thread_metadata_for_event
-        from gateway.platforms.helpers import typing_metadata_for_turn
+        from hermes_agent.gateway.platforms.base import _reply_anchor_for_event, _thread_metadata_for_event
+        from hermes_agent.gateway.platforms.helpers import typing_metadata_for_turn
         self.adapter, self.event, self.hooks = adapter, event, hooks
         # The status anchor is this turn's: a message that reaches the chat later must not move it.
         self.metadata = typing_metadata_for_turn(
@@ -68,8 +68,8 @@ async def _open(authority, row, event):
     turns = _turns(authority)
     if row['admission_id'] not in turns:
         return None
-    from gateway.platforms.base import BasePlatformAdapter
-    from gateway.run_turn_followup_ack import _followup_processing_hooks_apply
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter
+    from hermes_agent.gateway.run_turn_followup_ack import _followup_processing_hooks_apply
     adapter = authority.runner._adapter_for_source(event.source)
     typing = adapter is not None and type(adapter).send_typing is not BasePlatformAdapter.send_typing
     hooks = _followup_processing_hooks_apply(adapter, event)

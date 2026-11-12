@@ -15,7 +15,7 @@ import pytest
 def _make_adapter(monkeypatch):
     monkeypatch.setenv("MATRIX_REQUIRE_MENTION", "true")
     monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
     from plugins.platforms.matrix.adapter import MatrixAdapter
 
     adapter = MatrixAdapter(PlatformConfig(

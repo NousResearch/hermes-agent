@@ -23,8 +23,8 @@ from tests.waiting import async_wait_until
 
 _ensure_telegram_mock()
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent
 from hermes_agent.hermes_state import SessionDB
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from tests.gateway.test_telegram_topic_mode import (
@@ -48,7 +48,7 @@ def _fake_bot(*, create_fails: bool = False) -> MagicMock:
 
 
 def _rig(tmp_path, monkeypatch, *, extra: dict, create_fails: bool = False):
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     db = SessionDB(db_path=tmp_path / "state.db")
     _seed_two_topic_bindings(db)  # topic mode on; topic "222" is the most recently bound
@@ -213,8 +213,8 @@ async def test_receiving_secondary_bot_controls_opt_in(tmp_path, monkeypatch, la
 @pytest.mark.asyncio
 async def test_new_topic_reply_anchor_survives_native_codec(tmp_path, monkeypatch):
     """A durably admitted (snapshot -> restore) transferred event still sends without quoting the root DM."""
-    from gateway.session_envelope import restore_native, snapshot_native
-    from gateway.session_ingress import deliver_response
+    from hermes_agent.gateway.session_envelope import restore_native, snapshot_native
+    from hermes_agent.gateway.session_ingress import deliver_response
     from plugins.platforms.telegram.telegram_topic_transfer import apply_root_dm_topic_transfer
 
     runner, adapter, db, _runs = _rig(tmp_path, monkeypatch, extra={"dm_topic_auto_transfer": True})

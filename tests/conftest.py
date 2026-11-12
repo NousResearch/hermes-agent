@@ -210,7 +210,7 @@ os.environ["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
 HERMES_HOME_AT_CONFTEST_IMPORT = os.environ.get("HERMES_HOME", "")
 
 # ── Host-rendezvous isolation ───────────────────────────────────────────────
-# ``gateway/host_rendezvous.py`` publishes ONE record per role per OS USER, in
+# ``hermes_agent/gateway/host_rendezvous.py`` publishes ONE record per role per OS USER, in
 # ``$HERMES_GATEWAY_LOCK_DIR`` else ``$XDG_STATE_HOME/hermes/gateway-locks`` —
 # deliberately outside HERMES_HOME, because the host singleton spans profiles.
 # Under the per-file parallel runner that directory is shared by ~40 pytest

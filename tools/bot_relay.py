@@ -42,9 +42,9 @@ LOCKS_DIR = "locks"
 TURN_WAIT_SECONDS_FALLBACK = 120
 DEFAULT_ENVELOPE_TTL_SECONDS = 900  # older envelopes are refused at drain with 'queued_expired'
 # Per-attempt turn budget and attempt ceiling of one relayed delivery: the owner admits the turn and, when it
-# settles failed with a transient error, ONE retry under a derived identity (``gateway.session_bot._maybe_retry``).
+# settles failed with a transient error, ONE retry under a derived identity (``hermes_agent.gateway.session_bot._maybe_retry``).
 TURN_ATTEMPT_TIMEOUT_SECONDS = 600
-TURN_MAX_ATTEMPTS = 2  # first admission + the owner's one transient-failure retry (gateway.session_bot)
+TURN_MAX_ATTEMPTS = 2  # first admission + the owner's one transient-failure retry (hermes_agent.gateway.session_bot)
 # Mirrors RELAY_DELIVER_TIMEOUT_MS in apps/desktop/src/plugins/hermes-bots/relay-budget.ts; both test suites pin it.
 DESKTOP_DELIVER_SETTLEMENT_MARGIN_SECONDS = 180
 DESKTOP_DELIVER_TIMEOUT_SECONDS = (
@@ -531,12 +531,12 @@ def delivery_turn_author(from_profile: Any, from_handle: Any, from_connection: A
 
 
 def _delivery_child_session_env_names() -> tuple[str, ...]:
-    """Session-bound env names to strip from a delivery child, from ``gateway.session_context``.
+    """Session-bound env names to strip from a delivery child, from ``hermes_agent.gateway.session_context``.
 
     Synced with the session binding surface as vars are added; deliberately NOT a
     ``HERMES_SESSION_*`` prefix match, which would also strip non-identity knobs
     (e.g. ``HERMES_SESSION_STALL_TIMEOUT``)."""
-    from gateway.session_context import _VAR_MAP
+    from hermes_agent.gateway.session_context import _VAR_MAP
 
     return tuple(_VAR_MAP)
 
@@ -557,7 +557,7 @@ def relaying_principal_author(principal: str) -> dict:
 def delivery_env(author: Optional[dict], profile_home: str | Path | None = None) -> dict[str, str]:
     """Environment for one delivery turn's ``hermes -p <profile>`` child. The dispatcher's own
     HERMES_TURN_AUTHOR is dropped first so a delivery without an author never inherits the author of the turn
-    that sent it. Dispatcher session identity (the canonical ``gateway.session_context`` session env names) is
+    that sent it. Dispatcher session identity (the canonical ``hermes_agent.gateway.session_context`` session env names) is
     dropped too: a nested recipient that ``message_agent``s onward must not stamp that grandchild
     notify with the grandparent's key, or the live recipient never resumes. The child runs the target
     profile's Bot Chat turn, so it starts from THAT profile's env (``served_profile_child_env``: launch

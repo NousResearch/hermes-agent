@@ -1,7 +1,7 @@
 """Weixin (personal WeChat via iLink Bot API) env -> gateway config bridge (``PlatformEntry.env_overrides``)."""
 
-from gateway.config import Platform
-from gateway.platform_env import EnvCred, strip_slash
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platform_env import EnvCred, strip_slash
 
 ENV_ENABLE_CREDENTIALS = ("WEIXIN_TOKEN", "WEIXIN_ACCOUNT_ID")
 ENV_OVERRIDES = (

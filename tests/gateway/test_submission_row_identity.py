@@ -12,8 +12,8 @@ from tests.gateway.test_surface_admission import _authority
 
 @pytest.mark.asyncio
 async def test_the_admitted_turns_user_row_names_its_submission_id(tmp_path, monkeypatch):
-    from gateway.run_turn_persistence import GatewayTurnPersistenceMixin
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.run_turn_persistence import GatewayTurnPersistenceMixin
+    from hermes_agent.gateway.session_controls import AuthorityConnection
 
     def stored_metadata(event):
         prepared = SimpleNamespace(persist_user_message=None, message_text=event.text, persist_user_timestamp=None,
@@ -47,7 +47,7 @@ async def test_the_admitted_turns_user_row_names_its_submission_id(tmp_path, mon
 @pytest.mark.asyncio
 async def test_a_retry_of_an_admitted_id_is_an_info_line_never_an_error(tmp_path, monkeypatch, caplog):
     """The client settles this refusal as the dedupe it is: errors.log must not report it as a failure."""
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
 
     async def answer(event):
         return 'ok'
@@ -56,7 +56,7 @@ async def test_a_retry_of_an_admitted_id_is_an_info_line_never_an_error(tmp_path
     try:
         await connection.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': 's'}})
         for rid, text in ((2, 'look at this'), (3, 'look at this, edited')):
-            with caplog.at_level('DEBUG', logger='gateway.session_controls'):
+            with caplog.at_level('DEBUG', logger='hermes_agent.gateway.session_controls'):
                 reply = await connection.dispatch({'id': rid, 'method': 'prompt.submit', 'params': {
                     'session_id': 's', 'submission_id': 'send-1', 'text': text}})
             await authority.sessions['s'].task
@@ -71,14 +71,14 @@ async def test_a_retry_of_an_admitted_id_is_an_info_line_never_an_error(tmp_path
 @pytest.mark.asyncio
 async def test_a_malformed_create_request_id_stays_a_warning(tmp_path, monkeypatch, caplog):
     """Only the admitted-send retry is lowered: session.create's ``invalid_params field=request_id`` still reaches errors.log."""
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
 
     async def answer(event):
         return 'ok'
     authority = await _authority(tmp_path, monkeypatch, answer)
     connection = AuthorityConnection(authority, object(), {'user_id': 'owner'})
     try:
-        with caplog.at_level('DEBUG', logger='gateway.session_controls'):
+        with caplog.at_level('DEBUG', logger='hermes_agent.gateway.session_controls'):
             reply = await connection.dispatch({'id': 1, 'method': 'session.create', 'params': {'request_id': 'x' * 300}})
     finally:
         await connection.close()

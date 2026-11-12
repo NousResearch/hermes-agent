@@ -8,7 +8,7 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_enrich_message_with_vision_merges_analysis_without_output_cap():
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = GatewayRunner.__new__(GatewayRunner)
 

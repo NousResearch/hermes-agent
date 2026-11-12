@@ -284,8 +284,8 @@ def test_the_gateway_instance_is_the_process_its_control_socket_answers_from(mon
     import json
     import os
 
-    from gateway.control_socket import GatewayControlServer
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway.control_socket import GatewayControlServer
+    from hermes_agent.gateway.status import get_process_start_time
     from hermes_cli import webapp_access, webapp_launcher
 
     server = GatewayControlServer(tmp_path)

@@ -4,16 +4,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_controls import AuthorityConnection
+from hermes_agent.gateway.session_controls import AuthorityConnection
 
 
 @pytest.mark.asyncio
 async def test_forwarded_identity_survives_reconnect_without_policy_override(tmp_path, monkeypatch):
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway import run
-    from gateway.session_policy import build_policy
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.session_policy import build_policy
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
@@ -64,10 +64,10 @@ async def test_forwarded_identity_survives_reconnect_without_policy_override(tmp
 
 @pytest.mark.asyncio
 async def test_forwarding_does_not_merge_lossy_context_or_peer_identity(tmp_path, monkeypatch):
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway import run
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {'default': 'fixture'}, 'platform_toolsets': {'cli': []}})
@@ -116,14 +116,14 @@ async def test_forwarding_does_not_merge_lossy_context_or_peer_identity(tmp_path
 async def test_forwarded_turns_are_authored_by_the_peer_for_memory_attribution(tmp_path, monkeypatch):
     """The owner binds the exact peer into the policy; memory providers must see that peer as the
     bot author of every forwarded turn, not the local principal that hosts the session."""
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_a2a import forward_author
-    from gateway.session_ingress import row_turn_author
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_a2a import forward_author
+    from hermes_agent.gateway.session_ingress import row_turn_author
     from agent.turn_author import a2a_key
     from hermes_agent.hermes_state_runtime import list_session_admissions
-    from gateway import run
+    from hermes_agent.gateway import run
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {'default': 'fixture'}, 'platform_toolsets': {'cli': []}})
@@ -150,7 +150,7 @@ async def test_forwarded_turns_are_authored_by_the_peer_for_memory_attribution(t
     # A producer's own stamp wins; an ordinary local policy names nobody.
     stamped = {**row, 'payload': {**row['payload'], 'local_automation_v1': {'turn_author': {'id': 'bot-7', 'is_bot': True}}}}
     assert row_turn_author(policy, stamped) == {'id': 'bot-7', 'is_bot': True}
-    from gateway.session_policy import build_policy
+    from hermes_agent.gateway.session_policy import build_policy
     plain = build_policy({'cwd': str(tmp_path), 'model': 'm'}, {'platform_toolsets': {'cli': []}})
     assert row_turn_author(plain, row) is None
     # An ordinary API session has no policy at all; it names nobody rather than failing admission.
@@ -168,7 +168,7 @@ async def test_forward_wakes_on_the_completion_frame_instead_of_a_fixed_100ms_po
     from websockets.asyncio.server import serve
     from hermes_cli import gateway_client
     from hermes_cli import gateway_runtime
-    from gateway.session_a2a import forward_to_owner
+    from hermes_agent.gateway.session_a2a import forward_to_owner
 
     calls = []
 

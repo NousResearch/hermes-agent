@@ -8,7 +8,7 @@ import pytest
 
 
 def _adapter():
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     from plugins.platforms.dingtalk.adapter import DingTalkAdapter
 
     adapter = DingTalkAdapter.__new__(DingTalkAdapter)

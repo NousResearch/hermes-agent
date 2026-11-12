@@ -5,8 +5,8 @@ adapter was never built because no plugin registered it in that profile (its loa
 its deadline, #137268). One task per (profile, platform) rebuilds it under that profile's own runtime
 scope until it connects or can no longer heal.
 
-Split out of ``gateway/run_adapters.py`` (its size ratchet is at its target). ``gateway.run``
-internals are imported lazily inside method bodies (import cycle), so ``patch("gateway.run.X")``
+Split out of ``hermes_agent/gateway/run_adapters.py`` (its size ratchet is at its target). ``hermes_agent.gateway.run``
+internals are imported lazily inside method bodies (import cycle), so ``patch("hermes_agent.gateway.run.X")``
 keeps intercepting them at call time.
 """
 from __future__ import annotations
@@ -17,13 +17,13 @@ import logging
 import time
 from typing import Optional
 
-from gateway.config import Platform
-from gateway.platforms.base import BasePlatformAdapter
-from gateway.platforms.helpers import carry_inbound_dedup, hand_over_held_inbound
-from gateway.restart import is_global_startup_conflict
-from gateway.run_shutdown import _log_suppressed
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.platforms.helpers import carry_inbound_dedup, hand_over_held_inbound
+from hermes_agent.gateway.restart import is_global_startup_conflict
+from hermes_agent.gateway.run_shutdown import _log_suppressed
 
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 _MAX_PLUGIN_LOAD_REARMS = 3  # per queued platform: transient load failures heal, a broken plugin stops re-importing
 
 
@@ -215,12 +215,12 @@ class GatewaySecondaryReconnectMixin:
         adapter unavailable for a reason only a config change fixes); ``(None, False)`` = no adapter yet
         but the platform can still heal (no plugin registered it, so a later import can succeed). Caller
         tears down a RETURNED adapter; one whose configure/connect raised is torn down here."""
-        from gateway.platform_registry import platform_registry
-        from gateway.run import _platform_has_bot_credential, _profile_runtime_scope
+        from hermes_agent.gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.run import _platform_has_bot_credential, _profile_runtime_scope
         # Lazy + per-attempt: keeps test monkeypatches on these modules live.
         from hermes_cli.profiles import get_profile_dir
         from hermes_cli.env_loader import hydrate_profile_secret_sources
-        from gateway.config import load_gateway_config
+        from hermes_agent.gateway.config import load_gateway_config
         profile_home = get_profile_dir(profile_name)
         # Hydrate external secret sources off-loop so they cannot starve heartbeats.
         await asyncio.to_thread(hydrate_profile_secret_sources, profile_home)
@@ -302,7 +302,7 @@ class GatewaySecondaryReconnectMixin:
         self, profile_name: str, platform: Platform, predecessor=None
     ) -> None:
         """Reconnect a retryable secondary adapter under its own profile scope."""
-        from gateway.run import _profile_runtime_scope, _reconnect_backoff
+        from hermes_agent.gateway.run import _profile_runtime_scope, _reconnect_backoff
         attempts = 0
         # Same escalation shape as the primary queue entry; ``queued_at`` is this task's start.
         queue_info = {"queued_at": time.monotonic(), "attempts": 0}

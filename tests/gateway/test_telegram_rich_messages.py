@@ -18,8 +18,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from telegram.error import BadRequest, NetworkError, TimedOut
 
@@ -487,7 +487,7 @@ def test_prefers_fresh_final_streaming_for_dm_topic_tables():
         RICH_CONTENT, {"direct_messages_topic_id": "20189"}
     ) is True
     # The documented telegram_-prefixed alias is honored through the same
-    # canonical accessor the send path uses (gateway/delivery.py treats the
+    # canonical accessor the send path uses (hermes_agent/gateway/delivery.py treats the
     # two keys as equivalent) — an alias-only lane must not flatten tables.
     assert adapter.prefers_fresh_final_streaming(
         RICH_CONTENT, {"telegram_direct_messages_topic_id": "20189"}
@@ -906,8 +906,8 @@ def _reply_message_with_rich_blocks(
 async def test_rich_reply_records_and_recovers_text(monkeypatch, tmp_path):
     """A reply to a rich-sent message resolves the original text via the index."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from gateway.platforms.event import MessageType
-    from gateway import rich_sent_store
+    from hermes_agent.gateway.platforms.event import MessageType
+    from hermes_agent.gateway import rich_sent_store
 
     adapter = _make_adapter()
 
@@ -937,7 +937,7 @@ def test_rich_reply_and_inbound_blocks_share_one_flattener():
     labelled list items and a ``mappingproxy`` api_kwargs all flatten the same way in both."""
     from types import MappingProxyType
 
-    from gateway.platforms.event import MessageType
+    from hermes_agent.gateway.platforms.event import MessageType
     from plugins.platforms.telegram.telegram_entities import rich_message_text
 
     blocks = [
@@ -956,7 +956,7 @@ def test_reply_to_deeply_nested_rich_message_still_reaches_the_agent():
     """A plain reply quoting a pathologically nested rich message (valid JSON, 2,000 levels of blocks
     and of inline spans) is still delivered: the flattener drops the over-deep content instead of
     raising RecursionError out of ``_build_message_event``."""
-    from gateway.platforms.event import MessageType
+    from hermes_agent.gateway.platforms.event import MessageType
 
     block = {"type": "paragraph", "text": "leaf"}
     span = "deep"

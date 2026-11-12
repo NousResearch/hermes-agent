@@ -292,7 +292,7 @@ def test_once_sends_the_alias_it_resolved_through(monkeypatch, session_model):
     """Review by @dokterdok: two ``model_aliases`` entries name one model on one provider, at different
     endpoints. ``/model second --once`` sends ``second``, not the bare model the owner would re-resolve to
     the first alias, and still sends it when the session already runs that model."""
-    from gateway.session_cli_turn import one_turn_runtime
+    from hermes_agent.gateway.session_cli_turn import one_turn_runtime
     from hermes_cli import model_switch
     resolve = model_switch.switch_model
     conn = RecordingConnection({"model": session_model, "provider": "custom"})
@@ -328,7 +328,7 @@ def test_once_through_an_alias_named_like_the_session_model_still_sends_it(monke
     ``model_aliases`` entry ``shared-model`` names that model at another endpoint. ``/model shared-model
     --once`` resolves the alias, but the submit compared the staged ``shared-model`` with the session's
     route again, dropped it, and the turn ran on the session's endpoint and key."""
-    from gateway.session_cli_turn import one_turn_runtime
+    from hermes_agent.gateway.session_cli_turn import one_turn_runtime
     from hermes_cli import model_switch
     resolve = model_switch.switch_model
     conn = RecordingConnection({"model": "shared-model", "provider": "custom"})

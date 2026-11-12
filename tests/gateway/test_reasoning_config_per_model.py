@@ -2,7 +2,7 @@
 
 import pytest
 
-import gateway.run as gateway_run
+import hermes_agent.gateway.run as gateway_run
 
 
 class TestGatewayPerModelReasoningConfig:
@@ -107,18 +107,18 @@ class TestApiServerPerModelReasoning:
     def _run(self, monkeypatch, effective_model):
         from unittest.mock import MagicMock, patch
 
-        from gateway.config import PlatformConfig
-        from gateway.platforms.api_server import APIServerAdapter
+        from hermes_agent.gateway.config import PlatformConfig
+        from hermes_agent.gateway.platforms.api_server import APIServerAdapter
 
         monkeypatch.setattr(
             gateway_run, "_load_gateway_config", lambda: self._cfg(),
         )
         adapter = APIServerAdapter(PlatformConfig())
 
-        with patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", True), \
-             patch("gateway.run._resolve_runtime_agent_kwargs") as kwargs_mock, \
-             patch("gateway.run._resolve_gateway_model") as model_mock, \
-             patch("gateway.run._load_gateway_config") as cfg_mock, \
+        with patch("hermes_agent.gateway.platforms.api_server.AIOHTTP_AVAILABLE", True), \
+             patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs") as kwargs_mock, \
+             patch("hermes_agent.gateway.run._resolve_gateway_model") as model_mock, \
+             patch("hermes_agent.gateway.run._load_gateway_config") as cfg_mock, \
              patch("run_agent.AIAgent") as agent_cls:
             kwargs_mock.return_value = {
                 "api_key": "k", "base_url": None, "provider": None,

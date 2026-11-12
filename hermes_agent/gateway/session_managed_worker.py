@@ -15,7 +15,7 @@ import sys
 import time
 
 from agent.managed_worker import accept_result, encode_frame, read_frame
-from gateway.session_worker_reservation import owner_worker_subject, reserve_admission_worker
+from hermes_agent.gateway.session_worker_reservation import owner_worker_subject, reserve_admission_worker
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 # The interpreter only imports psutil before it introduces itself; a child silent this long
@@ -43,7 +43,7 @@ def managed_policy(authority, ref):
 
     The frozen creation snapshot, not current profile config, chooses execution.
     """
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_policy import policy_for_source
     policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
     if policy is None:
         return None
@@ -58,9 +58,9 @@ def managed_policy(authority, ref):
 
 
 def _bootstrap(authority, ref, row, policy, scope, text=None):
-    from gateway.session_ingress import row_turn_author
-    from gateway.session_policy import route_launch_key
-    from gateway.session_policy_credentials import recover_config_secrets
+    from hermes_agent.gateway.session_ingress import row_turn_author
+    from hermes_agent.gateway.session_policy import route_launch_key
+    from hermes_agent.gateway.session_policy_credentials import recover_config_secrets
     terminal = json.loads(policy.terminal_json)
     if policy.config_secret_ref:
         for path, value in recover_config_secrets(authority, policy).items():
@@ -75,7 +75,7 @@ def _bootstrap(authority, ref, row, policy, scope, text=None):
         'yolo': _session_yolo(authority, live.route, policy),
         **({'surface_v1': row['payload']['surface_v1']} if row['payload'].get('surface_v1') else {}),
         **({'display_v1': row['payload']['display_v1']} if row['payload'].get('display_v1') else {})})
-    from gateway.session_worker_construct import construct_inputs
+    from hermes_agent.gateway.session_worker_construct import construct_inputs
     request['construct_v1'] = construct_inputs(authority, policy, live.source.chat_id)
     config = _worker_config(authority, policy)
     hydrated = replace(policy, config_json=json.dumps(config), request_json=json.dumps(request),
@@ -99,7 +99,7 @@ def _worker_config(authority, policy):
     home = Path(str(authority.profile_id))
     if policy.ignore_user_config or not home.is_absolute():
         return config
-    from gateway.run import _load_gateway_config
+    from hermes_agent.gateway.run import _load_gateway_config
     live = _load_gateway_config(home / 'config.yaml')
     config.pop('command_allowlist', None)
     if live.get('command_allowlist') is not None:
@@ -124,9 +124,9 @@ def worker_turn_scope(frame):
     (execute_finite_admission, the route's YOLO, the committed surface), so ``chat -q``/``-z``
     never park a prompt, the session's current YOLO governs this child and a HUD / live-voice /
     voice turn reaches the model as it does in process. Frames without it bind nothing."""
-    from gateway.session_finite import finite_turn_scope
-    from gateway.session_display import display_turn_scope, restore_display
-    from gateway.session_surface import restore_surface, surface_turn_scope
+    from hermes_agent.gateway.session_finite import finite_turn_scope
+    from hermes_agent.gateway.session_display import display_turn_scope, restore_display
+    from hermes_agent.gateway.session_surface import restore_surface, surface_turn_scope
     turn = json.loads(frame['policy'].get('request_json') or '{}').get('turn_v1')
     if turn is None:
         yield
@@ -223,7 +223,7 @@ class ManagedWorker:
         """Route the child's stderr (its tracebacks and redirected prints) into the profile's
         bounded, redacted, private log instead of discarding it."""
         from agent.memory_provider import spawn_context_thread
-        from gateway.session_managed_worker_log import drain_worker_stderr
+        from hermes_agent.gateway.session_managed_worker_log import drain_worker_stderr
         self.stderr_drain = spawn_context_thread(drain_worker_stderr, name='managed-stderr-drain',
                                                  args=(self.process.stderr, path, self.process.pid, lambda: self.secrets))
         self.stderr_drain.start()
@@ -559,8 +559,8 @@ def _record_lost_attempt(authority, policy, exc, reason, scope):
     if (not getattr(policy, 'kanban_json', None) or isinstance(exc, asyncio.CancelledError)
             or reason in ('managed_worker_stopped', 'stale_generation')):
         return None
-    from gateway.session_kanban import record_worker_loss
-    from gateway.session_runtime_workers import track_mutation
+    from hermes_agent.gateway.session_kanban import record_worker_loss
+    from hermes_agent.gateway.session_runtime_workers import track_mutation
     return track_mutation(authority, asyncio.to_thread(partial(record_worker_loss, policy, reason,
                                                                pid=(scope or {}).get('pid'), bound=scope is not None)))
 
@@ -573,8 +573,8 @@ async def _settle_lost(authority, row, scope, recording):
     as a protocol violation. A busy board holds this up ``LOSS_RECORD_WAIT_S`` at most (the
     write carries on, tracked), and a cancellation during the wait still settles.
     """
-    from gateway.session_worker_reservation import lose_admission_worker
-    from gateway.session_runtime_workers import tracked_write
+    from hermes_agent.gateway.session_worker_reservation import lose_admission_worker
+    from hermes_agent.gateway.session_runtime_workers import tracked_write
     try:
         if recording is not None:
             await asyncio.wait({recording}, timeout=LOSS_RECORD_WAIT_S)
@@ -590,8 +590,8 @@ async def _spawn_registered_worker(authority, ref, row):
     try:
         env = await asyncio.to_thread(_worker_env, authority)
         cwd = (await asyncio.to_thread(Path(__file__).resolve)).parents[1]
-        from gateway.session_worker_spawn import acquire_process
-        from gateway.session_managed_worker_log import worker_log_path
+        from hermes_agent.gateway.session_worker_spawn import acquire_process
+        from hermes_agent.gateway.session_managed_worker_log import worker_log_path
         log_path = worker_log_path(authority.profile_id)
         process = await acquire_process(subprocess.Popen, [sys.executable, '-m', 'agent.managed_worker'],
             cwd=cwd, stdin=subprocess.PIPE, env=env, stdout=subprocess.PIPE,
@@ -620,7 +620,7 @@ async def admit_managed(authority, ref, row, policy):
     """The ingress route into a managed worker. A removed folder is refused before a worker exists,
     like the in-process runner: a worker failing in its policy scope reads as a LOST execution
     (``unknown``) and parks every follower behind it."""
-    from gateway.session_policy import workspace_ready, workspace_unavailable_result
+    from hermes_agent.gateway.session_policy import workspace_ready, workspace_unavailable_result
     if not workspace_ready(policy):
         result = workspace_unavailable_result(policy)
         authority.pending_results[row['admission_id']] = {'result': result, 'usage': {}}
@@ -645,9 +645,9 @@ async def _finalize_managed_refusal(authority, session_id, accepted):
 
 
 async def execute_managed(authority, ref, row, policy):
-    from gateway.run_turn_progress import publish_worker_tool_event
+    from hermes_agent.gateway.run_turn_progress import publish_worker_tool_event
     # This route never passes the inbound prepare step, so the worker would read ``@`` tokens as typed.
-    from gateway.session_context_refs import managed_turn_text, refused_turn_result
+    from hermes_agent.gateway.session_context_refs import managed_turn_text, refused_turn_result
     _mark_spawning(authority, ref, row)
     try:
         text, refusal = await managed_turn_text(authority, row, policy)
@@ -678,7 +678,7 @@ async def execute_managed(authority, ref, row, policy):
             # Stopped before the child could receive controls: hello raced the latch; never bootstrap.
             raise RuntimeStoreError('managed_worker_stopped')
         # psutil + BEGIN IMMEDIATE: off-loop and retirement-tracked, like admission and claim.
-        from gateway.session_runtime_workers import tracked_write
+        from hermes_agent.gateway.session_runtime_workers import tracked_write
         scope = await tracked_write(authority, partial(reserve_admission_worker, authority,
                     admission_id=row['admission_id'], process=process, principal_id=row['principal_id'], hello=hello,
                     worker_subject=owner_worker_subject()))

@@ -105,9 +105,9 @@ _SENSITIVE_QUERY_PARAMS = frozenset({
 # ON by default; `security.redact_secrets: false` bridges to this env var.
 # ON by default — secure default per issue #17691. Users who need raw credential values in tool output (e.g.
 # working on the redactor itself) can opt out via `security.redact_secrets: false` in config.yaml (bridged
-# to this env var in hermes_cli/main.py, gateway/run.py, and cli.py) or `HERMES_REDACT_SECRETS=false` in
+# to this env var in hermes_cli/main.py, hermes_agent/gateway/run.py, and cli.py) or `HERMES_REDACT_SECRETS=false` in
 # ~/.hermes/.env. An opt-out warning is logged at gateway and CLI startup so operators see the downgrade —
-# see `_log_redaction_status()` in gateway/run.py and cli.py.
+# see `_log_redaction_status()` in hermes_agent/gateway/run.py and cli.py.
 _REDACT_ENABLED = os.getenv("HERMES_REDACT_SECRETS", "true").lower() in {"1", "true", "yes", "on"}
 
 # Routed multiplex profiles: the import-time snapshot above is the LAUNCH profile's policy. A profile

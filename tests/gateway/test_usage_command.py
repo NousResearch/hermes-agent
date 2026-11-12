@@ -44,7 +44,7 @@ def _make_mock_agent(**overrides):
 
 def _make_runner(session_key, agent=None, cached_agent=None):
     """Build a bare GatewayRunner with just the fields _handle_usage_command needs."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner._running_agents = {}
@@ -132,13 +132,13 @@ class TestUsageAccountSection:
             calls.append({"args": args, "kwargs": kwargs})
             return fn(*args, **kwargs)
 
-        monkeypatch.setattr("gateway.run.asyncio.to_thread", _fake_to_thread)
+        monkeypatch.setattr("hermes_agent.gateway.run.asyncio.to_thread", _fake_to_thread)
         monkeypatch.setattr(
-            "gateway.slash_commands_status.fetch_account_usage",
+            "hermes_agent.gateway.slash_commands_status.fetch_account_usage",
             lambda provider, base_url=None, api_key=None: object(),
         )
         monkeypatch.setattr(
-            "gateway.slash_commands_status.render_account_usage_lines",
+            "hermes_agent.gateway.slash_commands_status.render_account_usage_lines",
             lambda snapshot, markdown=False: [
                 "📈 **Account limits**",
                 "Provider: openai-codex (Pro)",
@@ -174,14 +174,14 @@ class TestUsageAccountSection:
             calls.append({"fn": fn, "args": args, "kwargs": kwargs})
             return fn(*args, **kwargs)
 
-        monkeypatch.setattr("gateway.run.asyncio.to_thread", _fake_to_thread)
-        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {"model": {"provider": "openai-codex"}})
+        monkeypatch.setattr("hermes_agent.gateway.run.asyncio.to_thread", _fake_to_thread)
+        monkeypatch.setattr("hermes_agent.gateway.run._load_gateway_config", lambda: {"model": {"provider": "openai-codex"}})
         monkeypatch.setattr(
-            "gateway.slash_commands_status.fetch_account_usage",
+            "hermes_agent.gateway.slash_commands_status.fetch_account_usage",
             lambda provider, base_url=None, api_key=None: object(),
         )
         monkeypatch.setattr(
-            "gateway.slash_commands_status.render_account_usage_lines",
+            "hermes_agent.gateway.slash_commands_status.render_account_usage_lines",
             lambda snapshot, markdown=False: ["📈 **Account limits**", "Provider: openai-codex (Plus)",
                                               "Weekly: 91% remaining (9% used)"],
         )
@@ -214,13 +214,13 @@ class TestUsageAccountSection:
             calls.append({"args": args, "kwargs": kwargs})
             return fn(*args, **kwargs)
 
-        monkeypatch.setattr("gateway.run.asyncio.to_thread", _fake_to_thread)
+        monkeypatch.setattr("hermes_agent.gateway.run.asyncio.to_thread", _fake_to_thread)
         monkeypatch.setattr(
-            "gateway.slash_commands_status.fetch_account_usage",
+            "hermes_agent.gateway.slash_commands_status.fetch_account_usage",
             lambda provider, base_url=None, api_key=None: object(),
         )
         monkeypatch.setattr(
-            "gateway.slash_commands_status.render_account_usage_lines",
+            "hermes_agent.gateway.slash_commands_status.render_account_usage_lines",
             lambda snapshot, markdown=False: ["account limits"],
         )
         monkeypatch.setattr("agent.account_usage.nous_credits_lines", lambda **_kw: [])

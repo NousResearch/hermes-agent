@@ -24,7 +24,7 @@ def inject_plugin_message(
     if session_key and origin is not None:
         logger.warning("inject_message: pass session_key or origin, not both")
         return False
-    # Neither: the live gateway picks the chat (gateway/plugin_keyless_inject.py) from the session this
+    # Neither: the live gateway picks the chat (hermes_agent/gateway/plugin_keyless_inject.py) from the session this
     # call works for, read here on the caller's own context; no gateway keeps main's refusal.
     keyless = not session_key and origin is None
     if keyless and not manager.has_gateway_message_injector:
@@ -56,7 +56,7 @@ def inject_plugin_message(
     # there or nowhere, and a keyed local session must belong to it (never the ambient HERMES_HOME
     # of whatever thread called us).
     if keyless:
-        from gateway.session_context import bound_session_key
+        from hermes_agent.gateway.session_context import bound_session_key
         target: dict[str, Any] = {"keyless": True, "calling_session_key": bound_session_key(),
                                   "plugin_home": manager.home_path}
     elif origin is None:

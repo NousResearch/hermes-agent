@@ -1,11 +1,11 @@
 """A late webhook finalizer cannot end a replacement route or generation."""
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent
-from gateway.platforms.webhook import WebhookAdapter
-from gateway.run import GatewayRunner
-from gateway.session_authority import initialize_session_authority
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.platforms.webhook import WebhookAdapter
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session_authority import initialize_session_authority
 from hermes_agent.hermes_state_runtime import admit_session_input, claim_session_input, settle_session_input
 
 

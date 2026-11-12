@@ -4,9 +4,9 @@ leave Approve on the card on the strength of a ``success: true`` that may hide a
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.relay.adapter import RelayAdapter
-from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.relay.adapter import RelayAdapter
+from hermes_agent.gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
 
 
 class _Connector:

@@ -14,9 +14,9 @@ from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionEntry, SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionEntry, SessionSource
 from hermes_cli.cli_session_mixin import CLISessionMixin
 
 SESSION_ID = "status-contract-7f3a"
@@ -57,7 +57,7 @@ def _render_cli() -> str:
 
 
 def _render_gateway() -> str:
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     source = SessionSource(platform=Platform.TELEGRAM, user_id="u1", chat_id="c1", user_name="t", chat_type="dm")
     entry = SessionEntry(session_key="telegram:c1", session_id=SESSION_ID, created_at=CREATED, updated_at=UPDATED,

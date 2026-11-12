@@ -19,7 +19,7 @@ def test_notify_supports_systemd_abstract_socket(monkeypatch):
     monkeypatch.setenv("NOTIFY_SOCKET", "@hermes-test-notify")
 
     try:
-        from gateway.systemd_notify import notify
+        from hermes_agent.gateway.systemd_notify import notify
 
         assert notify("WATCHDOG=1") is True
         assert receiver.recv(4096) == b"WATCHDOG=1"
@@ -46,7 +46,7 @@ def test_notify_uses_nonblocking_datagram_send(monkeypatch):
         def send(self, payload):
             calls.append(("send", payload))
 
-    import gateway.systemd_notify as notify_mod
+    import hermes_agent.gateway.systemd_notify as notify_mod
 
     monkeypatch.setenv("NOTIFY_SOCKET", "/tmp/hermes-test-notify")
     monkeypatch.setattr(notify_mod.socket, "socket", lambda *_args: _Sender())
@@ -61,7 +61,7 @@ async def test_watchdog_sends_ready_heartbeat_and_stopping(monkeypatch):
     monkeypatch.setenv("NOTIFY_SOCKET", "/tmp/hermes-test-notify")
     monkeypatch.setenv("WATCHDOG_USEC", "20000")
 
-    import gateway.systemd_notify as notify_mod
+    import hermes_agent.gateway.systemd_notify as notify_mod
 
     monkeypatch.setattr(
         notify_mod, "notify", lambda message: calls.append(message) or True

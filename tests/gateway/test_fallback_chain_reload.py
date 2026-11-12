@@ -16,9 +16,9 @@ from types import SimpleNamespace
 
 
 def test_refresh_fallback_model_rereads_config(tmp_path, monkeypatch):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
-    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    monkeypatch.setattr("hermes_agent.gateway.run._hermes_home", tmp_path)
     cfg = tmp_path / "config.yaml"
     cfg.write_text(
         "fallback_providers:\n"
@@ -50,7 +50,7 @@ def test_refresh_fallback_model_rereads_config(tmp_path, monkeypatch):
 
 def test_apply_fallback_chain_skips_while_cooldown_holds_fallback():
     """Do not clobber a live fallback activation during its cooldown window."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     live = [{"provider": "deepseek", "model": "deepseek-v4-flash"}]
     agent = SimpleNamespace(
@@ -74,9 +74,9 @@ def test_apply_fallback_chain_skips_while_cooldown_holds_fallback():
 
 def test_load_fallback_model_static_unchanged_contract(tmp_path, monkeypatch):
     """_load_fallback_model remains a pure static reader used by refresh."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
-    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    monkeypatch.setattr("hermes_agent.gateway.run._hermes_home", tmp_path)
     (tmp_path / "config.yaml").write_text(
         "fallback_providers:\n"
         "  - provider: deepseek\n"

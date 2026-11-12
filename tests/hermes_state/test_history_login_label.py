@@ -2,7 +2,7 @@
 
 Desktop stamps its rows as ``<provider>:<user>`` (hermes_agent/tui_gateway/session_transports.py), while a
 forwarded dashboard actor carries ``authenticated_subject``'s ``auth:v1:[provider, "", user]``
-form (gateway/session_identity.py). ``authorize_history`` compared the two byte for byte, so the
+form (hermes_agent/gateway/session_identity.py). ``authorize_history`` compared the two byte for byte, so the
 right logged-in user got ``permission_denied`` on rows it owned (#138950 review). The label maps
 only for an issuer-less login — the label drops the issuer, so an issuer-bearing subject must not
 claim one — and never to anything that itself reads as a subject.
@@ -10,7 +10,7 @@ claim one — and never to anything that itself reads as a subject.
 
 import pytest
 
-from gateway.session_contract import SessionActor
+from hermes_agent.gateway.session_contract import SessionActor
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_mutation_binding import _login_label, authorize_history
 
@@ -83,8 +83,8 @@ def test_an_unowned_row_still_admits_any_local_actor(db):
 def test_one_parser_reads_the_login_subject_for_every_caller():
     """``authenticated_subject``'s format is parsed in one place: the control socket's
     forwarded-subject gate and the login label both use its checked result."""
-    from gateway.control_socket import _structured_login_subject
-    from gateway.session_identity import authenticated_subject, parse_authenticated_subject
+    from hermes_agent.gateway.control_socket import _structured_login_subject
+    from hermes_agent.gateway.session_identity import authenticated_subject, parse_authenticated_subject
 
     subject = authenticated_subject({'provider': 'basic', 'issuer': '', 'user_id': 'e2e'})
     assert parse_authenticated_subject(subject) == ('basic', '', 'e2e')

@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.run_turn_runner import TurnRunner
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.run_turn_runner import TurnRunner
 from tools import approval
 from tools.approval_gateway_wait import _ApprovalEntry
 

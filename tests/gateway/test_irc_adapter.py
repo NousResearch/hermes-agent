@@ -46,8 +46,8 @@ class TestIRCAdapterLockConflict:
     async def test_connect_fails_when_identity_lock_held(self, monkeypatch):
         """``acquire_scoped_lock`` returns ``(acquired, existing)``; a live foreign holder must stop
         connect() before any socket is opened (the tuple is truthy, so a bare ``if not`` never fired)."""
-        import gateway.status as gateway_status
-        from gateway.config import PlatformConfig
+        import hermes_agent.gateway.status as gateway_status
+        from hermes_agent.gateway.config import PlatformConfig
 
         monkeypatch.setattr(
             gateway_status, "acquire_scoped_lock",
@@ -72,7 +72,7 @@ class TestIRCAdapterSend:
     def adapter(self, monkeypatch):
         for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
             monkeypatch.delenv(key, raising=False)
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         cfg = PlatformConfig(
             enabled=True,
             extra={
@@ -109,7 +109,7 @@ class TestIRCAdapterMessageParsing:
     def adapter(self, monkeypatch):
         for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
             monkeypatch.delenv(key, raising=False)
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         cfg = PlatformConfig(
             enabled=True,
             extra={
@@ -180,7 +180,7 @@ class TestIRCAdapterMessageParsing:
         """Nicks not in allowlist should be ignored."""
         for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
             monkeypatch.delenv(key, raising=False)
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         cfg = PlatformConfig(
             enabled=True,
             extra={
@@ -213,7 +213,7 @@ class TestIRCAdapterSplitting:
         """Multi-byte characters should not exceed IRC byte limit."""
         # 100 japanese chars = 300 bytes in utf-8
         text = "あ" * 100
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         cfg = PlatformConfig(enabled=True, extra={"server": "x", "channel": "#x"})
         adapter = IRCAdapter(cfg)
         adapter._current_nick = "bot"
@@ -259,7 +259,7 @@ class TestIRCRequirements:
     def test_validate_config_from_extra(self, monkeypatch):
         for key in ("IRC_SERVER", "IRC_CHANNEL"):
             monkeypatch.delenv(key, raising=False)
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         cfg = PlatformConfig(extra={"server": "irc.test.net", "channel": "#test"})
         assert validate_config(cfg) is True
 
@@ -319,7 +319,7 @@ class TestIRCStandaloneSend:
 
     @pytest.mark.asyncio
     async def test_standalone_send_completes_handshake_and_sends_privmsg(self, monkeypatch):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         monkeypatch.setenv("IRC_SERVER", "irc.test.net")
         monkeypatch.setenv("IRC_CHANNEL", "#cron")
@@ -355,7 +355,7 @@ class TestIRCStandaloneSend:
 
     @pytest.mark.asyncio
     async def test_standalone_send_returns_error_on_registration_timeout(self, monkeypatch):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         monkeypatch.setenv("IRC_SERVER", "irc.test.net")
         monkeypatch.setenv("IRC_CHANNEL", "#cron")
@@ -444,7 +444,7 @@ class TestMultiplexProfileScope:
     ):
         """The secondary profile's own config.yaml extra is authoritative,
         not the default profile's bridged server/channel/port/nick/tls."""
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         multiplex_scope()
         cfg = PlatformConfig(
@@ -470,7 +470,7 @@ class TestMultiplexProfileScope:
         """Keys absent from the profile's own scope must NOT borrow the
         default profile's bridged env values -- that would silently connect
         the secondary profile's bot to the wrong IRC server/channel."""
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         multiplex_scope()
         adapter = IRCAdapter(PlatformConfig(enabled=True, extra={}))

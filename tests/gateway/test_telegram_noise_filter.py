@@ -7,8 +7,8 @@ from agent.conversation_compression import (
     CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE,
     ROUTINE_COMPRESSION_STATUS_SAMPLES,
 )
-from gateway.config import Platform
-from gateway.run import (
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.run import (
     _prepare_gateway_status_message,
     _sanitize_gateway_final_response,
 )
@@ -17,7 +17,7 @@ from gateway.run import (
 # secret-redacted, provider-error-sanitized output (not just Telegram).
 # The filtering functions under test (_prepare_gateway_status_message /
 # _sanitize_gateway_final_response) are platform-agnostic shared logic in
-# gateway.run — a representative platform subset is sufficient; per-platform
+# hermes_agent.gateway.run — a representative platform subset is sufficient; per-platform
 # copies were near-duplicate parametrizations.
 CHAT_PLATFORMS = [
     "telegram",

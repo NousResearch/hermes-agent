@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote, urlparse
 
 from agent.i18n import t
-from gateway.platforms.base import SendResult, cache_document_from_bytes_async, cache_image_from_bytes_async
+from hermes_agent.gateway.platforms.base import SendResult, cache_document_from_bytes_async, cache_image_from_bytes_async
 
 logger = logging.getLogger("plugins.platforms.wecom.adapter")
 
@@ -179,7 +179,7 @@ class WeComMediaMixin:
         return decrypted[:-pad_len]
 
     async def _download_remote_bytes(self, url: str, max_bytes: int) -> tuple[bytes, dict[str, str]]:
-        from gateway.platforms.base import ssrf_redirect_guard
+        from hermes_agent.gateway.platforms.base import ssrf_redirect_guard
         from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
         from plugins.platforms.wecom import adapter as _adapter_mod
         if not is_safe_url(url):

@@ -30,8 +30,8 @@ _REPO = Path(__file__).resolve().parents[4]
 _CLIENT = r"""
 import json, sys
 from pathlib import Path
-from gateway.control_socket import windows_pipe_name
-from gateway import runtime_bootstrap_windows as native
+from hermes_agent.gateway.control_socket import windows_pipe_name
+from hermes_agent.gateway import runtime_bootstrap_windows as native
 from hermes_dir_acl import process_is_elevated
 from hermes_cli.gateway_runtime import discover_gateway_endpoint
 home = Path(sys.argv[1])
@@ -48,8 +48,8 @@ print("RESULT " + json.dumps(out))
 
 
 def test_a_standard_user_client_gets_the_named_refusal_from_an_elevated_gateway(tmp_path):
-    from gateway import runtime_bootstrap_windows as native
-    from gateway.control_socket import windows_pipe_name
+    from hermes_agent.gateway import runtime_bootstrap_windows as native
+    from hermes_agent.gateway.control_socket import windows_pipe_name
     from hermes_dir_acl import process_is_elevated
     from tests.e2e.core.windows_update._tokens import StandardUserProcess, hand_to_user, probe_token_elevation
 

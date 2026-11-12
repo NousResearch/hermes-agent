@@ -13,7 +13,7 @@ from tools import async_delegation as ledger
 
 
 def test_worker_dispatch_is_bound_to_execution_and_cannot_replace_foreign_rows(tmp_path):
-    from gateway.session_worker_delegation import worker_delegation_handlers
+    from hermes_agent.gateway.session_worker_delegation import worker_delegation_handlers
     db = SessionDB(tmp_path / 'state.db')
     db.create_session('parent', source='cli')
     db.create_session('other', source='cli')
@@ -45,7 +45,7 @@ def test_worker_dispatch_is_bound_to_execution_and_cannot_replace_foreign_rows(t
 
 
 def test_worker_completion_claims_refund_and_preserve_terminal_result(tmp_path):
-    from gateway.session_worker_delegation import worker_delegation_handlers
+    from hermes_agent.gateway.session_worker_delegation import worker_delegation_handlers
     db = SessionDB(tmp_path / 'state.db')
     db.create_session('parent', source='cli')
     handlers = worker_delegation_handlers('worker-a', os.getpid(), worker_birth(psutil.Process()))

@@ -16,8 +16,8 @@ import inspect
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
 
 
 class _MinAdapter(BasePlatformAdapter):

@@ -14,10 +14,10 @@ from functools import wraps
 from pathlib import Path
 from typing import Dict, Optional, Any
 
-from gateway.platforms._shared import (
+from hermes_agent.gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret, get_scoped_secret, send_error
 )
-from gateway.platforms.send_targets import StandaloneSendPolicy, regex_stripped_parser
+from hermes_agent.gateway.platforms.send_targets import StandaloneSendPolicy, regex_stripped_parser
 from hermes_cli._subprocess_compat import windows_detach_flags
 from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
 from hermes_constants import (find_node_executable, get_hermes_dir, with_hermes_node_path)
@@ -115,7 +115,7 @@ _SIGKILL = getattr(signal, "SIGKILL", signal.SIGTERM)  # escalation paths below 
 def _pids_alive(pids: list) -> list:
     """The subset of *pids* still running. ``_pid_exists`` reports zombies dead (an exited but
     unreaped bridge holds no socket), and never sends a real signal on Windows."""
-    from gateway.status import _pid_exists
+    from hermes_agent.gateway.status import _pid_exists
     return [pid for pid in pids if _pid_exists(pid)]
 
 
@@ -175,7 +175,7 @@ def _bridge_pid_is_ours(pid: int, expected_start) -> bool:
     path matches that same substring (#116883), so a legacy pidfile could signal a stranger. Without
     a start-time fingerprint the caller must reap via the bridge-port scan instead.
     """
-    from gateway import status
+    from hermes_agent.gateway import status
     if not status._pid_exists(pid):
         return False
     if expected_start is None:
@@ -207,7 +207,7 @@ def _read_bridge_pidfile(session_path: Path) -> tuple:
 
 def _kill_stale_bridge_by_pidfile(session_path: Path) -> None:
     """Kill an orphaned bridge recorded in ``bridge.pid``, after :func:`_bridge_pid_is_ours`."""
-    from gateway.status import _pid_exists
+    from hermes_agent.gateway.status import _pid_exists
     pid_file = session_path / "bridge.pid"
     if not pid_file.exists():
         return
@@ -241,7 +241,7 @@ def _write_bridge_pidfile(session_path: Path, pid: int, port: Optional[int] = No
     """Write the bridge PID plus its kernel start time (line 2) for identity-checked cleanup, and the
     port it listens on (line 3) so a secondary adopts only the endpoint that process actually serves."""
     with suppress(OSError):
-        from gateway.status import get_process_start_time
+        from hermes_agent.gateway.status import get_process_start_time
         start = get_process_start_time(pid)
         text = str(pid) if start is None else f"{pid}\n{start}" + ("" if port is None else f"\n{port}")
         (session_path / "bridge.pid").write_text(text, encoding="utf-8")
@@ -279,20 +279,20 @@ def _terminate_bridge_process(proc, *, force: bool = False) -> None:
         getattr(parent, action)()
 
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
-from gateway.whatsapp_identity import normalize_whatsapp_mention_jid, to_whatsapp_jid
-from gateway.platforms.base import (
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
+from hermes_agent.gateway.whatsapp_identity import normalize_whatsapp_mention_jid, to_whatsapp_jid
+from hermes_agent.gateway.platforms.base import (
     BasePlatformAdapter, SendResult, SUPPORTED_DOCUMENT_TYPES, cache_image_from_url, cache_audio_from_url,
 )
-from gateway.platforms.helpers import cancel_task
-from gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.platforms.helpers import cancel_task
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 from utils import env_int
 
 
 def _cache_dirs() -> tuple:
     """``(image, audio, video, document)`` cache dirs, resolved per call so a profile override's cache matches."""
-    from gateway.platforms.base import get_audio_cache_dir, get_document_cache_dir, get_image_cache_dir, get_video_cache_dir
+    from hermes_agent.gateway.platforms.base import get_audio_cache_dir, get_document_cache_dir, get_image_cache_dir, get_video_cache_dir
     return get_image_cache_dir(), get_audio_cache_dir(), get_video_cache_dir(), get_document_cache_dir()
 
 
@@ -429,7 +429,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WHATSAPP)
         if WhatsAppAdapter._DEFAULT_BRIDGE_DIR is None:
-            from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
+            from hermes_agent.gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
             WhatsAppAdapter._DEFAULT_BRIDGE_DIR = resolve_whatsapp_bridge_dir()
         extra = config.extra
         from hermes_constants import get_hermes_home
@@ -944,7 +944,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if result.success and result.message_id:
             # A later quote of this attachment carries only a thumbnail stub; the bridge's cache
             # knows inbound media only, so index our own sends (the cron-delivered image case).
-            from gateway import rich_sent_store
+            from hermes_agent.gateway import rich_sent_store
             mime = mimetypes.guess_type(file_path)[0] or _MEDIA_INFO.get(_MEDIA_TYPE_BY_BRIDGE_KIND.get(media_type), ("", ""))[1]
             await rich_sent_store.record_media_async(jid, result.message_id, [(file_path, mime or "application/octet-stream")])
         return result
@@ -1154,7 +1154,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 continue
             accepted.append((path, _QUOTED_MIME_BY_BRIDGE_KIND.get(quoted_type, "application/octet-stream")))
         if not accepted and raw_reply_id is not None:
-            from gateway import rich_sent_store
+            from hermes_agent.gateway import rich_sent_store
             accepted = rich_sent_store.lookup_media(data.get("chatId", ""), str(raw_reply_id))
         for path, _ in accepted:
             print(f"[{self.name}] Attached quoted-reply media: {path}", flush=True)
@@ -1384,7 +1384,7 @@ _SEND_JID_RE = re.compile(r"^\s*[\w-]+@(?:g\.us|s\.whatsapp\.net|lid|broadcast|n
 
 
 def register(ctx) -> None:
-    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
+    from . import gateway_env  # env -> GatewayConfig bridge (hermes_agent.gateway.config_env)
     ctx.register_platform(
         target_ref_syntax_fn=regex_stripped_parser(_SEND_JID_RE),
         # Media goes through Baileys /send-media; ``mentions`` force the standalone route too.

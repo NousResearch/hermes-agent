@@ -1,4 +1,4 @@
-"""C8 chaos: agent-turn liveness through the REAL messaging gateway (``python -m gateway.run``).
+"""C8 chaos: agent-turn liveness through the REAL messaging gateway (``python -m hermes_agent.gateway.run``).
 
 The gateway process is the shipped entry point: it discovers a user platform plugin
 (``_gateway_fake_platform``, an in-memory adapter dialled over loopback), connects it,

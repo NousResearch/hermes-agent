@@ -13,12 +13,12 @@ from tests.waiting import async_wait_until
 
 
 async def probe(mode, peer):
-    from gateway.config import Platform, PlatformConfig
-    from gateway.platforms.base import BasePlatformAdapter, SendResult
-    from gateway.platforms.event import MessageEvent
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_envelope import snapshot_native
+    from hermes_agent.gateway.config import Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_envelope import snapshot_native
     from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions
 
     class Adapter(BasePlatformAdapter):

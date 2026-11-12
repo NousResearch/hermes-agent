@@ -20,8 +20,8 @@ from types import SimpleNamespace
 import pytest
 import pytest_asyncio
 
-from gateway.config import GatewayConfig
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.config import GatewayConfig
+from hermes_agent.gateway.run import GatewayRunner
 from hermes_agent.hermes_state_runtime import list_session_admissions
 from tests.waiting import async_wait_until
 
@@ -49,7 +49,7 @@ class _Gateway:
         self.runner, self.connections = None, []
 
         async def model(runner, message, context_prompt, history, source, session_id, **_kwargs):
-            from gateway.session_policy import policy_for_source
+            from hermes_agent.gateway.session_policy import policy_for_source
             policy = policy_for_source(runner, source)
             self.turns.append(SimpleNamespace(profile=source.profile, chat=source.chat_id, text=message,
                                               policy=policy and (policy.model, policy.cwd)))
@@ -61,8 +61,8 @@ class _Gateway:
         monkeypatch.setattr(GatewayRunner, '_run_agent', model)
 
     async def start(self):
-        from gateway.run_runtime import initialize_gateway_runtime
-        from gateway.runtime_ownership import process_ownership
+        from hermes_agent.gateway.run_runtime import initialize_gateway_runtime
+        from hermes_agent.gateway.runtime_ownership import process_ownership
         config = GatewayConfig()
         config.multiplex_profiles = True
         config._runtime_profile_homes = self.homes
@@ -75,7 +75,7 @@ class _Gateway:
         self.launch = self.create(self.primary, self.connect(self.primary), 'launch', 'cli')
 
     async def stop(self):
-        from gateway.runtime_ownership import process_ownership
+        from hermes_agent.gateway.runtime_ownership import process_ownership
         for connection in self.connections:
             await connection.close()
         self.connections = []
@@ -85,14 +85,14 @@ class _Gateway:
             process_ownership.release(home)
 
     def connect(self, authority, **identity):
-        from gateway.session_controls import AuthorityConnection
+        from hermes_agent.gateway.session_controls import AuthorityConnection
         connection = AuthorityConnection(authority, object(), {'user_id': 'uid:1000', **identity})
         self.connections.append(connection)
         return connection
 
     def create(self, authority, connection, request_id, source, **params):
-        from gateway.session_authorities import owner_scope
-        from gateway.session_local import create_local_session
+        from hermes_agent.gateway.session_authorities import owner_scope
+        from hermes_agent.gateway.session_local import create_local_session
         with owner_scope(authority):
             return create_local_session(authority, connection.actor, dict(
                 request_id=request_id, source=source, cwd=str(self.tmp_path), toolsets=[], **params))
@@ -154,7 +154,7 @@ def _tick_output(text):
 
 @pytest.mark.asyncio
 async def test_a_liveness_tick_is_admitted_into_the_session_that_started_the_process(gateway):
-    from gateway.session_automation import admission_display
+    from hermes_agent.gateway.session_automation import admission_display
     from hermes_cli.gateway_tools_notify import _card
     sid = gateway.launch.session_id
 
@@ -212,10 +212,10 @@ async def test_waiting_ticks_fold_into_one_turn_and_none_outlives_its_process(ga
 @pytest_asyncio.fixture
 async def messaging(tmp_path, monkeypatch):
     """A Discord DM under the session authority with one committed human message; inputs stay queued."""
-    from gateway.config import Platform, PlatformConfig
-    from gateway.platforms.event import MessageEvent
-    from gateway.session_authority import SessionAuthority, initialize_session_authority
-    from gateway.session_ingress_context import native_callback, register_transport_home
+    from hermes_agent.gateway.config import Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.session_authority import SessionAuthority, initialize_session_authority
+    from hermes_agent.gateway.session_ingress_context import native_callback, register_transport_home
     from hermes_agent.hermes_state import SessionDB
     from plugins.platforms.discord.adapter import DiscordAdapter
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
@@ -381,7 +381,7 @@ async def test_job_output_that_looks_like_a_cut_marker_keeps_the_earlier_output(
 async def test_a_late_tick_of_a_settled_batch_member_is_dropped(messaging):
     """A completion batch names only its primary in ``request_id``; the siblings live in the payload.
     Once the batch turn has finished, a late tick of a sibling process is still stale."""
-    from gateway.session_automation import producer_identity
+    from hermes_agent.gateway.session_automation import producer_identity
     batch = [messaging.event('completion', session_id=process, exit_code=0, output='done')
              for process in ('proc_a', 'proc_b')]
     primary = dict(batch[0], _automation_identities=[producer_identity(messaging.runner, e) for e in batch])

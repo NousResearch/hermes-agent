@@ -5,12 +5,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import platform_registry
-from gateway.config import GatewayConfig, PlatformConfig
-from gateway.platform_registry import PlatformEntry, PlatformRegistry
-from gateway.run import GatewayRunner
-from gateway.session_authority import SessionAuthority, initialize_session_authority
-from gateway.session_ingress_context import native_callback
+from hermes_agent.gateway import platform_registry
+from hermes_agent.gateway.config import GatewayConfig, PlatformConfig
+from hermes_agent.gateway.platform_registry import PlatformEntry, PlatformRegistry
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session_authority import SessionAuthority, initialize_session_authority
+from hermes_agent.gateway.session_ingress_context import native_callback
 from hermes_constants import get_hermes_home
 from hermes_agent.hermes_state_runtime import list_session_admissions
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter

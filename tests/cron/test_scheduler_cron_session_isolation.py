@@ -12,7 +12,7 @@ import os
 import pytest
 
 import hermes_agent.cron.scheduler as cron_scheduler
-from gateway.session_context import (
+from hermes_agent.gateway.session_context import (
     clear_session_vars,
     get_session_env,
     reset_session_vars,

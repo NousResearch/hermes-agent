@@ -1,7 +1,7 @@
 """Gateway slash commands that switch or tune the model route:
 /model, /codex-runtime, /reasoning, /fast, /personality.
 
-Split out of ``gateway/slash_commands.py``; bound onto ``GatewayRunner`` through
+Split out of ``hermes_agent/gateway/slash_commands.py``; bound onto ``GatewayRunner`` through
 ``GatewaySlashCommandsMixin``. Origin internals are imported lazily inside the bodies to avoid
 the import cycle.
 """
@@ -15,11 +15,11 @@ import logging
 from typing import Any, Optional
 
 from agent.i18n import t
-from gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.platforms.event import MessageEvent
 from hermes_cli.config import atomic_config_write
 from utils import base_url_host_matches
 
-logger = logging.getLogger("gateway.run")  # log-record parity with gateway/run.py
+logger = logging.getLogger("hermes_agent.gateway.run")  # log-record parity with hermes_agent/gateway/run.py
 
 # /fast argument -> (service tier, persisted value, i18n label key; None = value.upper()).
 _FAST_SELECTIONS = {
@@ -49,7 +49,7 @@ _REASONING_DISPLAY_TOGGLES = {"show": True, "on": True, "hide": False, "off": Fa
 def _model_switch_skew_guard() -> Optional[str]:
     """Refuse a model switch when the gateway is running stale code: a first-time lazy import on
     a new code path can crash on a stale cached dependency. Scoped to the highest-risk trigger."""
-    from gateway.code_skew import detect_code_skew
+    from hermes_agent.gateway.code_skew import detect_code_skew
 
     skew = detect_code_skew()
     if not skew:
@@ -92,7 +92,7 @@ class _ModelSwitchContext:
 
     def read_config(self) -> None:
         """Fill the current route from ``config_path``; fail-open to the defaults."""
-        from gateway.run import _load_gateway_config
+        from hermes_agent.gateway.run import _load_gateway_config
         try:
             cfg = _load_gateway_config(config_path=self.config_path)
             if not cfg:
@@ -156,7 +156,7 @@ class GatewayModelCommandsMixin:
         self, ctx: _ModelSwitchContext, raw_input: str, explicit_provider, source
     ):
         """Resolve a /model switch off-loop. Returns ``(result, None)`` or ``(None, error_text)``."""
-        from gateway.run import _load_gateway_config
+        from hermes_agent.gateway.run import _load_gateway_config
         from hermes_cli.model_switch import switch_model
 
         skew_error = _model_switch_skew_guard()
@@ -306,7 +306,7 @@ class GatewayModelCommandsMixin:
         global_error: Optional[str] = None,
     ) -> str:
         """Confirmation text with full metadata (display form shortens opaque Palantir IDs)."""
-        from gateway.run import _load_gateway_config
+        from hermes_agent.gateway.run import _load_gateway_config
         from hermes_cli.model_switch import (
             effective_context_pin, format_model_for_display, resolve_display_context_length_async)
 
@@ -376,7 +376,7 @@ class GatewayModelCommandsMixin:
 
     def _channel_override_for(self, source):
         """This chat's ``channel_overrides`` entry (model/provider), or None."""
-        from gateway.run import _get_channel_override
+        from hermes_agent.gateway.run import _get_channel_override
         cfg = getattr(self, "config", None)
         if not cfg or source is None:
             return None
@@ -421,7 +421,7 @@ class GatewayModelCommandsMixin:
 
     async def _commit_model_switch_locked(self, result, ctx: _ModelSwitchContext, *, source, picker: bool) -> str:
         one_turn = False if picker else ctx.one_turn
-        from gateway.session_setting_commands import defer_local_model_pick, local_authority_live
+        from hermes_agent.gateway.session_setting_commands import defer_local_model_pick, local_authority_live
         authority, live = local_authority_live(self, source)
         level = ""
         if live is not None:
@@ -460,7 +460,7 @@ class GatewayModelCommandsMixin:
         elif ctx.reasoning_effort and not one_turn:
             # `/model X --reasoning <level>`: same applier as /reasoning, same scope as the pick.
             # The record step already evicted the cached agent, so the pin lands on the rebuild.
-            from gateway.run import _platform_config_key
+            from hermes_agent.gateway.run import _platform_config_key
             reply += "\n" + self._apply_reasoning_selection(
                 ctx.session_key, _platform_config_key(source.platform), ctx.reasoning_effort,
                 persist_global=ctx.persist_global and global_error is None)
@@ -478,7 +478,7 @@ class GatewayModelCommandsMixin:
             providers = []
         if not providers:
             return False
-        from gateway.approval_actor import opener_authority
+        from hermes_agent.gateway.approval_actor import opener_authority
         on_model_selected.prompt_authority = opener_authority(event)  # only its opener (or an admin) taps it
         result = await adapter.send_model_picker(
             chat_id=source.chat_id, providers=providers,
@@ -517,7 +517,7 @@ class GatewayModelCommandsMixin:
             async def _on_model_selected(_chat_id: str, model_id: str, provider_slug: str) -> str:
                 if profile_home is None:
                     return await _picker_switch(model_id, provider_slug)
-                from gateway.run import _profile_runtime_scope
+                from hermes_agent.gateway.run import _profile_runtime_scope
                 with _profile_runtime_scope(profile_home):
                     return await _picker_switch(model_id, provider_slug)
 
@@ -579,7 +579,7 @@ class GatewayModelCommandsMixin:
             return await self._handle_model_command_locked(event)
 
     async def _handle_model_command_locked(self, event: MessageEvent) -> Optional[str]:
-        from gateway.run import _hermes_home
+        from hermes_agent.gateway.run import _hermes_home
         from hermes_cli.model_switch import parse_model_switch_args, resolve_persist_behavior
 
         profile_home = None
@@ -608,7 +608,7 @@ class GatewayModelCommandsMixin:
             # the caller's). user_id is critical for the fallback lookup path (hermes_agent/hermes_state.py:1994-2009)
             # that searches by the complete peer tuple when session_key doesn't match. origin_json and
             # display_name complete the identity (same shape as the reset path's db_create_kwargs in
-            # gateway/session.py, #82633) so consumers that read routing/presentation data from state.db
+            # hermes_agent/gateway/session.py, #82633) so consumers that read routing/presentation data from state.db
             # (the mcp-serve plugin, mirror, channel directory) see the branch row fully formed with zero backfill gap.
             session_key=session_key,
             source=source,
@@ -626,7 +626,7 @@ class GatewayModelCommandsMixin:
             return await self._handle_model_reset(event, ctx)
         # Turn precedence: session /model > channel_overrides > config.yaml.
         # The channel's full route as the turn resolves it, so a config-backed endpoint (custom) survives.
-        from gateway.session_info_route import channel_override_route
+        from hermes_agent.gateway.session_info_route import channel_override_route
         _ch_model, _ch_route, _ch_forced = await asyncio.to_thread(channel_override_route, getattr(self, "config", None), source)
         if _ch_model:
             ctx.apply_override({"model": _ch_model, **(_ch_route or ({"provider": _ch_forced} if _ch_forced else {}))})
@@ -645,7 +645,7 @@ class GatewayModelCommandsMixin:
         """``(model, provider)`` this chat runs with no session override: channel_overrides, else the
         owning profile's config.yaml (read from *config_path*: slash dispatch runs outside the routed
         profile's scope on a multiplexed runner)."""
-        from gateway.run import _load_gateway_config, _resolve_gateway_model
+        from hermes_agent.gateway.run import _load_gateway_config, _resolve_gateway_model
         cfg = _load_gateway_config(config_path=config_path) or {}
         model_cfg = cfg.get("model")
         provider = str(model_cfg.get("provider") or "") if isinstance(model_cfg, dict) else ""
@@ -661,7 +661,7 @@ class GatewayModelCommandsMixin:
         source, session_key = ctx.source, ctx.session_key
         default_model, default_provider = await asyncio.to_thread(
             self._channel_default_route, source, ctx.config_path)
-        from gateway.session_setting_commands import local_authority_live
+        from hermes_agent.gateway.session_setting_commands import local_authority_live
         if local_authority_live(self, source)[1] is not None:
             # A local session runs a frozen policy with no override tier: reset is a session-scoped
             # pick of the configured default, committed by the owner like any typed /model.
@@ -766,7 +766,7 @@ class GatewayModelCommandsMixin:
                                          offer: Optional[tuple[str, int]] = None) -> str:
         """The tap: switch this session to *model_id* on Nous, then re-send the refused message.
         ``offer`` is the refused turn's ``(session_key, run_generation)``."""
-        from gateway.run import _hermes_home
+        from hermes_agent.gateway.run import _hermes_home
         source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
         session_key = self._session_key_for_source(source)
         profile_home = None
@@ -787,7 +787,7 @@ class GatewayModelCommandsMixin:
         if profile_home is None:
             reply = await _switch()
         else:
-            from gateway.run import _profile_runtime_scope
+            from hermes_agent.gateway.run import _profile_runtime_scope
             with _profile_runtime_scope(profile_home):
                 reply = await _switch()
         after = self._session_model_overrides.get(session_key)
@@ -800,7 +800,7 @@ class GatewayModelCommandsMixin:
         return reply
 
     async def _dispatch_usage_limit_retry(self, event: MessageEvent, offer: Optional[tuple[str, int]] = None) -> None:
-        from gateway.platforms.event import MessageType
+        from hermes_agent.gateway.platforms.event import MessageType
         adapter = self._delivery_adapter_for(event.source)
         # Re-checked here, with no await before the /retry: the switch awaited model resolution, and a
         # turn that ran meanwhile is what /retry would rewind. The switch itself stands.
@@ -839,7 +839,7 @@ class GatewayModelCommandsMixin:
 
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality — list or set a personality (hermes_cli.personality owns the state)."""
-        from gateway.run import _load_gateway_config
+        from hermes_agent.gateway.run import _load_gateway_config
         from hermes_cli.personality import (
             active_personality_name,
             available_personalities,
@@ -881,8 +881,8 @@ class GatewayModelCommandsMixin:
 
     def _save_gateway_config_key(self, key_path: str, value) -> bool:
         """Save a dot-separated key to config.yaml (shared by /reasoning, /fast and their pickers)."""
-        from gateway.slash_commands import _nested_dict
-        from gateway.run import _gateway_config_home
+        from hermes_agent.gateway.slash_commands import _nested_dict
+        from hermes_agent.gateway.run import _gateway_config_home
         from hermes_cli.config import read_user_config_raw
         config_path = _gateway_config_home() / "config.yaml"
         try:
@@ -907,7 +907,7 @@ class GatewayModelCommandsMixin:
         from hermes_constants import parse_reasoning_effort
 
         value = (value or "").strip().lower()
-        from gateway.session_setting_commands import local_live_for_route
+        from hermes_agent.gateway.session_setting_commands import local_live_for_route
         live = local_live_for_route(self, session_key)
         show = _REASONING_DISPLAY_TOGGLES.get(value)
         if show is not None:  # per-platform display toggle
@@ -947,7 +947,7 @@ class GatewayModelCommandsMixin:
         adapter = self._delivery_adapter_for(event.source)
         if adapter is None or getattr(type(adapter), "send_choice_picker", None) is None:
             return False
-        from gateway.approval_actor import opener_authority
+        from hermes_agent.gateway.approval_actor import opener_authority
         on_choice_selected.prompt_authority = opener_authority(event)  # only its opener (or an admin) taps it
         try:
             result = await adapter.send_choice_picker(
@@ -961,7 +961,7 @@ class GatewayModelCommandsMixin:
 
     async def _handle_reasoning_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /reasoning command — manage reasoning effort and display toggle."""
-        from gateway.run import _platform_config_key
+        from hermes_agent.gateway.run import _platform_config_key
         from hermes_constants import VALID_REASONING_EFFORTS
 
         raw_args = event.get_command_args().strip()
@@ -971,7 +971,7 @@ class GatewayModelCommandsMixin:
         _reasoning_source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
         session_key = self._session_key_for_source(_reasoning_source)
         self._show_reasoning = self._load_show_reasoning()
-        from gateway.session_setting_commands import local_live
+        from hermes_agent.gateway.session_setting_commands import local_live
         if (_live := local_live(self, event.source)) is not None:
             self._show_reasoning = getattr(_live, "show_reasoning", None) is True
         # Effective model (session /model override wins) so per-model reasoning_overrides display.
@@ -988,7 +988,7 @@ class GatewayModelCommandsMixin:
         # Labels tell the truth about the route: a Hermes-internal step (``ultra``) that the wire
         # clamps is shown as "ultra (sends max on this route)" instead of a distinct level (#61634).
         from agent.reasoning_effort import effort_display_label
-        from gateway.run import _load_gateway_config
+        from hermes_agent.gateway.run import _load_gateway_config
         from hermes_cli.codex_runtime_switch import get_current_runtime
         _session_route = ((getattr(self, "_session_model_overrides", {}) or {}).get(session_key) or {})
         _model_cfg = {}
@@ -1039,7 +1039,7 @@ class GatewayModelCommandsMixin:
         tier, saved_value, label_key = selection
         label = t(label_key) if label_key else value.upper()
         self._service_tier = tier
-        from gateway.session_setting_commands import local_live_for_route
+        from hermes_agent.gateway.session_setting_commands import local_live_for_route
         if persist and self._save_gateway_config_key("agent.service_tier", saved_value):
             if local_live_for_route(self, session_key) is not None:
                 # A local session runs its frozen tier, not config.yaml's: it takes the tier too.
@@ -1057,7 +1057,7 @@ class GatewayModelCommandsMixin:
         """Handle /fast — the CLI Priority Processing toggle; session-scoped unless ``--global``
         (persists agent.service_tier, parity with /model)."""
         from agent.fast_mode import FAST_ARG_ALIASES, service_tier_word
-        from gateway.run import _load_gateway_config, _resolve_gateway_model
+        from hermes_agent.gateway.run import _load_gateway_config, _resolve_gateway_model
 
         # The /reasoning parser strips --global (any position) and normalizes unicode dashes.
         args, persist_global = self._parse_reasoning_command_args(event.get_command_args().strip().lower())

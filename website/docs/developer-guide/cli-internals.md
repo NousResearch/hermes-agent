@@ -50,7 +50,7 @@ it guards. `plan → snapshot → apply → restart-per-kind → verify → repo
   same account — a sibling install, the real `hermes-gateway.service` seen from a scratch home — is named and
   left alone, never restarted (#93349).
 - **Verify**: gateways stamp `code_sha`/`code_version` into `gateway_state.json` on every
-  runtime-status write (`gateway/status.py`); the updater compares each live gateway against the
+  runtime-status write (`hermes_agent/gateway/status.py`); the updater compares each live gateway against the
   fresh checkout and prints a fleet version matrix. After the commit point (the tree moved) nothing
   fails `hermes update` (exit 0 unless the code was rolled back): a provably-stale or stopped
   gateway, a failed build/launcher/config migration/bytecode sweep/channel adoption/Windows resume
@@ -195,7 +195,7 @@ classifying a process by `"serve" in cmdline` or similar. `kanban --preserve-cac
 "serve"; a flag VALUE can equal a subcommand (`-m dashboard serve`); truncated cmdlines hide the real
 subcommand. Rules:
 
-- Use the canonical matchers: `gateway.status.looks_like_gateway_command_line` (gateway run),
+- Use the canonical matchers: `hermes_agent.gateway.status.looks_like_gateway_command_line` (gateway run),
   `hermes_cli.update_cmd._hermes_holder_subcommand` (top-level subcommand of any Hermes argv). Never
   hand-roll token scans.
 - Flag sets must be DERIVED from the parser (`_holder_value_flags()` introspects
@@ -239,4 +239,4 @@ operations are HOME-anchored (`_get_profiles_root()` returns
 `Path.home() / ".hermes" / "profiles"`, not `get_hermes_home() / "profiles"`) so
 `hermes -p coder profile list` sees all profiles regardless of which one is active — intentional.
 Profile-safe coding rules are in the root `AGENTS.md`; multiplex secret-scope rules in
-`gateway/AGENTS.md`.
+`hermes_agent/gateway/AGENTS.md`.

@@ -8,12 +8,12 @@ import pytest
 
 
 async def local_session(tmp_path, monkeypatch, source='cli'):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_local import create_local_session
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': [], 'acp': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
@@ -31,8 +31,8 @@ async def local_session(tmp_path, monkeypatch, source='cli'):
 async def test_replayed_receipt_keeps_a_newer_turns_agent(tmp_path, monkeypatch, operation):
     """An exact retry of an OLD model/reset receipt after a newer admission claimed must not
     evict that turn's cached agent (the projection is fenced by execution generation)."""
-    from gateway import session_mutations
-    from gateway.session_policy import restore_policy
+    from hermes_agent.gateway import session_mutations
+    from hermes_agent.gateway.session_policy import restore_policy
     from hermes_agent.hermes_state_runtime import admit_session_input, claim_session_input
     owner, connection, ref = await local_session(tmp_path, monkeypatch)
     async def prepare(authority, live, payload, prepared):
@@ -40,7 +40,7 @@ async def test_replayed_receipt_keeps_a_newer_turns_agent(tmp_path, monkeypatch,
         config = old.config()
         config['model'] = {'default': payload['model'], 'provider': 'fixture'}
         return {**prepared, 'policy': asdict(replace(old, model=payload['model'], config_json=json.dumps(config)))}
-    monkeypatch.setattr('gateway.session_mutation_model.prepare_model', prepare)
+    monkeypatch.setattr('hermes_agent.gateway.session_mutation_model.prepare_model', prepare)
     live = owner.sessions[ref.session_id]
     agent, cached, evicted = object(), {}, []
     def evict(route):

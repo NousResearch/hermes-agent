@@ -71,7 +71,7 @@ SEEDERS = {
 @pytest.mark.parametrize("seeder", list(SEEDERS))
 def test_every_seeder_keeps_every_platform_display_default(tmp_path, monkeypatch, seeder):
     import hermes_cli.config as cfg
-    from gateway.run import _load_gateway_config
+    from hermes_agent.gateway.run import _load_gateway_config
 
     home = tmp_path / "home"
     home.mkdir()

@@ -249,7 +249,7 @@ class TestWarningSurvivesNoiseFilter:
         )
 
     def test_cooldown_warning_not_matched_by_noise_regex(self):
-        from gateway.run import _TELEGRAM_NOISY_STATUS_RE
+        from hermes_agent.gateway.run import _TELEGRAM_NOISY_STATUS_RE
 
         assert not _TELEGRAM_NOISY_STATUS_RE.search(
             self._emitted_warning("cooldown:30")
@@ -258,8 +258,8 @@ class TestWarningSurvivesNoiseFilter:
 
     def test_warning_delivered_in_chat_platform_dm(self):
         """End-to-end through the fail-closed gateway status preparer: a DM keeps it (#101003)."""
-        from gateway.config import Platform
-        from gateway.run import _prepare_gateway_status_message
+        from hermes_agent.gateway.config import Platform
+        from hermes_agent.gateway.run import _prepare_gateway_status_message
 
         message = self._emitted_warning("cooldown:30")
         assert (

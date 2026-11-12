@@ -8,7 +8,7 @@ resolution, so every DM from an allowed user was silently dropped before the
 gateway authz layer ever ran.
 
 The fix routes the adapter gate through the shared
-``gateway.whatsapp_identity.expand_whatsapp_aliases`` helper, which reads the
+``hermes_agent.gateway.whatsapp_identity.expand_whatsapp_aliases`` helper, which reads the
 bridge's ``lid-mapping-*.json`` session files (the same source the gateway
 authz and session-key paths already use).
 """
@@ -16,7 +16,7 @@ authz and session-key paths already use).
 import json
 from unittest.mock import AsyncMock
 
-from gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.config import Platform, PlatformConfig
 from hermes_constants import get_hermes_home
 
 

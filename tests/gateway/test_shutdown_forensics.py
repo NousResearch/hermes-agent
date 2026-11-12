@@ -1,4 +1,4 @@
-"""Tests for gateway.shutdown_forensics — fast snapshot + async diag spawn."""
+"""Tests for hermes_agent.gateway.shutdown_forensics — fast snapshot + async diag spawn."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import time
 
 import pytest
 
-from gateway import shutdown_forensics as sf
+from hermes_agent.gateway import shutdown_forensics as sf
 
 # ---------------------------------------------------------------------------
 # _signal_name

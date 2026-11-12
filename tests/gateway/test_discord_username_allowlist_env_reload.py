@@ -25,7 +25,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.session import Platform, SessionSource
+from hermes_agent.gateway.session import Platform, SessionSource
 
 
 OPERATOR_ID = "387972437901312000"
@@ -46,7 +46,7 @@ def _clean_auth_env(monkeypatch):
 
 def _make_runner(adapter=None):
     """Bare GatewayRunner (object.__new__ pattern, AGENTS.md pitfall #17)."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.pairing_store = SimpleNamespace(is_approved=lambda *_a, **_kw: False)

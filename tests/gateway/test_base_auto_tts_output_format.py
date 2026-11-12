@@ -16,14 +16,14 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import (
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import (
     BasePlatformAdapter,
     SendResult,
     build_auto_tts_output_path,
 )
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource, build_session_key
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.session import SessionSource, build_session_key
 
 
 class _DummyAdapter(BasePlatformAdapter):

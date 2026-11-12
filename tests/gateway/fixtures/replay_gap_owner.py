@@ -22,9 +22,9 @@ class Owner:
     """``pause``: the next turn pauses the viewer throughout (``"ended"``) or until delta 400 (``"live"``)."""
 
     def __init__(self, db_path, pause="ended"):
-        from gateway.session_authority import LiveSession, SessionAuthority
-        from gateway.session_contract import SessionRef
-        from gateway.session_controls import AuthorityConnection
+        from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+        from hermes_agent.gateway.session_contract import SessionRef
+        from hermes_agent.gateway.session_controls import AuthorityConnection
         from hermes_agent.hermes_state import SessionDB
         from hermes_agent.hermes_state_runtime import begin_runtime_epoch
         self.loop, self.events, self.running = asyncio.get_running_loop(), asyncio.Queue(), threading.Event()
@@ -63,7 +63,7 @@ class Owner:
         return await getattr(self.conn, verb)(self.ref, {} if verb == "resume" else params) if verb else {}
 
     def _turn(self, row, pause):
-        from gateway.session_settlement_recovery import commit_and_publish
+        from hermes_agent.gateway.session_settlement_recovery import commit_and_publish
         self.authority._stamp_claim(self.ref, self.live, row)
         if pause:
             self.running.clear()  # Ctrl-Z mid-turn

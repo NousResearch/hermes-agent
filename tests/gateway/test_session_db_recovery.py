@@ -7,7 +7,7 @@ import threading
 from pathlib import Path
 from unittest.mock import patch
 
-from gateway.session_db_recovery import RecoverableHandleCache
+from hermes_agent.gateway.session_db_recovery import RecoverableHandleCache
 
 
 class _Clock:
@@ -95,7 +95,7 @@ def test_runtime_health_is_sanitized_and_recovers() -> None:
             raise RuntimeError("database disk image is malformed at secret/profile/state.db")
         return object()
 
-    with patch("gateway.status.publish_runtime_status", side_effect=lambda **kw: writes.append(kw)):
+    with patch("hermes_agent.gateway.status.publish_runtime_status", side_effect=lambda **kw: writes.append(kw)):
         assert cache.get(path, opener) is None
         clock.now = 1.0
         assert cache.get(path, opener) is not None
@@ -109,9 +109,9 @@ def test_runtime_health_is_sanitized_and_recovers() -> None:
 def test_session_store_and_runner_reopen_after_failed_construction(monkeypatch, tmp_path) -> None:
     from hermes_agent import hermes_state
     from hermes_agent import hermes_state_registry
-    from gateway.run import GatewayRunner, _SESSION_DB_UNPINNED
-    from gateway.session import SessionStore
-    from gateway.session_persistence import _DB_UNPINNED
+    from hermes_agent.gateway.run import GatewayRunner, _SESSION_DB_UNPINNED
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_persistence import _DB_UNPINNED
 
     db_path = tmp_path / "state.db"
     clock = _Clock()
@@ -261,9 +261,9 @@ def test_close_all_preserves_inflight_failure() -> None:
 
 def test_recovered_db_rows_survive_fallback_structural_save(monkeypatch, tmp_path) -> None:
     from hermes_agent import hermes_state
-    from gateway.config import GatewayConfig, Platform
-    from gateway.session import SessionEntry, SessionSource, SessionStore
-    from gateway.session_lifecycle import _now
+    from hermes_agent.gateway.config import GatewayConfig, Platform
+    from hermes_agent.gateway.session import SessionEntry, SessionSource, SessionStore
+    from hermes_agent.gateway.session_lifecycle import _now
 
     db_path = tmp_path / "state.db"
     sessions_dir = tmp_path / "sessions"

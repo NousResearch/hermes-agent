@@ -42,7 +42,7 @@ def is_connected(config) -> bool:
     extra = getattr(config, "extra", {}) or {}
     if extra.get("enabled"):
         return True
-    from gateway.platforms._shared import env_is_connected
+    from hermes_agent.gateway.platforms._shared import env_is_connected
 
     return env_is_connected("A2A_PORT")(config)
 

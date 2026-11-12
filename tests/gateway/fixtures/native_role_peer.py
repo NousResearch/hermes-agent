@@ -14,11 +14,11 @@ from tests.waiting import async_wait_until
 
 
 async def probe(peer):
-    from gateway.config import Platform, PlatformConfig
-    from gateway.platforms.base import SendResult
-    from gateway.platforms.event import MessageEvent
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.config import Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.base import SendResult
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import initialize_session_authority
     from plugins.platforms.discord.adapter import DiscordAdapter
     from hermes_agent.hermes_state_runtime import list_session_admissions
 
@@ -76,7 +76,7 @@ async def probe(peer):
 
     if sys.argv[1] == 'multiplex':
         from agent.secret_scope import set_multiplex_active
-        from gateway.profile_routing import ProfileRoute
+        from hermes_agent.gateway.profile_routing import ProfileRoute
         state = Path(os.environ['HERMES_HOME'])
         transport = state / 'profiles' / 'transport'
         transport.mkdir(parents=True)
@@ -115,7 +115,7 @@ async def probe(peer):
             guild.hook = None
             (transport / '.env').write_text('DISCORD_ALLOWED_ROLES=999\n')
         guild.hook = revoke_policy
-        from gateway.session_ingress_context import native_callback
+        from hermes_agent.gateway.session_ingress_context import native_callback
         from hermes_agent.hermes_state_runtime import RuntimeStoreError
         ev = event('policy-revoked-during-fetch')
         with native_callback(runner, ev, transport, 'transport'):

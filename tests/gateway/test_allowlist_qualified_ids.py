@@ -9,9 +9,9 @@ dedicated alias expansion. Left unconditional, it makes a bare allowlist entry
 
 import pytest
 
-from gateway.authz_mixin import _principal_matches_allowlist
-from gateway.config import Platform
-from gateway.session import SessionSource
+from hermes_agent.gateway.authz_mixin import _principal_matches_allowlist
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.session import SessionSource
 
 
 def _source(platform: Platform, user_id: str) -> SessionSource:
@@ -25,7 +25,7 @@ def _source(platform: Platform, user_id: str) -> SessionSource:
 
 
 def _make_runner():
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.pairing_store = None

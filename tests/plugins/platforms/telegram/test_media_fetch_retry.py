@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
@@ -25,8 +25,8 @@ class BadRequest(Exception):
 
 @pytest.fixture
 def adapter(tmp_path, monkeypatch):
-    monkeypatch.setattr("gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path / "audio_cache")
-    monkeypatch.setattr("gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache")
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path / "audio_cache")
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache")
 
     async def _no_wait(*_a, **_k):
         return None

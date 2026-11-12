@@ -10,9 +10,9 @@ Covers the wrong-session-wake / silent-loss fixes:
 
 import asyncio
 
-from gateway.config import Platform
-from gateway.platforms.base import SendResult
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.base import SendResult
+from hermes_agent.gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
@@ -116,7 +116,7 @@ def test_apiserver_sub_wakes_subscription_destination_via_self_post(tmp_path, mo
     async def fake_self_post(adapter, *, text, session_id):
         posts.append({"text": text, "session_id": session_id})
 
-    import gateway.wake as wake_mod
+    import hermes_agent.gateway.wake as wake_mod
 
     monkeypatch.setattr(wake_mod, "_self_post_chat_completion", fake_self_post)
 
@@ -173,7 +173,7 @@ def test_apiserver_subscriptions_have_independent_wake_destinations(
     async def fake_self_post(adapter, *, text, session_id):
         posts.append({"text": text, "session_id": session_id})
 
-    import gateway.wake as wake_mod
+    import hermes_agent.gateway.wake as wake_mod
 
     monkeypatch.setattr(wake_mod, "_self_post_chat_completion", fake_self_post)
     runner = _make_runner({Platform.API_SERVER: ApiServerLikeAdapter()})
@@ -200,7 +200,7 @@ def test_apiserver_wake_failure_rewinds_then_retries_destination(
         if len(attempted_sessions) == 1:
             raise RuntimeError("simulated wake failure")
 
-    import gateway.wake as wake_mod
+    import hermes_agent.gateway.wake as wake_mod
 
     monkeypatch.setattr(
         wake_mod,

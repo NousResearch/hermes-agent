@@ -25,7 +25,7 @@ headless = peer.headless
 async def test_owner_chat_retains_identity_history_and_replies_in_both_orders(
     headless, monkeypatch, source, stamp, open_first
 ):
-    import gateway.session_worker_reservation as reservation
+    import hermes_agent.gateway.session_worker_reservation as reservation
 
     monkeypatch.setattr(reservation, "owner_worker_subject", lambda: "uid:1000")
     db = headless.authority.db
@@ -66,7 +66,7 @@ async def test_owner_login_chat_is_not_replaced_while_its_legacy_writer_is_live(
 ):
     from pathlib import Path
 
-    import gateway.session_worker_reservation as reservation
+    import hermes_agent.gateway.session_worker_reservation as reservation
     from hermes_cli.active_sessions import (
         release_active_session,
         try_acquire_active_session,
@@ -119,7 +119,7 @@ async def test_a_forwarded_login_delivers_into_its_own_chat_in_both_orders(
 ):
     # The forwarded login adopts the chat it stamped, so its delivery must not move that chat
     # aside, whether or not it opened it first.
-    import gateway.session_worker_reservation as reservation
+    import hermes_agent.gateway.session_worker_reservation as reservation
 
     monkeypatch.setattr(reservation, "owner_worker_subject", lambda: "uid:1000")
     db = headless.authority.db
@@ -143,7 +143,7 @@ async def test_a_forwarded_login_delivers_into_its_own_chat_in_both_orders(
 async def test_a_forwarded_login_never_moves_the_owners_chat_aside(headless, monkeypatch):
     # The owner's own Bot Chat stays where it is when a forwarded login that cannot adopt it
     # delivers: that delivery is refused, the owner's history keeps the title.
-    import gateway.session_worker_reservation as reservation
+    import hermes_agent.gateway.session_worker_reservation as reservation
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     monkeypatch.setattr(reservation, "owner_worker_subject", lambda: "uid:1000")

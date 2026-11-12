@@ -6,17 +6,17 @@ import asyncio
 
 import pytest
 
-from gateway.session_contract import Submission
+from hermes_agent.gateway.session_contract import Submission
 
 
 @pytest.mark.asyncio
 async def test_native_waiter_registered_after_the_claim_still_gets_the_only_delivery(tmp_path, monkeypatch):
-    from gateway import session_ingress
-    from gateway.config import Platform
-    from gateway.platforms.event import MessageEvent
-    from gateway.session import SessionSource
-    from gateway.session_authority import LiveSession
-    from gateway.session_contract import SessionActor, SessionRef
+    from hermes_agent.gateway import session_ingress
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.session import SessionSource
+    from hermes_agent.gateway.session_authority import LiveSession
+    from hermes_agent.gateway.session_contract import SessionActor, SessionRef
     from tests.gateway.test_prompt_attachments import _authority as _store_authority
 
     turn_started = asyncio.Event()

@@ -6,13 +6,13 @@ import time
 
 import pytest
 
-from gateway.session_ingress_media import _media_root, capture_native_media, release_admission_media
+from hermes_agent.gateway.session_ingress_media import _media_root, capture_native_media, release_admission_media
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input, settle_session_input
 
 
 def _settled_native_document(tmp_path, monkeypatch, note):
-    from gateway.platforms.base import get_document_cache_dir
+    from hermes_agent.gateway.platforms.base import get_document_cache_dir
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     staged = get_document_cache_dir() / 'doc_1_report.pdf'
     staged.write_bytes(b'%PDF-1.4 retained')
@@ -36,7 +36,7 @@ def _settled_native_document(tmp_path, monkeypatch, note):
     lambda path: "It is saved at: /root/.hermes/cache/documents/" + path.split('/documents/', 1)[1],
 ], ids=['host-path', 'agent-visible-path'])
 def test_settled_native_document_named_by_the_transcript_survives_settlement(tmp_path, monkeypatch, note):
-    import gateway.session_ingress_media as media_module
+    import hermes_agent.gateway.session_ingress_media as media_module
     monkeypatch.setattr(media_module, '_last_sweep', {}, raising=False)
     db, row, retained = _settled_native_document(tmp_path, monkeypatch, note)
     try:

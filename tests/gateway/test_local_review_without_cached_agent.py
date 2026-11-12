@@ -7,7 +7,7 @@ is the session's stored transcript; the reviewer reviews it, its completion re-e
 its request carries what a review from the resident agent carries (the session's provider routing,
 not the daemon's startup copy, and its prefill examples).
 
-Real daemon (``python -m gateway.run``), ``slash.exec`` (``session_commands.execute_command``),
+Real daemon (``python -m hermes_agent.gateway.run``), ``slash.exec`` (``session_commands.execute_command``),
 loopback model. ``/moa`` drops the cached agent here because the idle sweep's first pass is a minute in.
 """
 import asyncio

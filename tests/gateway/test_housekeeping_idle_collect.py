@@ -33,7 +33,7 @@ def clock(monkeypatch):
 
 
 def _tick():
-    from gateway import run as gateway_run
+    from hermes_agent.gateway import run as gateway_run
     gateway_run._housekeeping_memory_trim()
 
 

@@ -220,7 +220,7 @@ def require_active_authority(runner, store=None):
     adapter bound to another profile's SessionDB never admits here."""
     authority = active_authority(runner)
     if authority is None:
-        from gateway.run_runtime import refuse_parked_scope
+        from hermes_agent.gateway.run_runtime import refuse_parked_scope
         refuse_parked_scope(runner)  # retryable while its profile is parked
     if authority is None or (store is not None and store() is not authority.db):
         from hermes_agent.hermes_state_runtime import RuntimeStoreError
@@ -278,7 +278,7 @@ def holds_admission(authority, session_id) -> bool:
         if not getattr(authority, 'retiring', False):
             raise
         import logging
-        logging.getLogger('gateway.run').warning("Skipping auto-resume of %s: retained store %s cannot answer: %s",
+        logging.getLogger('hermes_agent.gateway.run').warning("Skipping auto-resume of %s: retained store %s cannot answer: %s",
                                                  session_id, getattr(authority, 'profile_id', '?'), exc)
         return True
 
@@ -290,7 +290,7 @@ def _prepare_owner_scope(home: Path):
     if not home.is_dir():
         return None
     from agent.secret_scope import current_secret_scope
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
     from tools.terminal_scope import get_terminal_scope
     with _profile_runtime_scope(home, hydrate_secrets=False):
         return current_secret_scope(), get_terminal_scope()
@@ -314,7 +314,7 @@ async def async_owner_scope(authority):
     if prepared is None:
         yield
         return
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
     secrets, terminal = prepared
     with _profile_runtime_scope(home, secrets, prepared_terminal_scope=terminal):
         yield
@@ -342,5 +342,5 @@ def owner_scope(authority, *, hydrate_secrets=False):
     home = Path(str(authority.profile_id))
     if not home.is_absolute() or not home.is_dir():
         return nullcontext()
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
     return _profile_runtime_scope(home, hydrate_secrets=hydrate_secrets)

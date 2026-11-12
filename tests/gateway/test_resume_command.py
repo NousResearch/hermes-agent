@@ -10,9 +10,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionSource, build_session_key
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionSource, build_session_key
 
 
 def _make_event(text="/resume", platform=Platform.TELEGRAM,
@@ -35,7 +35,7 @@ def _session_key_for_event(event):
 def _make_runner(session_db=None, current_session_id="current_session_001",
                  event=None):
     """Create a bare GatewayRunner with a mock session_store and optional session_db."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
     runner.config = SimpleNamespace(platforms={})
@@ -392,8 +392,8 @@ class TestHandleSessionsCommand:
     ):
         import json
 
-        from gateway.config import GatewayConfig
-        from gateway.session import AsyncSessionStore, SessionStore
+        from hermes_agent.gateway.config import GatewayConfig
+        from hermes_agent.gateway.session import AsyncSessionStore, SessionStore
         from hermes_agent.hermes_state import AsyncSessionDB
 
         event = _make_event(text="/sessions full")
@@ -445,8 +445,8 @@ class TestHandleSessionsCommand:
     ):
         import json
 
-        from gateway.config import GatewayConfig
-        from gateway.session import AsyncSessionStore, SessionStore
+        from hermes_agent.gateway.config import GatewayConfig
+        from hermes_agent.gateway.session import AsyncSessionStore, SessionStore
         from hermes_agent.hermes_state import AsyncSessionDB
 
         event = _make_event(text="/sessions full")

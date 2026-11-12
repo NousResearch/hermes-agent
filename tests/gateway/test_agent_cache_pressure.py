@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.agent_cache_pressure import (
+from hermes_agent.gateway.agent_cache_pressure import (
     AgentCacheBounds,
     plan_pressure_evictions,
     resolve_agent_cache_bounds,
@@ -22,7 +22,7 @@ from gateway.agent_cache_pressure import (
 )
 
 class TestBoundsResolution:
-    """Absent config must stay absent so gateway/run.py keeps its defaults."""
+    """Absent config must stay absent so hermes_agent/gateway/run.py keeps its defaults."""
 
     def test_absent_section_leaves_lru_bounds_unset(self):
         bounds = resolve_agent_cache_bounds({})
@@ -77,7 +77,7 @@ class TestMemoryBudgetResolution:
     def test_auto_derives_a_budget_below_the_cgroup_limit(self, monkeypatch):
         """The budget must leave headroom: hitting memory.high is what makes
         the shutdown flush time out in the first place."""
-        import gateway.agent_cache_pressure as acp
+        import hermes_agent.gateway.agent_cache_pressure as acp
 
         limit_mb = 10 * 1024
         monkeypatch.setattr(acp, "_cgroup_limit_bytes", lambda: limit_mb * 1024 * 1024)
@@ -88,7 +88,7 @@ class TestMemoryBudgetResolution:
         assert 0 < budget < limit_mb
 
     def test_auto_is_disabled_when_no_limit_is_discoverable(self, monkeypatch):
-        import gateway.agent_cache_pressure as acp
+        import hermes_agent.gateway.agent_cache_pressure as acp
 
         monkeypatch.setattr(acp, "_cgroup_limit_bytes", lambda: None)
         monkeypatch.setattr(acp, "_total_memory_bytes", lambda: None)
@@ -101,8 +101,8 @@ class TestPressureSignalScope:
     an execute_code kernel in the same cgroup counts even while the gateway itself is small (#110549)."""
 
     def _cgroup(self, monkeypatch, tmp_path, stat_text):
-        import gateway.agent_cache_pressure as acp
-        import gateway.cgroup_cleanup as cleanup
+        import hermes_agent.gateway.agent_cache_pressure as acp
+        import hermes_agent.gateway.cgroup_cleanup as cleanup
 
         monkeypatch.setattr(cleanup, "_own_cgroup_path", lambda: "/hermes.service")
         real_read_text = acp.Path.read_text
@@ -236,7 +236,7 @@ class TestGatewayPressureSweep:
     """End-to-end against the real GatewayRunner method."""
 
     def _runner(self, bounds=None):
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         runner = GatewayRunner.__new__(GatewayRunner)
         runner._agent_cache = OrderedDict()
@@ -254,7 +254,7 @@ class TestGatewayPressureSweep:
         return agent
 
     def _at_rss(self, monkeypatch, mb):
-        import gateway.agent_cache_pressure as acp
+        import hermes_agent.gateway.agent_cache_pressure as acp
 
         monkeypatch.setattr(acp, "read_anon_rss_mb", lambda: mb)
 
@@ -358,14 +358,14 @@ class TestConfiguredBoundsReachTheCache:
     built-in values when config.yaml says nothing."""
 
     def _runner(self, bounds):
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         runner = GatewayRunner.__new__(GatewayRunner)
         runner._agent_cache_bounds_cache = bounds
         return runner
 
     def test_unset_config_keeps_the_built_in_defaults(self):
-        from gateway import run as gw_run
+        from hermes_agent.gateway import run as gw_run
 
         runner = self._runner(AgentCacheBounds())
         assert runner._agent_cache_cap() == gw_run._AGENT_CACHE_MAX_SIZE
@@ -423,14 +423,14 @@ class TestSalvageFollowups:
         """A transient config-read failure must not permanently disable the
         pressure valve — the fallback resolves an empty config, whose absent
         section means memory_high_mb='auto', not None."""
-        import gateway.run as gw_run
-        from gateway.run import GatewayRunner
+        import hermes_agent.gateway.run as gw_run
+        from hermes_agent.gateway.run import GatewayRunner
 
         monkeypatch.setattr(
             gw_run, "_load_gateway_config",
             lambda: (_ for _ in ()).throw(OSError("transient")),
         )
-        import gateway.agent_cache_pressure as acp
+        import hermes_agent.gateway.agent_cache_pressure as acp
 
         monkeypatch.setattr(acp, "_cgroup_limit_bytes", lambda: 8 * 1024**3)
 

@@ -68,8 +68,8 @@ def test_rejected_control_char_path_yields_no_collectible_media(tmp_path, suffix
     """#116276: a newline / U+2028 in output_path split the echoed MEDIA: tag into a second,
     unvalidated directive. The error envelope must contain nothing the gateway auto-append
     collector or the model-echo parser can turn into an attachment."""
-    from gateway.platforms.base import BasePlatformAdapter
-    from gateway.run import _collect_auto_append_media_tags
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter
+    from hermes_agent.gateway.run import _collect_auto_append_media_tags
 
     result = text_to_speech_tool(text="hello", output_path=str(tmp_path / "a.mp3") + suffix)
     payload = json.loads(result)
@@ -84,7 +84,7 @@ def test_media_directive_in_path_is_rejected_before_any_echo(tmp_path):
     """A MEDIA:-anchored segment needs no control characters: ``file_path`` and the traversal
     error text both echo the raw path. The directive check fires before those echoes; a bare
     ``media:`` without a path anchor stays a legal filename."""
-    from gateway.run import _collect_auto_append_media_tags
+    from hermes_agent.gateway.run import _collect_auto_append_media_tags
     from tools.tts_tool import _resolve_output_base
 
     for bad in (str(tmp_path / "decoy" / "MEDIA:/tmp/evil.txt"), "../MEDIA:/tmp/evil.txt",

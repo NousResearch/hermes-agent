@@ -17,8 +17,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from gateway.config import PlatformConfig, Platform
-from gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.config import PlatformConfig, Platform
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
 
 class _StubStore:
     def __init__(self, transcript: list[dict[str, Any]]) -> None:

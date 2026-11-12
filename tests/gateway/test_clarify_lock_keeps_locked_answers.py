@@ -13,7 +13,7 @@ from tests.gateway.test_surface_admission import _authority
 
 
 async def _locked_then(tmp_path, monkeypatch, end):
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
 
     async def answer(event):
         return 'ok'

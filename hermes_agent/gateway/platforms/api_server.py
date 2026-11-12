@@ -91,8 +91,8 @@ def _approval_request_event(run_id: str, approval_data: Optional[dict[str, Any]]
     """The ``approval.request`` payload every approval surface emits (runs bridge, session stream,
     chat completions): the flagged command redacted before egress (#48456), the ``_run_event``
     envelope, and the ``choices`` the client may send back to ``POST /v1/runs/{id}/approval``."""
-    from gateway.platforms.api_server_runs import _run_event
-    from gateway.run import _redact_approval_command
+    from hermes_agent.gateway.platforms.api_server_runs import _run_event
+    from hermes_agent.gateway.run import _redact_approval_command
     event = dict(approval_data or {})  # consent prompts (MCP, vault) carry server/model text in the description
     event.update({k: _redact_approval_command(event[k]) for k in ("command", "description") if k in event})
     event.update(_run_event(run_id, "approval.request", **fields, choices=_approval_event_choices(
@@ -109,27 +109,27 @@ except ImportError:
     AIOHTTP_AVAILABLE = False
     web = None  # type: ignore[assignment]
 
-from gateway.config import Platform, PlatformConfig
-from gateway.display_config import resolve_display_setting
-from gateway.platforms import api_server_room_dispatch as _room_dispatch
-from gateway.platforms import api_server_room_grants as _room_grants
-from gateway.platforms import api_server_runs as _api_runs
-from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
-from gateway.platforms.api_server_memory_sessions import ApiServerMemorySessions
-from gateway.platforms.api_server_bot_chat import reset_local_title_owner
-from gateway.platforms.base import (
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.display_config import resolve_display_setting
+from hermes_agent.gateway.platforms import api_server_room_dispatch as _room_dispatch
+from hermes_agent.gateway.platforms import api_server_room_grants as _room_grants
+from hermes_agent.gateway.platforms import api_server_runs as _api_runs
+from hermes_agent.gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
+from hermes_agent.gateway.platforms.api_server_memory_sessions import ApiServerMemorySessions
+from hermes_agent.gateway.platforms.api_server_bot_chat import reset_local_title_owner
+from hermes_agent.gateway.platforms.base import (
     MEDIA_TAG_CLEANUP_RE, BasePlatformAdapter, SendResult, _terminal_sentinel_start, is_network_accessible,
     validate_media_delivery_path)
-from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
-from gateway.platforms.api_server_response_store import ResponseStore
+from hermes_agent.gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+from hermes_agent.gateway.platforms.api_server_response_store import ResponseStore
 from agent.i18n import t
 from agent.redact import redact_sensitive_text
 from agent.interrupt_compat import request_hard_interrupt
-from gateway.readiness import collect_runtime_readiness
+from hermes_agent.gateway.readiness import collect_runtime_readiness
 
-from gateway.parked_route_refusal import ParkedRouteRefused
-from gateway.platforms._shared import coerce_port as _coerce_port, get_scoped_secret as _get_scoped_secret
-from gateway.platforms.tcp_site import start_tcp_site
+from hermes_agent.gateway.parked_route_refusal import ParkedRouteRefused
+from hermes_agent.gateway.platforms._shared import coerce_port as _coerce_port, get_scoped_secret as _get_scoped_secret
+from hermes_agent.gateway.platforms.tcp_site import start_tcp_site
 from hermes_agent.hermes_state_errors import SessionActiveWriteGuardError
 
 
@@ -235,7 +235,7 @@ def _clean_request_string(value: Any) -> Optional[str]:
 
 # model_options decoding lives in the topical sibling (line-cap offset);
 # re-exported here so importers are unaffected.
-from gateway.platforms.api_server_request_options import _request_reasoning_config, _request_service_tier
+from hermes_agent.gateway.platforms.api_server_request_options import _request_reasoning_config, _request_service_tier
 
 
 def _apply_runtime_agent_overrides(
@@ -252,7 +252,7 @@ def _apply_runtime_agent_overrides(
 
 
 def _resolve_request_runtime_agent_kwargs(provider: str, target_model: Optional[str] = None) -> dict[str, Any]:
-    """gateway.run._resolve_runtime_agent_kwargs() for an explicit provider/model, so an API
+    """hermes_agent.gateway.run._resolve_runtime_agent_kwargs() for an explicit provider/model, so an API
     caller uses the same authenticated provider catalog without mutating config.yaml."""
     from hermes_cli.runtime_provider import resolve_runtime_provider, format_runtime_provider_error, _get_model_config
     try:
@@ -509,7 +509,7 @@ def _reap_disconnected_agent_processes(
     ``TurnRunner``). Daemon-thread fire-and-forget; epoch-gated so a stale reaper never kills
     a newer run's process on a shared task_id.
 
-    Mirrors the gateway-turn cleanup in ``gateway/run.py`` (#76115) for this API-server surface, which runs
+    Mirrors the gateway-turn cleanup in ``hermes_agent/gateway/run.py`` (#76115) for this API-server surface, which runs
     its own agent lifecycle via ``_run_agent`` and never passes through ``TurnRunner`` — so it needs its own
     trigger for the same baseline-diff reap.
     """
@@ -527,7 +527,7 @@ def _reap_disconnected_agent_processes(
                 current = _TURN_PROCESS_EPOCHS.get(_task_id)
             return current is None or current == _epoch
         is_still_current = _epoch_still_current
-    from gateway.run import _reap_gateway_turn_processes
+    from hermes_agent.gateway.run import _reap_gateway_turn_processes
     threading.Thread(
         target=copy_context().run, args=(_reap_gateway_turn_processes, process_task_id, process_baseline),
         kwargs={"source": source, "is_still_current": is_still_current},
@@ -555,7 +555,7 @@ def _publish_turn_process_ownership(agent: Any, task_id: str) -> None:
 
 def _clear_turn_process_ownership(agent: Any) -> None:
     """Clear turn ownership as soon as the turn ends: a later disconnect/cancel must not reap
-    background work the turn deliberately left running (same guard as gateway/run.py)."""
+    background work the turn deliberately left running (same guard as hermes_agent/gateway/run.py)."""
     task_id = getattr(agent, "_gateway_turn_process_task_id", "")
     epoch = getattr(agent, "_gateway_turn_process_epoch", None)
     if task_id and epoch is not None:
@@ -925,7 +925,7 @@ except Exception:  # pragma: no cover - scanner is optional hardening
     _scan_cron_prompt = None
 
 
-# English labels stay as constants: ``gateway.run._GATEWAY_AUTH_ERROR_RE`` / ``_GATEWAY_RATE_LIMIT_RE``
+# English labels stay as constants: ``hermes_agent.gateway.run._GATEWAY_AUTH_ERROR_RE`` / ``_GATEWAY_RATE_LIMIT_RE``
 # sniff these words in failure envelopes, so matchers and tests key off them regardless of the
 # display language. ``user_text()`` renders the human-facing line through ``t()``.
 PROVIDER_AUTH_FAILED_LABEL = "Provider authentication failed"
@@ -1107,7 +1107,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._shutdown_interruptible_agents: dict[int, Any] = {}
         # One memory provider per session across requests (this surface rebuilds the agent per turn).
         self._memory_sessions = ApiServerMemorySessions()
-        self.gateway_runner: Optional[Any] = None  # set by gateway/run.py
+        self.gateway_runner: Optional[Any] = None  # set by hermes_agent/gateway/run.py
         # Admitted requests not yet in agent bookkeeping, so shutdown drain counts them.
         self._pending_agent_requests: int = 0
         # Daily API metrics + heartbeat stamps published to gateway runtime status (#52323).
@@ -1157,8 +1157,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _gateway_is_draining() -> bool:
         """Whether the owning gateway currently refuses new agent turns."""
         try:
-            from gateway.platforms.api_server_fire_startup import runner_is_draining
-            from gateway.run import _gateway_runner_ref
+            from hermes_agent.gateway.platforms.api_server_fire_startup import runner_is_draining
+            from hermes_agent.gateway.run import _gateway_runner_ref
             runner = _gateway_runner_ref()
             return bool(runner) and runner_is_draining(runner)
         except Exception:
@@ -1499,7 +1499,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     # -- Multi-profile multiplexing (/p/<profile>/...) --------------------------------
 
     def _resolve_request_profile(self, request: web.Request):
-        from gateway.platforms.api_server_profile_prefix import resolve_request_profile
+        from hermes_agent.gateway.platforms.api_server_profile_prefix import resolve_request_profile
         return resolve_request_profile(self, request)
 
     @staticmethod
@@ -1515,18 +1515,18 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             with suppress(Exception):
                 from agent.secret_scope import is_multiplex_active
                 if is_multiplex_active():
-                    from gateway.run import _profile_runtime_scope
+                    from hermes_agent.gateway.run import _profile_runtime_scope
                     from hermes_constants import get_hermes_home
                     return _profile_runtime_scope(get_hermes_home())
             return nullcontext()
-        from gateway.run import _profile_runtime_scope
+        from hermes_agent.gateway.run import _profile_runtime_scope
         from hermes_cli.profiles import get_profile_dir
         return _profile_runtime_scope(get_profile_dir(profile))
 
     async def _handle_profile_ingress(self, request: web.Request) -> web.StreamResponse:
         """``/p/<profile>/<tail>`` → the served profile's shared-listener adapter (already scoped by the
         prefix middleware); a profile with no adapter for the path is a 404, never the default's."""
-        from gateway.platforms.shared_ingress import dispatch_profile_ingress
+        from hermes_agent.gateway.platforms.shared_ingress import dispatch_profile_ingress
         return await dispatch_profile_ingress(
             self.gateway_runner, _api_request_profile.get(), request.match_info.get("tail", ""), request,
             scoped=True)
@@ -1538,7 +1538,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         async def profile_prefix_middleware(request: web.Request, handler):
             profile = self._resolve_request_profile(request)
             if profile is _PROFILE_REJECTED:
-                from gateway.platforms.api_server_profile_prefix import rejection_response
+                from hermes_agent.gateway.platforms.api_server_profile_prefix import rejection_response
                 return rejection_response(request)
             token = _api_request_profile.set(profile)
             try:
@@ -1610,7 +1610,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if db is None:
             return None
         if getattr(self.gateway_runner, 'session_authority', None) is not None:
-            from gateway.session_api import declared_api_session
+            from hermes_agent.gateway.session_api import declared_api_session
             return declared_api_session(db, key)
         try:
             row = db.find_latest_gateway_session_for_peer(
@@ -1694,7 +1694,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         """Cached SessionDB for ``home`` (shared by both ``_ensure_session_db*``). Never writes
         ``self._session_db`` (explicit override only), so no profile pins later requests."""
         if self.gateway_runner is not None:
-            from gateway.platforms.api_server_store import selected_session_db
+            from hermes_agent.gateway.platforms.api_server_store import selected_session_db
             return selected_session_db(self, home)
         from hermes_agent.hermes_state_registry import acquire
         key = str(home)
@@ -1739,7 +1739,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         per profile). Sync, for ``_create_agent``; handlers use ``_ensure_session_db_async``."""
         if self.gateway_runner is not None:
             from hermes_constants import get_hermes_home
-            from gateway.platforms.api_server_store import selected_session_db
+            from hermes_agent.gateway.platforms.api_server_store import selected_session_db
             return selected_session_db(self, get_hermes_home())
         if self._session_db is not None:
             return self._session_db
@@ -1755,7 +1755,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         inside ``to_thread``), only the blocking open runs in the worker, single-flight locked."""
         if self.gateway_runner is not None:
             from hermes_constants import get_hermes_home
-            from gateway.platforms.api_server_store import selected_session_db
+            from hermes_agent.gateway.platforms.api_server_store import selected_session_db
             return selected_session_db(self, get_hermes_home())
         if self._session_db is not None:
             return self._session_db
@@ -2005,7 +2005,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if not session_key:
             return None
         try:
-            from gateway.run import _gateway_runner_ref
+            from hermes_agent.gateway.run import _gateway_runner_ref
             runner = _gateway_runner_ref()
             if runner is None:
                 return None
@@ -2057,7 +2057,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return _resolve_request_runtime_agent_kwargs(provider_name, target_model=target_model or None)
         except Exception as exc:
             with suppress(Exception):
-                from gateway.run import _resolve_runtime_agent_kwargs_for_provider
+                from hermes_agent.gateway.run import _resolve_runtime_agent_kwargs_for_provider
                 return _resolve_runtime_agent_kwargs_for_provider(provider_name, target_model=target_model or None)
             if required:
                 raise _ProviderAuthResolutionError(str(exc)) from exc
@@ -2190,7 +2190,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         ``route`` / ``session_model`` are mutually exclusive; ``confirmed_runtime_lock`` beats the
         session ``/model`` override, disables the fallback chain and fails closed."""
         from run_agent import AIAgent
-        from gateway.run import (
+        from hermes_agent.gateway.run import (
             _checkpoint_agent_kwargs, _current_max_iterations, _resolve_runtime_agent_kwargs,
             _resolve_gateway_model, _load_gateway_config, GatewayRunner)
         from hermes_cli.tools_config import _get_platform_tools
@@ -2219,7 +2219,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             interim_assistant_callback = None
         max_iterations = _current_max_iterations()
         if room_dispatch is not None:
-            from gateway.hosted_room_execution_policy import RoomExecutionPolicy
+            from hermes_agent.gateway.hosted_room_execution_policy import RoomExecutionPolicy
             policy = RoomExecutionPolicy.from_mapping(room_execution_policy or {})
             enabled_toolsets = list(policy.enabled_toolsets)
             max_iterations = policy.max_iterations
@@ -2270,7 +2270,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     @_require_auth
     async def _handle_health_detailed(self, request: web.Request) -> web.Response:
         """GET /health/detailed — gateway state, platforms, PID for dashboard probing (Bearer auth)."""
-        from gateway.status import (
+        from hermes_agent.gateway.status import (
             derive_gateway_busy, derive_gateway_drainable, normalize_updated_at, parse_active_agents,
             read_runtime_status)
         runtime = read_runtime_status() or {}
@@ -2291,7 +2291,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # Served BY the gateway process, so gateway_running is True by definition; busy/
         # drainable use the same shared contract as /api/status so the two never disagree.
         active_api_runs, process_depth, active_delegations = self._readiness_work_counts()
-        from gateway.run import _resolve_gateway_model
+        from hermes_agent.gateway.run import _resolve_gateway_model
         readiness = collect_runtime_readiness(
             configured_model=_resolve_gateway_model(), runtime_status=runtime,
             active_api_runs=active_api_runs, process_completion_queue_depth=process_depth,
@@ -2577,7 +2577,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         body, err = await self._read_json_body(request)
         if err:
             return err
-        from gateway.platforms.api_server_bot_chat import create_peer_bot_chat
+        from hermes_agent.gateway.platforms.api_server_bot_chat import create_peer_bot_chat
         if (bot_chat := await create_peer_bot_chat(self, body)) is not None:
             return bot_chat  # the owner minted the canonical Bot Chat (#139370)
         db = await self._ensure_session_db_async()
@@ -2585,7 +2585,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return self._session_db_unavailable()
         raw_id = body.get("id") or body.get("session_id")
         session_id = str(raw_id).strip() if raw_id else f"api_{int(time.time())}_{uuid.uuid4().hex[:8]}"
-        from gateway.session import _is_path_unsafe
+        from hermes_agent.gateway.session import _is_path_unsafe
         if not session_id or re.search(r'[\r\n\x00]', session_id) or _is_path_unsafe(session_id):
             return _error_response("Invalid session ID", 400, code="invalid_session_id")
         if len(session_id) > self._MAX_SESSION_HEADER_LEN:
@@ -2722,7 +2722,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 await asyncio.to_thread(store.remove_by_session_id, session_id)
             # Retirement erased the chat's image references; bytes nothing else holds go too. Off the
             # loop like every other media release: its holder check and unlink are one write txn.
-            from gateway.session_ingress_media import collect_unheld_api_images
+            from hermes_agent.gateway.session_ingress_media import collect_unheld_api_images
             await asyncio.to_thread(collect_unheld_api_images, db)
         return web.json_response({"object": "hermes.session.deleted", "id": session_id, "deleted": bool(deleted)})
 
@@ -2892,7 +2892,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             # to the requested profile) while the Channels page rendered "The gateway is not running" (it
             # did neither). Cross-container, profile-scoped, and launch-service-managed deployments each hit
             # that split. profile_home is passed when the request was scoped to a named profile:
-            # gateway/status readers resolve process-level paths and do NOT follow the HERMES_HOME
+            # hermes_agent/gateway/status readers resolve process-level paths and do NOT follow the HERMES_HOME
             # contextvar override (#56986 / #69143), so the profile's directory has to be handed over
             # explicitly or messaging silently reports another profile's gateway (#71211).
             runtime=runtime,
@@ -2929,7 +2929,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # authority FIFO (a Desktop showing it is a viewer, not a lease holder): the turn enters
         # through the same door as ``bot_relay.deliver`` and the receipt is its admission's.
         if getattr(self.gateway_runner, "session_authority", None) is not None:
-            from gateway.platforms.api_server_bot_chat import admit_peer_turn
+            from hermes_agent.gateway.platforms.api_server_bot_chat import admit_peer_turn
             return await admit_peer_turn(self.gateway_runner, session_id, message, author)
         db = await self._ensure_session_db_async()
         if db is None:
@@ -2985,7 +2985,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         mailbox through ``await_delivery_async``) until it settles or the local DM budget runs out;
         ``keepalive`` (async) is called every SSE keepalive interval so a streaming caller's proxy
         keeps the socket."""
-        from gateway.platforms.api_server_bot_chat import await_live_delivery
+        from hermes_agent.gateway.platforms.api_server_bot_chat import await_live_delivery
         from tools.bot_mode_dm import _LIVE_WAIT_SECONDS
         deadline = time.monotonic() + _LIVE_WAIT_SECONDS
         while record["status"] in ("queued", "claimed"):
@@ -3050,14 +3050,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         ctx, err = await self._prepare_session_chat(request)
         if err is not None:
             return err
-        from gateway.platforms.api_server_openai_routes import _response_status
+        from hermes_agent.gateway.platforms.api_server_openai_routes import _response_status
         handed_off = await self._answer_through_live_bot_chat(ctx)
         if handed_off is not None:
             return handed_off
         gateway_session_key = ctx["gateway_session_key"]
         session_id = ctx["session_id"]
         history = await self._conversation_history_for_session(session_id)
-        from gateway.platforms.api_server_authority_runs import RuntimeStoreError, store_error_response
+        from hermes_agent.gateway.platforms.api_server_authority_runs import RuntimeStoreError, store_error_response
         try:
             result, usage = await self._run_agent(conversation_history=history, **ctx["run_kwargs"])
             # One policy-gated re-run of a transiently failed turn, as the local (``tools.bot_mode_dm``)
@@ -3506,7 +3506,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             from hermes_agent.cron.scheduler_provider import provider_supports_split_fire, resolve_cron_scheduler
             provider = resolve_cron_scheduler()
             loop = asyncio.get_running_loop()
-            from gateway.platforms.api_server_fire_startup import live_adapters_once_started
+            from hermes_agent.gateway.platforms.api_server_fire_startup import live_adapters_once_started
             refusal, adapters = await live_adapters_once_started(self, request, job_id, received_at=received_at)
             if refusal is not None:
                 return refusal
@@ -3579,7 +3579,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         ``profile`` is the ``/p/<profile>/`` prefix serving the request (``""`` = default). It must
         reach ``HERMES_SESSION_PROFILE``: the persistent-Docker container key is derived from it, so an
         unbound profile collapses every profile's turns onto the default sandbox (#96370)."""
-        from gateway.session_context import set_session_vars
+        from hermes_agent.gateway.session_context import set_session_vars
         return set_session_vars(
             platform="api_server", chat_id=chat_id, session_key=session_key, session_id=session_id,
             profile=profile, async_delivery=False, cron_session="", session_history_delivery=session_history_delivery)
@@ -3684,7 +3684,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         as THIS turn's user message instead of being appended a second time
         (``agent.session_persistence.adopt_unanswered_turn``; #115325)."""
         if getattr(self.gateway_runner, "session_authority", None) is not None:
-            from gateway.session_api_turn import run_api_turn
+            from hermes_agent.gateway.session_api_turn import run_api_turn
             return await run_api_turn(self, user_message=user_message, conversation_history=conversation_history,
                 ephemeral_system_prompt=ephemeral_system_prompt, session_id=session_id,
                 stream_delta_callback=stream_delta_callback, tool_progress_callback=tool_progress_callback,
@@ -3704,7 +3704,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         request_profile = _api_request_profile.get()
 
         def _run():
-            from gateway.session_context import clear_session_vars
+            from hermes_agent.gateway.session_context import clear_session_vars
             with self._profile_scope(request_profile):
                 tokens = self._bind_api_server_session(
                     chat_id=session_id or "", session_key=gateway_session_key or session_id or "",
@@ -3712,7 +3712,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     session_history_delivery=session_history_delivery)
                 agent = None
                 from agent.notification_presentation import notification_turn
-                from gateway.warning_notifications import diagnostic_turn_muted
+                from hermes_agent.gateway.warning_notifications import diagnostic_turn_muted
                 muted = diagnostic_turn_muted({"notification_category": notification_category}, "api_server")
                 try:
                     agent = self._create_agent(
@@ -3739,7 +3739,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     # Process baseline for disconnect reaping (this surface bypasses TurnRunner)
                     # + shutdown-interrupt registration, once for every caller.
                     # Baseline for selective background-process reaping on SSE client disconnect — mirrors
-                    # gateway/run.py's gateway-turn cleanup (#76115); this API-server surface runs its own
+                    # hermes_agent/gateway/run.py's gateway-turn cleanup (#76115); this API-server surface runs its own
                     # agent lifecycle and doesn't go through TurnRunner, so it needs its own baseline.
                     # /v1/runs runs its own agent lifecycle (no TurnRunner, no _run_agent) — record turn
                     # process ownership so stop/cancel can reap only the background processes this run
@@ -3947,7 +3947,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             self._set_fatal_error(
                 # A rejected API_SERVER_KEY is a configuration error, not a transient blip — the key will
                 # not become valid on its own. A bare ``return False`` makes the reconnect watcher in
-                # gateway.run treat it as retryable and loop forever at the backoff cap, re-instantiating
+                # hermes_agent.gateway.run treat it as retryable and loop forever at the backoff cap, re-instantiating
                 # the adapter (and its ResponseStore sqlite connection) every retry (#38803: ~501 leaked
                 # connections / 1002 fds over 2.5 days until EMFILE took the whole gateway down).
                 # Non-retryable drops it from the reconnect queue — same treatment as the port-conflict
@@ -3962,7 +3962,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 retryable=False)
             return False
         try:
-            from gateway.platforms.api_server_config_guard import config_unavailable_middleware
+            from hermes_agent.gateway.platforms.api_server_config_guard import config_unavailable_middleware
             mws = [mw for mw in (  # the config guard outermost: entering a profile scope reads config
                 config_unavailable_middleware, self._make_profile_prefix_middleware(), cors_middleware,
                 body_limit_middleware, security_headers_middleware) if mw is not None]
@@ -4030,7 +4030,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     self._set_fatal_error(
                         # A port conflict is a configuration error, not a transient blip — another process
                         # holds the port for its lifetime. A bare ``return False`` makes the reconnect
-                        # watcher in gateway.run treat it as retryable and loop forever at the backoff cap
+                        # watcher in hermes_agent.gateway.run treat it as retryable and loop forever at the backoff cap
                         # (observed: 1568+ retries over 5 days across multi-profile setups all defaulting
                         # to the same port, #52132), filling errors.log and leaking the adapter's ResponseStore
                         # fds each retry. Non-retryable drops it from the reconnect queue; the operator
@@ -4045,7 +4045,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     "config.yaml: platforms.api_server.port",
                     self.name, self._host, self._port, exc)
                 return False
-            from gateway.platforms.shared_ingress import listener_base_url
+            from hermes_agent.gateway.platforms.shared_ingress import listener_base_url
             self._mark_connected(listener_base=listener_base_url(self._host, self._port))
             # Publish a metrics-bearing snapshot at bind and keep it fresh: the
             # heartbeat loop updates last_heartbeat/metrics_today (#52323).
@@ -4064,7 +4064,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         connection (the reconnect loop builds a fresh adapter per retry; leaked fds hit EMFILE).
 
         Without this, every adapter instance leaks 2 file descriptors (the database file and its WAL
-        sidecar) — the reconnect loop in ``gateway.run`` constructs a fresh adapter on every retry, so 2
+        sidecar) — the reconnect loop in ``hermes_agent.gateway.run`` constructs a fresh adapter on every retry, so 2
         fds/retry × 300s backoff cap ≈ 12 fds/hour, which exhausts the default 2560 fd limit after ~12h of
         failed reconnects and turns the whole gateway into a zombie (OSError: [Errno 24] Too many open
         files, #37011).
@@ -4103,7 +4103,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     async def send_clarify(self, chat_id: str, question: str, choices: Optional[list],
                            clarify_id: str, session_key: str,
                            metadata: Optional[dict[str, Any]] = None) -> SendResult:
-        from gateway.platforms.api_server_authority_runs import send_clarify
+        from hermes_agent.gateway.platforms.api_server_authority_runs import send_clarify
         return await send_clarify(self, chat_id=chat_id, clarify_id=clarify_id)
 
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:

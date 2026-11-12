@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agent.i18n import t
-from gateway.platforms.base import unauthorized_action_notice, utf16_len
+from hermes_agent.gateway.platforms.base import unauthorized_action_notice, utf16_len
 
 # ---------------------------------------------------------------------------
 # Ensure the repo root is importable
@@ -20,7 +20,7 @@ if _repo not in sys.path:
 
 
 from plugins.platforms.telegram.adapter import TelegramAdapter
-from gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.config import Platform, PlatformConfig
 
 
 def _make_adapter(extra=None):

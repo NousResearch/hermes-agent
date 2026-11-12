@@ -234,7 +234,7 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
         if self.path.parent.is_symlink() or self.path.is_symlink():
             raise WorkerPersistenceError('unsafe_outbox')
         os.chmod(self.path.parent, 0o700)
-        from gateway.status import _try_acquire_file_lock
+        from hermes_agent.gateway.status import _try_acquire_file_lock
         lock_path = self.path.parent / 'owner.lock'
         if lock_path.is_symlink():
             raise WorkerPersistenceError('unsafe_outbox')

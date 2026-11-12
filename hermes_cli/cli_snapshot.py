@@ -62,7 +62,7 @@ def restore_snapshot_command(cli, parts):
 
 def _pause_owner(home, control_home, identity):
     """Hand the profile off; True when this restore parked a satellite and must serve it again."""
-    from gateway.control_socket import pause_gateway_for_update, request_unserve_profile
+    from hermes_agent.gateway.control_socket import pause_gateway_for_update, request_unserve_profile
     from hermes_cli.data_cleanup_holders import pause_acked
     from hermes_cli.profiles import parked_marker_path
     satellite = control_home != home
@@ -94,7 +94,7 @@ def _pause_owner(home, control_home, identity):
 
 
 def _restore_gateway_snapshot(cli, store, snap_id):
-    from gateway.control_socket import request_serve_profile_hot
+    from hermes_agent.gateway.control_socket import request_serve_profile_hot
     from hermes_cli.backup import restore_quick_snapshot
     from hermes_cli.data_cleanup_holders import manual_gateway_identity
     from hermes_cli.gateway_connection import GatewayConnection

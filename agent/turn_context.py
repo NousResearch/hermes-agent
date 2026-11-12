@@ -1036,7 +1036,7 @@ def _previous_user_message_text(conversation_history: Optional[list[Any]]) -> st
     from agent.context_compressor import user_originated_turn_view
     from agent.conversation_compression_scaffolding import has_scaffolding_flag, is_user_role_scaffolding
     from agent.prompt_builder import STEER_MARKER_OPEN
-    from gateway.message_timestamps import strip_leading_message_timestamps
+    from hermes_agent.gateway.message_timestamps import strip_leading_message_timestamps
 
     for message in reversed(conversation_history or []):
         if not isinstance(message, dict) or message.get("role") != "user":

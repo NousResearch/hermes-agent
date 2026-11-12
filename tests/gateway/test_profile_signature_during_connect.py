@@ -6,8 +6,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.run import GatewayRunner
 
 
 @pytest.mark.asyncio

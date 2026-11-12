@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import hosted_room_driver as driver, hosted_rooms
-from gateway.session_hosted_service import CanonicalHostedRoomService
+from hermes_agent.gateway import hosted_room_driver as driver, hosted_rooms
+from hermes_agent.gateway.session_hosted_service import CanonicalHostedRoomService
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 from tests.tui_gateway.test_hosted_room_peer_recovery import _peer_service

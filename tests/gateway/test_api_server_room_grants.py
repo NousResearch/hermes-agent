@@ -5,12 +5,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.platforms import api_server
+from hermes_agent.gateway.platforms import api_server
 
 def test_room_grant_secret_stays_gateway_owned_on_named_profile(
     tmp_path, monkeypatch
 ):
-    from gateway.hosted_room_peer import gateway_room_grant_secret
+    from hermes_agent.gateway.hosted_room_peer import gateway_room_grant_secret
 
     adapter = api_server.APIServerAdapter.__new__(api_server.APIServerAdapter)
     adapter._api_key = "gateway-api-key-1234567890"
@@ -22,8 +22,8 @@ def test_room_grant_secret_stays_gateway_owned_on_named_profile(
         api_server._api_request_profile.reset(profile_token)
 
 def test_superseded_room_authority_cannot_reuse_its_grant(tmp_path, monkeypatch):
-    from gateway import hosted_rooms
-    from gateway.hosted_room_peer import (
+    from hermes_agent.gateway import hosted_rooms
+    from hermes_agent.gateway.hosted_room_peer import (
         gateway_room_grant_secret,
         issue_room_grant,
     )

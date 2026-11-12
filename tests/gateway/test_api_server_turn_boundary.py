@@ -10,7 +10,7 @@ this turn's output and the stored history doubled on every chained turn.
 
 from agent.agent_runtime_helpers import repair_message_sequence
 from agent.message_metadata import append_message
-from gateway.platforms.api_server import APIServerAdapter
+from hermes_agent.gateway.platforms.api_server import APIServerAdapter
 
 
 class _Agent:

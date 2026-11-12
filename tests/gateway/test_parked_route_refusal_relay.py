@@ -10,10 +10,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.parked_route_refusal import PARKED_ROUTE_NOTICE, refuse_parked_route
-from gateway.relay.adapter import RelayAdapter
-from gateway.relay.descriptor import CapabilityDescriptor
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.parked_route_refusal import PARKED_ROUTE_NOTICE, refuse_parked_route
+from hermes_agent.gateway.relay.adapter import RelayAdapter
+from hermes_agent.gateway.relay.descriptor import CapabilityDescriptor
 
 
 class _Transport:

@@ -10,9 +10,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import Platform
-from gateway.session import SessionEntry
-from gateway.session_authority import SessionAuthority
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.session import SessionEntry
+from hermes_agent.gateway.session_authority import SessionAuthority
 from hermes_agent.hermes_state import SessionDB
 import hermes_agent.hermes_state_runtime as rt
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
@@ -38,7 +38,7 @@ def _entry(**extra):
 
 
 def test_crash_marker_on_a_reset_tip_is_released_for_its_unknown_admission(tmp_path):
-    from gateway.run_runtime import release_unknown_turn_markers
+    from hermes_agent.gateway.run_runtime import release_unknown_turn_markers
     entry = _entry(active_turn_token='tok')
     cleared = []
     store = SimpleNamespace(list_sessions=lambda: [entry],

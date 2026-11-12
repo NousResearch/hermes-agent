@@ -3,8 +3,8 @@
 import json
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.platforms.webhook import (
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.webhook import (
     WebhookAdapter,
     _DYNAMIC_ROUTES_FILENAME,
 )

@@ -9,10 +9,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource
 from hermes_cli import goals, loops
 
 
@@ -217,7 +217,7 @@ async def test_failed_turn_with_text_never_drives_goal_or_until_judge(loop_env, 
     """A refused turn (its folder is gone) settles failed WITH text. That text is not evidence: the
     goal judge must not run on it (it burned the whole turn budget in seconds) and the /loop tick is
     released with no text, so a --until judge never grades it; the loop still reschedules."""
-    from gateway.session_results import execution_result
+    from hermes_agent.gateway.session_results import execution_result
     from hermes_cli import goals
 
     runner = _make_runner()
@@ -254,7 +254,7 @@ async def test_goal_hook_failure_does_not_block_loop_completion(loop_env, caplog
     assert mgr.fire_tick() is not None
 
     runner._post_turn_goal_continuation = AsyncMock(side_effect=RuntimeError("judge failed"))
-    with caplog.at_level(logging.DEBUG, logger="gateway.run"):
+    with caplog.at_level(logging.DEBUG, logger="hermes_agent.gateway.run"):
         await GatewayRunner._run_post_turn_hooks(
             runner,
             agent_result={"final_response": "still working"},
@@ -368,7 +368,7 @@ async def test_loop_wakeup_watcher_gates_profile_scope_on_active_loops(loop_env,
         on_main_thread.append(threading.current_thread() is threading.main_thread())
         return scopes
 
-    monkeypatch.setattr("gateway.run._handoff_watch_scopes", _scopes)
+    monkeypatch.setattr("hermes_agent.gateway.run._handoff_watch_scopes", _scopes)
 
     entered = []
 
@@ -383,7 +383,7 @@ async def test_loop_wakeup_watcher_gates_profile_scope_on_active_loops(loop_env,
         async def __aexit__(self, *exc):
             return False
 
-    monkeypatch.setattr("gateway.run._async_profile_runtime_scope", _SpyScope)
+    monkeypatch.setattr("hermes_agent.gateway.run._async_profile_runtime_scope", _SpyScope)
 
     runner = _make_runner()
     runner.config.multiplex_profiles = True
@@ -431,7 +431,7 @@ async def test_loop_wakeup_watcher_gates_profile_scope_on_active_loops(loop_env,
         assert entered == [], f"cleared loop row must not open the gate; got {entered}"
 
         # Fail OPEN: a store the probe cannot open is "unknown", never "idle" — the scan runs.
-        monkeypatch.setattr("gateway.run_idle_gates._profile_session_db_probe", lambda _home: None)
+        monkeypatch.setattr("hermes_agent.gateway.run_idle_gates._profile_session_db_probe", lambda _home: None)
         await _run_one_tick()
         assert entered == [work_home], (
             f"unavailable store must fall back to the historical scan; got {entered}")

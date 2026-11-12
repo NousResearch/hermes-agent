@@ -16,8 +16,8 @@ Covers:
 
 import pytest
 
-from gateway.config import Platform, GatewayConfig
-from gateway.session import SessionSource, SessionStore
+from hermes_agent.gateway.config import Platform, GatewayConfig
+from hermes_agent.gateway.session import SessionSource, SessionStore
 
 
 @pytest.fixture()

@@ -236,7 +236,7 @@ def _agent_home(agent: Any) -> Optional[Path]:
     ContextVar, where ambient resolution would leak the launch profile.
 
     1. Surfaces that multiplex several profiles over ONE shared session DB (the messaging gateway:
-    ``gateway/run.py`` hands every agent the launch-home ``state.db`` and binds the profile home per turn
+    ``hermes_agent/gateway/run.py`` hands every agent the launch-home ``state.db`` and binds the profile home per turn
     via ``_profile_runtime_scope`` + ``copy_context``) would otherwise have the db-derived launch home STOMP
     the correctly-bound profile — inverting the leak this helper exists to fix (found by @kshitijk4poor's
     post-merge probe on #86313). 2. Fallback: the home containing the agent's ``_session_db.db_path``
@@ -422,7 +422,7 @@ def _default_platform_hint(platform_key: str, tool_names: Any = ()) -> str:
     hint = PLATFORM_HINTS.get(platform_key, "")
     if not hint and platform_key:
         try:
-            from gateway.platform_registry import platform_registry
+            from hermes_agent.gateway.platform_registry import platform_registry
             _entry = platform_registry.get(platform_key)
             if _entry is None:
                 # A prompt can be built before anything ran plugin discovery (direct builders,
@@ -451,7 +451,7 @@ def _cron_delivery_hint(agent: Any) -> str:
     never reached scheduled jobs at all. The scheduler publishes the primary auto-deliver target
     into the session ContextVar before the agent runs (same seam ``send_message`` routes by).
     """
-    from gateway.session_context import get_session_env
+    from hermes_agent.gateway.session_context import get_session_env
     deliver_key = get_session_env("HERMES_CRON_AUTO_DELIVER_PLATFORM", "").lower().strip()
     if not deliver_key or deliver_key == "cron":
         return ""

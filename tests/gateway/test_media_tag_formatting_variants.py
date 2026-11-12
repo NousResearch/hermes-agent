@@ -17,7 +17,7 @@ import os
 
 import pytest
 
-from gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
 
 @pytest.fixture()

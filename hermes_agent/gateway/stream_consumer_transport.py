@@ -1,6 +1,6 @@
 """Transport layer of GatewayStreamConsumer: native frames, drafts, edit/send.
 
-Mixin methods use only ``self`` state; see gateway/stream_consumer.py for the
+Mixin methods use only ``self`` state; see hermes_agent/gateway/stream_consumer.py for the
 state model and the drain loop that calls into these."""
 
 from __future__ import annotations
@@ -11,11 +11,11 @@ import logging
 import time
 from typing import Any, Optional
 
-from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
-from gateway.stream_consumer_fences import ensure_closed_code_fences
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
+from hermes_agent.gateway.stream_consumer_fences import ensure_closed_code_fences
 from hermes_cli.observability.shared_metrics_gateway import stops_reply_clock
 
-logger = logging.getLogger("gateway.stream_consumer")
+logger = logging.getLogger("hermes_agent.gateway.stream_consumer")
 
 # Longest interim-edit interval flood backoff may reach. Interim edits are skipped (not slept)
 # until the interval elapses, so honouring a 30s Telegram retry_after costs nothing but a
@@ -184,7 +184,7 @@ class StreamTransportMixin:
             # merely "drafts are unusable". Disabling drafts alone routes the
             # turn-final to _first_send — a plain send into the chat the
             # connector just refused. Verified: ops were ['draft', 'send'].
-            from gateway.relay.egress import declined_send
+            from hermes_agent.gateway.relay.egress import declined_send
 
             if declined_send(result):
                 logger.warning(
@@ -583,7 +583,7 @@ class StreamTransportMixin:
         # unseen tail to the fallback, which SENDS it as a new message to the
         # chat the connector just refused. Measured: ops were
         # ['edit', 'edit', 'send'].
-        from gateway.relay.egress import declined_send
+        from hermes_agent.gateway.relay.egress import declined_send
 
         if declined_send(result):
             logger.warning(

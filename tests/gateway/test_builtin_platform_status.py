@@ -1,4 +1,4 @@
-"""gateway.config_env.builtin_platform_status: the gateway's (enabled, connected) for one built-in platform,
+"""hermes_agent.gateway.config_env.builtin_platform_status: the gateway's (enabled, connected) for one built-in platform,
 from a profile's config dict, without load_gateway_config(). Run here without a multiplexer, so the env pass's
 explicit-disable rule is visible (the dashboard's scoped reads run as a multiplex secondary, where the shared-
 listener guard keeps env-only api_server/webhook off anyway)."""
@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from gateway.config_env import builtin_platform_status
+from hermes_agent.gateway.config_env import builtin_platform_status
 
 _KEY = "k" * 32
 
@@ -66,7 +66,7 @@ def test_an_administrator_pinned_key_outranks_the_users_empty_one(monkeypatch, t
     assert builtin_platform_status("api_server", managed_scope.apply_managed_overlay(user)) == (True, True)
 
     # ... which is the gateway's own verdict for that profile.
-    from gateway.config import Platform, load_gateway_config
+    from hermes_agent.gateway.config import Platform, load_gateway_config
 
     home = tmp_path / "home"
     home.mkdir()

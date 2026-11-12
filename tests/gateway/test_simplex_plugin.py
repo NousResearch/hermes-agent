@@ -37,7 +37,7 @@ _CORR_PREFIX = _simplex._CORR_PREFIX
 
 def test_platform_enum_resolves_via_plugin_scan():
     """The plugin filesystem scan should expose Platform("simplex")."""
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     p = Platform("simplex")
     assert p.value == "simplex"
     # Identity stability — repeated lookups return the same pseudo-member
@@ -62,7 +62,7 @@ def test_check_requirements_true_when_configured(monkeypatch):
 
 
 def test_validate_config_uses_env_or_extra():
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
     # Empty extra + no env → invalid
     cfg = PlatformConfig(enabled=True)
     assert validate_config(cfg) is False
@@ -72,7 +72,7 @@ def test_validate_config_uses_env_or_extra():
 
 
 def test_is_connected_mirrors_validate(monkeypatch):
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
     monkeypatch.delenv("SIMPLEX_WS_URL", raising=False)
     cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://x"})
     assert is_connected(cfg) is True
@@ -104,7 +104,7 @@ def test_env_enablement_seeds_home_channel(monkeypatch):
 
 
 def test_corr_id_pending_set_self_trims():
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
     cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
     adapter = SimplexAdapter(cfg)
     adapter._max_pending_corr = 4
@@ -129,7 +129,7 @@ async def test_send_dm():
     survives newlines/quoting through ``json.dumps``, matching what
     ``send_image`` and ``send_document`` already do.
     """
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
     cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
     adapter = SimplexAdapter(cfg)
 
@@ -159,7 +159,7 @@ async def test_send_group():
     silently drop. The structured ``/_send`` form addresses by numeric
     ID and survives newlines/quoting through ``json.dumps``.
     """
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
     cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
     adapter = SimplexAdapter(cfg)
 
@@ -221,7 +221,7 @@ async def test_send_image_reports_thumbnail_preparation_failure(tmp_path, monkey
 
 
 def _adapter_with_ws():
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
     cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
     adapter = SimplexAdapter(cfg)
     adapter._ws = AsyncMock()
@@ -263,7 +263,7 @@ async def test_list_channels_contacts_and_groups():
 @pytest.mark.asyncio
 async def test_list_channels_returns_none_when_disconnected():
     """None (not []) so the directory falls back to session discovery."""
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
     cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
     adapter = SimplexAdapter(cfg)
     assert adapter._ws is None
@@ -360,7 +360,7 @@ async def test_standalone_send_defaults_to_local_daemon(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_health_monitor_does_not_reconnect_quiet_healthy_ws(monkeypatch):
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
     cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
     adapter = SimplexAdapter(cfg)
     adapter._running = True
@@ -462,7 +462,7 @@ def test_multiplex_scoped_miss_does_not_borrow_default_profile_env(
     """A secondary profile with no SimpleX config of its own must not be
     auto-enabled off the default's daemon URL, nor inherit its wide-open
     group allowlist."""
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
 
     multiplex_scope({"SOMETHING_ELSE": "x"})
     assert _env_enablement() is None
@@ -490,12 +490,12 @@ async def test_name_allowlist_warning_once_scoped_even_if_first_connect_fails(mo
     warns -- exactly once per process for this profile/value, read the way authz
     reads it (the profile scope, not the default profile's os.environ), and even
     when the first connect fails. Reconnects build a FRESH adapter each attempt
-    (gateway/run_adapters.py), so the dedup cannot live on the instance."""
+    (hermes_agent/gateway/run_adapters.py), so the dedup cannot live on the instance."""
     import logging
 
     import websockets
     from agent.secret_scope import reset_secret_scope, set_multiplex_active, set_secret_scope
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
 
     monkeypatch.setenv("SIMPLEX_ALLOWED_USERS", "bob")  # default profile's bridge output
     monkeypatch.setattr(_simplex, "_NAME_ALLOWLIST_WARNED", set())

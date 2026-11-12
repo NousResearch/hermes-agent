@@ -6,13 +6,13 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_cold_restore_keeps_the_persisted_yolo_toggle_and_untoggled_follows_launch(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import SessionActor
-    from gateway.session_local import create_local_session
-    from gateway.session_managed_worker import _session_yolo
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_managed_worker import _session_yolo
     from tools.approval import clear_session
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})

@@ -24,7 +24,7 @@ from unittest.mock import patch
 import pytest
 
 import hermes_cli.gateway as gateway_cli
-from gateway.shutdown_watchdog import (
+from hermes_agent.gateway.shutdown_watchdog import (
     get_loop_heartbeat_path,
     get_loop_tick_socket_path,
     loop_heartbeat_forever,
@@ -134,7 +134,7 @@ def _start_freezeable_producer(tmp_path, block_s, errors, write_stall_s=1.5):
         state["loop"] = loop
         state["trigger"] = lambda: loop.call_soon_threadsafe(freeze_evt.set)
         state["stop"] = lambda: loop.call_soon_threadsafe(stop_evt.set)
-        with patch("gateway.shutdown_watchdog.write_loop_heartbeat", stalling_write):
+        with patch("hermes_agent.gateway.shutdown_watchdog.write_loop_heartbeat", stalling_write):
             task = asyncio.create_task(
                 loop_heartbeat_forever(interval_s=1.0, home=tmp_path)
             )
@@ -194,7 +194,7 @@ def _launchd_harness(monkeypatch, tmp_path, pid):
     monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
     monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
     monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 180.0)
-    monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: pid)
+    monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda *a, **k: pid)
     monkeypatch.setattr(
         gateway_cli, "_request_gateway_self_restart", lambda pid: False
     )
@@ -242,7 +242,7 @@ def _launchd_harness(monkeypatch, tmp_path, pid):
     )
     monkeypatch.setattr(gateway_cli, "_clear_launchd_unsupported_marker", lambda: None)
     monkeypatch.setattr(
-        "gateway.shutdown_watchdog._process_hermes_home", lambda: tmp_path
+        "hermes_agent.gateway.shutdown_watchdog._process_hermes_home", lambda: tmp_path
     )
     return events
 
@@ -308,7 +308,7 @@ class TestProbeGatewayLoopLiveness:
 
     def test_probe_never_raises_on_unreadable_path(self, monkeypatch):
         monkeypatch.setattr(
-            "gateway.shutdown_watchdog.get_loop_heartbeat_path",
+            "hermes_agent.gateway.shutdown_watchdog.get_loop_heartbeat_path",
             lambda home=None: (_ for _ in ()).throw(OSError("boom")),
         )
         assert (
@@ -401,7 +401,7 @@ class TestLaunchdRestartWedgedIntegration:
         monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 180.0)
         # Wait budget covers after-turn deferral + drain + headroom (#77184).
         monkeypatch.setattr(gateway_cli, "_get_restart_exit_wait_budget", lambda: 195.0)
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: 4242)
+        monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda *a, **k: 4242)
         monkeypatch.setattr(
             gateway_cli, "_request_gateway_self_restart", lambda pid: False
         )

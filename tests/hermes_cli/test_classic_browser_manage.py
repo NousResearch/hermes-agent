@@ -124,7 +124,7 @@ def _runner_serving(*names, multiplexed=True):
 
 
 def _call(server, profile_id, params):
-    from gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
+    from hermes_agent.gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
     from hermes_agent.tui_gateway.ws_legacy_fallback import dispatch_legacy
     actor = types.SimpleNamespace(profile_id=str(profile_id),
                                   capabilities=frozenset(_PURPOSE_CAPABILITIES["interactive"]))
@@ -136,7 +136,7 @@ def _call(server, profile_id, params):
 
 
 def _registry(launch, *homes):
-    from gateway.session_authorities import SessionAuthorities
+    from hermes_agent.gateway.session_authorities import SessionAuthorities
     registry = SessionAuthorities(launch, multiplexed=True)
     for home in (launch, *homes):
         registry.add(home, types.SimpleNamespace(profile_id=str(home), retiring=False), name=home.name)
@@ -144,7 +144,7 @@ def _registry(launch, *homes):
 
 
 def _resolved(home):
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
     from tools.browser_session_cdp import get_cdp_override_raw
     with _profile_runtime_scope(home, hydrate_secrets=False):
         return get_cdp_override_raw()
@@ -155,7 +155,7 @@ def test_a_browser_one_profile_connects_never_reaches_another_profiles_session(h
     browser tools resolve A's URL, B keeps its own browser.cdp_url, only A's browsers are reaped, and
     disconnect from A leaves B's own live connection standing."""
     import os
-    from gateway import run_api
+    from hermes_agent.gateway import run_api
     from hermes_constants import hermes_home_key
     server, launch, bee, url, reaps = homes
     (bee / "config.yaml").write_text("browser:\n  cdp_url: ws://bee.invalid/devtools/browser/PROFILE-B\n")
@@ -179,7 +179,7 @@ def test_a_browser_one_profile_connects_never_reaches_another_profiles_session(h
 def test_single_profile_standalone_owner_connects_the_gateways_browser(homes, monkeypatch):
     """CLI-9 (d): a standalone owner connects and disconnects as before."""
     import os
-    from gateway import run_api
+    from hermes_agent.gateway import run_api
     server, launch, _bee, url, reaps = homes
     monkeypatch.setattr(run_api, "_ACTIVE_RUNNER", _runner_serving("default", multiplexed=False))
     reply = _call(server, launch, {"action": "connect", "url": url})
@@ -193,7 +193,7 @@ def test_single_profile_standalone_owner_connects_the_gateways_browser(homes, mo
 def test_connect_then_hot_serve_never_hands_one_profiles_browser_to_the_next(homes, monkeypatch):
     """CLI-9 (b), review #141357 P1: A connects while it is the only profile served; B, hot-served
     afterwards, still resolves its own browser.cdp_url, and A can still disconnect."""
-    from gateway import run_api
+    from hermes_agent.gateway import run_api
     server, launch, bee, url, _reaps = homes
     (bee / "config.yaml").write_text("browser:\n  cdp_url: ws://bee.invalid/devtools/browser/PROFILE-B\n")
     registry = _registry(launch)

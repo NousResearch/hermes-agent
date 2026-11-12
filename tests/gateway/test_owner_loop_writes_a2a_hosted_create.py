@@ -49,11 +49,11 @@ async def _max_gap_while(create, release):
 
 @pytest.mark.asyncio
 async def test_a2a_forward_creation_commits_off_the_owner_loop(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {'default': 'fixture'}, 'platform_toolsets': {'cli': []}})
@@ -79,7 +79,7 @@ async def test_a2a_forward_creation_commits_off_the_owner_loop(tmp_path, monkeyp
 
 
 def test_hosted_member_creation_commits_off_the_owner_loop(hosted_owner):
-    from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+    from hermes_agent.gateway.session_hosted_rpc import HostedRoomAuthorityRPC
 
     authority, loop, principal, _ = hosted_owner
 

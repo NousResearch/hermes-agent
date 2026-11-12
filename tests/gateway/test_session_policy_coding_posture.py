@@ -9,7 +9,7 @@ FOCUS = {'agent': {'coding_context': 'focus'}, 'platform_toolsets': {'cli': ['te
 
 def create(params, config, **kwargs):
     """The ``session.create`` build (``stage_local_session``), the one caller that opts in."""
-    from gateway.session_policy import build_policy
+    from hermes_agent.gateway.session_policy import build_policy
     return build_policy(params, config, workspace_posture=True, **kwargs)
 
 
@@ -88,7 +88,7 @@ def test_tool_sources_and_picks_keep_their_toolsets_in_a_workspace(project, para
 
 def test_only_session_create_opts_into_the_workspace_posture(project):
     # Kanban workers, legacy-row adoption, cron and hosted rooms build without opting in.
-    from gateway.session_policy import build_policy
+    from hermes_agent.gateway.session_policy import build_policy
     assert build_policy({'source': 'cli', 'cwd': str(project)}, FOCUS).toolsets == ('terminal',)
 
 
@@ -96,12 +96,12 @@ def test_only_session_create_opts_into_the_workspace_posture(project):
 async def test_session_create_selects_the_posture_for_its_named_folder(project, tmp_path, monkeypatch):
     """The real ``session.create`` path (``create_local_session``), not a direct ``build_policy`` call."""
     from types import SimpleNamespace
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import SessionActor
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_local import create_local_session
     from hermes_agent.hermes_state_local import local_receipt
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {**FOCUS, 'model': {'default': 'm'}})

@@ -13,8 +13,8 @@ async def test_output_indices_survive_completion_order_and_eviction(api, owner):
     entered, release = asyncio.Event(), asyncio.Event()
     calls = []
     async def handle(event):
-        from gateway.session_api_turn import publish_api_tool_event
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_api_turn import publish_api_tool_event
+        from hermes_agent.gateway.session_results import execution_result
         calls.append(event.text)
         entered.set()
         await release.wait()
@@ -71,8 +71,8 @@ async def test_output_indices_survive_completion_order_and_eviction(api, owner):
 async def test_late_stream_observer_receives_defined_output_indices(api, owner):
     entered, release = asyncio.Event(), asyncio.Event()
     async def handle(event):
-        from gateway.session_api_turn import publish_api_tool_event
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_api_turn import publish_api_tool_event
+        from hermes_agent.gateway.session_results import execution_result
         sid = event.source.chat_id
         generation = owner.sessions[sid].event_stream.execution['execution_generation']
         publish_api_tool_event(owner, sid, generation, 'tool.start', 'call_1', 'read_file', {'path': 'a'})

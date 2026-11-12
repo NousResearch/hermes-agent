@@ -25,8 +25,8 @@ async def test_a_reminder_the_app_set_on_the_old_conversation_fires_after_a_resu
     """N1: the reminder names A (``local:<A>``). Back on the chat (its ``/resume``) A's fire is A's own
     turn there; with A not mounted (any restart) it mounts off the chat and is written into A. It is
     never refused for a local receipt A never had, so a recurring reminder keeps firing."""
-    from gateway.session_cron import deliver_to_local_chat
-    from gateway.session_mutations import retire_live_sessions
+    from hermes_agent.gateway.session_cron import deliver_to_local_chat
+    from hermes_agent.gateway.session_mutations import retire_live_sessions
     _runner, adapter, authority, source, sent, ran, _gates, lane, ref_a = await _moved_on(monkeypatch)
     a, home = ref_a.session_id, Path(authority.db.db_path).parent
 
@@ -47,7 +47,7 @@ async def test_a_reminder_the_app_set_on_the_old_conversation_fires_after_a_resu
 async def test_a_note_into_the_old_conversation_leaves_the_row_the_chats_new_ended_closed(monkeypatch):
     """N2a: a reminder written into A as a note (no viewer, no turn) keeps the ``/new``'s end stamp, as
     a note into a closed local session does; only a turn reopens the row."""
-    from gateway.session_cron import deliver_to_local_chat
+    from hermes_agent.gateway.session_cron import deliver_to_local_chat
     _runner, _adapter, authority, _source, _sent, ran, _gates, _lane, ref_a = await _moved_on(monkeypatch)
     a = ref_a.session_id
     ran_before = len(ran)
@@ -120,12 +120,12 @@ async def test_a_secondary_profiles_old_conversation_gets_its_result_after_the_s
     the event resolves A's live source and binds ``fitness``'s scope, unscoped as the drain starts,
     and the result is written into A in ``fitness``'s store."""
     from hermes_agent import hermes_state
-    from gateway.config import GatewayConfig, Platform
-    from gateway.run import GatewayRunner
-    from gateway.session import SessionSource
-    from gateway.session_authorities import SessionAuthorities
-    from gateway.session_authority import LiveSession, initialize_session_authority
-    from gateway.session_detached import detach
+    from hermes_agent.gateway.config import GatewayConfig, Platform
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import SessionSource
+    from hermes_agent.gateway.session_authorities import SessionAuthorities
+    from hermes_agent.gateway.session_authority import LiveSession, initialize_session_authority
+    from hermes_agent.gateway.session_detached import detach
     from hermes_constants import get_hermes_home
     from hermes_agent.hermes_state import SessionDB
     root = tmp_path / 'hermes'

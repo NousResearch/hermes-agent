@@ -9,7 +9,7 @@ logger = logging.getLogger("hermes_cli.gateway")
 def _discard_dead_host_record() -> bool:
     """Drop the host rendezvous record once its owner is provably gone (after a confirmed stop)."""
     try:
-        from gateway.host_rendezvous import ROLE_GATEWAY, discard_dead_record
+        from hermes_agent.gateway.host_rendezvous import ROLE_GATEWAY, discard_dead_record
 
         return discard_dead_record(ROLE_GATEWAY)
     except Exception:
@@ -25,7 +25,7 @@ def _forget_host_gateway_probe() -> None:
     and exited 0 with no gateway running.
     """
     try:
-        from gateway.host_attach import invalidate_host_gateway_cache
+        from hermes_agent.gateway.host_attach import invalidate_host_gateway_cache
 
         invalidate_host_gateway_cache()
     except Exception:

@@ -31,7 +31,7 @@ from typing import Any, Dict
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.photon.adapter import PhotonAdapter
 
 _MODULE = Path("plugins/platforms/photon/sidecar/stream-staleness.mjs").resolve()

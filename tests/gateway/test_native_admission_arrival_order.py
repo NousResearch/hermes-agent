@@ -9,10 +9,10 @@ import threading
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
-from gateway.session_authority import SessionAuthority, initialize_session_authority
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session_authority import SessionAuthority, initialize_session_authority
 from hermes_agent.hermes_state_runtime import list_session_admissions
 from tests.gateway.test_shared_busy_receive_loop import Adapter
 from tests.waiting import async_wait_until
@@ -28,8 +28,8 @@ def _order(authority):
 
 def _hold_capture(monkeypatch):
     """The real capture, held on an Event: a large video on a slow disk."""
-    import gateway.session_envelope as envelope
-    import gateway.session_ingress_media as media
+    import hermes_agent.gateway.session_envelope as envelope
+    import hermes_agent.gateway.session_ingress_media as media
     entered, release = threading.Event(), threading.Event()
     real_capture = media.capture_native_media
 
@@ -50,7 +50,7 @@ def _video(source, mid, clip):
 @pytest.mark.parametrize('busy', [False, True], ids=['idle', 'busy'])
 async def test_media_then_quick_text_keep_arrival_order(tmp_path, monkeypatch, busy):
     """The adapter path: an idle video then a busy text, or both while a turn runs."""
-    import gateway.session_finite as finite
+    import hermes_agent.gateway.session_finite as finite
     monkeypatch.setenv('TELEGRAM_ALLOWED_USERS', 'fixture-user')
     gate = asyncio.Event()
 
@@ -108,7 +108,7 @@ async def _held_owner(tmp_path, monkeypatch):
 
     def admit(chat, mid, media=False, ingress=False):
         """``ingress``: through the messaging ingress (``admit_message``), else ``admit_native``."""
-        from gateway.session_ingress import admit_message
+        from hermes_agent.gateway.session_ingress import admit_message
         source = adapter.build_source(chat_id=chat, user_id=chat, chat_type='dm')
         event = _video(source, mid, clip) if media else MessageEvent(text='text ' + mid, source=source,
                                                                        message_id=mid)

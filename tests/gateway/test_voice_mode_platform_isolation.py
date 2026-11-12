@@ -14,8 +14,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
-from gateway.config import Platform
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.run import GatewayRunner
 
 
 class TestVoiceKeyHelper:
@@ -57,7 +57,7 @@ class TestLegacyKeyMigration:
             voice_path.write_text(json.dumps(legacy_data))
 
             with patch.object(runner, "_VOICE_MODE_PATH", voice_path):
-                with patch("gateway.run_voice.logger") as mock_logger:
+                with patch("hermes_agent.gateway.run_voice.logger") as mock_logger:
                     result = runner._load_voice_modes()
 
             # Legacy keys without ':' should be skipped
@@ -123,8 +123,8 @@ class TestVoiceModeProfileIsolation:
     async def test_voice_state_and_transcripts_stay_with_the_owning_bot(self, tmp_path):
         from types import SimpleNamespace
 
-        from gateway.platforms.base import SessionSource
-        from gateway.platforms.event import MessageEvent, MessageType
+        from hermes_agent.gateway.platforms.base import SessionSource
+        from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 
         runner = _make_runner()
         runner._VOICE_MODE_PATH = tmp_path / "voice.json"
@@ -184,7 +184,7 @@ class TestVoiceModeProfileIsolation:
 
 def _make_runner() -> GatewayRunner:
     """Create a minimal GatewayRunner for testing."""
-    with patch("gateway.run.GatewayRunner._load_voice_modes", return_value={}):
+    with patch("hermes_agent.gateway.run.GatewayRunner._load_voice_modes", return_value={}):
         runner = GatewayRunner.__new__(GatewayRunner)
         runner._voice_mode = {}
         runner.adapters = {}

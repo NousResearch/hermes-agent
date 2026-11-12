@@ -1,6 +1,6 @@
 """Canonical ``hermes-gateway-v1`` methods that only the session authority serves.
 
-``gateway/session_controls.py::AuthorityConnection.dispatch`` answers these on the authenticated
+``hermes_agent/gateway/session_controls.py::AuthorityConnection.dispatch`` answers these on the authenticated
 native socket; the TUI sidecar (``server._methods``) never registers them, so they live in
 ``CANONICAL_METHODS`` rather than ``METHODS``. Shared names with different authority semantics are overridden in
 ``canonical_sessions`` / ``canonical_projections``; unchanged names reuse ``METHODS``. The dispatcher refuses an unknown or missing key with ``4001 invalid_params`` before the
@@ -31,7 +31,7 @@ class CanonicalSessionRef(Result):
 
 
 class AdmissionStatus(Result):
-    """``gateway/session_contract.py::AdmissionReceipt`` as ``dataclasses.asdict`` sends it."""
+    """``hermes_agent/gateway/session_contract.py::AdmissionReceipt`` as ``dataclasses.asdict`` sends it."""
 
     admission_id: str
     ref: CanonicalSessionRef
@@ -153,7 +153,7 @@ class CanonicalSessionInfoParams(Params):
 
 
 class SessionInventoryFields(Result):
-    """Main's banner / status-bar inventory (``gateway/session_local_inventory.py::session_inventory``):
+    """Main's banner / status-bar inventory (``hermes_agent/gateway/session_local_inventory.py::session_inventory``):
     the shapes ``hermes_agent/tui_gateway/server.py::_session_info`` sent, computed for the session's frozen policy.
     ``enabled_toolsets`` / ``tool_availability`` / ``context_length`` feed the classic CLI banner."""
 
@@ -174,7 +174,7 @@ class SessionInventoryFields(Result):
     # Classic CLI surface (``source: cli``) only: main's startup lines under the banner (Rich markup).
     tool_availability_warnings: list[str] | None = None
     unknown_toolsets: list[str] | None = None  # main's "Unknown toolsets" warning, judged by the gateway
-    # The resident agent's status-bar usage (``gateway/session_usage.py::snapshot_usage``); absent agentless.
+    # The resident agent's status-bar usage (``hermes_agent/gateway/session_usage.py::snapshot_usage``); absent agentless.
     usage: Usage | None = None
 
 
@@ -186,7 +186,7 @@ class CanonicalClientLabel(Result):
 
 
 class CanonicalSessionInfo(SessionInventoryFields, OpenModel):
-    """``gateway/session_local_inventory.py::snapshot_info``: ``local_session_info`` + the inventory."""
+    """``hermes_agent/gateway/session_local_inventory.py::snapshot_info``: ``local_session_info`` + the inventory."""
 
     source: str
     model: str | None = None
@@ -227,7 +227,7 @@ class SessionStatsParams(Params):
 
 
 class SessionStats(Result):
-    """``gateway/session_usage.py::usage_stats``: session-cumulative counters (the agent's ``session_*``),
+    """``hermes_agent/gateway/session_usage.py::usage_stats``: session-cumulative counters (the agent's ``session_*``),
     context / compressor figures, rolling latency and throughput, rate-limit state, live subagents."""
 
     input_tokens: int
@@ -266,7 +266,7 @@ class RollbackSessionDiffParams(Params):
 
 
 class RollbackSessionDiffResult(Result):
-    """``gateway/session_tui_ops.py::_session_diff``: ``CheckpointManager.session_diff`` under the
+    """``hermes_agent/gateway/session_tui_ops.py::_session_diff``: ``CheckpointManager.session_diff`` under the
     session's frozen checkpoint policy (``enabled: false`` when that policy does not checkpoint).
     ``diff`` is bounded to fit one frame; ``diff_lines`` counts the whole body."""
 
@@ -294,7 +294,7 @@ class SessionExportParams(Params):
 
 
 class SessionExportResult(Result):
-    """``gateway/session_tui_ops.py::export_session``: the rendered ``/save`` body and its default
+    """``hermes_agent/gateway/session_tui_ops.py::export_session``: the rendered ``/save`` body and its default
     file name. The client writes it (the gateway may be remote); nothing is written on the host."""
 
     format: str
@@ -315,7 +315,7 @@ class SessionAutomationParams(Params):
 
 
 class SessionAutomationResult(Result):
-    """``gateway/session_viewer_automation.py``: the manager's persisted state after the call (its own
+    """``hermes_agent/gateway/session_viewer_automation.py``: the manager's persisted state after the call (its own
     JSON, ``null`` when none) and the call's value, or the refusal main's manager raised."""
 
     state: str | None
@@ -399,7 +399,7 @@ class PromptResponseResult(Result):
 canonical_method("clarify.respond", params=ClarifyRespondParams, result=PromptResponseResult,
                  doc="Generation-fenced answer to a pending clarify prompt (empty answer = skipped).")
 
-# The owner serves the sidecar's ``clarify.lock`` wire unchanged (``gateway/session_clarify_lock.py``):
+# The owner serves the sidecar's ``clarify.lock`` wire unchanged (``hermes_agent/gateway/session_clarify_lock.py``):
 # declaring it here lets the dispatcher refuse a mistyped or unknown key before the handler runs.
 canonical_method("clarify.lock", params=ClarifyLockParams, result=ClarifyLockResult,
                  doc="Lock one answer of the owner's batch clarify request (editable until every question is "
@@ -494,7 +494,7 @@ canonical_method("a2a.forward", params=A2aForwardParams, result=A2aForwardResult
 
 
 class WorkerScopeParams(Params):
-    """The producer claim every worker verb proves (``gateway/session_worker.py::_SCOPE``)."""
+    """The producer claim every worker verb proves (``hermes_agent/gateway/session_worker.py::_SCOPE``)."""
 
     profile_id: str
     session_id: str
@@ -609,7 +609,7 @@ method("groups.discard", params=GroupsDiscardParams, result=GroupsDiscardResult,
 
 # Cross-gateway members: the shared names, with the keys the gateway accepts. Grant ids are the
 # target's to choose, and the room's home derives a route's trace and cancellation identity itself
-# (``gateway/session_group_peers.py``).
+# (``hermes_agent/gateway/session_group_peers.py``).
 
 
 class CanonicalGroupsPeerInviteParams(RoomParams):

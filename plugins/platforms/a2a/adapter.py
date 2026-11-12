@@ -23,10 +23,10 @@ from concurrent.futures import TimeoutError as FuturesTimeout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional
 
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
-from gateway.config import Platform
-from gateway.platforms._shared import coerce_port as _to_int, get_scoped_secret as _get_scoped_secret
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms._shared import coerce_port as _to_int, get_scoped_secret as _get_scoped_secret
 
 from . import protocol, security
 
@@ -625,7 +625,7 @@ class A2AAdapter(BasePlatformAdapter):
     def _forward_to_profile(self, agent: dict, peer: str, context_id: str, framed_text: str,
                             *, input_id: Optional[str] = None) -> tuple[str, str]:
         """Forward to the destination owner; never open its canonical database here."""
-        from gateway.session_a2a import forward_to_owner
+        from hermes_agent.gateway.session_a2a import forward_to_owner
         profile = str(agent.get("profile") or agent.get("slug") or "").strip()
         home = _profile_home(profile)
         if not home:

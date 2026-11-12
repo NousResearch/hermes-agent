@@ -24,12 +24,12 @@ sys.modules.setdefault("telegram", _tg)
 sys.modules.setdefault("telegram.constants", _tg.constants)
 sys.modules.setdefault("telegram.ext", types.ModuleType("telegram.ext"))
 
-from gateway.platforms.base import (
+from hermes_agent.gateway.platforms.base import (
     Platform,
     SessionSource,
     build_session_key,
 )
-from gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +55,7 @@ def _make_event(text="hello", chat_id="123", platform_val="telegram"):
 
 def _make_runner():
     """Build a minimal GatewayRunner-like object for testing."""
-    from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
+    from hermes_agent.gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
 
     runner = object.__new__(GatewayRunner)
     runner._running_agents = {}
@@ -98,7 +98,7 @@ class TestBusySessionAck:
     @pytest.mark.asyncio
     async def test_busy_ack_is_not_sent_to_a_bot_peer(self):
         """Regression for #137027: runtime acknowledgements must not restart bot loops."""
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         runner, _sentinel = _make_runner()
         event = _make_event()
@@ -113,7 +113,7 @@ class TestBusySessionAck:
     @pytest.mark.asyncio
     async def test_telegram_grace_followups_respect_queue_fifo(self, monkeypatch):
         """Rapid Telegram text follow-ups in queue mode must not merge."""
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         monkeypatch.setenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "3.0")
 
@@ -202,7 +202,7 @@ class TestBusySessionAck:
     @pytest.mark.asyncio
     async def test_steer_mode_calls_agent_steer_no_interrupt_no_queue(self, monkeypatch):
         """busy_input_mode='steer' injects via agent.steer() and skips queueing."""
-        import gateway.run as _gr
+        import hermes_agent.gateway.run as _gr
 
         monkeypatch.delenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", raising=False)
         monkeypatch.setattr(_gr, "_load_gateway_config", dict)
@@ -218,7 +218,7 @@ class TestBusySessionAck:
         agent.steer = MagicMock(return_value=True)
         runner._running_agents[sk] = agent
 
-        with patch("gateway.platforms.base.merge_pending_message_event") as mock_merge:
+        with patch("hermes_agent.gateway.platforms.base.merge_pending_message_event") as mock_merge:
             await runner._handle_active_session_busy_message(event, sk)
 
         # VERIFY: Agent was steered, NOT interrupted
@@ -241,7 +241,7 @@ class TestBusySessionAck:
     @pytest.mark.asyncio
     async def test_steer_mode_transcribes_voice_before_injection(self, monkeypatch):
         """A busy voice follow-up is transcribed and steered, never queued."""
-        import gateway.run as _gr
+        import hermes_agent.gateway.run as _gr
 
         monkeypatch.delenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", raising=False)
         monkeypatch.setattr(_gr, "_load_gateway_config", dict)
@@ -389,7 +389,7 @@ class TestBusySessionAck:
         literal sentinel as an iteration ceiling."""
         import sys
 
-        import gateway.run as _gr
+        import hermes_agent.gateway.run as _gr
 
         monkeypatch.setattr(
             _gr,
@@ -430,7 +430,7 @@ class TestBusySessionOnboardingHint:
     @pytest.mark.asyncio
     async def test_first_busy_ack_appends_interrupt_hint(self, tmp_path, monkeypatch):
         """First busy-while-running message gets an extra hint about /busy."""
-        import gateway.run as _gr
+        import hermes_agent.gateway.run as _gr
 
         monkeypatch.setattr(_gr, "_hermes_home", tmp_path)
         # mark_seen imports utils.atomic_yaml_write; make sure it resolves
@@ -471,7 +471,7 @@ class TestLongRunningNotificationOwnership:
     """
 
     def test_notification_stops_after_session_ownership_moves(self):
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         runner = object.__new__(GatewayRunner)
         runner._running_agents = {}
@@ -490,8 +490,8 @@ class TestLongRunningNotificationOwnership:
         in flight must not be followed by a fresh "Working" send when that edit fails (#10990)."""
         import asyncio
         from types import SimpleNamespace
-        from gateway.run import GatewayRunner
-        from gateway.turn_context import TurnContext
+        from hermes_agent.gateway.run import GatewayRunner
+        from hermes_agent.gateway.turn_context import TurnContext
 
         monkeypatch.setenv("HERMES_AGENT_NOTIFY_INTERVAL", "0.01")
         runner = object.__new__(GatewayRunner)
@@ -524,7 +524,7 @@ class TestLongRunningNotificationOwnership:
     @pytest.mark.parametrize("flag", ["_draining", "_restart_requested"])
     def test_notification_stops_once_shutdown_or_restart_begins(self, flag):
         """After the restart/shutdown notice a heartbeat would contradict it (#10990)."""
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         runner = object.__new__(GatewayRunner)
         runner._running_agents = {}

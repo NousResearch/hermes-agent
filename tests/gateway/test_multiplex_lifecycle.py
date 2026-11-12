@@ -1,15 +1,15 @@
 """Phase 4: lifecycle guard + per-profile observability."""
 import pytest
 
-from gateway.config import GatewayConfig
-from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+from hermes_agent.gateway.config import GatewayConfig
+from hermes_agent.gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
 
 
 class TestServedProfilesStatus:
     def test_write_and_read_served_profiles(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         import importlib
-        from gateway import status
+        from hermes_agent.gateway import status
         importlib.reload(status)
         try:
             status.write_runtime_status(
@@ -33,7 +33,7 @@ def test_cron_profile_homes_serve_every_live_profile(tmp_path, monkeypatch):
     from hermes_constants import mark_named_profile_deleted
     mark_named_profile_deleted(default_home / "profiles" / "gone")
 
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     homes = gateway_run._multiplex_profile_homes(GatewayConfig(multiplex_profiles=True))
 
@@ -50,7 +50,7 @@ def test_cron_tick_homes_include_active_named_host(tmp_path, monkeypatch):
         (default_home / "profiles" / name / "config.yaml").write_text("{}\n")  # identity marker
     monkeypatch.setenv("HERMES_HOME", str(default_home / "profiles" / "host"))
 
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     cfg = GatewayConfig(multiplex_profiles=True)
     adapter_names = [name for name, _home in gateway_run._multiplex_profile_homes(cfg)]
@@ -80,7 +80,7 @@ class TestNamedProfileMultiplexerGuard:
     def _fake_running_default_gateway(self, monkeypatch, tmp_path):
         """Make the guard believe a live default gateway exists at tmp_path."""
         from hermes_cli import gateway as gw
-        from gateway import status
+        from hermes_agent.gateway import status
 
         monkeypatch.setattr(gw, "_profile_suffix", lambda: "coder")
         monkeypatch.setattr(

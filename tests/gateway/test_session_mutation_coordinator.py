@@ -2,8 +2,8 @@
 from types import SimpleNamespace
 import asyncio
 import pytest
-from gateway.session_authority import LiveSession, SessionAuthority
-from gateway.session_controls import AuthorityConnection
+from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+from hermes_agent.gateway.session_controls import AuthorityConnection
 from hermes_agent.hermes_state import SessionDB
 import hermes_agent.hermes_state_runtime as rt
 

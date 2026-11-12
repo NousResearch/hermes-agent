@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway.status import recorded_gateway_home_conflicts
+from hermes_agent.gateway.status import recorded_gateway_home_conflicts
 
 
 def _spawn_gateway_lookalike(bin_dir: Path, lock_path: Path) -> subprocess.Popen:
@@ -55,7 +55,7 @@ def _spawn_gateway_lookalike(bin_dir: Path, lock_path: Path) -> subprocess.Popen
 
 
 def _pid_record(proc: subprocess.Popen, script: Path, owner_home: Path) -> dict:
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway.status import get_process_start_time
 
     return {
         "pid": proc.pid,

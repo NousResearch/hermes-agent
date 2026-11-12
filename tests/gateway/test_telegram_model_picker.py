@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
@@ -200,9 +200,9 @@ async def test_model_buttons_still_over_budget_keep_head_and_tail_with_plan_word
 
 def _gateway_wired_adapter():
     """Real adapter with the real gateway auth callback, as ``GatewayRunner`` wires it."""
-    from gateway.config import GatewayConfig, Platform
-    from gateway.pairing import PairingStore
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.config import GatewayConfig, Platform
+    from hermes_agent.gateway.pairing import PairingStore
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig()

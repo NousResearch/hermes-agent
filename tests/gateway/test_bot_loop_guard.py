@@ -9,8 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.bot_loop_guard import BotLoopGuard, BotLoopGuardSettings, load_settings, settings_from_config
-from gateway.session import Platform, SessionSource
+from hermes_agent.gateway.bot_loop_guard import BotLoopGuard, BotLoopGuardSettings, load_settings, settings_from_config
+from hermes_agent.gateway.session import Platform, SessionSource
 
 GROUP_CHAT = "-1001234567890"
 OTHER_GROUP = "-1009876543210"
@@ -41,7 +41,7 @@ def settings():
 
 @pytest.fixture
 def runner(clock, settings):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.pairing_store = SimpleNamespace(is_approved=lambda *_a, **_kw: False)
@@ -92,8 +92,8 @@ def test_one_inbound_is_counted_once_however_often_the_verdict_is_asked(monkeypa
 
 @pytest.mark.asyncio
 async def test_ingress_gate_counts_an_authorized_bot_once_and_drops_it_when_refused():
-    from gateway.platforms.base import MessageEvent
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.platforms.base import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner._scale_to_zero_note_real_inbound = lambda: None
@@ -117,7 +117,7 @@ async def test_busy_path_counts_a_bot_message_once_before_steering(monkeypatch, 
     not charged again when a queued copy drains through ``_hm_admit_event``."""
     from unittest.mock import AsyncMock
 
-    from gateway.platforms.base import MessageEvent
+    from hermes_agent.gateway.platforms.base import MessageEvent
 
     _incident_config(monkeypatch)
     monkeypatch.setenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", "false")
@@ -150,8 +150,8 @@ async def test_busy_path_counts_a_bot_message_once_before_steering(monkeypatch, 
 async def test_routed_bot_traffic_is_metered_by_the_transport_profiles_policy(tmp_path, monkeypatch, runner, clock):
     """The verdict runs under the transport profile; the count must read the same ``bot_loop_guard`` block, not
     the routed profile's, or the two disagree about the budget."""
-    from gateway.platforms.base import MessageEvent
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.platforms.base import MessageEvent
+    from hermes_agent.gateway.run import _profile_runtime_scope
 
     transport, routed = tmp_path / "transport", tmp_path / "routed"
     for home, block in ((transport, "enabled: false"), (routed, "enabled: true\n    max_events: 1")):

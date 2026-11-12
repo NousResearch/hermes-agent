@@ -2,7 +2,7 @@
 
 import pytest
 
-from gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
 
 @pytest.mark.parametrize("sentinel", ["<|eos|>", "<|eos|><|eos|>"])
@@ -14,7 +14,7 @@ def test_terminal_eos_sentinel_leaves_extraction_and_cleanup_unchanged(tmp_path,
     root.mkdir()
     media_file = root / filename
     media_file.write_bytes(b"media")
-    monkeypatch.setattr("gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS", (root,))
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS", (root,))
     clean = f"Here is the file.\nMEDIA:{media_file}"
 
     assert BasePlatformAdapter.extract_media(clean + sentinel) == BasePlatformAdapter.extract_media(clean)

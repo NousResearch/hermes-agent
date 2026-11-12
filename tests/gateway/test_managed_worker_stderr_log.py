@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_contract import SessionRef
+from hermes_agent.gateway.session_contract import SessionRef
 
 SECRET = 'sk-proj-' + 'Q' * 40
 CRASH = f"""import sys
@@ -22,7 +22,7 @@ raise SystemExit(1)
 
 @pytest.mark.platforms("linux")
 def test_worker_stderr_reaches_a_private_redacted_profile_log(tmp_path, monkeypatch):
-    from gateway import session_managed_worker as managed
+    from hermes_agent.gateway import session_managed_worker as managed
     original = subprocess.Popen
 
     def crashing_child(args, **kwargs):
@@ -42,7 +42,7 @@ def test_worker_stderr_reaches_a_private_redacted_profile_log(tmp_path, monkeypa
 
 
 def test_worker_log_is_bounded_and_scrubs_the_workers_exact_secrets(tmp_path):
-    from gateway.session_managed_worker_log import LOG_NAME, MAX_LOG_BYTES, drain_worker_stderr
+    from hermes_agent.gateway.session_managed_worker_log import LOG_NAME, MAX_LOG_BYTES, drain_worker_stderr
     path = tmp_path / 'logs' / LOG_NAME
     assignment = 'opaque-assignment-secret-value'
     noise = (f'line {assignment} ' + 'x' * 200 + '\n') * 12_000 + 'y' * 300_000 + '\nlast\n'

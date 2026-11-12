@@ -82,7 +82,7 @@ def test_missing_requirements_keeps_tool_inventory(policy, monkeypatch, capsys):
 
 @pytest.mark.parametrize("shape", ["message_count", "token_count", "payload_bytes"])
 def test_retry_buffer_classification_survives_terminal_flush(policy, shape, monkeypatch):
-    from gateway.warning_notifications import DiagnosticText
+    from hermes_agent.gateway.warning_notifications import DiagnosticText
     agent = Agent()
     messages = [{"role": "user", "content": "a" * 4000}, {"role": "assistant", "content": "b" * 4000}]
     agent.compressed = messages[:1] if shape == "message_count" else [

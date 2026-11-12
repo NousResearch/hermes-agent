@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway.session_context import _UNSET, _VAR_MAP
+from hermes_agent.gateway.session_context import _UNSET, _VAR_MAP
 from tools import tts_tool
 
 

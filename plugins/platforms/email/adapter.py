@@ -24,16 +24,16 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
-from gateway.platforms.base import (
+from hermes_agent.gateway.platforms.base import (
     BasePlatformAdapter, SendResult,
     cache_document_from_bytes, cache_image_from_bytes,
 )
-from gateway.platforms.helpers import cancel_task
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.helpers import cancel_task
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.config import Platform, PlatformConfig
 from utils import is_truthy_value
-from gateway.platforms._shared import get_scoped_secret as _get_secret, coerce_port, decode_json_list_literal, send_error
-from gateway.platforms.send_targets import StandaloneSendPolicy, regex_stripped_parser
+from hermes_agent.gateway.platforms._shared import get_scoped_secret as _get_secret, coerce_port, decode_json_list_literal, send_error
+from hermes_agent.gateway.platforms.send_targets import StandaloneSendPolicy, regex_stripped_parser
 
 logger = logging.getLogger(__name__)
 
@@ -660,8 +660,8 @@ class EmailAdapter(BasePlatformAdapter):
             await self._dispatch_message(msg_data)
         if self._last_fetch_failed:
             # The IMAP check itself failed (not an empty inbox): route through the fatal-error hook so the gateway's
-            # reconnect/backoff re-establishes the mailbox. The handler runs detached (gateway/run.py), so awaiting it is safe.
-            # The handler runs in a detached task (gateway/run.py), so awaiting it from our own poll task is
+            # reconnect/backoff re-establishes the mailbox. The handler runs detached (hermes_agent/gateway/run.py), so awaiting it is safe.
+            # The handler runs in a detached task (hermes_agent/gateway/run.py), so awaiting it from our own poll task is
             # safe even though teardown cancels this task. See #80016.
             self._last_fetch_failed = False
             self._set_fatal_error("email_imap_fetch_failed", self._last_fetch_error or "IMAP fetch failed", retryable=True)
@@ -1012,7 +1012,7 @@ _SEND_TARGET_RE = re.compile(r"^\s*[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
-    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
+    from . import gateway_env  # env -> GatewayConfig bridge (hermes_agent.gateway.config_env)
     ctx.register_platform(
         target_ref_syntax_fn=regex_stripped_parser(_SEND_TARGET_RE),
         standalone_send=StandaloneSendPolicy(text_direct=True),

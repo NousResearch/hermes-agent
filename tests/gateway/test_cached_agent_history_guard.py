@@ -1,6 +1,6 @@
 """Regression tests for cached gateway transcript selection."""
 
-from gateway.run import _build_gateway_agent_history, _select_cached_agent_history
+from hermes_agent.gateway.run import _build_gateway_agent_history, _select_cached_agent_history
 
 
 def test_select_cached_history_keeps_expected_replay_cleanup():
@@ -74,7 +74,7 @@ def test_persistent_transcript_lag_escalates_to_error(caplog):
     import logging
     from types import SimpleNamespace
 
-    from gateway.run_turn_runner import _TRANSCRIPT_LAG_ESCALATION_TURNS, TurnRunner
+    from hermes_agent.gateway.run_turn_runner import _TRANSCRIPT_LAG_ESCALATION_TURNS, TurnRunner
 
     persisted = [{"role": "user", "content": "hello"}]
     live = [{"role": "user", "content": "hello", "_db_persisted": True},
@@ -85,7 +85,7 @@ def test_persistent_transcript_lag_escalates_to_error(caplog):
     turn = TurnRunner(runner, ctx)
     agent = SimpleNamespace(session_id="sid-1", _session_messages=live)
 
-    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.run"):
         for _ in range(_TRANSCRIPT_LAG_ESCALATION_TURNS):
             history, _observed, _media = turn._load_turn_history(agent, reused_cached_agent=True)
     assert len(history) == len(live)  # live context still preserved

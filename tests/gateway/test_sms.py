@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.config import Platform, PlatformConfig
 
 
 # ── Config loading ──────────────────────────────────────────────────
@@ -22,7 +22,7 @@ class TestSmsConfigLoading:
 
 
     def test_env_overrides_set_home_channel(self):
-        from gateway.config import load_gateway_config
+        from hermes_agent.gateway.config import load_gateway_config
 
         env = {
             "TWILIO_ACCOUNT_SID": "ACtest123",
@@ -338,8 +338,8 @@ class TestMultiplexProfileScope:
 async def test_oversized_cron_output_reaches_twilio_in_1600_char_chunks():
     """The router hands SMS the full cron payload and send() splits it under Twilio's 1600-char
     cap (a larger Body is rejected with 21617, which used to fail the whole delivery)."""
-    from gateway.config import GatewayConfig
-    from gateway.delivery import DeliveryRouter
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.delivery import DeliveryRouter
     from plugins.platforms.sms.adapter import SmsAdapter
 
     with patch.dict(os.environ, {"TWILIO_ACCOUNT_SID": "ACtest", "TWILIO_AUTH_TOKEN": "tok",

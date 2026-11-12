@@ -168,7 +168,7 @@ class TestSyncFallbacks:
     def test_async_delivery_unsupported_falls_back_to_sync(self):
         """One-shot runtimes (hermes -z, cron child, Kanban) keep sync."""
         with _bound_session_key():
-            with patch("gateway.session_context.async_delivery_supported",
+            with patch("hermes_agent.gateway.session_context.async_delivery_supported",
                        return_value=False):
                 res = _try_dispatch_background_run(_job('job-bg-06'))
         assert res is None

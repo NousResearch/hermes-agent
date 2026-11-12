@@ -24,7 +24,7 @@ def _write_corrupt_config(tmp_path):
 
 class TestGatewayGuard:
     def test_gateway_refuses_corrupt_config(self, tmp_path, capsys):
-        from gateway.run import _guard_corrupt_user_config
+        from hermes_agent.gateway.run import _guard_corrupt_user_config
 
         _write_corrupt_config(tmp_path)
 
@@ -35,18 +35,18 @@ class TestGatewayGuard:
         assert "Hermes stopped because your settings file" in capsys.readouterr().err
 
     def test_gateway_allows_valid_config(self, tmp_path):
-        from gateway.run import _guard_corrupt_user_config
+        from hermes_agent.gateway.run import _guard_corrupt_user_config
 
         (tmp_path / "config.yaml").write_text("model:\n  default: local/test\n")
         _guard_corrupt_user_config()  # must not raise
 
     def test_gateway_allows_missing_config(self, tmp_path):
-        from gateway.run import _guard_corrupt_user_config
+        from hermes_agent.gateway.run import _guard_corrupt_user_config
 
         _guard_corrupt_user_config()  # first-run state: must not raise
 
     def test_gateway_escape_hatch(self, monkeypatch, tmp_path):
-        from gateway.run import _guard_corrupt_user_config
+        from hermes_agent.gateway.run import _guard_corrupt_user_config
 
         _write_corrupt_config(tmp_path)
         monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "1")
@@ -63,8 +63,8 @@ class TestCronRunJobGuard:
         import json
         from types import SimpleNamespace
 
-        from gateway.session_contract import SessionRef
-        from gateway.session_cron import current_execution, execute
+        from hermes_agent.gateway.session_contract import SessionRef
+        from hermes_agent.gateway.session_cron import current_execution, execute
         from hermes_agent.hermes_state_registry import acquire, release
 
         _write_corrupt_config(tmp_path)

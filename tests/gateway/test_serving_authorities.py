@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_authorities import SessionAuthorities, serving_authorities
+from hermes_agent.gateway.session_authorities import SessionAuthorities, serving_authorities
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
@@ -42,11 +42,11 @@ def test_serving_authorities_skips_unbuilt_and_retiring_slots(tmp_path):
 
 
 def test_a_webhook_readback_never_reads_a_parked_store(tmp_path, monkeypatch):
-    from gateway.platforms.webhook_delivery import retained_destination
+    from hermes_agent.gateway.platforms.webhook_delivery import retained_destination
     registry, _launch = _registry(tmp_path)
     runner = SimpleNamespace(session_authorities=registry)
     # A reply leg scoped to a profile this process does not serve searches every served ledger.
-    monkeypatch.setattr('gateway.session_authorities.active_authority', lambda _runner: None)
+    monkeypatch.setattr('hermes_agent.gateway.session_authorities.active_authority', lambda _runner: None)
     adapter = SimpleNamespace(gateway_runner=runner, _message_handler=None, _delivery_info={})
     with pytest.raises(RuntimeStoreError, match='not_found'):
         retained_destination(adapter, 'chat-1')

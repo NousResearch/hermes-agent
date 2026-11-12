@@ -9,7 +9,7 @@ import pytest
 _repo = str(Path(__file__).resolve().parents[2])
 if _repo not in sys.path:
     sys.path.insert(0, _repo)
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 

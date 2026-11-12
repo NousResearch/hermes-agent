@@ -105,8 +105,8 @@ def test_finalize_turn_leaves_non_string_final_response_alone(monkeypatch):
 
 def test_gateway_final_response_sanitized_for_chat_surfaces():
     """#55309 / #55143: chat-surface replies must survive utf16_len/encode."""
-    from gateway.platforms.base import utf16_len
-    from gateway.run import _sanitize_gateway_final_response
+    from hermes_agent.gateway.platforms.base import utf16_len
+    from hermes_agent.gateway.run import _sanitize_gateway_final_response
 
     dirty = f"Here is your answer {LONE_HIGH} done"
     cleaned = _sanitize_gateway_final_response("telegram", dirty)
@@ -123,7 +123,7 @@ def test_gateway_final_response_sanitized_for_chat_surfaces():
 def test_gateway_raw_text_surfaces_keep_passthrough():
     """Programmatic surfaces keep raw text — their JSON consumers escape
     surrogates safely, and byte fidelity matters there."""
-    from gateway.run import _sanitize_gateway_final_response
+    from hermes_agent.gateway.run import _sanitize_gateway_final_response
 
     dirty = f"raw {LONE_HIGH} text"
     assert _sanitize_gateway_final_response("local", dirty) == dirty

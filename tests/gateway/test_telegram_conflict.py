@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.telegram import adapter as tg_adapter
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
@@ -46,11 +46,11 @@ async def test_polling_conflict_retries_before_fatal(monkeypatch):
     adapter.set_fatal_error_handler(fatal_handler)
 
     monkeypatch.setattr(
-        "gateway.status.acquire_scoped_lock",
+        "hermes_agent.gateway.status.acquire_scoped_lock",
         lambda scope, identity, metadata=None: (True, None),
     )
     monkeypatch.setattr(
-        "gateway.status_scoped_locks.release_scoped_lock",
+        "hermes_agent.gateway.status_scoped_locks.release_scoped_lock",
         lambda scope, identity: None,
     )
 
@@ -323,11 +323,11 @@ async def test_polling_conflict_becomes_fatal_after_retries(monkeypatch):
     adapter.set_fatal_error_handler(fatal_handler)
 
     monkeypatch.setattr(
-        "gateway.status.acquire_scoped_lock",
+        "hermes_agent.gateway.status.acquire_scoped_lock",
         lambda scope, identity, metadata=None: (True, None),
     )
     monkeypatch.setattr(
-        "gateway.status_scoped_locks.release_scoped_lock",
+        "hermes_agent.gateway.status_scoped_locks.release_scoped_lock",
         lambda scope, identity: None,
     )
 
@@ -423,11 +423,11 @@ async def test_connect_clears_webhook_before_polling(monkeypatch):
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
 
     monkeypatch.setattr(
-        "gateway.status.acquire_scoped_lock",
+        "hermes_agent.gateway.status.acquire_scoped_lock",
         lambda scope, identity, metadata=None: (True, None),
     )
     monkeypatch.setattr(
-        "gateway.status_scoped_locks.release_scoped_lock",
+        "hermes_agent.gateway.status_scoped_locks.release_scoped_lock",
         lambda scope, identity: None,
     )
 
@@ -482,11 +482,11 @@ async def test_connect_does_not_block_on_post_connect_housekeeping(monkeypatch):
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
 
     monkeypatch.setattr(
-        "gateway.status.acquire_scoped_lock",
+        "hermes_agent.gateway.status.acquire_scoped_lock",
         lambda scope, identity, metadata=None: (True, None),
     )
     monkeypatch.setattr(
-        "gateway.status_scoped_locks.release_scoped_lock",
+        "hermes_agent.gateway.status_scoped_locks.release_scoped_lock",
         lambda scope, identity: None,
     )
 
@@ -563,11 +563,11 @@ async def test_polling_conflict_reschedule_uses_running_loop(monkeypatch):
     adapter.set_fatal_error_handler(AsyncMock())
 
     monkeypatch.setattr(
-        "gateway.status.acquire_scoped_lock",
+        "hermes_agent.gateway.status.acquire_scoped_lock",
         lambda scope, identity, metadata=None: (True, None),
     )
     monkeypatch.setattr(
-        "gateway.status_scoped_locks.release_scoped_lock",
+        "hermes_agent.gateway.status_scoped_locks.release_scoped_lock",
         lambda scope, identity: None,
     )
 
@@ -671,7 +671,7 @@ def _build_polling_app(monkeypatch, adapter):
         SimpleNamespace(builder=MagicMock(return_value=builder)),
     )
     monkeypatch.setattr(
-        "gateway.status.acquire_scoped_lock",
+        "hermes_agent.gateway.status.acquire_scoped_lock",
         lambda scope, identity, metadata=None: (True, None),
     )
     monkeypatch.setattr("asyncio.sleep", AsyncMock())
@@ -742,11 +742,11 @@ async def test_conflict_callback_disarms_before_scheduling(monkeypatch):
     adapter.set_fatal_error_handler(fatal_handler)
 
     monkeypatch.setattr(
-        "gateway.status.acquire_scoped_lock",
+        "hermes_agent.gateway.status.acquire_scoped_lock",
         lambda scope, identity, metadata=None: (True, None),
     )
     monkeypatch.setattr(
-        "gateway.status_scoped_locks.release_scoped_lock",
+        "hermes_agent.gateway.status_scoped_locks.release_scoped_lock",
         lambda scope, identity: None,
     )
     monkeypatch.setattr("asyncio.sleep", AsyncMock())

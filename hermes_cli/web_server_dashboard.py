@@ -178,7 +178,7 @@ def mount_spa(application: FastAPI):
         if getattr(application.state, "ui_surface", "dashboard") == "webapp":
             # A bundle `hermes update` could not rebuild was built for the code before the update:
             # refuse it until `hermes webapp` rebuilds it.
-            from gateway.webapp_listener import bundle_stale_reason
+            from hermes_agent.gateway.webapp_listener import bundle_stale_reason
             stale = bundle_stale_reason(web_dist())
             if stale:
                 return JSONResponse({"error": stale}, status_code=503, headers=_NO_STORE)
@@ -189,7 +189,7 @@ def mount_spa(application: FastAPI):
         surface_js = "" if surface is None else f"window.__HERMES_UI_SURFACE__={json.dumps(surface)};"
         # Webapp grants host files and shell.exec as well as PTYs: its existing
         # session token must come from the operator, never anonymous HTML. The
-        # gateway-hosted listener (gateway/run_api.py) never publishes it either:
+        # gateway-hosted listener (hermes_agent/gateway/run_api.py) never publishes it either:
         # local clients use tickets.
         withheld = (gated or bool(getattr(_server().app.state, "withhold_session_token", False))
                     or not policy(application.state).html_token)

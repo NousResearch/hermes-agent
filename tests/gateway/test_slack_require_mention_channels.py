@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 
 def _ensure_slack_mock():
@@ -57,7 +57,7 @@ CHANNEL_ID = "C_FORCED"
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        "gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache"
+        "hermes_agent.gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache"
     )
     for var in (
         "SLACK_REQUIRE_MENTION",

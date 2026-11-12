@@ -19,7 +19,7 @@ import asyncio
 import threading
 import time
 
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.run import GatewayRunner
 
 def _make_runner():
     runner = object.__new__(GatewayRunner)

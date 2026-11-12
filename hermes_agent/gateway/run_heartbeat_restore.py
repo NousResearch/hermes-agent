@@ -4,14 +4,14 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 
 def _watched_homes(runner, default_home) -> list:
     """Every home the sweep's ``_profile_scope_for_source`` can resolve an origin to: the gateway home
     plus, under multiplex, the whole served set INCLUDING ``default`` — a ``-p work`` multiplexer's own
     home is not ``~/.hermes``, so dropping ``default`` here would hide its heartbeats forever."""
-    from gateway.run import _multiplex_profile_homes
+    from hermes_agent.gateway.run import _multiplex_profile_homes
 
     homes = [default_home]
     if getattr(getattr(runner, "config", None), "multiplex_profiles", False):
@@ -26,8 +26,8 @@ async def restore_heartbeat_watches(runner) -> None:
     rather than a second heartbeat routing snapshot, also cover pre-upgrade state.
     Run all storage work off-loop so a cold profile DB cannot block adapters.
     """
-    from gateway.run import _profile_runtime_scope
-    from gateway.run_idle_gates import profile_has_active_heartbeat
+    from hermes_agent.gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run_idle_gates import profile_has_active_heartbeat
     from hermes_cli.heartbeat import HeartbeatManager
     from hermes_constants import get_hermes_home
 

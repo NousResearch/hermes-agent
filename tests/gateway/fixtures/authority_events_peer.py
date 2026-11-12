@@ -50,12 +50,12 @@ def main():
     errors = []
 
     async def execute():
-        from gateway.config import Platform
-        from gateway.run import GatewayRunner
-        from gateway.session import SessionSource
-        from gateway.session_authority import initialize_session_authority
-        from gateway.session_controls import AuthorityConnection
-        from gateway.session_contract import Submission
+        from hermes_agent.gateway.config import Platform
+        from hermes_agent.gateway.run import GatewayRunner
+        from hermes_agent.gateway.session import SessionSource
+        from hermes_agent.gateway.session_authority import initialize_session_authority
+        from hermes_agent.gateway.session_controls import AuthorityConnection
+        from hermes_agent.gateway.session_contract import Submission
         from hermes_agent.hermes_state_runtime import list_session_admissions
         from run_agent import AIAgent
 

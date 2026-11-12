@@ -3,7 +3,7 @@
 Turn code keys some state by the running thread instead of by turn: ``tools.interrupt`` bits and
 reasons by thread id, per-turn callbacks in module ``threading.local`` objects, and the sudo
 password cache's thread scope (the fallback when a turn has no session key). A new thread starts
-with none of it; a parked executor worker (gateway/turn_executor.py) must drop all of it before it
+with none of it; a parked executor worker (hermes_agent/gateway/turn_executor.py) must drop all of it before it
 takes another session's turn, or turn 1's interrupt, approval callback or cached sudo password is
 live in turn 2. Context variables need nothing here: every item runs in a fresh context.
 

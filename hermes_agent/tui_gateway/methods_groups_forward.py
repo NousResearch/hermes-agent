@@ -5,7 +5,7 @@ rooms in the root ``shared-state.db`` and drives them here. Once a ready gateway
 profile, that gateway's store is the one Group Chat list native Desktop and the Webapp share, so
 the room calls a Desktop makes go to it instead (the owner-forward path prompts already use:
 ``hermes_agent/tui_gateway/owner_forward.py``). The gateway imports the rooms this backend already hosts once
-(``gateway/hosted_rooms_gateway_import.py``) and fences them here, so each room has one driver.
+(``hermes_agent/gateway/hosted_rooms_gateway_import.py``) and fences them here, so each room has one driver.
 
 Routing, so no view ever loses a room it listed before:
 
@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 def forwarded() -> frozenset[str]:
     """Every room method the gateway route serves (its ``GROUP_METHODS``), so a room the gateway
     owns answers the same calls on this wire; a hand list here fell behind each new verb (#145960)."""
-    from gateway.session_group_controls import GROUP_METHODS
+    from hermes_agent.gateway.session_group_controls import GROUP_METHODS
     return frozenset(GROUP_METHODS)
 
 #: The owner was found but did not answer: a verdict for this call, never a local write instead.
@@ -66,7 +66,7 @@ def _home(server, params: dict):
 
 def _root_home():
     from pathlib import Path
-    from gateway.hosted_rooms import default_db_path
+    from hermes_agent.gateway.hosted_rooms import default_db_path
     return Path(default_db_path()).parent  # the home whose gateway imports the standalone rooms
 
 
@@ -99,8 +99,8 @@ def _standalone_holder(room_id: str) -> str | None:
     gateway's store), ``"local"`` (any other room it holds: only this backend drives or mirrors
     it) or ``None`` (not a standalone room)."""
     from contextlib import closing
-    from gateway.hosted_rooms import _read_connection, default_db_path
-    from gateway.hosted_rooms_gateway_import import handoff_gateway_id
+    from hermes_agent.gateway.hosted_rooms import _read_connection, default_db_path
+    from hermes_agent.gateway.hosted_rooms_gateway_import import handoff_gateway_id
     source = default_db_path()
     if not source.is_file():
         return None
@@ -114,7 +114,7 @@ def _standalone_holder(room_id: str) -> str | None:
 
 def _standalone_rooms(params: dict | None = None) -> list[dict]:
     """The standalone store's rooms that were not handed to the gateway (the gateway-less list)."""
-    from gateway.hosted_rooms import MAX_ROOM_LIST_LIMIT, default_db_path, list_rooms
+    from hermes_agent.gateway.hosted_rooms import MAX_ROOM_LIST_LIMIT, default_db_path, list_rooms
     if not default_db_path().is_file():
         return []
     return local_rooms(list_rooms(default_db_path(), limit=MAX_ROOM_LIST_LIMIT,
@@ -187,8 +187,8 @@ def _list(server, rid, home, params: dict) -> dict | None:
     """One Group Chat list that hides no existing room: the profile's gateway rooms, plus (on the
     first page) the rooms only the standalone store holds and, for a named profile, the standalone
     rooms already handed to the root gateway."""
-    from gateway.hosted_rooms import MAX_ROOM_LIST_LIMIT, default_db_path
-    from gateway.hosted_rooms_gateway_import import handed_room_ids
+    from hermes_agent.gateway.hosted_rooms import MAX_ROOM_LIST_LIMIT, default_db_path
+    from hermes_agent.gateway.hosted_rooms_gateway_import import handed_room_ids
     endpoint = owner_endpoint(home)
     root = _root_home()
     handed = handed_room_ids(default_db_path()) if default_db_path().is_file() else set()
@@ -227,6 +227,6 @@ def forward_bound(rid, method: str, params: dict) -> dict | None:
 
 def local_rooms(rooms: list[dict]) -> list[dict]:
     """A gateway-less listing without the rooms already handed to the gateway's store."""
-    from gateway.hosted_rooms_gateway_import import handoff_gateway_id
+    from hermes_agent.gateway.hosted_rooms_gateway_import import handoff_gateway_id
     handoff = handoff_gateway_id()
     return [room for room in rooms if room.get("authority_gateway_id") != handoff]

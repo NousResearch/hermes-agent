@@ -7,12 +7,12 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_local_create_receipt_survives_cold_authority_atomically(tmp_path, monkeypatch):
-    from gateway.config import GatewayConfig, Platform
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import SessionActor
-    from gateway.session_local import create_local_session
-    from gateway import run
+    from hermes_agent.gateway.config import GatewayConfig, Platform
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway import run
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     config = {'platform_toolsets': {'cli': []}}
@@ -75,10 +75,10 @@ def test_real_daemon_recovers_only_authorized_never_started_local_work(tmp_path)
 def test_messaging_session_history_follows_the_compression_tip(tmp_path, monkeypatch):
     """The authority keeps a messaging session's admission identity at the compression root,
     but attach/resume history must come from the current physical transcript."""
-    from gateway.config import Platform
-    from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import SessionRef
-    from gateway.session_local_recovery import local_history
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_local_recovery import local_history
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import begin_runtime_epoch
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
@@ -111,14 +111,14 @@ async def test_branch_and_local_entries_keep_the_routing_prune_sweep_running(tmp
     branch) stamps the store clock: one aware-UTC entry makes ``prune_old_entries`` raise against
     its naive cutoff, and the watcher swallows that, so no stale route is ever pruned again."""
     from datetime import timedelta
-    from gateway.config import GatewayConfig, Platform
-    from gateway.session import SessionSource, SessionStore
-    from gateway.session_api import bind_api_session
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import SessionActor
-    from gateway.session_local import create_local_session
-    from gateway.session_mutations import mutate_session
-    from gateway import run
+    from hermes_agent.gateway.config import GatewayConfig, Platform
+    from hermes_agent.gateway.session import SessionSource, SessionStore
+    from hermes_agent.gateway.session_api import bind_api_session
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_mutations import mutate_session
+    from hermes_agent.gateway import run
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
@@ -147,14 +147,14 @@ async def test_delete_retires_owner_receipts_and_never_resurrects_the_id(tmp_pat
     """The deletion fence takes the local policy receipt (a cron policy's ``request_json`` holds
     the job and raw prompt) and the API binding + declared conversation key with the transcript;
     a later create/cron/API retry of the same deterministic id is refused instead of recreating it."""
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_api import bind_api_session
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import SessionActor
-    from gateway.session_local import create_local_session
-    from gateway.session_mutations import mutate_session
-    from gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_api import bind_api_session
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_mutations import mutate_session
+    from hermes_agent.gateway import run
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})

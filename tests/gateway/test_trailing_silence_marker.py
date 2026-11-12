@@ -11,7 +11,7 @@ import asyncio
 
 import pytest
 
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from tests.gateway.test_gateway_silence_tokens import _event, _runner, _source
 from tests.gateway.test_stream_consumer_silence import _make_adapter, _sent_and_edited
 from tests.waiting import async_wait_until

@@ -13,7 +13,7 @@ from tools.bot_live_delivery import _locked, _read, _write
 
 
 def _recover_one(tmp_path, record):
-    from gateway.session_bot import recover_bot_deliveries
+    from hermes_agent.gateway.session_bot import recover_bot_deliveries
     db = SessionDB(tmp_path / 'state.db')
     try:
         begin_runtime_epoch(db, instance_id='owner')

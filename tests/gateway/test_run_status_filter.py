@@ -6,8 +6,8 @@ Ported from #101011 (Wenfengcheng); the destination set is "anything but a DM" p
 import pytest
 
 from agent.conversation_compression import CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE
-from gateway.config import Platform
-from gateway.run import _prepare_gateway_status_message
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.run import _prepare_gateway_status_message
 
 
 @pytest.mark.parametrize(
@@ -29,9 +29,9 @@ def test_blocked_overflow_warning_is_suppressed_in_multi_user_chats(chat_type):
 def test_blocked_overflow_warning_through_production_callback(chat_type):
     import asyncio
 
-    from gateway.run_turn_runner import TurnRunner
-    from gateway.session import SessionSource
-    from gateway.turn_context import TurnContext
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.session import SessionSource
+    from hermes_agent.gateway.turn_context import TurnContext
 
     warning = CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(
         tokens=85_000, threshold=72_000, reason="cooldown:30"

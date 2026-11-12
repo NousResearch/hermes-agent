@@ -52,7 +52,7 @@ async def test_a_header_less_chat_resumed_after_a_sweep_keeps_its_new_session(ap
 
 @pytest.mark.asyncio
 async def test_a_hosted_room_member_resumed_after_a_sweep_keeps_its_new_session(api, owner):
-    from gateway.hosted_room_peer import HostedMemberDispatch
+    from hermes_agent.gateway.hosted_room_peer import HostedMemberDispatch
     from tests.gateway.test_hosted_room_execution_policy import _dispatch, _policy
     dispatch = _dispatch(_policy())
     swept = await api._ensure_hosted_member_session(dispatch)
@@ -121,7 +121,7 @@ async def test_a_chain_resumed_after_a_sweep_never_returns_to_its_swept_root(api
     permanent by itself. Once a continuation moved past the swept root to its next generation, a
     later continuation of a response stored on the root goes there too, past the horizon. Both
     continuations use one door, so each door's bind is the one that keeps the fence."""
-    from gateway.session_api import implicit_api_session
+    from hermes_agent.gateway.session_api import implicit_api_session
     app = web.Application()
     app.router.add_post('/v1/responses', api._handle_responses)
     app.router.add_post('/v1/runs', api._handle_runs)
@@ -152,8 +152,8 @@ async def test_a_fence_reclaimed_between_chain_lookup_and_bind_never_splits_the_
     next continuation would find the root free and land there (root, successor, root). The bind
     re-checks the walk in its own write and refuses with a retryable ``chain_moved``; the chain then
     stays on its root."""
-    from gateway.platforms import api_server_authority_runs as runs
-    from gateway.session_api import api_generation_id
+    from hermes_agent.gateway.platforms import api_server_authority_runs as runs
+    from hermes_agent.gateway.session_api import api_generation_id
     app = web.Application()
     app.router.add_post('/v1/responses', api._handle_responses)
     app.router.add_post('/v1/runs', api._handle_runs)
@@ -193,8 +193,8 @@ async def test_a_streamed_continuation_that_races_a_reclaim_gets_a_retryable_503
     """The streaming Responses door answers the same race (the root's sweep marker reclaimed between
     the chain lookup and the successor's bind) like the non-streaming one: 503 ``chain_moved`` with
     ``Retry-After: 1`` before any SSE frame, not a 200 stream that ends in ``response.failed``."""
-    from gateway.platforms import api_server_authority_runs as runs
-    from gateway.session_api import api_generation_id
+    from hermes_agent.gateway.platforms import api_server_authority_runs as runs
+    from hermes_agent.gateway.session_api import api_generation_id
     app = web.Application()
     app.router.add_post('/v1/responses', api._handle_responses)
     auth = {'Authorization': 'Bearer ' + chat._API_KEY}
@@ -236,7 +236,7 @@ async def test_a_storage_error_in_a_moved_chains_pre_bind_is_a_retryable_503(api
     ``storage_unavailable``, the JSON 503 with ``Retry-After`` every other store error before the
     response gets, not aiohttp's bare 500."""
     import sqlite3
-    from gateway import session_api
+    from hermes_agent.gateway import session_api
     app = web.Application()
     app.router.add_post('/v1/responses', api._handle_responses)
     auth = {'Authorization': 'Bearer ' + chat._API_KEY}
@@ -265,7 +265,7 @@ def test_keep_passed_fences_reports_a_walk_it_could_not_pin(owner):
     a passed generation without a marker means the walk would now stop there."""
     import json
     from functools import partial
-    from gateway.session_api import api_generation_id
+    from hermes_agent.gateway.session_api import api_generation_id
     from hermes_agent.hermes_state_mutation_retirement import RETIRED_PREFIX, keep_passed_fences, retire_routes
     derive = partial(api_generation_id, 'root-x')
     passed = ['root-x', derive(1)]

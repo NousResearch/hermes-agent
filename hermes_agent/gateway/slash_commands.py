@@ -1,4 +1,4 @@
-"""Gateway slash-command handlers for GatewayRunner: lifted out of ``gateway/run.py`` into a mixin
+"""Gateway slash-command handlers for GatewayRunner: lifted out of ``hermes_agent/gateway/run.py`` into a mixin
 so ``self._handle_*_command`` keeps resolving via the MRO.  Cohesive clusters live in the sibling
 mixins (``slash_commands_model/_session/_status/_goals``); this module keeps the shared helpers plus
 the one-off commands.  run.py helpers are imported lazily."""
@@ -20,21 +20,21 @@ from pathlib import Path
 from typing import Optional, Union
 
 from agent.i18n import t
-from gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_channel
-from gateway.platforms.base import EphemeralReply
-from gateway.platforms.event import MessageEvent
-from gateway.session import AsyncSessionStore
-from gateway.session_transcript import TranscriptReadError
-from gateway.slash_commands_goals import GatewayGoalCommandsMixin
-from gateway.slash_commands_model import GatewayModelCommandsMixin
-from gateway.slash_commands_session import GatewaySessionCommandsMixin
-from gateway.slash_commands_login import GatewayLoginCommandsMixin
-from gateway.slash_commands_status import GatewayStatusCommandsMixin, history_unreadable
+from hermes_agent.gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_channel
+from hermes_agent.gateway.platforms.base import EphemeralReply
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import AsyncSessionStore
+from hermes_agent.gateway.session_transcript import TranscriptReadError
+from hermes_agent.gateway.slash_commands_goals import GatewayGoalCommandsMixin
+from hermes_agent.gateway.slash_commands_model import GatewayModelCommandsMixin
+from hermes_agent.gateway.slash_commands_session import GatewaySessionCommandsMixin
+from hermes_agent.gateway.slash_commands_login import GatewayLoginCommandsMixin
+from hermes_agent.gateway.slash_commands_status import GatewayStatusCommandsMixin, history_unreadable
 from hermes_cli.config import atomic_config_write, cfg_get
 from utils import atomic_json_write, is_truthy_value
 from hermes_cli._startup_fast import project_root_str
 
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 
 # /rollback result keys -> i18n line for files the safe restore left alone.
@@ -207,7 +207,7 @@ class GatewaySlashCommandsMixin(
     def _resident_agent_for(self, session_key: str):
         """The live running agent for *session_key*, else the cached one, else None. The pending
         sentinel (a run that is starting) never counts as a usable agent."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from hermes_agent.gateway.run import _AGENT_PENDING_SENTINEL
         agent = self._running_agents.get(session_key)
         if agent is not None and agent is not _AGENT_PENDING_SENTINEL:
             return agent
@@ -230,14 +230,14 @@ class GatewaySlashCommandsMixin(
         return self._delivery_adapter_for(event.source), self._session_key_for_source(event.source)
 
     def _telegramized_command_reply(self, event: MessageEvent, text: str) -> str:
-        from gateway.run import _telegramize_command_mentions
+        from hermes_agent.gateway.run import _telegramize_command_mentions
         return _telegramize_command_mentions(text, getattr(getattr(event, "source", None), "platform", None))
 
     def _checkpoint_manager(self, source=None):
         """A CheckpointManager from a local session's frozen policy, else gateway config; None when disabled."""
-        from gateway.run import _checkpoint_agent_kwargs, _load_gateway_config
-        from gateway.session_authorities import active_authority
-        from gateway.session_policy import policy_for_source
+        from hermes_agent.gateway.run import _checkpoint_agent_kwargs, _load_gateway_config
+        from hermes_agent.gateway.session_authorities import active_authority
+        from hermes_agent.gateway.session_policy import policy_for_source
         from tools.checkpoint_manager import CheckpointManager
         policy = policy_for_source(self, source) if source is not None else None
         cp = _checkpoint_agent_kwargs(policy.config(active_authority(self), secrets=False) if policy
@@ -252,7 +252,7 @@ class GatewaySlashCommandsMixin(
         """``set_mode_fn`` for /memory and /skills: persist ``<section>.write_approval``. Raw read is
         correct for the write-back round-trip (merged defaults must not be persisted back to the
         user's file); the cached agent is dropped so the setting takes effect next message."""
-        from gateway.run import _gateway_config_home
+        from hermes_agent.gateway.run import _gateway_config_home
         # Persist to config (default) unless --session opted out, mirroring the text /model command path
         # above so a picked model survives across sessions like a typed one (#49066).
         from hermes_cli.config import read_user_config_raw
@@ -304,7 +304,7 @@ class GatewaySlashCommandsMixin(
     @staticmethod
     def _display_config_target(event: MessageEvent):
         """``(config.yaml path, platform config key)`` for the per-platform display settings."""
-        from gateway.run import _gateway_config_home, _platform_config_key
+        from hermes_agent.gateway.run import _gateway_config_home, _platform_config_key
         return _gateway_config_home() / "config.yaml", _platform_config_key(event.source.platform)
 
     async def _handle_profile_command(self, event: MessageEvent) -> str:
@@ -318,7 +318,7 @@ class GatewaySlashCommandsMixin(
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
             profile_name = (getattr(source, "profile", "") or "").strip()
             try:
-                from gateway.run import _profile_runtime_scope
+                from hermes_agent.gateway.run import _profile_runtime_scope
                 with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
                     display = display_hermes_home()
             except Exception:
@@ -332,7 +332,7 @@ class GatewaySlashCommandsMixin(
 
     async def _handle_whoami_command(self, event: MessageEvent) -> str:
         """Handle /whoami — platform, DM-vs-group scope, tier and runnable commands (always allowed)."""
-        from gateway.slash_access import policy_for_runner_source
+        from hermes_agent.gateway.slash_access import policy_for_runner_source
         source = event.source
         policy = policy_for_runner_source(self, source)
         platform = source.platform.value if source and source.platform else "?"
@@ -433,7 +433,7 @@ class GatewaySlashCommandsMixin(
         never checking _interrupt_requested) is caught by the early intercept in _handle_message();
         this handler runs via normal dispatch or as a fallback, and force-cleans the session lock in
         all cases.  The session is preserved so the user can continue."""
-        from gateway.run import _AGENT_PENDING_SENTINEL, _INTERRUPT_REASON_STOP
+        from hermes_agent.gateway.run import _AGENT_PENDING_SENTINEL, _INTERRUPT_REASON_STOP
         source = event.source
         session_entry = await self.async_session_store.get_or_create_session(source)
         session_key = session_entry.session_key
@@ -444,7 +444,7 @@ class GatewaySlashCommandsMixin(
                 key, source, interrupt_reason=_INTERRUPT_REASON_STOP,
                 invalidation_reason=invalidation_reason)
         # A turn the app started while the chat was elsewhere still runs on its own key (/resume).
-        from gateway.session_detached import chat_running_key
+        from hermes_agent.gateway.session_detached import chat_running_key
         run_key = chat_running_key(self, session_key, session_entry)
         agent = self._running_agents.get(run_key)
         if agent is _AGENT_PENDING_SENTINEL:  # force-clean the sentinel so the session is unlocked
@@ -543,7 +543,7 @@ class GatewaySlashCommandsMixin(
 
     async def _handle_restart_command(self, event: MessageEvent) -> str | EphemeralReply | None:
         """Handle /restart command - drain active work, then restart the gateway."""
-        from gateway.run import _hermes_home
+        from hermes_agent.gateway.run import _hermes_home
         # Idempotency check: if the previous gateway process recorded this same /restart (platform +
         # update_id) and we see it *again*, it's a redelivery from PTB's graceful-shutdown get_updates
         # ACK failing on the way out. Ignoring it prevents a loop where every fresh gateway re-restarts.
@@ -590,13 +590,13 @@ class GatewaySlashCommandsMixin(
         active_agents = self._running_agent_count()
         # Idle: teardown is immediate and a RETURNED ack raced the adapter disconnect (lost on a real
         # Bot API round trip, #65057), so deliver it first. Draining: the drain waits, the reply lands.
-        from gateway.restart_ack import send_restart_ack
+        from hermes_agent.gateway.restart_ack import send_restart_ack
         ack = t("gateway.draining", count=active_agents) if active_agents else EphemeralReply(t("gateway.restart.restarting"))
         sent = not active_agents and await send_restart_ack(self, self._delivery_adapter_for(event.source), event, ack)
         # Under a service manager (systemd/launchd) or Docker/Podman, exit 75 so the supervisor /
         # restart policy restarts us — detached setsid+bash fails there (systemd KillMode=mixed kills
         # the cgroup; tini exits with the gateway). The explicit marker covers ``sudo env -i`` wrappers.
-        from gateway.restart import is_container_restart_context, is_gateway_supervisor_process
+        from hermes_agent.gateway.restart import is_container_restart_context, is_gateway_supervisor_process
         via_service = is_gateway_supervisor_process() or is_container_restart_context()
         self.request_restart(detached=not via_service, via_service=via_service)
         return None if sent else ack
@@ -606,7 +606,7 @@ class GatewaySlashCommandsMixin(
         from hermes_cli.prune_advisor import answered
         reply = _execute("autoprune", args=event.get_command_args()).text
         if event.get_command_args().strip() and answered():  # a failed save or `status` keeps it
-            from gateway.run_housekeeping_disk import clear_local_auto_prune_notice
+            from hermes_agent.gateway.run_housekeeping_disk import clear_local_auto_prune_notice
             clear_local_auto_prune_notice(self, event.source)
         return reply
 
@@ -618,7 +618,7 @@ class GatewaySlashCommandsMixin(
         """``allowed_commands`` for /help and /commands when the caller is a gated non-admin:
         the slash-access floor + ``user_allowed_commands`` (mirrors /whoami), so the catalog
         never advertises commands ``_check_slash_access`` would refuse. Admins / ungated -> {}."""
-        from gateway.slash_access import policy_for_runner_source
+        from hermes_agent.gateway.slash_access import policy_for_runner_source
         source = event.source
         # Partially-constructed runners (``GatewayRunner.__new__`` in tests) have no ``config``;
         # policy_for_source treats None as ungated.
@@ -641,7 +641,7 @@ class GatewaySlashCommandsMixin(
 
     async def _handle_set_home_command(self, event: MessageEvent) -> str:
         """Handle /sethome command -- set the current chat as the platform's home channel."""
-        from gateway.run import _home_target_env_var, _home_thread_env_var
+        from hermes_agent.gateway.run import _home_target_env_var, _home_thread_env_var
         source = event.source
         platform_name = source.platform.value if source.platform else "unknown"
         chat_id = source.chat_id
@@ -695,7 +695,7 @@ class GatewaySlashCommandsMixin(
         def _set_mode(mode: str) -> None:
             self._voice_mode[voice_key] = mode
             self._save_voice_modes()
-            from gateway.session_config import local_voice_transition
+            from hermes_agent.gateway.session_config import local_voice_transition
             local_voice_transition(event.source, mode)
             if not adapter:
                 return
@@ -944,7 +944,7 @@ class GatewaySlashCommandsMixin(
 
     async def _handle_approvals_command(self, event: MessageEvent) -> str:
         """Show or persist the profile-wide dangerous-command approval mode."""
-        from gateway.slash_access import policy_for_runner_source
+        from hermes_agent.gateway.slash_access import policy_for_runner_source
         from hermes_cli.approval_mode import run_approval_mode_command
         requested = event.get_command_args().strip() or None
         # This mutates profile-wide security policy. The central slash gate can allow selected
@@ -975,8 +975,8 @@ class GatewaySlashCommandsMixin(
         """Handle /verbose — cycle tool progress display mode (off → new → all → verbose → log) per
         *current platform*, saved to ``display.platforms.<platform>.tool_progress``. Gated by
         ``display.tool_progress_command`` (default off)."""
-        from gateway.run import _load_gateway_config
-        from gateway.session_setting_commands import local_live
+        from hermes_agent.gateway.run import _load_gateway_config
+        from hermes_agent.gateway.session_setting_commands import local_live
         config_path, platform_key = self._display_config_target(event)
         live = local_live(self, event.source)
         try:
@@ -991,7 +991,7 @@ class GatewaySlashCommandsMixin(
         # Cycle mode (per-platform), reading the current effective mode via the resolver. ``log``
         # (tool calls to a log file instead of the chat) is a messaging mode: a local client renders
         # every tool event itself.
-        from gateway.display_config import resolve_display_setting
+        from hermes_agent.gateway.display_config import resolve_display_setting
         cycle = ["off", "new", "all", "verbose"] + ([] if live is not None else ["log"])
         current = (getattr(live, "tool_progress_mode", None) if live is not None else None) or \
             resolve_display_setting(user_config, platform_key, "tool_progress", "all")
@@ -1008,7 +1008,7 @@ class GatewaySlashCommandsMixin(
 
     async def _handle_busy_command(self, event: MessageEvent) -> str | EphemeralReply:
         """Handle /busy — control what happens when messaging while Hermes is working."""
-        from gateway.session_setting_commands import local_live, session_busy_mode
+        from hermes_agent.gateway.session_setting_commands import local_live, session_busy_mode
         arg = event.get_command_args().strip().lower()
         live = local_live(self, event.source)
         if not arg or arg == "status":
@@ -1026,7 +1026,7 @@ class GatewaySlashCommandsMixin(
             live.busy_input_mode = arg  # the frozen session does not re-read config.yaml
         profile_name = self._busy_profile_name_for_source(event.source)
         if profile_name:
-            from gateway.run import _load_gateway_config
+            from hermes_agent.gateway.run import _load_gateway_config
             self._snapshot_profile_busy_modes(profile_name, _load_gateway_config())
         else:
             self._busy_input_mode = arg
@@ -1041,8 +1041,8 @@ class GatewaySlashCommandsMixin(
 
     async def _handle_footer_command(self, event: MessageEvent) -> str:
         """Handle /footer command — toggle the runtime-metadata footer."""
-        from gateway.run import _load_gateway_config, _resolve_gateway_model
-        from gateway.runtime_footer import format_runtime_footer, resolve_footer_config
+        from hermes_agent.gateway.run import _load_gateway_config, _resolve_gateway_model
+        from hermes_agent.gateway.runtime_footer import format_runtime_footer, resolve_footer_config
         config_path, platform_key = self._display_config_target(event)
         arg = event.get_command_args().strip().lower()
         try:
@@ -1061,7 +1061,7 @@ class GatewaySlashCommandsMixin(
         new_state = _FOOTER_STATE_BY_ARG[arg] if arg else not effective["enabled"]
         try:
             # A local session writes the ``cli`` key, as /reasoning show|hide saves: every local
-            # surface reads it (gateway.display_config.local_display_config), so the setting holds
+            # surface reads it (hermes_agent.gateway.display_config.local_display_config), so the setting holds
             # wherever it was set (T7). A chat's /footer keeps the global key it always wrote.
             leaf = (("display", "platforms", platform_key) if event.source.platform == Platform.LOCAL
                     else ("display",)) + ("runtime_footer", "enabled")
@@ -1205,8 +1205,8 @@ class GatewaySlashCommandsMixin(
         from tools.approval import has_blocking_approval
         session_key = self._session_key_for_source(event.source)
         if has_blocking_approval(session_key):
-            from gateway.approval_actor import answerable_request_ids, refusal_text
-            from gateway.slash_access import policy_for_runner_source
+            from hermes_agent.gateway.approval_actor import answerable_request_ids, refusal_text
+            from hermes_agent.gateway.slash_access import policy_for_runner_source
             ids, requester = answerable_request_ids(
                 session_key, event.sender_id(), resolve_all=resolve_all, choice=choice,
                 admin_ids=policy_for_runner_source(self, event.source))
@@ -1338,15 +1338,15 @@ class GatewaySlashCommandsMixin(
         """Handle /update — spawn ``hermes update`` detached (``setsid``) so it survives the gateway
         restart it may trigger; marker files let this or the next gateway process notify the user."""
         import json
-        from gateway.approval_actor import opener_authority
-        from gateway.run import _hermes_home, _resolve_hermes_bin
+        from hermes_agent.gateway.approval_actor import opener_authority
+        from hermes_agent.gateway.run import _hermes_home, _resolve_hermes_bin
         from hermes_cli.config import is_managed, format_managed_message
         # Block non-messaging platforms (API server, webhooks, ACP); plugin platforms with
         # allow_update_command=True are also allowed.
         src = event.source
         if src.platform not in self._UPDATE_ALLOWED_PLATFORMS:
             try:
-                from gateway.platform_registry import platform_registry
+                from hermes_agent.gateway.platform_registry import platform_registry
                 entry = platform_registry.get(src.platform.value)
                 if not entry or not entry.allow_update_command:
                     return t("gateway.update.platform_not_messaging")

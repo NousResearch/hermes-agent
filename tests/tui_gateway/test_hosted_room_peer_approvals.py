@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from gateway.session_group_controls import _execution_control
+from hermes_agent.gateway.session_group_controls import _execution_control
 from tests.tui_gateway.test_hosted_room_two_gateway_peer import _agent, _linked_home, _member_replies
 from tests.waiting import async_wait_until
 from tools.approval import _gateway_notify_cb, unregister_gateway_notify

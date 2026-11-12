@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_contract import SessionActor, SessionRef
+from hermes_agent.gateway.session_contract import SessionActor, SessionRef
 
 CHILD = """import json, os, sys, psutil
 from hermes_cli.process_identity import worker_birth
@@ -23,10 +23,10 @@ for line in sys.stdin.buffer:
 
 def _authority_with_a_lost_worker(tmp_path, monkeypatch):
     """A real authority whose next managed turn's child says hello, then sends a bogus frame."""
-    from gateway import session_managed_worker as managed
-    from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import Submission
-    from gateway.session_policy import build_policy
+    from hermes_agent.gateway import session_managed_worker as managed
+    from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_agent.gateway.session_contract import Submission
+    from hermes_agent.gateway.session_policy import build_policy
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import begin_runtime_epoch, claim_session_input
 
@@ -60,7 +60,7 @@ def _authority_with_a_lost_worker(tmp_path, monkeypatch):
 
 @pytest.mark.platforms("linux")
 def test_unknown_worker_loss_publishes_error_status(tmp_path, monkeypatch):
-    from gateway import session_managed_worker as managed
+    from hermes_agent.gateway import session_managed_worker as managed
     authority, ref, policy, claim, published, db = _authority_with_a_lost_worker(tmp_path, monkeypatch)
 
     async def scenario():
@@ -78,7 +78,7 @@ def _kanban_loss_recorder(monkeypatch, policy, started, release, write_s):
     """Record the order of the board's worker_lost write (held until ``release``) and the
     admission's settlement."""
     import dataclasses
-    from gateway import session_kanban, session_worker_reservation
+    from hermes_agent.gateway import session_kanban, session_worker_reservation
     order = []
 
     def record(*_, **__):
@@ -96,7 +96,7 @@ def _kanban_loss_recorder(monkeypatch, policy, started, release, write_s):
 def test_a_lost_card_worker_is_on_the_board_before_its_admission_settles(tmp_path, monkeypatch):
     """The settled 'unknown' lets the submitter exit and the crash sweep book the run, so the
     worker_lost note must already be there."""
-    from gateway import session_managed_worker as managed
+    from hermes_agent.gateway import session_managed_worker as managed
     import threading
     authority, ref, policy, claim, _published, db = _authority_with_a_lost_worker(tmp_path, monkeypatch)
     # ``release`` is never set: the write takes its full 1 s, slower than the settlement.
@@ -118,7 +118,7 @@ def test_a_lost_card_worker_is_on_the_board_before_its_admission_settles(tmp_pat
 def test_a_cancellation_while_the_board_is_busy_still_settles_the_admission(tmp_path, monkeypatch):
     import threading
     from tests.waiting import async_wait_until
-    from gateway import session_managed_worker as managed
+    from hermes_agent.gateway import session_managed_worker as managed
     authority, ref, policy, claim, _published, db = _authority_with_a_lost_worker(tmp_path, monkeypatch)
     started, busy_board_frees = threading.Event(), threading.Event()
     policy, order = _kanban_loss_recorder(monkeypatch, policy, started, busy_board_frees, write_s=30)

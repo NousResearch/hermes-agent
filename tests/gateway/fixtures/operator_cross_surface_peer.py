@@ -15,11 +15,11 @@ from tests.waiting import async_wait_until
 async def probe(peer, creator):
     import httpx
     from websockets.asyncio.client import connect
-    from gateway.run import GatewayRunner
-    from gateway.run_bootstrap import _start_gateway_start_control_socket
-    from gateway.run_runtime import (initialize_gateway_runtime, start_gateway_runtime_api,
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.run_bootstrap import _start_gateway_start_control_socket
+    from hermes_agent.gateway.run_runtime import (initialize_gateway_runtime, start_gateway_runtime_api,
                                      publish_gateway_runtime_ready)
-    from gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.runtime_ownership import process_ownership
     from hermes_cli import web_server
     from hermes_cli.dashboard_auth import register_provider, clear_providers
     from hermes_agent.hermes_state_local import local_receipt

@@ -60,15 +60,15 @@ async def _answer(event):
 
 
 def _live(platform, chat_id, **source):
-    from gateway.session import SessionSource
-    from gateway.session_authority import LiveSession
+    from hermes_agent.gateway.session import SessionSource
+    from hermes_agent.gateway.session_authority import LiveSession
     return LiveSession(SessionSource(platform=platform, chat_id=chat_id, **source), chat_id)
 
 
 @pytest.mark.asyncio
 async def test_plugin_method_is_gated_like_a_session_verb_and_leaves_with_its_plugin(tmp_path, monkeypatch):
-    from gateway.config import Platform
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     from hermes_cli import plugins
 
     authority = await _authority(tmp_path, monkeypatch, _answer)
@@ -140,8 +140,8 @@ async def test_plugin_method_is_gated_like_a_session_verb_and_leaves_with_its_pl
 
 @pytest.mark.asyncio
 async def test_plugin_session_event_reaches_only_that_sessions_viewers(tmp_path, monkeypatch):
-    from gateway import run_api
-    from gateway.config import Platform
+    from hermes_agent.gateway import run_api
+    from hermes_agent.gateway.config import Platform
     from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 
     authority = await _authority(tmp_path, monkeypatch, _answer)
@@ -181,8 +181,8 @@ async def test_plugin_session_event_reaches_only_that_sessions_viewers(tmp_path,
 def two_profile_runner(launch, secondary):
     """A multiplexed gateway serving ``launch`` and ``secondary``, each with one live session whose
     viewers record their frames: ``(runner, {home: frames})``."""
-    from gateway.config import Platform
-    from gateway.session_authorities import SessionAuthorities
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session_authorities import SessionAuthorities
 
     registry, frames = SessionAuthorities(launch), {}
     for home, session_id in ((launch, 'in-launch'), (secondary, 'in-secondary')):
@@ -197,7 +197,7 @@ def two_profile_runner(launch, secondary):
 async def test_owner_advertises_plugin_rpc_and_the_contract_declares_its_namespace(tmp_path, monkeypatch):
     """A client gates ``plugin.*`` on ``plugin-rpc-v1``: without it, -32601 cannot tell "no such
     plugin method" from "this server has no plugin RPC"."""
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
 
     authority = await _authority(tmp_path, monkeypatch, _answer)
     owner = AuthorityConnection(authority, object(), {'user_id': 'owner'})
@@ -215,7 +215,7 @@ async def test_owner_advertises_plugin_rpc_and_the_contract_declares_its_namespa
 def test_emit_from_a_plugin_thread_reaches_its_own_profile_on_a_multiplexed_gateway(tmp_path, monkeypatch):
     """A thread the plugin started carries no profile scope; ``ctx.emit_to_session`` still looks the
     session up in the plugin's own profile, never the launch profile's."""
-    from gateway import run_api
+    from hermes_agent.gateway import run_api
     from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
     from hermes_constants import get_hermes_home_override
 
@@ -255,8 +255,8 @@ async def test_plugin_frontend_gets_schema_checked_json_from_its_own_task_with_i
     the plugin's code runs in the plugin host and the same calls answer the same way."""
     import contextvars
     import sys
-    from gateway import run_api
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway import run_api
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     from hermes_cli import plugins
 
     model = ThreadingHTTPServer(('127.0.0.1', 0), _ChartModel)

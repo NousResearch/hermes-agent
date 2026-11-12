@@ -1266,7 +1266,7 @@ class TestRenameProfile:
         with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
              patch("hermes_cli.profiles._live_default_multiplexer", return_value=True), \
              patch("hermes_cli.profiles._notify_multiplexer"), \
-             patch("gateway.control_socket.migrate_gateway_profile_identity",
+             patch("hermes_agent.gateway.control_socket.migrate_gateway_profile_identity",
                    return_value={"ok": True, "rekeyed": 1, "db": {}}) as verb, \
              patch("hermes_agent.hermes_state_registry.acquire") as acquire:
             rename_profile("oldname", "newname")
@@ -1306,7 +1306,7 @@ class TestRenameProfile:
         with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
              patch("hermes_cli.profiles._live_default_multiplexer", return_value=True), \
              patch("hermes_cli.profiles._notify_multiplexer"), \
-             patch("gateway.control_socket.migrate_gateway_profile_identity", return_value=None):
+             patch("hermes_agent.gateway.control_socket.migrate_gateway_profile_identity", return_value=None):
             rename_profile("oldname", "newname")
         assert "hermes profile migrate-identity oldname newname" in capsys.readouterr().err
 
@@ -1599,7 +1599,7 @@ class TestEdgeCases:
         unheld runtime lock before it inspects the PID record.
         """
         import os
-        import gateway.status as gw_status
+        import hermes_agent.gateway.status as gw_status
         from hermes_cli.profiles import _check_gateway_running
 
         tmp_path = profile_env
@@ -1630,8 +1630,8 @@ class TestEdgeCases:
         # scenario that PID belongs to the live gateway, so mock its command
         # line to a bare ``gateway run`` (this is the default/root home, which
         # runs the gateway with no profile flag).
-        with patch("gateway.status.get_running_pid", return_value=None), patch(
-            "gateway.status._read_process_cmdline",
+        with patch("hermes_agent.gateway.status.get_running_pid", return_value=None), patch(
+            "hermes_agent.gateway.status._read_process_cmdline",
             return_value="hermes gateway run --replace",
         ):
             assert _check_gateway_running(default_home) is True

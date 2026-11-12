@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_controls import AuthorityConnection
+from hermes_agent.gateway.session_controls import AuthorityConnection
 
 _ENTRY = {'name': 'deepseek', 'api': 'https://api.deepseek.com', 'key_env': 'DEEPSEEK_ENTRY_KEY',
           'transport': 'chat_completions', 'default_model': 'deepseek-flash'}
@@ -19,10 +19,10 @@ _ENTRY = {'name': 'deepseek', 'api': 'https://api.deepseek.com', 'key_env': 'DEE
 @pytest.mark.asyncio
 @pytest.mark.parametrize('pick', ['deepseek', 'custom:deepseek'])
 async def test_session_create_with_the_entrys_bare_pick_freezes_its_custom_route(tmp_path, monkeypatch, pick):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
     from hermes_agent.hermes_state_local import local_receipt
 
     for var in ('DEEPSEEK_API_KEY', 'OPENAI_API_KEY'):
@@ -64,10 +64,10 @@ async def test_only_the_held_entrys_own_key_keeps_its_route(tmp_path, monkeypatc
     (``customDefaultSupersedesPick``). A pick that merely matches the entry's display name names a
     real built-in, and freezing the private endpoint and its key pointer for it would send that
     credential where the user did not pick."""
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
     from hermes_agent.hermes_state_local import local_receipt
 
     for var in ('DEEPSEEK_API_KEY', 'OPENROUTER_API_KEY', 'OPENAI_API_KEY'):

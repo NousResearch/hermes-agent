@@ -21,7 +21,7 @@ from hermes_cli.web_routers import messaging
 
 @pytest.fixture
 def pairing(tmp_path, monkeypatch):
-    from gateway import status
+    from hermes_agent.gateway import status
 
     home = tmp_path / "home"
     home.mkdir()
@@ -73,7 +73,7 @@ def pairing(tmp_path, monkeypatch):
         from hermes_cli._subprocess_compat import windows_hide_flags
 
         output = tmp_path / "lock-probe.txt"
-        code = "from gateway.status import acquire_scoped_lock; import sys; print(acquire_scoped_lock('whatsapp-session', sys.argv[1])[0])"
+        code = "from hermes_agent.gateway.status import acquire_scoped_lock; import sys; print(acquire_scoped_lock('whatsapp-session', sys.argv[1])[0])"
         with output.open("w", encoding="utf-8") as stream:
             subprocess.run([sys.executable, "-c", code, str(session)], stdout=stream, stderr=subprocess.STDOUT,
                            timeout=20, check=True, creationflags=windows_hide_flags())
@@ -81,7 +81,7 @@ def pairing(tmp_path, monkeypatch):
 
     yield SimpleNamespace(home=home, session=session, creds=creds, starts=starts, workers=workers, timers=timers,
                           start=start, gateway_can_acquire=gateway_can_acquire, real_thread=real_thread)
-    from gateway.status_scoped_locks import release_scoped_lock
+    from hermes_agent.gateway.status_scoped_locks import release_scoped_lock
 
     for record in messaging._whatsapp_onboarding_sessions.values():
         timer = record.expiry_timer
@@ -137,7 +137,7 @@ def test_failed_process_start_releases_reservation(pairing, monkeypatch):
 
 
 def test_recycled_pid_does_not_block_repair(pairing):
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway.status import get_process_start_time
 
     started = get_process_start_time(os.getpid())
     assert started is not None
@@ -146,7 +146,7 @@ def test_recycled_pid_does_not_block_repair(pairing):
 
 
 def test_matching_pid_fingerprint_refuses_repair(pairing):
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway.status import get_process_start_time
 
     (pairing.session / "bridge.pid").write_text(f"{os.getpid()}\n{get_process_start_time(os.getpid())}", encoding="utf-8")
     with pytest.raises(HTTPException) as refused:
@@ -269,7 +269,7 @@ def test_apply_waits_for_flush_before_restarting_gateway(pairing, monkeypatch):
 
 
 def test_unverifiable_live_pid_stays_blocked(pairing, monkeypatch):
-    from gateway import status
+    from hermes_agent.gateway import status
 
     (pairing.session / "bridge.pid").write_text(f"{os.getpid()}\n123", encoding="utf-8")
     monkeypatch.setattr(status, "get_process_start_time", lambda pid: None)
@@ -311,7 +311,7 @@ def test_repair_refuses_pending_pairing(pairing):
 
 
 def test_repair_refuses_session_lock_owned_by_live_gateway(pairing):
-    from gateway import status
+    from hermes_agent.gateway import status
 
     lock = status._get_scope_lock_path("whatsapp-session", str(pairing.session))
     lock.parent.mkdir(parents=True)

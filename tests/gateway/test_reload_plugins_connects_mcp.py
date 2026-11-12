@@ -71,7 +71,7 @@ def gateway_home(tmp_path, monkeypatch):
 # The fixture server launches as ./server.py via its shebang + exec bit, which Windows lacks.
 @pytest.mark.platforms("posix")
 def test_reload_plugins_answers_with_the_plugins_mcp_tools_already_registered(gateway_home):
-    from gateway.run_plugin_rewire import reload_plugins_verb
+    from hermes_agent.gateway.run_plugin_rewire import reload_plugins_verb
     from tools.registry import registry
     _home, loop = gateway_home
     runner = SimpleNamespace(config=SimpleNamespace(multiplex_profiles=False), adapters={})

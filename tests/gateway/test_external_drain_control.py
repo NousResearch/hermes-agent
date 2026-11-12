@@ -16,9 +16,9 @@ import json
 
 import pytest
 
-import gateway.drain_control as dc
-from gateway.run import GatewayRunner
-from gateway.platforms.event import MessageEvent, MessageType
+import hermes_agent.gateway.drain_control as dc
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 from datetime import UTC
 
@@ -199,7 +199,7 @@ class TestMarkerMaxAge:
             dc.drain_request_path().write_text(json.dumps(body), encoding="utf-8")
 
         _write_expired(60)
-        with caplog.at_level(logging.WARNING, logger="gateway.drain_control"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.drain_control"):
             assert dc.drain_requested() is False
             assert dc.drain_requested() is False  # second poll tick
             assert dc.drain_requested() is False  # third poll tick
@@ -208,7 +208,7 @@ class TestMarkerMaxAge:
 
         caplog.clear()
         _write_expired(120)  # a DIFFERENT requested_at that is also expired
-        with caplog.at_level(logging.WARNING, logger="gateway.drain_control"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.drain_control"):
             assert dc.drain_requested() is False
         expired_logs = [r for r in caplog.records if "expired drain marker" in r.message]
         assert len(expired_logs) == 1

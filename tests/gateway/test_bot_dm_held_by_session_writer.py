@@ -17,11 +17,11 @@ CHAT = 'old-bot-chat'
 
 @pytest_asyncio.fixture
 async def held(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     from hermes_cli import gateway_runtime
     from hermes_cli.active_sessions import release_active_session, try_acquire_active_session
     from hermes_cli.gateway_client import rpc_error
@@ -51,7 +51,7 @@ async def held(tmp_path, monkeypatch):
         executed.append(row['payload']['text'])
         return 'pong'
 
-    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    monkeypatch.setattr('hermes_agent.gateway.session_finite.execute_finite_admission', execute)
     loop = asyncio.get_running_loop()
     # A test may hold the next refusal on its way back to the tool (``gate``), after the owner
     # answered and released its serialization: the window a concurrent same-id attempt races.
@@ -112,7 +112,7 @@ def _admissions(held):
 
 @pytest.mark.asyncio
 async def test_a_dm_refused_while_another_writer_holds_the_chat_is_a_definite_no_send(held):
-    from gateway.session_bot import recover_bot_deliveries
+    from hermes_agent.gateway.session_bot import recover_bot_deliveries
     from tools.bot_live_delivery import read_delivery_result
 
     refused = await _send(held, 'ping')
@@ -213,7 +213,7 @@ async def test_the_runner_settles_a_held_refusal_with_its_payload(held, capsys):
 
 @pytest.mark.asyncio
 async def test_an_older_owner_without_the_marker_stays_ambiguous(held, monkeypatch):
-    from gateway import session_bot
+    from hermes_agent.gateway import session_bot
 
     async def old_owner(home, key, exc):
         return None
@@ -244,7 +244,7 @@ async def test_a_retiring_or_retired_owner_refuses_settle_through_a_retained_con
     """Retirement joins a settle it already tracks; one arriving later (a stale connection) must be
     refused before it writes: receipt files carry no epoch and the mailbox lock is this authority's
     own, so nothing else keeps it from racing the home's next owner."""
-    from gateway import run_runtime
+    from hermes_agent.gateway import run_runtime
     from hermes_cli.gateway_client import GatewayRPCError
     from tools.bot_live_delivery import find_canonical_live_owner, read_delivery_result, settle_held_delivery
     owner = find_canonical_live_owner(held.home)
@@ -263,7 +263,7 @@ async def test_a_retiring_or_retired_owner_refuses_settle_through_a_retained_con
 async def test_a_settle_refused_by_a_retired_owner_keeps_the_unknown_outcome(held, monkeypatch):
     """The owner refused the DM (writer held), then retired before the tool's settle: that refusal
     settles nothing, so the tool keeps the intent and gives the ambiguous answer, never 'NOT sent'."""
-    from gateway import run_runtime
+    from hermes_agent.gateway import run_runtime
     from tools import bot_live_delivery
     loop = asyncio.get_running_loop()
     settle = bot_live_delivery.authority_settle

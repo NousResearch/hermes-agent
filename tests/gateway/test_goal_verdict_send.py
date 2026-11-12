@@ -16,8 +16,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.session import SessionEntry, SessionSource, build_session_key
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.session import SessionEntry, SessionSource, build_session_key
 
 
 @pytest.fixture()
@@ -71,7 +71,7 @@ class _RecordingAdapter:
 
 
 def _make_runner_with_adapter(session_id: str | None = None):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
     import uuid
 
     runner = object.__new__(GatewayRunner)

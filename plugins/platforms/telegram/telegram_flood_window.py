@@ -13,7 +13,7 @@ import asyncio
 import logging
 from typing import Any, Awaitable, Callable, Optional
 
-from gateway.platforms.base import SendResult
+from hermes_agent.gateway.platforms.base import SendResult
 from plugins.platforms.telegram.telegram_media_flood import _MAX_WINDOW_WAITS, flood_wait_seconds
 
 logger = logging.getLogger("plugins.platforms.telegram.adapter")

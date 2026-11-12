@@ -383,7 +383,7 @@ def _gateway_api_target(profile: str, home: Path) -> tuple[str, str]:
     """``(loopback base URL, API_SERVER_KEY)`` of the gateway api_server serving *profile*, from one
     listener lookup. The key is the one that listener checks (the api_server's ``_expected_api_key``):
     a multiplexed profile's own key, never the default's; otherwise a usable ``API_SERVER_KEY``,
-    which the gateway loads over ``platforms.api_server.extra.key`` (gateway/config_env.py), then
+    which the gateway loads over ``platforms.api_server.extra.key`` (hermes_agent/gateway/config_env.py), then
     that configured key. ``""`` when there is none."""
     listener = _gateway_listener(profile, home)
     multiplex, listener_profile, listener_home = listener
@@ -393,7 +393,7 @@ def _gateway_api_target(profile: str, home: Path) -> tuple[str, str]:
     if multiplex and profile != "default":
         # The secret mapping the gateway binds for this profile's requests (its .env plus external
         # secret sources and managed env), which ``_expected_api_key`` reads through get_secret.
-        from gateway.run import _load_profile_secret_scope
+        from hermes_agent.gateway.run import _load_profile_secret_scope
         key = (_load_profile_secret_scope(home).get("API_SERVER_KEY") or "").strip()
         return base, key if has_usable_secret(key, min_length=16) else ""
     key = _profile_setting(listener_profile, listener_home, "API_SERVER_KEY").strip()
@@ -408,7 +408,7 @@ def _listener_base(profile: str, listener: tuple[bool, str, Path], extra: dict) 
 
     Port resolution mirrors the gateway's for the LISTENER-OWNER profile (process env for the active
     profile, the profile's own .env otherwise): ``API_SERVER_PORT`` when ``API_SERVER_KEY`` is
-    usable, which the gateway loads over the configured port (gateway/config_env.py), then
+    usable, which the gateway loads over the configured port (hermes_agent/gateway/config_env.py), then
     ``platforms.api_server.extra.port`` in its config.yaml (*extra*), then ``API_SERVER_PORT``
     (the adapter's own fallback), then 8642. Loopback is safe: dashboard and gateway share a
     network namespace in every supported deployment.

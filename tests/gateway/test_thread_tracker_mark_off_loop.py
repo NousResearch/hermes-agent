@@ -1,6 +1,6 @@
 """The thread-participation tracker's persist must not block the event loop.
 
-``gateway/platforms/helpers.ThreadParticipationTracker._save`` ends in
+``hermes_agent/gateway/platforms/helpers.ThreadParticipationTracker._save`` ends in
 ``atomic_json_write`` -> ``os.replace``, whose duration is unbounded under
 filesystem pressure.  Every caller sits on an inbound-message coroutine --
 Matrix ``_resolve_message_context`` and ``create_handoff_thread``, Discord
@@ -36,8 +36,8 @@ import time
 
 import pytest
 
-from gateway.platforms import helpers
-from gateway.platforms.helpers import ThreadParticipationTracker
+from hermes_agent.gateway.platforms import helpers
+from hermes_agent.gateway.platforms.helpers import ThreadParticipationTracker
 
 # One constant drives both sides of the stall check below: the barrier timeout
 # (how long a worker parked inside the rename stalls the loop under the

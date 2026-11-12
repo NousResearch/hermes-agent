@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_STARTUP_WATCHDOG_TIMEOUT_S = 300.0
 _MIN_TIMEOUT_S = 30.0
 
-# Mirrors gateway.restart.GATEWAY_SERVICE_RESTART_EXIT_CODE (parity test in
+# Mirrors hermes_agent.gateway.restart.GATEWAY_SERVICE_RESTART_EXIT_CODE (parity test in
 # tests/gateway/test_startup_watchdog.py) — this module must not import gateway.
 SERVICE_RESTART_EXIT_CODE = 75
 
@@ -91,7 +91,7 @@ _DISARMED = "disarmed"
 _FIRING = "firing"
 
 # Module singleton: the arm sites (hermes_cli.main / hermes_cli.gateway /
-# gateway.run.main / cli.py --gateway) and the disarm site (GatewayRunner)
+# hermes_agent.gateway.run.main / cli.py --gateway) and the disarm site (GatewayRunner)
 # share no object, and only one gateway startup ever runs per process.
 _handle_lock = threading.Lock()
 _handle: Optional[StartupWatchdogHandle] = None
@@ -167,7 +167,7 @@ def _mark_lifecycle_exit(exit_code: int) -> None:
     interpreter import lock, and the fire path must reach ``os._exit`` regardless.
     """
     try:
-        from gateway.lifecycle_ledger import mark_exited
+        from hermes_agent.gateway.lifecycle_ledger import mark_exited
 
         mark_exited(exit_code, reason="startup_liveness_watchdog")
     except Exception:

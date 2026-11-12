@@ -167,7 +167,7 @@ def test_explicit_install_records_only_completed_install(supervisor, monkeypatch
 
 @pytest.mark.platforms("linux")
 def test_wizard_start_does_not_spawn_over_reserved_owner(supervisor, monkeypatch):
-    from gateway.runtime_ownership import ProfileOwnership
+    from hermes_agent.gateway.runtime_ownership import ProfileOwnership
     profile, _calls = supervisor
     profile.chmod(0o700)
     config_api.save_config({"gateway": {"service_install_choice": "decline"}})

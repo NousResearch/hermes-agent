@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.think_scrubber import THINK_TAG_NAMES
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 
 
@@ -112,7 +112,7 @@ class TestEditMessageFinalizeSignature:
     """Every concrete platform adapter must accept the ``finalize`` kwarg.
 
     stream_consumer._send_or_edit always passes ``finalize=`` to
-    ``adapter.edit_message(...)`` (see gateway/stream_consumer.py).  An
+    ``adapter.edit_message(...)`` (see hermes_agent/gateway/stream_consumer.py).  An
     adapter that overrides edit_message without accepting finalize raises
     TypeError the first time streaming hits a segment break or final edit.
     Guard the contract with an explicit signature check so it cannot
@@ -752,7 +752,7 @@ class TestInitialOverflowRollingEdit:
     async def test_initial_overflow_uses_adapter_fence_aware_split(self):
         """Initial rolling sends must preserve the adapter's fence contract."""
         adapter = TestUtf16OverflowDetection()._make_telegram_like_adapter()
-        from gateway.platforms.base import utf16_len
+        from hermes_agent.gateway.platforms.base import utf16_len
 
         msg_ids = iter(["msg_1", "msg_2", "msg_3"])
         adapter.send = AsyncMock(
@@ -887,7 +887,7 @@ class TestInterimCommentaryMessages:
 class TestCancelledConsumerSetsFlags:
     """Cancellation must set final_response_sent when already_sent is True.
 
-    The 5-second stream_task timeout in gateway/run.py can cancel the
+    The 5-second stream_task timeout in hermes_agent/gateway/run.py can cancel the
     consumer while it's still processing.  If final_response_sent stays
     False, the gateway falls through to the normal send path and the
     user sees a duplicate message.
@@ -1198,7 +1198,7 @@ class TestUtf16OverflowDetection:
     def _make_telegram_like_adapter(self):
         """Construct a minimal BasePlatformAdapter subclass that overrides
         message_len_fn like Telegram does."""
-        from gateway.platforms.base import utf16_len, BasePlatformAdapter
+        from hermes_agent.gateway.platforms.base import utf16_len, BasePlatformAdapter
 
         TelegramLikeAdapter = type(
             "TelegramLikeAdapter",
@@ -1220,7 +1220,7 @@ class TestUtf16OverflowDetection:
     async def test_emoji_text_exceeding_utf16_limit_triggers_overflow_split(self):
         """A response that is under 4096 codepoints but over 4096 UTF-16
         units must trigger the overflow-split path."""
-        from gateway.platforms.base import utf16_len
+        from hermes_agent.gateway.platforms.base import utf16_len
 
         adapter = self._make_telegram_like_adapter()
         # Mock the send/edit methods we actually call
@@ -1441,7 +1441,7 @@ class TestConfirmedFinalDeliveryConsultsCommentaryRecord:
     @staticmethod
     def _mark_streamed_delivery(consumer, final_text):
         """Drive the production gateway boundary that decides ``already_sent`` for the normal final send."""
-        from gateway.run_turn import GatewayTurnMixin
+        from hermes_agent.gateway.run_turn import GatewayTurnMixin
         response = {"final_response": final_text}
         turn_ctx = SimpleNamespace(
             stream_consumer_holder=[consumer], source=SimpleNamespace(platform="telegram"), session_key="s1",
@@ -1455,7 +1455,7 @@ class TestConfirmedFinalDeliveryConsultsCommentaryRecord:
         assert response.get("already_sent") is True
 
     def test_distinct_final_after_commentary_is_still_sent(self):
-        from gateway.run_turn import GatewayTurnMixin
+        from hermes_agent.gateway.run_turn import GatewayTurnMixin
         c = self._consumer_after_commentary("Checking the compaction config first.")
         assert GatewayTurnMixin._run_agent_stream_confirmed_final_delivery(
             c, "Native compaction is active.", previewed=False) is False

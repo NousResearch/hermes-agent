@@ -14,13 +14,13 @@ identity-less: nothing is inferred and nothing is stamped.
 
 from __future__ import annotations
 
-from gateway.owner_identity import host_owner_subject
+from hermes_agent.gateway.owner_identity import host_owner_subject
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.tui_gateway import server
 from hermes_agent.tui_gateway.transport import bind_transport, reset_transport
 
 _LOADED_USER = "alice"
-# A signed-in login is the machine owner (gateway.owner_identity): its row carries the owner's OS
+# A signed-in login is the machine owner (hermes_agent.gateway.owner_identity): its row carries the owner's OS
 # subject, the one native Desktop's own sessions carry, so Desktop and the TUI resume it.
 _LOGIN = host_owner_subject()
 

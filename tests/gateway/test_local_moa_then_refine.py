@@ -5,7 +5,7 @@ restore drops the MoA-built agent too. ``/refine`` used to read the conversation
 agent, so straight after a ``/moa`` turn it answered "Nothing to refine yet". The conversation
 belongs to the session (its stored transcript), so ``/refine`` still finds it.
 
-Real daemon (``python -m gateway.run``), ``slash.exec`` (``session_commands.execute_command``),
+Real daemon (``python -m hermes_agent.gateway.run``), ``slash.exec`` (``session_commands.execute_command``),
 loopback model.
 """
 import asyncio

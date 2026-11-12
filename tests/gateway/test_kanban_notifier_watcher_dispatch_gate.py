@@ -3,8 +3,8 @@
 import asyncio
 from unittest.mock import MagicMock, patch
 
-from gateway.config import Platform
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.run import GatewayRunner
 
 
 def _make_runner(with_adapter=False):

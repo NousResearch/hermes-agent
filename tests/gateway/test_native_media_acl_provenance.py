@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 import hermes_dir_acl
-from gateway import session_ingress_media as media
+from hermes_agent.gateway import session_ingress_media as media
 
 
 def _elevated(monkeypatch, home):

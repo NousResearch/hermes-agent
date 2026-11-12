@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 
 def _ensure_discord_mock():
@@ -59,7 +59,7 @@ def _ensure_discord_mock():
 _ensure_discord_mock()
 
 from plugins.platforms.discord.adapter import DiscordAdapter
-from gateway.platforms.event import MessageType
+from hermes_agent.gateway.platforms.event import MessageType
 from datetime import UTC
 
 

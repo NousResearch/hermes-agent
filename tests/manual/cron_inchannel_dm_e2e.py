@@ -36,8 +36,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 os.environ["HERMES_HOME"] = tempfile.mkdtemp(prefix="cron_dm_e2e_")
 
 import hermes_agent.cron.scheduler as sched
-from gateway.config import PlatformConfig, Platform
-from gateway.session import build_session_key, SessionSource
+from hermes_agent.gateway.config import PlatformConfig, Platform
+from hermes_agent.gateway.session import build_session_key, SessionSource
 from plugins.platforms.slack.adapter import SlackAdapter
 
 DM_CHAT = "D_TESTDM"

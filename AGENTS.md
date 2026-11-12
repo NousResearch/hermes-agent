@@ -94,7 +94,7 @@ all profile-aware via `get_hermes_home()`.
 ### Facade + siblings layout
 
 Every former god file is a **facade** (public entry points + the names other packages import) plus
-**siblings** `<stem>_<topic>.py`, each owning one topic (the tree above, `gateway/run.py`,
+**siblings** `<stem>_<topic>.py`, each owning one topic (the tree above, `hermes_agent/gateway/run.py`,
 `tools/mcp_tool.py`, `hermes_cli/kanban.py`, `hermes_cli/web_server.py`).
 
 - **Find code by topic:** `grep -rn "def name" <dir>/<stem>_*.py`, not by reading the facade.
@@ -113,14 +113,14 @@ Every former god file is a **facade** (public entry points + the names other pac
 - **No defensive clutter:** no wrappers or `try/except: pass` around code that cannot fail, no flags
   nobody sets, no dead code wired in without E2E proof. Comments keep the WHY, cut the WHAT.
 - **Never infer process identity from argv substrings;** use
-  `gateway.status.looks_like_gateway_command_line` / `hermes_cli.update_cmd._hermes_holder_subcommand`
+  `hermes_agent.gateway.status.looks_like_gateway_command_line` / `hermes_cli.update_cmd._hermes_holder_subcommand`
   (HX003).
 - **Never hardcode `~/.hermes`:** `get_hermes_home()` for paths, `display_hermes_home()` for text
   (HX001). `_get_profiles_root()` is HOME-anchored on purpose.
 - **One process serves many profiles.** Code that runs outside a turn (boot probes, eviction,
   tickers, deferred callbacks, RPC methods, thread hops, child spawns) binds the owning profile scope
   explicitly; `os.environ`, module globals and import-time values hold the launch profile's, so an
-  unbound read is a silent default-profile leak. Binding points and seams: `gateway/AGENTS.md`
+  unbound read is a silent default-profile leak. Binding points and seams: `hermes_agent/gateway/AGENTS.md`
   § Profile scope (HX002/HX004/HX005/HX012, PS-P05/P06).
 - **Machine facts and executable lookup go through `hermes_platform`.**
 - **Dependencies carry upper bounds** (`>=floor,<next_major`; git URLs and Actions pinned to a SHA);
@@ -146,8 +146,8 @@ Every former god file is a **facade** (public entry points + the names other pac
 |---|---|---|
 | `run_agent.py`, `agent/` | `agent/AGENTS.md` | turn phases, message-flow invariants, compression, model/aux resolution, i18n |
 | `cli.py`, `hermes_cli/` | `hermes_cli/AGENTS.md` | CLI mixins, slash registry, config system, skins, `hermes update`, profiles / multiplex |
-| `gateway/` | `gateway/AGENTS.md` | adapters, message guards, streaming, notifications, token locks, § Profile scope |
-| `plugins/platforms/` new adapter | `gateway/platforms/ADDING_A_PLATFORM.md` | step-by-step adapter guide |
+| `gateway/` | `hermes_agent/gateway/AGENTS.md` | adapters, message guards, streaming, notifications, token locks, § Profile scope |
+| `plugins/platforms/` new adapter | `hermes_agent/gateway/platforms/ADDING_A_PLATFORM.md` | step-by-step adapter guide |
 | `tools/`, `toolsets.py`, `model_tools.py` | `tools/AGENTS.md` | adding tools, registry, toolsets, delegation, session-scoped surface tools |
 | `plugins/`, `hermes_cli/plugins*.py` | `plugins/AGENTS.md` | plugin kinds, native compat contract, in-tree policy, boundary lint |
 | `plugin-catalog/` | `plugin-catalog/README.md` | catalog admission rules (mirrored in the developer guide; keep identical) |

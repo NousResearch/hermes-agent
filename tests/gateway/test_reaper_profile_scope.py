@@ -3,7 +3,7 @@
 import threading
 from types import SimpleNamespace
 
-from gateway.run_agent_cache import GatewayAgentCacheMixin
+from hermes_agent.gateway.run_agent_cache import GatewayAgentCacheMixin
 from hermes_constants import (
     get_hermes_home,
     reset_hermes_home_override,

@@ -274,7 +274,7 @@ async def test_the_owner_records_the_loss_on_the_board_and_one_tick_disposes_of_
     records nothing; a real loss leaves one worker_lost event that the next tick books."""
     import asyncio
     from types import SimpleNamespace
-    from gateway.session_managed_worker import _record_lost_attempt
+    from hermes_agent.gateway.session_managed_worker import _record_lost_attempt
     run_id = board.running("t_owner", claim_expires_in=900, heartbeat_age=30)
     policy = _owner_policy(board, "t_owner", run_id)
     authority = SimpleNamespace()
@@ -297,7 +297,7 @@ async def test_the_owner_records_the_loss_on_the_board_and_one_tick_disposes_of_
 
 def test_a_loss_recorded_against_a_superseded_run_is_dropped(board):
     """The owner's note is run-scoped: it may never be evidence about a LATER attempt."""
-    from gateway.session_kanban import record_worker_loss
+    from hermes_agent.gateway.session_kanban import record_worker_loss
     run_id = board.running("t_stale", claim_expires_in=900, heartbeat_age=30)
     policy = _owner_policy(board, "t_stale", run_id)
 

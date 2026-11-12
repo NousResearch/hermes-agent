@@ -13,13 +13,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import GatewayConfig, PlatformConfig
-from gateway.platforms.base import SendResult
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
-from gateway.session_authority import initialize_session_authority
-from gateway.session_ingress_burst import holds_busy_burst
-from gateway.session_results import execution_result
+from hermes_agent.gateway.config import GatewayConfig, PlatformConfig
+from hermes_agent.gateway.platforms.base import SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session_authority import initialize_session_authority
+from hermes_agent.gateway.session_ingress_burst import holds_busy_burst
+from hermes_agent.gateway.session_results import execution_result
 from hermes_agent.hermes_state_runtime import list_session_admissions
 from tests.waiting import async_wait_until
 
@@ -80,7 +80,7 @@ def _photo(source, tmp_path, n):
 
 def _hold_capture(monkeypatch):
     """The real media capture, held on an Event: a slow disk under the burst's commit."""
-    import gateway.session_envelope as envelope
+    import hermes_agent.gateway.session_envelope as envelope
     entered, release, real = threading.Event(), threading.Event(), envelope.capture_native_media
 
     def held(paths):
@@ -103,8 +103,8 @@ async def test_signal_busy_photos_merge_without_holding_the_reader(monkeypatch, 
 
 @pytest.mark.asyncio
 async def test_irc_split_text_merges_through_the_receive_loop(monkeypatch):
-    from gateway import platform_registry
-    from gateway.platform_registry import PlatformEntry, PlatformRegistry
+    from hermes_agent.gateway import platform_registry
+    from hermes_agent.gateway.platform_registry import PlatformEntry, PlatformRegistry
     from tests.gateway._plugin_adapter_loader import load_plugin_adapter
     monkeypatch.setenv('IRC_ALLOWED_USERS', 'sender')
     module = load_plugin_adapter('irc')
@@ -225,7 +225,7 @@ async def test_restart_waits_for_a_held_text_queued_behind_a_slow_capture(monkey
     await async_wait_until(lambda: all(live.task is None or live.task.done() for live in authority.sessions.values()),
                            timeout=15, what="the draining owner's drains to exit")
     runner._draining = False
-    from gateway.run_runtime import recover_profile_native_sessions
+    from hermes_agent.gateway.run_runtime import recover_profile_native_sessions
     assert set((await recover_profile_native_sessions(runner, authority)).values()) <= {'ready'}
     await async_wait_until(lambda: all(row['status'] == 'terminal' for row in _rows(authority)), timeout=15,
                            what='both turns to run')
@@ -237,9 +237,9 @@ async def test_restart_waits_for_a_direct_busy_input_queued_behind_a_slow_captur
     """The same with the default busy mode: the text is no burst, so it goes straight to the shared
     runtime, queues behind the capture and releases the reader before it is durable. With no burst commit
     to wait on, the /restart it reads next must still wait for that row (Signal live: both lost)."""
-    from gateway import session_ingress_burst
-    from gateway.session_authority import SessionAuthority
-    from gateway.session_runtime_workers import mutation_tasks
+    from hermes_agent.gateway import session_ingress_burst
+    from hermes_agent.gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_runtime_workers import mutation_tasks
     adapter, source = _signal(monkeypatch)
     entered, release = _hold_capture(monkeypatch)
     monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)  # no drain: rows stay queued

@@ -5,7 +5,7 @@
 applies). The reset ran INSIDE the overflowing turn, while that turn's own admission was still
 ``started``: ``reset_local_target`` refused it (``session_busy``), the exception became a failed turn
 that persisted the DM a second time, and the Bot Chat kept its oversized transcript, so every later
-DM overflowed too (HTTP 502 forever). Real daemon (``python -m gateway.run``), real api_server door,
+DM overflowed too (HTTP 502 forever). Real daemon (``python -m hermes_agent.gateway.run``), real api_server door,
 real SessionDB and authority; only the model is a loopback window-capped stub.
 """
 from contextlib import closing

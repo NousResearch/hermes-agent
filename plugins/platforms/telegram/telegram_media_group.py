@@ -13,7 +13,7 @@ import contextlib
 import functools
 from typing import Any, Iterator
 
-from gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.platforms.event import MessageEvent
 
 # Private event attribute: an item's own notes (too large, …), which an album merge never dedupes away
 # (#151871). Not ``event.metadata``: native admission refuses any metadata key outside its allowlist.

@@ -27,7 +27,7 @@ _RUNTIME = {
 
 @contextmanager
 def _owner_execution(db, job, execution_id=None):
-    from gateway import session_cron
+    from hermes_agent.gateway import session_cron
     owner = SimpleNamespace(db=db)
     token = session_cron._execution.set((owner, "cleanup-session", job["id"], execution_id))
     try:

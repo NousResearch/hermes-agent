@@ -2,7 +2,7 @@
 
 The reporter's owner could not import its session WebSocket handler, so every cron agent turn and
 managed-worker dial got ``InvalidStatus: ... HTTP 500`` while gateway.log stayed empty: uvicorn's own
-error logger is not a gateway logger. This boots a real owner (``python -m gateway.run``) in a
+error logger is not a gateway logger. This boots a real owner (``python -m hermes_agent.gateway.run``) in a
 throwaway home with that handler broken, then dials it the way an external cron worker and a managed
 worker do.
 """
@@ -114,7 +114,7 @@ def test_a_failed_session_upgrade_is_logged_with_its_cause(tmp_path):
 async def test_the_log_line_names_the_status_the_dialer_got(caplog, refused_first):
     """Uvicorn answers 500 only when the handler raised before sending anything; a handler that had
     already closed the upgrade got its own refusal (403) out, so the line must not claim a 500."""
-    from gateway.run_api import GatewayRuntimeAPI
+    from hermes_agent.gateway.run_api import GatewayRuntimeAPI
 
     api = GatewayRuntimeAPI(None, None, None)
 
@@ -130,7 +130,7 @@ async def test_the_log_line_names_the_status_the_dialer_got(caplog, refused_firs
         sent.append(message)
 
     scope = {'type': 'websocket', 'path': '/api/ws', 'client': ('127.0.0.1', 5)}
-    with caplog.at_level('ERROR', logger='gateway.run_api'), pytest.raises(RuntimeError, match='late failure'):
+    with caplog.at_level('ERROR', logger='hermes_agent.gateway.run_api'), pytest.raises(RuntimeError, match='late failure'):
         await api(scope, None, send)
     [line] = [record.getMessage() for record in caplog.records if 'session WebSocket upgrade' in record.getMessage()]
     assert 'RuntimeError: late failure' in line

@@ -13,8 +13,8 @@ from tests.waiting import async_wait_until
 
 
 def _owner(monkeypatch):
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.run import GatewayRunner
     from plugins.platforms.discord.adapter import DiscordAdapter
 
     monkeypatch.setenv('DISCORD_ALLOWED_USERS', '42')
@@ -23,7 +23,7 @@ def _owner(monkeypatch):
     sent = []
 
     async def send(chat_id, content, reply_to=None, metadata=None):
-        from gateway.platforms.base import SendResult
+        from hermes_agent.gateway.platforms.base import SendResult
         sent.append(content)
         return SendResult(success=True, message_id=f's{len(sent)}')
     monkeypatch.setattr(adapter, 'send', send)
@@ -37,11 +37,11 @@ async def _until(predicate, timeout=10):
 
 @pytest.mark.asyncio
 async def test_stop_during_agent_construction_latches_so_the_turn_runs_no_tools(monkeypatch):
-    from gateway.platforms.event import MessageEvent
-    from gateway.run_turn_runner import TurnRunner
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_results import execution_result
-    from gateway.turn_context import TurnContext
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_results import execution_result
+    from hermes_agent.gateway.turn_context import TurnContext
     from hermes_agent.hermes_state_runtime import list_session_admissions
 
     runner, adapter, sent = _owner(monkeypatch)
@@ -94,11 +94,11 @@ async def test_stop_during_agent_construction_latches_so_the_turn_runs_no_tools(
 @pytest.mark.asyncio
 @pytest.mark.parametrize('command', ['/stop', '/new'])
 async def test_idle_stop_and_new_cancel_the_queued_followup(monkeypatch, command):
-    from gateway.platforms.event import MessageEvent
-    from gateway.session_authority import SessionAuthority, initialize_session_authority
-    from gateway.session_contract import SessionRef
-    from gateway.session_ingress import admit_message
-    from gateway.session_ingress_context import native_callback
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.session_authority import SessionAuthority, initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_ingress import admit_message
+    from hermes_agent.gateway.session_ingress_context import native_callback
     from hermes_constants import get_hermes_home
     from hermes_agent.hermes_state_runtime import list_session_admissions
 

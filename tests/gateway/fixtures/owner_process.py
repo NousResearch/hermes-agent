@@ -1,4 +1,4 @@
-"""A real gateway owner (``python -m gateway.run``) in a throwaway home, for tests that dial it."""
+"""A real gateway owner (``python -m hermes_agent.gateway.run``) in a throwaway home, for tests that dial it."""
 import contextlib
 import json
 import os
@@ -41,7 +41,7 @@ def running_owner(tmp_path: Path, model_peer, *, prepare=None, extra_env=None):
         prepare(home)
     env = {**owner_env(home, user, model_url), **(extra_env or {})}
     with (tmp_path / 'gateway.log').open('w+') as log:
-        process = subprocess.Popen([sys.executable, '-m', 'gateway.run'], cwd=ROOT, env=env,
+        process = subprocess.Popen([sys.executable, '-m', 'hermes_agent.gateway.run'], cwd=ROOT, env=env,
                                    stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
         try:
             descriptor, deadline = {}, time.monotonic() + 35

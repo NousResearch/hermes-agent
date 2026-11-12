@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import GatewayConfig
-from gateway.session_identity import RoutingIdentity
+from hermes_agent.gateway.config import GatewayConfig
+from hermes_agent.gateway.session_identity import RoutingIdentity
 from tests.gateway.test_gateway_silence_tokens import _event, _runner, _source
 from tests.gateway.test_active_turn_recovery import _close_store_db, _db_runner, _entry_for
 
@@ -92,7 +92,7 @@ async def test_room_config_controls_delivery(monkeypatch, tmp_path, lane, settin
         await runner._run_agent_deliver_first_response(ctx, None, result, result, None)
         assert runner._deliver_queued_first_response.called is not silent
     else:
-        from gateway.delivery_ledger import sweep_recoverable
+        from hermes_agent.gateway.delivery_ledger import sweep_recoverable
         _, store = _db_runner(tmp_path)
         runner.session_store = store
         result["agent_persisted"] = False
@@ -125,7 +125,7 @@ async def test_opt_in_does_not_hide_unhealthy_or_empty_results(monkeypatch, tmp_
         runner._run_agent = AsyncMock(return_value=result)
         assert await runner._handle_message_with_agent(_event(reply_expected=True), source, "lane", 1)
     elif lane == "queued":
-        from gateway.run import _normalize_empty_agent_response
+        from hermes_agent.gateway.run import _normalize_empty_agent_response
         result = {**result, "final_response": _normalize_empty_agent_response(result, result["final_response"])}
         runner._deliver_queued_first_response = AsyncMock(return_value=True)
         ctx = SimpleNamespace(session_key="lane", source=source, stream_consumer_holder=[None],
@@ -135,7 +135,7 @@ async def test_opt_in_does_not_hide_unhealthy_or_empty_results(monkeypatch, tmp_
         await runner._run_agent_deliver_first_response(ctx, None, result, result, None)
         runner._deliver_queued_first_response.assert_awaited_once()
     else:
-        from gateway.delivery_ledger import sweep_recoverable
+        from hermes_agent.gateway.delivery_ledger import sweep_recoverable
         recovered, store = _db_runner(tmp_path)
         recovered.config = runner.config
         entry = store.get_or_create_session(source)
@@ -160,7 +160,7 @@ async def test_opt_in_does_not_hide_unhealthy_or_empty_results(monkeypatch, tmp_
 async def test_queued_terminal_source_owns_policy(monkeypatch, tmp_path, terminal_opted_in):
     runner = _runner(monkeypatch, tmp_path)
     opted = _configure(runner, tmp_path)
-    from gateway.session_identity import replace_source
+    from hermes_agent.gateway.session_identity import replace_source
     guarded_home = tmp_path / "guarded"
     guarded_home.mkdir()
     (guarded_home / "config.yaml").write_text("{}\n", encoding="utf-8")
@@ -178,7 +178,7 @@ async def test_queued_terminal_source_owns_policy(monkeypatch, tmp_path, termina
 
 @pytest.mark.asyncio
 async def test_agent_persisted_final_survives_trailing_session_metadata(monkeypatch, tmp_path):
-    from gateway.delivery_ledger import sweep_recoverable
+    from hermes_agent.gateway.delivery_ledger import sweep_recoverable
     runner = _runner(monkeypatch, tmp_path)
     source = _configure(runner, tmp_path)
     _, store = _db_runner(tmp_path)
@@ -212,7 +212,7 @@ async def test_agent_persisted_final_survives_trailing_session_metadata(monkeypa
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mismatch", ["missing", "token", "timestamp"])
 async def test_recovery_keeps_guard_without_exact_completed_decision(tmp_path, mismatch):
-    from gateway.delivery_ledger import sweep_recoverable
+    from hermes_agent.gateway.delivery_ledger import sweep_recoverable
     runner, store = _db_runner(tmp_path)
     source = _source()
     entry = store.get_or_create_session(source)
@@ -253,7 +253,7 @@ def test_served_profile_lookup_reads_every_platform_block_layout(monkeypatch, tm
 
 
 def test_failed_room_lookup_keeps_the_reply_rule(monkeypatch, tmp_path):
-    from gateway.profile_routing import ProfileRouteRejected
+    from hermes_agent.gateway.profile_routing import ProfileRouteRejected
     runner = _runner(monkeypatch, tmp_path)
     source = _source()
     source.profile = "gone"

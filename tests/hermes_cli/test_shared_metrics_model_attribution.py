@@ -219,7 +219,7 @@ def test_tui_switch_before_first_prompt_blames_the_configured_route(
 
 
 def _gateway_runner(multiplex_home=None):
-    from gateway.slash_commands_model import GatewayModelCommandsMixin
+    from hermes_agent.gateway.slash_commands_model import GatewayModelCommandsMixin
 
     class Runner(GatewayModelCommandsMixin):
         def __init__(self):
@@ -241,7 +241,7 @@ def _gateway_runner(multiplex_home=None):
 
 
 def _gateway_switch(runner, config_path):
-    from gateway.slash_commands_model import _ModelSwitchContext
+    from hermes_agent.gateway.slash_commands_model import _ModelSwitchContext
 
     ctx = _ModelSwitchContext(session_key="k", source=None, config_path=config_path, persist_global=False)
     ctx.read_config()

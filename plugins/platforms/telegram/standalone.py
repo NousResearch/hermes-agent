@@ -120,7 +120,7 @@ def _telegram_bot(token, extra=None):
     server actually reached, else the fallback-IP transport on api.telegram.org. Falls back to PTB
     defaults (same URLs) on failure."""
     from telegram import Bot
-    from gateway.platforms.base import describe_proxy_error, resolve_proxy_url, safe_proxy_url_for_log
+    from hermes_agent.gateway.platforms.base import describe_proxy_error, resolve_proxy_url, safe_proxy_url_for_log
     proxy = None
     extra = extra or {}
     base_url = extra.get("base_url")
@@ -320,7 +320,7 @@ def _telegram_format(message):
 def _telegram_mdv2(text, *, max_units=None):
     """``text`` as the adapter's MarkdownV2 (``format_message``), or ``None`` when the adapter is
     unavailable or the escaped text exceeds ``max_units`` UTF-16 units."""
-    from gateway.platforms.base import utf16_len
+    from hermes_agent.gateway.platforms.base import utf16_len
     try:
         from plugins.platforms.telegram.adapter import TelegramAdapter
     except ImportError:
@@ -349,7 +349,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         formatted, send_parse_mode, _has_html = _telegram_format(message)
         bot = _telegram_bot(token, extra)
         from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
-        from gateway.platforms.base import BasePlatformAdapter, utf16_len
+        from hermes_agent.gateway.platforms.base import BasePlatformAdapter, utf16_len
         # Telegram accepts a numeric chat_id OR an @username string; never force-int.
         # See #13206.
         int_chat_id = normalize_telegram_chat_id(chat_id)

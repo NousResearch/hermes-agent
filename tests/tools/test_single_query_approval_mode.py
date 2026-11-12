@@ -16,7 +16,7 @@ import pytest
 
 import tools.approval as approval_module
 from tools import approval_context
-from gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
+from hermes_agent.gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
 from tools.approval import check_all_command_guards, check_dangerous_command
 from tools.approval_context import _get_single_query_approval_mode
 
@@ -313,7 +313,7 @@ class TestDaemonOneshotTurns:
 
     def test_unattended_finite_turn_approves_execute_code_but_plain_finite_stays_single_query(self, monkeypatch):
         from unittest.mock import patch as mock_patch
-        from gateway.session_finite import admit_finite, finite_turn_scope
+        from hermes_agent.gateway.session_finite import admit_finite, finite_turn_scope
         from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
         for key in ("HERMES_SINGLE_QUERY_SESSION", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK", "HERMES_YOLO_MODE"):

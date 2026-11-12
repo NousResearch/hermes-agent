@@ -22,7 +22,7 @@ _REASON_HARD_STOP = "explicit stop requested"
 _REASON_NEW_MESSAGE = "user sent a new message"
 _REASON_USER_INTERRUPT = "user interrupt"
 USER_INTERRUPT_REASONS = frozenset({_REASON_HARD_STOP, _REASON_NEW_MESSAGE, _REASON_USER_INTERRUPT})
-# ``tool_reason`` the gateway's restart/shutdown stop passes (gateway.run._INTERRUPT_TOOL_REASON_GATEWAY_SHUTDOWN).
+# ``tool_reason`` the gateway's restart/shutdown stop passes (hermes_agent.gateway.run._INTERRUPT_TOOL_REASON_GATEWAY_SHUTDOWN).
 _REASON_GATEWAY_SHUTDOWN = "gateway shutdown"
 
 

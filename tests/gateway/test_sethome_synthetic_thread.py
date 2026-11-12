@@ -13,8 +13,8 @@ message's own id is a synthetic session key, never a durable location.
 
 from types import SimpleNamespace
 
-from gateway.config import Platform
-from gateway.slash_commands import _home_thread_from_source
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.slash_commands import _home_thread_from_source
 
 
 def _source(platform=Platform.SLACK, thread_id=None, message_id=None):

@@ -24,10 +24,10 @@ from pathlib import Path
 import pytest
 
 import hermes_yaml as yaml
-from gateway.config import Platform, PlatformConfig, StreamingConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform, PlatformConfig, StreamingConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.session import SessionSource
 from tests.e2e.core.history._helpers import NO_BACKGROUND_REVIEW, OFFLINE_CONFIG
 from tests.fakes.fake_llm_provider import FakeLLMServer, Hang, Text, ToolCall, write_hermes_home
 from tests.gateway.test_run_progress_topics import _make_runner
@@ -115,7 +115,7 @@ def dispatches(monkeypatch):
 
 async def _turn(monkeypatch, config: dict, *, platform=Platform.WHATSAPP, model=None, during=None):
     """One inbound message through the real gateway turn; returns (chat, the parent's model requests)."""
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
     from tools import async_delegation
 
     home = Path(os.environ["HERMES_HOME"])
@@ -316,7 +316,7 @@ async def _two_turns(monkeypatch, config: dict, *, first_heartbeat: bool, restar
     Returns (chat, the delegate_task definition of each parent request, the persisted pin)."""
     import json
 
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
     from hermes_agent.hermes_state import SessionDB
     from tools import async_delegation
 

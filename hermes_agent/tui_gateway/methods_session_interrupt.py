@@ -152,7 +152,7 @@ def _correction_method(name: str, verb: str, accepted_status: str, supported, un
         # reaches the provider mid-compression aborts the compression (explicit_interrupt)
         # — the follow-up kills the turn that would answer it (#61042). Queued here, it
         # drains when compression finishes (the Discord-gateway contract; mirrors the
-        # interrupt→queue demotion in gateway/run_busy.py for the channel busy path).
+        # interrupt→queue demotion in hermes_agent/gateway/run_busy.py for the channel busy path).
         if _session_compression_in_flight(session):
             _enqueue_prompt(session, text, current_transport() or _stdio_transport)
             session["last_active"] = time.time()

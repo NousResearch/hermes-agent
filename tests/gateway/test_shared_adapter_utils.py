@@ -10,7 +10,7 @@ from collections import OrderedDict
 
 import pytest
 
-from gateway.platforms import helpers
+from hermes_agent.gateway.platforms import helpers
 
 
 def test_cancel_task_unwinds_and_is_self_cancel_safe():

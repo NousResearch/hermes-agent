@@ -13,11 +13,11 @@ import pytest
 import hermes_yaml as yaml
 
 from agent import secret_scope as ss
-from gateway.platforms.base import cache_media_bytes
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import _profile_runtime_scope
-from gateway.run_inbound import GatewayInboundMixin
-from gateway.run_inbound_media import rehome_inbound_media
+from hermes_agent.gateway.platforms.base import cache_media_bytes
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import _profile_runtime_scope
+from hermes_agent.gateway.run_inbound import GatewayInboundMixin
+from hermes_agent.gateway.run_inbound_media import rehome_inbound_media
 from tools.credential_files import from_agent_visible_cache_path, get_cache_directory_mounts
 
 

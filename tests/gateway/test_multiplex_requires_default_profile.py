@@ -1,7 +1,7 @@
 """Only the default profile runs the multiplexer; a named launch would split default's sessions."""
 import pytest
 
-from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+from hermes_agent.gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
 
 
 def _root(tmp_path):
@@ -14,14 +14,14 @@ def _root(tmp_path):
 
 
 def test_named_profile_launch_with_multiplex_is_a_config_verdict(tmp_path, monkeypatch):
-    from gateway import run_bootstrap
+    from hermes_agent.gateway import run_bootstrap
 
     root = _root(tmp_path)
     monkeypatch.setenv('HERMES_HOME', str(root / 'profiles' / 'foo'))
     import hermes_constants
     hermes_constants._default_hermes_root_memo = None
     written = []
-    monkeypatch.setattr('gateway.run._write_runtime_status_quiet', lambda **kw: written.append(kw))
+    monkeypatch.setattr('hermes_agent.gateway.run._write_runtime_status_quiet', lambda **kw: written.append(kw))
     with pytest.raises(SystemExit) as exc:
         run_bootstrap._launch_home_may_multiplex()
     assert exc.value.code == GATEWAY_FATAL_CONFIG_EXIT_CODE
@@ -29,7 +29,7 @@ def test_named_profile_launch_with_multiplex_is_a_config_verdict(tmp_path, monke
 
 
 def test_default_profile_launch_may_multiplex(tmp_path, monkeypatch):
-    from gateway import run_bootstrap
+    from hermes_agent.gateway import run_bootstrap
 
     root = _root(tmp_path)
     monkeypatch.setenv('HERMES_HOME', str(root))
@@ -42,17 +42,17 @@ def test_default_profile_launch_may_multiplex(tmp_path, monkeypatch):
 async def test_verdict_precedes_replacing_a_running_gateway(tmp_path, monkeypatch):
     """``hermes gateway run --replace`` on a named profile with the flag must exit EX_CONFIG while the
     healthy gateway it would have replaced keeps running."""
-    from gateway import run_bootstrap
-    from gateway.config import GatewayConfig
+    from hermes_agent.gateway import run_bootstrap
+    from hermes_agent.gateway.config import GatewayConfig
 
     root = _root(tmp_path)
     monkeypatch.setenv('HERMES_HOME', str(root / 'profiles' / 'foo'))
     import hermes_constants
     hermes_constants._default_hermes_root_memo = None
     monkeypatch.setattr('hermes_cli.resource_limits.apply_nofile_soft_limit', lambda: None)
-    monkeypatch.setattr('gateway.code_skew.record_boot_fingerprint', lambda: None)
-    monkeypatch.setattr('gateway.status.get_running_pid', lambda: 4242)
-    monkeypatch.setattr('gateway.run._write_runtime_status_quiet', lambda **kw: None)
+    monkeypatch.setattr('hermes_agent.gateway.code_skew.record_boot_fingerprint', lambda: None)
+    monkeypatch.setattr('hermes_agent.gateway.status.get_running_pid', lambda: 4242)
+    monkeypatch.setattr('hermes_agent.gateway.run._write_runtime_status_quiet', lambda **kw: None)
     replaced = []
 
     async def fake_replace(existing_pid, replace):

@@ -255,7 +255,7 @@ def test_a_recreated_dir_is_granted_again(tmp_path, monkeypatch):
 
 def test_media_release_then_recapture_grants_the_recreated_digest_dir(tmp_path, monkeypatch):
     """The production lifecycle behind (c): capture -> release_unheld_media -> capture again."""
-    from gateway import session_ingress_media as media
+    from hermes_agent.gateway import session_ingress_media as media
     from hermes_agent.hermes_state import SessionDB
 
     home = tmp_path / "home"

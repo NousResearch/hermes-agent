@@ -15,9 +15,9 @@ from urllib.parse import urlsplit
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.run import GatewayRunner
-from gateway.session_results import execution_result
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session_results import execution_result
 from tests.waiting import async_wait_until
 
 websockets = pytest.importorskip('websockets')
@@ -29,9 +29,9 @@ SOURCE = {'platform': 'telegram', 'chat_type': 'dm'}
 async def _relay(runner, platforms=('telegram',), port=0):
     """A real WebSocketRelayTransport + RelayAdapter wired as ``runner``'s primary relay, against a
     fake connector that acks every outbound. Yields ``(send, outgoing, adapter)``."""
-    from gateway.relay.adapter import RelayAdapter
-    from gateway.relay.descriptor import CapabilityDescriptor
-    from gateway.relay.ws_transport import WebSocketRelayTransport
+    from hermes_agent.gateway.relay.adapter import RelayAdapter
+    from hermes_agent.gateway.relay.descriptor import CapabilityDescriptor
+    from hermes_agent.gateway.relay.ws_transport import WebSocketRelayTransport
 
     outgoing, ready = [], asyncio.Queue()
     descriptor = CapabilityDescriptor(1, platforms[0], 'Fixture', 4096, False, True, False, 'plain', 'chars')
@@ -107,7 +107,7 @@ def _requests(authority):
 
 @pytest.mark.asyncio
 async def test_single_profile_gateway_serves_a_connector_stamped_profile(tmp_path, monkeypatch):
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_authority import initialize_session_authority
     from hermes_constants import get_hermes_home
     launch = Path(get_hermes_home()).resolve()
     # A profile of the stamped name exists on disk: the single-profile gateway must still not use it.
@@ -165,9 +165,9 @@ def _reserve_homes(tmp_path, monkeypatch, names):
 
 @pytest.mark.asyncio
 async def test_multiplexed_gateway_admits_a_connector_stamped_profile_into_its_own_ledger(tmp_path, monkeypatch):
-    from gateway.run_runtime import initialize_gateway_runtime
-    from gateway.runtime_ownership import process_ownership
-    from gateway.session_envelope import restore_native
+    from hermes_agent.gateway.run_runtime import initialize_gateway_runtime
+    from hermes_agent.gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.session_envelope import restore_native
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     root, homes = _reserve_homes(tmp_path, monkeypatch, names=('work',))
@@ -219,8 +219,8 @@ async def test_stamped_profile_completion_finds_its_relay_after_a_restart(tmp_pa
     """A persisted origin omits relay trust, and a stamped profile with no local route cannot borrow
     the primary relay by route: after a restart its background completion must still reach the relay,
     proven by the route's committed relay admission, instead of being deferred or refused."""
-    from gateway.run_runtime import initialize_gateway_runtime
-    from gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.run_runtime import initialize_gateway_runtime
+    from hermes_agent.gateway.runtime_ownership import process_ownership
 
     _root, homes = _reserve_homes(tmp_path, monkeypatch, names=('work',))
     process_ownership.reserve([home for _, home in homes])
@@ -274,7 +274,7 @@ def _discord_modal(profile):
 
 @pytest.mark.asyncio
 async def test_single_profile_gateway_serves_stamped_commands_and_discord_interactions(tmp_path, monkeypatch):
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_authority import initialize_session_authority
     from hermes_constants import get_hermes_home
     launch = Path(get_hermes_home()).resolve()
     (launch / 'profiles' / 'work').mkdir(parents=True, exist_ok=True)

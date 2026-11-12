@@ -8,7 +8,7 @@ historical inline formatting.
 
 import html as _html
 
-from gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
 def _bare(cls):
     """Bare instance without running __init__ (documented test pattern)."""
@@ -50,10 +50,10 @@ class TestFormatExecApproval:
 
     def test_deadline_line_tracks_configured_timeout(self, monkeypatch):
         """The card must say how long the user has and that silence means NO — for any timeout."""
-        monkeypatch.setattr("gateway.platforms.base.approval_timeout_seconds", lambda: 90)
+        monkeypatch.setattr("hermes_agent.gateway.platforms.base.approval_timeout_seconds", lambda: 90)
         text = _bare(_DefaultAdapter)._format_exec_approval("rm -rf /", "scary")
         assert "within 90 seconds it will NOT run" in text
-        monkeypatch.setattr("gateway.platforms.base.approval_timeout_seconds", lambda: 7200)
+        monkeypatch.setattr("hermes_agent.gateway.platforms.base.approval_timeout_seconds", lambda: 7200)
         text = _bare(_DefaultAdapter)._format_exec_approval("rm -rf /", "scary")
         assert "within 2 hours it will NOT run" in text
 

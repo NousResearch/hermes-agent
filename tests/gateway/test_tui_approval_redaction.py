@@ -5,7 +5,7 @@ transports. The TUI JSON-RPC transport is the third egress: three
 `register_gateway_notify` callbacks in `hermes_agent/tui_gateway/server.py` emit the raw
 `approval_data` (with an unredacted `command`) to the TUI client. They now
 route through the module-level `_emit_approval_request` helper, which redacts
-`payload["command"]` via the shared `gateway.run._redact_approval_command` seam
+`payload["command"]` via the shared `hermes_agent.gateway.run._redact_approval_command` seam
 before emitting.
 """
 

@@ -6,7 +6,7 @@ import pytest
 
 
 def _make_runner(holder_value=None, record_thread=False, thread_sink=None):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
     runner = GatewayRunner.__new__(GatewayRunner)
 
     store = MagicMock()
@@ -33,7 +33,7 @@ def _make_runner(holder_value=None, record_thread=False, thread_sink=None):
 
 @pytest.mark.asyncio
 async def test_returns_false_when_no_session_store():
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
     runner = GatewayRunner.__new__(GatewayRunner)
     runner.session_store = None
     runner._session_db = MagicMock()

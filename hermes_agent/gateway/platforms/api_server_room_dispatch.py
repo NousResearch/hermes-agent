@@ -11,7 +11,7 @@ try:
 except ImportError:
     web = None  # type: ignore[assignment]
 
-from gateway.platforms.api_server_room_grants import _json_error
+from hermes_agent.gateway.platforms.api_server_room_grants import _json_error
 
 _ROOM_ONLY_FIELDS = frozenset({"hosted_room_dispatch", "_room_execution_policy"})
 
@@ -28,10 +28,10 @@ async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
         f"{dispatch.home_install_id}\0{dispatch.room_id}\0"
         f"{dispatch.member_id}\0{dispatch.target_profile}")
     session_id = f"room_{hashlib.sha256(seed.encode()).hexdigest()[:32]}"
-    from gateway.session_authorities import active_authority
+    from hermes_agent.gateway.session_authorities import active_authority
     authority = active_authority(self.gateway_runner)
     if authority is not None:
-        from gateway.session_api import bind_api_steps, hosted_member_session, run_steps_off_loop
+        from hermes_agent.gateway.session_api import bind_api_steps, hosted_member_session, run_steps_off_loop
         if db is not authority.db:
             raise RuntimeError('profile_mismatch')
         # A member session the user deleted stays deleted: the room moves to its next generation.
@@ -91,10 +91,10 @@ async def _normalize_room_dispatch(
             _openai_error, "Room dispatch accepts only input and hosted_room_dispatch.",
             code="invalid_room_dispatch", status=400)
     try:
-        from gateway import hosted_rooms
-        from gateway.hosted_room_peer import GatewayRoomCatalog, HostedMemberDispatch, verify_room_grant
-        from gateway.hosted_room_execution_policy import RoomExecutionPolicy
-        from gateway.platforms.api_server_room_grants import _local_room_catalog, request_target_profile
+        from hermes_agent.gateway import hosted_rooms
+        from hermes_agent.gateway.hosted_room_peer import GatewayRoomCatalog, HostedMemberDispatch, verify_room_grant
+        from hermes_agent.gateway.hosted_room_execution_policy import RoomExecutionPolicy
+        from hermes_agent.gateway.platforms.api_server_room_grants import _local_room_catalog, request_target_profile
         dispatch = HostedMemberDispatch.from_mapping(body.get("hosted_room_dispatch"))
         verify_room_grant(self._room_grant_secret(), room_token, dispatch, permission="dispatch")
         active_profile = request_target_profile(_api_server._api_request_profile)

@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.run import _platform_has_bot_credential, _profile_runtime_scope
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.run import _platform_has_bot_credential, _profile_runtime_scope
 from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
 
@@ -20,7 +20,7 @@ def test_credentials_follow_profile_home(tmp_path):
             assert _platform_has_bot_credential(Platform.WHATSAPP, PlatformConfig()) is expected
             overridden = PlatformConfig(extra={"session_path": str(a / "platforms/whatsapp/session")})
             assert _platform_has_bot_credential(Platform.WHATSAPP, overridden)
-    from gateway.status import write_runtime_status
+    from hermes_agent.gateway.status import write_runtime_status
     from hermes_cli import gateway_multiplex_served as served
     from unittest.mock import patch
     write_runtime_status(platform="work:whatsapp", platform_state="disabled",
@@ -143,7 +143,7 @@ def test_ownership_verdicts(tmp_path):
     """free: unbound port (a stale pidfile changes nothing, and nothing is signalled). ours: bound port
     and this profile's pidfile names a live process by pid + kernel start time. Anything else bound
     is a fatal, so a secondary never probes or signals another profile's bridge."""
-    from gateway import status
+    from hermes_agent.gateway import status
     from plugins.platforms.whatsapp.adapter import _write_bridge_pidfile
     from plugins.platforms.whatsapp.bridge_ownership import check_secondary_ownership
     session = tmp_path / "session"

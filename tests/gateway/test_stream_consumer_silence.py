@@ -2,7 +2,7 @@
 
 When the agent chooses not to reply it emits a bare control marker
 (``NO_REPLY`` / ``[SILENT]`` / …).  The gateway's whole-response filter
-(``gateway/response_filters.is_intentional_silence_agent_result``) suppresses
+(``hermes_agent/gateway/response_filters.is_intentional_silence_agent_result``) suppresses
 this on the non-streaming delivery path, but the *streaming* path
 (``GatewayStreamConsumer``) previously had no silence awareness: it edited the
 raw marker onto the screen delta-by-delta and finalized it *before* the
@@ -24,11 +24,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.response_filters import (
+from hermes_agent.gateway.response_filters import (
     is_intentional_silence_response,
     is_partial_silence_marker,
 )
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 
 # --------------------------------------------------------------------------
@@ -37,7 +37,7 @@ from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 def test_partial_predicate_agrees_with_exact_on_full_markers():
     """Every exact silence marker is also a (trivial) partial of itself."""
-    from gateway.response_filters import LIVE_GATEWAY_SILENT_MARKERS
+    from hermes_agent.gateway.response_filters import LIVE_GATEWAY_SILENT_MARKERS
 
     for marker in LIVE_GATEWAY_SILENT_MARKERS:
         assert is_partial_silence_marker(marker) is True

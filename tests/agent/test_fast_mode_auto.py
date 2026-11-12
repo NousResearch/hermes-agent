@@ -96,7 +96,7 @@ def test_fast_auto_and_cold_parse_and_slash_command(monkeypatch):
     if not hasattr(config_mod, "save_env_value_secure"):
         config_mod.save_env_value_secure = lambda key, value: {"success": True}
     import cli as cli_mod
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
     from hermes_cli.commands import COMMAND_REGISTRY
     from hermes_cli.config import DEFAULT_CONFIG
 
@@ -104,7 +104,7 @@ def test_fast_auto_and_cold_parse_and_slash_command(monkeypatch):
     for raw, expected in (("auto", "auto"), ("COLD", "cold"), ("fast", "priority"), ("", None), ("bogus", None)):
         assert cli_mod._parse_service_tier_config(raw) == expected
         monkeypatch.setattr(
-            "gateway.run._load_gateway_config", lambda: {"agent": {"service_tier": raw}}
+            "hermes_agent.gateway.run._load_gateway_config", lambda: {"agent": {"service_tier": raw}}
         )
         assert GatewayRunner._load_service_tier() == expected
     assert DEFAULT_CONFIG["agent"]["service_tier"] == ""

@@ -202,7 +202,7 @@ Google Chat 的 `media.upload` 端点会硬拒绝 service account 认证：
 4. 在宿主机上，向 Hermes 注册该客户端：
 
 ```bash
-python -m gateway.platforms.google_chat_user_oauth \
+python -m hermes_agent.gateway.platforms.google_chat_user_oauth \
     --client-secret /path/to/client_secret.json
 ```
 
@@ -262,7 +262,7 @@ Chat API 默认配额为每个 space 每分钟 60 条消息。如果 agent 产�
 一次性宿主机设置未完成。在运行 Hermes 的宿主机终端中执行：
 
 ```bash
-python -m gateway.platforms.google_chat_user_oauth \
+python -m hermes_agent.gateway.platforms.google_chat_user_oauth \
     --client-secret /path/to/client_secret.json
 ```
 

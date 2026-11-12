@@ -39,17 +39,17 @@ except ImportError:
     HTTPX_AVAILABLE = False
     httpx = None  # type: ignore[assignment]
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms._shared import config_connected_extra
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms._shared import config_connected_extra
 from agent.i18n import t
-from gateway.platforms.base import BasePlatformAdapter, ExecApprovalPrompt, SendResult, transcode_to_ogg_opus
-from gateway.platforms.base_exec_approval import ea_header_text
-from gateway.platforms.helpers import bounded_put
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin, _get_wsecret
-from gateway.platforms.access_policy_mixin import OPTIN_TRUTHY as _OPTIN_TRUTHY
-from gateway.platforms.media_cache import ext_for_mime
-from gateway import rich_sent_store
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, ExecApprovalPrompt, SendResult, transcode_to_ogg_opus
+from hermes_agent.gateway.platforms.base_exec_approval import ea_header_text
+from hermes_agent.gateway.platforms.helpers import bounded_put
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin, _get_wsecret
+from hermes_agent.gateway.platforms.access_policy_mixin import OPTIN_TRUTHY as _OPTIN_TRUTHY
+from hermes_agent.gateway.platforms.media_cache import ext_for_mime
+from hermes_agent.gateway import rich_sent_store
 from hermes_constants import get_hermes_dir
 
 logger = logging.getLogger(__name__)
@@ -277,7 +277,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 return False
         # Tighter keepalive so idle CLOSE_WAIT drains promptly.
         # Outbound HTTP client. See #18451.
-        from gateway.platforms._http_client_limits import platform_httpx_limits
+        from hermes_agent.gateway.platforms._http_client_limits import platform_httpx_limits
         self._http_client = httpx.AsyncClient(timeout=30.0, limits=platform_httpx_limits())
         # client_max_size backstops the bounded reader in _handle_webhook.
         # Inbound webhook server. client_max_size backstops the bounded reader in _handle_webhook — aiohttp
@@ -287,7 +287,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         app.router.add_get(self._webhook_path, self._handle_verify)
         app.router.add_post(self._webhook_path, self._handle_webhook)
         # Shared-listener mode (multiplex secondary): no bind; served at /p/<profile>/<webhook_path>.
-        from gateway.platforms.shared_ingress import bind_listener
+        from hermes_agent.gateway.platforms.shared_ingress import bind_listener
         self._runner = await bind_listener(self, app, self._webhook_host, self._webhook_port, self._webhook_path)
         self._mark_connected()
         if self._runner is not None:
@@ -881,15 +881,15 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return session_key
 
     async def _refused_tap(self, to: str, requester: Optional[str]) -> bool:
-        """Answer a tap ``gateway.approval_actor`` refused (left pending for its requester)."""
+        """Answer a tap ``hermes_agent.gateway.approval_actor`` refused (left pending for its requester)."""
         if requester:
-            from gateway.approval_actor import refusal_text
+            from hermes_agent.gateway.approval_actor import refusal_text
             await self._reply_best_effort(to, refusal_text(requester), "[whatsapp_cloud] prompt refusal reply failed")
         return bool(requester)
 
     async def _handle_clarify_tap(self, to: str, inner: dict[str, Any], parts: list) -> bool:
         _, clarify_id, choice = parts
-        from gateway.approval_actor import clarify_refusal
+        from hermes_agent.gateway.approval_actor import clarify_refusal
         if await self._refused_tap(to, clarify_refusal(clarify_id, to, extra=self.config.extra)):
             return True
         session_key = self._pop_tap_state(
@@ -934,7 +934,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     async def _handle_approval_tap(self, to: str, inner: dict[str, Any], parts: list) -> bool:
         _, approval_id, choice = parts
-        from gateway.approval_actor import approval_refusal
+        from hermes_agent.gateway.approval_actor import approval_refusal
         if await self._refused_tap(to, approval_refusal(self._exec_approval_state.get(approval_id) or "", to, extra=self.config.extra,
                                                         request_id=self._approval_request_ids().get(approval_id), choice=choice)):
             return True
@@ -963,7 +963,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     async def _handle_slash_confirm_tap(self, to: str, inner: dict[str, Any], parts: list) -> bool:
         _, choice, confirm_id = parts
-        from gateway.approval_actor import slash_confirm_refusal
+        from hermes_agent.gateway.approval_actor import slash_confirm_refusal
         if await self._refused_tap(to, slash_confirm_refusal(self._slash_confirm_state.get(confirm_id) or "", confirm_id, to,
                                                              extra=self.config.extra)):
             return True
@@ -1136,7 +1136,7 @@ def register(ctx) -> None:
     ``whatsapp_cloud_unconfigured`` fatal error (same outcome as the former core wiring). No
     ``standalone_sender_fn`` / ``max_message_length``: out-of-process ``send_message`` had no
     WhatsApp Cloud sender in core either, and ``send()`` chunks itself."""
-    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
+    from . import gateway_env  # env -> GatewayConfig bridge (hermes_agent.gateway.config_env)
     ctx.register_platform(
         name="whatsapp_cloud", label="WhatsApp Business (Cloud)", adapter_factory=WhatsAppCloudAdapter,
         dashboard_label="WhatsApp Cloud API",

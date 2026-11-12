@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.platform_registry import platform_registry
-from gateway.relay import register_relay_adapter, relay_url
-from gateway.relay.adapter import RelayAdapter
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platform_registry import platform_registry
+from hermes_agent.gateway.relay import register_relay_adapter, relay_url
+from hermes_agent.gateway.relay.adapter import RelayAdapter
 
 
 @pytest.fixture(autouse=True)
@@ -30,7 +30,7 @@ def _clean_registry(monkeypatch):
 
 def test_off_when_no_url_configured(monkeypatch):
     # No GATEWAY_RELAY_URL and (assuming) no gateway.relay_url in config.
-    monkeypatch.setattr("gateway.relay.relay_url", lambda: None)
+    monkeypatch.setattr("hermes_agent.gateway.relay.relay_url", lambda: None)
     assert register_relay_adapter() is False
     assert platform_registry.is_registered("relay") is False
 
@@ -57,7 +57,7 @@ class TestConfigRegistrationAgreementUnderMultiplexScope:
         self, tmp_path, monkeypatch
     ):
         from agent import secret_scope as ss
-        from gateway.config import Platform, load_gateway_config
+        from hermes_agent.gateway.config import Platform, load_gateway_config
 
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -104,7 +104,7 @@ class TestConfigRegistrationAgreementUnderMultiplexScope:
         self, tmp_path, monkeypatch
     ):
         from agent import secret_scope as ss
-        from gateway.config import Platform, load_gateway_config
+        from hermes_agent.gateway.config import Platform, load_gateway_config
 
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

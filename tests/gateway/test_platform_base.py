@@ -1,4 +1,4 @@
-"""Tests for gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
+"""Tests for hermes_agent/gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
 
 import logging
 import os
@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway.platforms.base import (
+from hermes_agent.gateway.platforms.base import (
     BasePlatformAdapter,
     SendResult,
     cache_image_from_bytes,
@@ -18,13 +18,13 @@ from gateway.platforms.base import (
     _prefix_within_utf16_limit,
     cache_audio_from_bytes,
 )
-from gateway.platforms.base_log_safety import safe_url_for_log
-from gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.platforms.base_log_safety import safe_url_for_log
+from hermes_agent.gateway.platforms.event import MessageEvent
 
 
 def test_media_delivery_denies_encrypted_bitwarden_cache(tmp_path, monkeypatch):
     """Encrypted Bitwarden cache is covered by the media credential guard."""
-    from gateway.platforms import base
+    from hermes_agent.gateway.platforms import base
 
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
@@ -45,7 +45,7 @@ class TestInboundMediaSizeCap:
 
 
     def test_image_bytes_rejected_when_oversized(self, monkeypatch):
-        from gateway.platforms import base
+        from hermes_agent.gateway.platforms import base
         monkeypatch.setattr(base, "get_inbound_media_max_bytes", lambda: 16)
         with pytest.raises(ValueError, match="Inbound image payload is too large"):
             cache_image_from_bytes(self._PNG, ext=".png")
@@ -69,7 +69,7 @@ class TestSafeUrlForLog:
 class TestCacheAudioFromBytes:
     def test_sniffs_mp4_quicktime_audio_even_when_ext_is_ogg(self, tmp_path):
         payload = b"\x00\x00\x00\x14ftypqt  " + b"\x00" * 32
-        with patch("gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path):
+        with patch("hermes_agent.gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path):
             result = cache_audio_from_bytes(payload, ext=".ogg")
 
         saved = tmp_path / os.path.basename(result)
@@ -415,7 +415,7 @@ class TestMediaExtensionAllowlistParity:
         tag survives visibly instead of vanishing (the core of issue #34517).
         Validated unknown-extension paths DO deliver — see
         TestUniversalMediaEgress (#36060)."""
-        from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
+        from hermes_agent.gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
         text = "Saved to MEDIA:/tmp/data.weirdext done"
         media, _ = BasePlatformAdapter.extract_media(text)
         assert media == []  # nonexistent path fails validation, not delivered
@@ -428,7 +428,7 @@ class TestExtensionlessMediaDelivery:
 
     def _patch_allow_root(self, monkeypatch, root):
         monkeypatch.setattr(
-            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+            "hermes_agent.gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
             (str(root),),
         )
         monkeypatch.delenv("HERMES_MEDIA_DELIVERY_STRICT", raising=False)
@@ -459,7 +459,7 @@ class TestUniversalMediaEgress:
 
     def _patch_allow_root(self, monkeypatch, root):
         monkeypatch.setattr(
-            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+            "hermes_agent.gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
             (str(root),),
         )
         monkeypatch.delenv("HERMES_MEDIA_DELIVERY_STRICT", raising=False)
@@ -498,7 +498,7 @@ class TestUniversalMediaEgress:
 class TestMediaDeliveryPathValidation:
     def _patch_roots(self, monkeypatch, *roots):
         monkeypatch.setattr(
-            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+            "hermes_agent.gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
             tuple(roots),
         )
         # All tests in this class cover strict-mode behavior (allowlist +
@@ -606,7 +606,7 @@ class TestMediaDeliveryDefaultMode:
         # validate_media_delivery_path in these tests is the
         # default-mode "anything not denied" branch.
         monkeypatch.setattr(
-            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+            "hermes_agent.gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
             tuple(roots),
         )
         # Pin strict OFF — the public default. Tests that exercise the
@@ -652,11 +652,11 @@ class TestMediaDeliveryDefaultMode:
         secret.write_text('{"access_token": "live-bearer-abc123"}')
         monkeypatch.setenv("HOME", str(fake_home))
         monkeypatch.setattr(
-            "gateway.platforms.base._HERMES_HOME",
+            "hermes_agent.gateway.platforms.base._HERMES_HOME",
             hermes_dir,
         )
         monkeypatch.setattr(
-            "gateway.platforms.base._HERMES_ROOT",
+            "hermes_agent.gateway.platforms.base._HERMES_ROOT",
             hermes_dir,
         )
 
@@ -674,8 +674,8 @@ class TestMediaDeliveryDefaultMode:
         secret = hermes_dir / rel
         secret.write_text("t" * 43 + "\n")
         monkeypatch.setenv("HOME", str(fake_home))
-        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
-        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
+        monkeypatch.setattr("hermes_agent.gateway.platforms.base._HERMES_HOME", hermes_dir)
+        monkeypatch.setattr("hermes_agent.gateway.platforms.base._HERMES_ROOT", hermes_dir)
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(secret)) is None
 
@@ -695,8 +695,8 @@ class TestMediaDeliveryDefaultMode:
         token = hermes_dir / "google_token.json"
         token.write_text('{"access_token": "***", "refresh_token": "***"}')
         monkeypatch.setenv("HOME", str(fake_home))
-        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
-        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
+        monkeypatch.setattr("hermes_agent.gateway.platforms.base._HERMES_HOME", hermes_dir)
+        monkeypatch.setattr("hermes_agent.gateway.platforms.base._HERMES_ROOT", hermes_dir)
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(token)) is None
 
@@ -717,8 +717,8 @@ class TestMediaDeliveryDefaultMode:
         artifact = hermes_dir / "adhoc_report.pdf"
         artifact.write_bytes(b"%PDF-1.4")  # fresh mtime
         monkeypatch.setenv("HOME", str(fake_home))
-        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
-        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
+        monkeypatch.setattr("hermes_agent.gateway.platforms.base._HERMES_HOME", hermes_dir)
+        monkeypatch.setattr("hermes_agent.gateway.platforms.base._HERMES_ROOT", hermes_dir)
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(artifact)) == str(artifact.resolve())
 
@@ -734,8 +734,8 @@ class TestMediaDeliveryDefaultMode:
         hermes_dir = fake_home / ".hermes"
         hermes_dir.mkdir(parents=True)
         monkeypatch.setenv("HOME", str(fake_home))
-        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
-        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
+        monkeypatch.setattr("hermes_agent.gateway.platforms.base._HERMES_HOME", hermes_dir)
+        monkeypatch.setattr("hermes_agent.gateway.platforms.base._HERMES_ROOT", hermes_dir)
         board = hermes_dir / "kanban" / "boards" / "team-a"
         (board / "attachments").mkdir(parents=True)
 
@@ -762,8 +762,8 @@ class TestMediaDeliveryDefaultMode:
         hermes_root = fake_home / ".hermes"
         profile_b = hermes_root / "profiles" / "beta"
         monkeypatch.setenv("HOME", str(fake_home))
-        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_root)
-        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_root)
+        monkeypatch.setattr("hermes_agent.gateway.platforms.base._HERMES_HOME", hermes_root)
+        monkeypatch.setattr("hermes_agent.gateway.platforms.base._HERMES_ROOT", hermes_root)
 
         denied = [".env", "auth.json", "state.db", "state.db-wal", "config.yaml",
                   "sessions/20260101_abc.json", "mcp-tokens/server.json"]
@@ -816,7 +816,7 @@ class TestMediaDeliveryDefaultMode:
         monkeypatch.setenv("USERPROFILE", str(fake_home))
         # $HOME is itself on the denied-prefix list, mirroring /root.
         monkeypatch.setattr(
-            "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
+            "hermes_agent.gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
             (str(fake_home),),
         )
 
@@ -850,11 +850,11 @@ class TestMediaDeliveryDefaultMode:
         fake_home.mkdir(parents=True)
         monkeypatch.setenv("HOME", str(fake_home))
         monkeypatch.setattr(
-            "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
+            "hermes_agent.gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
             (str(denied_root),),
         )
         monkeypatch.setattr(
-            "gateway.platforms.base._HERMES_ROOT", hermes_root
+            "hermes_agent.gateway.platforms.base._HERMES_ROOT", hermes_root
         )
 
         assert (
@@ -881,7 +881,7 @@ class TestMediaDeliveryDefaultMode:
         link.symlink_to(key)
         monkeypatch.setenv("HOME", str(fake_home))
         monkeypatch.setattr(
-            "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
+            "hermes_agent.gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
             (str(fake_home),),
         )
 
@@ -894,7 +894,7 @@ def test_windows_drive_letter_host_mount_parses(monkeypatch):
     Windows; the Windows lanes run the marked twin below)."""
     import json
 
-    from gateway.platforms import base
+    from hermes_agent.gateway.platforms import base
 
     monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", json.dumps(["C:/data:/workspace:ro"]))
     monkeypatch.setattr(base, "_resolve_path", lambda p, **_k: p)
@@ -908,7 +908,7 @@ def test_windows_drive_letter_host_mount_parses_on_windows(monkeypatch):
     False, which is the case the fix is for (the lanes only run ``-m platforms``)."""
     import json
 
-    from gateway.platforms import base
+    from hermes_agent.gateway.platforms import base
 
     monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", json.dumps(["C:/data:/workspace:ro"]))
     monkeypatch.setattr(base, "_resolve_path", lambda p, **_k: p)
@@ -1060,13 +1060,13 @@ class TestShouldSendMediaAsAudio:
     """Audio-routing policy shared by gateway + scheduler + send_message."""
 
     def test_unknown_extension_returns_false(self):
-        from gateway.platforms.base import should_send_media_as_audio
+        from hermes_agent.gateway.platforms.base import should_send_media_as_audio
         assert should_send_media_as_audio(None, ".png") is False
         assert should_send_media_as_audio("telegram", ".pdf") is False
 
 
     def test_telegram_ogg_opus_only_when_voice_flagged(self):
-        from gateway.platforms.base import should_send_media_as_audio
+        from hermes_agent.gateway.platforms.base import should_send_media_as_audio
         assert should_send_media_as_audio("telegram", ".ogg", is_voice=True) is True
         assert should_send_media_as_audio("telegram", ".opus", is_voice=True) is True
         assert should_send_media_as_audio("telegram", ".ogg") is False
@@ -1100,7 +1100,7 @@ class TestIsSenderAuthorized:
             async def get_chat_info(self, *a):
                 return {}
 
-        from gateway.config import Platform, PlatformConfig
+        from hermes_agent.gateway.config import Platform, PlatformConfig
 
         return StubAdapter(config=PlatformConfig(enabled=True, token="test"),
                            platform=Platform.TELEGRAM)
@@ -1161,7 +1161,7 @@ class TestTruncateMessage:
             async def get_chat_info(self, *a):
                 return {}
 
-        from gateway.config import Platform, PlatformConfig
+        from hermes_agent.gateway.config import Platform, PlatformConfig
 
         config = PlatformConfig(enabled=True, token="test")
         return StubAdapter(config=config, platform=Platform.TELEGRAM)
@@ -1249,7 +1249,7 @@ class TestGetHumanDelay:
         env = {"HERMES_HUMAN_DELAY_MODE": "custom", "HERMES_HUMAN_DELAY_MIN_MS": "10",
                "HERMES_HUMAN_DELAY_MAX_MS": "20"}
         with patch.dict(os.environ, env), patch(
-            "gateway.platforms.base.random.uniform", return_value=1.5
+            "hermes_agent.gateway.platforms.base.random.uniform", return_value=1.5
         ) as uniform:
             assert self._adapter_with(None)._get_human_delay() == 0.0
             uniform.assert_not_called()
@@ -1265,8 +1265,8 @@ class TestGetHumanDelay:
         ({"human_delay": {"mode": "custom", "min_ms": 3000, "max_ms": 1000}}, (800, 2500), "human_delay.max_ms=1000"),
     ])
     def test_config_bounds_are_validated_with_a_warning_naming_the_key(self, cfg, expected, warned_key, caplog):
-        from gateway.run import GatewayRunner
-        with caplog.at_level(logging.WARNING, logger="gateway.run"):
+        from hermes_agent.gateway.run import GatewayRunner
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.run"):
             assert GatewayRunner._human_delay_from_config(cfg) == expected
         if warned_key is None:
             assert "human_delay" not in caplog.text
@@ -1346,7 +1346,7 @@ class TestProxyKwargsForAiohttp:
     def test_http_proxy_uses_connector_when_aiohttp_socks_available(self):
         pytest.importorskip("aiohttp_socks")
         from unittest.mock import MagicMock
-        from gateway.platforms.base import proxy_kwargs_for_aiohttp
+        from hermes_agent.gateway.platforms.base import proxy_kwargs_for_aiohttp
 
         sentinel = MagicMock(name="ProxyConnector")
         with patch("aiohttp_socks.ProxyConnector.from_url", return_value=sentinel):
@@ -1366,7 +1366,7 @@ class TestMediaDeliveryDiagnosability:
         outside.write_bytes(b"OggS")
         with patch.dict(os.environ, {"HERMES_MEDIA_DELIVERY_STRICT": "1",
                                      "HERMES_MEDIA_TRUST_RECENT_FILES": "0"}), \
-                patch("gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS", ()):
+                patch("hermes_agent.gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS", ()):
             with caplog.at_level("WARNING"):
                 out = BasePlatformAdapter.filter_media_delivery_paths([(str(outside), False)])
         assert out == []
@@ -1409,7 +1409,7 @@ class _CapturingAdapter(BasePlatformAdapter):
     """
 
     def __init__(self):
-        from gateway.config import Platform, PlatformConfig
+        from hermes_agent.gateway.config import Platform, PlatformConfig
         super().__init__(PlatformConfig(enabled=True), Platform.TELEGRAM)
         self.sent: list[dict] = []
 
@@ -1423,7 +1423,7 @@ class _CapturingAdapter(BasePlatformAdapter):
         return {"name": chat_id, "type": "dm"}
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
-        from gateway.platforms.base import SendResult
+        from hermes_agent.gateway.platforms.base import SendResult
         self.sent.append({
             "chat_id": chat_id,
             "content": content,
@@ -1600,7 +1600,7 @@ class TestDockerProfileSandboxMediaTranslation:
         import logging
 
         self._enable_docker(monkeypatch)
-        with caplog.at_level(logging.WARNING, logger="gateway.platforms.base"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.platforms.base"):
             resolved = BasePlatformAdapter.validate_media_delivery_path(
                 "/workspace/ghost.png", session_key=self.SESSION_KEY
             )
@@ -1642,7 +1642,7 @@ class TestPlatformLockTakeoverGovernance:
     """
 
     def _make_adapter(self, *, takeover_allowed: bool):
-        from gateway.config import Platform, PlatformConfig
+        from hermes_agent.gateway.config import Platform, PlatformConfig
 
         adapter = _LockGovernanceProbeAdapter(
             config=PlatformConfig(), platform=Platform.DISCORD
@@ -1651,7 +1651,7 @@ class TestPlatformLockTakeoverGovernance:
         return adapter
 
     def test_no_takeover_without_replace_authority(self, tmp_path, monkeypatch):
-        from gateway import status
+        from hermes_agent.gateway import status
 
         existing = {
             "pid": 4242,
@@ -1680,7 +1680,7 @@ class TestPlatformLockTakeoverGovernance:
         assert adapter._fatal_error_code == "discord-token_lock"
 
     def test_takeover_authority_consumed_once(self, tmp_path, monkeypatch):
-        from gateway import status
+        from hermes_agent.gateway import status
 
         existing = {
             "pid": 4242,

@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from agent import secret_scope as ss
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 
 @pytest.fixture(autouse=True)
@@ -102,7 +102,7 @@ def _signal_reactions(mod):
 def _discord(mod, method):
     adapter = object.__new__(mod.DiscordAdapter)
     adapter.config = PlatformConfig(enabled=True)
-    adapter.platform = adapter.config and __import__("gateway.config", fromlist=["Platform"]).Platform.DISCORD
+    adapter.platform = adapter.config and __import__("hermes_agent.gateway.config", fromlist=["Platform"]).Platform.DISCORD
     return getattr(adapter, method)()
 
 

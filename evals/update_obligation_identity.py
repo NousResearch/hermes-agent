@@ -22,7 +22,7 @@ try:
     for name in ["alpha", "beta"]:
         home = root / ".hermes" / "profiles" / name
         home.mkdir(parents=True)
-        code = "import sys,time; sys.path.insert(0,sys.argv[1]); from gateway.status import write_runtime_status; write_runtime_status(gateway_state='running'); print('ready',flush=True); time.sleep(120)"
+        code = "import sys,time; sys.path.insert(0,sys.argv[1]); from hermes_agent.gateway.status import write_runtime_status; write_runtime_status(gateway_state='running'); print('ready',flush=True); time.sleep(120)"
         p = subprocess.Popen(
             [sys.executable, "-c", code, str(repo)],
             cwd=repo,

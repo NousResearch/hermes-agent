@@ -327,7 +327,7 @@ class SessionGatewayMixin:
             if ancestors:
                 # An explicit repoint moved these rows to this lane: the local conversation whose receipt
                 # names one of them goes with it in the same write, or it would match neither lane (#143286).
-                from gateway.session_route_recovery import _messaging_platform
+                from hermes_agent.gateway.session_route_recovery import _messaging_platform
                 from hermes_agent.hermes_state_local import hand_off_conversations, moved_receipts
                 moved = {row[0] for row in conn.execute(
                     f"{_COMPRESSION_LINEAGE_CTE} SELECT id FROM compression_lineage", (session_id,))}

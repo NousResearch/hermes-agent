@@ -38,7 +38,7 @@ def test_interpreter_kill_rejection_names_the_owned_process_route(tmp_path, monk
     monkeypatch.setenv("HERMES_SUPERVISED_CHILD", "1")
     for marker in ("INVOCATION_ID", "XPC_SERVICE_NAME", "HERMES_S6_SUPERVISED_CHILD", "HERMES_GATEWAY_EXTERNAL_SUPERVISOR"):
         monkeypatch.delenv(marker, raising=False)
-    monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: os.getpid())
+    monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda *a, **k: os.getpid())
 
     def run(command):
         return gateway_lifecycle_block(

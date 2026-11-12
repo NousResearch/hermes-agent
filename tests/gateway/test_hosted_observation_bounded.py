@@ -13,7 +13,7 @@ import pytest
 
 
 def _server(home):
-    from gateway.control_socket import GatewayControlServer
+    from hermes_agent.gateway.control_socket import GatewayControlServer
     descriptor = {'runtime_protocol': 1, 'state': 'ready', 'instance_id': 'test',
                   'authority_epoch': 1, 'served_profiles': [{'home': str(home), 'profile_id': str(home)}],
                   'capabilities': ['session-authority-v1'], 'api_origin': 'http://127.0.0.1:1',
@@ -22,7 +22,7 @@ def _server(home):
 
 
 def _owner_pair(hosted_owner, tmp_path):
-    from gateway.session_hosted_transport import install_hosted_transport
+    from hermes_agent.gateway.session_hosted_transport import install_hosted_transport
     authority, loop, _, _ = hosted_owner
     source, target = tmp_path / 'source', tmp_path / 'target'
     source.mkdir(mode=0o700)
@@ -39,9 +39,9 @@ def _owner_pair(hosted_owner, tmp_path):
 
 
 def test_watcher_delivers_terminal_once_with_bounded_polls_past_the_response_cap(hosted_owner, tmp_path, monkeypatch):
-    from gateway import session_hosted_transport as transport
-    from gateway.control_socket import _MAX_RESPONSE_BYTES
-    from gateway.hosted_room_driver import TaskIdentity
+    from hermes_agent.gateway import session_hosted_transport as transport
+    from hermes_agent.gateway.control_socket import _MAX_RESPONSE_BYTES
+    from hermes_agent.gateway.hosted_room_driver import TaskIdentity
     from hermes_agent.hermes_state_runtime import claim_session_input, settle_session_input
     from hermes_agent.tui_gateway.hosted_room_driver import _bounded_terminal_result
     authority, loop, _, _ = hosted_owner
@@ -91,8 +91,8 @@ def test_watcher_delivers_terminal_once_with_bounded_polls_past_the_response_cap
 
 
 def test_oversized_owner_response_is_a_distinct_structured_error(hosted_owner, tmp_path):
-    from gateway.control_socket import _MAX_RESPONSE_BYTES
-    from gateway.session_hosted_transport import HostedRoomOwnerRPC
+    from hermes_agent.gateway.control_socket import _MAX_RESPONSE_BYTES
+    from hermes_agent.gateway.session_hosted_transport import HostedRoomOwnerRPC
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     _, loop, _, _ = hosted_owner
     source, target, servers = _owner_pair(hosted_owner, tmp_path)

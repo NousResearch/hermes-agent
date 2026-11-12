@@ -12,8 +12,8 @@ async def test_previous_response_chain_keeps_turn_user_api_content(api, owner, s
     seen = []
 
     async def handle(event):
-        from gateway.session_api_turn import api_execution
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_api_turn import api_execution
+        from hermes_agent.gateway.session_results import execution_result
         history = api_execution.get()['history']
         seen.append(history)
         user = {'role': 'user', 'content': event.text}

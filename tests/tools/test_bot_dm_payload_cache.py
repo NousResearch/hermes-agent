@@ -6,7 +6,7 @@ owns per-delivery cleanup, and `_write_dm_file` sweeps opportunistically —
 but a gateway that never sends another DM would still keep orphans forever.
 `cleanup_bot_dm_cache` follows the same contract as the other
 ``cleanup_*_cache`` helpers (returns the number of files removed) so the
-gateway housekeeping loop in ``gateway/run.py`` prunes this cache on the
+gateway housekeeping loop in ``hermes_agent/gateway/run.py`` prunes this cache on the
 same hourly cadence as the media caches.
 """
 

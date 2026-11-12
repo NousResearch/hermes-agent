@@ -6,9 +6,9 @@ from aiohttp.test_utils import TestClient, TestServer
 
 @pytest.mark.asyncio
 async def test_chat_completion_admission_carries_durable_run_owner(api, owner):
-    from gateway.session_api_turn import owns_api_run
+    from hermes_agent.gateway.session_api_turn import owns_api_run
     async def handle(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         execution_result.get()['result'] = {'final_response': 'ok', 'messages': []}
         return 'ok'
     owner.runner._handle_message = handle

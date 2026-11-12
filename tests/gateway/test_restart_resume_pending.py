@@ -32,10 +32,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import GatewayConfig, HomeChannel, Platform
-from gateway.platforms.base import SendResult
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import (
+from hermes_agent.gateway.config import GatewayConfig, HomeChannel, Platform
+from hermes_agent.gateway.platforms.base import SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import (
     _AGENT_PENDING_SENTINEL,
     _auto_continue_freshness_window,
     _coerce_gateway_timestamp,
@@ -45,7 +45,7 @@ from gateway.run import (
     _should_clear_resume_pending_after_turn,
     build_resume_recovery_note,
 )
-from gateway.session import SessionEntry, SessionSource, SessionStore
+from hermes_agent.gateway.session import SessionEntry, SessionSource, SessionStore
 from tests.gateway.restart_test_helpers import (
     RestartTestAdapter,
     make_restart_runner,
@@ -84,7 +84,7 @@ def _make_store(tmp_path):
 
 
 def _build_agent_history(history: list) -> list:
-    """Mirror gateway/run.py's ``history → agent_history`` conversion.
+    """Mirror hermes_agent/gateway/run.py's ``history → agent_history`` conversion.
 
     This is the transformation that strips ``timestamp`` off tool/tool_call
     rows before the agent sees them.  Tests that check the freshness gate
@@ -116,7 +116,7 @@ def _simulate_note_injection(
     agent_history: list | None = None,
     window_secs: float | None = None,
 ) -> str:
-    """Mirror the note-injection logic in gateway/run.py _run_agent().
+    """Mirror the note-injection logic in hermes_agent/gateway/run.py _run_agent().
 
     The freshness signal reads ``history[-1].timestamp`` (the raw transcript
     row), NOT ``agent_history[-1].timestamp`` (which has been stripped).
@@ -157,7 +157,7 @@ def _simulate_note_injection(
     if is_resume_pending:
         reason = getattr(resume_entry, "resume_reason", None) or "restart_timeout"
         # Real production note builder — extracted to module scope in
-        # gateway/run.py so tests exercise the actual strings.
+        # hermes_agent/gateway/run.py so tests exercise the actual strings.
         message = build_resume_recovery_note(reason, message)
     elif has_fresh_tool_tail:
         message = (
@@ -168,7 +168,7 @@ def _simulate_note_injection(
             + message
         )
 
-    # Empty-turn safety net: mirrors gateway/run.py — a blank
+    # Empty-turn safety net: mirrors hermes_agent/gateway/run.py — a blank
     # auto-resume turn on a resume_pending session must never reach the model.
     if (
         isinstance(message, str)
@@ -551,8 +551,8 @@ async def test_drain_timeout_marks_resume_pending():
     session_store.mark_resume_pending = MagicMock(return_value=True)
     runner.session_store = session_store
 
-    with patch("gateway.status.remove_pid_file"), patch(
-        "gateway.status.publish_runtime_status"
+    with patch("hermes_agent.gateway.status.remove_pid_file"), patch(
+        "hermes_agent.gateway.status.publish_runtime_status"
     ):
         await runner.stop()
 
@@ -685,7 +685,7 @@ async def test_startup_auto_resume_freshness_survives_spring_forward(monkeypatch
                 return now if tz is None else datetime.fromtimestamp(now.timestamp(), tz=tz)
 
         # Freeze both wall clocks the startup path could read.
-        monkeypatch.setattr("gateway.run_startup.datetime", _FrozenDatetime, raising=False)
+        monkeypatch.setattr("hermes_agent.gateway.run_startup.datetime", _FrozenDatetime, raising=False)
         monkeypatch.setattr(time, "time", lambda: now.timestamp())
         entry = SessionEntry(
             session_key="agent:main:telegram:dm:dst-chat",
@@ -1043,7 +1043,7 @@ class TestStuckLoopEscalation:
         fresh-session despite resume_pending being set."""
         import json
 
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         store = _make_store(tmp_path)
         source = _make_source()
@@ -1055,7 +1055,7 @@ class TestStuckLoopEscalation:
         counts_file = tmp_path / ".restart_failure_counts"
         counts_file.write_text(json.dumps({entry.session_key: 3}))
 
-        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        monkeypatch.setattr("hermes_agent.gateway.run._hermes_home", tmp_path)
         runner = object.__new__(GatewayRunner)
         runner.session_store = store
 
@@ -1165,7 +1165,7 @@ async def test_auto_resume_runs_agent_exactly_once_through_full_path():
     runner.session_store._entries = {session_key: pending_entry}
 
     # Wire the REAL runner pipeline that _handle_message depends on.
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner._handle_message = GatewayRunner._handle_message.__get__(
         runner, GatewayRunner

@@ -3,9 +3,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_authority import LiveSession, SessionAuthority
-from gateway.session_contract import SessionRef
-from gateway.session_controls import AuthorityConnection
+from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+from hermes_agent.gateway.session_contract import SessionRef
+from hermes_agent.gateway.session_controls import AuthorityConnection
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 

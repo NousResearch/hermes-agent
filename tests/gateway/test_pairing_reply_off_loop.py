@@ -11,10 +11,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import Platform
-from gateway.pairing import PairingStore
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.pairing import PairingStore
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource
 from tests.lock_contention import watch_file_lock_contention
 
 

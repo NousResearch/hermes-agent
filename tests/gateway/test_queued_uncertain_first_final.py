@@ -12,8 +12,8 @@ import os
 
 import pytest
 
-from gateway import delivery_ledger as dl
-from gateway.platforms.base import SendResult
+from hermes_agent.gateway import delivery_ledger as dl
+from hermes_agent.gateway.platforms.base import SendResult
 from tests.gateway.test_run_progress_topics import ProgressCaptureAdapter, _run_with_agent
 
 FIRST = "The complete first answer."

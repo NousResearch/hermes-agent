@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway import status
+from hermes_agent.gateway import status
 from hermes_cli import update_pause_record as pause_record
 
 pytestmark = [

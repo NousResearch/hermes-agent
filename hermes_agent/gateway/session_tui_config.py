@@ -3,7 +3,7 @@
 Main served these from the per-TUI sidecar (``hermes_agent/tui_gateway/methods_config_set.py``); on the shared
 owner they write the OWNING profile's config.yaml (raw round-trip, off-loop, under its runtime
 scope) with main's per-key semantics. The session controls (busy/verbose/yolo/show_reasoning/
-service_tier, the refused ``model``) stay in ``gateway.session_busy_controls``; any other key is
+service_tier, the refused ``model``) stay in ``hermes_agent.gateway.session_busy_controls``; any other key is
 ``invalid_params``.
 """
 import asyncio
@@ -148,7 +148,7 @@ def _write_profile_config(connection, edit):
     written (no defaults or overlay persisted), run once; saved only when it changed. A written leaf the
     managed scope pins refuses the whole edit unsaved, even one set to the value the raw file already
     holds (the managed value still wins). Runs off the loop."""
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
     from hermes_cli.config import atomic_config_replace, get_config_path, read_user_config_raw
     with _profile_runtime_scope(Path(connection.authority.profile_id)), _WRITE_LOCK:
         path = get_config_path()
@@ -171,7 +171,7 @@ def _write_profile_config(connection, edit):
 
 def _authorize_write(connection, ref, params):
     """Profile-level like ``config.get`` (a session is optional), plus the control capability."""
-    from gateway.session_config import _authorize
+    from hermes_agent.gateway.session_config import _authorize
     policy = _authorize(connection, ref, params)
     if 'session:control' not in connection.actor.capabilities:
         raise RuntimeStoreError('permission_denied')
@@ -189,7 +189,7 @@ async def config_set(connection, ref, params):
     if key == 'reasoning' or (key == 'yolo' and 'scope' in params):
         return await _set_command_setting(connection, ref, params)
     if key in _SESSION_CONTROL_KEYS or not isinstance(key, str):
-        from gateway.session_busy_controls import busy_config
+        from hermes_agent.gateway.session_busy_controls import busy_config
         return await busy_config(connection, ref, params, write=True)
     if set(params) - {'session_id', 'profile', 'key', 'value'}:
         raise RuntimeStoreError('invalid_params')
@@ -222,7 +222,7 @@ async def _broadcast_skin(connection):
     """Main repainted every surface of the profile: ``skin.changed`` on each attached session."""
     def resolve():
         import sys
-        from gateway.run import _profile_runtime_scope
+        from hermes_agent.gateway.run import _profile_runtime_scope
         from hermes_cli.config import load_config
         from hermes_agent.tui_gateway.change_watcher import skin_payload
         with _profile_runtime_scope(Path(connection.authority.profile_id)):
@@ -247,7 +247,7 @@ def current_tier(connection, ref, policy):
 def service_tier_options(connection, ref, policy, *, include_ultrafast=True):
     """The session route's speed choices, resolved under its credential scope."""
     from agent.codex_service_tiers import ultrafast_offered
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
     from hermes_cli.models import resolve_fast_mode_overrides
     with _profile_runtime_scope(Path(connection.authority.profile_id)):
         agent = connection.authority.agent(ref)
@@ -255,7 +255,7 @@ def service_tier_options(connection, ref, policy, *, include_ultrafast=True):
         route = config.get('model') or {}
         provider, base_url = route.get('provider'), route.get('base_url')
         if policy is not None and policy.follows_profile:
-            from gateway.session_policy import route_launch_key
+            from hermes_agent.gateway.session_policy import route_launch_key
             access_token = route_launch_key(connection.authority, policy, config) or route.get('api_key')
         else:
             model = getattr(agent, 'model', None) or model
@@ -293,7 +293,7 @@ async def _set_fast(connection, ref, policy, value):
                                           include_ultrafast=tier == 'ultrafast')
         if service_tier_word(tier) not in options:
             raise RuntimeStoreError('fast_unavailable')
-    from gateway.session_busy_controls import service_tier_config
+    from hermes_agent.gateway.session_busy_controls import service_tier_config
     service_tier_config(connection, ref, {'session_id': ref.session_id, 'value': raw})
     return {'key': 'fast', 'value': service_tier_word(tier)}
 
@@ -302,7 +302,7 @@ def _set_personality(connection, value):
     """Main's /personality: validated against the profile's personalities and persisted through
     ``hermes_cli.personality`` (the only sanctioned write). Every next turn of the profile's sessions
     resolves its ephemeral prompt from that config, and the changed prompt rebuilds the cached agent."""
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
     from hermes_cli.config import load_config
     from hermes_cli.managed_scope import is_key_managed
     from hermes_cli.personality import persist_personality, resolve_personality
@@ -336,7 +336,7 @@ def _set_profile_leaf(cfg, key, value):
 
 def _set_approval_mode(connection, value):
     """``/approvals <mode>``'s own write (``hermes_cli.approval_mode``) for this profile."""
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
     from hermes_cli.approval_mode import run_approval_mode_command
     with _profile_runtime_scope(Path(connection.authority.profile_id)), _WRITE_LOCK:
         result = run_approval_mode_command(_word(value) or None)
@@ -369,7 +369,7 @@ async def _set_command_setting(connection, ref, params):
 
         def flip():
             from tools.approval_context import _get_approval_mode
-            from gateway.run import _profile_runtime_scope
+            from hermes_agent.gateway.run import _profile_runtime_scope
             with _profile_runtime_scope(Path(connection.authority.profile_id)):
                 enable = (_get_approval_mode() != 'off') if on is None else on
             return enable, _set_approval_mode(connection, 'off' if enable else 'manual')
@@ -377,9 +377,9 @@ async def _set_command_setting(connection, ref, params):
         return {'key': 'yolo', 'value': '1' if enable else '0', 'scope': 'global'}
     if not value:
         raise RuntimeStoreError('invalid_params')
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
     from hermes_constants import parse_reasoning_effort
-    from gateway.slash_commands_model import _REASONING_DISPLAY_TOGGLES
+    from hermes_agent.gateway.slash_commands_model import _REASONING_DISPLAY_TOGGLES
     if value not in _REASONING_DISPLAY_TOGGLES and value != 'reset' and parse_reasoning_effort(value) is None:
         raise RuntimeStoreError('invalid_params')
     if scope == 'global' and parse_reasoning_effort(value) is not None:
@@ -389,7 +389,7 @@ async def _set_command_setting(connection, ref, params):
         if await asyncio.to_thread(is_key_managed, 'agent.reasoning_effort'):
             raise _managed_refusal('agent.reasoning_effort')
     live, runner = connection.authority.sessions[ref.session_id], connection.authority.runner
-    from gateway.session_setting_commands import commit_reasoning_command
+    from hermes_agent.gateway.session_setting_commands import commit_reasoning_command
     await commit_reasoning_command(connection.authority, connection.actor, ref, value, scope == 'global')
 
     def apply():

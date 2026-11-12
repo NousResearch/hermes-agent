@@ -21,10 +21,10 @@ SESSION_COUNT = 300  # more than one LISTING_BATCH
 
 @pytest_asyncio.fixture
 async def owner(tmp_path, monkeypatch):
-    from gateway.config import GatewayConfig, Platform
-    from gateway.session import SessionSource, SessionStore
-    from gateway.session_authority import LiveSession, initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.config import GatewayConfig, Platform
+    from hermes_agent.gateway.session import SessionSource, SessionStore
+    from hermes_agent.gateway.session_authority import LiveSession, initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
@@ -112,7 +112,7 @@ async def test_a_closed_unviewed_local_session_still_leaves_the_live_feed(owner)
 
 @pytest.mark.asyncio
 async def test_a_session_retired_during_the_read_is_not_listed_or_restored(owner, monkeypatch):
-    from gateway import session_live_listing
+    from hermes_agent.gateway import session_live_listing
     original = session_live_listing._store_facts
     gone = owner.sids[5]
 
@@ -129,7 +129,7 @@ async def test_a_session_retired_during_the_read_is_not_listed_or_restored(owner
 async def test_a_profile_parked_during_the_off_loop_read_lists_nothing(owner, monkeypatch):
     """The store read is an await: a park (unserve) can retire the authority while it runs, and the
     batch read for it belongs to the home's next owner, not to this listing."""
-    from gateway import session_live_listing
+    from hermes_agent.gateway import session_live_listing
     real = session_live_listing._store_facts
 
     def parked_mid_read(db, batch):

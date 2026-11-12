@@ -7,7 +7,7 @@ On a fresh gateway conversation the post-turn re-baseline
 (``_refresh_agent_cache_message_count``) runs *before* the first-turn
 ``session_meta`` marker row is appended to the transcript:
 
-    gateway/run.py:
+    hermes_agent/gateway/run.py:
         ... agent run completes ...
         self._refresh_agent_cache_message_count(...)   # snapshot taken HERE
         ...
@@ -41,10 +41,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import gateway.run as gateway_run
-from gateway.config import GatewayConfig, Platform
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionEntry, SessionSource
+import hermes_agent.gateway.run as gateway_run
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionEntry, SessionSource
 
 
 SESSION_KEY = "agent:main:telegram:group:-1001:12345"

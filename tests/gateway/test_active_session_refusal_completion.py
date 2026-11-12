@@ -1,8 +1,8 @@
 """A refused turn still ends with message.complete, so the viewer never hangs."""
 from types import SimpleNamespace
 
-from gateway.session_events import SessionEvents
-from gateway.session_settlement_recovery import _publish_completion
+from hermes_agent.gateway.session_events import SessionEvents
+from hermes_agent.gateway.session_settlement_recovery import _publish_completion
 from hermes_cli.active_sessions import MAX_CONCURRENT_SESSIONS, ActiveSessionRefusal
 
 

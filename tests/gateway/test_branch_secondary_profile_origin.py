@@ -6,14 +6,14 @@ from tests.gateway.test_session_authorities_multiplex import _reserve_homes, _ru
 
 @pytest.mark.asyncio
 async def test_branch_restart_resume_keeps_source_and_route_for_default_and_secondary(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.run import _profile_runtime_scope
-    from gateway.run_runtime import initialize_gateway_runtime
-    from gateway.runtime_ownership import process_ownership
-    from gateway.session_contract import SessionActor
-    from gateway.session_local import create_local_session
-    from gateway.session_local_recovery import restore_local_session
-    from gateway.session_mutations import mutate_session
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run_runtime import initialize_gateway_runtime
+    from hermes_agent.gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_local_recovery import restore_local_session
+    from hermes_agent.gateway.session_mutations import mutate_session
     from hermes_agent.hermes_state_local import local_receipt
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})

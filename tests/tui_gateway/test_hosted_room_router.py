@@ -9,11 +9,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import hosted_room_discussion as discussion
-from gateway import hosted_room_driver as driver
-from gateway import hosted_room_router as router
-from gateway import hosted_rooms
-from gateway.hosted_room_context import set_room_context
+from hermes_agent.gateway import hosted_room_discussion as discussion
+from hermes_agent.gateway import hosted_room_driver as driver
+from hermes_agent.gateway import hosted_room_router as router
+from hermes_agent.gateway import hosted_rooms
+from hermes_agent.gateway.hosted_room_context import set_room_context
 from tests.waiting import wait_until
 from hermes_agent.tui_gateway import hosted_room_router_call as router_call
 from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService

@@ -35,7 +35,7 @@ from hermes_agent.hermes_state import AsyncSessionDB
 
 def _make_runner():
     """Create a minimal GatewayRunner with just the cache infrastructure."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = GatewayRunner.__new__(GatewayRunner)
     runner._agent_cache = {}

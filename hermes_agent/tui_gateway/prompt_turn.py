@@ -24,7 +24,7 @@ def _bot_mode_delivery_text(response: Any, *, successful: bool) -> Any:
     Mode delivery boundary.  Failed turns intentionally fail open so their
     diagnostic text is never swallowed.
     """
-    from gateway.response_filters import is_intentional_silence_response, strip_trailing_silence_marker
+    from hermes_agent.gateway.response_filters import is_intentional_silence_response, strip_trailing_silence_marker
     if not successful:
         return response
     return "" if is_intentional_silence_response(response) else strip_trailing_silence_marker(response)
@@ -328,9 +328,9 @@ def _turn_outcome(result: Any, error_surface: dict | None = None) -> tuple[Any, 
     if (not raw) and result.get("error") and (result.get("failed") or result.get("partial")):
         raw = turn_error_text(result.get("error"), error_surface)
     # "Operation interrupted: waiting for model response (…)" is cancellation
-    # metadata, not assistant prose (gateway/run.py and ACP suppress it too).
+    # metadata, not assistant prose (hermes_agent/gateway/run.py and ACP suppress it too).
     # "Operation interrupted: waiting for model response (…)" is cancellation metadata, not assistant prose.
-    # gateway/run.py and the ACP adapter already suppress this sentinel; without this the desktop paints it
+    # hermes_agent/gateway/run.py and the ACP adapter already suppress this sentinel; without this the desktop paints it
     # as the agent's reply whenever a stop/steer lands mid-request (#7921).
     if status == "interrupted" and isinstance(raw, str) and raw.strip().startswith(
             INTERRUPT_WAITING_FOR_MODEL_PREFIX):
@@ -342,7 +342,7 @@ def _turn_outcome(result: Any, error_surface: dict | None = None) -> tuple[Any, 
 
 def _goal_followup_after_turn(
     sid: str, session: dict, result: Any, status: str, raw: Any) -> str | None:
-    """/goal continuation (mirrors gateway/run._post_turn_goal_continuation): the prompt to
+    """/goal continuation (mirrors hermes_agent/gateway/run._post_turn_goal_continuation): the prompt to
     chain once ``running`` is released, or None.  Compression failures are never judge
     input: the error text is not work toward the goal, and judging it spends a turn."""
     goal_followup = None
@@ -351,7 +351,7 @@ def _goal_followup_after_turn(
         recovery_prompt, recovery_notice = _plan_goal_compression_recovery(
             session, result, status=status, raw=raw)
         if recovery_notice:
-            from gateway.warning_notifications import render_notification
+            from hermes_agent.gateway.warning_notifications import render_notification
             render_notification(
                 lambda: _emit("status.update", sid, {"kind": "goal", "text": recovery_notice}),
                 platform="tui", user_config=getattr(session.get("agent"), "_notification_config", None))
@@ -613,7 +613,7 @@ def _adopt_store_tail_without_row_ids(session: dict, history: list, version: int
 def _install_has_prior_sessions(session: dict) -> bool:
     """True when this install already has session rows beyond the current one.
 
-    Mirrors ``gateway.session.SessionStore.has_any_sessions`` (the messaging
+    Mirrors ``hermes_agent.gateway.session.SessionStore.has_any_sessions`` (the messaging
     first-contact gate): ``_run_prompt_submit`` persists the session's own row
     before the turn runs (``_ensure_session_db_row``), so a fresh install on
     its first-ever message holds exactly one row.
@@ -758,11 +758,11 @@ def _invoke_agent(
     ``text`` is the turn's raw submit, matched against the row staged by prompt.submit."""
     agent = st.agent
     st.compression_count = getattr(getattr(agent, "context_compressor", None), "compression_count", None)
-    # Bot Chat mirrors gateway.stream_consumer: deltas are withheld while the reply could still
+    # Bot Chat mirrors hermes_agent.gateway.stream_consumer: deltas are withheld while the reply could still
     # be a bare silence marker ("NO"->"NO_REPLY") or its last line a closing one
     # ("Paris.\n\nNO"), so a marker is never shown or spoken (the client keeps streamed text
     # when message.complete is "").
-    from gateway.response_filters import SilenceMarkerStreamHold
+    from hermes_agent.gateway.response_filters import SilenceMarkerStreamHold
     hold = SilenceMarkerStreamHold() if _is_bot_mode_session(session) else None
 
     def _stream(delta):
@@ -1143,7 +1143,7 @@ def _run_prompt_submit(
     if admitted is None:
         return False
     images, agent = admitted
-    from gateway.warning_notifications import diagnostic_turn_muted
+    from hermes_agent.gateway.warning_notifications import diagnostic_turn_muted
     from agent.notification_presentation import notification_config_snapshot
     with _session_profile_runtime_scope(session):
         notification_config = notification_config_snapshot()

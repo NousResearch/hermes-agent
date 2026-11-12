@@ -24,7 +24,7 @@ def homes(tmp_path, monkeypatch):
 
 
 def _call(server, profile_id, method, params):
-    from gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
+    from hermes_agent.gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
     from hermes_agent.tui_gateway.ws_legacy_fallback import dispatch_legacy
     actor = types.SimpleNamespace(profile_id=str(profile_id), capabilities=frozenset(_PURPOSE_CAPABILITIES['interactive']))
     written, done = [], threading.Event()

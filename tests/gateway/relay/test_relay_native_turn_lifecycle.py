@@ -16,9 +16,9 @@ from contextlib import asynccontextmanager
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.run import GatewayRunner
-from gateway.session_results import execution_result, record_unexecuted_failure
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session_results import execution_result, record_unexecuted_failure
 from tests.waiting import async_wait_until
 
 websockets = pytest.importorskip('websockets')
@@ -31,9 +31,9 @@ async def _relay(runner, *, refusing_chats=()):
     """A real relay transport + adapter fronting Slack (``react`` advertised) against a fixture
     connector that answers every outbound frame; every ``send`` to a chat in ``refusing_chats`` is
     refused. Yields ``(send, outgoing, adapter)``."""
-    from gateway.relay.adapter import RelayAdapter
-    from gateway.relay.descriptor import CapabilityDescriptor
-    from gateway.relay.ws_transport import WebSocketRelayTransport
+    from hermes_agent.gateway.relay.adapter import RelayAdapter
+    from hermes_agent.gateway.relay.descriptor import CapabilityDescriptor
+    from hermes_agent.gateway.relay.ws_transport import WebSocketRelayTransport
 
     outgoing, ready = [], asyncio.Queue()
     descriptor = CapabilityDescriptor(1, 'slack', 'Fixture', 4096, False, True, True, 'plain', 'chars',
@@ -78,7 +78,7 @@ async def _relay(runner, *, refusing_chats=()):
 
 @asynccontextmanager
 async def _gateway(tmp_path, instance, **relay):
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_authority import initialize_session_authority
     runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / 'sessions'))
     authority = await initialize_session_authority(runner, profile_id='default', instance_id=instance)
     try:
@@ -291,7 +291,7 @@ async def test_pre_gateway_dispatch_still_fires_once_and_the_turn_is_acknowledge
 
 @pytest.mark.asyncio
 async def test_a_scheduled_wake_on_the_chat_shows_no_reaction_or_typing(tmp_path, monkeypatch):
-    from gateway.session_automation import admit_route_wake
+    from hermes_agent.gateway.session_automation import admit_route_wake
 
     async with _gateway(tmp_path, 'relay-lifecycle-wake') as (runner, _authority, send, outgoing, adapter):
         executed = _stub_model(runner, monkeypatch)
@@ -316,8 +316,8 @@ async def test_a_scheduled_wake_on_the_chat_shows_no_reaction_or_typing(tmp_path
 @pytest.mark.asyncio
 async def test_a_cancel_while_the_start_hook_runs_leaks_no_typing():
     """A drain cancelled while on_processing_start is awaited stops typing and drops the bracket."""
-    from gateway.platforms.base import BasePlatformAdapter
-    from gateway.session_producer_lifecycle import producer_turn
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter
+    from hermes_agent.gateway.session_producer_lifecycle import producer_turn
 
     class Adapter(BasePlatformAdapter):
         name = property(lambda self: 'fake')

@@ -5,9 +5,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.platforms.base import SendResult
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.base import SendResult
+from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
@@ -108,7 +108,7 @@ async def test_empty_tail_commit_honors_retry_after(monkeypatch):
         SendResult(success=True, message_id="final-1"),
     ]
     sleep = AsyncMock()
-    monkeypatch.setattr("gateway.stream_consumer.asyncio.sleep", sleep)
+    monkeypatch.setattr("hermes_agent.gateway.stream_consumer.asyncio.sleep", sleep)
 
     consumer = GatewayStreamConsumer(adapter, "chat-1")
     consumer._message_id = "preview-1"
@@ -132,7 +132,7 @@ async def test_complete_preview_survives_long_flood_fallback_failure(monkeypatch
         retry_after=20.0,
     )
     sleep = AsyncMock()
-    monkeypatch.setattr("gateway.stream_consumer.asyncio.sleep", sleep)
+    monkeypatch.setattr("hermes_agent.gateway.stream_consumer.asyncio.sleep", sleep)
 
     consumer = GatewayStreamConsumer(adapter, "chat-1")
     consumer._message_id = "preview-1"
@@ -206,7 +206,7 @@ async def test_empty_fallback_preview_delete_retries_once(monkeypatch):
     adapter.send.return_value = SendResult(success=True, message_id="final-1")
     adapter.delete_message = AsyncMock(side_effect=[False, True])
     sleep = AsyncMock()
-    monkeypatch.setattr("gateway.stream_consumer.asyncio.sleep", sleep)
+    monkeypatch.setattr("hermes_agent.gateway.stream_consumer.asyncio.sleep", sleep)
 
     consumer = GatewayStreamConsumer(adapter, "chat-1")
     consumer._message_id = "preview-1"
@@ -236,7 +236,7 @@ async def test_flood_capped_resend_keeps_single_bubble_reply_first(monkeypatch):
         retry_after=41.0,
     )
     sleep = AsyncMock()
-    monkeypatch.setattr("gateway.stream_consumer.asyncio.sleep", sleep)
+    monkeypatch.setattr("hermes_agent.gateway.stream_consumer.asyncio.sleep", sleep)
 
     consumer = GatewayStreamConsumer(
         adapter, "chat-1", initial_reply_to_id="111",
@@ -250,7 +250,7 @@ async def test_flood_capped_resend_keeps_single_bubble_reply_first(monkeypatch):
 
     # Preview must NOT be deleted — it is the only copy of the answer.
     adapter.delete_message.assert_not_awaited()
-    # Mirror the gateway/run.py suppression decision: content delivered and
+    # Mirror the hermes_agent/gateway/run.py suppression decision: content delivered and
     # the recorded payload reconciles, so the normal final send is skipped.
     assert consumer.final_content_delivered is True
     assert consumer.delivered_final_matches("Final answer") is True

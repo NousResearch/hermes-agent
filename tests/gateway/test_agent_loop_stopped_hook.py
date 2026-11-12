@@ -11,8 +11,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.session import SessionSource, build_session_key
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.session import SessionSource, build_session_key
 
 
 def _make_source() -> SessionSource:
@@ -26,7 +26,7 @@ def _make_source() -> SessionSource:
 
 
 def _make_runner():
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
@@ -87,7 +87,7 @@ async def test_hook_not_fired_for_pending_sentinel_stop(mock_invoke_hook):
     """The pending-sentinel /stop path (slash_commands.py) has no in-flight
     work to cancel — the agent loop never started. The hook is gated on a
     real running agent and must not fire in this case."""
-    from gateway.run import _AGENT_PENDING_SENTINEL
+    from hermes_agent.gateway.run import _AGENT_PENDING_SENTINEL
 
     runner = _make_runner()
     source = _make_source()

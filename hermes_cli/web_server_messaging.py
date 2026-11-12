@@ -64,12 +64,12 @@ _PLATFORM_ORDER: tuple[str, ...] = (
 def _messaging_platform_catalog() -> tuple[dict[str, Any], ...]:
     """Build the messaging catalog from the gateway's Platform enum + plugin registry.
 
-    Built-ins come from ``gateway.config.Platform`` (LOCAL excluded); plugin platforms from
+    Built-ins come from ``hermes_agent.gateway.config.Platform`` (LOCAL excluded); plugin platforms from
     ``platform_registry.plugin_entries()`` so new adapters appear without a code change here.
     UI metadata comes from each plugin's PlatformEntry, or :data:`_PLATFORM_OVERRIDES` for core-only
     platforms; the rest is derived from id/required_env.
     """
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
 
     # Resolve plugin entries FIRST: plugin platforms leak into ``Platform.__members__`` as
     # pseudo-members once anything calls ``Platform("<plugin id>")``, and iterating the enum
@@ -80,7 +80,7 @@ def _messaging_platform_catalog() -> tuple[dict[str, Any], ...]:
         # server process doesn't do — trigger it explicitly (idempotent).
         from hermes_cli.plugins import discover_plugins
         discover_plugins()
-        from gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.platform_registry import platform_registry
         for plugin_entry in platform_registry.plugin_entries():
             plugin_map[plugin_entry.name] = plugin_entry
     except Exception:

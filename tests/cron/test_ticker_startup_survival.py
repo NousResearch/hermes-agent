@@ -74,7 +74,7 @@ def test_multiplex_ticker_survives_a_raising_gate_without_ticking_ungated(tmp_pa
 def test_housekeeping_restarts_a_dead_ticker(monkeypatch):
     """The supervisor is the outer layer: a ticker that ended without a stop request is respawned
     on the next housekeeping tick; one that ended BECAUSE of the stop request is not."""
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
     from hermes_agent.cron.scheduler_thread import SupervisedTickerThread
 
     class _OneTick:

@@ -203,8 +203,8 @@ def _stage_one(client: Any, plan: PlannedCall, raw: str, task_id: Optional[str])
 
 def _readable_file(raw: str, task_id: Optional[str]) -> str:
     """The host path of a file the model may send, by the media-delivery rule; else ``FileInputError``."""
-    from gateway.platforms.base import validate_media_delivery_path
-    from gateway.session_context import get_session_env
+    from hermes_agent.gateway.platforms.base import validate_media_delivery_path
+    from hermes_agent.gateway.session_context import get_session_env
 
     candidate = _backend_path(raw, task_id)
     allowed = validate_media_delivery_path(candidate, session_key=get_session_env("HERMES_SESSION_KEY", ""))

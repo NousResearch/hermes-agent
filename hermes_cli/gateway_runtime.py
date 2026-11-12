@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Callable, Literal
 from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
-    from gateway.runtime_contract import RuntimeState
+    from hermes_agent.gateway.runtime_contract import RuntimeState
 
 # Total startup deadline a client waits for a cold daemon. A cold boot imports the whole
 # runtime, seeds the skill library and warms the turn machinery: ~10-20 s on a loaded
@@ -58,7 +58,7 @@ def attachable(result: GatewayDiscovery) -> bool:
     Shared by every client bootstrap (``connect_gateway`` and ``gateway_runtime_attach.attach_gateway``)."""
     if result.endpoint is None:
         return False
-    from gateway.drain_control import RESTART_WAIT_REASON
+    from hermes_agent.gateway.drain_control import RESTART_WAIT_REASON
     return result.state == "ready" or (result.state == "draining" and result.reason_code == RESTART_WAIT_REASON)
 
 
@@ -121,7 +121,7 @@ def _endpoint(payload: dict, home: Path, control_home: Path | None = None) -> Ga
     # A graceful restart's after-turn wait still owns its in-flight turns (#139041): it stays
     # ``draining`` (exit 6, never a fresh-start target) but carries its endpoint, so an interactive
     # client can attach to answer a turn parked on approval/clarify. New input queues for the next owner.
-    from gateway.drain_control import RESTART_WAIT_REASON
+    from hermes_agent.gateway.drain_control import RESTART_WAIT_REASON
     restart_wait = state == "draining" and payload.get("drain_reason") == RESTART_WAIT_REASON
     if state in {"starting", "draining", "conflict"} and not restart_wait:
         # An auto-started gateway ending through its idle exit names that, so its clients wait
@@ -216,7 +216,7 @@ def _parked_by_multiplexer(payload: dict, home: Path) -> GatewayDiscovery | None
 
 def _refused_owner_verdict(exc: PermissionError) -> GatewayDiscovery | None:
     """The named refusal when the client proved the boundary from the control pipe, else None."""
-    from gateway.runtime_bootstrap_windows import RefusedOwner
+    from hermes_agent.gateway.runtime_bootstrap_windows import RefusedOwner
     if isinstance(exc, RefusedOwner):
         return GatewayDiscovery("inaccessible", reason_code=exc.reason_code, detail=str(exc))
     return None
@@ -264,7 +264,7 @@ def _owner_pid(home: Path) -> int | None:
     one (a recycled PID differs), its recorded home not another profile's, and its live command line
     (or, when that is unreadable across the elevation boundary, its record) a gateway's. A stale
     ``gateway.pid`` falls through to ``gateway.lock`` instead of masking it."""
-    from gateway.status import (
+    from hermes_agent.gateway.status import (
         _get_process_start_time,
         _live_pid_from_record,
         _read_json_file,
@@ -292,7 +292,7 @@ def _refused(home: Path, *, windows: bool = _NATIVE_WINDOWS) -> GatewayDiscovery
     fact) name the boundary (an elevated owner, or one in another logon session) with its remedy
     instead of the generic ``authorization`` that reads as a credential failure (#139845, #140252)."""
     if windows and (pid := _owner_pid(home)) is not None:
-        from gateway.runtime_bootstrap_windows import probe_refused_owner
+        from hermes_agent.gateway.runtime_bootstrap_windows import probe_refused_owner
         try:
             named = probe_refused_owner(pid)
         except OSError:
@@ -309,7 +309,7 @@ def _missing_owner_verdict(home: Path) -> GatewayDiscovery:
     from hermes_cli.gateway_runtime_discovery import missing_owner_state
     state = missing_owner_state(home)
     if state == "inaccessible" and os.name != "nt":
-        from gateway.runtime_ownership import unreadable_lock_recovery
+        from hermes_agent.gateway.runtime_ownership import unreadable_lock_recovery
         if detail := unreadable_lock_recovery(home / "gateway.lock"):
             return GatewayDiscovery(state, reason_code="foreign_stale_lock", detail=detail)
     return GatewayDiscovery(state)

@@ -1,5 +1,5 @@
 """Exact operator controls for canonical hosted attempts, never legacy replay."""
-from gateway import hosted_room_driver as tasks
+from hermes_agent.gateway import hosted_room_driver as tasks
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 from hermes_agent.tui_gateway.hosted_room_driver import HostedRoomBinding, discarded_receipt
 from hermes_agent.tui_gateway.hosted_room_prepare_stall import RETRY_TASK_PREFIX
@@ -116,7 +116,7 @@ class HostedControls:
         """Refuse Retry while any home could still run this generation. A turn from before attempt
         homes were recorded may run at an older home of its profile, which must first answer that
         it holds nothing; then the home the Stop is asked at must be idle (unless it is gone)."""
-        from gateway.session_hosted_member_homes import moved_attempt_gone, unsettled_legacy_homes
+        from hermes_agent.gateway.session_hosted_member_homes import moved_attempt_gone, unsettled_legacy_homes
         task, binding = self._control_task(room_id, member_id, task_id, execution_generation)
         if task['status'] != 'deferred':
             return  # refused under the lock

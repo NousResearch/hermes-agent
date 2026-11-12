@@ -9,12 +9,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform
-from gateway.run_turn_runner import TurnRunner
-from gateway.session import SessionSource
-from gateway.session_results import execution_result
-from gateway.session_settlement_recovery import completion_payload
-from gateway.turn_context import TurnContext
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.run_turn_runner import TurnRunner
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.session_results import execution_result
+from hermes_agent.gateway.session_settlement_recovery import completion_payload
+from hermes_agent.gateway.turn_context import TurnContext
 from tests.gateway.test_local_viewer_events_submit import _gateway_runner, _RecordingAgent
 
 RAW = "Your api key is SECRET-123."

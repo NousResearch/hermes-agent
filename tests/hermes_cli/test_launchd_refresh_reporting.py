@@ -15,7 +15,7 @@ def _stale_plist(tmp_path, monkeypatch, *, registered: bool):
     monkeypatch.setattr(gw, "get_launchd_label", lambda: "com.hermes.agent")
     monkeypatch.setattr(gw, "_launchd_domain", lambda: "gui/501")
     monkeypatch.setattr(gw, "_append_launchd_reload_log", lambda msg: None)
-    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+    monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda: None)
     monkeypatch.setattr(gw, "_retry_launchctl_bootstrap_until_registered", lambda *a, **k: registered)
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: MagicMock(returncode=0))
 

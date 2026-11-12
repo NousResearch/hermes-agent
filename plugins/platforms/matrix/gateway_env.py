@@ -1,7 +1,7 @@
 """Matrix env -> gateway config bridge (``PlatformEntry.env_overrides``)."""
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platform_env import EnvCred, env_extras, getenv, home_step
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platform_env import EnvCred, env_extras, getenv, home_step
 from utils import is_truthy_value
 
 

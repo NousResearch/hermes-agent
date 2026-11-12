@@ -16,7 +16,7 @@ the redactor regexes so the assertions stay meaningful, but contain no real
 or real-looking key, so secret scanners do not flag this file.
 """
 
-from gateway.run import _redact_approval_command
+from hermes_agent.gateway.run import _redact_approval_command
 
 # Synthetic, scanner-safe credential fixtures. Each matches its redactor
 # regex (ghp_/sk-/JWT) but is unmistakably fake -- a run of X's, never a
@@ -66,7 +66,7 @@ class TestApprovalCommandWiring:
     def test_chat_platform_path_redacts_before_send(self):
         import asyncio
         from types import SimpleNamespace
-        from gateway.run_turn_runner import TurnRunner
+        from hermes_agent.gateway.run_turn_runner import TurnRunner
 
         async def exercise():
             for card_success in (True, False):
@@ -100,7 +100,7 @@ class TestApprovalCommandWiring:
 
 class TestApprovalTextFallbackContract:
     def test_smart_deny_only_advertises_one_operation(self):
-        from gateway.run import _format_exec_approval_fallback
+        from hermes_agent.gateway.run import _format_exec_approval_fallback
 
         text = _format_exec_approval_fallback(
             "rm -rf /", "dangerous deletion", "/",
@@ -112,9 +112,9 @@ class TestApprovalTextFallbackContract:
 
     def test_text_fallback_says_silence_means_no(self, monkeypatch):
         """Surfaces without buttons get the same deadline line as the button card."""
-        from gateway.run import _format_exec_approval_fallback
+        from hermes_agent.gateway.run import _format_exec_approval_fallback
 
-        monkeypatch.setattr("gateway.platforms.base_exec_approval.approval_timeout_seconds", lambda: 300)
+        monkeypatch.setattr("hermes_agent.gateway.platforms.base_exec_approval.approval_timeout_seconds", lambda: 300)
         text = _format_exec_approval_fallback("rm -rf /", "recursive delete", "/")
         assert "recursive delete" in text
         assert "5 minutes" in text

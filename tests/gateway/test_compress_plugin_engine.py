@@ -21,9 +21,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.context_engine import ContextEngine
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionEntry, SessionSource, build_session_key
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionEntry, SessionSource, build_session_key
 
 
 class _FakePluginEngine(ContextEngine):
@@ -81,7 +81,7 @@ def _make_history() -> list[dict[str, str]]:
 
 
 def _make_runner(history: list[dict[str, str]]):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
@@ -130,8 +130,8 @@ async def test_compress_works_with_plugin_context_engine():
     agent_instance._compression_skipped_due_to_lock = False
 
     with (
-        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
-        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
+        patch("hermes_agent.gateway.run._resolve_gateway_model", return_value="test-model"),
         patch("run_agent.AIAgent", return_value=agent_instance),
         patch("agent.model_metadata.estimate_messages_tokens_rough", return_value=100),
     ):

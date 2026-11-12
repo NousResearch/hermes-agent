@@ -37,7 +37,7 @@ class CLIChatTurnMixin:
         keeps the last known-good chain instead of reading as "chain removed"."""
         from cli import logger
         try:
-            from gateway.run import GatewayRunner
+            from hermes_agent.gateway.run import GatewayRunner
             from hermes_cli.config_effective import load_user_config_effective
             from hermes_cli.fallback_config import get_fallback_chain
             self._fallback_model = get_fallback_chain(load_user_config_effective(fail_closed=True))
@@ -107,7 +107,7 @@ class CLIChatTurnMixin:
         from agent.notification_presentation import notification_config_snapshot, notification_policy_snapshot
         with notification_policy_snapshot(agent, "cli", notification_config_snapshot()):
             turn = _ChatTurn()
-            from gateway.warning_notifications import diagnostic_turn_muted
+            from hermes_agent.gateway.warning_notifications import diagnostic_turn_muted
             turn.mute_notification_reply = diagnostic_turn_muted(
                 agent._pending_cli_user_message.get("display_metadata"), "cli", agent._notification_config)
             try:
@@ -597,7 +597,7 @@ class CLIChatTurnMixin:
             _api_calls = turn.result.get("api_calls", 0)
             _max_iter = getattr(self.agent, "max_iterations", 500)
             if _api_calls >= _max_iter:
-                from gateway.warning_notifications import render_notification
+                from hermes_agent.gateway.warning_notifications import render_notification
                 render_notification(
                     lambda: _cprint(
                         f"\n{_DIM}{t('cli.chat.iteration_budget_reached', used=_api_calls, max=_max_iter)}{_RST}"

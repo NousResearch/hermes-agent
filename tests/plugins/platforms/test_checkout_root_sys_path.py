@@ -4,7 +4,7 @@ These modules used to run ``sys.path.insert(0, <checkout root>)`` at import, so 
 packages (``evals``, ``utils``, ``tests``, ...) shadowed same-named installed packages for every later
 import in the process. ``sys.path`` is process-global, so each import runs in a fresh interpreter.
 
-``gateway.run`` is not listed: it imports ``hermes_bootstrap``, whose ``harden_import_path`` relocates
+``hermes_agent.gateway.run`` is not listed: it imports ``hermes_bootstrap``, whose ``harden_import_path`` relocates
 the root to the front on purpose (entry-point hardening against a cwd ``utils/`` package).
 """
 

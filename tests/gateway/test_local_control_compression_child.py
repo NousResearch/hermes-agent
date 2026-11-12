@@ -11,7 +11,7 @@ from tests.gateway.test_local_resume_compression_child import _cold, _compressed
 
 
 async def _mutate(authority, sid, request_id, operation, payload):
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     connection = AuthorityConnection(authority, object(), {
         'provider': 'local', 'user_id': 'owner', 'profile_id': 'fixture', 'instance_id': authority.instance_id,
         'capabilities': ['session:create', 'session:read', 'session:control']})
@@ -44,7 +44,7 @@ async def test_a_segment_rewind_keeps_the_owner_busy_gate(tmp_path, monkeypatch,
     run while the conversation's FIFO holds queued input (the ledger keys admissions by owner id),
     so it is refused exactly like the same rewind by the conversation id (review of #140971)."""
     import hermes_agent.hermes_state_runtime as rt
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     compressed = await _compressed(tmp_path, monkeypatch)
     authority = compressed.warm
     evicted = []

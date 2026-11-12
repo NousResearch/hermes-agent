@@ -1,6 +1,6 @@
 """The proxy a Matrix ``ClientSession`` actually uses, for error redaction (kept out of the adapter facade)."""
 
-from gateway.platforms.base import env_proxy_for_redaction, gateway_trust_env
+from hermes_agent.gateway.platforms.base import env_proxy_for_redaction, gateway_trust_env
 
 
 def _socks_connector_missing() -> bool:

@@ -5,7 +5,7 @@ calling the gateway's message handler directly, which bypasses the adapter's
 native_callback wrapper. admission matches provenance by event identity, so a freshly
 built event carries no provenance and native admission refuses it as invalid_params when
 gateway.multiplex_profiles is true. The fix carries the /retry event's native callback to
-the re-dispatched turn (gateway/session_ingress_context.carry_callback), which is built on
+the re-dispatched turn (hermes_agent/gateway/session_ingress_context.carry_callback), which is built on
 the same authenticated source object.
 
 This test reproduces the refusal on a real multiplexed authority and asserts the fix makes
@@ -17,14 +17,14 @@ from pathlib import Path
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
-from gateway.run_runtime import initialize_gateway_runtime
-from gateway.runtime_ownership import process_ownership
-from gateway.session import SessionSource
-from gateway.session_envelope import prepare_native
-from gateway.session_ingress_context import (
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.run_runtime import initialize_gateway_runtime
+from hermes_agent.gateway.runtime_ownership import process_ownership
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.session_envelope import prepare_native
+from hermes_agent.gateway.session_ingress_context import (
     capture_provenance, native_callback, register_transport_home)
 
 from hermes_agent.hermes_state_runtime import RuntimeStoreError

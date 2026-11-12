@@ -18,10 +18,10 @@ def _mirror(monkeypatch, tmp_path):
 
 
 def test_inherited_gateway_marker_does_not_keep_the_gateway_cwd(monkeypatch, tmp_path):
-    monkeypatch.delitem(sys.modules, "gateway.run", raising=False)
+    monkeypatch.delitem(sys.modules, "hermes_agent.gateway.run", raising=False)
     assert _mirror(monkeypatch, tmp_path) == str(tmp_path)
 
 
 def test_gateway_process_keeps_its_bridged_cwd(monkeypatch, tmp_path):
-    monkeypatch.setitem(sys.modules, "gateway.run", types.ModuleType("gateway.run"))
+    monkeypatch.setitem(sys.modules, "hermes_agent.gateway.run", types.ModuleType("hermes_agent.gateway.run"))
     assert _mirror(monkeypatch, tmp_path) == "/gateway/terminal/cwd"

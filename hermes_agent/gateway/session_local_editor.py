@@ -30,7 +30,7 @@ def validate_editor(source, editor):
     if not isinstance(editor.get('mcp_servers', []), list):
         raise RuntimeStoreError('invalid_params', field='editor.mcp_servers',
                                 detail=f'must be a list, got {type(editor.get("mcp_servers")).__name__}')
-    from gateway.session_local_mcp import validate_servers
+    from hermes_agent.gateway.session_local_mcp import validate_servers
     validate_servers(editor.get('mcp_servers', []))
 
 

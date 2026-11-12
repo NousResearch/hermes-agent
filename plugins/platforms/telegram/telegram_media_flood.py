@@ -20,7 +20,7 @@ import tempfile
 from contextvars import ContextVar
 from typing import Any, Awaitable, Callable, Optional
 
-from gateway.platforms.base import SendResult
+from hermes_agent.gateway.platforms.base import SendResult
 
 logger = logging.getLogger("plugins.platforms.telegram.adapter")
 

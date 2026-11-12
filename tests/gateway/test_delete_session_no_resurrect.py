@@ -27,9 +27,9 @@ from aiohttp.test_utils import TestClient, TestServer
 
 import hermes_constants
 from hermes_agent import hermes_state
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.api_server import APIServerAdapter
-from gateway.session import SessionEntry, SessionSource, SessionStore
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.api_server import APIServerAdapter
+from hermes_agent.gateway.session import SessionEntry, SessionSource, SessionStore
 
 
 def _source(user_id: str = "user-1") -> SessionSource:

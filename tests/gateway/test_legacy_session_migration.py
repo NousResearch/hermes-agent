@@ -8,12 +8,12 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_legacy_history_adoption_is_native_owned_atomic_and_retryable(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig, Platform
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import SessionActor
-    from gateway.session_local_title import resolve_titled_session
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig, Platform
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_local_title import resolve_titled_session
     from hermes_agent.hermes_state_local import local_receipt
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
@@ -39,8 +39,8 @@ async def test_legacy_history_adoption_is_native_owned_atomic_and_retryable(tmp_
     authority._native_legacy_transports = {native.transport_id: native}
     with pytest.raises(RuntimeStoreError, match='not_found'):
         resolve_titled_session(authority, remote, 'My retained work')
-    from gateway.session_mutations import mutate_session
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_mutations import mutate_session
+    from hermes_agent.gateway.session_contract import SessionRef
     with pytest.raises(RuntimeStoreError, match='permission_denied'):
         await mutate_session(authority, remote, SessionRef(authority.profile_id, 'old-cli'),
             {'session_id': 'old-cli', 'request_id': 'steal', 'expected_revision': original['runtime_revision'],
@@ -67,7 +67,7 @@ async def test_legacy_history_adoption_is_native_owned_atomic_and_retryable(tmp_
     assert runner.adapters[Platform.LOCAL].policies[ref.session_id] == policy
     history = [{'role': 'user', 'content': 'COMPRESSED'}, {'role': 'assistant', 'content': 'RETAINED'}]
     # Compression runs inside a turn, and the first admitted turn reopens the adopted row.
-    from gateway.session_local_recovery import reopen_local_session
+    from hermes_agent.gateway.session_local_recovery import reopen_local_session
     reopen_local_session(authority, ref)
     assert db.get_session('old-cli')['end_reason'] is None
     assert db.try_acquire_compression_lock(ref.session_id, 'fixture')
@@ -94,12 +94,12 @@ async def test_legacy_history_adoption_is_native_owned_atomic_and_retryable(tmp_
 
 @pytest.mark.asyncio
 async def test_legacy_adoption_refuses_live_owner_and_foreign_profile_without_writes(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import SessionActor
-    from gateway.session_local_title import resolve_titled_session
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_local_title import resolve_titled_session
     from hermes_cli.active_sessions import try_acquire_active_session, release_active_session
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
@@ -134,7 +134,7 @@ async def test_legacy_adoption_refuses_live_owner_and_foreign_profile_without_wr
     receipt = local_receipt(db, ref.session_id)
     entry = dict(receipt['entry'], session_id='reset-tip')
     reset_local_target(db, epoch=authority.epoch, parent_session_id=ref.session_id, entry=entry)
-    from gateway.session_bot import _target
+    from hermes_agent.gateway.session_bot import _target
     submitter = SessionActor(native.subject, native.profile_id, native.capabilities | {'session:submit'}, native.transport_id)
     assert (await _target(authority, submitter))[2].session_id == 'reset-tip'
 
@@ -144,11 +144,11 @@ async def test_upgraded_oneshot_and_tool_history_resumes_by_id_and_title_but_sta
     """main's `chat -q` stored ``oneshot`` rows (``--source tool`` stored ``tool``) and printed
     `hermes --resume <id>` for each. After the upgrade, the native owner adopts them by id and by
     title like ``cli`` history, and they keep their label so human pickers still hide them."""
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
@@ -184,11 +184,11 @@ async def test_upgraded_desktop_history_resumes_by_id(tmp_path, monkeypatch):
     adopts them by id like ``gui`` history, including the ones stamped with the signed-in Nous
     account. A served remote backend's login stamp (``hermes serve`` basic auth) adopts for that same
     login only. Any other identity still needs its own authority."""
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'gui': []}})
@@ -208,17 +208,17 @@ async def test_upgraded_desktop_history_resumes_by_id(tmp_path, monkeypatch):
     resumed = await native.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': 'old-desktop'}})
     assert resumed.get('result', {}).get('session_id') == 'old-desktop', resumed
     assert [m['content'] for m in resumed['result']['messages']] == ['OLD-DESKTOP']
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     assert runner.adapters[Platform.LOCAL].policies['old-desktop'].platform == 'desktop'
     stamped = await native.dispatch({'id': 2, 'method': 'session.resume', 'params': {'session_id': 'old-desktop-account'}})
     assert stamped.get('result', {}).get('session_id') == 'old-desktop-account', stamped
     assert [m['content'] for m in stamped['result']['messages']] == ['OLD-DESKTOP-ACCOUNT']
     # A served remote backend stamped its basic-auth login on the row at creation (#139818). Hermes
     # is single-user and sign-in is owner-only, so that login is the machine owner: the owner's own
-    # native ticket (native Desktop, the TUI) adopts it once its serve is gone (gateway.owner_identity).
+    # native ticket (native Desktop, the TUI) adopts it once its serve is gone (hermes_agent.gateway.owner_identity).
     caps = ['session:create', 'session:read', 'session:submit', 'session:control', 'session:approve',
             'session:respond']
-    from gateway.owner_identity import host_owner_subject
+    from hermes_agent.gateway.owner_identity import host_owner_subject
     owner = AuthorityConnection(authority, object(), {'provider': 'local', 'user_id': host_owner_subject(),
         'profile_id': str(tmp_path), 'instance_id': 'first', 'capabilities': caps})
     remote = await owner.dispatch({'id': 5, 'method': 'session.resume',

@@ -7,7 +7,7 @@ profile that is SERVED by the host gateway answered "no". That produced three us
 "not running", "Per-profile gateways: 0/3 up", and a silently skipped destructive-action warning.
 
 :func:`host_gateway_topology` answers the real question once, from
-:mod:`gateway.host_rendezvous` (the authoritative host record the winning process publishes),
+:mod:`hermes_agent.gateway.host_rendezvous` (the authoritative host record the winning process publishes),
 falling back to the default home's recorded ``served_profiles`` for a gateway that predates the
 record. ``default`` is just another served profile here, never a special owner.
 """
@@ -56,7 +56,7 @@ class HostGatewayTopology:
 
 
 def _from_host_record() -> Optional[HostGatewayTopology]:
-    from gateway import host_rendezvous as hr
+    from hermes_agent.gateway import host_rendezvous as hr
 
     record = hr.read_record(hr.ROLE_GATEWAY)  # already drops stale/PID-reused records
     if record is None or not record.pid:
@@ -68,7 +68,7 @@ def _from_host_record() -> Optional[HostGatewayTopology]:
     # liveness_is_proven() would bless ANY process that happens to hold the recorded PID today.
     if record.create_time is None or not hr.record_names_live_owner(record):
         return None
-    from gateway.host_attach import launched_by_other_tenant, record_home
+    from hermes_agent.gateway.host_attach import launched_by_other_tenant, record_home
     from hermes_constants import get_hermes_home
 
     # Another tenant root's gateway is a name collision, not this tenant's host process (#121352).

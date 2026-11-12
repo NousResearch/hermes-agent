@@ -28,7 +28,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.photon import auth as photon_auth
 from plugins.platforms.photon.adapter import PhotonAdapter
 

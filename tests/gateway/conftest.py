@@ -50,7 +50,7 @@ def _join_api_turn_workers():
     ``api_worker_live_count`` inside the next test (the shutdown close-gate tests read it).
     """
     yield
-    runs = sys.modules.get("gateway.platforms.api_server_runs")
+    runs = sys.modules.get("hermes_agent.gateway.platforms.api_server_runs")
     executor = runs.retire_api_turn_executor() if runs is not None else None
     for thread in list(getattr(executor, "_threads", ())):
         thread.join(30)
@@ -669,9 +669,9 @@ def owner(tmp_path):
     """A canonical ``SessionAuthority`` over a fresh profile ``state.db``."""
     from types import SimpleNamespace
 
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import SessionAuthority
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 
@@ -689,8 +689,8 @@ def owner(tmp_path):
 @pytest.fixture
 def api(owner, tmp_path, monkeypatch):
     """The API server adapter bound to ``owner``'s runner and database."""
-    from gateway.config import PlatformConfig
-    from gateway.platforms.api_server import APIServerAdapter
+    from hermes_agent.gateway.config import PlatformConfig
+    from hermes_agent.gateway.platforms.api_server import APIServerAdapter
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     adapter = APIServerAdapter(PlatformConfig(enabled=True))
@@ -709,11 +709,11 @@ def hosted_owner(tmp_path, monkeypatch):
     import threading
     from types import SimpleNamespace
 
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import SessionActor
-    from gateway import run, session_policy
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway import run, session_policy
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {'default': 'fixture'}, 'platform_toolsets': {'cli': []}})
     monkeypatch.setattr(run, '_resolve_gateway_model', lambda cfg: 'fixture')
     # Parent-owned private restore hook, explicitly not an ordinary-daemon proof.

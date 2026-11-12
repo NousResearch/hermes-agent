@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import session_kanban
+from hermes_agent.gateway import session_kanban
 from hermes_cli import kanban_db as kb
 from hermes_cli.kanban_db_connect import connect_closing
 

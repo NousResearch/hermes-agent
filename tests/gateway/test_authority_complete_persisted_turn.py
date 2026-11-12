@@ -11,8 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_authority import LiveSession, SessionAuthority
-from gateway.session_contract import SessionActor, SessionRef, Submission
+from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+from hermes_agent.gateway.session_contract import SessionActor, SessionRef, Submission
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 from run_agent import AIAgent
@@ -54,7 +54,7 @@ def _tool_turn(db, session_id):
 
 
 def test_turn_runner_result_carries_the_committed_turn_receipt(tmp_path):
-    from gateway.run_turn_runner import _persisted_turn
+    from hermes_agent.gateway.run_turn_runner import _persisted_turn
     db = SessionDB(db_path=tmp_path / 'state.db')
     db.create_session('s', source='test')
     agent, history, messages, row_ids = _tool_turn(db, 's')
@@ -70,7 +70,7 @@ def test_turn_runner_result_carries_the_committed_turn_receipt(tmp_path):
 def test_steered_turn_receipt_names_every_user_row_in_order(tmp_path):
     """A steer/redirect adds a second user row, so the turn is never `complete`; the receipt still
     names each committed user row so the client can bind every optimistic bubble it painted."""
-    from gateway.run_turn_runner import _persisted_turn
+    from hermes_agent.gateway.run_turn_runner import _persisted_turn
     db = SessionDB(db_path=tmp_path / 'state.db')
     db.create_session('s', source='test')
     agent = _flushing_agent(db, 's')
@@ -90,7 +90,7 @@ def test_steered_turn_receipt_names_every_user_row_in_order(tmp_path):
 
 @pytest.mark.asyncio
 async def test_authority_completion_publishes_the_turn_receipt(tmp_path, monkeypatch):
-    from gateway import session_finite
+    from hermes_agent.gateway import session_finite
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     db = SessionDB(db_path=tmp_path / 'state.db')
     db.create_session('s', source='test')

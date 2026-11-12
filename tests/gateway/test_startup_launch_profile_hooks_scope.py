@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 
 from agent import secret_scope
-from gateway.run_startup import GatewayStartupMixin
+from hermes_agent.gateway.run_startup import GatewayStartupMixin
 
 
 def _capture_registration(monkeypatch, hooks_cfg):
@@ -44,7 +44,7 @@ def test_launch_profile_webhooks_register_signed_under_multiplex(tmp_path, monke
     secret_scope.set_multiplex_active(True)
     try:
         assert secret_scope.current_secret_scope() is None  # startup: no turn scope yet
-        with caplog.at_level(logging.WARNING, logger="gateway.run_startup"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.run_startup"):
             GatewayStartupMixin._register_launch_profile_config_hooks()
     finally:
         secret_scope.set_multiplex_active(False)
@@ -63,6 +63,6 @@ def test_registration_failure_is_a_warning_not_debug(monkeypatch, caplog):
         raise RuntimeError("config exploded")
 
     monkeypatch.setattr(cfgmod, "load_config", boom)
-    with caplog.at_level(logging.WARNING, logger="gateway.run_startup"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.run_startup"):
         GatewayStartupMixin._register_launch_profile_config_hooks()
     assert any(r.levelno == logging.WARNING and "registration failed" in r.getMessage() for r in caplog.records)

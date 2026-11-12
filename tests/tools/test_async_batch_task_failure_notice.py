@@ -61,7 +61,7 @@ def test_interim_notice_never_claims_or_acknowledges_the_batch_final_row(tmp_pat
 
 
 def test_gateway_dedup_identity_separates_notices_from_the_final_and_from_each_other():
-    from gateway.run_notifications import GatewayNotificationsMixin
+    from hermes_agent.gateway.run_notifications import GatewayNotificationsMixin
     ident = GatewayNotificationsMixin._completion_delivery_identity
     n0 = {"type": "async_delegation", "delegation_id": "d", "task_failure_notice": True, "results": [{"task_index": 0}]}
     n1 = {"type": "async_delegation", "delegation_id": "d", "task_failure_notice": True, "results": [{"task_index": 1}]}

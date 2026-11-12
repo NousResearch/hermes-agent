@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import Platform
+from hermes_agent.gateway.config import Platform
 
 _repo = str(Path(__file__).resolve().parents[2])
 if _repo not in sys.path:
@@ -346,7 +346,7 @@ class TestThreadRenamed:
 class TestRunnerBoundaryIntegration:
     def test_unauthorized_discord_event_never_reaches_hooks(self):
         """Full path: adapter fire-site -> runner post-auth gate denies."""
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         runner = object.__new__(GatewayRunner)
         runner._is_user_authorized = lambda source: False
@@ -365,7 +365,7 @@ class TestRunnerBoundaryIntegration:
         invoked.assert_not_called()
 
     def test_authorized_discord_event_reaches_hooks(self):
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         runner = object.__new__(GatewayRunner)
         runner._is_user_authorized = lambda source: source.user_id == "777"

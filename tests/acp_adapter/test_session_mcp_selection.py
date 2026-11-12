@@ -3,7 +3,7 @@ import json
 import sys
 import time
 
-from gateway.session_policy import build_policy, bind_launch_key, policy_scope
+from hermes_agent.gateway.session_policy import build_policy, bind_launch_key, policy_scope
 from tests.acp_adapter.test_session_mcp_policy import owner
 
 
@@ -43,7 +43,7 @@ def test_editor_tool_names_keep_the_server_name(server_spec, tmp_path, monkeypat
         (name,) = _editor_tools()
     assert name.startswith('mcp__editor_same_editor_name_') and name.endswith('__echo')
     # A manifest frozen before names were recorded keeps executing under the names it froze.
-    import gateway.session_local_mcp as local_mcp
+    import hermes_agent.gateway.session_local_mcp as local_mcp
     import hashlib
     def legacy(scope, servers):
         prefix = hashlib.sha256(scope.encode()).hexdigest()[:20]

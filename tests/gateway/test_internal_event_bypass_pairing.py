@@ -13,10 +13,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.platforms.event import MessageEvent
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource
 from tools.process_registry import ProcessRegistry, ProcessSession
 
 
@@ -47,7 +47,7 @@ def _build_runner(monkeypatch, tmp_path) -> GatewayRunner:
         encoding="utf-8",
     )
 
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
@@ -77,7 +77,7 @@ def _watcher_dict_with_notify():
 @pytest.mark.asyncio
 async def test_internal_event_bypasses_authorization(monkeypatch, tmp_path):
     """An internal event should skip _is_user_authorized entirely."""
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     (tmp_path / "config.yaml").write_text("", encoding="utf-8")
@@ -126,7 +126,7 @@ async def test_internal_event_bypasses_authorization(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_notify_on_complete_uses_session_store_origin_for_group_topic(monkeypatch, tmp_path):
     import tools.process_registry as pr_module
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.session import SessionSource
 
     sessions = [
         SimpleNamespace(
@@ -179,7 +179,7 @@ async def test_notify_on_complete_uses_session_store_origin_for_group_topic(monk
 @pytest.mark.asyncio
 async def test_none_user_id_does_not_generate_pairing_code(monkeypatch, tmp_path):
     """A message with user_id=None must never call generate_code."""
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     (tmp_path / "config.yaml").write_text("", encoding="utf-8")

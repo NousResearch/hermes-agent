@@ -46,7 +46,7 @@ def test_streamed_oneshot_prints_the_reply(tmp_path):
                               stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120, check=False)
 
     with (home / "gw.log").open("w") as log:
-        daemon = subprocess.Popen([sys.executable, "-m", "gateway.run"], cwd=root, env=env,
+        daemon = subprocess.Popen([sys.executable, "-m", "hermes_agent.gateway.run"], cwd=root, env=env,
                                   stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
         try:
             deadline, desc = time.monotonic() + 60, {}

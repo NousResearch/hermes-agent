@@ -11,7 +11,7 @@ from unittest.mock import Mock
 
 import discord
 
-from gateway.platforms.helpers import MessageDeduplicator
+from hermes_agent.gateway.platforms.helpers import MessageDeduplicator
 from plugins.platforms.discord.adapter import DiscordAdapter
 
 BOT_ID = 99

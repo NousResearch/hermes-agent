@@ -3,18 +3,18 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent
-from gateway.run import GatewayRunner
-from gateway.session_authority import SessionAuthority, initialize_session_authority
-from gateway.session_contract import SessionActor
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session_authority import SessionAuthority, initialize_session_authority
+from hermes_agent.gateway.session_contract import SessionActor
 from hermes_agent.hermes_state_runtime import RuntimeStoreError, get_session_admission, list_session_admissions
 
 
 async def _authority(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)
-    monkeypatch.setattr('gateway.session_bot._watch_reply', lambda *args: None)
+    monkeypatch.setattr('hermes_agent.gateway.session_bot._watch_reply', lambda *args: None)
     runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / 'sessions'))
     from hermes_agent.hermes_state import SessionDB
     db = SessionDB(tmp_path / 'state.db')
@@ -38,10 +38,10 @@ def test_live_delivery_forwards_diagnostic_category(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('category', ['result', 'diagnostic'])
 async def test_bot_category_is_committed_restored_and_part_of_retry_identity(tmp_path, monkeypatch, category):
-    from gateway.session_bot import deliver
-    from gateway.session_local import create_local_session
-    from gateway.session_local_title import title_new_session
-    from gateway.session_automation import restore_local_automation
+    from hermes_agent.gateway.session_bot import deliver
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_local_title import title_new_session
+    from hermes_agent.gateway.session_automation import restore_local_automation
     _runner, authority = await _authority(tmp_path, monkeypatch)
     actor = SessionActor('test-owner', 'default', frozenset({'session:create', 'session:submit', 'session:read'}), 'fixture')
     try:
@@ -83,7 +83,7 @@ async def test_bot_category_is_committed_restored_and_part_of_retry_identity(tmp
 @pytest.mark.asyncio
 @pytest.mark.parametrize('category', [None, [], {}, 'other'])
 async def test_bot_invalid_category_refuses_before_admission(tmp_path, monkeypatch, category):
-    from gateway.session_bot import deliver
+    from hermes_agent.gateway.session_bot import deliver
     _runner, authority = await _authority(tmp_path, monkeypatch)
     actor = SessionActor('test-owner', 'default', frozenset({'session:submit'}), 'fixture')
     try:
@@ -98,8 +98,8 @@ async def test_bot_invalid_category_refuses_before_admission(tmp_path, monkeypat
 @pytest.mark.asyncio
 async def test_display_kind_is_a_closed_producer_set(tmp_path, monkeypatch):
     """Only gateway-produced notice kinds ride an automation admission; anything else refuses."""
-    from gateway.response_filters import display_kind_for_event, display_metadata_for_event
-    from gateway.session_automation import automation_display_metadata
+    from hermes_agent.gateway.response_filters import display_kind_for_event, display_metadata_for_event
+    from hermes_agent.gateway.session_automation import automation_display_metadata
     trusted = {'display_kind': 'process_complete', 'display_text': 'Background Process Finished: true'}
     assert automation_display_metadata(trusted) == trusted
     event = MessageEvent(text='notice', internal=True, metadata=dict(trusted))
@@ -116,8 +116,8 @@ async def test_display_kind_is_a_closed_producer_set(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('category', ['result', 'diagnostic'])
 async def test_native_automation_category_roundtrip(tmp_path, monkeypatch, category):
-    from gateway.session_ingress_context import native_callback, register_transport_home
-    from gateway.session_envelope import restore_native
+    from hermes_agent.gateway.session_ingress_context import native_callback, register_transport_home
+    from hermes_agent.gateway.session_envelope import restore_native
     from plugins.platforms.discord.adapter import DiscordAdapter
     runner, authority = await _authority(tmp_path, monkeypatch)
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token='fixture-token', typing_indicator=False))
@@ -158,7 +158,7 @@ _SOURCE = dict(chat_id='42', chat_type='dm', user_id='42', user_name='human')
 
 
 async def _native_owner(tmp_path, monkeypatch, human_message_id, fields=_SOURCE, **config):
-    from gateway.session_ingress_context import native_callback, register_transport_home
+    from hermes_agent.gateway.session_ingress_context import native_callback, register_transport_home
     from plugins.platforms.discord.adapter import DiscordAdapter
     runner, authority = await _authority(tmp_path, monkeypatch)
     vars(runner.session_store.config).update(config)
@@ -182,7 +182,7 @@ async def _native_owner(tmp_path, monkeypatch, human_message_id, fields=_SOURCE,
 async def test_native_completion_wake_admits_when_source_differs_only_by_message_id(tmp_path, monkeypatch):
     """A synthetic wake clears ``message_id`` (#52694/#123097) while the committed human
     envelope keeps it; the admission must still match the route and drop the stale anchor."""
-    from gateway.session_envelope import restore_native
+    from hermes_agent.gateway.session_envelope import restore_native
     runner, authority, adapter, source, metadata = await _native_owner(tmp_path, monkeypatch, 'human-1')
     try:
         assert source.message_id is None
@@ -231,8 +231,8 @@ async def test_native_completion_wake_refuses_another_adapter(tmp_path, monkeypa
 async def test_refused_watch_wake_logs_the_refusal_code(tmp_path, monkeypatch, caplog):
     """A refused wake used to requeue silently; the refusal code is what diagnoses it (#138940)."""
     import logging
-    from gateway.session_identity import replace_source
-    from gateway.wake import WakeNotAccepted
+    from hermes_agent.gateway.session_identity import replace_source
+    from hermes_agent.gateway.wake import WakeNotAccepted
     runner, authority, _adapter, source, metadata = await _native_owner(tmp_path, monkeypatch, 'human')
     try:
         route = metadata['gateway_session_key']
@@ -241,7 +241,7 @@ async def test_refused_watch_wake_logs_the_refusal_code(tmp_path, monkeypatch, c
         evt = {'type': 'completion', 'session_id': 'proc_x', 'session_key': route, 'platform': 'discord',
                'chat_id': '42', 'chat_type': 'dm', 'exit_code': 0, 'output': 'done', 'started_at': 1.0,
                'parent_session_id': metadata['gateway_session_id']}
-        with caplog.at_level(logging.WARNING, logger='gateway.run'):
+        with caplog.at_level(logging.WARNING, logger='hermes_agent.gateway.run'):
             with pytest.raises(WakeNotAccepted):
                 await runner._inject_watch_notification('[done]', evt, raise_not_accepted=True)
         assert [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING

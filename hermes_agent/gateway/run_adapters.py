@@ -1,8 +1,8 @@
 """Adapter connect/disconnect, fatal-error recovery, reconnect watcher and multiplex profile
 adapters for GatewayRunner (mixin bound via the MRO).
 
-``gateway.run`` internals are imported lazily inside method bodies (import cycle), so
-``patch("gateway.run.X")`` keeps intercepting them at call time.
+``hermes_agent.gateway.run`` internals are imported lazily inside method bodies (import cycle), so
+``patch("hermes_agent.gateway.run.X")`` keeps intercepting them at call time.
 """
 
 from __future__ import annotations
@@ -19,30 +19,30 @@ import weakref as _weakref
 from agent.async_utils import consume_detached_task_result
 from contextvars import Context
 from datetime import datetime, timedelta, timezone, UTC
-from gateway.config import (
+from hermes_agent.gateway.config import (
     ON_ALL_ADAPTERS_DOWN_POLICIES,
     SHARED_LISTENER_MIRROR_PLATFORMS,
     Platform,
     platform_binds_port as _platform_binds_port,
 )
-from gateway.platforms.base import BasePlatformAdapter
-from gateway.platforms.helpers import carry_inbound_dedup, hand_over_held_inbound
-from gateway.run_adapters_recovery import (
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.platforms.helpers import carry_inbound_dedup, hand_over_held_inbound
+from hermes_agent.gateway.run_adapters_recovery import (
     GatewaySecondaryReconnectMixin,
     _adapter_unavailable_message,
 )
-from gateway.run_shutdown import _log_suppressed
-from gateway.session import SessionSource
+from hermes_agent.gateway.run_shutdown import _log_suppressed
+from hermes_agent.gateway.session import SessionSource
 from hermes_cli.observability.shared_metrics_gateway import record_platform_connect, record_platform_disconnect
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner
-    from gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 _UNSET = object()  # "no per-profile human_delay snapshot": fall back to the primary's value
 # Slack on top of one connect budget per EXTEND_TIMEOUT_USEC step: covers the next profile's config load.
 _SYSTEMD_BOOT_STEP_MARGIN_SECS = 30.0
@@ -149,7 +149,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
 
     def _adapter_disconnect_timeout_secs(self) -> float:
         """Return the per-adapter disconnect timeout used during shutdown."""
-        from gateway.run import _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT
+        from hermes_agent.gateway.run import _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT
         override = self._env_timeout_override("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT")
         return _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT if override is None else override
 
@@ -161,7 +161,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         cold-start wait is capped and the platform is handed to the reconnect watcher, which retries with
         the full budget (and ``is_reconnect=True``, preserving the offline update queue — #46621).
         """
-        from gateway.run import (
+        from hermes_agent.gateway.run import (
             _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT, _TELEGRAM_CONNECT_TIMEOUT_SECS_DEFAULT,
             _TELEGRAM_INITIAL_CONNECT_TIMEOUT_SECS_DEFAULT,
         )
@@ -211,7 +211,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         timeout = self._platform_connect_timeout_secs(platform, initial=True)
         if getattr(self, "_running", False) or self.config.systemd_watchdog_seconds <= 0 or timeout <= 0:
             return
-        from gateway.systemd_notify import extend_start_timeout
+        from hermes_agent.gateway.systemd_notify import extend_start_timeout
         extend_start_timeout(timeout + _SYSTEMD_BOOT_STEP_MARGIN_SECS)
 
     async def _connect_initial_adapter_with_timeout(self, adapter, platform) -> bool:
@@ -542,8 +542,8 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         """Process pending CLI→gateway session handoffs from ``state.db``: claim atomically (pending
         → running), re-bind the home channel to the CLI session_id, dispatch a synthetic event, mark
         ``completed``/``failed``."""
-        from gateway.run import _async_profile_runtime_scope, _reclaim_stale, _resolve_handoff_watch_scopes
-        from gateway.run_idle_gates import off_loop_gate, profile_has_pending_handoff
+        from hermes_agent.gateway.run import _async_profile_runtime_scope, _reclaim_stale, _resolve_handoff_watch_scopes
+        from hermes_agent.gateway.run_idle_gates import off_loop_gate, profile_has_pending_handoff
         await asyncio.sleep(5)  # let platforms connect before dispatching through them
         # Does _process_handoff accept the profile argument? Test stand-ins bind a one-arg callable.
         try:
@@ -751,7 +751,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         """Flag NEEDS_ATTENTION (once) past the threshold — a signal, NOT a circuit breaker. The threshold
         is the bound profile's ``agent.reconnect_attention_after``: secondaries call this inside their
         ``_profile_runtime_scope`` with their ``<profile>:<platform>`` status key. True = flagged now."""
-        from gateway.run import _reconnect_needs_attention
+        from hermes_agent.gateway.run import _reconnect_needs_attention
         if info.get("attention_flagged") or not _reconnect_needs_attention(info, now):
             return False
         info["attention_flagged"] = True
@@ -783,7 +783,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         ``retry_now`` still set here was raised DURING this attempt (the pass clears it when it starts):
         what the attempt lacked arrived after it began (relay credentials), so the retry stays immediate.
         """
-        from gateway.run import _reconnect_backoff
+        from hermes_agent.gateway.run import _reconnect_backoff
         self._update_platform_runtime_status(
             platform.value, platform_state="retrying", error_code=error_code, error_message=error_message,
         )
@@ -799,8 +799,8 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         (missing deps/creds), a registered plugin returning None, or an empty bot credential needs a config
         change: retrying it re-warns forever at the backoff cap (#5196 fleet nodes). Shared by startup and
         the reconnect watcher so both classify the same platform the same way."""
-        from gateway.platform_registry import platform_registry
-        from gateway.run import _BUILTIN_ADAPTERS, _platform_has_bot_credential
+        from hermes_agent.gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.run import _BUILTIN_ADAPTERS, _platform_has_bot_credential
         return (
             platform not in _BUILTIN_ADAPTERS
             and not platform_registry.is_registered(platform.value)
@@ -809,7 +809,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
 
     async def _reconnect_failed_platform(self, platform, now: float) -> None:
         """One watcher pass for a queued platform: gate, attempt, and record the outcome."""
-        from gateway.run import _dispose_unused_adapter, _platform_has_bot_credential
+        from hermes_agent.gateway.run import _dispose_unused_adapter, _platform_has_bot_credential
         info = self._failed_platforms.get(platform)
         # None: removed concurrently since the caller's snapshot. Paused needs /platform resume.
         if info is None or info.get("paused"):
@@ -829,7 +829,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         logger.info("Reconnecting %s (attempt %d)...", platform.value, attempt)
         adapter = None
         try:
-            from gateway.platform_registry import platform_registry
+            from hermes_agent.gateway.platform_registry import platform_registry
             # A re-armed plugin import + register() joins its load deadline: run it off the event loop.
             await self._run_in_executor_with_context(platform_registry.get, platform.value)
             adapter = await self._create_adapter_off_loop_deps(platform, platform_config)
@@ -898,7 +898,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         """Register a connected primary adapter and wire voice mode/input (transcription without /voice join)."""
         self.adapters[platform] = adapter
         if platform == Platform.API_SERVER:
-            from gateway.session_api_turn import recover_api_turns
+            from hermes_agent.gateway.session_api_turn import recover_api_turns
             recover_api_turns(adapter)
         self._sync_voice_mode_state_to_adapter(adapter)
         self._bind_voice_input_callback(adapter)
@@ -906,7 +906,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
     def _schedule_planned_restart_replay(self) -> None:
         """Replay the owed planned-restart notice after a reconnect, in the background: notification delivery
         must not hold up adapter recovery or other platforms' reconnects."""
-        from gateway.run import _planned_restart_notification_pending
+        from hermes_agent.gateway.run import _planned_restart_notification_pending
         if _planned_restart_notification_pending():
             task = self._retain_background_task(asyncio.create_task(
                 self._replay_pending_planned_restart_notification(),
@@ -940,7 +940,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             await self._redeliver_failed_obligations_for_platform(platform)
         # Rebuild channel directory with the new adapter
         with suppress(Exception):
-            from gateway.channel_directory import build_channel_directory
+            from hermes_agent.gateway.channel_directory import build_channel_directory
             await build_channel_directory(self.adapters)
         # A platform offline at startup skipped its restart-interrupted sessions; resume them now.
         try:
@@ -977,14 +977,14 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         """Bring up adapters for every non-active profile (multiplex only); returns connected count.
         Each profile connects under its own HERMES_HOME + secret scope; credential/listener collisions
         are refused here — the only point seeing every profile's credentials together."""
-        from gateway.run import MultiplexConfigError, _multiplex_profile_homes
-        from gateway.run_profile_reconcile import profile_serve_signature
+        from hermes_agent.gateway.run import MultiplexConfigError, _multiplex_profile_homes
+        from hermes_agent.gateway.run_profile_reconcile import profile_serve_signature
         if not self._multiplex_on():
             # Runtime-status publication re-stamps the previous writer's record in place, so a multiplexer's
             # ``served_profiles`` would outlive it into this single-profile run and `hermes -p X ...`
             # would keep refusing (exit 78) / reporting "served" for profiles nobody serves.
             with _log_suppressed(logging.DEBUG, "could not clear served_profiles", exc_info=True):
-                from gateway.status import publish_runtime_status
+                from hermes_agent.gateway.status import publish_runtime_status
                 publish_runtime_status(served_profiles=[])
             return 0
         try:
@@ -1055,8 +1055,8 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         """Record the served set (eligible for routing/HTTP prefixes/cron/runtime scope — broader
         than "has a connected adapter") for `hermes status`; seed per-profile PairingStores."""
         with _log_suppressed(logging.DEBUG, "could not record served_profiles", exc_info=True):
-            from gateway.status import publish_runtime_status
-            from gateway.pairing import PairingStore
+            from hermes_agent.gateway.status import publish_runtime_status
+            from hermes_agent.gateway.pairing import PairingStore
             served = [active] + sorted(name for name, _home in profile_homes if name != active)
             self._note_served_profiles(profile_homes)
             for name in served:
@@ -1067,7 +1067,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             publish_runtime_status(served_profiles=served)
             # The host record is what a second `gateway run` reads to decide attach-vs-start; keep
             # its served set in step with the live one (it is republished, never re-claimed).
-            from gateway.host_rendezvous import ROLE_GATEWAY, owns_host_lock, publish_record
+            from hermes_agent.gateway.host_rendezvous import ROLE_GATEWAY, owns_host_lock, publish_record
             if owns_host_lock(ROLE_GATEWAY):
                 from hermes_constants import get_hermes_home
                 publish_record(ROLE_GATEWAY, profiles=tuple(served), home=str(get_hermes_home()))
@@ -1077,16 +1077,16 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         ``MultiplexConfigError`` (open dm/group policy). Port-binding platforms are NOT refused: the
         default profile owns the single shared listener and a secondary's port-binders are built in
         shared-listener mode (``/p/<profile>/...``) by ``_start_one_profile_adapters``."""
-        from gateway.run import (
+        from hermes_agent.gateway.run import (
             MultiplexConfigError, _load_gateway_config,
             _own_policy_open_startup_violation, _profile_runtime_scope,
         )
-        from gateway.config import load_gateway_config
+        from hermes_agent.gateway.config import load_gateway_config
         from hermes_cli.env_loader import hydrate_profile_secret_sources
         # Hydrate external secret sources off-loop ONCE: sync hydration would stall every heartbeat.
         await asyncio.to_thread(hydrate_profile_secret_sources, profile_home)
         # A platform that left core for a catalog plugin is installed before discovery below.
-        from gateway.run_startup import recover_left_core_in
+        from hermes_agent.gateway.run_startup import recover_left_core_in
         await asyncio.to_thread(recover_left_core_in, profile_home, hydrate_secrets=False)
         with _profile_runtime_scope(profile_home, hydrate_secrets=False):
             profile_runtime_cfg = _load_gateway_config()
@@ -1116,7 +1116,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         is only returned when the profile's own ``.env`` does not contain the value — a shell
         export that merely echoes the file is the file.
         """
-        from gateway.config import PLATFORM_TOKEN_ENV_NAMES
+        from hermes_agent.gateway.config import PLATFORM_TOKEN_ENV_NAMES
         env_name = PLATFORM_TOKEN_ENV_NAMES.get(platform)
         if not env_name or not isinstance(token, str) or not token.strip():
             return None
@@ -1276,7 +1276,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         self, profile_name: str, profile_home: Path, claimed: dict[tuple, str]
     ) -> int:
         """Create+connect one profile's adapters under its runtime scope."""
-        from gateway.run import _platform_has_bot_credential, _profile_runtime_scope
+        from hermes_agent.gateway.run import _platform_has_bot_credential, _profile_runtime_scope
         profile_cfg = await self._load_secondary_profile_config(profile_name, profile_home)
         # Keep the served profile's config: host-wide passes (planned-restart notices) must reach
         # every served profile's home channels, and this is the only place it is loaded.
@@ -1542,7 +1542,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         (bare test rigs) — the legacy readers then stay in force."""
         if source is None:
             return None
-        from gateway.session_identity import canonical_identity
+        from hermes_agent.gateway.session_identity import canonical_identity
         try:
             identity = canonical_identity(
                 source, runner=self, transport_profile=transport_profile, primary_home=primary_home)
@@ -1558,9 +1558,9 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         """Message handler that canonicalizes the event's identity FIRST, then delegates under the
         profile scope (auth runs BEFORE the agent-turn scope, so the profile's ``.env`` must be
         visible here)."""
-        from gateway.run import _async_profile_runtime_scope
+        from hermes_agent.gateway.run import _async_profile_runtime_scope
         profile_home = self._routed_profile_home(profile_name)
-        from gateway.session_ingress_context import native_callback, register_transport_home
+        from hermes_agent.gateway.session_ingress_context import native_callback, register_transport_home
         # An unresolvable named profile has no transport home: the native callback then fails
         # closed under session authority (``profile_mismatch``) instead of naming a path.
         transport_home = None if profile_home is UNRESOLVED_PROFILE_HOME else profile_home
@@ -1589,7 +1589,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
     def _make_profile_busy_session_handler(self, profile_name: str):
         """Busy-path twin: canonicalize FIRST, then resolve busy policy under the profile scope
         (auth runs against the profile's own allowlist, same as the cold-path message handler)."""
-        from gateway.run import _async_profile_runtime_scope
+        from hermes_agent.gateway.run import _async_profile_runtime_scope
         profile_home = self._routed_profile_home(profile_name)
 
         async def _handler(event, _session_key):
@@ -1603,15 +1603,15 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
     def _make_default_profile_message_handler(self):
         """Scope primary-adapter messages to their routed multiplex profile. Authorization stays
         with the transport profile (a routed profile may have no credential/allowlist)."""
-        from gateway.run import _async_profile_runtime_scope, get_hermes_home
+        from hermes_agent.gateway.run import _async_profile_runtime_scope, get_hermes_home
         default_home = Path(get_hermes_home())
-        from gateway.session_ingress_context import register_transport_home
+        from hermes_agent.gateway.session_ingress_context import register_transport_home
         register_transport_home(self, None, default_home)
 
         async def _handler(_runner, event):
             # A rejected route still enters ``_handle_message``, whose ingress gate drops it fail-closed.
             profile_home = self._admit_primary_source(event.source, default_home) or default_home
-            from gateway.session_ingress_context import native_callback
+            from hermes_agent.gateway.session_ingress_context import native_callback
             with native_callback(self, event, default_home):
                 async with _async_profile_runtime_scope(profile_home):
                     return await self._handle_message(event)
@@ -1622,7 +1622,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         """Busy-path twin of ``_make_default_profile_message_handler``: busy callbacks bypass the message
         handler, so the routed scope and transport-home authorization must be re-established here or the
         follow-up is authorized in whatever scope is ambient (#103717)."""
-        from gateway.run import _async_profile_runtime_scope, get_hermes_home
+        from hermes_agent.gateway.run import _async_profile_runtime_scope, get_hermes_home
         default_home = Path(get_hermes_home())
 
         async def _handler(event, _session_key):
@@ -1686,7 +1686,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
 
     def _make_profile_platform_event_handler(self, profile_name: str):
         """Bind platform-event auth and hook dispatch to one multiplex profile."""
-        from gateway.run import _profile_runtime_scope
+        from hermes_agent.gateway.run import _profile_runtime_scope
         profile_home = self._routed_profile_home(profile_name)
 
         async def _handler(event, source):
@@ -1698,7 +1698,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
 
     def _make_default_profile_platform_event_handler(self):
         """Scope primary-transport events to their routed multiplex profile."""
-        from gateway.run import _profile_runtime_scope, get_hermes_home
+        from hermes_agent.gateway.run import _profile_runtime_scope, get_hermes_home
         default_home = Path(get_hermes_home())
 
         async def _handler(event, source):
@@ -1718,7 +1718,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
     @staticmethod
     def _adapter_credential_claim(platform: Platform, adapter: Any) -> Optional[tuple]:
         """Return the exclusive credential resource claimed by an adapter."""
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
         fingerprint = GatewayRunner._adapter_credential_fingerprint(adapter)
         return None if fingerprint is None else (platform, fingerprint)
 
@@ -1770,7 +1770,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         install runs in the executor first, and the create that follows never re-runs the installer
         on the loop (#125607). Inline, a minutes-long pm install froze the event loop until the
         liveness watchdog killed the gateway (exit 75)."""
-        from gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.platform_registry import platform_registry
         # None (no registered entry) leaves create_adapter / the built-in path to decide as before.
         deps_ok = await self._run_in_executor_with_context(platform_registry.ensure_deps, platform.value)
         with platform_registry.deps_resolved_off_loop(deps_ok):
@@ -1778,14 +1778,14 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
 
     def _instantiate_adapter(self, platform: Platform, config: Any) -> Optional[BasePlatformAdapter]:
         """Instantiate the adapter for a platform: plugin registry first, then built-ins."""
-        from gateway.run import _instantiate_builtin_adapter
+        from hermes_agent.gateway.run import _instantiate_builtin_adapter
         if hasattr(config, "extra") and isinstance(config.extra, dict):
             config.extra.setdefault("group_sessions_per_user", self.config.group_sessions_per_user)
             config.extra.setdefault(
                 "thread_sessions_per_user", getattr(self.config, "thread_sessions_per_user", False)
             )
         with _log_suppressed(logging.DEBUG, "Platform registry lookup for '%s' failed: %s", platform.value):
-            from gateway.platform_registry import platform_registry
+            from hermes_agent.gateway.platform_registry import platform_registry
             if platform_registry.is_registered(platform.value):
                 adapter = platform_registry.create_adapter(platform.value, config)
                 if adapter is None:  # registered but failed — never fall through to built-ins
@@ -1811,7 +1811,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         back to os.environ (the default profile's env) and denies the secondary's own allowlisted
         callers (#120639).
         """
-        from gateway.run import get_hermes_home
+        from hermes_agent.gateway.run import get_hermes_home
         transport_home = Path(get_hermes_home()) if self._multiplex_on() and profile_name is None else None
         # Resolved once; the scope is entered per call so an ``.env`` allowlist edit reaches the next
         # tap, matching the message path's per-message re-read.
@@ -1839,7 +1839,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
                 # Sync, on the adapter's event loop (per tap, per inline-query keystroke): never
                 # hydrate external secret sources here — that takes the process-global source lock
                 # (#99519). Startup and the message path hydrate off-loop; this reads their cache.
-                from gateway.run import _profile_runtime_scope
+                from hermes_agent.gateway.run import _profile_runtime_scope
                 with self._scope_or_null(
                         functools.partial(_profile_runtime_scope, hydrate_secrets=False), profile_home):
                     return self._is_user_authorized(source)

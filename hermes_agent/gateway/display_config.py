@@ -64,7 +64,7 @@ def _platform_defaults(platform_key: str) -> dict[str, Any]:
     if platform_key in _PLATFORM_DEFAULTS:
         return _PLATFORM_DEFAULTS[platform_key]
     try:
-        from gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.platform_registry import platform_registry
         entry = platform_registry.get(platform_key)
     except Exception:
         return {}
@@ -81,7 +81,7 @@ def resolve_display_setting(user_config: dict, platform_key: str, setting: str, 
     """Resolve a display setting with per-platform override support (see module docstring for order).
 
     ``platform_key`` is the platform config key (``"telegram"``; see ``_platform_config_key`` in
-    gateway/run.py). Returns *fallback* when nothing is configured.
+    hermes_agent/gateway/run.py). Returns *fallback* when nothing is configured.
     """
     configured = _configured_display_value(user_config, platform_key, setting)
     if configured is not None:

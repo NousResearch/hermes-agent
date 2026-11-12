@@ -89,7 +89,7 @@ def test_third_party_children_never_see_hermes_credentials(child_env, monkeypatc
 
         asyncio.run(_exec_buzz(str(probe), [], relay_url="wss://relay.invalid", private_key="buzz-own"))
     else:
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.raft.adapter import RaftAdapter
 
         monkeypatch.setenv("RAFT_PROFILE", "probe")

@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
 
 def _make_adapter(monkeypatch, **extra):
@@ -33,7 +33,7 @@ class TestBlueBubblesConfigLoading:
         monkeypatch.setenv("BLUEBUBBLES_WEBHOOK_PORT", "9999")
         monkeypatch.setenv("BLUEBUBBLES_REQUIRE_MENTION", "true")
         monkeypatch.setenv("BLUEBUBBLES_MENTION_PATTERNS", r'["(?i)^amos\\b"]')
-        from gateway.config import GatewayConfig, _apply_env_overrides
+        from hermes_agent.gateway.config import GatewayConfig, _apply_env_overrides
 
         config = GatewayConfig()
         _apply_env_overrides(config)
@@ -616,7 +616,7 @@ class TestBlueBubblesPluginRegistration:
     def test_core_wiring_removed(self):
         import tools.send_message_senders as senders
         import tools.send_message_tool as smt
-        from gateway.run import _BUILTIN_ADAPTERS
+        from hermes_agent.gateway.run import _BUILTIN_ADAPTERS
         from hermes_cli import gateway_setup_wizard as wiz
 
         assert Platform.BLUEBUBBLES not in _BUILTIN_ADAPTERS

@@ -6,9 +6,9 @@ LOCAL, RELAY = 'http://127.0.0.1:8000/v1', 'https://relay.example.com/v1'
 
 def _launch(tmp_path, config, launch_key=None, **pick):
     """session.create's route steps, then the runtime the first turn resolves from the frozen policy."""
-    from gateway.session_local_route import resolve_launch_route
-    from gateway.session_policy import build_policy
-    from gateway.session_worker_construct import route_runtime
+    from hermes_agent.gateway.session_local_route import resolve_launch_route
+    from hermes_agent.gateway.session_policy import build_policy
+    from hermes_agent.gateway.session_worker_construct import route_runtime
     params = {'cwd': str(tmp_path), 'toolsets': [], 'provider': 'custom', **pick}
     params = resolve_launch_route({**params, **({'api_key': launch_key} if launch_key else {})}, config)
     policy = build_policy(params, config, profile_terminal=False)
@@ -120,8 +120,8 @@ def test_a_launch_key_is_refused_for_an_entry_only_the_model_chose(tmp_path):
 def test_a_kanban_custom_provider_override_stays_on_the_profiles_endpoint(tmp_path, monkeypatch):
     from contextlib import closing
     from types import SimpleNamespace
-    from gateway.session_contract import SessionActor
-    from gateway.session_kanban import build_kanban_policy
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_kanban import build_kanban_policy
     from hermes_cli import kanban_db as kb
     from hermes_cli.kanban_db_connect import connect
     monkeypatch.setenv('HERMES_KANBAN_HOME', str(tmp_path))
@@ -147,7 +147,7 @@ def test_a_kanban_custom_provider_override_stays_on_the_profiles_endpoint(tmp_pa
 async def test_a_session_create_with_a_bare_custom_pick_stays_on_the_profiles_endpoint(monkeypatch):
     """The real ``session.create`` (``stage_local_session``) and the turn's runtime resolver."""
     import json
-    from gateway import run
+    from hermes_agent.gateway import run
     from hermes_constants import get_hermes_home
     from tests.gateway.test_session_follow_profile_config import _owner, _route
     home = get_hermes_home()
@@ -171,8 +171,8 @@ async def test_a_session_create_with_a_bare_custom_pick_stays_on_the_profiles_en
 async def test_adopting_a_legacy_custom_row_recovers_the_entry_serving_its_model(monkeypatch):
     """Real ``adopt_legacy_session``: the row recorded bare ``custom``, no endpoint, and a model only another entry lists."""
     import json
-    from gateway import run
-    from gateway.session_local_migration import resolve_local_target
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.session_local_migration import resolve_local_target
     from hermes_constants import get_hermes_home
     from tests.gateway.test_session_follow_profile_config import _owner, _route
     home = get_hermes_home()

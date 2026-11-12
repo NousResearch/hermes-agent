@@ -7,8 +7,8 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 
 import pytest
 
-from gateway import hosted_rooms as rooms
-from gateway import hosted_room_driver as driver
+from hermes_agent.gateway import hosted_rooms as rooms
+from hermes_agent.gateway import hosted_room_driver as driver
 
 
 class FakeClock:

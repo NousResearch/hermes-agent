@@ -61,7 +61,7 @@ def _no_ambient_env(monkeypatch, tmp_path):
 
 
 def _make_adapter(extra=None, **cfg_kwargs):
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
 
     cfg = PlatformConfig(
         enabled=True,
@@ -313,7 +313,7 @@ class TestReplyThreadingConfig:
 class TestProgressRouting:
 
     def test_buzz_progress_threads_by_default(self):
-        from gateway.run import _resolve_progress_thread_id
+        from hermes_agent.gateway.run import _resolve_progress_thread_id
 
         assert _resolve_progress_thread_id(
             "buzz", source_thread_id=None, event_message_id="evt-1",
@@ -321,7 +321,7 @@ class TestProgressRouting:
         ) == "evt-1"
 
     def test_buzz_progress_flat_when_opted_out(self):
-        from gateway.run import _resolve_progress_thread_id
+        from hermes_agent.gateway.run import _resolve_progress_thread_id
 
         assert _resolve_progress_thread_id(
             "buzz", source_thread_id=None, event_message_id="evt-1",
@@ -336,7 +336,7 @@ class TestDisplayDefaults:
 
 
     def test_buzz_does_not_inherit_verbose_global_tool_progress(self):
-        from gateway.display_config import resolve_display_setting
+        from hermes_agent.gateway.display_config import resolve_display_setting
         from hermes_cli.plugins import discover_plugins
 
         discover_plugins()  # the tier ships on buzz's PlatformEntry (display_tier)

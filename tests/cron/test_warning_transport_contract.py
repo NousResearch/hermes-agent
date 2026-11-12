@@ -7,7 +7,7 @@ import pytest
 
 from hermes_agent.cron import delivery_queue, scheduler
 from hermes_agent.cron.scheduler_delivery import _deliver_result
-from gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 
 
 @pytest.fixture
@@ -42,7 +42,7 @@ def test_warning_policy_at_real_transport_boundary(tmp_path, monkeypatch, loop_t
     config = GatewayConfig()
     config.platforms[Platform.DISCORD] = PlatformConfig(enabled=True)
     config.platforms[Platform.RELAY] = PlatformConfig(enabled=True)
-    monkeypatch.setattr("gateway.config.load_gateway_config", lambda: config)
+    monkeypatch.setattr("hermes_agent.gateway.config.load_gateway_config", lambda: config)
     sent = []
     fallbacks = []
 

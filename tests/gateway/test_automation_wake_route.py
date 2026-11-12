@@ -4,10 +4,10 @@ import asyncio
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionSource
-from gateway.session_identity import replace_source
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.session_identity import replace_source
 from hermes_agent.hermes_state_runtime import RuntimeStoreError, get_session_admission, list_session_admissions
 from tests.gateway.test_automation_compression_media import _admit_human, _discord_owner
 from tests.gateway.test_automation_notification_category import _SOURCE, _authority, _native_owner
@@ -55,7 +55,7 @@ async def test_subagent_process_notice_enters_its_parent_route_but_not_after_res
     root = (await _admit_human(runner, authority, MessageEvent(text='human', source=source, message_id='human'))).ref.session_id
     key = runner.session_store._generate_session_key(source)
     worker, nested = root + '-worker', root + '-nested'
-    # Shaped like reserve_child_execution's rows (gateway/session_worker_child.py).
+    # Shaped like reserve_child_execution's rows (hermes_agent/gateway/session_worker_child.py).
     authority.db.create_session(worker, source='subagent', parent_session_id=root, model_config={'_delegate_from': root})
     authority.db.create_session(nested, source='subagent', parent_session_id=worker,
                                 model_config={'_delegate_from': worker})
@@ -130,8 +130,8 @@ def _compress(runner, authority, key, child):
 
 @pytest.mark.asyncio
 async def test_wake_on_a_resumed_delegate_passes_preflight_after_compression(tmp_path, monkeypatch):
-    from gateway.session_contract import SessionRef
-    from gateway.session_envelope import check_native_route
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_envelope import check_native_route
     runner, authority, source, key, child = await _resumed_delegate_route(tmp_path, monkeypatch)
     tip = _compress(runner, authority, key, child)
     event = {'type': 'completion', 'session_id': 'proc', 'started_at': 1, 'session_key': key, 'parent_session_id': tip}
@@ -171,9 +171,9 @@ async def test_process_notice_from_a_subagent_of_a_resumed_delegate_reaches_the_
 
 
 def _relay_adapter():
-    from gateway.relay.adapter import RelayAdapter
-    from gateway.relay.descriptor import CapabilityDescriptor
-    from gateway.relay.ws_transport import WebSocketRelayTransport
+    from hermes_agent.gateway.relay.adapter import RelayAdapter
+    from hermes_agent.gateway.relay.descriptor import CapabilityDescriptor
+    from hermes_agent.gateway.relay.ws_transport import WebSocketRelayTransport
     descriptor = CapabilityDescriptor(1, 'relay', 'Fixture', 4096, False, True, False, 'plain', 'chars')
     transport = WebSocketRelayTransport('http://127.0.0.1:1/relay', 'relay', '',
                                         gateway_id='fixture-gateway', upgrade_secret='fixture-secret')
@@ -189,8 +189,8 @@ def _relay_source(message_id=None):
 
 @pytest.mark.asyncio
 async def test_relay_wake_row_reverifies_the_source_it_stores(tmp_path, monkeypatch):
-    from gateway.session_envelope import restore_native
-    from gateway.session_ingress_context import native_callback, register_transport_home, relay_callback
+    from hermes_agent.gateway.session_envelope import restore_native
+    from hermes_agent.gateway.session_ingress_context import native_callback, register_transport_home, relay_callback
     runner, authority = await _authority(tmp_path, monkeypatch)
     adapter, transport = _relay_adapter()
     runner.adapters = {Platform.RELAY: adapter}

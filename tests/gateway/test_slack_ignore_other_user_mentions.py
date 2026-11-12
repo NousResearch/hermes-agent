@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.config import Platform, PlatformConfig
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +139,7 @@ def adapter():
 @pytest.fixture(autouse=True)
 def _redirect_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache"
+        "hermes_agent.gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache"
     )
     # Keep gating driven by config.extra, not ambient env.
     monkeypatch.delenv("SLACK_IGNORE_OTHER_USER_MENTIONS", raising=False)
@@ -228,7 +228,7 @@ def test_config_bridges_slack_ignore_other_user_mentions(monkeypatch, tmp_path):
     """config.yaml ``slack.ignore_other_user_mentions`` reaches the runtime env
     var the adapter reads (same wiring as ``strict_mention`` — via the plugin's
     apply_yaml_config_fn bridge, not the generic shared-key allowlist)."""
-    from gateway.config import load_gateway_config
+    from hermes_agent.gateway.config import load_gateway_config
 
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
@@ -246,7 +246,7 @@ def test_config_bridges_slack_ignore_other_user_mentions(monkeypatch, tmp_path):
 
 
 def test_ignore_other_user_mentions_env_wins_over_yaml(monkeypatch, tmp_path):
-    from gateway.config import load_gateway_config
+    from hermes_agent.gateway.config import load_gateway_config
 
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()

@@ -3,11 +3,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform
-from gateway.session import SessionSource
-from gateway.session_authority import LiveSession, SessionAuthority
-from gateway.session_contract import SessionActor
-from gateway.session_local_title import resolve_titled_session
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+from hermes_agent.gateway.session_contract import SessionActor
+from hermes_agent.gateway.session_local_title import resolve_titled_session
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import RuntimeStoreError, begin_runtime_epoch
 

@@ -6,12 +6,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import Platform
-from gateway.slash_commands_model import _ModelSwitchContext
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.slash_commands_model import _ModelSwitchContext
 
 
 def _runner():
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     calls = {}

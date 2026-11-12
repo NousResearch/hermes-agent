@@ -11,7 +11,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from gateway.session import SessionSource
+from hermes_agent.gateway.session import SessionSource
 
 # Desktop attachment reference tags prepended by buildContextText before the
 # user's visible text (e.g. "@image:/tmp/foo.png\n\n/moa ask something").

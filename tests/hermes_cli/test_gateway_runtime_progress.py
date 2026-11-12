@@ -85,6 +85,6 @@ def test_cpu_seconds_reads_this_process():
 def test_a_lock_record_without_a_running_gateway_is_never_the_owner(tmp_path, monkeypatch):
     """A backup/restore holding the home writes a lock record too; its CPU is not the start's."""
     from types import SimpleNamespace
-    from gateway import status
+    from hermes_agent.gateway import status
     monkeypatch.setattr(status, "get_running_pid", lambda pid_path, cleanup_stale: None)
     assert progress._starting_owner_pid((tmp_path,), SimpleNamespace(pid=77)) == 77

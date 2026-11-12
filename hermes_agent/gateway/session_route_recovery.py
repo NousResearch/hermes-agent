@@ -12,7 +12,7 @@ every cold row of this profile that carries a ``session_key`` and a messaging-pl
   else its columns, rebuild the source.
 
 Either way the source is revived through ``_restored_source``, so delivery stays pinned to the
-persisted receiving bot. A row the lane moved past mounts DETACHED (gateway/session_detached.py): the
+persisted receiving bot. A row the lane moved past mounts DETACHED (hermes_agent/gateway/session_detached.py): the
 lane's current key names the newer conversation, so the row runs on a key of its own instead, its
 turns and Stop act on it alone and its replies reach its app viewers only, never the chat
 (Teknium's ruling: a chat's ``/new`` never locks the apps out of its old conversation). A compression continuation is never
@@ -26,7 +26,7 @@ from. LOCAL rows (cron, CLI, TUI) restore from their private receipt and API row
 import json
 from datetime import datetime
 
-from gateway.config import Platform
+from hermes_agent.gateway.config import Platform
 
 
 def _messaging_platform(label):
@@ -52,7 +52,7 @@ def _routed_entry(authority, sid, route):
 
 def _row_source(row, platform, profile):
     """The row's persisted origin, else its columns (``channel_directory`` reads rows the same way)."""
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.session import SessionSource
     try:
         return SessionSource.from_dict(json.loads(row['origin_json']))
     except (TypeError, ValueError, KeyError):
@@ -78,7 +78,7 @@ def _names_another_conversation(authority, sid, route):
 
 def _row_entry(row, platform, route, profile):
     """A routing entry rebuilt from the row alone (the route no longer vouches for it)."""
-    from gateway.session import SessionEntry
+    from hermes_agent.gateway.session import SessionEntry
     source = _row_source(row, platform, profile)
     if source is None or source.platform != platform:
         return None
@@ -109,20 +109,20 @@ def _mount_plan(authority, sid):
 def restore_routed_session(authority, sid):
     """Publish *sid* as its lane would after a restart; None when this row is not one a route or a
     messaging-platform row can stand for."""
-    from gateway.session_authority import LiveSession
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_authority import LiveSession
+    from hermes_agent.gateway.session_contract import SessionRef
     plan = _mount_plan(authority, sid)
     if plan is None:
         return None
     route, entry, routed = plan
     authority._require_admission_open()
     # Re-pin the persisted receiving bot so delivery after a restart goes through it or nowhere,
-    # never the default bot by heuristic (gateway/AGENTS.md § Identity survives the process).
+    # never the default bot by heuristic (hermes_agent/gateway/AGENTS.md § Identity survives the process).
     source = authority.runner._restored_source(entry)
     if sid not in authority.sessions:
         live = authority.sessions[sid] = LiveSession(source, route)
         if routed is None and _names_another_conversation(authority, sid, route):
-            from gateway.session_detached import detach
+            from hermes_agent.gateway.session_detached import detach
             detach(authority, live, sid)  # the lane moved past it: its turns stay off the chat
     return SessionRef(authority.profile_id, sid)
 
@@ -138,7 +138,7 @@ def messaging_owner_ref(authority, ref):
     row = authority.db.get_session(ref.session_id)
     if row is None or not row.get('session_key') or _messaging_platform(row['source']) is None:
         return ref
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_contract import SessionRef
     owner = authority.logical_owner(ref.session_id)
     return ref if owner == ref.session_id else SessionRef(ref.profile_id, owner)
 
@@ -148,7 +148,7 @@ def handed_off_ref(authority, session_id):
     (``/handoff``, a platform ``/resume``): created by a local surface, now routed on a lane this
     authority mounts. Its title stays the conversation's, so ``/resume <title>`` and the Bots roster's
     registry lookup open it on that lane (#143286). None for any other row."""
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_contract import SessionRef
     from hermes_agent.hermes_state_local_migration import LEGACY_LOCAL_SOURCES, client_label
     ref = messaging_owner_ref(authority, SessionRef(authority.profile_id, session_id))
     row = authority.db.get_session(ref.session_id) or {}
@@ -175,7 +175,7 @@ async def conversation_head(runner, session_id):
     (``hermes_agent.hermes_state_local.handoff_head``), never an earlier ``/new`` segment, which would move that
     history onto the lane while the live conversation stays local, its receipt released (#143286)."""
     import asyncio
-    from gateway.session_authorities import active_authority
+    from hermes_agent.gateway.session_authorities import active_authority
     from hermes_agent.hermes_state_local import handoff_head
     authority = active_authority(runner)
     db = authority.db if authority is not None else getattr(runner._session_db, '_db', runner._session_db)

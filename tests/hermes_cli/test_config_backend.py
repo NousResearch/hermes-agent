@@ -230,7 +230,7 @@ class TestPipelinesConsultTheBackend:
         assert {"exists", "read"} <= backend.ops(home)
 
     def test_gateway_yaml_layers(self, recording):
-        from gateway.config_loader import read_yaml_layers
+        from hermes_agent.gateway.config_loader import read_yaml_layers
         home, backend = recording
         assert read_yaml_layers(home)["model"]["default"] == "my-model"
         assert "read" in backend.ops(home)

@@ -16,8 +16,8 @@ import uuid
 from functools import partial
 from pathlib import Path
 
-from gateway.session_busy_controls import authorize
-from gateway.session_tui_reads import context_breakdown
+from hermes_agent.gateway.session_busy_controls import authorize
+from hermes_agent.gateway.session_tui_reads import context_breakdown
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
@@ -61,7 +61,7 @@ async def save_session(connection, ref, params):
     reset/compression child), like main's ``_submit_row_target_key``."""
     _live_ref(connection, ref, params, {'session_id', 'profile'}, 'session:read')
     authority = connection.authority
-    from gateway.session_ancillary import physical_target
+    from hermes_agent.gateway.session_ancillary import physical_target
     target = physical_target(authority, ref)
 
     def write():
@@ -98,7 +98,7 @@ async def export_session(connection, ref, params):
     except ValueError:
         raise RuntimeStoreError('invalid_params') from None
     authority = connection.authority
-    from gateway.session_ancillary import physical_target
+    from hermes_agent.gateway.session_ancillary import physical_target
     target = physical_target(authority, ref)
 
     def render():
@@ -122,12 +122,12 @@ async def session_history(connection, ref, params):
     """Main's ``session.history``: the display transcript of the conversation's current physical row (compression tip or local receipt entry), ancestors included, each row with its durable ``row_id``; Desktop's edit resolves its turn by it."""
     _live_ref(connection, ref, params, {'session_id', 'profile'}, 'session:read')
     authority = connection.authority
-    from gateway.session_local_recovery import transcript_target
+    from hermes_agent.gateway.session_local_recovery import transcript_target
     # On the loop, as ``attach`` resolves it: a local restore publishes the live entry.
     target = transcript_target(authority, ref)
 
     def read():
-        from gateway.session_controls import display_projection
+        from hermes_agent.gateway.session_controls import display_projection
         rows = authority.db.get_messages_as_conversation(target, include_ancestors=True, include_row_ids=True)
         return {'count': len(rows), 'messages': display_projection(rows, authority.profile_id)}
     return await asyncio.to_thread(read)
@@ -221,7 +221,7 @@ async def rollback(connection, ref, params, *, kind):
         raise RuntimeStoreError('invalid_params')
     live = _live_ref(connection, ref, params, fields, 'session:read' if kind != 'restore' else 'session:control')
     authority = connection.authority
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_policy import policy_for_source
     policy = policy_for_source(authority.runner, live.source)
     if policy is None:
         raise RuntimeStoreError('permission_denied')
@@ -229,9 +229,9 @@ async def rollback(connection, ref, params, *, kind):
     if kind == 'restore' and not file_path and authority._handle(ref).execution_state != 'idle':
         # Main refuses a full-history rollback mid-turn; a file-scoped restore only touches disk.
         raise RuntimeStoreError('session_busy')
-    from gateway.session_ancillary import physical_target
+    from hermes_agent.gateway.session_ancillary import physical_target
     task_id = physical_target(authority, ref)
-    from gateway.run import _checkpoint_agent_kwargs
+    from hermes_agent.gateway.run import _checkpoint_agent_kwargs
     kwargs = _checkpoint_agent_kwargs(policy.config(authority, secrets=False))
     terminal = json.loads(policy.terminal_json)
 
@@ -260,7 +260,7 @@ async def rollback(connection, ref, params, *, kind):
                 # An /undo's /rollback line. ``undo_message_id`` (the rewound user row) fixes the kept prefix
                 # whose newest row bounds the span from below, so a turn started since cannot move it;
                 # without it ``undo_since`` is already bounded by the client (the rewired classic CLI).
-                from gateway.session_local_recovery import transcript_target
+                from hermes_agent.gateway.session_local_recovery import transcript_target
                 from tools.checkpoint_undo_hint import undo_hint_payload, undo_span_start
                 kept, transcript = [], transcript_target(authority, ref)
                 if (cut := params.get('undo_message_id')) is not None:
@@ -342,7 +342,7 @@ async def _rewind_last_turn(connection, ref, taken=None):
     ended before the checkpoint taken at ``taken`` (``/undo`` already removed the turn that made it)."""
     authority = connection.authority
     from agent.context_compressor import user_originated_turn_view
-    from gateway.session_local_recovery import local_history
+    from hermes_agent.gateway.session_local_recovery import local_history
     from tools.checkpoint_undo_hint import rollback_rewinds_newest_turn
     rows = [row for row in await asyncio.to_thread(local_history, authority, ref) if not row.get('archived')]
     users = [i for i, row in enumerate(rows) if isinstance(row.get('row_id'), int)
@@ -350,7 +350,7 @@ async def _rewind_last_turn(connection, ref, taken=None):
     if not users or not rollback_rewinds_newest_turn(rows, users, taken):
         return 0
     target = rows[users[-1]]['row_id']
-    from gateway.session_mutations import mutate_session
+    from hermes_agent.gateway.session_mutations import mutate_session
     from hermes_agent.hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
     handle = authority._handle(ref)
     try:

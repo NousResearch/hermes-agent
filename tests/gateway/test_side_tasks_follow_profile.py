@@ -13,7 +13,7 @@ from tests.gateway.test_config_policy_recovery import _bound_session
 def _compress(policy, owner):
     """One side-task call as a turn makes it: the per-turn scope, then the real resolver."""
     from agent.auxiliary_client import get_text_auxiliary_client
-    from gateway.session_policy import policy_scope
+    from hermes_agent.gateway.session_policy import policy_scope
     with policy_scope(policy, authority=owner()):
         client, model = get_text_auxiliary_client('compression')
         client.chat.completions.create(model=model, messages=[{'role': 'user', 'content': 'summarise'}])
@@ -104,8 +104,8 @@ def test_an_ignore_user_config_chat_never_reads_the_profiles_side_tasks(tmp_path
     profile's ``auxiliary:`` is never read, and the built-in per-task defaults (vision's 120s timeout)
     still apply."""
     from tests.fakes.fake_llm_provider import FakeLLMServer
-    from gateway.session_local import _bypass_policy
-    from gateway.session_policy import policy_scope
+    from hermes_agent.gateway.session_local import _bypass_policy
+    from hermes_agent.gateway.session_policy import policy_scope
     from agent.auxiliary_client import _get_task_timeout
     from agent.auxiliary_task_config import _get_auxiliary_task_config
     with FakeLLMServer() as main, FakeLLMServer() as aux:
@@ -129,7 +129,7 @@ def test_every_side_task_reader_sees_the_same_route(tmp_path, monkeypatch):
     """The shared resolver and a reader that loads config.yaml itself (background review, ``/btw``, vision's
     model) agree inside one chat's turn: there is no second copy for them to disagree about."""
     from agent.auxiliary_task_config import _get_auxiliary_task_config
-    from gateway.session_policy import policy_scope
+    from hermes_agent.gateway.session_policy import policy_scope
     from hermes_cli.config import load_config_readonly
     cfg = {'model': {'provider': 'custom', 'default': 'primary-model', 'base_url': 'http://127.0.0.1:9/v1',
                      'api_key': 'main-key'},

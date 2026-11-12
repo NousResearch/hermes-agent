@@ -446,7 +446,7 @@ def build_whole_comment_prompt(
 
 def _resolve_model_and_runtime() -> tuple[str, dict]:
     """Resolve model and provider credentials, same as gateway message handling."""
-    from gateway.run import _load_gateway_config, _resolve_gateway_model, _resolve_runtime_agent_kwargs
+    from hermes_agent.gateway.run import _load_gateway_config, _resolve_gateway_model, _resolve_runtime_agent_kwargs
     model = _resolve_gateway_model(_load_gateway_config())
     runtime_kwargs = _resolve_runtime_agent_kwargs()
     try:

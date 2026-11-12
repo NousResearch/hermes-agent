@@ -55,7 +55,7 @@ def test_secondary_profile_is_ticked_with_multiplex_profiles_off(
     isolated_profiles, monkeypatch
 ):
     from hermes_agent.cron import scheduler_thread
-    from gateway import run as gateway_run
+    from hermes_agent.gateway import run as gateway_run
 
     monkeypatch.setattr(scheduler_thread, "SupervisedTickerThread", _CapturedTicker)
     monkeypatch.setattr(

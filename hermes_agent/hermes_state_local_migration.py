@@ -18,7 +18,7 @@ LEGACY_LOCAL_SOURCES = frozenset({'cli', 'tui', 'gui', 'desktop', 'oneshot', 'to
 LEGACY_CREATION_SOURCES = {'desktop': 'gui'}
 # Labels a routeless row can carry that never name a chat app: automation and recovery rows, a
 # retired platform, and a third-party WebUI that runs its own agent on this state.db (adopting its rows
-# would legitimise a second writer, so they stay read-only: gateway/session_history_mount.py).
+# would legitimise a second writer, so they stay read-only: hermes_agent/gateway/session_history_mount.py).
 NOT_CLIENT_LABELS = frozenset({'cron', 'subagent', 'kanban', 'bot_room', 'a2a', 'webhook', 'api_server',
                                'import', 'recovered', 'curator', 'batch', 'homeassistant', 'webui',
                                'local', 'unknown'})
@@ -28,7 +28,7 @@ NOT_CLIENT_LABELS = frozenset({'cron', 'subagent', 'kanban', 'bot_room', 'a2a', 
 def _messaging_labels():
     """Every platform Hermes ships: the enum and the bundled platform plugins. A runtime-registered
     catalog plugin (hermes-mobile's ``mobile``) is not in it: its rows are routed, which excludes them."""
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     bundled, aliases = Platform._scan_bundled_plugin_platforms()
     return frozenset({platform.value for platform in Platform} | set(bundled) | set(aliases))
 
@@ -77,12 +77,12 @@ def login_owned_by(row, subject):
     Older ``hermes serve`` builds stamped the WS-upgrade login as ``<provider>:<user id>``
     (hermes_agent/tui_gateway/session_transports.py), and the gateway stored a Webapp login as its
     ``auth:v1:[...]`` subject. Hermes is single-user and sign-in is owner-only, so both name the
-    machine owner: the host owner's subject adopts them (gateway.owner_identity.same_owner).
+    machine owner: the host owner's subject adopts them (hermes_agent.gateway.owner_identity.same_owner).
     """
     user_id = row.get('user_id')
     if not isinstance(user_id, str) or not subject:
         return False
-    from gateway.owner_identity import same_owner
+    from hermes_agent.gateway.owner_identity import same_owner
     return same_owner(user_id, subject)
 
 

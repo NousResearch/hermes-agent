@@ -30,9 +30,9 @@ def _image_urls(content):
 def commit_api_images(content):
     """Stage every inline ``data:`` image deterministically (same bytes -> same path, so an
     exact retry keeps its admission digest) and commit the bytes as immutable media."""
-    from gateway.platforms.base import get_image_cache_dir
-    from gateway.platforms.base import get_inbound_media_max_bytes
-    from gateway.session_ingress_media import capture_native_media, sniff_image_mime
+    from hermes_agent.gateway.platforms.base import get_image_cache_dir
+    from hermes_agent.gateway.platforms.base import get_inbound_media_max_bytes
+    from hermes_agent.gateway.session_ingress_media import capture_native_media, sniff_image_mime
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     # The bytes decide the committed type: SDKs often label JPEG bytes ``data:image/png`` and
     # main forwarded those to the provider; only bytes that are no supported image are refused.
@@ -59,7 +59,7 @@ def restore_api_images(content, media):
     """The transient content keeps its pixels; its text gains the validated committed reference
     per inline image (remote URLs keep their address) so the persisted user row records what
     was seen, exactly like native image turns."""
-    from gateway.session_ingress_media import restore_native_media
+    from hermes_agent.gateway.session_ingress_media import restore_native_media
     paths = iter(restore_native_media(media))
     hints = []
     for url in _image_urls(content):
@@ -152,7 +152,7 @@ def rehydrate_api_images(content, media):
     an image whose committed bytes are gone becomes a text notice rather than a dangling URL."""
     if not isinstance(content, list):
         return content
-    from gateway.session_ingress_media import restore_native_media
+    from hermes_agent.gateway.session_ingress_media import restore_native_media
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     by_digest = {reference['sha256']: reference for reference in media or ()}
     mimes = {ext: mime for mime, ext in _MIME_EXT.items()}

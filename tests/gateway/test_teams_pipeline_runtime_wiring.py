@@ -7,8 +7,8 @@ from types import ModuleType
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from gateway.config import Platform, PlatformConfig
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.run import GatewayRunner
 from plugins.teams_pipeline.runtime import (
     bind_gateway_runtime,
     build_pipeline_runtime,
@@ -30,7 +30,7 @@ def test_gateway_runner_skips_wiring_without_msgraph_adapter(monkeypatch):
 
     monkeypatch.setattr("plugins.teams_pipeline.runtime.bind_gateway_runtime", _bind)
     monkeypatch.setattr(
-        "gateway.run._load_gateway_config",
+        "hermes_agent.gateway.run._load_gateway_config",
         lambda: {"plugins": {"enabled": ["teams_pipeline"]}},
     )
 

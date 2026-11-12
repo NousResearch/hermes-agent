@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.session import SessionSource
 
 
 def _source(user_id: str = "user-1", *, chat_type: str = "dm") -> SessionSource:
@@ -19,7 +19,7 @@ def _source(user_id: str = "user-1", *, chat_type: str = "dm") -> SessionSource:
 
 
 def _runner(*, admins=(), group_admins=()):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
@@ -64,7 +64,7 @@ def _event(user_id: str = "user-1", *, chat_type: str = "dm"):
 )
 async def test_gateway_gate_add_requires_explicit_admin(admins, user_id):
     """Allowed chat users must not turn /goal into an unrestricted host shell."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner, manager = _runner(admins=admins)
 
@@ -77,7 +77,7 @@ async def test_gateway_gate_add_requires_explicit_admin(admins, user_id):
 @pytest.mark.asyncio
 async def test_gateway_explicit_admin_can_add_goal_gate():
     """The fix preserves the documented quality-gate capability for operators."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner, manager = _runner(admins=("admin-1",))
 
@@ -92,7 +92,7 @@ async def test_gateway_explicit_admin_can_add_goal_gate():
 @pytest.mark.asyncio
 async def test_gateway_group_gate_add_uses_group_admin_scope():
     """DM admin status must not silently grant host-shell access in groups."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner, manager = _runner(
         admins=("dm-admin",),
@@ -118,7 +118,7 @@ async def test_gateway_group_gate_add_uses_group_admin_scope():
 @pytest.mark.asyncio
 async def test_gateway_non_admin_can_still_list_goal_gates():
     """Non-admins retain read-only visibility into the active goal's gates."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner, manager = _runner(admins=("admin-1",))
     manager.render_gates.return_value = "- 1. $ scripts/run_tests.sh"

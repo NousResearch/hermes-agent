@@ -12,9 +12,9 @@ import pytest
 
 from tests.waiting import async_wait_until
 
-from gateway.config import PlatformConfig
-from gateway.platforms.event import MessageEvent
-from gateway.session import Platform, SessionSource
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import Platform, SessionSource
 from plugins.platforms.telegram import adapter as tg_adapter
 from plugins.platforms.telegram.adapter import TelegramAdapter
 

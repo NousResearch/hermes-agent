@@ -167,7 +167,7 @@ class TestFallbackMirrorEndToEnd:
             send_calls.append({"chat_id": chat_id, "thread_id": thread_id})
             return {"success": True, "chat_id": chat_id, "message_id": "1.2"}
 
-        import gateway.platform_registry as reg
+        import hermes_agent.gateway.platform_registry as reg
         import hermes_cli.plugins as hp
 
         entry = reg.platform_registry.get("slack")
@@ -190,7 +190,7 @@ class TestFallbackMirrorEndToEnd:
             })
             return True
 
-        import gateway.mirror as mirror_mod
+        import hermes_agent.gateway.mirror as mirror_mod
 
         real_mirror = mirror_mod.mirror_to_session
         monkeypatch.setattr(mirror_mod, "mirror_to_session", fake_mirror)
@@ -219,9 +219,9 @@ class TestFallbackMirrorEndToEnd:
 
     def test_managed_bare_platform_job_mirrors_brief(self, slack_env, monkeypatch):
         """The managed-cron shape delivers into the session a home-channel reply resumes."""
-        import gateway.mirror as mirror_mod
-        from gateway.config import GatewayConfig, Platform
-        from gateway.session import SessionSource, SessionStore
+        import hermes_agent.gateway.mirror as mirror_mod
+        from hermes_agent.gateway.config import GatewayConfig, Platform
+        from hermes_agent.gateway.session import SessionSource, SessionStore
 
         monkeypatch.setattr(mirror_mod, "mirror_to_session", slack_env["real_mirror"])
         store = SessionStore(slack_env["home"] / "sessions", GatewayConfig())

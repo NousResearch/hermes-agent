@@ -8,7 +8,7 @@ not exact snapshots, so they survive internal tweaks that preserve behavior.
 
 import pytest
 
-from gateway.platforms.helpers import (
+from hermes_agent.gateway.platforms.helpers import (
     balance_fences_across_chunks,
     greedy_pack_blocks,
     infer_block_separator,

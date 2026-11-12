@@ -144,11 +144,11 @@ async def automation(connection, ref, params):
     kind, call, args, kwargs = _parse(params)
     if not isinstance(ref.session_id, str) or not ref.session_id:
         raise RuntimeStoreError("invalid_params")
-    from gateway.session_busy_controls import authorize
+    from hermes_agent.gateway.session_busy_controls import authorize
     authorize(connection, ref, params, "session:control")
     authority = connection.authority
     live = authority.sessions[ref.session_id]
-    from gateway.session_ancillary import physical_target
+    from hermes_agent.gateway.session_ancillary import physical_target
     target = physical_target(authority, ref)
     if not hasattr(authority, "viewer_automation"):
         authority.viewer_automation = {}
@@ -157,8 +157,8 @@ async def automation(connection, ref, params):
     home = Path(authority.profile_id)
 
     def run():
-        from gateway.run import _profile_runtime_scope
-        from gateway.session_commands import _session_workspace
+        from hermes_agent.gateway.run import _profile_runtime_scope
+        from hermes_agent.gateway.session_commands import _session_workspace
         with _profile_runtime_scope(home), _session_workspace(runner, live.source):
             return invoke(runner, kind, target, call, args, kwargs)
     rows = lambda: tuple(authority.db.get_meta(f"{k}:{target}") for k in ("goal", "loop", "heartbeat"))
@@ -173,6 +173,6 @@ async def automation(connection, ref, params):
         authority.viewer_heartbeat[ref.session_id] = connection
     if before is None or rows() != before:
         # The classic CLI drives this session's automation: other viewers (Ink, Desktop) repaint from the event.
-        from gateway.session_control_actions import publish
+        from hermes_agent.gateway.session_control_actions import publish
         publish(authority, ref.session_id)
     return result

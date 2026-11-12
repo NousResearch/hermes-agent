@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from gateway import hosted_room_driver as driver
+from hermes_agent.gateway import hosted_room_driver as driver
 from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService
 
 

@@ -13,8 +13,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.platforms.base import SendResult
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.base import SendResult
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
@@ -153,7 +153,7 @@ async def test_reset_after_the_request_was_written_is_never_resent():
 
 def _multiplexed_runner(primary_live, profile_maps):
     """The real ``GatewayRunner`` profile-scoped lookup: primary map + per-profile maps."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.adapters = {primary_live.platform: primary_live}

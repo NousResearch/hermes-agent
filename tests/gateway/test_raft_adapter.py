@@ -10,7 +10,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.raft.adapter import (
     ACTIVITY_DRAIN_SCHEMA,
     ACTIVITY_EVENT_SCHEMA,
@@ -147,7 +147,7 @@ class TestBodySize:
     Content-Length header; a Transfer-Encoding: chunked request
     (content_length=None) bypassed the cap entirely and read the full body,
     bounded only by aiohttp's implicit 1 MiB default. Mirrors
-    gateway/platforms/webhook.py's TestBodySize."""
+    hermes_agent/gateway/platforms/webhook.py's TestBodySize."""
 
     @pytest.mark.asyncio
     async def test_wake_chunked_oversized_payload_rejected(self):

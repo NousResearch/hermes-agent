@@ -184,7 +184,7 @@ Hermes 支持配置回退 provider 链——一个按顺序尝试的 `(provider,
 
 4. **配置流程**：
    - CLI：`cli.py` 读取 `CLI_CONFIG["fallback_model"]` → 传递给 `AIAgent(fallback_model=...)`
-   - Gateway：`gateway/run.py._load_fallback_model()` 读取 `config.yaml` → 传递给 `AIAgent`
+   - Gateway：`hermes_agent/gateway/run.py._load_fallback_model()` 读取 `config.yaml` → 传递给 `AIAgent`
    - 验证：`provider` 和 `model` 键均须非空，否则回退被禁用
 
 ### 不支持回退的场景

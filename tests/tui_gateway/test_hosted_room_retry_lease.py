@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from gateway import hosted_room_driver as driver, hosted_rooms
+from hermes_agent.gateway import hosted_room_driver as driver, hosted_rooms
 from tests.gateway import test_session_group_peers as peers
 from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
 

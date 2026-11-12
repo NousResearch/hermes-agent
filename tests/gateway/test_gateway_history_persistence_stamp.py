@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 from agent.session_persistence import _db_flush_collect
-from gateway.run import _build_gateway_agent_history
+from hermes_agent.gateway.run import _build_gateway_agent_history
 
 
 def test_db_flush_collect_does_not_recollect_gateway_history_rows():

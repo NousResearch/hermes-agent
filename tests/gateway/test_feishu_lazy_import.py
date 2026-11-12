@@ -30,7 +30,7 @@ def test_configured_feishu_dependency_check_does_not_load_sdk():
 
 def test_feishu_connect_loads_sdk_on_worker_thread():
     """The first SDK import is deferred until a configured adapter connects."""
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
     feishu_adapter = _feishu_adapter_module()
 
     adapter = feishu_adapter.FeishuAdapter(

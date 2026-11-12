@@ -21,7 +21,7 @@ import uuid
 from contextlib import nullcontext
 from typing import Optional
 
-from gateway.config import Platform
+from hermes_agent.gateway.config import Platform
 
 
 def chat_choices(runner, source, session_key: str):
@@ -35,7 +35,7 @@ def chat_choices(runner, source, session_key: str):
 
 
 def _ask_chat(runner, source, session_key, loop, question, labels) -> Optional[str]:
-    from gateway.run_turn_runner_clarify_delivery import _clarify_send_then_wait, text_fallback_coro
+    from hermes_agent.gateway.run_turn_runner_clarify_delivery import _clarify_send_then_wait, text_fallback_coro
     from tools import clarify_gateway
     adapter = runner._delivery_adapter_for(source)
     if adapter is None:
@@ -58,7 +58,7 @@ def _ask_chat(runner, source, session_key, loop, question, labels) -> Optional[s
         return response
     retire = getattr(type(adapter), "retire_clarify_card", None)
     if callable(retire):  # a persistent card must stop looking answerable
-        from gateway.run_turn_runner import _clarify_expired_notice
+        from hermes_agent.gateway.run_turn_runner import _clarify_expired_notice
         asyncio.run_coroutine_threadsafe(retire(adapter, clarify_id, _clarify_expired_notice()), loop)
     return None
 
@@ -70,7 +70,7 @@ def viewer_choices(live, session_id: str):
 
 
 def _ask_viewers(live, session_id, question, labels) -> Optional[str]:
-    from gateway.session_server_requests import ask_viewer_result
+    from hermes_agent.gateway.session_server_requests import ask_viewer_result
     from tools.clarify_gateway import get_clarify_timeout
     timeout = get_clarify_timeout()
     result = ask_viewer_result(live.event_stream, session_id, "clarify",

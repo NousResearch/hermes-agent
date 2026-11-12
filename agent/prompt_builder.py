@@ -1224,7 +1224,7 @@ def _current_session_platform_hint() -> str:
     platform = os.environ.get("HERMES_PLATFORM") or os.environ.get("HERMES_SESSION_PLATFORM")
     if platform:
         return platform
-    get_session_env = getattr(sys.modules.get("gateway.session_context"), "get_session_env", None)
+    get_session_env = getattr(sys.modules.get("hermes_agent.gateway.session_context"), "get_session_env", None)
     try:
         return (get_session_env("HERMES_SESSION_PLATFORM") if get_session_env else "") or ""
     except Exception:

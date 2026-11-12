@@ -21,7 +21,7 @@ def _admissions(authority, ref, needle):
 
 @pytest.mark.asyncio
 async def test_kanban_wake_is_admitted_into_a_local_chat(tmp_path, monkeypatch):
-    from gateway.wake import deliver_wake
+    from hermes_agent.gateway.wake import deliver_wake
     runner, authority, ref, _ = await _local(tmp_path, monkeypatch)
     live = authority.sessions[ref.session_id]
     adapter = runner._delivery_adapter_for(live.source)
@@ -44,7 +44,7 @@ def _heartbeat_admissions(authority, ref):
 
 @pytest.mark.asyncio
 async def test_due_heartbeat_is_admitted_into_a_local_chat(tmp_path, monkeypatch):
-    from gateway.run_heartbeat_restore import restore_heartbeat_watches
+    from hermes_agent.gateway.run_heartbeat_restore import restore_heartbeat_watches
     runner, authority, ref, _ = await _local(tmp_path, monkeypatch)
     _overdue_heartbeat(ref.session_id)
     await restore_heartbeat_watches(runner)
@@ -54,8 +54,8 @@ async def test_due_heartbeat_is_admitted_into_a_local_chat(tmp_path, monkeypatch
 
 @pytest.mark.asyncio
 async def test_overdue_heartbeat_fires_once_with_a_classic_cli_also_polling(tmp_path, monkeypatch):
-    from gateway.run_heartbeat_restore import restore_heartbeat_watches
-    from gateway.session_viewer_automation import invoke
+    from hermes_agent.gateway.run_heartbeat_restore import restore_heartbeat_watches
+    from hermes_agent.gateway.session_viewer_automation import invoke
     from hermes_cli.heartbeat import HeartbeatManager
     runner, authority, ref, _ = await _local(tmp_path, monkeypatch)
     _overdue_heartbeat(ref.session_id)
@@ -76,8 +76,8 @@ async def test_overdue_heartbeat_fires_once_with_a_classic_cli_also_polling(tmp_
 
 
 async def _attached_cli(tmp_path, monkeypatch):
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_local import create_local_session
     from hermes_cli import goals
     runner, authority, _, _ = await _local(tmp_path, monkeypatch)
     # The RPC runs under the owner's profile scope, ``Path('default')`` here: keep it in tmp_path, on its db.
@@ -97,7 +97,7 @@ async def _attached_cli(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_a_classic_cli_driving_its_heartbeat_keeps_the_tick(tmp_path, monkeypatch):
     """The classic CLI paints only the ticks its own watchdog fires, so the poller leaves them to it."""
-    from gateway.run_heartbeat_restore import restore_heartbeat_watches
+    from hermes_agent.gateway.run_heartbeat_restore import restore_heartbeat_watches
     runner, authority, ref, automation = await _attached_cli(tmp_path, monkeypatch)
     await automation('heartbeat', 'set', 'status tick', 60)  # /heartbeat set starts the CLI's watchdog
     _overdue_heartbeat(ref.session_id)
@@ -110,7 +110,7 @@ async def test_a_classic_cli_driving_its_heartbeat_keeps_the_tick(tmp_path, monk
 @pytest.mark.asyncio
 async def test_a_classic_cli_without_a_heartbeat_watchdog_leaves_the_tick_to_the_poller(tmp_path, monkeypatch):
     """A CLI reopening a chat runs goal/loop reads but starts its watchdog only on /heartbeat set or resume."""
-    from gateway.run_heartbeat_restore import restore_heartbeat_watches
+    from hermes_agent.gateway.run_heartbeat_restore import restore_heartbeat_watches
     runner, authority, ref, automation = await _attached_cli(tmp_path, monkeypatch)
     _overdue_heartbeat(ref.session_id)
     await restore_heartbeat_watches(runner)
@@ -123,7 +123,7 @@ async def test_a_classic_cli_without_a_heartbeat_watchdog_leaves_the_tick_to_the
 @pytest.mark.asyncio
 async def test_a_classic_cli_resume_with_no_heartbeat_leaves_the_tick_to_the_poller(tmp_path, monkeypatch):
     """/heartbeat resume with nothing to resume starts no watchdog, so a heartbeat set later elsewhere still fires."""
-    from gateway.run_heartbeat_restore import restore_heartbeat_watches
+    from hermes_agent.gateway.run_heartbeat_restore import restore_heartbeat_watches
     runner, authority, ref, automation = await _attached_cli(tmp_path, monkeypatch)
     assert (await automation('heartbeat', 'resume'))['value'] is None
     _overdue_heartbeat(ref.session_id)  # Desktop sets it
@@ -163,7 +163,7 @@ async def test_cron_result_for_a_local_origin_is_a_note_not_a_turn(tmp_path, mon
 @pytest.mark.asyncio
 async def test_cron_result_for_a_local_origin_without_its_owner_is_an_error(tmp_path, monkeypatch):
     from hermes_agent.cron import scheduler_delivery as sd
-    from gateway.session_cron import unbind_owner
+    from hermes_agent.gateway.session_cron import unbind_owner
     runner, authority, ref, _ = await _local(tmp_path, monkeypatch)
     unbind_owner(authority)  # a standalone `hermes cron run`: no gateway in this process
     job = {'id': 'j1', 'name': 'digest', 'deliver': 'origin',

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import hosted_room_driver as driver, hosted_room_links, hosted_rooms
+from hermes_agent.gateway import hosted_room_driver as driver, hosted_room_links, hosted_rooms
 from tests.gateway.test_session_group_peers import (
     gateway as gateway_fixture, linked_peer as linked_peer_fixture, linked_room, _seat, call, invite, _owed, _grant_error)
 from hermes_agent.tui_gateway import methods_groups, methods_groups_forward, server
@@ -31,8 +31,8 @@ def _surface(gateway, monkeypatch, surface):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('surface', ['canonical', 'standalone'])
 async def test_registration_demoted_after_probe_persists_revoke_debt(gateway, monkeypatch, linked_peer, surface):
-    from gateway.hosted_room_replicas import demote_room
-    from gateway.session_hosted_service import CanonicalHostedRoomService
+    from hermes_agent.gateway.hosted_room_replicas import demote_room
+    from hermes_agent.gateway.session_hosted_service import CanonicalHostedRoomService
 
     _peer, url, catalog, room = linked_peer
     service, probe = gateway.service, PeerRunsHTTPClient.probe
@@ -64,7 +64,7 @@ async def test_registration_demoted_after_probe_persists_revoke_debt(gateway, mo
 @pytest.mark.parametrize('surface', ['canonical', 'standalone'])
 @pytest.mark.parametrize('operation', ['disband', 'stop'])
 async def test_expiring_active_peer_can_stop_without_holding_publication_locks(gateway, monkeypatch, linked_peer, surface, operation):
-    from gateway.platforms import api_server_runs
+    from hermes_agent.gateway.platforms import api_server_runs
 
     async def complete(adapter, run, **kwargs):
         adapter._set_run_status(run.run_id, 'completed', output='peer reply', completed=True)
@@ -136,7 +136,7 @@ async def test_expiring_active_peer_can_stop_without_holding_publication_locks(g
 @pytest.mark.parametrize('phase', ['before_probe', 'after_probe'])
 @pytest.mark.parametrize('outcome', ['failed', 'ended', 'ended_without_route'])
 async def test_registration_during_disband_preserves_surviving_grants(gateway, monkeypatch, linked_peer, surface, phase, outcome):
-    from gateway.platforms import api_server_runs
+    from hermes_agent.gateway.platforms import api_server_runs
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     from hermes_agent.tui_gateway.hosted_room_peer_transport import build_member_dispatch
 

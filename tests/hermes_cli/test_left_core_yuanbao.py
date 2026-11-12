@@ -195,7 +195,7 @@ def test_a_bare_yuanbao_in_plugins_disabled_is_still_use(tmp_path):
 
 
 def test_every_platform_core_knows_but_yuanbao_keeps_the_yb_tools_off():
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     from hermes_cli.platforms import PLATFORMS
     feature = next(f for f in lcm.LEFT_CORE if f.plugin == "yuanbao")
     assert "homeassistant" in feature.off_platforms and "yuanbao" not in feature.off_platforms

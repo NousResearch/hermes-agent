@@ -29,7 +29,7 @@ def text_fallback_coro(adapter, **send_kwargs):
     """The base numbered-text ``send_clarify`` as a fresh coroutine, or ``None`` when the adapter has
     no native override — its ``send_clarify`` already IS the text path, so retrying it would only
     repeat the failure."""
-    from gateway.platforms.base import BasePlatformAdapter
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
     if not isinstance(adapter, BasePlatformAdapter) \
             or type(adapter).send_clarify is BasePlatformAdapter.send_clarify:
@@ -70,7 +70,7 @@ def _abort_for_outcome(outcome: str, *, session_key: str, clarify_mod) -> Option
 
 def _clarify_send_disposition(fut, *, session_key: str, clarify_mod) -> Optional[str]:
     """Decide whether a clarify prompt send aborts the wait; returns the abort sentinel or ``None``."""
-    from gateway.run import _approval_send_outcome
+    from hermes_agent.gateway.run import _approval_send_outcome
 
     return _abort_for_outcome(
         _approval_send_outcome(fut, timeout=SEND_ACK_WINDOW), session_key=session_key, clarify_mod=clarify_mod)
@@ -88,7 +88,7 @@ def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_m
 
     Returns ``(response, answered)``. ``answered`` is the only signal that a user reply arrived;
     callers must not infer it from the text (a real answer may start with '[' like a sentinel)."""
-    from gateway.run import _approval_send_outcome
+    from hermes_agent.gateway.run import _approval_send_outcome
 
     outcome = _approval_send_outcome(fut, timeout=SEND_ACK_WINDOW)
     if outcome == "failed" and fallback is not None:
@@ -145,7 +145,7 @@ class _LateFailureWatch:
 
     @staticmethod
     def _outcome(fut) -> str:
-        from gateway.run import _approval_send_outcome
+        from hermes_agent.gateway.run import _approval_send_outcome
         return _approval_send_outcome(fut, timeout=0)
 
     def _on_card_done(self, fut) -> None:

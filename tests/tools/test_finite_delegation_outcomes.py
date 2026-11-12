@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent.interrupt_control import InterruptControlMixin
-from gateway import session_context as sc
+from hermes_agent.gateway import session_context as sc
 from tools import async_delegation, delegate_tool as dt
 from tools.delegate_tool_child_run import _attach_child
 from tools.process_registry import process_registry
@@ -243,7 +243,7 @@ def test_nonfinite_marker_preserves_background_dispatch(harness, monkeypatch, ma
 
 def test_owner_finite_scope_overrides_history_without_leaking(harness, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
-    from gateway.session_finite import finite_turn_scope, finite_turn_required
+    from hermes_agent.gateway.session_finite import finite_turn_scope, finite_turn_required
     from tools.delegate_tool_dispatch import _resolve_async_wake_sid
 
     monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
@@ -268,8 +268,8 @@ def test_oneshot_started_session_joins_children_on_an_interactive_turn(harness, 
     """A ``chat -q`` session resumed interactively keeps its pinned one-shot ``delegate_task`` schema ("joined in
     this call", no list/steer/stop), so an interactive (finite=False) turn must still join, never detach."""
     from agent.oneshot_footprint import agent_is_oneshot
-    from gateway.session_finite import finite_turn_scope
-    from gateway.session_policy import build_policy, policy_scope
+    from hermes_agent.gateway.session_finite import finite_turn_scope
+    from hermes_agent.gateway.session_policy import build_policy, policy_scope
 
     parent, _children, dispatch = harness
     monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION")

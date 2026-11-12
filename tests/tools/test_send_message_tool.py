@@ -26,7 +26,7 @@ def _reset_signal_scheduler():
     yield
     _reset_scheduler()
 
-from gateway.config import Platform
+from hermes_agent.gateway.config import Platform
 from tools.send_message_tool import (
     _resolve_slack_user_target,
     _send_matrix_via_adapter,
@@ -120,7 +120,7 @@ def _discord_entry():
     """Return the live Discord PlatformEntry, importing lazily so plugin
     discovery is forced exactly once and patches survive across tests."""
     from hermes_cli.plugins import discover_plugins
-    from gateway.platform_registry import platform_registry
+    from hermes_agent.gateway.platform_registry import platform_registry
     discover_plugins()
     return platform_registry.get("discord")
 
@@ -170,7 +170,7 @@ def _slack_entry():
     """Return the live Slack PlatformEntry, importing lazily so plugin
     discovery is forced exactly once and patches survive across tests."""
     from hermes_cli.plugins import discover_plugins
-    from gateway.platform_registry import platform_registry
+    from hermes_agent.gateway.platform_registry import platform_registry
     discover_plugins()
     return platform_registry.get("slack")
 
@@ -290,12 +290,12 @@ class TestSendMessageTool:
             get_home_channel=lambda _platform: None,
         )
 
-        with patch("gateway.config.load_gateway_config", return_value=config), \
+        with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
              patch("tools.interrupt.is_interrupted", return_value=False), \
-             patch("gateway.channel_directory.resolve_channel_name", side_effect=AssertionError("should not resolve ntfy topics")), \
+             patch("hermes_agent.gateway.channel_directory.resolve_channel_name", side_effect=AssertionError("should not resolve ntfy topics")), \
              patch("model_tools._run_async", side_effect=_run_async_immediately), \
              patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
-             patch("gateway.mirror.mirror_to_session", return_value=True):
+             patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True):
             result = json.loads(
                 send_message_tool(
                     {
@@ -330,11 +330,11 @@ class TestSendMessageTool:
         secret = tmp_path / "secret.pdf"
         secret.write_bytes(b"%PDF secret")
 
-        with patch("gateway.config.load_gateway_config", return_value=config), \
+        with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
              patch("tools.interrupt.is_interrupted", return_value=False), \
              patch("model_tools._run_async", side_effect=_run_async_immediately), \
              patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
-             patch("gateway.mirror.mirror_to_session", return_value=True):
+             patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True):
             result = json.loads(
                 send_message_tool(
                     {
@@ -371,11 +371,11 @@ class TestSendMessageTool:
         report.write_bytes(b"%PDF report")
         missing = tmp_path / "missing.pdf"
 
-        with patch("gateway.config.load_gateway_config", return_value=config), \
+        with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
              patch("tools.interrupt.is_interrupted", return_value=False), \
              patch("model_tools._run_async", side_effect=_run_async_immediately), \
              patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
-             patch("gateway.mirror.mirror_to_session", return_value=True):
+             patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True):
             raw = send_message_tool({
                 "action": "send",
                 "target": "telegram:12345",
@@ -403,7 +403,7 @@ class TestSendMessageTool:
                 f"transport error: https://api.example.com/send?access_token={leaked}"
             )
 
-        with patch("gateway.config.load_gateway_config", return_value=config), \
+        with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
              patch("tools.interrupt.is_interrupted", return_value=False), \
              patch("model_tools._run_async", side_effect=_raise_and_close):
             result = json.loads(
@@ -536,7 +536,7 @@ class TestSendToPlatformChunking:
         """
         from plugins.platforms.signal.adapter import MAX_MESSAGE_LENGTH as SIGNAL_MAX
         from hermes_cli.plugins import discover_plugins
-        from gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.platform_registry import platform_registry
 
         sent = []
 
@@ -594,7 +594,7 @@ class TestSendToPlatformChunking:
         send path must chunk the *formatted* text so no single send exceeds
         4096 (issue #28557).
         """
-        from gateway.platforms.base import utf16_len
+        from hermes_agent.gateway.platforms.base import utf16_len
 
         send_lengths = []
 
@@ -656,7 +656,7 @@ class TestMatrixMediaLiveAdapterReuse:
         )
 
         with patch(
-            "gateway.run._gateway_runner_ref",
+            "hermes_agent.gateway.run._gateway_runner_ref",
             return_value=fake_runner,
         ), patch.dict(
             sys.modules, {"plugins.platforms.matrix.adapter": SimpleNamespace()}
@@ -708,7 +708,7 @@ class TestMatrixMediaLiveAdapterReuse:
         fake_module = SimpleNamespace(MatrixAdapter=EphemeralAdapter)
 
         with patch(
-            "gateway.run._gateway_runner_ref", return_value=None
+            "hermes_agent.gateway.run._gateway_runner_ref", return_value=None
         ), patch.dict(sys.modules, {"plugins.platforms.matrix.adapter": fake_module}):
             result = asyncio.run(
                 _send_matrix_via_adapter(
@@ -981,7 +981,7 @@ class TestParseTargetRef:
 class TestEmailHomeChannelErrorHint:
     """The no-home-channel error for email points at the real env var.
 
-    Email reads its home channel from EMAIL_HOME_ADDRESS (gateway/config.py),
+    Email reads its home channel from EMAIL_HOME_ADDRESS (hermes_agent/gateway/config.py),
     not the generic EMAIL_HOME_CHANNEL. The error guidance must name the
     variable that is actually consulted so users who follow it succeed.
     """
@@ -992,7 +992,7 @@ class TestEmailHomeChannelErrorHint:
             platforms={Platform.EMAIL: email_cfg},
             get_home_channel=lambda _platform: None,
         )
-        with patch("gateway.config.load_gateway_config", return_value=config), \
+        with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
              patch("tools.interrupt.is_interrupted", return_value=False):
             result = json.loads(
                 send_message_tool(
@@ -1238,7 +1238,7 @@ class TestSendDiscordForum:
         mock_session, _ = self._build_mock(200, response_data=thread_data)
 
         with patch("aiohttp.ClientSession", return_value=mock_session), \
-             patch("gateway.channel_directory.lookup_channel_type", return_value="forum"):
+             patch("hermes_agent.gateway.channel_directory.lookup_channel_type", return_value="forum"):
             result = asyncio.run(
                 _send_discord("tok", "forum_ch", "Hello forum")
             )
@@ -1257,7 +1257,7 @@ class TestSendDiscordForum:
         mock_session, _ = self._build_mock(403, response_text="Forbidden")
 
         with patch("aiohttp.ClientSession", return_value=mock_session), \
-             patch("gateway.channel_directory.lookup_channel_type", return_value="forum"):
+             patch("hermes_agent.gateway.channel_directory.lookup_channel_type", return_value="forum"):
             result = asyncio.run(
                 _send_discord("tok", "forum_ch", "Hello")
             )
@@ -1294,7 +1294,7 @@ class TestSendDiscordForumMedia:
 
         monkeypatch.setattr(smt, "lookup_channel_type", lambda p, cid: "forum", raising=False)
         monkeypatch.setattr(
-            "gateway.channel_directory.lookup_channel_type", lambda p, cid: "forum"
+            "hermes_agent.gateway.channel_directory.lookup_channel_type", lambda p, cid: "forum"
         )
 
         thread_resp = self._build_thread_resp()
@@ -1329,7 +1329,7 @@ class TestSendDiscordForumMedia:
     def test_forum_missing_media_file_collected_as_warning(self, tmp_path, monkeypatch):
         """Missing media files produce warnings but the thread is still created."""
         monkeypatch.setattr(
-            "gateway.channel_directory.lookup_channel_type", lambda p, cid: "forum"
+            "hermes_agent.gateway.channel_directory.lookup_channel_type", lambda p, cid: "forum"
         )
 
         thread_resp = self._build_thread_resp()
@@ -1487,7 +1487,7 @@ class TestSendSignalChunking:
 
 
 class _FakePlatform:
-    """Stand-in for the gateway.config.Platform enum.  Holds the .value
+    """Stand-in for the hermes_agent.gateway.config.Platform enum.  Holds the .value
     attribute consulted by ``_send_via_adapter`` for registry lookups."""
 
     def __init__(self, value):
@@ -1506,7 +1506,7 @@ class TestSendViaAdapterStandaloneFallback:
 
     @staticmethod
     def _make_entry(send_fn):
-        from gateway.platform_registry import PlatformEntry
+        from hermes_agent.gateway.platform_registry import PlatformEntry
 
         return PlatformEntry(
             name="fakeplatform",
@@ -1531,9 +1531,9 @@ class TestSendViaAdapterStandaloneFallback:
                 return SimpleNamespace(success=True, message_id="ntfy-id")
 
         runner = SimpleNamespace(adapters={platform: Adapter()})
-        fake_gateway_run = ModuleType("gateway.run")
+        fake_gateway_run = ModuleType("hermes_agent.gateway.run")
         fake_gateway_run._gateway_runner_ref = lambda: runner
-        monkeypatch.setitem(sys.modules, "gateway.run", fake_gateway_run)
+        monkeypatch.setitem(sys.modules, "hermes_agent.gateway.run", fake_gateway_run)
 
         result = await _send_via_adapter(
             platform,
@@ -1552,14 +1552,14 @@ class TestSendViaAdapterStandaloneFallback:
     async def test_standalone_sender_fn_raises_is_caught_and_formatted(self, monkeypatch):
         """Hook raises: error dict has 'Plugin standalone send failed: ...'"""
         from tools.send_message_tool import _send_via_adapter
-        from gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.platform_registry import platform_registry
 
         async def boom(pconfig, chat_id, message, **kwargs):
             raise ValueError("boom!")
 
         platform_registry.register(self._make_entry(boom))
         try:
-            monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+            monkeypatch.setattr("hermes_agent.gateway.run._gateway_runner_ref", lambda: None)
 
             result = await _send_via_adapter(
                 _FakePlatform("fakeplatform"),
@@ -1578,7 +1578,7 @@ class TestSendViaAdapterStandaloneFallback:
         """No gateway and nothing registered yet (cron/CLI process): the fallback runs plugin
         discovery, so a platform without a dedicated route still reaches its standalone sender."""
         from tools.send_message_tool import _send_via_adapter
-        from gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.platform_registry import platform_registry
 
         sent = []
 
@@ -1586,7 +1586,7 @@ class TestSendViaAdapterStandaloneFallback:
             sent.append((chat_id, message))
             return {"success": True, "platform": "fakeplatform", "chat_id": chat_id}
 
-        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+        monkeypatch.setattr("hermes_agent.gateway.run._gateway_runner_ref", lambda: None)
         monkeypatch.setattr("hermes_cli.plugins.discover_plugins",
                             lambda *a, **k: platform_registry.register(self._make_entry(send)))
         try:
@@ -1648,7 +1648,7 @@ class TestSendTelegramThreadNotFoundRetry:
 def test_not_configured_error_names_resolved_home_and_consulted_sources(tmp_path, monkeypatch):
     """The 'not configured' error names the files this process actually read (resolved home, not a
     hardcoded ``~/.hermes``) and what each source held, so a Windows/profile home user can fix the right file."""
-    from gateway.config import GatewayConfig
+    from hermes_agent.gateway.config import GatewayConfig
     from tools.send_message_tool import _resolve_platform_config
 
     home = tmp_path / "AppData" / "Local" / "hermes"
@@ -1672,7 +1672,7 @@ def test_not_configured_error_names_default_root_gateway_and_secret_sources(tmp_
     import json
     import os
 
-    from gateway.config import GatewayConfig
+    from hermes_agent.gateway.config import GatewayConfig
     from tools.send_message_tool import _resolve_platform_config
 
     root = tmp_path / "hermes"

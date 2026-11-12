@@ -2,7 +2,7 @@
 
 import threading
 
-from gateway import run
+from hermes_agent.gateway import run
 from hermes_cli import plugins_cadence
 
 

@@ -99,7 +99,7 @@ def _media_scaled_timeout(base: float, media_files) -> float:
     """``base`` widened for the on-disk ``(path, is_voice)`` attachments the way the gateway's own
     upload deadline grows (``gateway.platforms.helpers.scaled_upload_deadline``): a platform answers
     an upload only once the file arrived, so a fixed cap reported a delivered file as failed."""
-    from gateway.platforms.helpers import media_upload_seconds, scaled_upload_deadline
+    from hermes_agent.gateway.platforms.helpers import media_upload_seconds, scaled_upload_deadline
     return scaled_upload_deadline(base, media_upload_seconds(path for path, _voice in media_files or ()))
 
 

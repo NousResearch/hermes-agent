@@ -171,7 +171,7 @@ class TestInboundMedia:
     def adapter(self, monkeypatch):
         monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN", raising=False)
         monkeypatch.delenv("LINE_CHANNEL_SECRET", raising=False)
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         cfg = PlatformConfig(enabled=True, extra={
             "channel_access_token": "tok",
@@ -222,7 +222,7 @@ class TestSendRouting:
     def adapter(self, monkeypatch):
         monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN", raising=False)
         monkeypatch.delenv("LINE_CHANNEL_SECRET", raising=False)
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         cfg = PlatformConfig(enabled=True, extra={
             "channel_access_token": "tok",
             "channel_secret": "sec",
@@ -288,7 +288,7 @@ class TestSlowLLMPostbackRegression:
     def adapter(self, monkeypatch):
         monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN", raising=False)
         monkeypatch.delenv("LINE_CHANNEL_SECRET", raising=False)
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         cfg = PlatformConfig(enabled=True, extra={"channel_access_token": "tok", "channel_secret": "sec"})
         ad = LineAdapter(cfg)
         ad._client = MagicMock()
@@ -340,7 +340,7 @@ class TestStandaloneSend:
 
     def test_missing_token_returns_error(self, monkeypatch):
         monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN", raising=False)
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         for extra in ({}, {"channel_access_token": "   "}):  # a blank token never reaches the push API
             result = asyncio.run(_standalone_send(PlatformConfig(enabled=True, extra=extra), "Uchat", "hi"))
             assert "missing token" in result["error"]
@@ -374,7 +374,7 @@ class TestCheckRequirements:
 class TestValidateConfig:
 
     def test_validates_from_extra(self):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         cfg = PlatformConfig(
             enabled=True,
             extra={"channel_access_token": "t", "channel_secret": "s"},
@@ -388,8 +388,8 @@ class TestAdapterInit:
     async def test_connect_fails_when_channel_lock_held(self, monkeypatch):
         """``acquire_scoped_lock`` returns ``(acquired, existing)``; a live foreign holder must stop
         connect() before the LINE client is built (the tuple is truthy, so a bare ``if not`` never fired)."""
-        import gateway.status as gateway_status
-        from gateway.config import PlatformConfig
+        import hermes_agent.gateway.status as gateway_status
+        from hermes_agent.gateway.config import PlatformConfig
 
         monkeypatch.setattr(
             gateway_status, "acquire_scoped_lock",
@@ -403,7 +403,7 @@ class TestAdapterInit:
     def test_init_from_config_extra(self, monkeypatch):
         for k in ("LINE_CHANNEL_ACCESS_TOKEN", "LINE_CHANNEL_SECRET", "LINE_PORT"):
             monkeypatch.delenv(k, raising=False)
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         cfg = PlatformConfig(
             enabled=True,
             extra={
@@ -449,14 +449,14 @@ class TestDualStackBind:
     router's dial to ``<app>.internal:8646`` hit an address nothing was
     listening on → connection refused → 502 on webhook verification.
 
-    Mirrors gateway/platforms/webhook.py's fix (commit d542894ad):
+    Mirrors hermes_agent/gateway/platforms/webhook.py's fix (commit d542894ad):
     ``DEFAULT_HOST = None`` → asyncio binds one socket per address family.
     ``"::"`` is NOT a valid substitute (bindv6only=1 on Fly machines makes
     it IPv6-only, breaking IPv4 loopback health probes).
     """
 
     def _cfg(self, **extra):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         base = {"channel_access_token": "tok", "channel_secret": "sec"}
         base.update(extra)
         return PlatformConfig(enabled=True, extra=base)
@@ -517,7 +517,7 @@ class TestMediaPublicUrlGuard:
     default and the legacy wildcard strings."""
 
     def _adapter(self, monkeypatch, **extra):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         monkeypatch.delenv("LINE_HOST", raising=False)
         monkeypatch.delenv("LINE_PUBLIC_URL", raising=False)
         base = {"channel_access_token": "tok", "channel_secret": "sec"}

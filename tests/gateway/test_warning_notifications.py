@@ -8,11 +8,11 @@ import pytest
 
 from agent.credits_tracker import AgentNotice
 from agent.status_output import StatusOutputMixin
-from gateway.config import Platform
-from gateway.run import GatewayRunner, _load_gateway_config
-from gateway.run_turn_runner import TurnRunner
-from gateway.session import SessionSource
-from gateway.turn_context import TurnContext
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.run import GatewayRunner, _load_gateway_config
+from hermes_agent.gateway.run_turn_runner import TurnRunner
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.turn_context import TurnContext
 
 
 from tests.gateway.test_session_hygiene import HygieneCaptureAdapter
@@ -49,7 +49,7 @@ class Emitter(StatusOutputMixin):
     ("display: {suppress_warning_notifications: true, platforms: {slack: {suppress_warning_notifications: false}}}", True),
 ])
 def test_warning_opt_out_preserves_other_delivery(tmp_path, monkeypatch, platform, configured, enabled):
-    from gateway import run
+    from hermes_agent.gateway import run
 
     thread_id = "1700.1"  # threaded vs. unthreaded delivery is covered in test_warning_notifications_transport
 
@@ -108,7 +108,7 @@ def test_warning_opt_out_preserves_other_delivery(tmp_path, monkeypatch, platfor
 
 @pytest.mark.parametrize("enabled", [True, False])
 def test_direct_warning_delivery_keeps_failure_state(tmp_path, monkeypatch, enabled):
-    from gateway import run
+    from hermes_agent.gateway import run
 
     (tmp_path / "config.yaml").write_text(f"display: {{suppress_warning_notifications: {str(not enabled).lower()}}}")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

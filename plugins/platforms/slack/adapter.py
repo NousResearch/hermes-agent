@@ -41,24 +41,24 @@ from agent.compression_marker import ELISION_MARKER_MAX_LEN, elide
 from agent.i18n import t
 from agent.retry_utils import parse_retry_after_seconds
 from agent.secret_scope import get_secret
-from gateway.config import Platform, PlatformConfig
-from gateway.approval_actor import approval_refusal, clarify_refusal, refusal_text, slash_confirm_refusal
-from gateway.platforms._shared import (
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.approval_actor import approval_refusal, clarify_refusal, refusal_text, slash_confirm_refusal
+from hermes_agent.gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, env_is_connected as _env_is_connected,
     extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
     platform_gate_env as _scoped_gate_env, send_error
 )
-from gateway.platforms.base_log_safety import safe_url_for_log
-from gateway.platforms.helpers import MessageDeduplicator, clarify_text_with_choices
+from hermes_agent.gateway.platforms.base_log_safety import safe_url_for_log
+from hermes_agent.gateway.platforms.helpers import MessageDeduplicator, clarify_text_with_choices
 from plugins.platforms.slack.adapter_config_readers import (
     _extra_or_env_channel_set_getter, _extra_or_env_flag_getter)
-from gateway.platforms.base import (
+from hermes_agent.gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES, _TEXT_INJECT_EXTENSIONS,
     is_host_excluded_by_no_proxy, resolve_proxy_url, safe_proxy_url_for_log, ssrf_redirect_guard, describe_proxy_error,
     cache_document_from_bytes_async, cache_video_from_bytes_async,
 )
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
 try:  # sibling modules; support both package and flat plugin-dir import
     from .block_kit import render_blocks, sanitize_blocks
@@ -3427,7 +3427,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
                 if redirect_url and not is_safe_url(redirect_url):
                     raise ValueError("Blocked redirect to private/internal address")
 
-            from gateway.platforms.base import read_httpx_body_with_limit
+            from hermes_agent.gateway.platforms.base import read_httpx_body_with_limit
             # Download the image first
             async with create_ssrf_safe_async_client(
                 timeout=30.0, follow_redirects=True,
@@ -4353,7 +4353,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
     def _channel_prompt_with_identity(self, channel_id: str, team_id: str) -> Optional[str]:
         """Channel prompt with the bot's Slack identity prepended (ephemeral, never persisted,
         so prompt caching holds) so it won't read a human's mention as a self-mention."""
-        from gateway.platforms.base import resolve_channel_prompt
+        from hermes_agent.gateway.platforms.base import resolve_channel_prompt
         channel_prompt = resolve_channel_prompt(self.config.extra, channel_id, None)
         identity_prompt = self._build_identity_prompt(team_id)
         if identity_prompt:
@@ -4663,7 +4663,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             # authorize them. Same predicate as the drop gate (api_human_users stay human).
             is_bot=self._event_declares_bot_sender(event))
         source.shared_session = event.get("channel_type") == "mpim"  # a group DM keys "dm" but is shared
-        from gateway.platforms.base import resolve_channel_skills
+        from hermes_agent.gateway.platforms.base import resolve_channel_skills
         # Remaining ``<@UID>`` are OTHER participants (own mention stripped
         # above); render as ``@DisplayName`` so the agent knows who is addressed.
         text = await self._humanize_user_mentions(text, chat_id=channel_id, team_id=team_id)
@@ -5204,7 +5204,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
 
         providers = state.get("providers", [])
         on_model_selected = state.get("on_model_selected")
-        from gateway.approval_actor import picker_refusal, refusal_text
+        from hermes_agent.gateway.approval_actor import picker_refusal, refusal_text
         if requester := picker_refusal(on_model_selected, user_id, extra=self.config.extra):  # someone else's card
             return await self._get_client(channel_id, team_id=team_id or None).chat_postEphemeral(
                 channel=channel_id, user=user_id, text=refusal_text(requester), thread_ts=message.get("thread_ts"))
@@ -5423,7 +5423,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         auth_fn = self._runner_auth_fn()
         if callable(auth_fn):
             try:
-                from gateway.session import SessionSource
+                from hermes_agent.gateway.session import SessionSource
                 source = SessionSource(
                     platform=Platform.SLACK, chat_id=str(channel_id or normalized_user_id),
                     chat_type=chat_type, user_id=normalized_user_id,
@@ -5563,7 +5563,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             channel_id, message.get("ts", ""))
 
     async def _refuse_other_requester(self, requester: Optional[str], body: dict) -> bool:
-        """Tell only the clicker ``gateway.approval_actor`` refused them (the prompt stays pending)."""
+        """Tell only the clicker ``hermes_agent.gateway.approval_actor`` refused them (the prompt stays pending)."""
         if requester:
             channel_id, user_id = (body.get("channel") or {}).get("id", ""), (body.get("user") or {}).get("id", "")
             await self._get_client(channel_id, team_id=self._event_team_id({}, body) or None).chat_postEphemeral(
@@ -5901,8 +5901,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         ``chat_type`` + ``thread_id``: ``"thread"`` reads as a DM in authz, which skipped
         ``group_allow_from``. Name and text are attacker-controlled — an embedded newline could
         forge a "## SYSTEM" heading — so both collapse to one inert line."""
-        # Local import: don't force gateway.session at module load.
-        from gateway.session import neutralize_untrusted_inline_text
+        # Local import: don't force hermes_agent.gateway.session at module load.
+        from hermes_agent.gateway.session import neutralize_untrusted_inline_text
         is_bot = self._event_declares_bot_sender(msg)
         msg_user = msg.get("user", "")
         msg_team = msg.get("team") or team_id  # our own bot for this message's workspace
@@ -6054,7 +6054,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         source = self.build_source(
             chat_id=channel_id, chat_type="dm" if is_dm else "group", user_id=user_id,
             thread_id=thread_id, scope_id=team_id or None)
-        from gateway.platforms.base import resolve_channel_skills
+        from hermes_agent.gateway.platforms.base import resolve_channel_skills
         event = MessageEvent(
             text=text,
             message_type=(MessageType.COMMAND if text.startswith("/") else MessageType.TEXT),
@@ -6313,7 +6313,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
     async def _download_slack_file(
         self, url: str, ext: str, audio: bool = False, team_id: str = "") -> str:
         """Download a Slack image/audio file and cache it; returns the cached path."""
-        from gateway.platforms.base import cache_audio_from_bytes_async, cache_image_from_bytes_async
+        from hermes_agent.gateway.platforms.base import cache_audio_from_bytes_async, cache_image_from_bytes_async
         data = await self._download_slack_file_bytes(url, team_id=team_id, html_label="media")
         return await (cache_audio_from_bytes_async if audio else cache_image_from_bytes_async)(data, ext)
 
@@ -6464,8 +6464,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
 # ``gateway/platforms/slack.py`` into this bundled plugin. It mirrors the Discord migration (PR #24356)
 # exactly: a ``register(ctx)`` entry point plus the hook implementations (``_standalone_send``,
 # ``interactive_setup``, ``_apply_yaml_config``, ``_is_connected``) that replace the
-# per-platform core touchpoints (the ``Platform.SLACK`` elif in ``gateway/run.py``, the ``slack_cfg``
-# YAML→env block in ``gateway/config.py``, the ``_setup_slack`` wizard + ``_PLATFORMS["slack"]`` static dict
+# per-platform core touchpoints (the ``Platform.SLACK`` elif in ``hermes_agent/gateway/run.py``, the ``slack_cfg``
+# YAML→env block in ``hermes_agent/gateway/config.py``, the ``_setup_slack`` wizard + ``_PLATFORMS["slack"]`` static dict
 # in ``hermes_cli/{setup,gateway}.py``, and the ``_send_slack`` dispatch in ``tools/send_message_tool.py``).
 # ──────────────────────────────────────────────────────────────────────────
 _slack_dm_cache: dict[str, str] = {}
@@ -6521,7 +6521,7 @@ def _load_slack_bot_tokens(raw_token: str, *, quiet: bool) -> list[str]:
 
 def _standalone_proxy_kwargs() -> tuple[dict[str, Any], dict[str, Any]]:
     """``(session_kwargs, request_kwargs)`` for aiohttp honoring the configured proxy."""
-    from gateway.platforms.base import proxy_kwargs_for_aiohttp
+    from hermes_agent.gateway.platforms.base import proxy_kwargs_for_aiohttp
     return proxy_kwargs_for_aiohttp(resolve_proxy_url())
 
 
@@ -6885,7 +6885,7 @@ def register(ctx) -> None:
     from .adapter_hint import PLATFORM_HINT
     from .send_targets import SEND_ENTRY_KWARGS
     from .dashboard_card import DASHBOARD_CARD
-    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
+    from . import gateway_env  # env -> GatewayConfig bridge (hermes_agent.gateway.config_env)
     ctx.register_platform(
         **SEND_ENTRY_KWARGS,  # send_message target syntax + routing
         name="slack",
@@ -6902,7 +6902,7 @@ def register(ctx) -> None:
         # strict_mention, ignore_other_user_mentions, thread_require_mention, allow_bots,
         # free_response_channels, reactions, disable_dms, allowed_channels, ignored_channels) into SLACK_*
         # env vars that the adapter reads via os.getenv(). Replaces the hardcoded block in
-        # gateway/config.py. Hook contract: #24849.
+        # hermes_agent/gateway/config.py. Hook contract: #24849.
         apply_yaml_config_fn=_apply_yaml_config,
         cron_deliver_env_var="SLACK_HOME_CHANNEL",
         # Out-of-process cron delivery; without it deliver=slack cron jobs fail with

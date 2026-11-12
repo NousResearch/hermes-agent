@@ -116,7 +116,7 @@ _restart_pending: str | None = None
 def note_restart_pending(reason: str) -> None:
     """Record that an install this process ran can only load in a new process.
 
-    An auto-started gateway that nothing restarts reads it (``gateway.run_idle_exit``) and retires,
+    An auto-started gateway that nothing restarts reads it (``hermes_agent.gateway.run_idle_exit``) and retires,
     so the next client starts one that boots the new generation instead of reattaching to this one.
     """
     global _restart_pending

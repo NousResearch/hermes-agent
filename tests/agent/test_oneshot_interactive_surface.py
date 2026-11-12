@@ -67,8 +67,8 @@ def test_oneshot_resume_keeps_the_pinned_interactive_tool_bytes(monkeypatch, con
 
 
 def test_gateway_oneshot_inventory_drops_clarify(tmp_path, monkeypatch):
-    from gateway.session_local_inventory import _policy_tools
-    from gateway.session_policy import build_policy, policy_scope
+    from hermes_agent.gateway.session_local_inventory import _policy_tools
+    from hermes_agent.gateway.session_policy import build_policy, policy_scope
 
     monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION", raising=False)
 

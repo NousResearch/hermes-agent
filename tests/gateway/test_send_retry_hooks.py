@@ -13,8 +13,8 @@ from typing import Any, Dict
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
 
 
 class _Adapter(BasePlatformAdapter):
@@ -51,7 +51,7 @@ async def test_final_failure_skips_retry_and_plain_text_fallback(monkeypatch):
 
     async def _sleep(d):
         slept.append(d)
-    monkeypatch.setattr("gateway.platforms.base.asyncio.sleep", _sleep)
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base.asyncio.sleep", _sleep)
     refusal = SendResult(success=False, error="Target not allowed", retryable=True,
                          raw_response={"error_class": "target_not_allowed", "retryable": False})
     adapter = _FinalOnRefusal([refusal])
@@ -68,8 +68,8 @@ async def test_server_retry_after_is_honoured_by_every_adapter(monkeypatch):
 
     async def _sleep(d):
         slept.append(d)
-    monkeypatch.setattr("gateway.platforms.base.asyncio.sleep", _sleep)
-    monkeypatch.setattr("gateway.platforms.base.random.uniform", lambda a, b: 0.0)
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base.asyncio.sleep", _sleep)
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base.random.uniform", lambda a, b: 0.0)
     adapter = _FinalOnRefusal([SendResult(success=False, error="429 rate limited", retryable=True, retry_after=7.0)])
     result = await adapter._send_with_retry("c", "hello", base_delay=2.0)
     assert result.success and adapter.sent == ["hello", "hello"]

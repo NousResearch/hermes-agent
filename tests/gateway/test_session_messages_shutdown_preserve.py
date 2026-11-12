@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway.shutdown_flush import (
+from hermes_agent.gateway.shutdown_flush import (
     flush_agent_history_to_file,
 )
 
@@ -32,7 +32,7 @@ def _make_flush_dir(tmp_path: Path) -> Path:
 def test_preserves_agent_history_when_flush_raises(tmp_path, monkeypatch):
     flush_dir = _make_flush_dir(tmp_path)
     monkeypatch.setattr(
-        "gateway.shutdown_flush._get_flush_dir", lambda: flush_dir
+        "hermes_agent.gateway.shutdown_flush._get_flush_dir", lambda: flush_dir
     )
     history = [{"role": "user", "content": "lost msg"}]
     flush_agent_history_to_file("sess:abc123", history)
@@ -49,7 +49,7 @@ def test_preserves_agent_history_when_flush_raises(tmp_path, monkeypatch):
 def test_no_recovery_file_on_empty_history(tmp_path, monkeypatch):
     flush_dir = _make_flush_dir(tmp_path)
     monkeypatch.setattr(
-        "gateway.shutdown_flush._get_flush_dir", lambda: flush_dir
+        "hermes_agent.gateway.shutdown_flush._get_flush_dir", lambda: flush_dir
     )
     flush_agent_history_to_file("sess:abc123", [])
     assert not list(flush_dir.glob("*.json"))

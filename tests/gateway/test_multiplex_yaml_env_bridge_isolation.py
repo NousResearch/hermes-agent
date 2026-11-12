@@ -85,7 +85,7 @@ def secondary_scope(tmp_path, monkeypatch):
 
 def test_secondary_profile_yaml_reaches_its_extra_not_the_process_env(secondary_scope):
     from hermes_cli.plugins import discover_plugins
-    from gateway.config import Platform, load_gateway_config
+    from hermes_agent.gateway.config import Platform, load_gateway_config
 
     discover_plugins()
     cfg = load_gateway_config()

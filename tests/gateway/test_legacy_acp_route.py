@@ -9,16 +9,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_contract import SessionActor
+from hermes_agent.gateway.session_contract import SessionActor
 
 
 @pytest.mark.asyncio
 async def test_adopted_acp_thread_keeps_its_saved_route_and_workspace(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_local_migration import bind_native_transport, resolve_local_target
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_local_migration import bind_native_transport, resolve_local_target
     from hermes_agent.hermes_state_local import local_receipt
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {
@@ -53,11 +53,11 @@ async def test_adopted_acp_thread_keeps_its_saved_route_and_workspace(tmp_path, 
 @pytest.mark.asyncio
 async def test_adopted_legacy_tui_session_keeps_saved_route_and_runtime_settings(tmp_path, monkeypatch):
     """Regression for #138912: pre-authority TUI rows must not inherit a new profile route."""
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_local_migration import bind_native_transport, resolve_local_target
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_local_migration import bind_native_transport, resolve_local_target
     from hermes_agent.hermes_state_local import local_receipt
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {

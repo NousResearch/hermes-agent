@@ -6,9 +6,9 @@ from types import SimpleNamespace
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.event import MessageType
-from gateway.run import (
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageType
+from hermes_agent.gateway.run import (
     _resolve_gateway_display_bool,
     _resolve_progress_thread_id,
 )
@@ -73,7 +73,7 @@ class TestMattermostConfigLoading:
         monkeypatch.setenv("MATTERMOST_HOME_CHANNEL", "ch_abc123")
         monkeypatch.setenv("MATTERMOST_HOME_CHANNEL_NAME", "General")
 
-        from gateway.config import GatewayConfig, _apply_env_overrides
+        from hermes_agent.gateway.config import GatewayConfig, _apply_env_overrides
         config = GatewayConfig()
         _apply_env_overrides(config)
 
@@ -578,7 +578,7 @@ class TestMattermostMediaTypes:
         self.adapter._session = MagicMock()
         self.adapter._session.get = MagicMock(return_value=mock_resp)
 
-        with patch("gateway.platforms.base.cache_image_from_bytes", return_value="/tmp/photo.png"):
+        with patch("hermes_agent.gateway.platforms.base.cache_image_from_bytes", return_value="/tmp/photo.png"):
             await self.adapter._handle_ws_event(self._make_event(["file1"]))
 
         msg = self.adapter.handle_message.call_args[0][0]
@@ -735,7 +735,7 @@ class TestMultiplexProfileScope:
 
 def test_bot_turn_does_not_publish_runtime_status():
     """#137027: a provider-fallback diagnostic must not become a peer-bot message."""
-    from gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
 
     turn_runner = object.__new__(TurnRunner)
     turn_runner._schedule = MagicMock()
@@ -757,8 +757,8 @@ def test_bot_turn_does_not_publish_runtime_status():
 
 def test_configured_mattermost_bot_is_authorized(monkeypatch):
     """#137027: peer bots use Mattermost's registered bot-admission policy."""
-    from gateway.run import GatewayRunner
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import SessionSource
 
     for name in ("MATTERMOST_ALLOW_BOTS", "MATTERMOST_ALLOWED_USERS", "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS"):
         monkeypatch.delenv(name, raising=False)

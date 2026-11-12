@@ -1,7 +1,7 @@
 """Listener boundary primitives shared by the dashboard app and the gateway's session listener:
 Host validation, the auth-gate decision and the native WebSocket ticket subprotocol.
 
-Import-light on purpose (no FastAPI): ``gateway.run_api`` serves the native session WebSocket
+Import-light on purpose (no FastAPI): ``hermes_agent.gateway.run_api`` serves the native session WebSocket
 without importing the dashboard app (about 690 routes, ~0.6 s), and must apply the same
 DNS-rebinding Host check and gate decision. ``hermes_cli.web_server`` and
 ``hermes_cli.web_server_chat`` re-export these names, so ``web_server.<name>`` keeps working.

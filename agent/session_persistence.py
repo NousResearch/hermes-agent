@@ -160,9 +160,9 @@ def adopt_unanswered_turn(history: list[dict[str, Any]], query: Any, agent: Any)
     reuse it as this turn's user dict and the flush writes no second row. The one user is the peer-DM
     lane's re-run (``resume_unanswered_turn`` in ``gateway.platforms.api_server``, #115325): in process it
     calls this on the agent it just built for the re-run; under the session authority the admission
-    carries ``resume_unanswered`` and ``gateway.run_turn_runner`` calls it on the admitted history
+    carries ``resume_unanswered`` and ``hermes_agent.gateway.run_turn_runner`` calls it on the admitted history
     when its tail is that bare user row (a tool suffix there keeps the completed work in view).
-    The owner-side Bot Chat retry (``gateway.session_bot._maybe_retry``) does not adopt: its failed
+    The owner-side Bot Chat retry (``hermes_agent.gateway.session_bot._maybe_retry``) does not adopt: its failed
     turn is already closed by the durable failed-turn boundary, which this function declines by design.
 
     The DM is not always the literal tail: a turn that died mid-way persisted its tool scaffolding — assistant

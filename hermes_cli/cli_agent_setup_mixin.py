@@ -394,7 +394,7 @@ class CLIAgentSetupMixin:
                 logger.warning(
                     "Primary provider %s (%s). Falling through to fallback: %s/%s",
                     _why_log, primary_exc, _fb_provider, _fb_model)
-                from gateway.warning_notifications import render_notification
+                from hermes_agent.gateway.warning_notifications import render_notification
                 render_notification(
                     lambda: _cprint(t("cli.startup.switching_to_fallback", reason=_why, provider=_fb_provider, model=_fb_model)),
                     platform="cli")

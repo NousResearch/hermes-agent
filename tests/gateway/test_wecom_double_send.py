@@ -7,7 +7,7 @@ independent timers.
   * The consumer's got_done finalize blocks on the finalize frame's ack,
     bounded by ``adapter._REPLY_ACK_TIMEOUT``.
   * The gateway's ``finally`` block joins the ``stream_task`` with a hardcoded
-    ``timeout=5.0`` (``gateway/run.py:20749``) and then ``stream_task.cancel()``
+    ``timeout=5.0`` (``hermes_agent/gateway/run.py:20749``) and then ``stream_task.cancel()``
     (``run.py:20751``).
 
 When the ack is slower than the gateway's join window, the gateway cancels the
@@ -34,7 +34,7 @@ Assertions target observable causality:
     normal send would go out).
 
 The suppression predicate below is a faithful mirror of the (non-importable,
-nested) logic in ``gateway/run.py:20793-20819`` — it reads the *real* consumer
+nested) logic in ``hermes_agent/gateway/run.py:20793-20819`` — it reads the *real* consumer
 properties, it does not re-implement the delivery lifecycle.
 """
 
@@ -45,7 +45,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 
 CHAT_ID = "chat-1"
@@ -58,7 +58,7 @@ REQ_ID = "req-1"
 
 
 def _gateway_suppresses_normal_send(consumer, final_text: str) -> bool:
-    """Mirror of gateway/run.py:20793-20819 suppression decision.
+    """Mirror of hermes_agent/gateway/run.py:20793-20819 suppression decision.
 
     Reads the REAL consumer properties (``final_response_sent`` /
     ``final_content_delivered``) — the same attributes ``run.py`` consults —
@@ -80,7 +80,7 @@ def _gateway_suppresses_normal_send(consumer, final_text: str) -> bool:
 
 
 async def _gateway_join_and_cancel(stream_task: asyncio.Task, join_timeout: float) -> None:
-    """Faithful copy of gateway/run.py:20748-20755 finally-block join.
+    """Faithful copy of hermes_agent/gateway/run.py:20748-20755 finally-block join.
 
     Joins the stream task with a bounded timeout; on timeout it cancels the
     task (exactly what the gateway does when the consumer has not finished
@@ -119,7 +119,7 @@ def _make_real_wecom_adapter(*, resolve_finalize_ack: bool):
         consumer finishes finalize and sets its flags before any join fires.
     """
     from plugins.platforms.wecom.adapter import WeComAdapter
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
 
     adapter = WeComAdapter(PlatformConfig(enabled=True))
     adapter._ws = MagicMock(closed=False)
@@ -305,7 +305,7 @@ def _make_manual_ack_adapter():
     of intermediate-ack arrival vs. finalize registration by hand.
     """
     from plugins.platforms.wecom.adapter import WeComAdapter
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
 
     adapter = WeComAdapter(PlatformConfig(enabled=True))
     adapter._ws = MagicMock(closed=False)

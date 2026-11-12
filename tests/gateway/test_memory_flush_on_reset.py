@@ -25,7 +25,7 @@ import pytest
 from agent.memory_manager import MemoryManager
 from agent.memory_provider import MemoryProvider
 import agent.memory_manager as _mm_module
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.run import GatewayRunner
 
 
 # How long the "gate" write occupies the single background worker. Chosen so a

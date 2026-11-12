@@ -171,7 +171,7 @@ def _slash_review_surface() -> bool:
     hint must not name a command nobody can deliver (#98330); it names the pending dir instead."""
     def _env(name: str) -> str:
         try:
-            from gateway.session_context import get_session_env
+            from hermes_agent.gateway.session_context import get_session_env
             return get_session_env(name, "") or ""
         except Exception:  # standalone/tests: process env is the fallback
             return os.environ.get(name, "") or ""

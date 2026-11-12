@@ -57,7 +57,7 @@ def may_settle(authority, actor, session_id, events) -> bool:
     request went out on *authority*'s own live stream for that session (session ids repeat across
     profiles and ``_open`` is process-wide), *actor* holds ``session:respond`` there, and *actor* is
     attached to that session, the same set of connections the request frame was written to."""
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_contract import SessionRef
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     if not owned_by(authority, session_id, events):
         return False

@@ -89,8 +89,8 @@ def _log_notice_failure(done, event: str, store: str) -> None:
 
 async def send_cron_store_notice(runner, event: str, record) -> None:
     """Post one ``unwritable``/``recovered`` notice to the home channels of the store's profile."""
-    from gateway.run import _async_profile_runtime_scope
-    from gateway.warning_notifications import present_notification
+    from hermes_agent.gateway.run import _async_profile_runtime_scope
+    from hermes_agent.gateway.warning_notifications import present_notification
     from hermes_agent.cron.store_health import store_key
     from hermes_constants import get_routing_process_hermes_home
 

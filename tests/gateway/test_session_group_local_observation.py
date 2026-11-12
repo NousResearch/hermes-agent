@@ -6,9 +6,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import hosted_room_driver as driver, hosted_rooms, run
-from gateway.session_hosted_service import CanonicalHostedRoomService
-from gateway.session_hosted_transport import HostedRoomOwnerRPC, install_hosted_transport
+from hermes_agent.gateway import hosted_room_driver as driver, hosted_rooms, run
+from hermes_agent.gateway.session_hosted_service import CanonicalHostedRoomService
+from hermes_agent.gateway.session_hosted_transport import HostedRoomOwnerRPC, install_hosted_transport
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import begin_runtime_epoch, list_session_admissions
 from tests.gateway.test_session_hosted_transport import _server

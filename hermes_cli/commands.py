@@ -53,7 +53,7 @@ class CommandDef:
     cli_only: bool = False             # only available in CLI
     gateway_only: bool = False         # only available in gateway/messaging
     gateway_config_gate: str | None = None  # config dotpath; truthy overrides cli_only for gateway
-    # Mid-run (agent busy) gateway behavior (gateway/run.py Guard-2 dispatcher): "dispatch" = run
+    # Mid-run (agent busy) gateway behavior (hermes_agent/gateway/run.py Guard-2 dispatcher): "dispatch" = run
     # while busy (normal handler or the ``busy_handler`` variant); "reject" = refuse mid-run
     # (generic "Agent is running" unless ``busy_handler`` names a reject message);
     # "interrupt_then_dispatch" = interrupt first (/stop, /new, /reset; Guard 1, platforms/base.py).
@@ -484,14 +484,14 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
 
 
 def is_interrupt_then_dispatch(command_name: str | None) -> bool:
-    """Guard 1 (gateway/platforms/base.py) routes these through the cancel-handoff path."""
+    """Guard 1 (hermes_agent/gateway/platforms/base.py) routes these through the cancel-handoff path."""
     cmd = resolve_command(command_name) if command_name else None
     return cmd is not None and cmd.busy_policy == "interrupt_then_dispatch"
 
 
 def should_bypass_active_session(command_name: str | None) -> bool:
     """True for any resolvable slash command: every recognized command is dispatched mid-run
-    (Guard-2 handler or the "busy" catch-all), never queued — gateway.run's safety net discards
+    (Guard-2 handler or the "busy" catch-all), never queued — hermes_agent.gateway.run's safety net discards
     command text reaching the pending queue, so a queued mid-run /model (or /reasoning, /voice,
     /insights, /title, /resume, /retry, /undo, /compress, /usage, /reload-mcp, /sethome, /reset)
     would silently interrupt the agent AND get discarded — a zero-char response. See issue

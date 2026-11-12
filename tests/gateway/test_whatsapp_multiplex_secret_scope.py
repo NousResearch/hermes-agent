@@ -87,7 +87,7 @@ class TestWhatsAppCommonUsesSecretScope:
 
     def test_effective_reply_prefix_uses_scope(self, tmp_path, monkeypatch):
         """_effective_reply_prefix respects the profile's WHATSAPP_MODE from scope."""
-        from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
+        from hermes_agent.gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
 
         monkeypatch.delenv("WHATSAPP_MODE", raising=False)
         monkeypatch.delenv("WHATSAPP_REPLY_PREFIX", raising=False)
@@ -112,7 +112,7 @@ class TestWhatsAppCommonUsesSecretScope:
 
     def test_whatsapp_require_mention_uses_scope(self, tmp_path, monkeypatch):
         """_whatsapp_require_mention respects the profile's env from scope."""
-        from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
+        from hermes_agent.gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
 
         monkeypatch.delenv("WHATSAPP_REQUIRE_MENTION", raising=False)
         ss.set_multiplex_active(True)
@@ -134,7 +134,7 @@ class TestWhatsAppCloudAdapterUsesSecretScope:
 
     def test_cloud_dm_policy_reads_scope(self, tmp_path, monkeypatch):
         """WhatsAppCloudAdapter._dm_policy respects profile scope."""
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
 
         monkeypatch.delenv("WHATSAPP_CLOUD_DM_POLICY", raising=False)
         monkeypatch.delenv("WHATSAPP_DM_POLICY", raising=False)
@@ -148,7 +148,7 @@ class TestWhatsAppCloudAdapterUsesSecretScope:
             # Cloud adapter won't fully init without creds, but we can at least
             # verify the dm_policy assignment path doesn't crash under scope.
             # We test via the mixin's behavior instead.
-            from gateway.platforms.whatsapp_common import _get_wsecret
+            from hermes_agent.gateway.platforms.whatsapp_common import _get_wsecret
             assert _get_wsecret("WHATSAPP_DM_POLICY", default="pairing") == "allowlist"
         finally:
             ss.reset_secret_scope(tok)

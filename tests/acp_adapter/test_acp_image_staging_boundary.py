@@ -11,8 +11,8 @@ PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 32
 
 
 def test_hardlink_in_staging_to_outside_file_is_refused(tmp_path, monkeypatch):
-    from gateway.platforms import base
-    from gateway.session_ingress_media import admit_attachments
+    from hermes_agent.gateway.platforms import base
+    from hermes_agent.gateway.session_ingress_media import admit_attachments
     staging = tmp_path / "home" / "cache" / "images"
     staging.mkdir(parents=True)
     monkeypatch.setattr(base, "get_image_cache_dir", lambda: staging)
@@ -34,7 +34,7 @@ def test_acp_image_mime_never_chooses_the_staged_extension(tmp_path, monkeypatch
     from hermes_agent.acp_adapter.content import _content_blocks_to_openai_user_content
     import asyncio
     from hermes_agent.acp_adapter.gateway_media import stage_user_content
-    from gateway.platforms import base
+    from hermes_agent.gateway.platforms import base
     staging = tmp_path / "home" / "cache" / "images"
     staging.mkdir(parents=True)
     monkeypatch.setattr(base, "get_image_cache_dir", lambda: staging)

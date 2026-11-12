@@ -13,8 +13,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.platforms.base import SendResult
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.base import SendResult
 
 if importlib.util.find_spec("lark_oapi") is None and "lark_oapi" not in sys.modules:
     _lark = MagicMock()
@@ -119,10 +119,10 @@ async def _press_teams_card(request_id):
 
 
 async def _press_relay_card(request_id):
-    from gateway.platforms.event import MessageEvent, MessageType
-    from gateway.relay.adapter import RelayAdapter
-    from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+    from hermes_agent.gateway.relay.adapter import RelayAdapter
+    from hermes_agent.gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+    from hermes_agent.gateway.session import SessionSource
     from tests.gateway.relay.stub_connector import StubConnector
     desc = CapabilityDescriptor(
         contract_version=CONTRACT_VERSION, platform="telegram", label="Telegram", max_message_length=4096,

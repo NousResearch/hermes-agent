@@ -1,6 +1,6 @@
 """Expired staged bytes cannot be revived by a delayed share."""
 import pytest
-from gateway.hosted_room_attachments import HostedRoomAttachmentStore, AttachmentNotFoundError, UNCOMMITTED_TTL_SECONDS
+from hermes_agent.gateway.hosted_room_attachments import HostedRoomAttachmentStore, AttachmentNotFoundError, UNCOMMITTED_TTL_SECONDS
 
 
 def test_expired_upload_cannot_be_committed_without_pruning(tmp_path):

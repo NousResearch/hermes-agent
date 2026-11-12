@@ -143,7 +143,7 @@ class TestNonInteractiveInheritance:
         self, project_env, monkeypatch, tmp_path
     ):
         """Desktop project skills follow the active session, not launch cwd."""
-        from gateway.session_context import clear_session_vars, set_session_vars
+        from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
 
         launcher = tmp_path / "desktop-launcher"
         launcher.mkdir()

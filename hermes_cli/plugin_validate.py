@@ -611,7 +611,7 @@ def validate_plugin_dir(
 def _check_trusted_inbound(report: ValidationReport, recorded: Optional[dict]) -> None:
     """Surface ``trusted_inbound`` platforms (their events skip user allowlists and pairing); one
     naming a core platform fails, as the loader refuses it."""
-    from gateway.platform_registry import core_ships_platform
+    from hermes_agent.gateway.platform_registry import core_ships_platform
     for name in (recorded or {}).get("trusted_inbound") or []:
         if core_ships_platform(name):
             report.add("trusted inbound", False, f"platform '{name}' ships with core; trusted_inbound is refused for it")

@@ -67,11 +67,11 @@ class TestWindowsSpawnParity:
 
         monkeypatch.setenv("_HERMES_GATEWAY", "1")
         monkeypatch.setattr(
-            "gateway.status.get_running_pid",
+            "hermes_agent.gateway.status.get_running_pid",
             lambda *, cleanup_stale=False: os.getpid(),
         )
         monkeypatch.setattr(
-            "gateway.restart.is_gateway_supervisor_process", lambda: True
+            "hermes_agent.gateway.restart.is_gateway_supervisor_process", lambda: True
         )
         monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
 

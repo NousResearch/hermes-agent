@@ -6,7 +6,7 @@ import asyncio
 import logging
 from typing import Any
 
-from gateway.config import Platform
+from hermes_agent.gateway.config import Platform
 from plugins.teams_pipeline.pipeline import TeamsMeetingPipeline
 from plugins.teams_pipeline.store import TeamsPipelineStore, resolve_teams_pipeline_store_path
 from plugins.teams_pipeline.subscriptions import build_graph_client

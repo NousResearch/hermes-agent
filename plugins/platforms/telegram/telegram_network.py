@@ -117,7 +117,7 @@ def build_ptb_requests(request_cls, *, fallback_ips: list[str], proxy_url: Optio
     (``_WALK_CONNECT_BUDGET_S``) so failover finishes inside the send deadline. getUpdates keeps
     ``getupdates_keepalive_connections()`` sockets (see there for the per-OS reason). httpx ignores client ``limits`` when a custom
     ``transport`` is supplied (#58790), so the fallback branch hands them to the transport."""
-    from gateway.platforms._http_client_limits import platform_httpx_limits
+    from hermes_agent.gateway.platforms._http_client_limits import platform_httpx_limits
     verify = platform_ssl_context() if verify is None else verify
     kwargs = ptb_request_kwargs()
     base = platform_httpx_limits()
@@ -163,7 +163,7 @@ def proxy_target_hosts(base_url: Optional[str], fallback_ips: Iterable[str] = ()
 
 
 def _resolve_proxy_url(target_hosts=None) -> str | None:
-    from gateway.platforms.base import resolve_proxy_url  # env vars + macOS system proxy
+    from hermes_agent.gateway.platforms.base import resolve_proxy_url  # env vars + macOS system proxy
     return resolve_proxy_url("TELEGRAM_PROXY", target_hosts=target_hosts)
 
 

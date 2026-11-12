@@ -2,7 +2,7 @@
 
 from typing import Any, Optional
 
-from gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.platforms.event import MessageEvent
 from plugins.platforms.telegram.telegram_media_group import item_notes
 
 

@@ -453,7 +453,7 @@ def _check_npm_audit(should_fix: bool, f: Finding) -> None:
         # The WhatsApp bridge may live under a writable HERMES_HOME mirror instead of the (possibly
         # read-only) install tree in Docker — resolve it through the shared helper so we audit the dir
         # that actually holds node_modules. See #49561.
-        from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
+        from hermes_agent.gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
         whatsapp_bridge_dir = resolve_whatsapp_bridge_dir()
     except Exception:
         whatsapp_bridge_dir = PROJECT_ROOT / "scripts" / "whatsapp-bridge"

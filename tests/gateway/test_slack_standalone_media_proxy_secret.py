@@ -43,7 +43,7 @@ def slack(monkeypatch):
     for name, mod in {"slack_sdk": ModuleType("slack_sdk"), "slack_sdk.web": ModuleType("slack_sdk.web"),
                       "slack_sdk.web.async_client": async_client}.items():
         monkeypatch.setitem(sys.modules, name, mod)
-    with patch("gateway.platforms.base.gateway_trust_env", return_value=True):
+    with patch("hermes_agent.gateway.platforms.base.gateway_trust_env", return_value=True):
         yield slack_mod
 
 

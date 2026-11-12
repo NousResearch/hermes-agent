@@ -67,7 +67,7 @@ from plugins.platforms.slack.adapter import (
     _ThreadContextCache,
 )
 
-from gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.config import Platform, PlatformConfig
 
 
 BOT_USER_ID = "U_BOT_OWN"

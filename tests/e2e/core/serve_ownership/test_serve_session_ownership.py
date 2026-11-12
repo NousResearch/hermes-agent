@@ -134,7 +134,7 @@ def _poll(pred: Callable[[], Any], timeout: float, what: str, log: Path) -> Any:
 
 
 def _control(home: Path, verb: str, params: dict | None = None) -> dict:
-    from gateway.control_socket import resolve_client_socket_path
+    from hermes_agent.gateway.control_socket import resolve_client_socket_path
     path = resolve_client_socket_path(home)
     if path is None:
         raise OSError("control socket absent")

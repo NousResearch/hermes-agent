@@ -63,7 +63,7 @@ def _merged_platform_block(home: Path, name: str) -> Optional[dict]:
     """Platform *name*'s block as the gateway loader merges it for *home*: legacy ``gateway.json`` base
     layer, then config.yaml's ``gateway.platforms`` / ``platforms`` / ``gateway.<name>`` blocks and a top-level
     ``<name>:`` block in the loader's order (managed overlay and ``${VAR}`` applied). ``None`` when no layer names it."""
-    from gateway import config_loader
+    from hermes_agent.gateway import config_loader
     gw_data = config_loader.load_legacy_gateway_json(home)
     gw_data = gw_data if isinstance(gw_data, dict) else {}
     try:
@@ -85,7 +85,7 @@ def _merged_platform_block(home: Path, name: str) -> Optional[dict]:
     block = platforms.get(name)
     root = yaml_cfg.get(name)
     if isinstance(root, dict):  # a top-level ``<name>:`` block, bridged as bridge_platform_shared_keys does: its
-        from gateway.config import PlatformConfig  # adapter keys beat gateway.json's extra, not config.yaml's nested one
+        from hermes_agent.gateway.config import PlatformConfig  # adapter keys beat gateway.json's extra, not config.yaml's nested one
         block = dict(block) if isinstance(block, dict) else {}
         block["extra"] = {**(block.get("extra") or {}), **PlatformConfig.from_dict({**root, "home_channel": None}).extra,
                           **authored.get(name, {})}  # a home_channel names a plugin's Platform
@@ -110,7 +110,7 @@ def _platform_config(block: dict):
     """``PlatformConfig`` of a merged block, read for its ``enabled``, token and ``extra``. A saved
     ``home_channel`` (``/sethome``) is left out: it names a ``Platform`` a left-core platform has only once
     its plugin loads, so parsing it before the install raised and stopped the home's whole migration."""
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
     return PlatformConfig.from_dict({**block, "home_channel": None})
 
 
@@ -179,7 +179,7 @@ def yuanbao_in_use(home: Path, *, process_env: bool = False) -> bool:
     return _toolset_listed(_read_config(home), frozenset({"yuanbao", "hermes-yuanbao"}), own_platform="yuanbao")
 
 
-# ``gateway.config.Platform`` members in neither table above. Named, not imported: gateway.config imports
+# ``hermes_agent.gateway.config.Platform`` members in neither table above. Named, not imported: hermes_agent.gateway.config imports
 # hermes_cli.config, which loads this module (the left-core test asserts every member is covered).
 _GATEWAY_ONLY_PLATFORMS = ("msgraph_webhook", "relay")
 
@@ -239,7 +239,7 @@ def spotify_in_use(home: Path, *, process_env: bool = False) -> bool:
 def _plugins_listed(home: Path, names: tuple[str, ...]) -> tuple[bool, bool]:
     """Whether a name in *names* is in *home*'s ``plugins.enabled`` / ``plugins.disabled``, read with the
     managed overlay applied like the loader's config, so an administrator's pinned list counts."""
-    from gateway import config_loader
+    from hermes_agent.gateway import config_loader
     try:
         plugins = config_loader.read_yaml_layers(home).get("plugins")
     except Exception:  # malformed config.yaml: the loader enables nothing from it either
@@ -283,7 +283,7 @@ def singularity_in_use(home: Path, *, process_env: bool = False) -> bool:
     from its environment (systemd unit, Docker, shell export), for the launch home only: ``TERMINAL_*``
     is process-global (``get_secret`` never scopes it), so for any other served home it is the launch
     profile's backend, not this one's."""
-    from gateway import config_loader
+    from hermes_agent.gateway import config_loader
     try:
         terminal = config_loader.read_yaml_layers(home).get("terminal")
     except Exception:  # malformed config.yaml: the bridge reads nothing from it either
@@ -355,7 +355,7 @@ def _route_slots(home: Path) -> list[dict]:
     models and aggregator (``normalize_moa_config``), the cron-wide ``cron.model_provider``, each cron job's pin
     and the user's own ``providers:`` / ``custom_providers:`` endpoints (``get_compatible_custom_providers``)."""
     from hermes_agent.cron.scheduler_preflight import cron_default_provider
-    from gateway import config_loader
+    from hermes_agent.gateway import config_loader
     from hermes_cli.config_providers import get_compatible_custom_providers
     from hermes_cli.fallback_config import get_fallback_chain
     from hermes_cli.moa_config import normalize_moa_config
@@ -435,7 +435,7 @@ def providers_selected(home: Path, names: tuple[str, ...], *, process_env: bool 
 def _names_custom_endpoint(home: Path, name: str) -> bool:
     """*name* resolves to one of *home*'s own ``providers:`` / ``custom_providers:`` endpoints (the
     resolver's named-custom rung: ``named_custom_provider_config_path``), not to the provider it aliases."""
-    from gateway import config_loader
+    from hermes_agent.gateway import config_loader
     from hermes_cli.runtime_provider_custom import named_custom_provider_config_path
     try:
         return named_custom_provider_config_path(name, config_loader.read_yaml_layers(home)) is not None
@@ -1249,7 +1249,7 @@ def migrate_all_homes(*, say: Callable[[str], None] = print) -> list[str]:
 def _gateway_serves(home: Path) -> bool:
     """A live gateway serves *home*: it loaded its platforms before this agent-start install."""
     try:
-        from gateway.status import resolve_gateway_liveness
+        from hermes_agent.gateway.status import resolve_gateway_liveness
         return resolve_gateway_liveness(profile_dir=home, use_cache=False).running
     except Exception:
         return False

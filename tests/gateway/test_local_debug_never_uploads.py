@@ -10,13 +10,13 @@ from unittest.mock import patch
 
 import pytest
 
-from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.base import MessageEvent
+from hermes_agent.gateway.session import SessionSource
 
 
 def _runner():
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
     runner = object.__new__(GatewayRunner)
     runner._running_agents = {}
 

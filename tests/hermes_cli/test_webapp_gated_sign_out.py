@@ -75,8 +75,8 @@ SIGN_INS = {"password": _sign_in_with_password, "oauth": _sign_in_with_oauth}
 @pytest.fixture
 def sign_out(gated, tmp_path):
     """Ask the gateway serving *gated* for ``webapp-sign-out`` over its control socket."""
-    from gateway.control_socket import GatewayControlServer
-    from gateway.webapp_listener import register_control_verbs
+    from hermes_agent.gateway.control_socket import GatewayControlServer
+    from hermes_agent.gateway.webapp_listener import register_control_verbs
 
     home = tmp_path / ".hermes"
     runner = SimpleNamespace(
@@ -387,7 +387,7 @@ def test_the_refusal_survives_a_gateway_restart(gated, sign_out, monkeypatch):
 
 
 def test_a_credential_replaced_while_the_gateway_was_down_ends_its_logins_tokens(gated, monkeypatch, tmp_path):
-    from gateway.webapp_listener import browser_session_token
+    from hermes_agent.gateway.webapp_listener import browser_session_token
 
     browser = gated.browser()
     _sign_in_with_password(browser)

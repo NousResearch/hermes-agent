@@ -12,7 +12,7 @@ import pytest
 
 from agent import i18n
 from agent.i18n import t
-from gateway.platforms.base import utf16_len
+from hermes_agent.gateway.platforms.base import utf16_len
 
 import plugins.platforms.discord.adapter as discord_adapter
 import plugins.platforms.telegram.adapter as telegram_adapter

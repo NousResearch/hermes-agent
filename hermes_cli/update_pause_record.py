@@ -493,7 +493,7 @@ def mark_stop_consumed(path: Path, marker: dict) -> None:
     Called under the pause mutex by the consumer. Preserve the holder's identity;
     this is evidence of a stop, not a transfer of the updater's custody.
     """
-    from gateway.status import _same_hermes_home
+    from hermes_agent.gateway.status import _same_hermes_home
     pid = str(marker["target_pid"])
     for src, body in _files(record_path()):
         token = body["token"]
@@ -817,7 +817,7 @@ def _request_on_disk(token: dict, pid: str) -> bool | None:
     path = (token.get("stop_markers") or {}).get(str(pid))
     if not path:
         return False
-    from gateway.status import _PLANNED_STOP_MARKER_TTL_S
+    from hermes_agent.gateway.status import _PLANNED_STOP_MARKER_TTL_S
     # An unconsumed request expires; the receipt of an accepted one is evidence for the whole drain
     # (only the accepting incarnation is ever judged: a later one is not this entry's live process).
     verdicts = (_names_request(token, pid, Path(path), _PLANNED_STOP_MARKER_TTL_S),
@@ -829,7 +829,7 @@ def _names_request(token: dict, pid: str, path: Path, ttl_s: int | None) -> bool
     """Does *path* hold this stopper's request for *pid*'s incarnation? Only an absent file or a
     valid one naming something else is ``False``; refused (a sharing violation, an AV scanner) or
     malformed is ``None``, unknown."""
-    from gateway.status import _marker_is_stale, get_process_start_time
+    from hermes_agent.gateway.status import _marker_is_stale, get_process_start_time
     try:
         marker = json.loads(path.read_text(encoding="utf-8-sig"))
         target, stopper = int(marker["target_pid"]), int(marker["stopper_pid"])

@@ -352,7 +352,7 @@ def test_inheriting_child_gets_provider_keys_but_never_adapter_secrets(child_env
 
 
 def test_runtime_adapter_secret_follows_the_bound_profiles_registry(child_env, monkeypatch):
-    from gateway.platform_registry import PlatformEntry, platform_registry
+    from hermes_agent.gateway.platform_registry import PlatformEntry, platform_registry
     from tools.env_passthrough import is_env_passthrough, register_env_passthrough
     home_a, home_b = child_env / "hermes", child_env / "profile-b"
     home_a.mkdir(exist_ok=True)
@@ -385,7 +385,7 @@ def test_runtime_adapter_secret_follows_the_bound_profiles_registry(child_env, m
 def test_passthrough_accepted_before_an_adapter_owns_the_name_stops_forwarding_it(
         child_env, monkeypatch, declared_by):
     from agent import secret_scope as ss
-    from gateway.platform_registry import PlatformEntry, platform_registry
+    from hermes_agent.gateway.platform_registry import PlatformEntry, platform_registry
     from tools.code_execution_env import _scrub_child_env
     from tools.env_passthrough import register_env_passthrough
     name, names = "ACME_CHAT_SIGNING_SECRET", ["ACME_CHAT_SIGNING_SECRET", "MY_APP_KEY"]
@@ -478,7 +478,7 @@ def test_force_prefix_is_not_plugin_passthrough(child_env, monkeypatch, builder,
 @pytest.mark.parametrize("scope", [None, {"BUZZ_PRIVATE_KEY": "fake-scoped"}])
 def test_buzz_context_and_plain_process_value(child_env, monkeypatch, managed, platform, allowed, scope):
     from agent import secret_scope as ss
-    from gateway.session_context import _SESSION_PLATFORM
+    from hermes_agent.gateway.session_context import _SESSION_PLATFORM
     from tools.code_execution_env import _scrub_child_env
     from tools.env_passthrough import register_env_passthrough, is_env_passthrough
     buzz = {"BUZZ_PRIVATE_KEY": "fake-process", "BUZZ_AUTH_TAG": "fake-tag", "BUZZ_RELAY_URL": "fake-relay"}
@@ -507,7 +507,7 @@ def test_buzz_context_and_plain_process_value(child_env, monkeypatch, managed, p
 @pytest.mark.parametrize("first_platform,first_value", [("buzz", "fake-profile-a"), ("telegram", None)], ids=["buzz", "other"])
 def test_buzz_secret_never_reaches_second_profile_via_snapshot(child_env, monkeypatch, first_platform, first_value):
     from agent import secret_scope as ss
-    from gateway.session_context import _SESSION_PLATFORM
+    from hermes_agent.gateway.session_context import _SESSION_PLATFORM
     monkeypatch.setenv("BUZZ_PRIVATE_KEY", "fake-profile-a")
     ss.set_multiplex_active(True)
     platform = _SESSION_PLATFORM.set(first_platform)
@@ -1045,7 +1045,7 @@ class TestNativeEnvironmentContracts:
 
         Independent audit of every real launcher producer (Electron
         ``apps/desktop/electron/main.ts``,
-        ``gateway/run.py::_ensure_windows_gateway_venv_imports``,
+        ``hermes_agent/gateway/run.py::_ensure_windows_gateway_venv_imports``,
         ``hermes_agent/cron/scheduler.py::_windows_cron_python_invocation``,
         ``hermes_agent/tui_gateway/host_supervisor.py``) shows they all inject the exact
         repo root and/or the venv site-packages — none injects

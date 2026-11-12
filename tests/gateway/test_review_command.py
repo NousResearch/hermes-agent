@@ -45,7 +45,7 @@ def _make_agent():
 def _make_runner(agent):
     import threading
 
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner._running_agents = {}

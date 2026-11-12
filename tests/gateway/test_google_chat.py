@@ -23,7 +23,7 @@ import pytest
 
 from agent.i18n import t
 
-from gateway.config import Platform, PlatformConfig, load_gateway_config
+from hermes_agent.gateway.config import Platform, PlatformConfig, load_gateway_config
 
 # Platform uses _missing_() for dynamic members, so "google_chat" is
 # resolvable via Platform("google_chat") even without a static
@@ -132,7 +132,7 @@ import plugins.platforms.google_chat.adapter as _gc_mod
 
 _gc_mod.GOOGLE_CHAT_AVAILABLE = True
 
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.google_chat.adapter import (
     GoogleChatAdapter,
     _is_google_owned_host,
@@ -1596,9 +1596,9 @@ class TestAuthorizationEmailMatch:
 
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        from gateway.config import GatewayConfig
-        from gateway.run import GatewayRunner
-        from gateway.session import SessionSource
+        from hermes_agent.gateway.config import GatewayConfig
+        from hermes_agent.gateway.run import GatewayRunner
+        from hermes_agent.gateway.session import SessionSource
         from hermes_cli.plugins import discover_plugins
 
         monkeypatch.setenv("GOOGLE_CHAT_ALLOWED_USERS", "alice@example.com")
@@ -1643,7 +1643,7 @@ class TestCronSchedulerRegistry:
         discover + manually invoke the register hook so the resolver sees
         ``cron_deliver_env_var``.
         """
-        from gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.platform_registry import platform_registry
         if platform_registry.get("google_chat") is not None:
             return
         # Discover first so the plugin is loaded at all.
@@ -1662,7 +1662,7 @@ class TestCronSchedulerRegistry:
             manifest = _M()
             _manager = type("_Mgr", (), {"_plugin_platform_names": set()})()
             def register_platform(self, **kwargs):
-                from gateway.platform_registry import PlatformEntry
+                from hermes_agent.gateway.platform_registry import PlatformEntry
                 entry = PlatformEntry(source="plugin", **kwargs)
                 platform_registry.register(entry)
         _register(_Ctx())

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.i18n import t
-from gateway.platforms.base import SendResult
+from hermes_agent.gateway.platforms.base import SendResult
 
 logger = logging.getLogger("plugins.platforms.discord.adapter")
 
@@ -237,7 +237,7 @@ class DiscordMediaMixin:
                         # Download to BytesIO so it renders inline
                         try:
                             import aiohttp as _aiohttp
-                            from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+                            from hermes_agent.gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
                             _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
                             _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
                             if aiohttp_session is None:
@@ -370,7 +370,7 @@ class DiscordMediaMixin:
     async def _ogg_opus_voice_payload(audio_path: str) -> Optional[tuple[bytes, float]]:
         """``(ogg_opus_bytes, duration_secs)`` for a voice message: the file itself when it already
         is Ogg/Opus, else an ffmpeg transcode; None when neither yields Ogg/Opus."""
-        from gateway.platforms.base import transcode_to_ogg_opus
+        from hermes_agent.gateway.platforms.base import transcode_to_ogg_opus
 
         data = await asyncio.to_thread(Path(audio_path).read_bytes)
         duration = _ogg_opus_duration(data)
@@ -453,7 +453,7 @@ class DiscordMediaMixin:
             channel = await self._resolve_channel(_prompt_target_id(chat_id, metadata))
             if not channel:
                 return SendResult(success=False, error=f"Channel {chat_id} not found")
-            from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+            from hermes_agent.gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
             _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(resolve_proxy_url(platform_env_var="DISCORD_PROXY"))
             async with aiohttp.ClientSession(**_sess_kw) as session:
                 status, data, headers = await _read_url_image_with_redirect_guard(

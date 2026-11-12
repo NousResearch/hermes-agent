@@ -119,7 +119,7 @@ def _profile_home(name: Any) -> Path:
 def delegated_profile_scope(home: Any) -> Iterator[None]:
     """Run the block as profile ``home``: HERMES_HOME override, that profile's secret scope,
     multiplex semantics when it is not this process's own profile, and its terminal policy - the
-    binding a multiplexed gateway applies to a routed turn (gateway/AGENTS.md § Profile scope).
+    binding a multiplexed gateway applies to a routed turn (hermes_agent/gateway/AGENTS.md § Profile scope).
     A no-op for anything but a path (``None``: no profile route) and for the home already in effect."""
     from hermes_constants import get_hermes_home, get_routing_process_hermes_home, hermes_home_key
     if not isinstance(home, (str, Path)) or hermes_home_key(home) == hermes_home_key(get_hermes_home()):

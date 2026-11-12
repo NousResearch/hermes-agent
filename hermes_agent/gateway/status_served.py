@@ -2,8 +2,8 @@
 
 One rule for ``/api/status`` and the messaging card so the two surfaces never pick different records
 for the same profile. Read-only: it selects and projects existing ``gateway_state.json`` records and
-writes nothing. ``gateway.status`` is resolved at call time so its test seams
-(``monkeypatch.setattr(gateway.status, ...)``) still intercept.
+writes nothing. ``hermes_agent.gateway.status`` is resolved at call time so its test seams
+(``monkeypatch.setattr(hermes_agent.gateway.status, ...)``) still intercept.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ def served_profile_runtime(
     - ``gateway_pid`` (a PID the caller proved on this host) must BE the multiplexer, so a gateway of
       the profile's own holding its lock keeps its record.
     """
-    from gateway import status
+    from hermes_agent.gateway import status
 
     if own_runtime is not None and status.get_runtime_status_running_pid(own_runtime, expected_home=home) is not None:
         return None
@@ -49,13 +49,13 @@ def served_profile_runtime(
 
 def served_profile_mirror_platforms(runtime: Optional[dict[str, Any]], profile: str) -> dict[str, Any]:
     """Entries a served ``profile`` mirrors from the DEFAULT (api_server/webhook listeners, and the
-    Relay adapter). The multiplexer never builds those adapters for a secondary (``gateway.run_adapters``
+    Relay adapter). The multiplexer never builds those adapters for a secondary (``hermes_agent.gateway.run_adapters``
     skips them: ``SHARED_LISTENER_MIRROR_PLATFORMS``), so the record has no ``<profile>:api_server``
     entry and every reader fell through to ``pending_restart`` — "Restart needed" forever while
     ``/p/<profile>/v1/...`` answered. A listener is mirrored only while live, with the ``/p/<profile>``
     URL the client must call; Relay in every state, since the default's failure is the profile's too.
     """
-    from gateway.config import (
+    from hermes_agent.gateway.config import (
         SERVED_PROFILE_MIRROR_PLATFORMS, SHARED_LISTENER_MIRROR_PATHS, SHARED_LISTENER_MIRROR_PLATFORMS,
     )
     plats = (runtime or {}).get("platforms")

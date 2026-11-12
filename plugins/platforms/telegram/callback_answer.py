@@ -80,11 +80,11 @@ async def answer_or_note(adapter: Any, query: Any, text: str) -> None:
 
 
 async def refuse_tap(query: Any, requester: Optional[str]) -> bool:
-    """Answer a tap on someone else's prompt (``gateway.approval_actor`` refused it: *requester* is
+    """Answer a tap on someone else's prompt (``hermes_agent.gateway.approval_actor`` refused it: *requester* is
     the opener's name) with the localized "only X can answer" alert; the card stays open for them."""
     if not requester:
         return False
-    from gateway.approval_actor import refusal_text
+    from hermes_agent.gateway.approval_actor import refusal_text
 
     await answer_callback(query, refusal_text(requester)[:TOAST_LIMIT], show_alert=True)
     return True

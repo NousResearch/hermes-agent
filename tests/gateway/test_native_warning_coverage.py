@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.platforms.base import SendResult
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.base import SendResult
 from plugins.platforms.buzz.adapter import BuzzAdapter
 from plugins.platforms.discord.adapter import DiscordAdapter
 from plugins.platforms.google_chat.adapter import GoogleChatAdapter
@@ -308,7 +308,7 @@ async def test_telegram_cache_warning_does_not_hide_inbound_context(policy):
     async def reply_text(text):
         frames.append(text)
 
-    from gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.platforms.event import MessageEvent
     event = MessageEvent(text="Requested content", source=adapter.build_source(chat_id="42", user_id="42"))
     await adapter._surface_media_cache_failure(SimpleNamespace(reply_text=reply_text), event, "photo", RuntimeError("fixture"))
     assert bool(frames) is (not policy)

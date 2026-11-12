@@ -1,6 +1,6 @@
 """Memory-trim coverage for the long-lived messaging gateway housekeeper."""
 
-import gateway.run as gateway_run
+import hermes_agent.gateway.run as gateway_run
 
 
 class _OneTickStopEvent:

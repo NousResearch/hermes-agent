@@ -26,7 +26,7 @@ READS = {'toolsets': _toolsets, 'platforms': _platforms}
 async def owner_lines(authority, lines, offload=None) -> dict:
     """``slash.exec``'s reply for ``lines()``, built off the owner loop in the owning profile, on
     ``offload`` (an awaitable executor hop) or else the loop's default pool."""
-    from gateway.session_authorities import owner_scope
+    from hermes_agent.gateway.session_authorities import owner_scope
 
     def build():
         with owner_scope(authority):
@@ -36,6 +36,6 @@ async def owner_lines(authority, lines, offload=None) -> dict:
 
 async def run_info_read(authority, live, name) -> dict:
     """Render *name* off the owner loop, in the owning profile; None policy = no frozen route."""
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_policy import policy_for_source
     policy = policy_for_source(authority.runner, live.source)
     return await owner_lines(authority, lambda: READS[name](authority, policy))

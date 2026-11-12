@@ -44,7 +44,7 @@ async def test_closing_the_last_viewer_frees_the_ring_and_detach_keeps_it(tmp_pa
 
 
 def test_a_dropped_session_stream_leaves_nothing_in_the_shared_cache():
-    from gateway.session_events import SessionEvents
+    from hermes_agent.gateway.session_events import SessionEvents
     from hermes_agent.tui_gateway import event_replay
 
     kept, dropped = SessionEvents(), SessionEvents()
@@ -61,7 +61,7 @@ def test_a_dropped_session_stream_leaves_nothing_in_the_shared_cache():
 
 
 def test_a_finalizer_that_finds_the_lock_held_defers_the_release_without_blocking():
-    from gateway.session_events import SessionEvents
+    from hermes_agent.gateway.session_events import SessionEvents
     from hermes_agent.tui_gateway import event_replay
 
     dropped = SessionEvents()

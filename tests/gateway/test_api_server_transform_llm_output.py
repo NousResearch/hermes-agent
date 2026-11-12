@@ -14,8 +14,8 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from agent.turn_finalizer import apply_llm_output_transform
-from gateway.config import PlatformConfig
-from gateway.platforms.api_server import APIServerAdapter
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.api_server import APIServerAdapter
 
 RAW = "Original model reply."
 TRANSFORMS = {

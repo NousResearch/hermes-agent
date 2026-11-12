@@ -25,8 +25,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.api_server import (
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.api_server import (
     APIServerAdapter,
     ResponseStore,
     _api_request_profile,
@@ -140,7 +140,7 @@ class TestRunIdempotentProfileScope:
 
     @pytest.mark.asyncio
     async def test_same_key_different_profiles_do_not_share_a_cached_response(self, adapter, monkeypatch):
-        monkeypatch.setattr("gateway.platforms.api_server._idem_cache", _IdempotencyCache())
+        monkeypatch.setattr("hermes_agent.gateway.platforms.api_server._idem_cache", _IdempotencyCache())
         request = MagicMock()
         request.headers = {"Idempotency-Key": "client-supplied-key"}
         body = {"model": "gpt-5.5", "messages": [{"role": "user", "content": "hi"}]}
@@ -174,7 +174,7 @@ class TestRunIdempotentProfileScope:
     async def test_same_key_same_profile_still_dedupes(self, adapter, monkeypatch):
         """Regression guard: profile-scoping the cache key must not break same-profile dedup,
         which is the whole point of the Idempotency-Key contract."""
-        monkeypatch.setattr("gateway.platforms.api_server._idem_cache", _IdempotencyCache())
+        monkeypatch.setattr("hermes_agent.gateway.platforms.api_server._idem_cache", _IdempotencyCache())
         request = MagicMock()
         request.headers = {"Idempotency-Key": "client-supplied-key"}
         body = {"model": "gpt-5.5", "messages": [{"role": "user", "content": "hi"}]}
@@ -219,16 +219,16 @@ class TestAdapterInit:
 
         monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
         monkeypatch.setattr(
-            "gateway.run._resolve_runtime_agent_kwargs",
+            "hermes_agent.gateway.run._resolve_runtime_agent_kwargs",
             lambda: {
                 "provider": "openai-codex",
                 "base_url": "https://example.test/v1",
                 "api_mode": "codex_responses",
             },
         )
-        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "gpt-5.5")
+        monkeypatch.setattr("hermes_agent.gateway.run._resolve_gateway_model", lambda: "gpt-5.5")
         monkeypatch.setattr(
-            "gateway.run._load_gateway_config",
+            "hermes_agent.gateway.run._load_gateway_config",
             lambda: {
                 "agent": {"reasoning_effort": "xhigh"},
                 "checkpoints": {
@@ -240,10 +240,10 @@ class TestAdapterInit:
             },
         )
         monkeypatch.setattr(
-            "gateway.run.GatewayRunner._load_reasoning_config",
+            "hermes_agent.gateway.run.GatewayRunner._load_reasoning_config",
             staticmethod(lambda model="": {"enabled": True, "effort": "xhigh"}),
         )
-        monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
+        monkeypatch.setattr("hermes_agent.gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
         monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
 
         adapter = APIServerAdapter(PlatformConfig(enabled=True))
@@ -558,7 +558,7 @@ class TestDisconnectedAgentReap:
     ownership was ever recorded on the agent."""
 
     def test_reaps_baseline_diff_for_owned_turn(self, monkeypatch):
-        from gateway.platforms.api_server import _reap_disconnected_agent_processes
+        from hermes_agent.gateway.platforms.api_server import _reap_disconnected_agent_processes
         from tools.process_registry import process_registry
 
         calls = []
@@ -585,7 +585,7 @@ class TestDisconnectedAgentReap:
         ]
 
     def test_noop_when_agent_has_no_ownership_markers(self, monkeypatch):
-        from gateway.platforms.api_server import _reap_disconnected_agent_processes
+        from hermes_agent.gateway.platforms.api_server import _reap_disconnected_agent_processes
         from tools.process_registry import process_registry
 
         calls = []
@@ -608,7 +608,7 @@ class TestDisconnectedAgentReap:
         """#76188 follow-up: concurrent API runs can share a client-provided
         session_id (same task_id). A disconnecting run whose epoch has been
         superseded must NOT kill the newer run's processes."""
-        from gateway.platforms.api_server import (
+        from hermes_agent.gateway.platforms.api_server import (
             _clear_turn_process_ownership,
             _publish_turn_process_ownership,
             _reap_disconnected_agent_processes,
@@ -647,7 +647,7 @@ class TestDisconnectedAgentReap:
         """A missing epoch entry (the abandoned run's own finally already
         cleared it) means no newer claimant — the reap must proceed using a
         pre-captured marker snapshot, or the leak survives."""
-        from gateway.platforms.api_server import (
+        from hermes_agent.gateway.platforms.api_server import (
             _clear_turn_process_ownership,
             _publish_turn_process_ownership,
             _reap_disconnected_agent_processes,
@@ -682,7 +682,7 @@ class TestDisconnectedAgentReap:
         assert calls == [True]
 
     def test_publish_and_clear_ownership_roundtrip(self, monkeypatch):
-        from gateway.platforms.api_server import (
+        from hermes_agent.gateway.platforms.api_server import (
             _TURN_PROCESS_EPOCHS,
             _clear_turn_process_ownership,
             _publish_turn_process_ownership,
@@ -713,7 +713,7 @@ class TestDisconnectedAgentReap:
     async def test_stop_run_reaps_owned_processes(self, adapter, monkeypatch):
         """POST /v1/runs/{id}/stop abandons the run — it must reap the
         background processes that run created (#76115 sibling surface)."""
-        from gateway.platforms.api_server import _publish_turn_process_ownership
+        from hermes_agent.gateway.platforms.api_server import _publish_turn_process_ownership
         from tools.process_registry import process_registry
 
         calls = []
@@ -831,14 +831,14 @@ class TestHealthDetailedEndpoint:
         with patch.object(adapter, "_write_runtime_status_safe"):
             adapter._record_api_metrics({"total_tokens": 9}, 0.02)
         app = _create_app(adapter)
-        with patch("gateway.status.read_runtime_status", return_value={
+        with patch("hermes_agent.gateway.status.read_runtime_status", return_value={
             "gateway_state": "running",
             "platforms": {"telegram": {"state": "connected"}},
             "active_agents": 2,
             "exit_reason": None,
             "updated_at": "2026-04-14T00:00:00Z",
-        }), patch("gateway.run._resolve_gateway_model", return_value="test/model"), patch(
-            "gateway.readiness.shutil.disk_usage",
+        }), patch("hermes_agent.gateway.run._resolve_gateway_model", return_value="test/model"), patch(
+            "hermes_agent.gateway.readiness.shutil.disk_usage",
             return_value=types.SimpleNamespace(total=100, used=25, free=75),
         ):
             async with TestClient(TestServer(app)) as cli:
@@ -864,7 +864,7 @@ class TestHealthDetailedEndpoint:
     @pytest.mark.asyncio
     async def test_public_health_does_not_run_readiness_probes(self, adapter):
         app = _create_app(adapter)
-        with patch("gateway.platforms.api_server.collect_runtime_readiness") as probe:
+        with patch("hermes_agent.gateway.platforms.api_server.collect_runtime_readiness") as probe:
             async with TestClient(TestServer(app)) as cli:
                 resp = await cli.get("/health")
                 assert resp.status == 200
@@ -914,7 +914,7 @@ class TestModelsEndpoint:
     @pytest.mark.asyncio
     async def test_models_returns_profile_name(self):
         """When running under a named profile, /v1/models advertises the profile name."""
-        with patch("gateway.platforms.api_server.APIServerAdapter._resolve_model_name", return_value="lucas"):
+        with patch("hermes_agent.gateway.platforms.api_server.APIServerAdapter._resolve_model_name", return_value="lucas"):
             adapter = _make_adapter()
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
@@ -1178,7 +1178,7 @@ class TestChatCompletionsEndpoint:
                         )
                     ),
                 ),
-                patch("gateway.platforms.api_server.asyncio.ensure_future", side_effect=_fake_ensure_future),
+                patch("hermes_agent.gateway.platforms.api_server.asyncio.ensure_future", side_effect=_fake_ensure_future),
                 patch.object(adapter, "_write_sse_chat_completion", new_callable=AsyncMock) as mock_write_sse,
             ):
                 mock_write_sse.return_value = web.Response(status=200, text="ok")
@@ -1748,7 +1748,7 @@ class TestResponsesStreaming:
                         )
                     ),
                 ),
-                patch("gateway.platforms.api_server.asyncio.ensure_future", side_effect=_fake_ensure_future),
+                patch("hermes_agent.gateway.platforms.api_server.asyncio.ensure_future", side_effect=_fake_ensure_future),
                 patch.object(adapter, "_write_sse_responses", new_callable=AsyncMock) as mock_write_sse,
             ):
                 mock_write_sse.return_value = web.Response(status=200, text="ok")
@@ -1791,7 +1791,7 @@ class TestResponsesStreaming:
                 written_payloads.append(payload)
 
         # Patch web.StreamResponse for the duration of the writer call.
-        import gateway.platforms.api_server as api_mod
+        import hermes_agent.gateway.platforms.api_server as api_mod
 
         # The SSE writers consume an asyncio queue (ThreadSafeAsyncQueue),
         # not a plain queue.Queue — a stdlib queue would block the drain
@@ -1864,7 +1864,7 @@ class TestResponsesStreaming:
                 if write_call_count["n"] >= 3:
                     raise ConnectionResetError("simulated client disconnect")
 
-        import gateway.platforms.api_server as api_mod
+        import hermes_agent.gateway.platforms.api_server as api_mod
 
         # asyncio queue to match the writers' consumer (see the note in
         # test_stream_cancelled_persists_incomplete_snapshot).
@@ -1934,7 +1934,7 @@ class TestConfigIntegration:
             "API_SERVER_CORS_ORIGINS",
             "http://localhost:3000, http://127.0.0.1:3000",
         )
-        from gateway.config import load_gateway_config
+        from hermes_agent.gateway.config import load_gateway_config
         config = load_gateway_config()
         assert config.platforms[Platform.API_SERVER].extra.get("cors_origins") == [
             "http://localhost:3000",
@@ -2570,7 +2570,7 @@ def _patch_create_agent_runtime(monkeypatch, captured: dict, fake_agent_cls):
     """Stub out every external dependency of _create_agent."""
     monkeypatch.setattr("run_agent.AIAgent", fake_agent_cls)
     monkeypatch.setattr(
-        "gateway.run._resolve_runtime_agent_kwargs",
+        "hermes_agent.gateway.run._resolve_runtime_agent_kwargs",
         lambda: {
             "provider": "openrouter",
             "api_key": "sk-global",
@@ -2578,15 +2578,15 @@ def _patch_create_agent_runtime(monkeypatch, captured: dict, fake_agent_cls):
             "api_mode": "chat_completions",
         },
     )
-    monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "global/model")
-    monkeypatch.setattr("gateway.run._load_gateway_config", dict)
+    monkeypatch.setattr("hermes_agent.gateway.run._resolve_gateway_model", lambda: "global/model")
+    monkeypatch.setattr("hermes_agent.gateway.run._load_gateway_config", dict)
     monkeypatch.setattr(
-        "gateway.run.GatewayRunner._load_reasoning_config", staticmethod(lambda model="": {})
+        "hermes_agent.gateway.run.GatewayRunner._load_reasoning_config", staticmethod(lambda model="": {})
     )
     monkeypatch.setattr(
-        "gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None)
+        "hermes_agent.gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None)
     )
-    monkeypatch.setattr("gateway.run._current_max_iterations", lambda: 90)
+    monkeypatch.setattr("hermes_agent.gateway.run._current_max_iterations", lambda: 90)
     monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
 
 
@@ -2649,7 +2649,7 @@ class TestModelRoutesAgentCreation:
 
         _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
         monkeypatch.setattr(
-            "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+            "hermes_agent.gateway.run._resolve_runtime_agent_kwargs_for_provider",
             lambda provider, target_model=None: {
                 "provider": provider,
                 "api_key": f"sk-{provider}",
@@ -2898,7 +2898,7 @@ class TestKeyRejectionSetsNonRetryableFatalError:
     the reconnect watcher drops the platform from the retry queue instead of
     looping indefinitely.
 
-    Previously connect() returned bare ``False``, which gateway.run treated
+    Previously connect() returned bare ``False``, which hermes_agent.gateway.run treated
     as retryable — re-queueing every backoff interval forever and
     re-instantiating the adapter (with its ResponseStore sqlite connection)
     each retry (#38803: ~501 leaked connections / 1002 fds over 2.5 days,
@@ -3021,11 +3021,11 @@ class TestCreateAgentModelRecovery:
 
         _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
         monkeypatch.setattr(
-            "gateway.run._resolve_runtime_agent_kwargs",
+            "hermes_agent.gateway.run._resolve_runtime_agent_kwargs",
             lambda: {"provider": "openai-codex", "base_url": "https://example.test/v1",
                      "api_mode": "codex_responses"},
         )
-        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "")
+        monkeypatch.setattr("hermes_agent.gateway.run._resolve_gateway_model", lambda: "")
         monkeypatch.setattr(
             "hermes_cli.models.get_default_model_for_provider",
             lambda provider: "gpt-5.5-codex" if provider == "openai-codex" else None,
@@ -3058,16 +3058,16 @@ class TestCreateAgentModelRecovery:
 
         # Turn 1: model resolves fine — populates the last-known-good cache
         # (keyed on gateway_session_key).
-        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "minimax/minimax-m3")
+        monkeypatch.setattr("hermes_agent.gateway.run._resolve_gateway_model", lambda: "minimax/minimax-m3")
         adapter._create_agent(session_id="api-session", gateway_session_key="stable-chan-1")
         assert captured[0]["model"] == "minimax/minimax-m3"
         assert adapter._last_resolved_model["stable-chan-1"] == "minimax/minimax-m3"
 
         # Turn 2: transient empty resolution, no provider catalog default —
         # must recover the model from turn 1, not build model="".
-        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "")
+        monkeypatch.setattr("hermes_agent.gateway.run._resolve_gateway_model", lambda: "")
         monkeypatch.setattr(
-            "gateway.run._resolve_runtime_agent_kwargs",
+            "hermes_agent.gateway.run._resolve_runtime_agent_kwargs",
             lambda: {"provider": None, "base_url": None, "api_mode": None},
         )
         adapter._create_agent(session_id="another-session", gateway_session_key="stable-chan-1")
@@ -3094,7 +3094,7 @@ class TestCreateAgentModelRecovery:
         # Make _resolve_gateway_model return the virtual alias — the
         # condition the session-row bug can produce after a prior turn.
         monkeypatch.setattr(
-            "gateway.run._resolve_gateway_model", lambda: virtual,
+            "hermes_agent.gateway.run._resolve_gateway_model", lambda: virtual,
         )
 
         adapter._create_agent(session_id="s1", gateway_session_key="ch")
@@ -3123,9 +3123,9 @@ class TestCreateAgentModelRecovery:
         adapter._last_resolved_model["*"] = adapter._model_name
 
         # Trigger an empty resolution.
-        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "")
+        monkeypatch.setattr("hermes_agent.gateway.run._resolve_gateway_model", lambda: "")
         monkeypatch.setattr(
-            "gateway.run._resolve_runtime_agent_kwargs",
+            "hermes_agent.gateway.run._resolve_runtime_agent_kwargs",
             lambda: {"provider": None, "base_url": None, "api_mode": None},
         )
         adapter._create_agent(session_id="s1", gateway_session_key="ch")
@@ -3152,7 +3152,7 @@ class TestCreateAgentModelRecovery:
 
         # Turn 1: legitimate model — must enter the cache.
         monkeypatch.setattr(
-            "gateway.run._resolve_gateway_model",
+            "hermes_agent.gateway.run._resolve_gateway_model",
             lambda: "anthropic/claude-opus-4.6",
         )
         adapter._create_agent(session_id="s1", gateway_session_key="ch")
@@ -3160,9 +3160,9 @@ class TestCreateAgentModelRecovery:
         assert adapter._last_resolved_model["ch"] == "anthropic/claude-opus-4.6"
 
         # Turn 2: empty resolution — must recover the legitimate model.
-        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "")
+        monkeypatch.setattr("hermes_agent.gateway.run._resolve_gateway_model", lambda: "")
         monkeypatch.setattr(
-            "gateway.run._resolve_runtime_agent_kwargs",
+            "hermes_agent.gateway.run._resolve_runtime_agent_kwargs",
             lambda: {"provider": None, "base_url": None, "api_mode": None},
         )
         adapter._create_agent(session_id="s2", gateway_session_key="ch")

@@ -8,10 +8,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.helpers import MessageDeduplicator
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.platforms.helpers import MessageDeduplicator
+from hermes_agent.gateway.run import GatewayRunner
 
 
 class StubAdapter(BasePlatformAdapter):
@@ -127,7 +127,7 @@ class TestStartupPlatformIsolation:
             coro.close()
             return MagicMock()
 
-        with patch("gateway.status.publish_runtime_status"):
+        with patch("hermes_agent.gateway.status.publish_runtime_status"):
             with patch("hermes_cli.plugins.discover_plugins"):
                 with patch("hermes_cli.config.load_config", return_value={}):
                     with patch("agent.shell_hooks.register_from_config"):
@@ -136,10 +136,10 @@ class TestStartupPlatformIsolation:
                             return_value=0,
                         ):
                             with patch(
-                                "gateway.channel_directory.build_channel_directory",
+                                "hermes_agent.gateway.channel_directory.build_channel_directory",
                                 new=AsyncMock(return_value={"platforms": {}}),
                             ):
-                                with patch("gateway.run.asyncio.create_task", side_effect=fake_create_task):
+                                with patch("hermes_agent.gateway.run.asyncio.create_task", side_effect=fake_create_task):
                                     assert await runner.start() is True
 
         assert Platform.TELEGRAM in runner._failed_platforms
@@ -175,7 +175,7 @@ class TestPlatformReconnectWatcher:
         real_sleep = asyncio.sleep
 
         with patch.object(runner, "_create_adapter", return_value=succeed_adapter):
-            with patch("gateway.run.build_channel_directory", create=True):
+            with patch("hermes_agent.gateway.run.build_channel_directory", create=True):
                 runner._running = True
                 call_count = 0
 
@@ -219,7 +219,7 @@ class TestPlatformReconnectWatcher:
         real_sleep = asyncio.sleep
 
         with patch.object(runner, "_create_adapter", return_value=adapter):
-            with patch("gateway.run.build_channel_directory", create=True):
+            with patch("hermes_agent.gateway.run.build_channel_directory", create=True):
                 runner._running = True
                 call_count = 0
 
@@ -285,7 +285,7 @@ class TestPlatformReconnectWatcher:
         real_sleep = asyncio.sleep
 
         with patch.object(runner, "_create_adapter", return_value=succeed_adapter):
-            with patch("gateway.run.build_channel_directory", create=True):
+            with patch("hermes_agent.gateway.run.build_channel_directory", create=True):
                 async def run_one_iteration():
                     runner._running = True
                     call_count = 0
@@ -384,7 +384,7 @@ class TestPlatformReconnectWatcher:
         monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: manager)
         adapter = StubAdapter(platform=platform)
         monkeypatch.setattr(runner, "_create_adapter", lambda p, c: adapter if rearmed and healed else None)
-        monkeypatch.setattr("gateway.platform_registry.platform_registry.get",
+        monkeypatch.setattr("hermes_agent.gateway.platform_registry.platform_registry.get",
                             lambda name: on_loop.append(threading.current_thread() is threading.main_thread()))
 
         for tick in range(6):
@@ -480,8 +480,8 @@ class TestReconnectKeepsInboundDedup:
 
     @staticmethod
     def _event(text):
-        from gateway.platforms.event import MessageEvent
-        from gateway.session import SessionSource
+        from hermes_agent.gateway.platforms.event import MessageEvent
+        from hermes_agent.gateway.session import SessionSource
         return MessageEvent(text=text, source=SessionSource(platform=Platform.TELEGRAM, chat_id="1", chat_type="dm"))
 
     @pytest.mark.asyncio
@@ -543,9 +543,9 @@ class TestReconnectKeepsInboundDedup:
             runner._secondary_reconnect_attempt = attempt
         with patch("hermes_cli.profiles.get_profile_dir"), \
              patch("hermes_cli.env_loader.hydrate_profile_secret_sources"), \
-             patch("gateway.run._profile_runtime_scope", MagicMock()), \
-             patch("gateway.run._platform_has_bot_credential", return_value=True), \
-             patch("gateway.config.load_gateway_config") as load, \
+             patch("hermes_agent.gateway.run._profile_runtime_scope", MagicMock()), \
+             patch("hermes_agent.gateway.run._platform_has_bot_credential", return_value=True), \
+             patch("hermes_agent.gateway.config.load_gateway_config") as load, \
              pytest.raises(asyncio.CancelledError) if installed else contextlib.nullcontext():
             load.return_value.platforms = {Platform.TELEGRAM: PlatformConfig(enabled=True, token="t")}
             await runner._run_secondary_profile_reconnect("coder", Platform.TELEGRAM, predecessor)
@@ -665,7 +665,7 @@ class TestSpawnSupervised:
             delegated_child_context,
             is_delegated_child_context,
         )
-        from gateway.kanban_watchers_common import _to_thread_process_service
+        from hermes_agent.gateway.kanban_watchers_common import _to_thread_process_service
         from hermes_cli.kanban_db import _assert_not_delegated_child_mutation
 
         with delegated_child_context():
@@ -869,7 +869,7 @@ class TestVoiceInputCallbackWiring:
             return MagicMock()
 
         with patch.object(runner, "_create_adapter", return_value=adapter):
-            with patch("gateway.status.publish_runtime_status"):
+            with patch("hermes_agent.gateway.status.publish_runtime_status"):
                 with patch("hermes_cli.plugins.discover_plugins"):
                     with patch("hermes_cli.config.load_config", return_value={}):
                         with patch("agent.shell_hooks.register_from_config"):
@@ -878,11 +878,11 @@ class TestVoiceInputCallbackWiring:
                                 return_value=0,
                             ):
                                 with patch(
-                                    "gateway.channel_directory.build_channel_directory",
+                                    "hermes_agent.gateway.channel_directory.build_channel_directory",
                                     new=AsyncMock(return_value={"platforms": {}}),
                                 ):
                                     with patch(
-                                        "gateway.run.asyncio.create_task",
+                                        "hermes_agent.gateway.run.asyncio.create_task",
                                         side_effect=fake_create_task,
                                     ):
                                         assert await runner.start() is True

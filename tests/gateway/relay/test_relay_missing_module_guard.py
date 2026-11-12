@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from gateway.relay.egress import _is_missing_gateway_relay
+from hermes_agent.gateway.relay.egress import _is_missing_gateway_relay
 
 
 @pytest.mark.parametrize("name", ["gateway", "gateway.relay", "gateway.relay.egress"])

@@ -298,24 +298,24 @@ try:
 except ImportError:
     from ffmpeg_utils import resolve_ffmpeg_executable
 
-from gateway.config import Platform, PlatformConfig, discord_channel_id_from_link
-from gateway.approval_actor import clarify_refusal, refusal_text, slash_confirm_refusal
+from hermes_agent.gateway.config import Platform, PlatformConfig, discord_channel_id_from_link
+from hermes_agent.gateway.approval_actor import clarify_refusal, refusal_text, slash_confirm_refusal
 
-from gateway.platforms.helpers import (
+from hermes_agent.gateway.platforms.helpers import (
     MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets, is_discord_channel_obfuscated,
     numbered_clarify_choices,
 )
-from gateway.platforms.helpers import cancel_task
+from hermes_agent.gateway.platforms.helpers import cancel_task
 from utils import atomic_json_write, env_float
-from gateway.platforms.base import (
+from hermes_agent.gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult, unauthorized_action_notice,
     cache_image_from_url, cache_image_from_bytes_async, cache_audio_from_url, cache_audio_from_bytes_async,
     cache_document_from_bytes_async, SUPPORTED_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS,
     _prefix_within_utf16_limit, utf16_len, validate_inbound_media_size,
 )
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from tools.url_safety import is_safe_url
-from gateway.platforms._shared import (
+from hermes_agent.gateway.platforms._shared import (
     decode_json_list_literal as _decode_json_list_literal, env_is_connected as _env_is_connected,
     extra_or_secret as _extra_or_secret, platform_gate_env as _scoped_gate_env, send_error,
     yaml_env_setter as _yaml_env_setter
@@ -1214,7 +1214,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         # Gate env snapshot captured in connect() inside the owning profile's scope; None until then.
         # None until then; accessors fall back to live scope-aware reads (issue #72348).
         self._gate_env_snapshot: Optional[dict[str, str]] = None
-        self.gateway_runner = None  # Set by gateway/run.py for cross-platform delivery
+        self.gateway_runner = None  # Set by hermes_agent/gateway/run.py for cross-platform delivery
         self._voice_clients: dict[int, Any] = {}  # guild_id -> VoiceClient
         self._voice_locks: dict[int, asyncio.Lock] = {}  # guild_id -> serialize join/leave
         # Text batching: merge rapid successive messages (Telegram-style)
@@ -1381,7 +1381,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             return
         except Exception as err:  # pragma: no cover - defensive
             exc = err
-        from gateway.platforms.base import describe_proxy_error, resolve_proxy_url as _proxy
+        from hermes_agent.gateway.platforms.base import describe_proxy_error, resolve_proxy_url as _proxy
         shown = describe_proxy_error(exc, _proxy("DISCORD_PROXY")) if exc else None  # raw text may echo a proxy secret
         message = f"Discord gateway task exited: {shown or exc}" if exc else "Discord gateway task exited without an exception"
         logger.error("[%s] %s", self.name, message, exc_info=exc if exc and not shown else False)
@@ -1429,7 +1429,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             )
             intents.voice_states = True
             # Resolve proxy (DISCORD_PROXY > generic env vars > macOS system proxy)
-            from gateway.platforms.base import proxy_kwargs_for_bot, resolve_proxy_url, safe_proxy_url_for_log
+            from hermes_agent.gateway.platforms.base import proxy_kwargs_for_bot, resolve_proxy_url, safe_proxy_url_for_log
             proxy_url = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
             if proxy_url:
                 logger.info("[%s] Using proxy for Discord: %s", self.name, safe_proxy_url_for_log(proxy_url))
@@ -1581,7 +1581,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             )
             return False
         except Exception as e:  # pragma: no cover - defensive logging
-            from gateway.platforms.base import describe_proxy_error, resolve_proxy_url as _proxy
+            from hermes_agent.gateway.platforms.base import describe_proxy_error, resolve_proxy_url as _proxy
             proxy_error = describe_proxy_error(e, _proxy(platform_env_var="DISCORD_PROXY"))
             logger.error("[%s] Failed to connect to Discord: %s", self.name, proxy_error or e, exc_info=not proxy_error)
             # Same zombie-client hazard: client.start() may already run when a later step raises.
@@ -4056,7 +4056,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         if not user_id:
             return False
         try:
-            from gateway.pairing import PairingStore
+            from hermes_agent.gateway.pairing import PairingStore
             return bool(PairingStore().is_approved("discord", user_id))
         except Exception:
             return False
@@ -4212,8 +4212,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         adapters = runner._adapters_for_profile(profile)
         if adapters is runner.adapters:  # profile IS the primary
             return adapters, runner.config
-        from gateway.config import load_gateway_config
-        from gateway.run import _async_profile_runtime_scope
+        from hermes_agent.gateway.config import load_gateway_config
+        from hermes_agent.gateway.run import _async_profile_runtime_scope
         from hermes_cli.profiles import get_profile_dir
         async with _async_profile_runtime_scope(get_profile_dir(profile)):
             return adapters, load_gateway_config()
@@ -4232,7 +4232,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         profile = getattr(self, "_owner_profile", None)
         try:
             if profile:
-                from gateway.run import _async_profile_runtime_scope
+                from hermes_agent.gateway.run import _async_profile_runtime_scope
                 from hermes_cli.profiles import get_profile_dir
                 async with _async_profile_runtime_scope(get_profile_dir(profile)):
                     await self._deliver_unauthorized_slash_alert(
@@ -4266,7 +4266,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                     command_text=command_text, reason=reason)
                 # Policy is the DISCORD owner's (self) evaluated for the foreign target lane; a veto
                 # is not transport failure or permission to reroute to the next target.
-                from gateway.warning_notifications import present_notification
+                from hermes_agent.gateway.warning_notifications import present_notification
                 result = None
                 async def send_alert():
                     nonlocal result
@@ -4861,12 +4861,12 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
               - id: "123456"
                 skills: ["skill-a", "skill-b"]
         """
-        from gateway.platforms.base import resolve_channel_skills
+        from hermes_agent.gateway.platforms.base import resolve_channel_skills
         return resolve_channel_skills(self.config.extra, channel_id, parent_id)
 
     def _resolve_channel_prompt(self, channel_id: str, parent_id: str | None = None) -> str | None:
         """Resolve a Discord per-channel prompt, preferring the exact channel over its parent."""
-        from gateway.platforms.base import resolve_channel_prompt
+        from hermes_agent.gateway.platforms.base import resolve_channel_prompt
         return resolve_channel_prompt(self.config.extra, channel_id, parent_id)
 
     def _extra_or_env_flag(self, key: str, env_key: str, env_default: str, *, truthy: bool) -> bool:
@@ -5478,7 +5478,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         if not cleaned:
             return False
         # Thread names are budgeted in UTF-16 code units (emoji count double) — use the UTF-16 helpers.
-        from gateway.platforms.base import utf16_len, _prefix_within_utf16_limit
+        from hermes_agent.gateway.platforms.base import utf16_len, _prefix_within_utf16_limit
         if utf16_len(cleaned) > 80:
             cleaned = _prefix_within_utf16_limit(cleaned, 77).rstrip() + "..."
         try:
@@ -5948,7 +5948,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         if not is_safe_url(att.url):
             raise ValueError(f"Blocked unsafe attachment URL (SSRF protection): {att.url}")
         import aiohttp
-        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+        from hermes_agent.gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
         _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
         async with aiohttp.ClientSession(**_sess_kw) as session:
@@ -6028,7 +6028,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                     )
                     # Inject text for text-readable documents (capped at 100 KB). Gate on text-like
                     # extension/MIME, NOT a blind UTF-8 decode (PDF/zip/docx have ASCII headers); other
-                    # types rely on ``gateway/run.py`` emitting a (sandbox-translated) path note.
+                    # types rely on ``hermes_agent/gateway/run.py`` emitting a (sandbox-translated) path note.
                     MAX_TEXT_INJECT_BYTES = 100 * 1024
                     _is_text = ext in _TEXT_INJECT_EXTENSIONS or (content_type or "").startswith("text/")
                     if _is_text and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
@@ -6341,7 +6341,7 @@ def _define_discord_view_classes() -> None:
 
         async def _gate(self, interaction: discord.Interaction, *, resolved_msg: Optional[str], unauth_msg: str, refusal=None) -> bool:
             """Reject (ephemerally) an already-resolved or unauthorized click, or one ``refusal(user_id)``
-            (``gateway.approval_actor``) names another requester for; True when it may proceed."""
+            (``hermes_agent.gateway.approval_actor``) names another requester for; True when it may proceed."""
             if resolved_msg is not None and self.resolved:
                 await interaction.response.send_message(resolved_msg, ephemeral=True)
                 return False
@@ -6986,7 +6986,7 @@ async def _standalone_is_forum(aiohttp, chat_id: str, json_headers: dict, sess_k
     """Forum detection: channel directory → process-local probe cache → memoized ``GET /channels/{id}``."""
     _channel_type = None
     try:
-        from gateway.channel_directory import lookup_channel_type
+        from hermes_agent.gateway.channel_directory import lookup_channel_type
         _channel_type = lookup_channel_type("discord", chat_id)
     except Exception:
         pass
@@ -7028,7 +7028,7 @@ async def _standalone_send(
         token = (get_secret("DISCORD_BOT_TOKEN", "") or "").strip()
     if not token:
         return send_error("Discord standalone send: DISCORD_BOT_TOKEN is not set")
-    from gateway.platforms.base import describe_proxy_error, resolve_proxy_url, proxy_kwargs_for_aiohttp
+    from hermes_agent.gateway.platforms.base import describe_proxy_error, resolve_proxy_url, proxy_kwargs_for_aiohttp
     _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
     try:
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
@@ -7179,7 +7179,7 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     ``extra`` stays the per-adapter truth for liveness (multiplex isolation). Returns liveness settings.
 
     Implements the ``apply_yaml_config_fn`` contract (#24836). Mirrors the legacy ``discord_cfg`` block that
-    used to live in ``gateway/config.py::load_gateway_config()`` before this migration.
+    used to live in ``hermes_agent/gateway/config.py::load_gateway_config()`` before this migration.
     """
     # Every env write is first-writer-wins (an explicit env var beats YAML) and is skipped for a
     # profile-scoped multiplex load: a secondary profile's settings must never land in process-global
@@ -7281,7 +7281,7 @@ def register(ctx) -> None:
     from plugins.platforms.discord.onboarding import interactive_setup
 
     from .dashboard_card import DASHBOARD_CARD
-    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
+    from . import gateway_env  # env -> GatewayConfig bridge (hermes_agent.gateway.config_env)
     ctx.register_platform(
         **SEND_ENTRY_KWARGS,  # send_message target syntax + routing
         name="discord",
@@ -7299,7 +7299,7 @@ def register(ctx) -> None:
         # reactions, ignored_channels, allowed_channels, no_thread_channels, allow_mentions.*,
         # reply_to_mode, thread_require_mention)
         # into ``DISCORD_*`` env vars that the adapter reads via ``os.getenv()``. Replaces the hardcoded
-        # block that used to live in ``gateway/config.py``. Hook contract: #24836.
+        # block that used to live in ``hermes_agent/gateway/config.py``. Hook contract: #24836.
         apply_yaml_config_fn=_apply_yaml_config,
         cron_deliver_env_var="DISCORD_HOME_CHANNEL",
         # Out-of-process cron delivery via REST, else ``deliver=discord`` jobs fail with "No live adapter".

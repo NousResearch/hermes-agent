@@ -134,7 +134,7 @@ async def test_note_keeps_the_cached_agent(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_watch_notice_without_a_viewer_is_a_note(tmp_path, monkeypatch):
-    from gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.platforms.event import MessageEvent
     runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
     try:
         target = _target(runner, authority, ref)
@@ -155,9 +155,9 @@ async def test_watch_notice_without_a_viewer_is_a_note(tmp_path, monkeypatch):
 
 async def _restart(tmp_path, monkeypatch, old):
     """A real owner restart over the same state.db: new runner, new epoch, local sessions recovered."""
-    from gateway.config import GatewayConfig
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import initialize_session_authority
     from hermes_agent.hermes_state import AsyncSessionDB, SessionDB
     path = old.db.db_path
     old.db.close()
@@ -193,7 +193,7 @@ async def test_lost_ack_restart_and_regrouped_batch_note_each_result_once(tmp_pa
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(delegation, '_CLAIM_LEASE_S', -1.0)  # the dead owner's claim is reclaimable
     runner, authority = await _restart(tmp_path, monkeypatch, authority)
-    from gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_authority import SessionAuthority
     monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)
     try:
         second = dict(pending(route, 'deleg_bravo'), parent_session_id=target)
@@ -280,7 +280,7 @@ _CLOSES = ['cli_close', 'new_session', 'resumed_other', 'branched', 'tui_close',
 async def test_completion_after_new_is_noted_on_the_closed_session(tmp_path, monkeypatch, producer, reason):
     """The viewer closed the session (exit, /new): work finishing afterwards is a note on that original
     session, never dropped and never delivered into the session opened next."""
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_local import create_local_session
     from hermes_agent.hermes_state_local import end_idle_local_session
     runner, authority, ref, actor = await _local(tmp_path, monkeypatch)
     try:
@@ -327,7 +327,7 @@ def _compress(runner, authority, ref, parent, child):
 async def test_compressed_then_closed_completion_is_noted_on_the_closed_tip(tmp_path, monkeypatch, producer, reason):
     """Work started before compression stays pinned to the ancestor; the user then closed the compressed
     continuation (exit, /new). The result is a note on that closed tip, not the ancestor, not the replacement."""
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_local import create_local_session
     from hermes_agent.hermes_state_local import end_idle_local_session
     runner, authority, ref, actor = await _local(tmp_path, monkeypatch)
     try:
@@ -386,8 +386,8 @@ async def test_closed_tip_lookup_defers_only_a_failed_read():
     import sqlite3
     from types import SimpleNamespace
     from typing import Any
-    from gateway.config import Platform
-    from gateway.run_notifications_ownership import GatewayNotificationOwnershipMixin
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.run_notifications_ownership import GatewayNotificationOwnershipMixin
     from hermes_agent.hermes_state_errors import StateDbReplacedError
     entry: Any = SimpleNamespace(platform=Platform.LOCAL, session_id='lc7-tip')
 

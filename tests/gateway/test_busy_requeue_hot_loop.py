@@ -25,9 +25,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionEntry, SessionSource, build_session_key
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionEntry, SessionSource, build_session_key
 from tests.gateway.restart_test_helpers import RestartTestAdapter
 
 
@@ -39,7 +39,7 @@ def _source() -> SessionSource:
 def _runner_with_running_agent(adapter, *, compression_in_flight):
     """Runner whose agent for the session is still running (owned by a task the adapter no
     longer tracks) — the post-reconnect split-brain."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(

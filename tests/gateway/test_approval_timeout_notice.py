@@ -1,10 +1,10 @@
-"""Invariants for the exec-approval timeout notice hook (gateway/run_turn_runner_approval_settle.py)."""
+"""Invariants for the exec-approval timeout notice hook (hermes_agent/gateway/run_turn_runner_approval_settle.py)."""
 
 from types import SimpleNamespace
 
 import pytest
 
-from gateway import run_turn_runner_approval_settle as settle_mod
+from hermes_agent.gateway import run_turn_runner_approval_settle as settle_mod
 
 
 class _Runner:
@@ -73,7 +73,7 @@ async def test_text_prompt_is_never_edited_in_place():
 async def test_card_body_fills_the_message_in_the_platforms_own_units(command):
     """Telegram counts UTF-16 units: the command is cut to what fits in those units, so the edit
     lands whole (no in-place truncation behind a dangling "(1/N)")."""
-    from gateway.platforms.base import utf16_len
+    from hermes_agent.gateway.platforms.base import utf16_len
     edits = []
 
     class _Utf16Adapter:

@@ -531,7 +531,7 @@ def _settled_no_send(dm_file: str, exc: LiveTargetUnavailableError) -> str:
 
 def _held_disposition(record: dict | None) -> bool:
     """The owner's terminal not-sent receipt for a delivery refused while another writer held the
-    chat (``gateway/session_bot.py:_not_sent_record``)."""
+    chat (``hermes_agent/gateway/session_bot.py:_not_sent_record``)."""
     from tools.bot_failure_reasons import HELD_NOT_SENT
     return bool(record) and record.get("refused") is True and record.get("reason") == HELD_NOT_SENT
 
@@ -907,7 +907,7 @@ def _persist_reply_when_done(proc_id: str, agent: Any) -> bool:
     notification, so once the tracked runner exits its stdout — the recipient's reply or the
     delivery failure — is appended to the sender's session transcript as a DELIVERY row
     (``display_kind="process_complete"``, the shape push surfaces persist for the same
-    completion; mirrors gateway.wake.persist_delegation_delivery). A sender that already read
+    completion; mirrors hermes_agent.gateway.wake.persist_delegation_delivery). A sender that already read
     the outcome via process(action='wait'/'log') is not told twice. Returns False (nothing
     armed) when the sender has no session transcript or the process is not tracked here."""
     from tools.process_registry import process_registry

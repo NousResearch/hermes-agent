@@ -71,7 +71,7 @@ def _usage_db(tmp_path):
 def _settle(db, reservation, tip):
     """Settle as the owner does: the tip is whatever the owner's execution row names (compression moves it there)."""
     from types import SimpleNamespace
-    from gateway.session_managed_worker import _settled_session_usage
+    from hermes_agent.gateway.session_managed_worker import _settled_session_usage
     db._execute_write(lambda conn: conn.execute(
         "INSERT INTO worker_executions(execution_id,session_id,kind,owner_epoch,generation,status,adoption_digest) "
         "VALUES('exec',?,'compute',1,1,'running','d')", (tip,)))
@@ -131,7 +131,7 @@ def test_settled_usage_ignores_a_stale_sibling_of_the_continuation(tmp_path):
 def test_settled_usage_ignores_the_worker_reported_session_id(tmp_path):
     """The result frame's ``session_id`` is worker output: settlement reads the tip from the owner's execution row, so a frame naming a sibling or a foreign session changes nothing."""
     from types import SimpleNamespace
-    from gateway.session_managed_worker import _settled_session_usage
+    from hermes_agent.gateway.session_managed_worker import _settled_session_usage
     db = _usage_db(tmp_path)
     with db:
         db.create_session('mine', source='cli')

@@ -6,7 +6,7 @@ against an empty allowlist and rejected every group. Precedence mirrors the DM p
 wins, then the profile-scoped env.
 """
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 
 def _adapter_with_extra(extra):

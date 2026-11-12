@@ -4,7 +4,7 @@ hardening, durable lazy-install target, and dual-stack (Happy Eyeballs) connects
 Windows binds stdio to the console code page (cp1252), so ``print("café")`` raises
 ``UnicodeEncodeError``, and Python children inherit the same default unless
 ``PYTHONUTF8``/``PYTHONIOENCODING`` are set. Import this module first in every entry
-point (``hermes``, ``hermes-agent``, ``hermes-acp``, ``gateway.run``, ``batch_runner``,
+point (``hermes``, ``hermes-agent``, ``hermes-acp``, ``hermes_agent.gateway.run``, ``batch_runner``,
 ``hermes_agent/cron/scheduler``). It does NOT re-exec with ``-X utf8``: ``open()`` in the current
 process still needs an explicit ``encoding="utf-8"`` (ruff ``PLW1514``). POSIX is left
 alone deliberately — users' ``LANG``/``LC_*`` choices are respected.

@@ -14,7 +14,7 @@ from typing import Any, Callable, Dict, Optional
 
 from agent.i18n import t
 
-logger = logging.getLogger("gateway.platforms.google_chat")
+logger = logging.getLogger("hermes_agent.gateway.platforms.google_chat")
 
 # Reply copy lives in the catalog under platform.google_chat.setup_files.* and is resolved
 # through ``t()`` at reply time (never at import) so the active language applies.

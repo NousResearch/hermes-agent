@@ -7,10 +7,10 @@ from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 @asynccontextmanager
 async def producer_scope(adapter, event):
-    from gateway.run import _async_profile_runtime_scope
-    from gateway.session_ingress_context import native_callback
+    from hermes_agent.gateway.run import _async_profile_runtime_scope
+    from hermes_agent.gateway.session_ingress_context import native_callback
 
-    from gateway.session_authorities import authority_for_home
+    from hermes_agent.gateway.session_authorities import authority_for_home
     runner = getattr(adapter._message_handler, '__self__', None)
     if getattr(runner, 'session_authority', None) is None:
         raise RuntimeStoreError('not_found')
@@ -48,9 +48,9 @@ def _refuse_parked(runner, profile):
     profile again, so it is ``runtime_draining`` (a webhook answers 503; relay acknowledges and tells
     the sender, ``parked_route_refusal``), not the permanent ``profile_mismatch`` of a route to a
     profile this gateway does not serve."""
-    from gateway.run_runtime import profile_parked
+    from hermes_agent.gateway.run_runtime import profile_parked
     if profile_parked(runner, profile):
-        from gateway.parked_route_refusal import ParkedProfileRefusal
+        from hermes_agent.gateway.parked_route_refusal import ParkedProfileRefusal
         raise ParkedProfileRefusal(profile)
 
 
@@ -76,7 +76,7 @@ def parked_profile_refusal(runner, profile, route_config, admission_source):
             # ``WebhookAdapter._dispatch_agent_run``'s answer when admission refuses the delivery.
             return web.json_response({'error': 'Admission unavailable; retry this delivery'}, status=503)
         error = 'The routed profile is not being served right now; retry this delivery'
-    from gateway.parked_route_refusal import ParkedRouteRefused
+    from hermes_agent.gateway.parked_route_refusal import ParkedRouteRefused
     return web.json_response({'error': error}, status=ParkedRouteRefused.status, headers=ParkedRouteRefused.headers)
 
 
@@ -84,12 +84,12 @@ def _prefix_not_served(runner, profile):
     """Parked, or on disk with no serving authority here (its own gateway still runs, or it is not
     picked up yet): the URL prefix resolves against the profiles on disk, the registry says what is
     served."""
-    from gateway.run_runtime import profile_parked
+    from hermes_agent.gateway.run_runtime import profile_parked
     if profile_parked(runner, profile):
         return True
     if not profile or getattr(runner, 'session_authorities', None) is None:
         return False
-    from gateway.session_authorities import authority_for_home
+    from hermes_agent.gateway.session_authorities import authority_for_home
     from hermes_cli.profiles import get_profile_dir
     authority = authority_for_home(runner, get_profile_dir(profile))
     return authority is None or getattr(authority, 'retiring', False) is True
@@ -104,7 +104,7 @@ def _coalesced_route_refusal(runner, profile, route_config, admission_source):
     wins over ``profile_routes`` there, and routes apply only under multiplexing."""
     if profile or not isinstance(route_config.get('coalesce'), dict):
         return None
-    from gateway.run_runtime import profile_parked
+    from hermes_agent.gateway.run_runtime import profile_parked
     source = admission_source()
     if getattr(source, 'profile_route_rejected', False):
         # A parked target leaves the served set, so the resolver rejects it; admission retries
@@ -128,10 +128,10 @@ async def admit_producer(adapter, event):
     ``event._consumer_reply`` for the caller's own reply leg), and never for a replay of an
     already-committed delivery (provider retry, relay re-send) nor at execution (PLG-5)."""
     async with producer_scope(adapter, event) as authority:
-        from gateway.config import Platform
-        from gateway.run_inbound_consumer import POST_ADMISSION_HOOK
+        from hermes_agent.gateway.config import Platform
+        from hermes_agent.gateway.run_inbound_consumer import POST_ADMISSION_HOOK
         from hermes_cli.lifecycle import has_hook
-        from gateway.session_ingress_live_turn import may_answer_live_turn, was_consumed
+        from hermes_agent.gateway.session_ingress_live_turn import may_answer_live_turn, was_consumed
         webhook = adapter.platform == Platform.WEBHOOK
         if not webhook and was_consumed(event):
             return None
@@ -142,7 +142,7 @@ async def admit_producer(adapter, event):
         live = not webhook and may_answer_live_turn(authority.runner, event)
         if not (webhook or hooks or live):
             return await _admit_native(authority, event)
-        from gateway.session_authority import native_write_started
+        from hermes_agent.gateway.session_authority import native_write_started
         payload, principal = await _prepared(authority, event)
         writing = native_write_started.set(False)
         try:
@@ -163,7 +163,7 @@ async def admit_producer(adapter, event):
 
 
 async def _admit_once(authority, event, webhook, hooks, live, committed):
-    from gateway.run_inbound_consumer import POST_ADMISSION_HOOK
+    from hermes_agent.gateway.run_inbound_consumer import POST_ADMISSION_HOOK
     if webhook:
         prior = await _webhook_retry(authority, event, *committed)
         if prior is not None:
@@ -180,13 +180,13 @@ async def _admit_once(authority, event, webhook, hooks, live, committed):
         if admitted is not event:
             # The rewrite is committed with the fingerprint of the delivery as received:
             # a provider retry or relay re-send resends that, and resolves to this row.
-            from gateway.session_ingress_media import ingress_fingerprint
+            from hermes_agent.gateway.session_ingress_media import ingress_fingerprint
             admitted._ingress_sha256 = ingress_fingerprint(committed[0], event.raw_message)
     if live and await _answers_live_turn(runner, event, admitted):
         await _release_preparation(authority, committed[0])
         return None
     if POST_ADMISSION_HOOK in hooks:
-        from gateway.run_inbound_consumer import run_post_admission_hook
+        from hermes_agent.gateway.run_inbound_consumer import run_post_admission_hook
         consumed, event._consumer_reply = await run_post_admission_hook(
             runner, admitted, admitted.source, runner._session_key_for_source(admitted.source))
         if consumed:
@@ -198,7 +198,7 @@ async def _admit_once(authority, event, webhook, hooks, live, committed):
 async def _answers_live_turn(runner, event, admitted):
     """The delivery (as ``pre_gateway_dispatch`` left it) was consumed by the chat's running turn or
     pending prompt; its reply rides the delivery as received."""
-    from gateway.session_ingress_live_turn import answers_live_turn
+    from hermes_agent.gateway.session_ingress_live_turn import answers_live_turn
     if not await answers_live_turn(runner, admitted):
         return False
     event._consumer_reply = getattr(admitted, '_consumer_reply', None)
@@ -222,7 +222,7 @@ async def _delivery_turn(key):
     if not key[2]:  # no provider id: admission mints one, nothing can overlap
         yield
         return
-    from gateway.session_authority import keyed_turn
+    from hermes_agent.gateway.session_authority import keyed_turn
     async with keyed_turn(_deliveries, key):
         yield
 
@@ -231,7 +231,7 @@ async def _release_preparation(authority, payload):
     """A delivery a plugin skipped or consumed, or one refused or cancelled after preparing, is never
     admitted: release the media its preparation (``_prepared``) copied into the retained store. A path
     another admission or an in-flight capture holds is kept, as for a refused admission."""
-    from gateway.session_ingress_media import release_unheld_media
+    from hermes_agent.gateway.session_ingress_media import release_unheld_media
     if media := payload['native_text_v1'].get('media'):
         await asyncio.to_thread(release_unheld_media, authority.db, media, retain_history=False)
 
@@ -240,8 +240,8 @@ async def _prepared(authority, event):
     """``(validated payload, principal)`` of this delivery. Preparing the payload runs the same
     authorization as admission, so a refused sender raises here."""
     import json
-    from gateway.session_envelope import prepare_native, restore_native
-    from gateway.session_ingress_media import abandon_capture, capture_lease
+    from hermes_agent.gateway.session_envelope import prepare_native, restore_native
+    from hermes_agent.gateway.session_ingress_media import abandon_capture, capture_lease
     with capture_lease(authority) as scope:
         try:
             payload = await prepare_native(authority.runner, event)
@@ -262,7 +262,7 @@ def _committed(authority, principal, request_id):
 async def _webhook_retry(authority, event, payload, rows):
     # One-shot finalization ends the route. Resolve an existing provider receipt
     # before SessionStore would rotate it into a new physical session.
-    from gateway.session_ingress_media import ingress_fingerprint
+    from hermes_agent.gateway.session_ingress_media import ingress_fingerprint
     from hermes_agent.hermes_state_runtime import get_session_admission
     if not rows:
         return None
@@ -310,8 +310,8 @@ def finalize_webhook(authority, receipt):
 
 async def recover_webhook_finalizations(authority):
     """Close settled original webhooks only after current route authorization succeeds."""
-    from gateway.session_envelope import check_native_route
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_envelope import check_native_route
+    from hermes_agent.gateway.session_contract import SessionRef
     from hermes_agent.hermes_state_runtime import RuntimeStoreError, get_session_admission
 
     rows = authority.db._read_all("""

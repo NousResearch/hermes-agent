@@ -66,7 +66,7 @@ never hardcode `~/.hermes`. For custom/local-only tools, write a plugin in
 
 1. Add `CommandDef` to `COMMAND_REGISTRY` in `hermes_cli/commands.py`
 2. Add handler in `cli.py` → `process_command()`
-3. (Optional) Add gateway handler in `gateway/run.py`
+3. (Optional) Add gateway handler in `hermes_agent/gateway/run.py`
 
 All consumers (help text, autocomplete, Telegram menu, Slack mapping) derive from the central registry automatically.
 

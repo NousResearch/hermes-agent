@@ -1,6 +1,6 @@
 """``on_session_open`` fires in the gateway when a client creates or opens a local session (#89385).
 
-A real daemon (``gateway.run``) loads a user plugin whose ``on_session_open`` hook appends one JSON
+A real daemon (``hermes_agent.gateway.run``) loads a user plugin whose ``on_session_open`` hook appends one JSON
 line per call. Clients reach it over the canonical websocket exactly as the CLI, Ink TUI and Desktop
 do (``session.create`` / ``session.resume``).
 """
@@ -146,8 +146,8 @@ async def _hung_open(monkeypatch, sid, release):
     where the dispatcher never abandons a callback)."""
     import threading
     from types import SimpleNamespace
-    from gateway import session_open
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway import session_open
+    from hermes_agent.gateway.session_contract import SessionRef
     monkeypatch.setattr(session_open, '_UNBOUNDED_TURN_WAIT_S', 0.5, raising=False)
     entered = threading.Event()
     delivered = []
@@ -171,8 +171,8 @@ async def test_a_hung_open_never_wedges_the_turn_or_its_executing_stamp(monkeypa
     import asyncio
     import threading
     from types import SimpleNamespace
-    from gateway import session_finite
-    from gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_agent.gateway import session_finite
+    from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
     release = threading.Event()
     ran = []
 
@@ -206,7 +206,7 @@ async def test_opens_behind_a_hung_open_stay_bounded_and_fire_once_after_it(monk
     import asyncio
     import threading
     from types import SimpleNamespace
-    from gateway import session_open
+    from hermes_agent.gateway import session_open
     release = threading.Event()
     try:
         ref, first, delivered = await _hung_open(monkeypatch, 'reopened', release)
@@ -234,7 +234,7 @@ async def test_a_finished_open_is_freed_while_the_next_one_still_runs(monkeypatc
     import threading
     import weakref
     from types import SimpleNamespace
-    from gateway import session_open
+    from hermes_agent.gateway import session_open
     release, hold = threading.Event(), threading.Event()
     try:
         ref, first, _delivered = await _hung_open(monkeypatch, 'chained', release)
@@ -262,8 +262,8 @@ async def test_a_profile_with_no_consumer_starts_no_delivery_thread(monkeypatch,
     open, and one that registers a callback does."""
     import asyncio
     from types import SimpleNamespace
-    from gateway import session_commands, session_open
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway import session_commands, session_open
+    from hermes_agent.gateway.session_contract import SessionRef
     from hermes_cli import plugins
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     threads = []

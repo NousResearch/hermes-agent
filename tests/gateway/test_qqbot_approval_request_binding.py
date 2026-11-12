@@ -6,7 +6,7 @@ Drives the real ``tools.approval`` queue through ``send_exec_approval``'s keyboa
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.qqbot.keyboards import build_approval_keyboard, parse_approval_button_data, parse_interaction_event
 
 SESSION = "agent:main:qqbot:dm:u-42"
@@ -41,7 +41,7 @@ async def _sent_card(adapter, request_id):
 
     async def capture(chat_id, content, keyboard, reply_to=None):
         sent.append(keyboard)
-        from gateway.platforms.base import SendResult
+        from hermes_agent.gateway.platforms.base import SendResult
         return SendResult(success=True, message_id="m1")
 
     adapter.send_with_keyboard = capture

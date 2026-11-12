@@ -24,7 +24,7 @@ from tests.waiting import async_wait_until
 
 def test_registered_worker_process_cannot_receive_async_completions(monkeypatch):
     from agent import runtime_session_store
-    from gateway.session_context import async_delivery_supported
+    from hermes_agent.gateway.session_context import async_delivery_supported
     monkeypatch.delenv('HERMES_KANBAN_TASK', raising=False)
     assert async_delivery_supported() is True
     monkeypatch.setattr(runtime_session_store, '_worker_process', True)

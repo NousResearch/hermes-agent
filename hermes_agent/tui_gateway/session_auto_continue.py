@@ -119,7 +119,7 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
             # nested notes). Set here, not at schedule time, so a bail above leaves nothing for a racing user turn.
             session["_auto_continue_attempt"], session["_auto_continue_prompt"] = attempt, marker["prompt"]
         try:
-            from gateway.warning_notifications import render_notification
+            from hermes_agent.gateway.warning_notifications import render_notification
             diagnostic = marker.get("notification_category") == "diagnostic"
             with _session_profile_runtime_scope(session):
                 def announce():
@@ -265,7 +265,7 @@ def _session_compression_in_flight(session: dict) -> bool:
     Context compression is interrupt-protected (#23975), but a correction that reaches the
     provider mid-compression still aborts it with ``explicit_interrupt`` — the user's
     follow-up kills the very turn that would answer it (#61042). The channel-side busy
-    path demotes interrupt→queue for the same reason (gateway/run_busy.py
+    path demotes interrupt→queue for the same reason (hermes_agent/gateway/run_busy.py
     ``_session_has_compression_in_flight``, #56391); this is the local-RPC twin. Both
     blocking reads run off the event loop so a large state.db never freezes the dispatcher.
     """

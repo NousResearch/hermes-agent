@@ -144,7 +144,7 @@ def test_restart_wait_owner_is_attachable_on_start_and_recover(monkeypatch, tmp_
         "instance_id": endpoint.instance_id, "profile_id": endpoint.profile_id, "ticket": "grant",
         "runtime_protocol": 1}}).encode() + b"\n"
     if os.name == "nt":
-        import gateway.runtime_bootstrap_windows as windows_bootstrap
+        import hermes_agent.gateway.runtime_bootstrap_windows as windows_bootstrap
         monkeypatch.setattr(windows_bootstrap, "query_runtime_control", lambda h, req, timeout: reply)
     else:
         import hermes_cli.gateway_runtime_discovery as discovery

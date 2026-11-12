@@ -39,7 +39,7 @@ def _make_adapter(closing: bool = False) -> MattermostAdapter:
     # The genuine-auth path now escalates via _set_fatal_error +
     # _notify_fatal_error (OOF-156 follow-up), which touch these attributes
     # that __init__ would normally provide.
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
 
     adapter.platform = Platform.MATTERMOST
     adapter._running = True

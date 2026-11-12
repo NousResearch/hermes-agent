@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import status as gateway_status
+from hermes_agent.gateway import status as gateway_status
 from hermes_cli import gateway as gw
 from hermes_cli import gateway_supervised_restart as supervised
 
@@ -43,7 +43,7 @@ def restart_calls(monkeypatch):
     monkeypatch.setattr(gw, "_get_restart_exit_wait_budget", lambda: 7.0)
     monkeypatch.setattr(gateway_status, "get_running_pid", _running_pid)
     monkeypatch.setattr(gw, "_capture_gateway_argv", lambda pid: SUPERVISED_ARGV if pid == 4321 else None)
-    monkeypatch.setattr("gateway.control_socket.identify_gateway", lambda home, **k: None)
+    monkeypatch.setattr("hermes_agent.gateway.control_socket.identify_gateway", lambda home, **k: None)
     monkeypatch.setattr(supervised, "SUPERVISED_REPLACEMENT_VERIFY_TIMEOUT", 0.5)
     monkeypatch.setattr(gw, "_graceful_restart_via_sigusr1", _sigusr1)
     monkeypatch.setattr(gw, "stop_profile_gateway", lambda: calls.__setitem__("stopped", True) or True)
@@ -74,7 +74,7 @@ def test_custom_systemd_unit_gateway_hands_back_despite_socket_saying_systemd(re
     # so the gateway self-identifies as "systemd", not "external"; that unit still owns the respawn,
     # so the socket answer must not demote the argv contract back to the stop + foreground wedge.
     monkeypatch.setattr(
-        "gateway.control_socket.identify_gateway", lambda home, **k: {"pid": 4321, "supervisor": "systemd"}
+        "hermes_agent.gateway.control_socket.identify_gateway", lambda home, **k: {"pid": 4321, "supervisor": "systemd"}
     )
     _run_restart()
     assert restart_calls["sigusr1"] == (4321, 7.0)

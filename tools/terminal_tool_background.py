@@ -110,7 +110,7 @@ def _apply_async_support(proc_session, result_data, notify_on_complete, watch_pa
     poll. Otherwise stamp gateway routing. Returns (notify, watch_patterns)."""
     if not (notify_on_complete or watch_patterns):
         return notify_on_complete, watch_patterns
-    from gateway.session_context import async_delivery_supported, get_session_env
+    from hermes_agent.gateway.session_context import async_delivery_supported, get_session_env
 
     if async_delivery_supported():
         _stamp_gateway_routing(proc_session, get_session_env)
@@ -139,7 +139,7 @@ def _register_completion_watcher(process_registry, proc_session, session_key) ->
            for attr, _ in _ROUTING_FIELDS[:-1]},
         "notify_on_complete": True, "parent_session_id": proc_session.parent_session_id,
     }
-    runner_ref = getattr(sys.modules.get("gateway.run"), "_gateway_runner_ref", None)
+    runner_ref = getattr(sys.modules.get("hermes_agent.gateway.run"), "_gateway_runner_ref", None)
     runner = runner_ref() if callable(runner_ref) else None
     if runner is not None and runner.arm_process_watcher(watcher):
         return
@@ -277,7 +277,7 @@ def yield_to_background_handler(
 
 def _stamp_routing_if_gateway(process_registry, session, session_key) -> None:
     """Route the adopted session's completion like a normal notify_on_complete spawn."""
-    from gateway.session_context import async_delivery_supported, get_session_env
+    from hermes_agent.gateway.session_context import async_delivery_supported, get_session_env
     if not async_delivery_supported():
         session.notify_on_complete = False
         return

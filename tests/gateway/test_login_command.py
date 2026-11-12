@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.run import GatewayRunner
-from gateway.session import AsyncSessionStore, SessionSource, SessionStore
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import AsyncSessionStore, SessionSource, SessionStore
 from hermes_cli import anon_auth
 from hermes_cli.commands import resolve_command
 
@@ -384,7 +384,7 @@ async def test_durable_clear_fails_twice_keeps_override_and_warns(monkeypatch, t
     monkeypatch.setattr(store, "_save_sessions_json", fail_always)
     attempt = SimpleNamespace(source=_source(), attempt_id="attempt")
     state = anon_auth.Completed(model="model-1", model_changed=True)
-    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.run"):
         await runner._render_login_state(attempt, state)
 
     assert len(writes) == 4
@@ -525,7 +525,7 @@ async def test_login_dispatches_mid_turn():
 async def test_a_local_session_gets_the_sign_in_code_on_its_event_stream(monkeypatch):
     """A local CLI/TUI/Desktop session is a DM on the LOCAL adapter, whose ``send`` is a no-op: the
     link, code and outcome reach its viewers as ``notification.show`` events, never the platform push."""
-    from gateway import session_authorities
+    from hermes_agent.gateway import session_authorities
     runner = _runner(monkeypatch)
     published = []
     live = SimpleNamespace(event_stream=SimpleNamespace(

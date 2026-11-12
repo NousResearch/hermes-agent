@@ -5,7 +5,7 @@ import asyncio
 class DiscordAuthorizationMixin:
     async def reauthorize_native_roles(self, source):
         from plugins.platforms.discord.adapter import _read_dm_role_auth_guild
-        from gateway.config import Platform, PlatformConfig, load_gateway_config
+        from hermes_agent.gateway.config import Platform, PlatformConfig, load_gateway_config
         from discord import HTTPException
 
         # Unlike ingress caches, recovery reads current transport-scoped policy, resolved like
@@ -37,7 +37,7 @@ class DiscordAuthorizationMixin:
             return False
         # The entry-time ContextVar contains a secret snapshot. Reload the same
         # transport home after SDK I/O so an intervening .env edit is visible too.
-        from gateway.run import _profile_runtime_scope
+        from hermes_agent.gateway.run import _profile_runtime_scope
         from hermes_constants import get_hermes_home
         with _profile_runtime_scope(get_hermes_home()):
             current_policy = policy()

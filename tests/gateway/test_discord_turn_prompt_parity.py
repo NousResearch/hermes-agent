@@ -19,10 +19,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import gateway.run as gateway_run
+import hermes_agent.gateway.run as gateway_run
 import plugins.platforms.discord.adapter as discord_platform
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.session import build_session_context, build_session_key
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.session import build_session_context, build_session_key
 from plugins.platforms.discord.adapter import DiscordAdapter
 
 
@@ -104,7 +104,7 @@ async def test_slash_and_thread_starter_turns_match_a_message_turn(
     monkeypatch: pytest.MonkeyPatch, case: str, tools: bool,
 ) -> None:
     # With Discord tools on, the pinned notes list IDs; a slash turn has no triggering message.
-    monkeypatch.setattr("gateway.session._discord_tools_loaded", lambda: tools)
+    monkeypatch.setattr("hermes_agent.gateway.session._discord_tools_loaded", lambda: tools)
     parent = _parent()
     channel = {"dm": _DM(500), "channel": parent}.get(case) or _Thread(800, parent)
     adapter = _adapter(monkeypatch, channel.id)

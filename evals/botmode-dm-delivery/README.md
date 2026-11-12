@@ -62,7 +62,7 @@ Prior `/tmp/botmode-dm-recovery*` evidence remains untouched.
 ## Per-record delivery exception isolation
 
 Retired with the deferred `hermes chat` pending lane (`cron/bot_chat_delivery.py`): cron
-output now reaches Bot Chat through the gateway authority door (`gateway/session_bot.py`),
+output now reaches Bot Chat through the gateway authority door (`hermes_agent/gateway/session_bot.py`),
 which records a per-target receipt on the job and creates the Bot Chat when missing, so a
 per-record file-scan exception has no counterpart. The regression case lives in
 `tests/cron/test_cron_bot_chat_create_if_missing.py` and

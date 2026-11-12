@@ -6,8 +6,8 @@ import types
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.event import MessageType
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageType
 
 
 def _make_fake_mautrix():
@@ -257,7 +257,7 @@ class TestMatrixConfigLoading:
         monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
         monkeypatch.setenv("MATRIX_USER_ID", "@bot:example.org")
 
-        from gateway.config import GatewayConfig, _apply_env_overrides
+        from hermes_agent.gateway.config import GatewayConfig, _apply_env_overrides
         config = GatewayConfig()
         _apply_env_overrides(config)
 
@@ -274,7 +274,7 @@ class TestMatrixConfigLoading:
         monkeypatch.setenv("MATRIX_E2EE_MODE", "optional")
         monkeypatch.delenv("MATRIX_ENCRYPTION", raising=False)
 
-        from gateway.config import GatewayConfig, _apply_env_overrides
+        from hermes_agent.gateway.config import GatewayConfig, _apply_env_overrides
         config = GatewayConfig()
         _apply_env_overrides(config)
 
@@ -289,7 +289,7 @@ class TestMatrixConfigLoading:
         monkeypatch.setenv("MATRIX_HOME_ROOM", "!room123:example.org")
         monkeypatch.setenv("MATRIX_HOME_ROOM_NAME", "Bot Room")
 
-        from gateway.config import GatewayConfig, _apply_env_overrides
+        from hermes_agent.gateway.config import GatewayConfig, _apply_env_overrides
         config = GatewayConfig()
         _apply_env_overrides(config)
 
@@ -1134,7 +1134,7 @@ class TestMatrixDeviceIdConfig:
         monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
         monkeypatch.setenv("MATRIX_DEVICE_ID", "HERMES_BOT")
 
-        from gateway.config import GatewayConfig, _apply_env_overrides
+        from hermes_agent.gateway.config import GatewayConfig, _apply_env_overrides
         config = GatewayConfig()
         _apply_env_overrides(config)
 
@@ -1803,7 +1803,7 @@ class TestMatrixReactions:
 
     @pytest.mark.asyncio
     async def test_on_processing_complete_sends_check(self):
-        from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+        from hermes_agent.gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
         self.adapter._reactions_enabled = True
         self.adapter._reaction_redaction_delay_seconds = 0.01
@@ -2032,7 +2032,7 @@ class TestMatrixImageOnlyMediaNormalization:
 
     @pytest.mark.asyncio
     async def test_send_image_failure_log_redacts_signed_url(self, caplog, monkeypatch):
-        from gateway.platforms.base import SendResult
+        from hermes_agent.gateway.platforms.base import SendResult
         from tools import url_safety
 
         signed_url = "https://example.com/image.png?signature=secret-token#frag"
@@ -2051,7 +2051,7 @@ class TestMatrixImageOnlyMediaNormalization:
 
     @pytest.mark.asyncio
     async def test_send_image_failure_response_preserves_caption(self, monkeypatch):
-        from gateway.platforms.base import SendResult
+        from hermes_agent.gateway.platforms.base import SendResult
         from tools import url_safety
 
         signed_url = "https://example.com/image.png?signature=secret-token#fragment"

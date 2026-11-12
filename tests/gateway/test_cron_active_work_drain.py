@@ -107,7 +107,7 @@ class TestKillToolSubprocessesMarksCronInterrupted:
 
         monkeypatch.setattr(sched, "mark_running_jobs_interrupted", _spy)
 
-        with patch("gateway.status.remove_pid_file"), patch("gateway.status.publish_runtime_status"), \
+        with patch("hermes_agent.gateway.status.remove_pid_file"), patch("hermes_agent.gateway.status.publish_runtime_status"), \
              patch("hermes_agent.cron.scheduler.mark_job_run"):
             await runner.stop()
 

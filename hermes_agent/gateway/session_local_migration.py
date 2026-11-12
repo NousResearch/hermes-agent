@@ -1,7 +1,7 @@
 """Owner-only adoption of pre-authority local transcripts.
 
 An old transcript has no authenticated subject. Only the machine owner (a redeemed same-profile
-native control ticket, or the owner signed in to the Webapp: gateway.owner_identity) may adopt it.
+native control ticket, or the owner signed in to the Webapp: hermes_agent.gateway.owner_identity) may adopt it.
 The historical ID becomes the stable logical owner without copying its messages.
 Compression and reset may later advance the physical target, never FIFO identity.
 """
@@ -11,15 +11,15 @@ import json
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from gateway.config import Platform
-from gateway.session import SessionEntry, SessionSource
-from gateway.session_contract import SessionRef
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.session import SessionEntry, SessionSource
+from hermes_agent.gateway.session_contract import SessionRef
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
 def bind_native_transport(authority, actor, identity):
     # The machine owner signed in to the Webapp is the same person native Desktop is (owner_identity).
-    from gateway.owner_identity import host_owner_subject
+    from hermes_agent.gateway.owner_identity import host_owner_subject
     native = (identity.get('provider') == 'local' and identity.get('profile_id') == authority.profile_id
               and identity.get('instance_id') == authority.instance_id)
     if ((native or actor.subject == host_owner_subject())
@@ -36,7 +36,7 @@ def unbind_native_transport(authority, actor):
 
 def require_history_claim(authority, conn, actor, sid):
     """Import receipts confer ownership; merely knowing an old ID does not."""
-    from gateway.owner_identity import same_owner
+    from hermes_agent.gateway.owner_identity import same_owner
     from hermes_agent.hermes_state_mutation_binding import BINDING_PREFIX, _owner_user
     row = conn.execute('SELECT * FROM sessions WHERE id=?', (sid,)).fetchone()
     if row is None or row['session_key'] or row['chat_id'] or row['origin_json']:
@@ -69,7 +69,7 @@ def resolve_local_target(authority, actor, sid):
     if bound or str(row.get('chat_id') or '').startswith('local-'):
         ref = SessionRef(authority.profile_id, row['chat_id'])
         authority.authorize(actor, ref, 'session:read')
-        from gateway.session_local_recovery import restore_local_session
+        from hermes_agent.gateway.session_local_recovery import restore_local_session
         return restore_local_session(authority, ref.session_id) if bound else ref
     return adopt_legacy_session(authority, actor, row)
 
@@ -133,7 +133,7 @@ def bot_chat_row(row):
 
 def composer_pick_holds(row, config):
     """Whether *row*'s composer pick still holds: the profile (*config*) targets what it diverged from."""
-    from gateway.session_policy import profile_target
+    from hermes_agent.gateway.session_policy import profile_target
     from hermes_agent.hermes_state_sessions import _parse_model_config
     composer = _parse_model_config(row.get('model_config')).get('composer_override_profile')
     return isinstance(composer, dict) and (
@@ -170,7 +170,7 @@ def follow_bot_chat(authority, session_id, policy, live, picked=()):
     The caller re-binds the private values without the followed sections, so a frozen key never
     reaches the profile's route.
     """
-    from gateway.session_policy import FOLLOW_ADOPTED, SESSION_PINS, present_sections, profile_target
+    from hermes_agent.gateway.session_policy import FOLLOW_ADOPTED, SESSION_PINS, present_sections, profile_target
     if (policy.follows_profile or policy.ignore_user_config
             or 'follow_profile_config' in json.loads(policy.request_json)):
         return policy
@@ -219,7 +219,7 @@ def _profile_default(model_cfg):
 
 def _configured_owner(saved, config):
     """The configured named entry (``providers:``/``custom_providers:``) serving the saved URL, or None."""
-    from gateway.session_route_identity import resolved_route, same_route
+    from hermes_agent.gateway.session_route_identity import resolved_route, same_route
     names = list(config.get('providers') or {}) if isinstance(config.get('providers'), dict) else []
     legacy = config.get('custom_providers')
     names += [e.get('name') for e in legacy if isinstance(e, dict)] if isinstance(legacy, list) else []
@@ -234,7 +234,7 @@ def _endpoint_owner(saved, config):
     """The provider whose credential may serve the saved endpoint. A named entry that now points
     elsewhere owns a credential for THAT host: rebind to the entry still serving the saved URL, or
     refuse by name rather than send the moved entry's key to the old host."""
-    from gateway.session_route_identity import resolved_route, same_route
+    from hermes_agent.gateway.session_route_identity import resolved_route, same_route
     identity, entry_url = resolved_route({'provider': saved['provider']}, config)
     if not entry_url or same_route(saved, {'provider': identity, 'base_url': entry_url}, config):
         return saved['provider']
@@ -251,7 +251,7 @@ def adopts_client_history(authority, actor, row):
     native owner adoption requires, and only when it validates for that owner. A read-only view of it
     already open (a metadata read came first) is promoted in place (restore_local_session); a session
     this authority serves any other way is left alone."""
-    from gateway.session_history_mount import is_history_mount
+    from hermes_agent.gateway.session_history_mount import is_history_mount
     from hermes_agent.hermes_state_local_migration import client_history_row, validate_legacy_row
     live = authority.sessions.get(row['id'])
     if (not client_history_row(row) or (live is not None and not is_history_mount(live))
@@ -273,9 +273,9 @@ def adopt_legacy_session(authority, actor, row):
     from hermes_agent.hermes_state_local_migration import legacy_creation_source, validate_legacy_row
     validate_legacy_row(authority.db, row, subject=actor.subject)
     authority._require_admission_open()
-    from gateway.run import _load_gateway_config, _resolve_gateway_model
-    from gateway.session_policy import build_policy, bind_launch_key
-    from gateway.session_local_recovery import restore_local_session
+    from hermes_agent.gateway.run import _load_gateway_config, _resolve_gateway_model
+    from hermes_agent.gateway.session_policy import build_policy, bind_launch_key
+    from hermes_agent.gateway.session_local_recovery import restore_local_session
     from hermes_agent.hermes_state_local import commit_local_session
     from hermes_cli.active_sessions import active_session_liveness_guard, ActiveSessionRegistryError
 
@@ -298,7 +298,7 @@ def adopt_legacy_session(authority, actor, row):
             api_mode = None
     # A healed entry is its own route, even when it shares a relay URL with the profile's entry.
     if isinstance(model_cfg, dict) and ('provider' in params or 'base_url' in params):
-        from gateway.session_route_identity import ROUTE_BOUND_KEYS, resolved_route, same_route
+        from hermes_agent.gateway.session_route_identity import ROUTE_BOUND_KEYS, resolved_route, same_route
         saved = {'provider': params.get('provider', model_cfg.get('provider')), 'base_url': params.get('base_url')}
         # ``auto`` matches every route, so an ``auto`` side proves nothing about the saved endpoint.
         if (not healed and 'auto' not in (resolved_route(model_cfg, config)[0], resolved_route(saved, config)[0])
@@ -342,7 +342,7 @@ def adopt_legacy_session(authority, actor, row):
     if policy.model != named:
         policy = replace(policy, model=named)
     policy = bind_launch_key(authority, sid, policy, None, config_secrets=private)
-    from gateway.session_local_recovery import local_source
+    from hermes_agent.gateway.session_local_recovery import local_source
     source = local_source(authority, sid, actor.subject)
     route = authority.runner.session_store._generate_session_key(source)
     now = datetime.fromtimestamp(row['started_at'])

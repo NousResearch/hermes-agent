@@ -18,10 +18,10 @@ import types
 
 import pytest
 
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.response_filters import INTERNAL_NOTIFICATION_DISPLAY_KIND
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.response_filters import INTERNAL_NOTIFICATION_DISPLAY_KIND
+from hermes_agent.gateway.session import SessionSource
 from tests.gateway.test_run_progress_topics import _ACTIVE_ADAPTER, ProgressCaptureAdapter, _make_runner
 
 
@@ -60,7 +60,7 @@ async def _run(monkeypatch, tmp_path, *, queued_reply_expected=None, queued=Fals
     adapter = ProgressCaptureAdapter(platform=Platform.TELEGRAM)
     monkeypatch.setitem(_ACTIVE_ADAPTER, "adapter", adapter)
     runner = _make_runner(adapter)
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
     session_key = "agent:main:telegram:dm:dm-1"

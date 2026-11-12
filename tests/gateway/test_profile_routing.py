@@ -1,9 +1,9 @@
-"""Tests for gateway/profile_routing.py — profile-based routing."""
+"""Tests for hermes_agent/gateway/profile_routing.py — profile-based routing."""
 
 import json
 
 import pytest
-from gateway.profile_routing import (
+from hermes_agent.gateway.profile_routing import (
     ProfileRoute,
     parse_profile_routes,
     match_profile_route,
@@ -109,7 +109,7 @@ class TestParseProfileRoutes:
 
     @pytest.mark.parametrize("invalid", [None, "", "   "])
     def test_null_or_blank_user_id_rejects_only_that_route(self, invalid, caplog):
-        with caplog.at_level("WARNING", logger="gateway.profile_routing"):
+        with caplog.at_level("WARNING", logger="hermes_agent.gateway.profile_routing"):
             routes = parse_profile_routes([
                 {"name": "invalid", "platform": "teams", "profile": "owner", "user_id": invalid},
                 {"name": "missing", "platform": "teams", "profile": "shared"},
@@ -125,7 +125,7 @@ class TestParseProfileRoutes:
     def test_non_int_numeric_ids_warn_instead_of_silently_coercing(self, caplog):
         # #86470 nuance: float/bool stringify to values that can never match
         # an inbound id, so surface the misconfiguration at load time.
-        with caplog.at_level("WARNING", logger="gateway.profile_routing"):
+        with caplog.at_level("WARNING", logger="hermes_agent.gateway.profile_routing"):
             routes = parse_profile_routes([
                 {"name": "f", "platform": "discord", "profile": "p", "chat_id": 123.0},
                 {"name": "b", "platform": "discord", "profile": "p", "guild_id": True},
@@ -241,7 +241,7 @@ class TestWhatsAppChatIdIdentityMatching:
 
 class TestGatewayConfigRoundtrip:
     def test_routes_survive_to_dict_from_dict_with_user_id_and_enabled(self):
-        from gateway.config import GatewayConfig
+        from hermes_agent.gateway.config import GatewayConfig
 
         config = GatewayConfig(profile_routes=parse_profile_routes([
             {"name": "sender", "platform": "teams", "profile": "owner", "user_id": "aad-456"},

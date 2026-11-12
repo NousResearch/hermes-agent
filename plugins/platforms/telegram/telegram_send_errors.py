@@ -63,7 +63,7 @@ def maybe_delivered_result(error: Exception, safe_error: str, **fields):
     """The gateway ``SendResult`` for a failed send: one that may be in the chat (``LOST``) is
     ``delivery_uncertain`` and not retryable, so ``_send_with_retry`` neither resends it nor falls
     back to plain text; everything else stays retryable as before."""
-    from gateway.platforms.base import SendResult
+    from hermes_agent.gateway.platforms.base import SendResult
 
     if send_error_kind(error) == LOST:
         return SendResult(success=False, error=safe_error, retryable=False,

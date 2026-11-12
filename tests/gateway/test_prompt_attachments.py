@@ -11,9 +11,9 @@ _ONE_PX_PNG = bytes.fromhex(
 
 
 async def _authority(tmp_path, monkeypatch, answer):
-    from gateway.config import GatewayConfig, Platform
-    from gateway.session import SessionSource, SessionStore
-    from gateway.session_authority import LiveSession, initialize_session_authority
+    from hermes_agent.gateway.config import GatewayConfig, Platform
+    from hermes_agent.gateway.session import SessionSource, SessionStore
+    from hermes_agent.gateway.session_authority import LiveSession, initialize_session_authority
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
@@ -27,7 +27,7 @@ async def _authority(tmp_path, monkeypatch, answer):
 
 @pytest.mark.asyncio
 async def test_submit_rejects_attachment_outside_profile_staging_dir(tmp_path, monkeypatch):
-    from gateway.session_contract import SessionActor, SessionRef, Submission
+    from hermes_agent.gateway.session_contract import SessionActor, SessionRef, Submission
     from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions
 
     seen = []
@@ -47,8 +47,8 @@ async def test_submit_rejects_attachment_outside_profile_staging_dir(tmp_path, m
 
 @pytest.mark.asyncio
 async def test_staged_attachment_reaches_message_event_media(tmp_path, monkeypatch):
-    from gateway.platforms.base import cache_image_from_bytes
-    from gateway.session_contract import SessionActor, SessionRef, Submission
+    from hermes_agent.gateway.platforms.base import cache_image_from_bytes
+    from hermes_agent.gateway.session_contract import SessionActor, SessionRef, Submission
 
     seen = []
     async def answer(event):
@@ -68,7 +68,7 @@ async def test_staged_attachment_reaches_message_event_media(tmp_path, monkeypat
     assert path != staged, 'execution must read committed bytes, not the mutable staging file'
     assert 'native-inputs' in path
     # Retained bytes are exact-retry evidence by digest only; settlement releases them.
-    from gateway.session_runtime_workers import mutation_tasks
+    from hermes_agent.gateway.session_runtime_workers import mutation_tasks
     from tests.waiting import async_wait_until
     await async_wait_until(lambda: not mutation_tasks(authority), timeout=5, what='off-loop media collection')
     assert not os.path.exists(path)
@@ -79,9 +79,9 @@ async def test_lost_ack_retry_reconciles_a_queued_image_after_staging_is_gone(tm
     """Lost-ACK recovery of a still-queued image admission must not depend on the client's
     disposable staging file: the committed bytes and digest are the evidence. A changed payload
     under the same request id still conflicts, and a fresh request id still needs real staging."""
-    from gateway.platforms.base import cache_image_from_bytes
-    from gateway.session_contract import SessionActor, SessionRef, Submission
-    from gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.platforms.base import cache_image_from_bytes
+    from hermes_agent.gateway.session_contract import SessionActor, SessionRef, Submission
+    from hermes_agent.gateway.session_authority import SessionAuthority
     from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions
 
     async def answer(event):
@@ -109,9 +109,9 @@ async def test_retry_with_the_same_image_restaged_under_a_new_name_replays(tmp_p
     """Retry identity is the committed bytes, not the client's disposable staging filename: the
     same request re-staged under a new name replays the admission instead of conflicting, and
     different bytes under the same request id still conflict."""
-    from gateway.platforms.base import cache_image_from_bytes
-    from gateway.session_contract import SessionActor, SessionRef, Submission
-    from gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.platforms.base import cache_image_from_bytes
+    from hermes_agent.gateway.session_contract import SessionActor, SessionRef, Submission
+    from hermes_agent.gateway.session_authority import SessionAuthority
     from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions
 
     async def answer(event):
@@ -135,16 +135,16 @@ async def test_retry_with_the_same_image_restaged_under_a_new_name_replays(tmp_p
 async def test_discarding_a_lost_image_turn_releases_its_committed_bytes(tmp_path, monkeypatch):
     """A turn lost across an owner restart and Discarded is terminal: its committed image bytes
     are released like a settled turn's, never left on disk for the life of the profile."""
-    from gateway.platforms.base import cache_image_from_bytes
-    from gateway.session_contract import SessionActor, SessionRef, Submission
-    from gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.platforms.base import cache_image_from_bytes
+    from hermes_agent.gateway.session_contract import SessionActor, SessionRef, Submission
+    from hermes_agent.gateway.session_authority import SessionAuthority
     import hermes_agent.hermes_state_runtime as rt
 
     async def answer(event):
         return 'ok'
     authority = await _authority(tmp_path, monkeypatch, answer)
     monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)
-    from gateway import session_local_recovery
+    from hermes_agent.gateway import session_local_recovery
     monkeypatch.setattr(session_local_recovery, 'transcript_target', lambda authority, ref: ref.session_id)
     actor = SessionActor('human', 'p', frozenset({'session:submit', 'session:control'}), 't')
     receipt = await authority.submit(actor, Submission('img', SessionRef('p', 's'),
@@ -157,7 +157,7 @@ async def test_discarding_a_lost_image_turn_releases_its_committed_bytes(tmp_pat
     rt.recover_session_inputs(authority.db, epoch=authority.epoch)
     await authority.resolve_unknown(actor, SessionRef('p', 's'), receipt.admission_id, row['generation'])
     assert rt.get_session_admission(authority.db, admission_id=receipt.admission_id)['status'] == 'terminal'
-    from gateway.session_runtime_workers import mutation_tasks
+    from hermes_agent.gateway.session_runtime_workers import mutation_tasks
     from tests.waiting import async_wait_until
     await async_wait_until(lambda: not mutation_tasks(authority), timeout=5, what='off-loop media collection')
     assert not os.path.exists(committed)
@@ -168,10 +168,10 @@ async def test_refused_image_capture_is_released_without_masking_the_refusal(tmp
     """A local submit captures image bytes before admission can refuse them. The refused capture is
     released holder-aware (the accepted admission's bytes stay), and a collection failure never
     replaces the refusal the client must see."""
-    from gateway import session_ingress_media
-    from gateway.platforms.base import cache_image_from_bytes
-    from gateway.session_authority import SessionAuthority
-    from gateway.session_contract import SessionActor, SessionRef, Submission
+    from hermes_agent.gateway import session_ingress_media
+    from hermes_agent.gateway.platforms.base import cache_image_from_bytes
+    from hermes_agent.gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_contract import SessionActor, SessionRef, Submission
     from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions
 
     async def answer(event):

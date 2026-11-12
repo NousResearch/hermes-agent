@@ -427,7 +427,7 @@ class TestSubagentSteerRPC:
             _unregister_subagent("sid-rpc-2")
 
     def test_run_single_child_binds_exact_runtime_owner_artifacts(self):
-        from gateway.session_context import clear_session_vars, set_session_vars
+        from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
         from tools.delegate_tool import _run_single_child
 
         observed: dict[str, bool] = {}

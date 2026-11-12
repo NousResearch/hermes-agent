@@ -1,7 +1,7 @@
 """Launch-route gates compare what the runtime resolves, not how the provider was spelled."""
 import pytest
 
-from gateway.session_route_identity import ROUTE_BOUND_KEYS, resolved_route, same_route
+from hermes_agent.gateway.session_route_identity import ROUTE_BOUND_KEYS, resolved_route, same_route
 
 A, B = 'http://127.0.0.1:8001/v1', 'http://127.0.0.1:8002/v1'
 CONFIG = {'providers': {'team': {'base_url': A, 'api_key': 'sk-team'}}}
@@ -36,7 +36,7 @@ def test_configured_entry_key_is_the_key_or_a_legacy_entrys_display_name():
     """A keyed ``providers:`` entry is named by its key, never its display name. A legacy
     ``custom_providers:`` entry has no key, so its normalized display name is its identity, the
     same rule as Desktop's ``customDefaultSupersedesPick``."""
-    from gateway.session_route_identity import configured_entry_key, profile_route_identity
+    from hermes_agent.gateway.session_route_identity import configured_entry_key, profile_route_identity
 
     def held_key(entries, provider):
         config = {**entries, 'model': {'provider': provider}}

@@ -1,6 +1,6 @@
 """A declared API conversation restores at its current physical compression tip."""
-from gateway.session_api import restore_api_session
-from gateway.session_api_turn import admit_api_turn
+from hermes_agent.gateway.session_api import restore_api_session
+from hermes_agent.gateway.session_api_turn import admit_api_turn
 
 
 def test_declared_api_root_restores_compression_tip_and_retries_same_admission(api, owner):

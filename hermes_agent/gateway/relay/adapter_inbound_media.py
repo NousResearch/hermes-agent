@@ -2,7 +2,7 @@
 import logging
 from typing import Optional
 
-from gateway.platforms.base_media_flags import pad_inline_flags
+from hermes_agent.gateway.platforms.base_media_flags import pad_inline_flags
 
 logger = logging.getLogger(__name__)
 

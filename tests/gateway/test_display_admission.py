@@ -16,8 +16,8 @@ from tests.gateway.test_surface_admission import _admissions, _authority, _wait_
 
 @pytest.mark.asyncio
 async def test_display_fields_are_admitted_and_bound_to_their_own_turn(tmp_path, monkeypatch):
-    from gateway.response_filters import display_kind_for_event, display_metadata_for_event
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.response_filters import display_kind_for_event, display_metadata_for_event
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     from hermes_agent.hermes_state_runtime import list_session_admissions
 
     seen = []

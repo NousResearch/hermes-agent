@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_contract import SessionRef
+from hermes_agent.gateway.session_contract import SessionRef
 from hermes_agent.hermes_state_runtime import claim_session_input, list_session_admissions
 from tests.gateway.test_api_unknown_resolution import _AUTH_HEADERS, _runs_client
 

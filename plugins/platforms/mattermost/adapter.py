@@ -19,12 +19,12 @@ from pathlib import Path
 from urllib.parse import unquote as _unquote
 from typing import Any, Dict, List, Optional, Tuple
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import MessageDeduplicator
-from gateway.platforms.helpers import cancel_task
-from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms._shared import (
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.helpers import MessageDeduplicator
+from hermes_agent.gateway.platforms.helpers import cancel_task
+from hermes_agent.gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, env_is_connected as _env_is_connected,
     extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
     send_error
@@ -338,7 +338,7 @@ class MattermostAdapter(BasePlatformAdapter):
     async def _send_url_as_file(self, chat_id: str, url: str, caption: Optional[str], reply_to: Optional[str],
                                 kind: str = "file", metadata: _Metadata = None) -> SendResult:
         """Download a URL and upload it as a file attachment (text fallback with the URL on failure)."""
-        from gateway.platforms.base import read_httpx_body_with_limit
+        from hermes_agent.gateway.platforms.base import read_httpx_body_with_limit
         from tools.url_safety import is_safe_url
 
         async def fallback() -> SendResult:
@@ -397,7 +397,7 @@ class MattermostAdapter(BasePlatformAdapter):
                 logger.warning("Mattermost: skipping missing image %s", local_path)
                 return None
             return p.read_bytes(), p.name, mimetypes.guess_type(p.name)[0] or "image/png"
-        from gateway.platforms.base import read_httpx_body_with_limit
+        from hermes_agent.gateway.platforms.base import read_httpx_body_with_limit
         from tools.url_safety import is_safe_url
         if not is_safe_url(image_url):
             logger.warning("Mattermost: blocked unsafe image URL in batch")
@@ -544,7 +544,7 @@ class MattermostAdapter(BasePlatformAdapter):
     async def _download_attachments(self, file_ids: list[str]) -> tuple[list[str], list[str]]:
         """Download attachments now (URLs need auth headers downstream tools lack) → (paths, mime types)."""
         import aiohttp
-        from gateway.platforms.base import (
+        from hermes_agent.gateway.platforms.base import (
             cache_audio_from_bytes_async,
             cache_document_from_bytes_async,
             cache_image_from_bytes_async,
@@ -613,7 +613,7 @@ class MattermostAdapter(BasePlatformAdapter):
             # A bot account's post carries props.from_bot (a string "true" on the wire).
             is_bot=str((post.get("props") or {}).get("from_bot", "")).lower() == "true"
             or self._is_configured_bot_user(sender_id))
-        from gateway.platforms.base import resolve_channel_prompt
+        from hermes_agent.gateway.platforms.base import resolve_channel_prompt
         await self.handle_message(MessageEvent(
             text=message_text, message_type=msg_type, source=source, raw_message=post, message_id=post_id,
             media_urls=media_urls, media_types=media_types,
@@ -640,7 +640,7 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
         return send_error("Mattermost standalone send: MATTERMOST_URL and MATTERMOST_TOKEN must both be set")
     upload_headers = {"Authorization": f"Bearer {token}"}
     headers = {**upload_headers, "Content-Type": "application/json"}
-    from gateway.platforms.base import describe_proxy_error, resolve_proxy_url, proxy_kwargs_for_aiohttp
+    from hermes_agent.gateway.platforms.base import describe_proxy_error, resolve_proxy_url, proxy_kwargs_for_aiohttp
     proxy = resolve_proxy_url(platform_env_var="MATTERMOST_PROXY")
     try:  # one ClientSession (with proxy) covers the optional uploads + final post
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(proxy)
@@ -760,7 +760,7 @@ _PLATFORM_HINT = (
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
-    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
+    from . import gateway_env  # env -> GatewayConfig bridge (hermes_agent.gateway.config_env)
     ctx.register_platform(
         name="mattermost", label="Mattermost", adapter_factory=MattermostAdapter,
         dashboard_description="Connect Hermes to Mattermost channels and direct messages.",

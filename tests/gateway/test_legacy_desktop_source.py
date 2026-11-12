@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from gateway.session_contract import SessionActor
+from hermes_agent.gateway.session_contract import SessionActor
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_local_migration import validate_legacy_row
 from hermes_agent.hermes_state_mutation_binding import authorize_history, same_history_owner
@@ -90,8 +90,8 @@ def test_a_served_login_controls_its_own_stamped_chat_over_http(tmp_path):
     chats it created over plain HTTP (transport ``http``, no native ticket). The claim gate refused
     every non-native transport before ``authorize_history`` could read the login stamp."""
     from types import SimpleNamespace
-    from gateway.session_contract import SessionRef
-    from gateway.session_mutations import _authorize_control
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_mutations import _authorize_control
 
     db = SessionDB(db_path=tmp_path / 'state.db')
     try:
@@ -124,9 +124,9 @@ async def test_editing_ones_own_branch_leaves_another_logins_parent_alone(tmp_pa
     is another conversation. Her pin, hide or archive on it flagged that parent too, while a direct
     edit of the parent is refused. Her own chat's compression segments still move together."""
     from types import SimpleNamespace
-    from gateway.session_authority import SessionAuthority
-    from gateway.session_contract import SessionRef
-    from gateway.session_mutations import mutate_session
+    from hermes_agent.gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_mutations import mutate_session
     from hermes_agent.hermes_state_runtime import begin_runtime_epoch
     from hermes_agent.tui_gateway.methods_session import _persist_branch
 
@@ -169,9 +169,9 @@ async def test_renaming_ones_own_branch_leaves_another_logins_parent_title_alone
     """#144596 round-2 review F1: a rename transfers a title off a compression ancestor. alice's branch
     of bob's compressed chat is not his continuation, so taking his title is a conflict, not a transfer."""
     from types import SimpleNamespace
-    from gateway.session_authority import SessionAuthority
-    from gateway.session_contract import SessionRef
-    from gateway.session_mutations import mutate_session
+    from hermes_agent.gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_mutations import mutate_session
     from hermes_agent.hermes_state_runtime import begin_runtime_epoch
     from hermes_agent.tui_gateway.methods_session import _persist_branch
 

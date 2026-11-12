@@ -69,7 +69,7 @@ _CHILD_CODE = r"""
 import asyncio, os, sys
 sys.path.insert(0, sys.argv[1])
 os.environ["HERMES_HOME"] = sys.argv[2]
-from gateway.control_socket import GatewayControlServer
+from hermes_agent.gateway.control_socket import GatewayControlServer
 
 async def main():
     server = GatewayControlServer()
@@ -121,7 +121,7 @@ def _kill_tree(proc: subprocess.Popen) -> None:
 
 def test_named_pipe_identify_status_and_fleet_consumer(live_server, monkeypatch):
     _proc, home, server_pid = live_server
-    from gateway.control_socket import identify_gateway, query_gateway_control
+    from hermes_agent.gateway.control_socket import identify_gateway, query_gateway_control
 
     ident = identify_gateway(home, timeout=5.0)
     assert ident is not None, "identify returned None against a live pipe server"
@@ -156,7 +156,7 @@ def test_named_pipe_identify_status_and_fleet_consumer(live_server, monkeypatch)
 @pytest.mark.spawns_gateway_lookalike
 def test_pipe_gone_after_kill_falls_back(live_server, monkeypatch):
     proc, home, _server_pid = live_server
-    from gateway.control_socket import identify_gateway
+    from hermes_agent.gateway.control_socket import identify_gateway
 
     assert identify_gateway(home, timeout=5.0) is not None
     _kill_tree(proc)

@@ -21,7 +21,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.run import _approval_send_outcome
+from hermes_agent.gateway.run import _approval_send_outcome
 
 
 class _Result:

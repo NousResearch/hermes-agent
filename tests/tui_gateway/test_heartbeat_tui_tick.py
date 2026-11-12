@@ -96,8 +96,8 @@ def test_desktop_poller_leaves_gateway_owned_heartbeat_for_gateway(server, sessi
     """A Desktop viewer must not consume a messaging session's routed heartbeat, but ownership follows the
     gateway's live routing index, not the row's immutable ``source``: once /reset archives the row the gateway
     never registers a watch for it again, so the Desktop viewer must fire it (else nobody does)."""
-    from gateway.config import GatewayConfig, Platform
-    from gateway.session import SessionSource, SessionStore
+    from hermes_agent.gateway.config import GatewayConfig, Platform
+    from hermes_agent.gateway.session import SessionSource, SessionStore
     from hermes_cli.heartbeat import load_heartbeat
 
     sid, _, s = session

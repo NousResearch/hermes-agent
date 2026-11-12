@@ -4,9 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.platforms.api_server import APIServerAdapter
-from gateway.session_context import clear_session_vars
-from gateway.wake import persist_delegation_delivery
+from hermes_agent.gateway.platforms.api_server import APIServerAdapter
+from hermes_agent.gateway.session_context import clear_session_vars
+from hermes_agent.gateway.wake import persist_delegation_delivery
 from hermes_agent.hermes_state import SessionDB
 from tools.delegate_tool_dispatch import _resolve_async_wake_sid
 
@@ -23,7 +23,7 @@ async def test_detached_dispatch_requires_a_declared_consumer(monkeypatch):
         try:
             args = ["api-parent"]
             if len(inspect.signature(_resolve_async_wake_sid).parameters) > 1:
-                from gateway.session_context import session_history_delivery_supported
+                from hermes_agent.gateway.session_context import session_history_delivery_supported
                 args.append(session_history_delivery_supported())
             target = _resolve_async_wake_sid(*args)
             assert target == ("api-parent" if capability == "1" else None)

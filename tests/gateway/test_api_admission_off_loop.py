@@ -23,10 +23,10 @@ DOORS = [
 @pytest.mark.parametrize('name,path,body,headers,expected', DOORS, ids=[d[0] for d in DOORS])
 async def test_admission_waits_for_the_writer_off_the_owner_loop(api, owner, monkeypatch, name, path, body,
                                                                 headers, expected):
-    from gateway.platforms import api_server_runs
+    from hermes_agent.gateway.platforms import api_server_runs
 
     async def handle(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         execution_result.get()['result'] = {'final_response': 'ok', 'messages': []}
         return 'ok'
 

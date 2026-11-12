@@ -2,7 +2,7 @@
 
 A viewer upserts a re-sent delta or seal by ``turn_id``/``segment``/``offset`` instead of painting a second copy.
 """
-from gateway.run_turn_runner import TurnRunner
+from hermes_agent.gateway.run_turn_runner import TurnRunner
 
 
 class _Authority:

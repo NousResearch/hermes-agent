@@ -14,7 +14,7 @@ Columns are derived from code, never judged:
 * RPC ``current_path`` uses the tables ``/api/ws`` dispatch reads (``hermes_agent/tui_gateway/ws.py``): served by
   the authority (``AuthorityConnection.handlers`` + group verbs + ``profiles.list``), else legacy
   fallback or refused per ``hermes_agent/tui_gateway/ws_legacy_fallback.py::legacy_fallback_allowed``. A connector
-  verb the authority serves only for a session-owned call (``gateway/session_connections.py``) falls
+  verb the authority serves only for a session-owned call (``hermes_agent/gateway/session_connections.py``) falls
   back for an account-owned one. Without an authority (standalone ``serve``/``dashboard``) every
   legacy method runs in-process on ``server.dispatch``.
 * HTTP ``current_path`` is the endpoint plus any ``route_on`` surface gate
@@ -71,10 +71,10 @@ def _collect() -> dict:
     from fastapi.routing import APIRoute, APIWebSocketRoute
     from starlette.routing import Mount
 
-    from gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
-    from gateway.session_connections import METHODS as CONNECTION_METHODS
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_group_controls import GROUP_METHODS
+    from hermes_agent.gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
+    from hermes_agent.gateway.session_connections import METHODS as CONNECTION_METHODS
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_group_controls import GROUP_METHODS
     from hermes_cli.web_server import app
     from hermes_agent.tui_gateway import server
     from hermes_agent.tui_gateway.contracts.registry import CANONICAL_NAMESPACES

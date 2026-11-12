@@ -1,11 +1,11 @@
 # gateway/ — messaging gateway, adapters, delivery
 
 Applies on top of the root `AGENTS.md`. Long-form: `website/docs/developer-guide/gateway-internals.md`.
-New platform adapter: follow `gateway/platforms/ADDING_A_PLATFORM.md` step by step.
+New platform adapter: follow `hermes_agent/gateway/platforms/ADDING_A_PLATFORM.md` step by step.
 
 ## Shape
 
-`gateway/run.py` is the facade; phases live in `run_*.py` (startup, adapters, inbound, turn, busy,
+`hermes_agent/gateway/run.py` is the facade; phases live in `run_*.py` (startup, adapters, inbound, turn, busy,
 goals, notifications, shutdown, ...), sessions in `session*.py`, slash handlers in
 `slash_commands_*.py` mixins, authorization in `authz_mixin.py`, adapters in `platforms/<name>.py`
 over `platforms/base.py`. The gateway reads user YAML **raw** (`run.py` + `config.py`), not through
@@ -89,7 +89,7 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
 
 ## Profile scope (adapters, turns, and everything between turns)
 
-- **One identity per inbound event, canonicalized FIRST.** `gateway/session_identity.py::resolve_identity`
+- **One identity per inbound event, canonicalized FIRST.** `hermes_agent/gateway/session_identity.py::resolve_identity`
   answers "which bot received it / who may admit it / where does it run" ONCE per event and pins a
   frozen `RoutingIdentity` on the source (wire-invisible, like `_transport_adapter_ref`). Every
   ingress path calls the canonicalize seam before it derives a key: the adapter side
@@ -141,7 +141,7 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   Ambient `get_active_profile_name()` reads in `gateway/` are boot-only and marked
   `# launch profile, pre-identity`; a path with an identity reads `identity.runtime_profile`.
 - **Token locks.** An adapter that connects with a unique credential (bot token, API key) calls
-  `acquire_scoped_lock()` from `gateway.status` in `connect()`/`start()` and `release_scoped_lock()`
+  `acquire_scoped_lock()` from `hermes_agent.gateway.status` in `connect()`/`start()` and `release_scoped_lock()`
   in `disconnect()`/`stop()`, so two profiles cannot share one credential. Canonical:
   `plugins/platforms/irc/adapter.py`.
 - **Multiplex profile-scoped env reads MUST fail closed — never borrow from `os.environ`**

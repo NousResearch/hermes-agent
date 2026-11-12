@@ -10,9 +10,9 @@ import time
 import pytest
 import hermes_yaml as yaml
 
-import gateway.run as gateway_run
-from gateway.config import Platform
-from gateway.run import GatewayRunner
+import hermes_agent.gateway.run as gateway_run
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.run import GatewayRunner
 
 
 def _home_with_threshold(root, name, seconds):

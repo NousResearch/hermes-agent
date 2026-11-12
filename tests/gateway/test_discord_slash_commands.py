@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 
 def _ensure_discord_mock():
@@ -616,9 +616,9 @@ def test_build_slash_event_routes_guild_profile_like_messages(adapter, monkeypat
     as it matches a regular message: build_source needs guild_id (and the
     thread's parent_chat_id) or the route never fires and /new resets the
     default profile's session instead of the routed one."""
-    from gateway import run as gateway_run
-    from gateway.config import GatewayConfig
-    from gateway.profile_routing import ProfileRoute
+    from hermes_agent.gateway import run as gateway_run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.profile_routing import ProfileRoute
 
     runner = object.__new__(gateway_run.GatewayRunner)
     runner.config = GatewayConfig(

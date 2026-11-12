@@ -329,7 +329,7 @@ def test_a_running_update_refuses_a_direct_desktop_build(tmp_path):
 
 
 def _desktop_lock_free(root: Path) -> bool:
-    from gateway.status import _release_file_lock, _try_acquire_file_lock
+    from hermes_agent.gateway.status import _release_file_lock, _try_acquire_file_lock
 
     if not DesktopBuildLock(root).path.exists():
         return True

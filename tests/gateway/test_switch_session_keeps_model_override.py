@@ -10,8 +10,8 @@ from unittest.mock import patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.session import SessionSource, SessionStore
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.session import SessionSource, SessionStore
 
 OVERRIDE = {"model": "nous/hermes-4", "provider": "nous"}
 
@@ -24,7 +24,7 @@ def store(tmp_path, monkeypatch):
         raise RuntimeError("SQLite disabled in test")
 
     monkeypatch.setattr(hermes_state, "SessionDB", _raise)
-    with patch("gateway.session.SessionStore._ensure_loaded"):
+    with patch("hermes_agent.gateway.session.SessionStore._ensure_loaded"):
         s = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
     s._loaded = True
     return s

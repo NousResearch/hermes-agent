@@ -14,10 +14,10 @@ the proper ``model: {default: ..., provider: ...}`` form.
 import hermes_yaml as yaml
 import pytest
 
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource
 
 
 def _make_runner():
@@ -56,7 +56,7 @@ def _fake_switch_result():
 
 def _setup_isolated_home(tmp_path, monkeypatch, model_yaml_value):
     """Write a config.yaml with the given ``model:`` value and stub the heavy bits."""
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
@@ -111,7 +111,7 @@ async def test_model_global_persists_when_config_has_missing_model(tmp_path, mon
     """Companion case: ``model:`` key absent entirely. setdefault would have
     worked here, but the coercion branch also has to handle this cleanly.
     """
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()

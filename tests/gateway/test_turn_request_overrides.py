@@ -12,7 +12,7 @@ fixed key whitelist that omitted it -- so the provider's configured
 
 import pytest
 
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.run import GatewayRunner
 
 
 PROVIDER_OVERRIDES = {"extra_body": {"chat_template_kwargs": {"enable_thinking": True}}}
@@ -71,7 +71,7 @@ def test_no_provider_overrides_yields_empty():
 
 def test_resolve_runtime_agent_kwargs_carries_request_overrides(monkeypatch):
     """The module-level runtime resolver must not drop request_overrides."""
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     fake_runtime = {
         "api_key": "k",

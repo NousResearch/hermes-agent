@@ -14,7 +14,7 @@ from agent.secret_scope import (
     set_secret_scope,
 )
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-from gateway.config import (
+from hermes_agent.gateway.config import (
     ChannelOverride,
     GatewayConfig,
     HomeChannel,
@@ -239,7 +239,7 @@ class TestGatewayConfigRoundtrip:
 
 
     def test_max_concurrent_sessions_from_dict_ignores_invalid_values(self, caplog):
-        caplog.set_level(logging.WARNING, logger="gateway.config")
+        caplog.set_level(logging.WARNING, logger="hermes_agent.gateway.config")
 
         config = GatewayConfig.from_dict({"max_concurrent_sessions": "many"})
 
@@ -524,7 +524,7 @@ class TestLoadGatewayConfig:
     def test_api_server_port_bridged_into_extra(self, tmp_path, monkeypatch):
         """``gateway.api_server.port`` must land in PlatformConfig.extra —
         the adapter reads port/key/host/cors_origins/model_name from extra
-        (gateway/platforms/api_server.py), and from_dict discards unknown
+        (hermes_agent/gateway/platforms/api_server.py), and from_dict discards unknown
         top-level keys, so without the bridge the port is silently lost."""
         self._clear_api_server_env(monkeypatch)
         hermes_home = tmp_path / ".hermes"
@@ -764,7 +764,7 @@ class TestLoadGatewayConfig:
         """GATEWAY_RELAY_URL is a process-global deployment stamp (like the
         API_SERVER listener vars, #69379): the scoped runner reload in a
         multiplexed gateway must keep seeing it, so config's relay enablement
-        and sweep agree with gateway.relay.relay_url()/register_relay_adapter()
+        and sweep agree with hermes_agent.gateway.relay.relay_url()/register_relay_adapter()
         (which read os.environ). A secondary profile's .env stamp does NOT
         override the shared process stamp — an isolated multiplex scope is
         never consulted for globals. (A single-profile gateway, or the profile
@@ -844,7 +844,7 @@ class TestLoadGatewayConfig:
         monkeypatch.setenv("GATEWAY_RELAY_URL", "https://connector.example/relay")
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "fake-token-for-test")
 
-        with caplog.at_level(_logging.INFO, logger="gateway.config"):
+        with caplog.at_level(_logging.INFO, logger="hermes_agent.gateway.config"):
             config = load_gateway_config()
 
         warnings = [
@@ -920,8 +920,8 @@ class TestLoadGatewayConfig:
     def test_allow_all_users_yaml_reaches_the_authz_gate(self, tmp_path, monkeypatch, yaml_text):
         """Both spellings must open the gate for an unknown sender; before #110690 the key was inert
         because every allow-all reader consults GATEWAY_ALLOW_ALL_USERS only."""
-        from gateway.authz_mixin import GatewayAuthorizationMixin
-        from gateway.session import SessionSource
+        from hermes_agent.gateway.authz_mixin import GatewayAuthorizationMixin
+        from hermes_agent.gateway.session import SessionSource
 
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -941,8 +941,8 @@ class TestLoadGatewayConfig:
         ("gateway: {}\n", None, None),
     ])
     def test_allow_all_users_yaml_never_widens_past_env(self, tmp_path, monkeypatch, yaml_text, env, expected):
-        from gateway.authz_mixin import GatewayAuthorizationMixin
-        from gateway.session import SessionSource
+        from hermes_agent.gateway.authz_mixin import GatewayAuthorizationMixin
+        from hermes_agent.gateway.session import SessionSource
 
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -964,7 +964,7 @@ class TestLoadGatewayConfig:
         """The bridge owns what it wrote: flipping config.yaml to false and reloading closes the gate,
         and the restart/dashboard child envs never carry the bridged value (a sticky env var would make
         the restarted gateway ignore the flipped config and stay open)."""
-        from gateway.run_shutdown import GatewayShutdownMixin
+        from hermes_agent.gateway.run_shutdown import GatewayShutdownMixin
         from hermes_cli.web_server_gateway import _profile_action_environment
 
         hermes_home = tmp_path / ".hermes"
@@ -985,9 +985,9 @@ class TestLoadGatewayConfig:
         """Default-profile events are authorized inside its secret scope, where gate readers never fall to
         os.environ: the bridged grant must be part of that profile's scope (and only that profile's)."""
         from agent.secret_scope import build_profile_secret_scope, set_multiplex_active
-        from gateway.authz_mixin import GatewayAuthorizationMixin
-        from gateway.run import _profile_runtime_scope
-        from gateway.session import SessionSource
+        from hermes_agent.gateway.authz_mixin import GatewayAuthorizationMixin
+        from hermes_agent.gateway.run import _profile_runtime_scope
+        from hermes_agent.gateway.session import SessionSource
 
         hermes_home = tmp_path / ".hermes"
         secondary = hermes_home / "profiles" / "other"
@@ -1642,7 +1642,7 @@ class TestTopLevelBlockVsAuthoredExtra:
     def test_yaml_owner_reaches_adapter(self, platform, block, authored, global_value,
                                        operator_env, tmp_path, monkeypatch, caplog):
         import json
-        from gateway.config_loader import load_yaml_layer
+        from hermes_agent.gateway.config_loader import load_yaml_layer
 
         home = tmp_path / "home"
         home.mkdir()
@@ -1658,7 +1658,7 @@ class TestTopLevelBlockVsAuthoredExtra:
                 monkeypatch.delenv(key)
         if operator_env is not None:
             monkeypatch.setenv("TELEGRAM_REQUIRE_MENTION", operator_env)
-        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.config"):
             data = {}
             load_yaml_layer(home, data)
         if block == {"reply_to_mode": "all"}:
@@ -1680,7 +1680,7 @@ class TestTopLevelBlockVsAuthoredExtra:
             assert os.environ["SLACK_THREAD_REQUIRE_MENTION"] == "true"
             assert os.environ["SLACK_FREE_RESPONSE_CHANNELS"] == "C1,C2"
         if platform == "telegram":
-            from gateway.platform_registry import platform_registry
+            from hermes_agent.gateway.platform_registry import platform_registry
             entry = next(e for e in platform_registry.all_entries() if e.name == "telegram")
             cls = entry.adapter_factory.__globals__["TelegramAdapter"]
             adapter = cls.__new__(cls)
@@ -1732,7 +1732,7 @@ class TestTopLevelBlockVsAuthoredExtra:
         for key in list(os.environ):
             if key.startswith(platform.upper() + "_"):
                 monkeypatch.delenv(key)
-        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.config"):
             config = load_gateway_config()
         extra = config.platforms[Platform(platform)].extra
         if source.startswith("dict-"):
@@ -1756,7 +1756,7 @@ class TestTopLevelBlockVsAuthoredExtra:
         if source == "root-sibling" and platform == "discord":
             assert os.environ["DISCORD_ALLOWED_USERS"] == "U_ADMIN"
         if source == "root-sibling" and platform == "telegram":
-            from gateway.platform_registry import platform_registry
+            from hermes_agent.gateway.platform_registry import platform_registry
             entry = next(e for e in platform_registry.all_entries() if e.name == "telegram")
             cls = entry.adapter_factory.__globals__["TelegramAdapter"]
             adapter = cls.__new__(cls)

@@ -32,7 +32,7 @@ def pooled_served_process(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "alpha"))
     monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
     import hermes_constants
-    from gateway import status
+    from hermes_agent.gateway import status
     # Liveness is a verified identity; this pytest process passes as the default gateway only by
     # wearing a gateway command line.
     monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "hermes gateway run")
@@ -43,7 +43,7 @@ def pooled_served_process(tmp_path, monkeypatch):
 
 
 def test_unscoped_liveness_in_a_served_profile_process_matches_the_scoped_answer(pooled_served_process):
-    from gateway.status import profile_platforms_from_multiplexer, resolve_gateway_liveness
+    from hermes_agent.gateway.status import profile_platforms_from_multiplexer, resolve_gateway_liveness
     alpha = pooled_served_process / "profiles" / "alpha"
     scoped = resolve_gateway_liveness(profile_dir=alpha, health_probe=None, use_cache=False)
     unscoped = resolve_gateway_liveness(health_probe=None, use_cache=False)

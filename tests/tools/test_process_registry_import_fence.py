@@ -40,7 +40,7 @@ def test_importing_process_registry_does_not_connect_to_state_db(tmp_path):
 async def test_gateway_startup_restores_pending_delegation_completions(tmp_path, monkeypatch):
     """The gateway authority is the owner that rehydrates durable completions, at startup."""
     from unittest.mock import MagicMock
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
     import tools.async_delegation as ad
     from tools.process_registry import process_registry
 

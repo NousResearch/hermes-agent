@@ -6,12 +6,12 @@ import stat
 import pytest
 from concurrent.futures import ThreadPoolExecutor
 
-from gateway.hosted_room_links import (
+from hermes_agent.gateway.hosted_room_links import (
     load_room_links,
     make_stored_link,
     save_room_link,
 )
-from gateway.hosted_room_peer import GatewayRoomCatalog, catalog_mapping
+from hermes_agent.gateway.hosted_room_peer import GatewayRoomCatalog, catalog_mapping
 
 
 def _catalog(installation="install-peer"):

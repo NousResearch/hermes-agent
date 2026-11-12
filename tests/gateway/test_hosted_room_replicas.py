@@ -1,12 +1,12 @@
-"""Tests for gateway/hosted_room_replicas.py — replica ingest, promotion, and
+"""Tests for hermes_agent/gateway/hosted_room_replicas.py — replica ingest, promotion, and
 stale-authority demotion for hosted Group Chat rooms."""
 
 import json
 
 import pytest
 
-import gateway.hosted_room_replicas as replicas
-import gateway.hosted_rooms as rooms
+import hermes_agent.gateway.hosted_room_replicas as replicas
+import hermes_agent.gateway.hosted_rooms as rooms
 
 USER = {"kind": "user", "id": "tek"}
 MEMBERS = [{"kind": "bot", "id": "planner"}, {"kind": "bot", "id": "coder"}]

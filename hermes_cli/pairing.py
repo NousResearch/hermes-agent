@@ -2,7 +2,7 @@
 
 def pairing_command(args):
     """Handle hermes pairing subcommands."""
-    from gateway.pairing import PairingStore
+    from hermes_agent.gateway.pairing import PairingStore
 
     store = PairingStore()
     handlers = {

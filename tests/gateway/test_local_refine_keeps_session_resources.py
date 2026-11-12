@@ -13,8 +13,8 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_cold_refine_keeps_the_sessions_terminal(tmp_path, monkeypatch):
-    refine = pytest.importorskip('gateway.session_refine')
-    from gateway import session_tui_side, session_policy, session_local_recovery
+    refine = pytest.importorskip('hermes_agent.gateway.session_refine')
+    from hermes_agent.gateway import session_tui_side, session_policy, session_local_recovery
     from agent import background_review
     from run_agent import AIAgent
     from tools.environments.local import LocalEnvironment

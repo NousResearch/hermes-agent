@@ -296,7 +296,7 @@ class TestPairingEndpoints:
         self.client, _ = _client()
 
     def test_approve_pending_request_id(self):
-        from gateway.pairing import PairingStore
+        from hermes_agent.gateway.pairing import PairingStore
 
         store = PairingStore()
         bot_code = store.generate_code("telegram", "user1", "Alice")
@@ -323,7 +323,7 @@ class TestPairingEndpoints:
         consults — the user stays locked out with the dashboard showing them
         as approved.
         """
-        from gateway.pairing import PairingStore
+        from hermes_agent.gateway.pairing import PairingStore
         from hermes_constants import get_hermes_home
 
         (get_hermes_home() / "profiles" / "work").mkdir(parents=True, exist_ok=True)

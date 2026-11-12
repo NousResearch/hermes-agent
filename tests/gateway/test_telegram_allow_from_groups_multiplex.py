@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform
+from hermes_agent.gateway.config import Platform
 
 _YAML = ("telegram:\n  allow_from: ['111']\n  group_allow_from: ['222']\n"
          "  unauthorized_dm_behavior: ignore\n")
@@ -41,9 +41,9 @@ def two_profiles(monkeypatch):
 
 
 def _wire(home, secondary, profile):
-    from gateway.config import GatewayConfig, load_gateway_config
-    from gateway.pairing import PairingStore
-    from gateway.run import GatewayRunner, _profile_runtime_scope
+    from hermes_agent.gateway.config import GatewayConfig, load_gateway_config
+    from hermes_agent.gateway.pairing import PairingStore
+    from hermes_agent.gateway.run import GatewayRunner, _profile_runtime_scope
     from plugins.platforms.telegram.adapter import TelegramAdapter
 
     runner = object.__new__(GatewayRunner)

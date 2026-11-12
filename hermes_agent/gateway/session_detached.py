@@ -13,11 +13,11 @@ replies reach its viewers only, never the chat, which now gets only its new conv
   agent cache, busy guard, the agent a Stop reaches) is the conversation's own, never the chat's;
 * ``SessionStore.get_or_create_session`` resolves the key to the conversation itself
   (``detached_entry``), and never creates or persists a route for it;
-* delivery goes through the profile's ``LocalSessionAdapter`` (gateway/session_local.py), as a local
+* delivery goes through the profile's ``LocalSessionAdapter`` (hermes_agent/gateway/session_local.py), as a local
   session's does: its sends publish nothing, viewers read the canonical event stream.
 
 The key carries no platform slot, so a reader that parses a chat out of a session key
-(``gateway.run._parse_session_key``) finds none and delivers nowhere. Its turns bind the session
+(``hermes_agent.gateway.run._parse_session_key``) finds none and delivers nowhere. Its turns bind the session
 variables a Desktop session's turn binds (``session_env_source``), so a reminder, a kanban subscription
 or a ``send_message`` it starts names the app, never the chat. The chat naming the conversation again
 (``/resume``) moves it back onto the chat's route (``SessionAuthority.name_lane``).
@@ -58,8 +58,8 @@ def detach(authority, live, session_id) -> None:
     history mount (no source) has no route to leave, and a detached one has left it already."""
     if live.source is None or detached_route_of(live.source):
         return
-    from gateway.session_identity import replace_source
-    from gateway.session_local_recovery import local_adapter
+    from hermes_agent.gateway.session_identity import replace_source
+    from hermes_agent.gateway.session_local_recovery import local_adapter
     adapter = local_adapter(authority)  # its delivery; a messaging-only gateway has none yet
     live.route = detached_key(live.route, session_id)
     # No reply anchor: its replies reach the apps, and a background result's event is this very source.
@@ -72,7 +72,7 @@ def lane_source(source):
     chat's route over starts from (the route moved first, so the one it replaced is detached by now)."""
     if detached_route_of(source) is None:
         return source
-    from gateway.session_identity import replace_source
+    from hermes_agent.gateway.session_identity import replace_source
     return replace_source(source, detached_route=None)
 
 
@@ -85,8 +85,8 @@ def forget_detached(authority, key) -> None:
     if evict is not None:
         evict(key)
     drop_owner_hints(runner.session_store, key)
-    from gateway.config import Platform
-    from gateway.session_local_recovery import local_adapter_map
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session_local_recovery import local_adapter_map
     local = local_adapter_map(authority).get(Platform.LOCAL)
     if local is not None:
         local.sources.pop(key, None)  # what admitted the detached copy's background results
@@ -108,7 +108,7 @@ def running_key(runner, route, session_id) -> str:
 
 def chat_running_key(runner, route, entry) -> str:
     """``running_key`` for the conversation the chat's *route* names (*entry*, its routing entry)."""
-    from gateway.session_authorities import active_authority
+    from hermes_agent.gateway.session_authorities import active_authority
     authority = active_authority(runner)
     return route if authority is None else running_key(runner, route, authority.logical_owner(entry.session_id))
 
@@ -125,14 +125,14 @@ def session_env_source(runner, source):
             # still reaches tools as HERMES_SESSION_ACTOR_*, bound from the SessionContext.
             return dataclasses.replace(source, user_id=None, user_id_alt=None, user_name=None)
         return source
-    from gateway.session_authorities import active_authority
-    from gateway.session_local_recovery import local_source
+    from hermes_agent.gateway.session_authorities import active_authority
+    from hermes_agent.gateway.session_local_recovery import local_source
     return local_source(active_authority(runner), detached_session_id(key), source.user_id)
 
 
 def _route_authority(runner, store, route):
     """The authority owning *route*: its key names the profile, whatever scope the writer runs in."""
-    from gateway.session_authorities import authority_for_home
+    from hermes_agent.gateway.session_authorities import authority_for_home
     from hermes_constants import hermes_home_key
     registry = getattr(runner, 'session_authorities', None)
     if store._named_profile_for_key(route) is None:  # the launch profile's own key
@@ -179,8 +179,8 @@ def recover_detached_sessions(authority, pending):
     """Boot: schedule the queued input of conversations their chats moved past (an app prompt
     accepted during a restart's after-turn wait). The routing index names only each chat's current
     conversation, so native recovery never binds these, and no chat message will wake them."""
-    from gateway.session_contract import SessionRef
-    from gateway.session_route_recovery import restore_routed_session
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_route_recovery import restore_routed_session
     scheduled = []
     from hermes_agent.hermes_state_runtime import list_session_admissions
     for session_id in sorted(pending):
@@ -197,7 +197,7 @@ def recover_detached_sessions(authority, pending):
 
 def detached_live(authority, route):
     """``(ref, live)`` of the conversation still live on detached key *route*, else None."""
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_contract import SessionRef
     session_id = detached_session_id(route)
     live = authority.sessions.get(session_id) if session_id else None
     if live is None or live.route != route:
@@ -220,7 +220,7 @@ async def follow_detached_pin(runner, evt):
     (#141562). A conversation not mounted (a restart) mounts off the chat first."""
     key = str(evt.get('session_key') or '')
     pinned = str(evt.get('parent_session_id') or '').strip()
-    from gateway.session_authorities import all_authorities
+    from hermes_agent.gateway.session_authorities import all_authorities
     if not key or not all_authorities(runner):
         return evt
     if (detached := detached_session_id(key)) is not None:
@@ -259,8 +259,8 @@ def _mounted(authority, session_id):
     """*session_id*'s live session, mounted as its route would after a restart (off the chat when the
     chat names another conversation); None when it cannot be mounted now."""
     if session_id not in authority.sessions:
-        from gateway.session_authorities import owner_scope
-        from gateway.session_route_recovery import restore_routed_session
+        from hermes_agent.gateway.session_authorities import owner_scope
+        from hermes_agent.gateway.session_route_recovery import restore_routed_session
         from hermes_agent.hermes_state_runtime import RuntimeStoreError
         try:
             with owner_scope(authority):
@@ -292,7 +292,7 @@ def route_entry(authority, route):
 def detached_entry(store, source):
     """The routing entry a detached *source* resolves to: its own conversation, at the compression
     tip a turn writes to. Never stored: the chat's route stays the only one this conversation has."""
-    from gateway.session import SessionEntry
+    from hermes_agent.gateway.session import SessionEntry
     key = source.detached_route
     session_id = str(detached_session_id(key))
     db = store._db_for_key(key)

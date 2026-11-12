@@ -187,7 +187,7 @@ def cmd_whatsapp(args):
 
     _whatsapp_allowed_users(wa_mode, get_env_value, save_env_value)
 
-    from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
+    from hermes_agent.gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
     bridge_dir = resolve_whatsapp_bridge_dir()
     bridge_script = bridge_dir / "bridge.js"
     if not bridge_script.exists():

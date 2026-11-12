@@ -16,7 +16,7 @@ import asyncio
 import json
 from dataclasses import dataclass
 
-from gateway.session_contract import SessionHandle, SessionRef
+from hermes_agent.gateway.session_contract import SessionHandle, SessionRef
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 # Sessions per worker-thread read; each batch is one await, so the loop serves other work between them.
@@ -77,7 +77,7 @@ def _execution_state(pending) -> str:
 def _readable(authority, actor, session_id) -> bool:
     if session_id not in authority.sessions:
         return False  # retired since the snapshot: a listing never restores a session
-    from gateway.session_retirement import LISTING_READ
+    from hermes_agent.gateway.session_retirement import LISTING_READ
     token = LISTING_READ.set(True)
     try:
         authority.authorize(actor, SessionRef(actor.profile_id, session_id), 'session:read')
@@ -92,7 +92,7 @@ def _readable(authority, actor, session_id) -> bool:
 
 async def live_entries(authority, actor) -> list[LiveEntry]:
     """Every live session *actor* may read, with its handle, picker row and closed-and-unviewed verdict."""
-    from gateway.session_local_close import closed_idle_unviewed
+    from hermes_agent.gateway.session_local_close import closed_idle_unviewed
     entries = []
     snapshot = tuple(authority.sessions)
     for start in range(0, len(snapshot), LISTING_BATCH):

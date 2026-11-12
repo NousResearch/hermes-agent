@@ -124,7 +124,7 @@ def client_surface() -> str:
     from hermes_cli.process_identity import is_desktop_owned_backend, serves_local_desktop_now
     if serves_local_desktop_now():
         return "desktop"
-    status = sys.modules.get("gateway.status")
+    status = sys.modules.get("hermes_agent.gateway.status")
     if status is not None and status.owns_gateway_runtime_lock():
         return "gateway"
     return "desktop" if is_desktop_owned_backend() else "cli"

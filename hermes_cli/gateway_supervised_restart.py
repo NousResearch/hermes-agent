@@ -33,8 +33,8 @@ def gateway_declares_external_supervisor(pid: int, home: Path | None = None) -> 
     """
     if not pid or pid <= 1:
         return False
-    from gateway.control_socket import identify_gateway, launch_supervisor
-    from gateway.status import _get_process_hermes_home, read_runtime_status
+    from hermes_agent.gateway.control_socket import identify_gateway, launch_supervisor
+    from hermes_agent.gateway.status import _get_process_hermes_home, read_runtime_status
     from hermes_cli.gateway import _capture_gateway_argv
 
     home = home or _get_process_hermes_home()
@@ -60,7 +60,7 @@ def _wait_for_supervised_gateway_replacement(
     comes from ``get_running_pid``'s lock+PID liveness verification and freshness from ``!= old_pid``.
     Returns the fresh PID, or None once ``timeout`` passes.
     """
-    from gateway.status import get_running_pid
+    from hermes_agent.gateway.status import get_running_pid
 
     if timeout is None:
         timeout = SUPERVISED_REPLACEMENT_VERIFY_TIMEOUT

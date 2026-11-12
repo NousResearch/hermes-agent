@@ -6,7 +6,7 @@ on that env var alone — ``checkpoints.enabled: true`` in config.yaml was
 silently ignored on the desktop surface while the CLI and messaging gateway
 honored it. The fix makes ``_make_agent`` fall back to the ``checkpoints``
 config section when the env var is unset, mirroring the messaging gateway's
-``_checkpoint_agent_kwargs`` (gateway/run.py).
+``_checkpoint_agent_kwargs`` (hermes_agent/gateway/run.py).
 """
 
 import os

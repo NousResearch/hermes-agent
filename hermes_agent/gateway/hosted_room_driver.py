@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any, Callable, Literal, NamedTuple, get_args
 
-from gateway.hosted_rooms_common import (
+from hermes_agent.gateway.hosted_rooms_common import (
     DbPath, bounded_int, canonical_json, compact_json, connect, fenced_update, identifier, table_columns, text,
     transaction)
 
@@ -154,7 +154,7 @@ def _lease_window(ttl_seconds: Any, clock: Clock) -> tuple[float, float]:
 
 def validate_bound_task_manifest(value: Any) -> list[dict[str, Any]]:
     """Validate store metadata plus the exact source event for each task input."""
-    from gateway.hosted_room_attachments import validate_task_manifest
+    from hermes_agent.gateway.hosted_room_attachments import validate_task_manifest
 
     if not isinstance(value, list) or not value:
         raise DriverValidationError("attachments must be a non-empty list")
@@ -184,7 +184,7 @@ def _task_payload(value: Any) -> tuple[dict[str, Any], str, str]:
         value["source_event_seq"], message="source_event_seq must be a positive integer", low=1)
     normalized = {"target_profile": target_profile, "prompt": prompt, "source_event_seq": source_event_seq}
     if "input_context" in value:
-        from gateway.hosted_room_task_input import validate_task_input
+        from hermes_agent.gateway.hosted_room_task_input import validate_task_input
 
         try:
             normalized["input_context"] = validate_task_input(value["input_context"])
@@ -516,7 +516,7 @@ def _transition(
         if guard is not None:
             guard(row)
         fenced_update(conn, sql, params, StaleTaskError(stale))
-        from gateway.hosted_room_work_records import capture_transition_locked
+        from hermes_agent.gateway.hosted_room_work_records import capture_transition_locked
         capture_transition_locked(conn, identity.room_id)
         return _task_from_row(_load_task(conn, identity))
 
@@ -652,7 +652,7 @@ def admit_task(db_path: DbPath, identity: TaskIdentity, *, payload: Any, clock: 
             (
                 *dataclasses.astuple(identity), normalized_payload["source_event_seq"], payload_json, payload_digest,
                 now, now))
-        from gateway.hosted_room_work_records import capture_transition_locked
+        from hermes_agent.gateway.hosted_room_work_records import capture_transition_locked
         capture_transition_locked(conn, identity.room_id)
         return _task_from_row(_load_task(conn, identity))
 
@@ -688,7 +688,7 @@ def start_task(
             (
                 execution_generation, *_run_fence(lease), now, now, identity.room_id, identity.task_id,
                 expected_cancel_generation), StaleTaskError("task changed during start"))
-        from gateway.hosted_room_work_records import capture_transition_locked
+        from hermes_agent.gateway.hosted_room_work_records import capture_transition_locked
         capture_transition_locked(conn, identity.room_id)
         return TaskAttempt(
             identity=identity, lease=lease, execution_generation=execution_generation,
@@ -898,7 +898,7 @@ def mark_attempt_indeterminate(
             _generation_update("status='indeterminate', indeterminate_at=?, updated_at=?", "running"),
             (now, now, attempt.identity.room_id, attempt.identity.task_id,
              attempt.execution_generation, attempt.cancel_generation))
-        from gateway.hosted_room_work_records import capture_transition_locked
+        from hermes_agent.gateway.hosted_room_work_records import capture_transition_locked
         capture_transition_locked(conn, lease.room_id)
 
 
@@ -915,7 +915,7 @@ def recover_room(db_path: DbPath, lease: DriverLease, *, clock: Clock) -> dict[s
             conn.execute(
                 f"""UPDATE hosted_room_driver_tasks SET status='indeterminate', indeterminate_at=?, updated_at=?
                     WHERE {foreign_running}""", (now, now, *fence))
-        from gateway.hosted_room_work_records import capture_transition_locked
+        from hermes_agent.gateway.hosted_room_work_records import capture_transition_locked
         capture_transition_locked(conn, lease.room_id)
         return {
             status: [_task_identity_from_row(row) for row in _tasks_in_order(conn, lease.room_id, (status,))]

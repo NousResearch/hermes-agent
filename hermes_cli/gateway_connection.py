@@ -17,7 +17,7 @@ import threading
 import time
 
 from hermes_cli.gateway_client import (DEFAULT_RPC_TIMEOUT, DISCONNECTED, NOT_SENT, RESUME_KEY_MISMATCH,
-                                       GatewayClientError, GatewayRPCError)
+                                       AnswerLost, GatewayClientError, GatewayRPCError)
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +153,12 @@ class SessionState:
             listener(self.usage)
 
 
+def _client_hung_up(client):
+    """:meth:`GatewayClient.hung_up`; a stand-in client without it (the test doubles) never hangs up."""
+    hung_up = getattr(client, "hung_up", None)
+    return bool(hung_up is not None and hung_up())
+
+
 class GatewayConnection:
     _shared = None
     _shared_lock = threading.Lock()
@@ -238,9 +244,13 @@ class GatewayConnection:
                 raise GatewayClientError("Gateway connection timed out; no local fallback")
             if self._error is not None:
                 raise self._error
-            if self.client is not None or self.final:
+            client = self.client  # read once: the loop thread clears it when the connection ends
+            if self.final or (client is not None and not _client_hung_up(client)):
                 return
-            # Hung up right after that dial: let its loop end, then dial again.
+            # Hung up (right after that dial, or the loop is still closing the socket, up to its
+            # close_timeout): let its loop end, then dial again, so every caller (a submit's
+            # preflight, a detach, a create asked again after a lost answer) reads and writes the next
+            # gateway's state, never the dying socket's.
             thread.join(max(deadline - time.monotonic(), 0))
             if time.monotonic() >= deadline:
                 raise GatewayClientError("Gateway connection timed out; no local fallback")
@@ -266,7 +276,13 @@ class GatewayConnection:
         try:
             async with connect() as client:
                 if self.epoch:
-                    await self._resubscribe(client)
+                    try:
+                        await self._resubscribe(client)
+                    except AnswerLost as exc:
+                        # The redial's own resume lost its answer: the call that triggered the redial
+                        # sent nothing, so it must not read as that request's lost answer. A refusal
+                        # passes as is: the resume's own verdict, which the caller reports.
+                        raise GatewayClientError(NOT_SENT) from exc
                 self.epoch += 1
                 self.client = client
                 self._live = (client, self.epoch)
@@ -494,4 +510,4 @@ class GatewayConnection:
             return future.result(max(deadline - time.monotonic(), 0)), epoch
         except TimeoutError as exc:
             future.cancel()
-            raise GatewayClientError(f"Gateway did not answer {method}") from exc
+            raise AnswerLost(f"Gateway did not answer {method}") from exc

@@ -616,6 +616,42 @@ When `true` (the default), each user in a shared channel gets their own isolated
 
 Set to `false` if you want a collaborative mode where the entire channel shares one conversation session. Be aware this means users share context growth and token costs, and one user's `/reset` clears the session for everyone.
 
+### Root-mentioned thread mode
+
+To allow unmentioned follow-ups only when the thread **head** explicitly mentions
+this bot, configure the native adapter extra:
+
+```yaml
+platforms:
+  slack:
+    enabled: true
+    extra:
+      thread_followup_mode: root_mention  # auto (default) | root_mention
+      require_mention: true
+      strict_mention: false
+      thread_require_mention: false
+```
+
+`auto` preserves existing behavior: previous thread mentions, active sessions,
+bot-authored roots and root mentions can enroll a thread. `root_mention` accepts
+current mentions as usual, but those other signals cannot admit an unmentioned
+channel-thread reply. A mention in the middle of an ordinary thread therefore
+answers that request without enrolling the conversation. The mode does not
+assign special meaning to command words such as “reviewers”.
+
+The adapter classifies unknown heads using one Slack root-only lookup and caches
+the decision for 60 seconds, bounded to 2,500 workspace/channel/thread entries.
+Root edits become effective when that entry expires. Missing or unreadable heads
+stay silent; an explicit current mention remains eligible. Root classification
+does not load the discussion or call a model. Normal accepted-message handling,
+authorization, context retrieval, tools and reply delivery remain unchanged.
+
+Existing `strict_mention` and `thread_require_mention` restrictions still apply.
+The mode also restricts unmentioned thread replies in free-response channels;
+it does not change their top-level admission. DMs keep their existing behavior,
+and explicit reaction/control triggers retain their existing semantics. Omit
+`thread_followup_mode` or set `auto` to roll back. Other values are invalid.
+
 ### Mention & Trigger Behavior
 
 ```yaml

@@ -127,3 +127,108 @@ def test_manual_compress_uses_configured_plugin_engine(tmp_path, resident):
     boundary = [e for e in events if e['event'] == 'start' and e['boundary_reason'] == 'compression']
     assert boundary == [{'event': 'start', 'session_id': result['target_session_id'],
                          'boundary_reason': 'compression', 'old_session_id': result['previous_target_session_id']}]
+
+
+@pytest.mark.parametrize('resident_mode', [True, False], ids=['resident-agent', 'cold-session'])
+def test_prepare_compress_retains_context_compressor_subclass_engine(monkeypatch, tmp_path, resident_mode):
+    from types import SimpleNamespace
+    from agent.context_compressor import ContextCompressor
+    import gateway.session_mutation_compress as smc
+
+    events = []
+
+    class SubclassEngine(ContextCompressor):
+        @property
+        def name(self):
+            return 'subclass_engine'
+
+        def compress(self, messages, current_tokens=None, focus_topic=None, force=False, memory_context=''):
+            events.append(('compress', focus_topic, force))
+            if focus_topic == 'noop':
+                return list(messages)
+            return [messages[0], {'role': 'assistant', 'content': 'SUBCLASS_SUMMARY', '_compressed_summary': True}]
+
+        def on_session_start(self, session_id, **kwargs):
+            events.append(('start', session_id, kwargs.get('boundary_reason')))
+
+        def on_session_end(self, session_id, messages):
+            events.append(('end', session_id))
+
+    engine = SubclassEngine(model='test-model', quiet_mode=True)
+    builtin = ContextCompressor(model='test-model', quiet_mode=True)
+
+    # Exact ContextCompressor on resident is treated as built-in (None), whereas a subclass is retained.
+    assert smc._plugin_engine(None, None, {}, 'test-model', {}, SimpleNamespace(context_compressor=builtin), 's1') is None
+    assert smc._plugin_engine(None, None, {}, 'test-model', {}, SimpleNamespace(context_compressor=engine), 's1') is engine
+
+    history = [
+        {'role': 'user', 'content': 'u1 ' * 50},
+        {'role': 'assistant', 'content': 'a1 ' * 50},
+        {'role': 'user', 'content': 'u2 ' * 50},
+        {'role': 'assistant', 'content': 'a2 ' * 50},
+    ]
+    resident = SimpleNamespace(context_compressor=engine, _cached_system_prompt='', tools=None) if resident_mode else None
+
+    class FakePolicy:
+        safe_mode = False
+
+        def config(self, authority):
+            return {'context': {'engine': 'subclass_engine'}}
+
+    from contextlib import asynccontextmanager, contextmanager
+
+    @contextmanager
+    def fake_policy_scope(policy, authority=None):
+        yield
+
+    @asynccontextmanager
+    async def fake_async_profile_scope(path):
+        yield
+
+    import gateway.session_policy as sp
+    import agent.agent_init as ai
+    import gateway.run as gr
+
+    monkeypatch.setattr(sp, 'restore_policy', lambda raw: FakePolicy())
+    monkeypatch.setattr(sp, 'policy_scope', fake_policy_scope)
+    monkeypatch.setattr(ai, '_select_context_engine', lambda cfg: engine)
+    monkeypatch.setattr(gr, '_async_profile_runtime_scope', fake_async_profile_scope)
+
+    authority = SimpleNamespace(
+        profile_id=str(tmp_path),
+        runner=SimpleNamespace(
+            _resolve_session_agent_runtime=lambda **kw: ('test-model', {}),
+            _cached_agent_for=lambda route: resident,
+        ),
+        db=SimpleNamespace(
+            get_messages_as_conversation=lambda target: list(history),
+            get_session=lambda target: {},
+        ),
+    )
+    live = SimpleNamespace(source='cli', route='cli:local')
+    prepared = {'snapshot': {'target': 'sess-1', 'receipt': {'policy': {}}}}
+
+    out = asyncio.run(smc.prepare_compress(authority, live, {'focus': 'topic'}, prepared))
+    assert ('compress', 'topic', True) in events
+    assert any(m.get('content') == 'SUBCLASS_SUMMARY' for m in out['messages'])
+    assert out['engine_owner'].context_compressor is engine
+    assert out['engine_owner'].owned is (not resident_mode)
+
+    asyncio.run(smc.finish_compress_engine(
+        authority, out, {'target_session_id': 'sess-2', 'previous_target_session_id': 'sess-1'}
+    ))
+    assert ('start', 'sess-2', 'compression') in events
+    if not resident_mode:
+        assert ('end', 'sess-2') in events
+    else:
+        assert ('end', 'sess-2') not in events
+
+    # Also verify noop cleanup calls on_session_end on cold-session subclass engine
+    events.clear()
+    noop_out = asyncio.run(smc.prepare_compress(authority, live, {'focus': 'noop'}, prepared))
+    assert noop_out['status'] == 'noop'
+    if not resident_mode:
+        assert ('end', 'sess-1') in events
+    else:
+        assert ('end', 'sess-1') not in events
+

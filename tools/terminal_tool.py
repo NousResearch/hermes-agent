@@ -736,14 +736,17 @@ def _resolve_task_host_cwd(config: dict[str, Any], task_id: Optional[str]) -> Op
         # A shared container is reused by every session resolving to its key: bind a session's
         # workspace only into the container keyed to that workspace (a delegate child resolves
         # its parent's), or a sibling session in another folder would be handed this one's files.
+        # Match the exact shape _workspace_container_key derives: an operator's shared key may
+        # contain ":ws:" too, and stays a shared container keeping the launch dir.
         key = _resolve_container_task_id(task_id)
+        workspace_prefix = f"{profile_container_key(_container_profile())}:ws:"
         for owner in dict.fromkeys((task_id, _resolve_container_alias(task_id) if task_id else None)):
             source = _session_workspace_mount_source(owner)
-            if source and key.endswith(f":ws:{workspace_key_for(source)}"):
+            if source and key == workspace_prefix + workspace_key_for(source):
                 return source
         # A workspace-keyed container whose workspace is refused (deleted, in-container path)
         # mounts nothing: the launch dir is exactly what it must never get.
-        if key.startswith(f"{profile_container_key(_container_profile())}:ws:"):
+        if key.startswith(workspace_prefix):
             return None
         return config.get("host_cwd")
     return _session_workspace_mount_source(task_id)

@@ -545,3 +545,25 @@ def test_operator_shared_key_with_ws_marker_keeps_launch_mount(home, tmp_path, m
         assert _plan('desktop-shared-marker') == ('shared:team:ws:common', str(launch_home))
     finally:
         clear_session_vars(tokens)
+
+
+def test_operator_shared_key_ending_in_a_workspace_digest_never_binds_that_workspace(home, tmp_path, monkeypatch):
+    """A shared container named like ``<x>:ws:<digest>`` is reused by every session: it must not be
+    bound to the one session whose workspace digest its name happens to end with."""
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tools.terminal_tool import workspace_key_for
+    from tui_gateway import server
+    launch_home = tmp_path / 'user-home'
+    launch_home.mkdir()
+    ws = tmp_path / 'project'
+    ws.mkdir()
+    _desktop_shared_mode(monkeypatch, launch_home)
+    monkeypatch.setenv('TERMINAL_DOCKER_SHARED_CONTAINER_KEY', f'team:ws:{workspace_key_for(str(ws))}')
+    tokens = set_session_vars(session_key='desktop-shared-digest', profile='')
+    try:
+        vars(server)['_register_session_cwd'](
+            {'session_key': 'desktop-shared-digest', 'cwd': str(ws), 'explicit_cwd': True, 'source': 'desktop'})
+        key, mount = _plan('desktop-shared-digest')
+    finally:
+        clear_session_vars(tokens)
+    assert key.startswith('shared:team:ws:') and mount == str(launch_home)

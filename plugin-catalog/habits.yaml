@@ -2,28 +2,7 @@ name: habits
 repo: https://github.com/emiwltz/hermes-habits
 sha: 3fe9af287c871abf15a76974deb7bd2aaff31785
 title: Habits
-description: >-
-  Habits gives Hermes reflexes: the tool calls and small decisions it repeats, grouped into one file of steps that
-  runs with no model turn between the steps (the advanced llm step is the one exception); decisions go to a small typed model (Jev).
-  "Is Hermes OK?": 41 s when Hermes works it out, 2.7 s when the reflex answers with its six checks (medians of real chats,
-  10 November; the fast path needs your yes and a Jev key). A reflex has four kinds of step (do, check, ask, use) and
-  ends done, or handed back with what is left. The dream re-reads the history Hermes already keeps, with no model
-  call, and proposes reflexes for what comes back. A reflex acts on its own only after your yes, with two exceptions
-  named below. Try without a key: hermes habits run hermes-health.
-  Disclosure — hooks read each reply and each tool call. The dream reads Hermes's local history (read only, 60 days)
-  once a day at most (dream: manual stops it) and calls no model. Learning defaults to suggest: on a fresh install
-  nothing is run or practiced for you until you say try. A list of your reflexes (2,400 characters at most) is added to
-  each session, and Hermes may call any shipped example by name without a yes; it then runs for real (six only read;
-  tidy-downloads moves files in ~/Downloads and is not in that list). The shipped hermes-health sends one HEAD request
-  to github.com and reads the gateway file and disk of ~/.hermes; the other examples reach the web only when called
-  (api.github.com, hn.algolia.com, the pages you name). A reflex with your yes runs
-  its commands through Hermes's terminal tool and Hermes's own approval rules. The two exceptions to the yes: a
-  read-only message habit you asked for in so many words, and what you allow with learning: auto. Decision questions
-  go to TypeSafe Jev (api.typesafe.ai) only with your TYPESAFE_API_KEY, else to your Hermes model; once a message
-  habit exists, each message of 2,000 characters or less that is not a slash command is sent there to see whether it
-  starts one (one or two small questions). A scheduled habit writes a cron job and a script at once; hermes habits
-  cleanup removes them. Runs and traces are stored unencrypted in $HERMES_HOME/plugin-data/habits/. No telemetry.
-  Six private imports, each with a fallback. Line by line: docs/SAFETY.md.
+description: "Habits gives Hermes reflexes: the tool calls and small decisions it repeats, grouped into one file of steps that runs with no model turn between the steps (the advanced llm step is the one exception); decisions go to a small typed model (Jev). \"Is Hermes OK?\": 41 s when Hermes works it out, 2.7 s when the reflex answers with its six checks (medians of real chats, 10 November; the fast path needs your yes and a Jev key). A reflex has four kinds of step (do, check, ask, use) and ends done, or handed back with what is left. The dream re-reads the history Hermes already keeps, with no model call, and proposes reflexes for what comes back. A reflex acts on its own only after your yes, with two exceptions named below. Try without a key: hermes habits run hermes-health. Disclosure — hooks read each user message, reply and tool call; the dream reads Hermes's local session history (read only, 60 days) at most once a day (dream: manual stops it) and calls no model. Learning defaults to suggest: nothing is practised or run for you until you say try; learning: auto lets learned reflexes act with no question. A list of your reflexes (2,400 characters at most) is added to the system prompt, and Hermes may run any shipped example by name without a yes, for real (six only read; tidy-downloads moves files inside ~/Downloads). An automatic request habit can answer a message itself, without a model call, and a habit that starts on its skill runs when Hermes loads that skill. A read-only request habit you explicitly asked for starts automatic at once. Reflex commands run through Hermes's own terminal and tools under Hermes's approval rules. hermes-health sends one HEAD request to github.com and reads ~/.hermes gateway state, logs and disk use; other examples reach api.github.com, hn.algolia.com and the pages you or Hermes name. With TYPESAFE_API_KEY set, decision questions go to TypeSafe Jev (api.typesafe.ai), else to your own Hermes model. Once a message habit exists, each non-slash message of 2,000 characters or less goes there with your habit names and descriptions, and a reflex's ask steps send the text the reflex read (file names, page text). Saving a scheduled habit (every 5 minutes at most often) writes $HERMES_HOME/scripts/habits-<name>.sh and a Hermes cron job at once, before any yes, and is refused inside a cron run unless cron.allow_agent_scheduling is true; hermes habits cleanup removes every habits-* job and script. Runs and traces are stored unencrypted in $HERMES_HOME/plugin-data/habits/. No telemetry. Private Hermes imports are read-only, each with a fallback (docs/SAFETY.md §10)."
 maintainer: emiwltz
 tier: community
 category: automation

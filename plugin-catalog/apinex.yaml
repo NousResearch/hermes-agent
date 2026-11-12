@@ -18,7 +18,7 @@ description: >-
   https://api.apinex.bond/v1/models request with the key; the plugin makes no network requests of
   its own, adds no headers, sends no telemetry, reads or writes no files and stores no credentials.
 maintainer: Apinex-AI
-tier: community
+tier: verified
 category: models
 requires_hermes: ">=0.21.5"
 docs_url: https://apinex.bond/integrations/hermes?utm_source=hermes&utm_medium=plugin

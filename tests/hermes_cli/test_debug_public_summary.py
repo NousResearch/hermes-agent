@@ -147,3 +147,20 @@ def test_nous_share_still_carries_redacted_log_tails(pii_home):
     envelope = json.loads(gzip.decompress(share.call_args[0][0]))
     assert _MESSAGE in envelope["files"]["agent.log"]
     assert _MESSAGE in envelope["files"]["report"]
+
+
+def test_message_derived_names_never_reach_the_summary():
+    """Identifier-shaped tokens from message text or a runtime-built logger name are not printed;
+    real module paths and builtin exception names still are."""
+    from hermes_cli.debug_summary import _log_counts
+
+    log = (
+        "2026-04-12 17:00:00,001 WARNING agent.john_smith_42_main_st_password_hunter2: x\n"
+        "2026-04-12 17:00:01,002 ERROR agent.conversation_loop: "
+        "home.jsmith.projects.TopSecretError and SecretProjectError, then ConnectionResetError\n"
+        "httpx.ReadTimeout: timed out\n")
+    by_logger, exceptions, _codes, _n = _log_counts(log)
+    loggers = {name for _level, name in by_logger}
+    assert loggers == {"agent.*", "agent.conversation_loop"}
+    assert set(exceptions) == {"(other)", "ConnectionResetError", "httpx.ReadTimeout"}
+    assert "john_smith" not in repr(by_logger) and "jsmith" not in repr(exceptions)

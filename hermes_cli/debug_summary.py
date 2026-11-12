@@ -9,11 +9,15 @@ from an allowlist instead. The full redacted logs go only to private storage (``
 
 from __future__ import annotations
 
+import builtins
+import functools
+import importlib.util
 import logging
 import platform
 import re
 import sys
 from collections import Counter
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -32,7 +36,8 @@ _TRACEBACK_TAIL_RE = re.compile(r"^(?:[a-z_][a-z0-9_]*\.){0,4}[A-Z]\w*(?:Error|E
 _TOP_N = 20
 _MAX_SHAPE_DEPTH = 2
 # Logger names are module paths, but some embed runtime names (an MCP server, a plugin); only
-# loggers rooted in a known package are named, the rest are counted as "(other)".
+# loggers rooted in a known package are named, the rest are counted as "(other)". Below the root,
+# only segments that exist as modules on disk are kept (see _module_path).
 _KNOWN_LOGGER_ROOTS = frozenset({
     "acp_adapter", "agent", "cli", "cron", "gateway", "hermes", "hermes_cli", "hermes_constants",
     "hermes_logging", "hermes_platform", "hermes_state", "model_tools", "pm", "plugins",
@@ -110,6 +115,42 @@ def _config_shape(raw: dict[str, Any], schema: dict[str, Any], depth: int = 0) -
     return lines
 
 
+@functools.lru_cache(maxsize=512)
+def _module_path(name: str) -> str | None:
+    """``name`` when every segment is a real module under a known root, else the longest real
+    prefix + ``.*``; ``None`` when the root is unknown. Message-derived segments (a user name, a
+    password baked into a logger or exception path) never match a file, so they never print."""
+    segments = name.split(".")
+    if segments[0] not in _KNOWN_LOGGER_ROOTS:
+        return None
+    spec = _guarded(lambda: importlib.util.find_spec(segments[0]), None)
+    dirs = [Path(d) for d in (getattr(spec, "submodule_search_locations", None) or [])]
+    kept = [segments[0]]
+    for seg in segments[1:]:
+        hit = next((d / seg for d in dirs if (d / seg).is_dir() or (d / f"{seg}.py").is_file()), None)
+        if hit is None:
+            return ".".join(kept) + ".*"
+        kept.append(seg)
+        dirs = [hit] if hit.is_dir() else []
+    return ".".join(kept)
+
+
+def _logger_label(name: str) -> str:
+    return _module_path(name) or "(other)"
+
+
+def _exception_label(token: str) -> str:
+    """A dotted class keeps its prefix only when that prefix is a verified module path; otherwise
+    only a builtin exception name is shown, since a bare or foreign class name can come from
+    user code or tool output in the message text."""
+    prefix, _, cls = token.rpartition(".")
+    path = _module_path(prefix) if prefix else None
+    if path and not path.endswith(".*"):
+        return token
+    builtin = getattr(builtins, cls, None)
+    return cls if isinstance(builtin, type) and issubclass(builtin, BaseException) else "(other)"
+
+
 def _log_counts(text: str) -> tuple[Counter, Counter, Counter, int]:
     """(level, logger) counts, exception-class counts and HTTP-status counts for one log. Only
     WARNING+ log lines and traceback frames are mined; INFO lines (where adapters log message
@@ -121,13 +162,10 @@ def _log_counts(text: str) -> tuple[Counter, Counter, Counter, int]:
     for line in lines:
         m = _LOG_LINE_RE.match(line)
         if m:
-            name = m.group("logger")
-            if name.split(".", 1)[0] not in _KNOWN_LOGGER_ROOTS:
-                name = "(other)"
-            by_logger[(m.group("level"), name)] += 1
+            by_logger[(m.group("level"), _logger_label(m.group("logger")))] += 1
         elif not _TRACEBACK_TAIL_RE.match(line):
             continue
-        exceptions.update(set(_EXC_NAME_RE.findall(line)))
+        exceptions.update({_exception_label(t) for t in _EXC_NAME_RE.findall(line)})
         statuses.update(set(_HTTP_STATUS_RE.findall(line)))
     return by_logger, exceptions, statuses, len(lines)
 

@@ -944,9 +944,20 @@ def fetch_model_metadata(force_refresh: bool = False) -> dict[str, dict[str, Any
         return {}
 
 
+def _endpoint_model_supports_vision(model: dict[str, Any]) -> Optional[bool]:
+    """Vision capability from a ``/models`` item: ``capabilities.vision`` (bool) first, else
+    ``input_modalities`` containing ``"image"``; None when neither is present."""
+    caps = model.get("capabilities")
+    vision = caps.get("vision") if isinstance(caps, dict) else None
+    if isinstance(vision, bool):
+        return vision
+    modalities = model.get("input_modalities")
+    return "image" in modalities if isinstance(modalities, list) else None
+
+
 def _endpoint_model_entry(model: dict[str, Any], model_id: str, context_length: Optional[int]) -> dict[str, Any]:
     """Cache entry for one ``/models`` item; optional keys are set only when known."""
-    optional = (("context_length", context_length), ("max_completion_tokens", _extract_first_int(model, _MAX_COMPLETION_KEYS)), ("pricing", _extract_pricing(model) or None))
+    optional = (("context_length", context_length), ("max_completion_tokens", _extract_first_int(model, _MAX_COMPLETION_KEYS)), ("pricing", _extract_pricing(model) or None), ("supports_vision", _endpoint_model_supports_vision(model)))
     return {"name": model.get("name", model_id), **{k: v for k, v in optional if v is not None}}
 
 
@@ -1083,16 +1094,31 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
     return _remember_endpoint_models(memo_key, {})
 
 
-def _resolve_endpoint_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
-    """Resolve context length from an endpoint's live ``/models`` metadata."""
-    endpoint_metadata = fetch_endpoint_model_metadata(base_url, api_key=api_key)
+def _match_endpoint_model(model: str, endpoint_metadata: dict[str, dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """Match a model id against endpoint ``/models`` metadata: exact key first, then the
+    sole model on a single-model server, then a substring match (``""`` excluded)."""
     matched = endpoint_metadata.get(model)
     if not matched and len(endpoint_metadata) == 1:
         matched = next(iter(endpoint_metadata.values()))
-    elif not matched and model:  # substring match; "" would match EVERY key and poison the window
+    elif not matched and model:  # substring match; "" would match EVERY key and poison the result
         matched = next((entry for key, entry in endpoint_metadata.items() if model in key or key in model), None)
+    return matched
+
+
+def _resolve_endpoint_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
+    """Resolve context length from an endpoint's live ``/models`` metadata."""
+    endpoint_metadata = fetch_endpoint_model_metadata(base_url, api_key=api_key)
+    matched = _match_endpoint_model(model, endpoint_metadata)
     context_length = matched.get("context_length") if matched else None
     return context_length if isinstance(context_length, int) else None
+
+
+def _resolve_endpoint_supports_vision(model: str, base_url: str, api_key: str = "") -> Optional[bool]:
+    """Resolve vision capability from an endpoint's live ``/models`` metadata."""
+    endpoint_metadata = fetch_endpoint_model_metadata(base_url, api_key=api_key)
+    matched = _match_endpoint_model(model, endpoint_metadata)
+    supports_vision = matched.get("supports_vision") if matched else None
+    return supports_vision if isinstance(supports_vision, bool) else None
 
 
 def _get_context_cache_path() -> Path:

@@ -946,6 +946,60 @@ class TestFetchEndpointModelMetadata:
         mock_stream.assert_called_once()
 
 
+class TestEndpointModelVisionCapability:
+    """The custom-endpoint ``/models`` probe now captures per-model vision capability
+    (``capabilities.vision`` / ``input_modalities``) alongside context length, so the
+    image router can read it without a second fetch."""
+
+    def test_entry_captures_vision_from_capabilities(self):
+        import agent.model_metadata as mm
+
+        entry = mm._endpoint_model_entry(
+            {"id": "m", "capabilities": {"vision": True, "tool_calling": True}}, "m", 32768
+        )
+        assert entry["supports_vision"] is True
+
+    def test_entry_captures_vision_from_input_modalities(self):
+        import agent.model_metadata as mm
+
+        entry = mm._endpoint_model_entry(
+            {"id": "m", "input_modalities": ["text", "image"]}, "m", 32768
+        )
+        assert entry["supports_vision"] is True
+
+    def test_entry_vision_false_when_text_only(self):
+        import agent.model_metadata as mm
+
+        entry = mm._endpoint_model_entry(
+            {"id": "m", "capabilities": {"vision": False}, "input_modalities": ["text"]}, "m", 32768
+        )
+        assert entry["supports_vision"] is False
+
+    def test_entry_omits_vision_when_unknown(self):
+        import agent.model_metadata as mm
+
+        entry = mm._endpoint_model_entry({"id": "m"}, "m", 32768)
+        assert "supports_vision" not in entry
+
+    def test_resolve_returns_bool(self):
+        import agent.model_metadata as mm
+
+        with patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={"m": {"supports_vision": True}}):
+            assert mm._resolve_endpoint_supports_vision("m", "https://custom.example/v1") is True
+
+    def test_resolve_substring_match(self):
+        import agent.model_metadata as mm
+
+        with patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={"combo:m": {"supports_vision": True}}):
+            assert mm._resolve_endpoint_supports_vision("m", "https://custom.example/v1") is True
+
+    def test_resolve_none_when_unknown(self):
+        import agent.model_metadata as mm
+
+        with patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}):
+            assert mm._resolve_endpoint_supports_vision("m", "https://custom.example/v1") is None
+
+
 # =========================================================================
 # Nous Portal context-window resolution (provider="nous")
 # =========================================================================

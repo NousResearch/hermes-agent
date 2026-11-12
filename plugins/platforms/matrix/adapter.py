@@ -2215,7 +2215,11 @@ class MatrixAdapter(BasePlatformAdapter):
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,
         relates_to: dict, msgtype: str, mention_claimed: bool = False) -> None:
         body = source_content.get("body", "") or ""
-        url = source_content.get("url", "")
+        # Encrypted media: the keys decrypt file.url, so it wins over any top-level url (NeoChat
+        # also sends a redundant local file:// one, #154251).
+        file_content = source_content.get("file") if isinstance(source_content.get("file"), dict) else {}
+        is_encrypted_media = bool(file_content.get("url"))
+        url = file_content.get("url", "") if is_encrypted_media else source_content.get("url", "")
         if url and not str(url).startswith("mxc://"):
             logger.warning("[Matrix] Rejecting inbound media %s with non-MXC URL", event_id)
             return
@@ -2232,13 +2236,6 @@ class MatrixAdapter(BasePlatformAdapter):
                 "[Matrix] Rejecting oversized inbound media %s (%d > %d bytes)", event_id, event_size_int,
                 self._max_media_bytes)
             return
-        file_content = source_content.get("file", {})  # encrypted media carries file.url
-        if not url and isinstance(file_content, dict):
-            url = file_content.get("url", "") or ""
-            if url and not str(url).startswith("mxc://"):
-                logger.warning("[Matrix] Rejecting inbound encrypted media %s with non-MXC URL", event_id)
-                return
-        is_encrypted_media = bool(file_content and isinstance(file_content, dict) and file_content.get("url"))
         msg_type, media_type, is_voice_message = self._classify_inbound_media(msgtype, event_mimetype, source_content)
         # Gate (require_mention / allowed rooms) BEFORE the download: an unmentioned or
         # non-allowlisted room must not pull media onto the host only to drop it.

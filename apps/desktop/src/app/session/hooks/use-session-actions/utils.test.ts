@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
-import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart } from '@/lib/chat-messages'
+import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart, toChatMessages } from '@/lib/chat-messages'
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
 import { $desktopOnboarding, consumePendingCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -1555,6 +1555,30 @@ describe('preserveLocalPendingTurnMessages', () => {
 })
 
 describe('appendLiveSessionProjection', () => {
+  it('does not paint a second prompt when a running image turn trails injected context', () => {
+    const caption = 'look at this'
+
+    const stored = toChatMessages([
+      {
+        role: 'user',
+        content:
+          `${caption}\n\n[Image attached at: /tmp/shot.png]\n[screenshot]\n` +
+          '[System: This conversation is now being answered on a different interface: desktop]',
+        timestamp: 1,
+        row_id: 9
+      }
+    ])
+
+    const projected = appendLiveSessionProjection(stored, {
+      session_id: 'runtime-1',
+      inflight: { user: caption, assistant: '', streaming: true }
+    })
+
+    expect(projected.filter(message => message.role === 'user').map(message => message.id)).toEqual([stored[0].id])
+    expect(chatMessageText(projected[0])).toBe(caption)
+    expect(projected[0].attachmentRefs).toEqual(['@image:/tmp/shot.png'])
+  })
+
   // A synthetic starting prompt keeps the display typing its persisted row
   // will get: on reconnect it renders as the same timeline event as history,
   // never as a user bubble; a real user quoting the marker text stays a user

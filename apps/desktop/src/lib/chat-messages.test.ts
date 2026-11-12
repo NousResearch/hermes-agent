@@ -346,6 +346,22 @@ describe('toChatMessages', () => {
     expect(chatMessageText(assistant)).toBe(content)
   })
 
+  it('drops injected context after a native image suffix so the caption and thumbnail remain', () => {
+    const caption = 'look at this'
+    const path = '/tmp/shot.png'
+    const memory = `${caption}\n\n[Image attached at: ${path}]\n[screenshot]\n<memory-context>\nsecret recall\n</memory-context>`
+    const note = `${caption}\n\n[Image attached at: ${path}]\n[screenshot]\n[System: This conversation is now being answered on a different interface: desktop]`
+
+    for (const content of [memory, note]) {
+      const [message] = toChatMessages([{ role: 'user', content, timestamp: 1, row_id: 9 }])
+
+      expect(chatMessageText(message)).toBe(caption)
+      expect(message.attachmentRefs).toEqual([`@image:${path}`])
+      expect(JSON.stringify(message)).not.toContain('secret recall')
+      expect(JSON.stringify(message)).not.toContain('different interface')
+    }
+  })
+
   it('lifts @image directive lines into attachmentRefs instead of inline text', () => {
     const [message] = toChatMessages([
       {

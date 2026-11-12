@@ -1,16 +1,16 @@
 name: pepper
 title: Pepper for Hermes
 repo: https://github.com/Akshay-Scalelabs/pepper-hermes-plugin
-sha: 10170c9451a20441eab768c75246b87ca6ffd780
+sha: bf42bff14f992cf6252169039eb6909f3ee5ca66
 description: "Say “parlay this” to find a ParlayTix ticket or preview two outcome rights for one you own. Resume the same split across chats, review a listing for the other side in your wallet, or set a budget watch and ask for updates. Disclosure — crypto-adjacent ticketing: talks only to the ParlayTix hosted MCP server (mcp.parlaytix.xyz, OAuth via Hermes) and can preview/create ticket splits that mint outcome-right NFTs on Base, prepare checkout and listing reviews, and create/activate/answer Scout watches; payment, purchase and listing signing happen in the user's ParlayTix wallet, and write calls are gated by Hermes approval only when the server is configured `trust: untrusted` as the README instructs."
 maintainer: Akshay-Scalelabs
 tier: community
 category: tools
-version: "0.5.2"
+version: "0.5.3"
 requires_hermes: ">=0.21.5"
-docs_url: https://github.com/Akshay-Scalelabs/pepper-hermes-plugin/blob/10170c9451a20441eab768c75246b87ca6ffd780/README.md
+docs_url: https://github.com/Akshay-Scalelabs/pepper-hermes-plugin/blob/bf42bff14f992cf6252169039eb6909f3ee5ca66/README.md
 screenshots:
-  - https://raw.githubusercontent.com/Akshay-Scalelabs/pepper-hermes-plugin/10170c9451a20441eab768c75246b87ca6ffd780/docs/ticket-review.png
+  - https://raw.githubusercontent.com/Akshay-Scalelabs/pepper-hermes-plugin/bf42bff14f992cf6252169039eb6909f3ee5ca66/docs/ticket-review.png
 known_issues:
   - Live splitting requires ParlayTix admission for the specific account and verified ticket.
 capabilities:

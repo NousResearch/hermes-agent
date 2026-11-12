@@ -1,6 +1,8 @@
 """Tests for webhook adapter dynamic route loading."""
 
 import json
+import logging
+import os
 import pytest
 
 from gateway.config import PlatformConfig
@@ -25,6 +27,55 @@ def _isolate(tmp_path, monkeypatch):
 
 
 class TestDynamicRouteLoading:
+
+    def test_disabled_dynamic_route_is_skipped(self, tmp_path):
+        (tmp_path / _DYNAMIC_ROUTES_FILENAME).write_text(
+            json.dumps({"paused": {"enabled": False, "secret": "example-token"}})
+        )
+
+        adapter = _make_adapter()
+        adapter._reload_dynamic_routes()
+
+        assert "paused" not in adapter._routes
+        assert "paused" not in adapter._dynamic_routes
+
+    def test_reenabled_dynamic_route_hot_reloads_without_sleep(self, tmp_path):
+        path = tmp_path / _DYNAMIC_ROUTES_FILENAME
+        path.write_text(json.dumps({"paused": {"enabled": False, "secret": "example-token"}}))
+
+        adapter = _make_adapter()
+        adapter._reload_dynamic_routes()
+        assert "paused" not in adapter._dynamic_routes
+
+        next_mtime = path.stat().st_mtime + 2
+        path.write_text(json.dumps({"paused": {"enabled": True, "secret": "example-token"}}))
+        os.utime(path, (next_mtime, next_mtime))
+        adapter._reload_dynamic_routes()
+
+        assert "paused" in adapter._dynamic_routes
+
+    def test_disabled_static_route_reserves_name(self, tmp_path):
+        (tmp_path / _DYNAMIC_ROUTES_FILENAME).write_text(
+            json.dumps({"paused": {"secret": "example-token"}})
+        )
+        adapter = _make_adapter(routes={"paused": {"enabled": False, "secret": "example-token"}})
+
+        adapter._reload_dynamic_routes()
+
+        assert "paused" not in adapter._routes
+        assert "paused" not in adapter._dynamic_routes
+
+    def test_invalid_enabled_type_is_skipped(self, tmp_path, caplog):
+        (tmp_path / _DYNAMIC_ROUTES_FILENAME).write_text(
+            json.dumps({"paused": {"enabled": "false", "secret": "example-token"}})
+        )
+        adapter = _make_adapter()
+
+        with caplog.at_level(logging.WARNING, logger="gateway.platforms.webhook"):
+            adapter._reload_dynamic_routes()
+
+        assert "paused" not in adapter._dynamic_routes
+        assert any("'enabled' must be a boolean" in record.message for record in caplog.records)
 
     def test_loads_dynamic_routes(self, tmp_path):
         subs = {"my-hook": {"secret": "dynamic-secret", "prompt": "test", "events": []}}
@@ -77,5 +128,3 @@ class TestDynamicRouteSecretValidation:
         adapter = _make_adapter()  # global secret set
         adapter._reload_dynamic_routes()
         assert "valid" in adapter._routes
-
-

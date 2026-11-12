@@ -502,6 +502,42 @@ class TestHTTPHandling:
 
 
     @pytest.mark.asyncio
+    async def test_disabled_route_behaves_like_unknown_route(self):
+        """Disabled routes never reach authentication or dispatch."""
+        adapter = _make_adapter(
+            routes={"paused": {"enabled": False, "secret": _INSECURE_NO_AUTH, "prompt": "x"}}
+        )
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/webhooks/paused", json={"a": 1})
+            assert resp.status == 404
+            assert (await resp.json())["error"] == "Unknown route: paused"
+
+        adapter.handle_message.assert_not_called()
+
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("enabled", [False, "false", None, 0, 1])
+    async def test_runtime_disabled_route_stops_before_auth_and_rate_limit(self, enabled):
+        adapter = _make_adapter(routes={"paused": {"secret": "valid", "prompt": "x"}})
+        adapter._routes["paused"]["enabled"] = enabled
+        adapter._read_authenticated_body = AsyncMock()
+        adapter.handle_message = AsyncMock()
+
+        async with TestClient(TestServer(_create_app(adapter))) as cli:
+            resp = await cli.post("/webhooks/paused", json={"a": 1})
+            assert resp.status == 404
+            assert (await resp.json())["error"] == "Unknown route: paused"
+
+        adapter._read_authenticated_body.assert_not_called()
+        adapter.handle_message.assert_not_called()
+        assert adapter._rate_counts == {}
+        assert adapter._seen_deliveries == {}
+
+
+    @pytest.mark.asyncio
     async def test_route_without_secret_rejects_unsigned_request(self):
         """Missing HMAC secret must fail closed even if connect() was bypassed."""
         routes = {"test": {"prompt": "hi"}, "blank": {"prompt": "hi", "secret": "   "}}

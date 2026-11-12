@@ -1,20 +1,21 @@
 name: roster-compiler
 title: "Roster Compiler"
 repo: https://github.com/COSMICnoob80/hermes-roster-compiler
-sha: 37ad48c3ef16f58e7eb37610ff299d944585a794
+sha: 08704c949483475397e1efd4b61dab3d51d467d2
 description: >-
   Reads a hospital duty roster (CSV, plain text, Excel or a text-layer PDF), flags uncovered shifts,
   double bookings, runs longer than six days and night-then-day turns, and writes a clean schedule plus
-  an HTML exception report. Deterministic: no model calls, no network, staff names only, the input file
-  is never modified, and a file it cannot read is an error rather than a clean bill of health.
+  an HTML exception report. Deterministic: no model calls, no network, staff names only. Honours Hermes's
+  read and write denylists, never modifies its input, and treats a file it cannot read as an error rather
+  than a clean bill of health.
 maintainer: COSMICnoob80
 tier: community
 category: tools
 requires_hermes: ">=0.21"
 docs_url: https://github.com/COSMICnoob80/hermes-roster-compiler#readme
-version: "0.1.1"
+version: "0.1.2"
 screenshots:
-  - https://raw.githubusercontent.com/COSMICnoob80/hermes-roster-compiler/37ad48c3ef16f58e7eb37610ff299d944585a794/docs/report.png
+  - https://raw.githubusercontent.com/COSMICnoob80/hermes-roster-compiler/08704c949483475397e1efd4b61dab3d51d467d2/docs/report.png
 readme: true
 platforms: []
 capabilities:

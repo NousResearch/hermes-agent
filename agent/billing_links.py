@@ -60,6 +60,10 @@ _PROVIDERS: tuple[_Provider, ...] = (
 
 _BY_SLUG: dict[str, _Provider] = {slug: p for p in _PROVIDERS for slug in p.slugs}
 
+# A request sent on Anthropic's native OAuth wire is billed on the Claude subscription, so its
+# recovery page is the subscription's usage settings, not the Console billing page API keys use.
+_CLAUDE_SUBSCRIPTION_URL = "https://claude.ai/settings/usage"
+
 
 def is_nous_inference_route(provider: str, base_url: str) -> bool:
     """True when the failing route is the Nous-managed inference gateway."""
@@ -86,11 +90,16 @@ def _resolve_provider_link(slug: str, base_url: str) -> tuple[str, Optional[str]
     return slug.replace("_", " ").replace("-", " ").strip().title() or "your provider", None
 
 
-def build_billing_block(*, provider: str, base_url: str, model: str, message: str = "") -> BillingBlock:
-    """Billing descriptor for a billing-classified failure; ``message`` (agent-loop guidance) passes through unchanged."""
+def build_billing_block(
+    *, provider: str, base_url: str, model: str, message: str = "", oauth: bool = False,
+) -> BillingBlock:
+    """Billing descriptor for a billing-classified failure; ``message`` (agent-loop guidance) passes through unchanged.
+    ``oauth``: the request went out on Anthropic's native OAuth wire (billed on the Claude subscription), under any slug."""
     slug = (provider or "").strip().lower()
     model = (model or "").strip()
     if is_nous_inference_route(slug, base_url):
         return BillingBlock(slug or "nous", "Nous Portal", model, _nous_billing_url(), True, message or "")
     label, url = _resolve_provider_link(slug, base_url)
+    if oauth:
+        url = _CLAUDE_SUBSCRIPTION_URL
     return BillingBlock(slug, label, model, url, False, message or "")

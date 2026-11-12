@@ -1,20 +1,20 @@
 name: piquesignal
-title: PiqueSignal
+title: Pique Signal
 repo: https://github.com/PiqueSignalLabs/piquesignal-hermes
-sha: 3dd35a30996469181c440550e7fa058a19b5d0f0
+sha: 3d89c2a64cbfca72dbd716b309e11ec580acfb93
 subdir: piquesignal
-description: 'See PiqueSignal''s Solana memecoin board right inside Hermes. Press Deep Check on any coin and Hermes checks it for you: fake volume, the live price, and what people say on X. Open a live chart, ask Hermes about any coin, or listen to a short spoken board update. The free board needs no account; a paid member key adds the live member board. Research only, not financial advice. Nothing trades.'
-maintainer: PiqueSignal
+description: 'See Pique Signal''s Solana memecoin board right inside Hermes. Press Deep Check on any coin on the board and Hermes checks it for you: fake volume, the live price, and what people say on X. Open a live chart, ask Hermes about any coin on it, or listen to a short spoken board update. The free board needs no account; a paid member key adds the live member board. Research only, not financial advice. Nothing trades.'
+maintainer: Pique Signal
 tier: community
 category: desktop
-version: "1.4.0"
+version: "1.5.0"
 requires_hermes: ">=0.23.0"
-docs_url: https://github.com/PiqueSignalLabs/piquesignal-hermes/tree/3dd35a30996469181c440550e7fa058a19b5d0f0/piquesignal#readme
-image: https://raw.githubusercontent.com/PiqueSignalLabs/piquesignal-hermes/3dd35a30996469181c440550e7fa058a19b5d0f0/assets/banner.png
+docs_url: https://github.com/PiqueSignalLabs/piquesignal-hermes/tree/3d89c2a64cbfca72dbd716b309e11ec580acfb93/piquesignal#readme
+image: https://raw.githubusercontent.com/PiqueSignalLabs/piquesignal-hermes/3d89c2a64cbfca72dbd716b309e11ec580acfb93/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/PiqueSignalLabs/piquesignal-hermes/3dd35a30996469181c440550e7fa058a19b5d0f0/assets/page-free.png
-  - https://raw.githubusercontent.com/PiqueSignalLabs/piquesignal-hermes/3dd35a30996469181c440550e7fa058a19b5d0f0/assets/deep-check.png
-  - https://raw.githubusercontent.com/PiqueSignalLabs/piquesignal-hermes/3dd35a30996469181c440550e7fa058a19b5d0f0/assets/chart.png
+  - https://raw.githubusercontent.com/PiqueSignalLabs/piquesignal-hermes/3d89c2a64cbfca72dbd716b309e11ec580acfb93/assets/page-free.png
+  - https://raw.githubusercontent.com/PiqueSignalLabs/piquesignal-hermes/3d89c2a64cbfca72dbd716b309e11ec580acfb93/assets/deep-check.png
+  - https://raw.githubusercontent.com/PiqueSignalLabs/piquesignal-hermes/3d89c2a64cbfca72dbd716b309e11ec580acfb93/assets/chart.png
 readme: true
 platforms: []
 capabilities:

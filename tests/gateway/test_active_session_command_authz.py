@@ -252,3 +252,37 @@ async def test_held_text_runs_when_the_owner_finishes_during_a_refusal_reply():
     await adapter.handle_message(_event(MEMBER, "/stop"))
     await async_wait_until(lambda: (OWNER, HELD_TEXT) in runner.seen, timeout=5)
     adapter._session_tasks[key].cancel()
+
+
+@pytest.mark.asyncio
+async def test_overlapping_refused_commands_hand_the_session_back_to_its_owner():
+    """Two refused /stops overlap and the first finishes first: the owner's guard comes back, not the
+    first command's, so the owner's turn ending releases the session."""
+    adapter, started, finish = _Adapter(), asyncio.Event(), asyncio.Event()
+    gates = {"stop-1": asyncio.Event(), "stop-2": asyncio.Event()}
+
+    async def handle(event):
+        if event.text == "/stop":
+            await gates[event.message_id].wait()
+            return "⛔ You can't run /stop here."  # refused: nothing marks the event
+        started.set()
+        await finish.wait()
+        return "done"
+    adapter.set_message_handler(handle)
+    adapter.set_authorization_check(lambda *_a, **_kw: True)
+    await adapter.handle_message(_event(OWNER, "write the report"))
+    await asyncio.wait_for(started.wait(), 5)
+    key = next(iter(adapter._session_tasks))
+    guards, commands = [adapter._active_sessions[key]], []
+    for message_id in gates:
+        stop = _event(MEMBER, "/stop")
+        stop.message_id = message_id
+        commands.append(asyncio.create_task(adapter.handle_message(stop)))
+        await async_wait_until(lambda: adapter._active_sessions.get(key) is not guards[-1], timeout=5)
+        guards.append(adapter._active_sessions[key])
+    for command, gate in zip(commands, gates.values()):
+        gate.set()
+        await asyncio.wait_for(command, 5)
+    assert adapter._active_sessions.get(key) is guards[0]
+    finish.set()
+    await async_wait_until(lambda: key not in adapter._active_sessions, timeout=5)

@@ -11,12 +11,18 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Command guard -> the guard it stands in for, while that command is in flight. Overlapping commands
+# chain to the owner's guard, so a refusal never hands the session to another command's guard.
+_command_guard_owners: dict[asyncio.Event, asyncio.Event | None] = {}
+
 
 async def dispatch_active_session_command(adapter, event, session_key: str, cmd: str) -> None:
     """Reply, then cancel + drain if accepted; refused, the owner's turn and held input stay."""
     logger.debug("[%s] Command '/%s' bypassing active-session guard for %s", adapter.name, cmd, session_key)
     current_guard = adapter._active_sessions.get(session_key)
+    current_guard = _command_guard_owners.get(current_guard, current_guard)
     command_guard = adapter._active_sessions[session_key] = asyncio.Event()
+    _command_guard_owners[command_guard] = current_guard
     if (held := adapter._text_debounce_store().pop(session_key, None)) is not None:
         held.cancel_timer()
     cancelled = False
@@ -27,6 +33,7 @@ async def dispatch_active_session_command(adapter, event, session_key: str, cmd:
             await adapter.cancel_session_processing(session_key, release_guard=False, discard_pending=False)
             cancelled = True
     finally:
+        _command_guard_owners.pop(command_guard, None)
         if not cancelled:
             await _restore_after_refused_command(adapter, session_key, command_guard, current_guard, held)
     if cancelled:

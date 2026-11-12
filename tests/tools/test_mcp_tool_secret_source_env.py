@@ -244,3 +244,29 @@ def test_secret_source_withholds_last_good_credential_while_config_is_broken(mon
     assert "LAB_FRAGMENT" not in result
     assert result["ALPACA_API_KEY"] == "MARKER-third-party"
     assert explicit["LAB_FRAGMENT"] == "explicit"
+
+
+def test_unreadable_backups_dir_does_not_stop_stdio_env_while_config_is_broken(monkeypatch):
+    """Broken YAML plus an unreadable ``backups/config`` must not turn the last-good ref lookup into
+    an exception: the stdio server still starts (the env is built), as it did before the lookup."""
+    from hermes_cli import config_backups, env_loader
+    from hermes_cli.config import load_config_readonly
+    from tools.mcp_tool_config import _build_safe_env
+
+    config = Path(os.environ["HERMES_HOME"]) / "config.yaml"
+    config.write_text("model:\n  provider: custom\n  base_url: http://127.0.0.1:9/v1\n"
+                      "  api_key: ${LAB_FRAGMENT}\n", encoding="utf-8")
+    monkeypatch.setitem(env_loader._SECRET_SOURCES, "ALPACA_API_KEY", "command")
+    fake_env = {"PATH": "/usr/bin", "LAB_FRAGMENT": "MARKER-fragment", "ALPACA_API_KEY": "MARKER-third-party",
+                "HERMES_HOME": os.environ["HERMES_HOME"]}
+
+    def unreadable(*_args, **_kwargs):
+        raise PermissionError("backups/config")
+
+    with patch.dict("os.environ", fake_env, clear=True):
+        load_config_readonly()
+        config.write_text("model: [broken\n", encoding="utf-8")
+        monkeypatch.setattr(config_backups, "list_config_backups", unreadable)
+        result = _build_safe_env(None)
+
+    assert result["ALPACA_API_KEY"] == "MARKER-third-party"

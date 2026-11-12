@@ -403,9 +403,12 @@ def _raw_config_behind_effective() -> Any:
     from hermes_cli.config_backups import load_newest_good_backup
 
     raw = read_raw_config_readonly()
-    if isinstance(raw, FailedConfigRead):
+    if not isinstance(raw, FailedConfigRead):
+        return raw
+    try:
         return load_newest_good_backup(get_config_path()) or {}
-    return raw
+    except OSError:  # an unreadable backups dir must not stop the stdio server from starting
+        return {}
 
 
 def hermes_consumed_credentials(names: Iterable[str]) -> frozenset:

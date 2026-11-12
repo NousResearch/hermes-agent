@@ -5,12 +5,18 @@ use_gateway), the model picker catalog, config-only checklist exclusion,
 and the faster_whisper post-setup readiness hook.
 """
 
+import asyncio
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from agent import transcription_registry
+from agent.transcription_provider import TranscriptionProvider
+from hermes_cli import tools_config_providers
 from hermes_cli.tools_config import (
     STT_MODEL_CATALOG,
     TOOL_CATEGORIES,
@@ -20,6 +26,7 @@ from hermes_cli.tools_config import (
     _write_provider_config,
     apply_provider_selection,
 )
+from hermes_cli.web_routers import tools as tools_router
 
 def _stt_cat():
     return TOOL_CATEGORIES["stt"]
@@ -93,3 +100,62 @@ class TestConfigOnlyExclusion:
         assert "stt" not in _checklist_toolset_keys("cli")
         # sanity: tts (a real toolset) stays in
         assert "tts" in _checklist_toolset_keys("cli")
+
+
+class _FakeSTTProvider(TranscriptionProvider):
+    def __init__(self, name: str = "fake-stt", *, available: bool = True):
+        self._name = name
+        self.available = available
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def is_available(self) -> bool:
+        return self.available
+
+    def transcribe(self, file_path, *, model=None, language=None, **extra):
+        return {"success": True, "transcript": "", "provider": self._name}
+
+
+class TestPluginSTTProviders:
+    """A plugin transcription provider is a real ``stt.provider`` value.
+
+    Regression: the toolset readiness matrix injected plugin rows for TTS but
+    not STT, and the route dropped the ``stt_provider`` id, so clients reading
+    ``GET /api/tools/toolsets/stt/config`` (the dashboard, Conduit) could not
+    tell whether the selected plugin provider was ready.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_transcription_registry(self):
+        transcription_registry._reset_for_tests()
+        yield
+        transcription_registry._reset_for_tests()
+
+    def test_category_injects_plugin_row(self):
+        transcription_registry.register_provider(_FakeSTTProvider())
+
+        visible = tools_config_providers._visible_providers(_stt_cat(), config={})
+
+        row = next(r for r in visible if r.get("stt_provider") == "fake-stt")
+        assert row["stt_plugin_name"] == "fake-stt"
+
+    def test_readiness_is_the_providers_own_answer(self):
+        provider = _FakeSTTProvider(available=False)
+        transcription_registry.register_provider(provider)
+        row = next(r for r in tools_config_providers._plugin_stt_providers()
+                   if r.get("stt_provider") == "fake-stt")
+
+        assert tools_config_providers.provider_readiness_status(row, {}) == "needs_setup"
+        provider.available = True
+        assert tools_config_providers.provider_readiness_status(row, {}) == "ready"
+
+    def test_route_forwards_provider_id(self, _isolate_hermes_home):
+        transcription_registry.register_provider(_FakeSTTProvider())
+
+        payload = asyncio.run(tools_router.get_toolset_config("stt"))
+        row = next(r for r in payload["providers"] if r.get("stt_provider") == "fake-stt")
+
+        assert row["status"] == "ready"
+        assert row["is_active"] is False  # the profile still selects its default provider

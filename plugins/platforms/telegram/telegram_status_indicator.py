@@ -98,7 +98,8 @@ async def set_status_indicator(adapter: TelegramAdapter, online: bool) -> None:
             if online:
                 await _restore_original(adapter, bot)
             return
-        if online:
+        # Re-read before Offline too: a BotFather edit made while connected is saved, not overwritten.
+        if online or getattr(adapter, "_status_capture_saved", False):
             adapter._status_capture_saved = False
             await _capture_original(adapter, bot)
             adapter._status_capture_saved = True

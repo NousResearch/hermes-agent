@@ -100,3 +100,17 @@ async def test_turning_the_indicator_off_keeps_a_newer_botfather_text(tmp_path):
     await _adapter(tmp_path, bot)._set_status_indicator(online=True)
 
     assert bot.text == "v2 text"
+
+
+@pytest.mark.asyncio
+async def test_botfather_edit_made_while_connected_survives_offline_and_comes_back(tmp_path):
+    bot = _Bot("Original profile")
+    running = _adapter(tmp_path, bot, status_indicator=True)
+    await running._set_status_indicator(online=True)
+    bot.text = "New profile"  # operator edits BotFather while Hermes is connected
+    await running._set_status_indicator(online=False)
+    assert bot.text == "Offline"  # documented clean-disconnect indicator stays
+
+    await _adapter(tmp_path, bot)._set_status_indicator(online=True)  # indicator turned off
+
+    assert bot.text == "New profile"

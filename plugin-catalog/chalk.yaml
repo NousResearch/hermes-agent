@@ -1,6 +1,6 @@
 name: chalk
 repo: https://github.com/Nnadijoshuac/Hermes-chalk
-sha: 8018e2bf3d5ee5aca81ec74f9bd5a9fd8a1ea2bd
+sha: 694af892f33ce1c8c19676dbd71ebe7ee448e88f
 description: >-
   Hermes teaches on a chalkboard. Ask it to explain something and Hermes Desktop draws the lesson
   inline in the chat, stroke by stroke in chalk, while the narration plays; replay it or save it

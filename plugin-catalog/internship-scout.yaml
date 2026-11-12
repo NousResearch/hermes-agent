@@ -6,7 +6,7 @@ description: "Find internships on public Greenhouse, Lever and Ashby job boards,
 maintainer: aditkole
 tier: community
 category: tools
-requires_hermes: ">=0.19.0"
+requires_hermes: ">=0.20.4"
 docs_url: https://github.com/aditkole/hermes-internship-scout#readme
 platforms: []
 capabilities:

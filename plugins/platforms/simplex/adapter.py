@@ -105,6 +105,24 @@ def _display_name(obj: dict, profile_key: str, default: str = "") -> str:
     return obj.get("localDisplayName", "") or (obj.get(profile_key, {}) or {}).get("displayName", default)
 
 
+def _partition_media_paths(paths: list[str]) -> tuple[list[str], list[str]]:
+    """Split MEDIA-tag candidates into real files and phantoms.
+
+    The MEDIA tag is model-authored text, so a reply that merely *mentions* the syntax — or a
+    model inventing a placeholder — used to reach ``send_document``, return "File not found", and
+    fail a text send that had ALREADY been delivered. The gateway then sent a plain-text fallback
+    copy, and the delivery ledger redelivered the same text twice ("Recovered reply"): five
+    messages where one was meant. Dropping non-files at the source removes the whole cascade.
+    """
+    real: list[str] = []
+    phantom: list[str] = []
+    for path in paths:
+        (real if os.path.isfile(path) else phantom).append(path)
+    if phantom:
+        logger.info("SimpleX: ignoring %d MEDIA tag(s) that are not files: %r", len(phantom), phantom)
+    return real, phantom
+
+
 def _send_cmd(chat_id: str, items: list) -> str:
     """Structured ``/_send <target> json …`` addressing *chat_id* by ID. The bare ``@name`` / ``#[id]``
     syntax is a display-name lookup that silently drops unresolved names; json.dumps escapes text."""
@@ -460,16 +478,26 @@ class SimplexAdapter(BasePlatformAdapter):
         media_paths = re.findall(r"MEDIA:(\S+)", content)
         if media_paths:
             content = re.sub(r"MEDIA:\S+", "", content).strip()
+            media_paths, _phantom = _partition_media_paths(media_paths)
+        text_sent = False
         if content:
             cmd_str = _send_cmd(chat_id, [{"msgContent": {"type": "text", "text": content}}])
             await self._send_ws({"corrId": self._make_corr_id(), "cmd": cmd_str})
+            text_sent = True
+        failures: list[str] = []
         for path in media_paths:
             if os.path.splitext(path)[1].lower() in _VOICE_TAG_EXTS:
                 media_result = await self.send_voice(chat_id, path)
             else:
                 media_result = await self.send_document(chat_id, path)
             if not media_result.success:
-                return media_result
+                failures.append(f"{path}: {media_result.error}")
+        if failures:
+            logger.warning("SimpleX: %d media attachment(s) failed: %s", len(failures), "; ".join(failures))
+            # A text that already reached the user must NOT be reported as a failed send: that
+            # failure is what arms the plain-text fallback and the duplicate redelivery.
+            if not text_sent:
+                return SendResult(success=False, error=failures[0])
         return SendResult(success=True)
 
     async def list_channels(self) -> Optional[list[dict[str, Any]]]:

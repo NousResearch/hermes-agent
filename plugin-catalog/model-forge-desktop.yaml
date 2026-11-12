@@ -1,13 +1,14 @@
 name: model-forge-desktop
 title: Model Forge Desktop
 repo: https://github.com/mr-pewpy/model-forge
-sha: cd2ceb531afe7b99613b17729f90abb12e601532
+sha: a90b870708f17e09f349abc4b4188ed4b94f9965
 subdir: model-forge-desktop
-description: "Model Forge cockpit pane for Hermes Desktop — compute targets, live engines, loaded models and hardware at a glance. Companion UI for the Model Forge plugin. Disclosure — renders local plugin state only; no network calls, no shell commands, no credentials, no background processes."
+description: "Model Forge cockpit pane for Hermes Desktop — compute targets, live engines, loaded models and hardware at a glance. Companion UI for the Model Forge plugin. Disclosure — reads plugin state and probes each registered target’s engine API from the desktop app (GET /v1/models, /api/tags, /system_stats); no generation calls, no shell commands, no credentials, no background processes, no telemetry."
 maintainer: mr-pewpy
 tier: community
 category: desktop
-version: "0.1.0"
+version: "1.0.0"
+requires_hermes: ">=0.23.0"
 readme: false
 platforms: []
 capabilities:

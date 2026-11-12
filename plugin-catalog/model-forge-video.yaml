@@ -1,13 +1,14 @@
 name: model-forge-video
 title: Model Forge Video Backend
 repo: https://github.com/mr-pewpy/model-forge
-sha: cd2ceb531afe7b99613b17729f90abb12e601532
+sha: a90b870708f17e09f349abc4b4188ed4b94f9965
 subdir: model-forge-video
-description: "Model Forge local video-generation backend — routes Hermes video_generate to any OpenAI-compatible video job API (weights broker, engines with /v1/videos). Companion package for the Model Forge plugin. Disclosure — submits video jobs to the local endpoints the user configures; no third-party network calls, no shell commands, no stored credentials, no telemetry."
+description: "Model Forge local video-generation backend — routes Hermes video_generate to any OpenAI-compatible video job API (media gateway, engines with /v1/videos). Companion package for the Model Forge plugin. Disclosure — submits video jobs to user-configured endpoints; no third-party network calls, no shell commands, no stored credentials, no telemetry."
 maintainer: mr-pewpy
 tier: community
 category: models
-version: "0.1.0"
+version: "1.0.0"
+requires_hermes: ">=0.23.0"
 readme: false
 platforms: []
 capabilities:

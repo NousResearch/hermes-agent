@@ -1,7 +1,7 @@
 name: hermes-safeguard
 title: Hermes SafeGuard
 repo: https://github.com/robberdom/hermes-safeguard
-sha: 506fa45b9f275da05a2a20e380148d854b76bdbf
+sha: c81d4215e327ccc7dcea263b2ad77bb720daa21b
 version: "0.1.0"
 description: "Deterministic security middleware, EVM simulation guard, and prompt injection defense for on-chain agent actions."
 maintainer: robberdom

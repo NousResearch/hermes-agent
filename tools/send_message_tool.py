@@ -16,9 +16,9 @@ from tools.send_message_targets import (
 )
 from tools.send_message_senders import (
     _AUDIO_EXTS, _DEFAULT_CAPTION_LIMIT, _IMAGE_EXTS, _NO_DELIVERABLE, _VIDEO_EXTS, _VOICE_EXTS,
-    _adapter_media_method, _error, _live_adapter, _media_caption_split, _optional_sender_kwargs,
-    _plugin_standalone_sender, _registry_standalone_send, _resolve_slack_user_target, _sanitize_error_text,
-    _send_matrix_via_adapter)
+    SharedBotTargetRefused, _adapter_media_method, _error, _live_adapter, _media_caption_split,
+    _optional_sender_kwargs, _plugin_standalone_sender, _registry_standalone_send, _resolve_slack_user_target,
+    _sanitize_error_text, _send_matrix_via_adapter)
 from tools.registry import tool_error
 
 # A bare Slack user id (session metadata / home-channel config) is opened as a DM; same shape the
@@ -187,7 +187,10 @@ def _handle_react(args, remove=False):
     if _relay_denial:
         return tool_error(_relay_denial)
 
-    _, adapter = _live_adapter(platform)
+    try:
+        _, adapter = _live_adapter(platform, chat_id, _thread_id)
+    except SharedBotTargetRefused as e:
+        return tool_error(str(e))
     if adapter is None:
         return tool_error(f"Reactions require a live {platform_name} adapter in the running "
                           "gateway (not available from cron/standalone contexts).")
@@ -558,7 +561,10 @@ async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None
     """Live in-process gateway adapter first, else the plugin's ``standalone_sender_fn`` (cron),
     else an error naming both; media uses the adapter's native media APIs under the same rules."""
     platform_name = platform.value if hasattr(platform, "value") else str(platform)
-    runner, adapter = _live_adapter(platform)
+    try:
+        runner, adapter = _live_adapter(platform, chat_id, thread_id)
+    except SharedBotTargetRefused as e:
+        return {"error": str(e)}  # no standalone fallback: that would be the same refusal's bypass
     if adapter is not None:
         try:
             metadata = {**({"thread_id": thread_id} if thread_id else {}),

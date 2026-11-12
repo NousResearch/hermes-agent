@@ -100,7 +100,7 @@ class StreamJsonEmitter:
             # The viewer fell behind and re-attached: ``text`` events stopped there; ``text`` is the whole reply.
             payload["replay_gap"] = True
         self._emit(payload)
-        print(f"\nsession_id: {session_id or self._session_id}", file=sys.stderr)  # same stderr contract as -Q
+        print(f"\nsession_id: {session_id or self._session_id}", file=sys.stderr, flush=True)  # same stderr contract as -Q
         return exit_code
 
     def _emit(self, obj: dict) -> None:

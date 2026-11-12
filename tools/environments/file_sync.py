@@ -27,7 +27,7 @@ from typing import Callable
 import psutil
 
 from hermes_constants import get_hermes_home
-from tools.environments.base import _file_mtime_key
+from tools.environments.base import _file_mtime_key, profile_home_scope
 from utils import mtime_is_racy
 
 logger = logging.getLogger(__name__)
@@ -206,6 +206,10 @@ class FileSyncManager:
         self._bulk_upload_fn = bulk_upload_fn
         self._bulk_download_fn = bulk_download_fn
         self._delete_fn = delete_fn
+        # The owning profile's home, bound now because sync_back usually runs from the
+        # inactive-env reaper thread, which has no profile scope: unbound, get_hermes_home()
+        # there is the launch (default) profile and its skills tree receives the sync-back.
+        self._hermes_home = get_hermes_home()
         self._transaction_lock = threading.Lock()
         self._synced_files: dict[str, tuple[int, int, int, int]] = {}  # remote_path -> file_signature
         self._pushed_hashes: dict[str, str] = {}  # remote_path -> sha256 hex digest
@@ -218,8 +222,12 @@ class FileSyncManager:
         per ``sync_interval`` unless *force* or ``HERMES_FORCE_FILE_SYNC=1``. Transactional:
         state is committed only if ALL operations succeed; on failure it rolls back so the
         next cycle retries everything."""
-        with self._transaction_lock:
+        with self._transaction_lock, self._owner_scope():
             self._sync_transaction(force=force)
+
+    def _owner_scope(self):
+        """Resolve get_files_fn, config and lock paths against the owning profile."""
+        return profile_home_scope(self._hermes_home)
 
     def _sync_transaction(self, *, force: bool = False) -> None:
         """Execute one sync cycle while holding the per-manager lock."""
@@ -314,8 +322,8 @@ class FileSyncManager:
         """Pull remote changes back to the host: download the remote ``.hermes/`` as a tar and
         apply only files whose SHA-256 differs from what was pushed. SIGINT is deferred until
         complete; concurrent gateway sandboxes are serialized via a file lock."""
-        with self._transaction_lock:
-            self._sync_back_transaction(hermes_home=hermes_home)
+        with self._transaction_lock, self._owner_scope():
+            self._sync_back_transaction(hermes_home=hermes_home or self._hermes_home)
 
     def _sync_back_transaction(self, hermes_home: Path | None = None) -> None:
         """Execute sync-back (with retries) against a stable snapshot of manager state."""

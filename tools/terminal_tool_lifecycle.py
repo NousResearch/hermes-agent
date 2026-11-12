@@ -49,17 +49,21 @@ def _cleanup_env(env: Any, *, force_remove: Optional[bool] = None) -> None:
     ``force_remove`` is forwarded to ``cleanup()`` only when given and the backend's
     signature accepts it (``DockerEnvironment``, issue #20561; other backends don't).
     Shared by ``cleanup_vm``, the idle reaper and the prompt-time backend probe so
-    the signature check lives in one place.
+    the signature check lives in one place. Runs in the env's owning profile scope:
+    the reaper thread and atexit carry none, so sync-back and snapshot stores would
+    otherwise write into the launch profile's home.
     """
-    if hasattr(env, 'cleanup'):
-        if force_remove is not None and "force_remove" in inspect.signature(env.cleanup).parameters:
-            env.cleanup(force_remove=force_remove)
-        else:
-            env.cleanup()
-    elif hasattr(env, 'stop'):
-        env.stop()
-    elif hasattr(env, 'terminate'):
-        env.terminate()
+    from tools.environments.base import owner_scope
+    with owner_scope(env):
+        if hasattr(env, 'cleanup'):
+            if force_remove is not None and "force_remove" in inspect.signature(env.cleanup).parameters:
+                env.cleanup(force_remove=force_remove)
+            else:
+                env.cleanup()
+        elif hasattr(env, 'stop'):
+            env.stop()
+        elif hasattr(env, 'terminate'):
+            env.terminate()
 
 
 def _settle_env_processes(env: Any) -> None:
@@ -81,7 +85,10 @@ def _teardown_env(env: Any, task_id: str, *, force_remove: Optional[bool] = None
     A 404/"not found" error means the sandbox is already gone — logged at info."""
     try:
         if stop_idle:
-            env.stop_idle()
+            # Suspending can sync back or snapshot too: same owning-profile scope as _cleanup_env.
+            from tools.environments.base import owner_scope
+            with owner_scope(env):
+                env.stop_idle()
         else:
             _cleanup_env(env, force_remove=force_remove)
         logger.info(done_msg, task_id)

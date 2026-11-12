@@ -111,4 +111,36 @@ def unregister_global_provider(name: str, provider: DashboardAuthProvider) -> bo
     return False
 
 
-clear_providers = _registry.reset_for_tests  # Test-only: drop all registrations.
+# Profile-scope registrations the gate ignores. The bind refusal quotes these
+# sentences (the same text as the WARNING) so an empty provider list names the
+# plugin and profile. Keyed by plugin and profile so a repeat discovery replaces
+# the previous sentence instead of stacking copies.
+# Removed only when the same plugin registers in launch scope.
+_profile_auth_refusals: dict[tuple[str, str], str] = {}
+
+
+def record_profile_dashboard_auth_refusal(plugin_name: str, profile_scope: str, message: str) -> None:
+    """Remember one ignored profile-scope dashboard-auth registration."""
+    with _lock:
+        _profile_auth_refusals[(str(plugin_name), str(profile_scope))] = message
+
+
+def profile_dashboard_auth_refusals() -> list[str]:
+    """Warning sentences for dashboard-auth registrations ignored from a profile scope."""
+    with _lock:
+        return list(_profile_auth_refusals.values())
+
+
+def clear_profile_dashboard_auth_refusals(*, plugin_name: str) -> None:
+    """Drop this plugin's sentences once its registration is accepted."""
+    plugin = str(plugin_name)
+    with _lock:
+        for key in [key for key in _profile_auth_refusals if key[0] == plugin]:
+            del _profile_auth_refusals[key]
+
+
+def clear_providers() -> None:
+    """Test-only: drop all registrations and any remembered profile-scope refusals."""
+    _registry.reset_for_tests()
+    with _lock:
+        _profile_auth_refusals.clear()

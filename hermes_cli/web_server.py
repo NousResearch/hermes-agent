@@ -883,6 +883,8 @@ def _no_auth_provider_message(host: str) -> str:
     so print the offending URL and the remove-it exit.
     Bundled providers expose ``LAST_SKIP_REASON`` so an installed-but-
     unconfigured provider is not reported as merely "no providers".
+    A profile-scoped registration that was ignored is quoted with the same
+    sentence already logged as a WARNING (plugin name and profile path).
     """
     skip_reasons: list[str] = []
     try:
@@ -966,6 +968,14 @@ def _no_auth_provider_message(host: str) -> str:
         f"Refusing to bind dashboard to {host} — {gate_reason}, "
         f"but no auth providers are registered.\n\n"
     )
+    from hermes_cli.dashboard_auth.registry import profile_dashboard_auth_refusals
+    ignored = profile_dashboard_auth_refusals()
+    if ignored:
+        msg += (
+            "Dashboard-auth registrations ignored from a profile scope:\n"
+            + "\n".join(f"  • {line}" for line in ignored)
+            + "\n\n"
+        )
     if skip_reasons:
         msg += "Bundled providers reported these issues:\n" + "\n".join(skip_reasons) + "\n\n"
     return msg + fix_hint

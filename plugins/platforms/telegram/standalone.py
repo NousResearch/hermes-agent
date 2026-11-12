@@ -382,6 +382,33 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             ]
         for chunk in chunks:
             last_msg = await _telegram_send_text_chunk(bot, int_chat_id, chunk, send_parse_mode, _has_html, text_kwargs)
+        # Defense-in-depth (#34270): re-check at I/O so a caller that skipped
+        # filter_media_delivery_paths cannot attach a rejected file. Runs before
+        # the album path too — that sender never reaches the per-file loop.
+        # A missing file still falls through to the caption fallback below.
+        # Import failure fails closed (skip files that exist).
+        try:
+            from gateway.platforms.base import _log_safe_path, validate_media_delivery_path
+        except Exception:
+            validate_media_delivery_path = None
+            _log_safe_path = lambda p: str(p)[:200]
+        vetted_media = []
+        for media_path, is_voice in media_files:
+            safe_path = None
+            if validate_media_delivery_path is not None:
+                try:
+                    safe_path = validate_media_delivery_path(media_path)
+                except Exception:
+                    safe_path = None
+            if safe_path:
+                vetted_media.append((safe_path, is_voice))
+            elif os.path.exists(media_path):
+                warning = f"Skipping unsafe media path outside allowed roots: {_log_safe_path(media_path)}"
+                logger.warning(warning)
+                warnings.append(warning)
+            else:
+                vetted_media.append((media_path, is_voice))
+        media_files = vetted_media
         if album := _telegram_album_paths(media_files, force_document, _tg_caption):
             result = await send_album_standalone(bot, extra or {}, chat_id, album, thread_id=thread_id, notify=notify)
             detail = result.raw_response or {}

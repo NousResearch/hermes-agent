@@ -1,0 +1,36 @@
+name: haides
+title: hAIDes
+repo: https://github.com/VIP-DANaiL/haides
+sha: f95f51a9fbd584545c8d30bfbb52d14a4ef5cce7
+description: >-
+  hAIDes is the ferry for your sessions. A runtime plugin that auto-captures what you were
+  working on and what you owe at session end, then re-orients the next session so Hermes never
+  starts cold. Four hooks (on_session_end, pre_llm_call, post_tool_call, post_llm_call) write an
+  append-only ledger under the Hermes home, and a local-only dashboard pane renders session
+  history and open items in real time. Four tools: haides_whats_owed, haides_log, haides_resolve,
+  haides_dashboard. Two commands: /haides and /haides-dashboard. No cloud, no API key, no
+  database — a single JSON-lines file per profile, nothing leaves the machine.
+maintainer: Danny Purdy
+tier: community
+category: memory
+docs_url: https://github.com/VIP-DANaiL/haides#readme
+requires_hermes: ">=0.21"
+version: "2.0.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - haides_whats_owed
+    - haides_log
+    - haides_dashboard
+    - haides_resolve
+  provides_hooks:
+    - pre_llm_call
+    - post_tool_call
+    - post_llm_call
+    - on_session_end
+  provides_commands:
+    - haides
+    - haides-dashboard
+  provides_middleware: []
+  requires_env: []

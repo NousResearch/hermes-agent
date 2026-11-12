@@ -567,3 +567,46 @@ def test_multiplexing_off_distinct_instances_still_each_serve_their_profile(home
     alpha, beta = _manager(alpha_home, first), _manager(beta_home, second)
     assert (first._home, second._home) == (str(alpha_home), str(beta_home))
     assert alpha.providers == [first] and beta.providers == [second]
+
+
+def test_multiplexing_off_nonweakref_shared_provider_keeps_first_home(homes, caplog):
+    """A duck-typed slots provider must not bypass the live-manager home claim (#146293)."""
+    import weakref
+
+    class _SlotsProvider:
+        __slots__ = ("bound_home",)
+        name = "slots_only"
+
+        def __init__(self):
+            self.bound_home = None
+
+        def is_available(self):
+            return True
+
+        def initialize(self, session_id, **kwargs):
+            self.bound_home = kwargs["hermes_home"]
+
+        def get_tool_schemas(self):
+            return [{"name": _HOOK_TOOL, "description": "remember",
+                     "parameters": {"type": "object", "properties": {}}}]
+
+        def handle_tool_call(self, tool_name, args, **kwargs):
+            return json.dumps({"store_home": self.bound_home, "caller_home": kwargs["hermes_home"]})
+
+    alpha_home, beta_home = homes
+    shared = _SlotsProvider()
+    with pytest.raises(TypeError):
+        weakref.ref(shared)
+
+    first = _manager(alpha_home, shared)
+    second_same_home = _manager(alpha_home, shared)
+    refused = _manager(beta_home, shared)
+
+    assert first.providers == [shared] and second_same_home.providers == [shared]
+    assert refused.providers == [] and not refused.has_tool(_HOOK_TOOL)
+    assert shared.bound_home == str(alpha_home)
+    with _Scope(alpha_home):
+        assert json.loads(first.handle_tool_call(_HOOK_TOOL, {})) == {
+            "store_home": str(alpha_home), "caller_home": str(alpha_home)}
+    logged = "\n".join(r.getMessage() for r in caplog.records if r.name == "agent.memory_caller_scope")
+    assert "memory_provider_instance_shared" in logged and str(beta_home) in logged, logged

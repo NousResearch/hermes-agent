@@ -1,6 +1,6 @@
 name: pulse-rings
 repo: https://github.com/Stormxftw/Pulsr
-sha: 92ed7690dec17605c83e3c287ca96c473c18a88e
+sha: c04577560a40fa94cea2974778ba2fe017e9f446
 title: Pulsr
 description: >-
   Live numbers beside your chat: a Pulses pane for Hermes Desktop with rings, bars,
@@ -21,17 +21,17 @@ version: "0.5.0-dev"
 docs_url: https://github.com/Stormxftw/Pulsr#readme
 readme: true
 screenshots:
-  - https://raw.githubusercontent.com/Stormxftw/Pulsr/92ed7690dec17605c83e3c287ca96c473c18a88e/docs/screens/desktop-pane.png
-  - https://raw.githubusercontent.com/Stormxftw/Pulsr/92ed7690dec17605c83e3c287ca96c473c18a88e/docs/screens/pane-dark.png
-  - https://raw.githubusercontent.com/Stormxftw/Pulsr/92ed7690dec17605c83e3c287ca96c473c18a88e/docs/screens/notifications-dark.png
-  - https://raw.githubusercontent.com/Stormxftw/Pulsr/92ed7690dec17605c83e3c287ca96c473c18a88e/docs/screens/trend-dark.png
-  - https://raw.githubusercontent.com/Stormxftw/Pulsr/92ed7690dec17605c83e3c287ca96c473c18a88e/docs/screens/focus-dark.png
-  - https://raw.githubusercontent.com/Stormxftw/Pulsr/92ed7690dec17605c83e3c287ca96c473c18a88e/docs/screens/approval-dark.png
-  - https://raw.githubusercontent.com/Stormxftw/Pulsr/92ed7690dec17605c83e3c287ca96c473c18a88e/docs/screens/builder-design-dark.png
+  - https://raw.githubusercontent.com/Stormxftw/Pulsr/c04577560a40fa94cea2974778ba2fe017e9f446/docs/screens/desktop-pane.png
+  - https://raw.githubusercontent.com/Stormxftw/Pulsr/c04577560a40fa94cea2974778ba2fe017e9f446/docs/screens/pane-dark.png
+  - https://raw.githubusercontent.com/Stormxftw/Pulsr/c04577560a40fa94cea2974778ba2fe017e9f446/docs/screens/notifications-dark.png
+  - https://raw.githubusercontent.com/Stormxftw/Pulsr/c04577560a40fa94cea2974778ba2fe017e9f446/docs/screens/trend-dark.png
+  - https://raw.githubusercontent.com/Stormxftw/Pulsr/c04577560a40fa94cea2974778ba2fe017e9f446/docs/screens/focus-dark.png
+  - https://raw.githubusercontent.com/Stormxftw/Pulsr/c04577560a40fa94cea2974778ba2fe017e9f446/docs/screens/approval-dark.png
+  - https://raw.githubusercontent.com/Stormxftw/Pulsr/c04577560a40fa94cea2974778ba2fe017e9f446/docs/screens/builder-design-dark.png
 known_issues:
   - Background collection is opt-in and needs a running Hermes process; alert toasts need a visible Desktop window.
-  - MCP pulses need the server connected in the polling process; hosted Nous-gateway connectors are not supported.
-  - Validator cautions - private MCP policy imports (read-only, fail closed; catalog rule 9) and three scanner pattern matches, explained in the README.
+  - MCP pulses and MCP icons stay off until Hermes exposes public MCP tool metadata (ctx.tool_info), then turn on by themselves; hosted Nous-gateway connectors are not supported.
+  - Validator caution - three scanner pattern matches, explained in the README.
   - Windows notification pulses work on Windows only.
   - Not yet checked by an independent security review.
 capabilities:

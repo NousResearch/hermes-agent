@@ -24,7 +24,6 @@ import sys
 import tempfile
 import threading
 from contextlib import contextmanager, suppress
-from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Dict, Any, Literal, Optional, List, Tuple, Set
 
@@ -45,6 +44,7 @@ from hermes_constants import (
 # Re-export from hermes_constants — canonical definition lives there.
 from hermes_constants import get_hermes_home, get_process_hermes_home
 from utils import atomic_replace, fast_safe_load, file_cache_version, file_signature, mkstemp_beside
+from hermes_cli.config_set_scalars import _SCALAR_WORDS, _coerce_float, _coerce_int, _quoted_bool
 from hermes_cli.config_issues import ConfigIssue, _issue
 from hermes_cli.config_backend import (
     ConfigWriteError, config_cache_version, config_destination, config_exists, config_version,
@@ -2976,34 +2976,6 @@ def _looks_structured_value(value: str) -> bool:
     return False
 
 
-def _coerce_int(value: str):
-    """int(value) for a clean integer literal (signs/whitespace/underscores OK), else None."""
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _coerce_float(value: str):
-    """``float(value)`` only when the conversion preserves its decimal value; NaN/inf rejected.
-    Decimal-looking identifiers more precise than a binary float must stay strings."""
-    try:
-        f = float(value)
-        if f != f or f in (float("inf"), float("-inf")) or Decimal(value) != Decimal(str(f)):
-            return None
-    except (TypeError, ValueError, InvalidOperation):
-        return None
-    return f
-
-
-_SCALAR_WORDS = {
-    'true': True, 'yes': True, 'on': True,
-    'false': False, 'no': False, 'off': False,
-    # YAML null. Many DEFAULT_CONFIG leaves are "null/absent = off"; without this,
-    # ``config set X null`` stored the truthy string "null" and the feature could never be cleared.
-    'null': None, 'none': None, '~': None}
-
-
 def _coerce_config_set_value(key: str, value: str) -> Any:
     """Auto-coerce a ``hermes config set`` string to bool/None/int/float/list/dict.
     String-typed settings (per ``DEFAULT_CONFIG``) are preserved verbatim so enum members such as
@@ -3019,13 +2991,9 @@ def _coerce_config_set_value(key: str, value: str) -> Any:
     lower = stripped.lower()
     if lower in _SCALAR_WORDS:
         return _SCALAR_WORDS[lower]
-    # Boolean schema keys also accept shell-quoted YAML scalars. The quotes arrive
-    # as literal characters from e.g. `hermes config set gateway.strict '"true"'`.
-    if isinstance(_default_value_for_key(key), bool) and len(stripped) >= 2:
-        if stripped[0] == stripped[-1] and stripped[0] in ("'", '"'):
-            quoted = _SCALAR_WORDS.get(stripped[1:-1].strip().lower())
-            if isinstance(quoted, bool):
-                return quoted
+    quoted = _quoted_bool(stripped) if isinstance(_default_value_for_key(key), bool) else None
+    if quoted is not None:
+        return quoted
     for coerce in (_coerce_int, _coerce_float):
         coerced = coerce(stripped)
         if coerced is not None:

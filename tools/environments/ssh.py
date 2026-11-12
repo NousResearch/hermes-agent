@@ -8,7 +8,6 @@ import shlex
 import shutil
 import subprocess
 import tempfile
-import weakref
 from pathlib import Path
 from typing import Iterable
 
@@ -105,8 +104,6 @@ class SSHEnvironment(BaseEnvironment):
         super().__init__(cwd=coerce_ssh_remote_cwd(cwd, "ssh"), timeout=timeout, persist_env=persistent)
         self.host, self.user, self.port, self.key_path = host, user, port, key_path
         self.control_dir, self._owns_control_dir = _open_control_dir()
-        if self._owns_control_dir:  # not in cleanup(): a poller still reconnects through a cleaned-up env
-            weakref.finalize(self, shutil.rmtree, self.control_dir, True)
         # Short, deterministic socket name: the path must stay under macOS's 104-byte sun_path
         # limit (raw user@host:port + SSH's 16-byte suffix under a deep $TMPDIR exceeds it), and
         # stability across reconnects keeps ControlMaster reuse working. A probe gets its own
@@ -335,6 +332,14 @@ class SSHEnvironment(BaseEnvironment):
         cmd = self._build_ssh_command(send_env=values) + bash_argv(shlex.quote(prepend_unset(cmd_string, unset_names)), login)
         client_env = client_env_with(values)
         return _popen_bash(cmd, stdin_data, env=client_env) if client_env is not None else _popen_bash(cmd, stdin_data)
+
+    def __del__(self):
+        # The fallback dir goes only after the LAST cleanup() (a poller still reconnects through a
+        # cleaned-up env), and after it, not before: a weakref finalizer runs ahead of __del__ in
+        # cyclic GC and at exit, and sync_back() would then connect through a deleted ControlPath.
+        super().__del__()
+        if getattr(self, "_owns_control_dir", False):
+            shutil.rmtree(self.control_dir, ignore_errors=True)
 
     def cleanup(self):
         self.stop_all_processes()

@@ -111,6 +111,31 @@ def test_fallback_dir_outlives_cleanup_and_goes_with_its_env(shared_root, monkey
 
 
 @pytest.mark.platforms("posix")
+def test_last_cleanup_of_a_cyclic_env_still_has_its_fallback_dir(shared_root, monkeypatch):
+    """A synced env sits in a cycle (FileSyncManager holds its bound methods), so the cyclic GC
+    frees it, and its final cleanup() syncs back through the ControlPath: the dir must outlive it."""
+    monkeypatch.setattr(ssh_mod.logger, "disabled", True)  # a captured record's exc traceback pins the env
+    for name in ("hermes-ssh", f"hermes-ssh-{os.getuid()}"):  # windows-footgun: ok — posix-only test
+        (shared_root / name).write_text("x", encoding="utf-8")  # squat both names: forces mkdtemp
+    env = ssh_mod.SSHEnvironment(host="h", user="u", probe_only=True)
+    fallback_dir, seen = env.control_dir, []
+
+    class SyncBack:
+        def __init__(self, upload_fn):
+            self.upload_fn = upload_fn  # a bound method of the env, like FileSyncManager's callbacks
+
+        def sync_back(self):
+            seen.append(fallback_dir.is_dir())
+
+    env._sync_manager = SyncBack(env._run_ssh)
+    del env
+    gc.collect()
+
+    assert seen and all(seen)
+    assert not fallback_dir.exists()
+
+
+@pytest.mark.platforms("posix")
 def test_failed_connection_does_not_leave_a_fallback_dir_behind(shared_root, monkeypatch):
     for name in ("hermes-ssh", f"hermes-ssh-{os.getuid()}"):  # windows-footgun: ok — posix-only test
         (shared_root / name).write_text("x", encoding="utf-8")  # squat both names: forces mkdtemp

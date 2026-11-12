@@ -14,6 +14,7 @@ import contextlib
 import contextvars
 import logging
 import os
+import re
 import threading
 from dataclasses import dataclass
 from typing import Any, List, Optional
@@ -21,6 +22,22 @@ from typing import Any, List, Optional
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("cron.scheduler")
+
+CRON_DELIVERABLE_MARKER = "FINAL_CRON_OUTPUT:"
+_CRON_DELIVERABLE_MARKER_RE = re.compile(
+    rf"(?im)^[^\S\r\n]*{re.escape(CRON_DELIVERABLE_MARKER)}[^\S\r\n]*(.*)$")
+
+
+def _extract_cron_deliverable_response(text: str) -> str:
+    """Project after the first boundary; keep later markers literal and unmarked reports intact."""
+    if not isinstance(text, str):
+        return ""
+    stripped = text.strip()
+    marker = _CRON_DELIVERABLE_MARKER_RE.search(stripped)
+    if marker is None:
+        return stripped
+    tail = "\n".join((marker.group(1).strip(), stripped[marker.end():].strip())).strip()
+    return tail or stripped
 
 
 # Validates user-supplied delivery platform names, preventing env-var enumeration via crafted names.

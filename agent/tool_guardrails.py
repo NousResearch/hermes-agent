@@ -14,7 +14,8 @@ from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Mapping
 
 from utils import safe_json_loads
-from agent.tool_result_classification import file_mutation_result_landed, is_guardrail_refusal
+from agent.tool_result_classification import (
+    shape_failure_error, file_mutation_result_landed, has_failure_marker, is_guardrail_refusal, is_rate_limited)
 
 
 IDEMPOTENT_TOOL_NAMES = frozenset({
@@ -233,12 +234,16 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
         exit_code = data.get("exit_code") if isinstance(data, dict) else None
         return (True, f" [exit {exit_code}]") if exit_code is not None and exit_code != 0 else (False, "")
 
-    if tool_name == "memory":
-        data = safe_json_loads(result)
-        if isinstance(data, dict) and data.get("success") is False and "exceed the limit" in data.get("error", ""):
+    data = safe_json_loads(result)
+    if isinstance(data, dict):
+        failed = data.get("success") is False
+        if tool_name == "memory" and failed and "exceed the limit" in data.get("error", ""):
             return True, " [full]"
-    lower = result[:500].lower()
-    return (True, " [error]") if '"error"' in lower or '"failed"' in lower or result.startswith("Error") else (False, "")
+        # Same rule as _detect_tool_failure: a JSON object is judged by its top-level
+        # shape, never by a substring scan of its nested content.
+        err = data.get("error") or data.get("message")
+        return (True, " [error]") if (err and (failed or "error" in data)) or shape_failure_error(data) else (False, "")
+    return (True, " [error]") if has_failure_marker(result) else (False, "")
 
 
 # Guardrail verdict text injected into the conversation, keyed by decision code.
@@ -387,7 +392,14 @@ class ToolCallGuardrailController:
             # a mutation since the last identical failure restarts the exact-args streak.
             if self._progress_since_failure.pop(signature, False):
                 self._exact_failure_counts.pop(signature, None)
-            exact_count = self._exact_failure_counts[signature] = self._exact_failure_counts.get(signature, 0) + 1
+            # A throttled call retried after its cooldown is the correct move, not a replay:
+            # keep it out of the exact-args streak and never give it that streak's "stop retrying
+            # unchanged" warning, even after earlier ordinary failures with the same args.
+            # It still counts per tool below, so same_tool_failure_halt bounds a dead endpoint.
+            throttled = is_rate_limited(result)
+            exact_count = self._exact_failure_counts.get(signature, 0)
+            if not throttled:
+                exact_count = self._exact_failure_counts[signature] = exact_count + 1
             same_count = self._same_tool_failure_counts[tool_name] = self._same_tool_failure_counts.get(tool_name, 0) + 1
             self._no_progress.pop(signature, None)
             # same_tool_failure counts DIFFERENT args on one tool; for failure-tolerant
@@ -404,7 +416,7 @@ class ToolCallGuardrailController:
                 and same_count >= self.config.same_tool_failure_halt_after
             ):
                 return self._decide("halt", "same_tool_failure_halt", tool_name, same_count, signature)
-            if warnings and exact_count >= self.config.exact_failure_warn_after:
+            if warnings and not throttled and exact_count >= self.config.exact_failure_warn_after:
                 return self._decide("warn", "repeated_exact_failure_warning", tool_name, exact_count, signature)
             if warnings and same_count >= self.config.same_tool_failure_warn_after:
                 return self._decide(

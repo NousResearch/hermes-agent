@@ -1,0 +1,61 @@
+name: bluebubbles-platform
+label: BlueBubbles (iMessage)
+kind: platform
+version: 1.0.0
+description: >
+  BlueBubbles (Apple iMessage) gateway adapter for Hermes Agent.
+  Talks to a local BlueBubbles macOS server: outbound sends over its REST API,
+  inbound messages via a registered webhook listener. Supports media
+  attachments, typing indicators, read receipts and tapbacks (Private API
+  helper), group wake-word gating, and home-channel cron delivery.
+author: NousResearch
+requires_env:
+  - name: BLUEBUBBLES_SERVER_URL
+    description: "BlueBubbles server URL (e.g. http://192.168.1.10:1234)"
+    prompt: "BlueBubbles server URL"
+    password: false
+  - name: BLUEBUBBLES_PASSWORD
+    description: "BlueBubbles server password (BlueBubbles Server → Settings → API)"
+    prompt: "BlueBubbles server password"
+    password: true
+optional_env:
+  - name: BLUEBUBBLES_ALLOWED_USERS
+    description: "Comma-separated iMessage addresses (phone/email) allowed to talk to the bot"
+    prompt: "Allowed iMessage addresses (comma-separated)"
+    password: false
+  - name: BLUEBUBBLES_ALLOW_ALL_USERS
+    description: "Allow any iMessage sender to trigger the bot (dev only)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: BLUEBUBBLES_HOME_CHANNEL
+    description: "Default iMessage address / chat GUID for cron / notification delivery"
+    prompt: "Home channel address"
+    password: false
+  - name: BLUEBUBBLES_HOME_CHANNEL_NAME
+    description: "Display name for the home channel"
+    prompt: "Home channel name"
+    password: false
+  - name: BLUEBUBBLES_WEBHOOK_HOST
+    description: "Webhook listener bind host (default 127.0.0.1)"
+    prompt: "Webhook host"
+    password: false
+  - name: BLUEBUBBLES_WEBHOOK_PORT
+    description: "Webhook listener port (default 8645)"
+    prompt: "Webhook port"
+    password: false
+  - name: BLUEBUBBLES_WEBHOOK_PATH
+    description: "Webhook listener path (default /bluebubbles-webhook)"
+    prompt: "Webhook path"
+    password: false
+  - name: BLUEBUBBLES_SEND_READ_RECEIPTS
+    description: "Auto-mark inbound messages read (default true; needs the Private API helper)"
+    prompt: "Send read receipts? (true/false)"
+    password: false
+  - name: BLUEBUBBLES_REQUIRE_MENTION
+    description: "Require a wake word in group chats (default false)"
+    prompt: "Require mention in groups? (true/false)"
+    password: false
+  - name: BLUEBUBBLES_MENTION_PATTERNS
+    description: "Group wake-word regexes (JSON list or comma/newline-separated); default Hermes wake words"
+    prompt: "Mention patterns"
+    password: false

@@ -10,9 +10,12 @@ schedule via the `cronjob` tool; users via `hermes cron list|add|edit|pause|resu
 `/cron`. Schedules: duration (`"30m"`, `"2h"`, `"1d"`), "every" phrase (`"every 2h"`, `"every monday
 9am"`), 5-field cron (`"0 9 * * *"`), ISO one-shot (`"2026-06-01T09:00:00Z"`). Per-job fields:
 `skills`, `model`/`provider` overrides, `script` (pre-run data-collection script whose stdout is
-injected into the prompt; `no_agent=True` makes the script the whole job), `context_from` (chain job
+injected into the prompt; `no_agent=True` makes the script the whole job; always a FILE under
+`HERMES_HOME/scripts/`, never a command line — `script='echo hi'` is refused at creation), `context_from` (chain job
 A's last output into job B's prompt), `workdir` (run with that directory's `AGENTS.md`/`CLAUDE.md`
-loaded), multi-platform delivery.
+loaded), `timezone` (pin the cron expression's wall clock to an IANA zone; absent = the profile's
+zone), `grace_minutes` (override the catch-up window; `0` = never catch up, cron only),
+multi-platform delivery.
 
 Hardening invariants — each guards a real failure; don't weaken without answering for it:
 - **Inactivity watchdog** on cron agent sessions (`_cron_inactivity_seconds()`): default 600s idle,
@@ -20,7 +23,18 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   session is hard-interrupted so it cannot monopolise the scheduler, while a long-but-active job
   is never cut off. Attached scripts (pre-run or `no_agent`) are bounded separately by the script
   timeout (`_DEFAULT_SCRIPT_TIMEOUT`, 3600s).
-- Catch-up window = half the period, clamped to 120s–2h; 120s grace for missed one-shots.
+- Catch-up window = half the period, clamped to 120s–2h, or the job's `grace_minutes` when set
+  (`0` = never catch up — a real value, never "unset": `0 == False`); 120s grace for missed
+  one-shots.
+- **A pinned `timezone` owns the whole path, not just the compute.** `compute_next_run` resolves
+  *job pin → profile zone*, and every `next_run_at` write site must pass the pin (`cron/jobs.py`
+  call sites, `quota_hold.plan_hold`, `unreachable_retry.will_retry`, `extra_fire.settle`); one missed site is a burst
+  re-run or a skipped slot. `_evaluate_due_job` normalizes the stored instant into the JOB's zone
+  and **skips `_repair_timezone_shifted_cron`** for pinned jobs — that repair is for jobs that
+  follow the profile zone, and on a pinned job its wall-clock predicate reads a due occurrence as
+  future and re-anchors past it (job silently never fires). Knobs live in `cron/jobs_time.py`;
+  `timezone`/`grace_minutes` must stay in `job_definition.JOB_DEFINITION_FIELDS` or a profile
+  distribution strips them.
 - Every recurring occurrence is accounted for: `tick()` advances `next_run_at` BEFORE dispatch
   (at-most-once across a mid-run crash) and stamps `pending_slot` in the same save; a scan that
   finds the stamp with a dead owner restores the instant ONCE (`cron/occurrences.py`), the
@@ -28,6 +42,12 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   skips past-grace misses with a logged reason. Never drop a slot silently (#107485).
 - Per-home tick lock `<home>/cron/.tick.lock` prevents duplicate ticks across processes for
   that profile's store; never a `~/.hermes/...` literal.
+- **Headless ticks refuse, never spawn.** `hermes cron tick` (system crontab / external scheduler)
+  calls `tick(headless=True)`; `cron/scheduler_gateway_gate.py` skips agent jobs when discovery
+  says no gateway owns the home (`last_fire_error` stamped, one warning per tick, due instant
+  untouched) instead of letting `run_canonical_job → connect_gateway → ensure_gateway_runtime`
+  spawn an unmanaged daemon. Same policy as approvals (headless/cron = refuse). The in-process
+  ticker and `hermes cron run` are not headless.
 - **The ticker binds each served profile's scope for the whole tick, including pre-loop code.**
   `scheduler_provider.py::_start_multiplex` is ONE ticker iterating `profiles_to_serve()`
   sequentially under `_profile_cron_scope(home)` (home + secret scope + terminal scope) — never N

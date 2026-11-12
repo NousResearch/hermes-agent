@@ -128,7 +128,7 @@ class NousPortalAdapter(UpstreamAdapter):
                 providers = store.setdefault("providers", {})
                 providers["nous"] = state
                 _save_auth_store(store)
-            _write_shared_nous_state(state)
+            _write_shared_nous_state(state, renewal=True)
         except Exception as exc:
             logger.warning("proxy: failed to persist Nous quarantine state: %s", exc)
 

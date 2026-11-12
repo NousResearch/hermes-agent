@@ -1,15 +1,15 @@
 name: acedatacloud
 title: Ace Data Cloud
-repo: https://github.com/AceDataCloud/hermes-acedatacloud-provider
-sha: 4a6e99a1912b6e296e4464aa79b5851be2527ae3
-image: https://raw.githubusercontent.com/AceDataCloud/hermes-acedatacloud-provider/4a6e99a1912b6e296e4464aa79b5851be2527ae3/assets/catalog.png
+repo: https://github.com/AceDataCloud/AceDataCloudModelProviderHermes
+sha: 568763ee21fe081562bb9bcd91e7323f8f81d6ff
+image: https://raw.githubusercontent.com/AceDataCloud/AceDataCloudModelProviderHermes/568763ee21fe081562bb9bcd91e7323f8f81d6ff/assets/catalog.png
 description: Ace Data Cloud GPT models with streaming and tool calling.
 maintainer: AceDataCloud
 tier: community
 category: models
 requires_hermes: ">=0.21.5"
-version: "1.0.1"
-docs_url: https://github.com/AceDataCloud/hermes-acedatacloud-provider
+version: "1.0.2"
+docs_url: https://github.com/AceDataCloud/AceDataCloudModelProviderHermes/blob/568763ee21fe081562bb9bcd91e7323f8f81d6ff/README.md
 known_issues:
   - The model picker currently offers gpt-4.1-mini and gpt-4.1 only.
 capabilities:

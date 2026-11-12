@@ -25,7 +25,6 @@ from hermes_cli import doctor_tools
 from hermes_cli import doctor_state
 from hermes_cli import doctor_platform
 from hermes_cli import doctor_config
-from tools import browser_tool_install as bt_install
 
 
 @pytest.fixture(autouse=True)
@@ -824,9 +823,8 @@ def test_run_doctor_accepts_kimi_coding_cn_provider(monkeypatch, tmp_path):
     assert "model.provider 'kimi-coding-cn' is not a recognised provider" not in out
 
 
-def _doctor_env_for_agent_browser(monkeypatch, tmp_path):
-    """Shared fixture setup for the agent-browser npx-resolution
-    branch in run_doctor (hermes_cli/doctor.py ~1557-1605)."""
+def _doctor_env_for_browser(monkeypatch, tmp_path):
+    """Shared fixture setup for the Node + Chromium rows of run_doctor."""
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
@@ -858,61 +856,80 @@ def _doctor_env_for_agent_browser(monkeypatch, tmp_path):
         pass
 
 
-def test_run_doctor_reports_installed_agent_browser(monkeypatch, tmp_path):
-    _doctor_env_for_agent_browser(monkeypatch, tmp_path)
+def test_run_doctor_reports_installed_chromium(monkeypatch, tmp_path):
+    _doctor_env_for_browser(monkeypatch, tmp_path)
 
-    monkeypatch.setattr(bt_install, "_find_agent_browser", lambda **_kw: "/pm/agent-browser")
+    monkeypatch.setattr("hermes_cli.browser_runtime.chromium_executable", lambda **_kw: "/pm/chromium/chrome")
 
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         doctor_mod.run_doctor(Namespace(fix=False))
     out = buf.getvalue()
 
-    assert "agent-browser" in out
-    assert "/pm/agent-browser" in out
-    assert "agent-browser not installed" not in out
+    assert "Chromium" in out
+    assert "/pm/chromium/chrome" in out
+    assert "Chromium not installed" not in out
 
 
 def test_doctor_fix_does_not_claim_success_without_published_binary(monkeypatch, tmp_path):
     from hermes_cli import doctor_tools
-    _doctor_env_for_agent_browser(monkeypatch, tmp_path)
+    _doctor_env_for_browser(monkeypatch, tmp_path)
 
-    def missing(**kwargs):
-        raise FileNotFoundError("no published browser")
-
-    monkeypatch.setattr(bt_install, "_find_agent_browser", missing)
+    monkeypatch.setattr("hermes_cli.browser_runtime.chromium_executable", lambda **_kw: None)
+    monkeypatch.setattr("hermes_cli.doctor_tools._is_termux", lambda: False)
     monkeypatch.setattr("pm.ensure", lambda *a, **kw: None)
 
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        assert doctor_tools._check_agent_browser(True) is False
+        doctor_tools._check_chromium(True)
     out = buf.getvalue()
 
-    assert "agent-browser install failed" in out
-    assert "no published browser" in out
+    assert "Chromium not installed" in out
+    assert "hermes pm install chromium" in out
 
 
 def test_doctor_fix_reports_pm_install_failure(monkeypatch, tmp_path):
     from hermes_cli import doctor_tools
     import pm
-    _doctor_env_for_agent_browser(monkeypatch, tmp_path)
-
-    def missing(**kwargs):
-        raise FileNotFoundError("no published browser")
+    _doctor_env_for_browser(monkeypatch, tmp_path)
 
     def refuse(*args, **kwargs):
-        raise pm.InstallError("agent-browser", "offline")
+        raise pm.InstallError("chromium", "offline")
 
-    monkeypatch.setattr(bt_install, "_find_agent_browser", missing)
+    monkeypatch.setattr("hermes_cli.browser_runtime.chromium_executable", lambda **_kw: None)
+    monkeypatch.setattr("hermes_cli.doctor_tools._is_termux", lambda: False)
     monkeypatch.setattr(pm, "ensure", refuse)
 
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        assert doctor_tools._check_agent_browser(True) is False
+        doctor_tools._check_chromium(True)
     out = buf.getvalue()
 
-    assert "agent-browser install failed" in out
+    assert "Chromium install failed" in out
     assert "offline" in out
+
+
+@pytest.mark.parametrize("browser_yaml,reason", [
+    ("browser:\n  cdp_url: http://127.0.0.1:9222\n", "CDP override"),
+    ("browser:\n  engine: lightpanda\n", "lightpanda"),
+    ("browser:\n  cloud_provider: browserbase\n", "browserbase"),
+])
+def test_missing_chromium_is_info_when_config_needs_none(monkeypatch, tmp_path, browser_yaml, reason):
+    """A CDP override, Lightpanda or a cloud provider runs no local Chromium: no warning row."""
+    from hermes_cli import doctor_tools
+    from hermes_constants import get_hermes_home
+
+    (get_hermes_home() / "config.yaml").write_text(browser_yaml, encoding="utf-8")
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    monkeypatch.setattr("hermes_cli.browser_runtime.chromium_executable", lambda **_kw: None)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_tools._check_chromium(False)
+    out = buf.getvalue()
+
+    assert "not needed" in out and reason in out
+    assert "hermes pm install chromium" not in out
 
 
 def test_run_doctor_kimi_cn_env_is_detected_and_probe_is_null_safe(monkeypatch, tmp_path):
@@ -1485,10 +1502,10 @@ class TestStagedRuntimeVenv:
 def test_run_doctor_reports_shadowed_lightpanda_engine(monkeypatch, tmp_path):
     helper = TestDoctorMemoryProviderSection()
 
-    monkeypatch.setattr("tools.browser_tool_lightpanda_fallback._using_lightpanda_engine", lambda: True)
+    monkeypatch.setattr("tools.browser_lightpanda.using_lightpanda_engine", lambda: True, raising=False)
     monkeypatch.setattr(
-        "tools.browser_tool_lightpanda_fallback.lightpanda_engine_status",
-        lambda: (False, "cloud provider Browserbase is selected"),
+        "tools.browser_lightpanda.lightpanda_engine_status",
+        lambda: (False, "cloud provider Browserbase is selected"), raising=False,
     )
     out = helper._run_doctor_and_capture(monkeypatch, tmp_path)
     assert "browser.engine=lightpanda is shadowed" in out
@@ -1500,8 +1517,9 @@ def test_run_doctor_reports_shadowed_lightpanda_engine(monkeypatch, tmp_path):
 def test_run_doctor_warns_when_lightpanda_binary_missing(monkeypatch, tmp_path):
     helper = TestDoctorMemoryProviderSection()
 
-    monkeypatch.setattr("tools.browser_tool_lightpanda_fallback._using_lightpanda_engine", lambda: True)
-    monkeypatch.setattr("tools.browser_tool_lightpanda_fallback.lightpanda_engine_status", lambda: (True, "Browser Use mode"))
+    monkeypatch.setattr("tools.browser_lightpanda.using_lightpanda_engine", lambda: True, raising=False)
+    monkeypatch.setattr("tools.browser_lightpanda.lightpanda_engine_status",
+                        lambda: (True, "Hermes spawns `lightpanda serve`"), raising=False)
     monkeypatch.setattr("tools.browser_lightpanda.find_lightpanda_binary", lambda: None)
     out = helper._run_doctor_and_capture(monkeypatch, tmp_path)
     assert "Lightpanda selected but binary not found" in out
@@ -1632,3 +1650,35 @@ def test_cron_store_check_reports_writability_and_low_space(
     finding = doctor_state._check_cron_store(False)
     assert expected in capsys.readouterr().out
     assert len(finding.issues) == len(issues) and all(any(s in i for i in finding.issues) for s in issues)
+
+
+@pytest.mark.platforms("any")  # the wrapper name differs per host (.bat on Windows)
+def test_profile_alias_status_follows_the_wrapper_the_profile_really_has(monkeypatch, tmp_path):
+    """#131753: doctor said "no alias" for every Windows profile (``.bat`` wrapper) and for any
+    profile reachable only through a custom alias name; a bare (pre-``.bat`` on Windows) wrapper counts."""
+    import hermes_cli.gateway_migrate as gm
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
+    monkeypatch.setattr(gm, "duplicate_credential_findings", list)
+    for name in ("dev", "ops", "work", "old"):
+        (tmp_path / ".hermes" / "profiles" / name).mkdir(parents=True)
+        (tmp_path / ".hermes" / "profiles" / name / "config.yaml").write_text("model: m\n", encoding="utf-8")
+    profiles.create_wrapper_script("dev")
+    profiles.create_wrapper_script("w", target="work")
+    (tmp_path / ".local" / "bin" / "old").write_text('#!/bin/sh\nexec hermes -p old "$@"\n', encoding="utf-8")
+    for foreign in ("ops.bat", "old.bat"):  # same-named non-Hermes commands
+        (tmp_path / ".local" / "bin" / foreign).write_text("@echo off\r\nnotepad %*\r\n", encoding="utf-8")
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        doctor_state._check_profiles(False)
+    lines = out.getvalue().splitlines()
+    status = {name: next(ln for ln in lines if f" {name}:" in ln) for name in ("dev", "ops", "work", "old")}
+
+    assert not any("no alias" in status[n] for n in ("dev", "work", "old"))
+    assert "no alias" in status["ops"]  # a foreign ops.bat is not ops's alias
+    old = next(p for p in profiles.list_profiles() if p.name == "old")
+    assert old.alias_path == tmp_path / ".local" / "bin" / "old"  # never the foreign old.bat (uninstall unlinks it)

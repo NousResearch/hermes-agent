@@ -343,9 +343,9 @@ def test_search_limit_caps_the_group_across_both_legs_and_counts_total():
     matches = out["results"][0]["matches"]
     assert len(matches) == 3  # limit is the per-query cap across BOTH legs
     assert all(m.startswith("connectors__") for m in matches)
-    # total_available counts returned remote tools on top of the local catalog
-    # (empty here: the fake def is not registry-backed in this test env).
-    assert out["total_available"] == 3
+    # total_available counts returned remote tools on top of the local catalog, which holds
+    # manage_connections (deferred by default); the fake MCP def is not registry-backed here.
+    assert out["total_available"] == len(matches) + 1
 
 
 def test_search_drops_remote_group_with_mismatched_use_case_echo():
@@ -513,7 +513,7 @@ def _connectors_on(monkeypatch, client_factory):
 
     monkeypatch.setattr(config, "connectors_available", lambda: True)
     monkeypatch.setattr(bridge, "connectors_available", lambda: True)
-    monkeypatch.setattr(bridge, "_default_client_factory", client_factory)
+    monkeypatch.setattr(bridge, "_default_client_factory", lambda call=None: client_factory())
     invalidate_check_fn_cache()
 
 
@@ -595,26 +595,18 @@ class _FakeResponse:
 
 
 class _RecordingTransport:
-    """Records every outgoing request; answers each with `data` echoes."""
+    """Records every outgoing request; answers each single call with a `data` echo."""
 
     def __init__(self):
         self.requests = []
 
     def request(self, method, url, *, headers=None, json=None, timeout=None):
         self.requests.append({"method": method, "url": url, "json": json})
-        tools = (json or {}).get("tools") or []
-        results = [
-            {"index": i, "connector": t.get("connector"), "tool": t.get("tool"), "data": "ok"}
-            for i, t in enumerate(tools)
-        ]
+        if url.endswith("/schemas"):  # the file-input lookup on a schema-cache miss
+            return _FakeResponse({"schemas": {}})
+        call = (json or {}).get("call") or {}
         return _FakeResponse(
-            {
-                "results": results,
-                "successCount": len(results),
-                "errorCount": 0,
-                "totalCount": len(results),
-            }
-        )
+            {"result": {"connector": call.get("connector"), "tool": call.get("tool"), "data": "ok"}})
 
 
 def _recording_client_factory(transport):
@@ -628,8 +620,7 @@ def _recording_client_factory(transport):
 
 
 def _sent_tools(transport):
-    assert len(transport.requests) == 1
-    return transport.requests[0]["json"]["tools"]
+    return [request["json"]["call"] for request in transport.requests if request["url"].endswith("/execute")]
 
 
 def test_hook_rewrite_and_restored_vendor_slug_reach_the_gateway_request_body(monkeypatch):
@@ -648,7 +639,7 @@ def test_hook_rewrite_and_restored_vendor_slug_reach_the_gateway_request_body(mo
         {"connector": "gmail", "tool": "GMAIL_SEND_EMAIL",
          "arguments": {"to": "x@example.com", "body": "[REDACTED]"}},
     ]
-    assert "sk-secret" not in json.dumps(transport.requests[0]["json"])
+    assert "sk-secret" not in json.dumps([request["json"] for request in transport.requests])
     assert out["results"][0]["response"] == "ok"  # correlation survives the rewrite
 
 

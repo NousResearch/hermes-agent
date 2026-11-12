@@ -191,12 +191,12 @@ class TestSpentShrinkFallsBack:
         agent = self._Agent()
         err = _FakeApiError(400, "Please make sure your payload is below 26214400 bytes in size.")
         retry = SimpleNamespace(
-            image_shrink_retry_attempted=shrink_attempted, copilot_stale_cred_retry_attempted=False,
+            image_shrink_retry_attempted=shrink_attempted, provider_stale_refresh_attempted=False,
             primary_recovery_attempted=False, restart_with_redirected_messages=False,
         )
         classified = classify_api_error(err, provider="custom")
         assert classified.reason == FailoverReason.image_too_large
-        with patch("agent.conversation_loop._is_copilot_provider", lambda a: False), patch(
+        with patch("agent.conversation_loop._credential_refresh_profile", lambda a: None), patch(
             "agent.conversation_loop._arm_fallback_restart", lambda agent, msgs, prompt, retry: prompt
         ), patch("agent.turn_api_error.compute_error_backoff", lambda *a, **k: 0), patch(
             "agent.turn_api_error.interruptible_backoff_sleep", lambda *a, **k: None

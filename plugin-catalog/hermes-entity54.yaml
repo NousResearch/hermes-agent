@@ -1,0 +1,37 @@
+name: hermes-entity54
+title: HERMES ENTITY54
+repo: https://github.com/AGENTROPOLIS-CITY-OF-AGENTS/AGENTROPOLIS-HERMES-ENTITY-54
+sha: 5124070da90005f3230b8f18410678d8f3eebe9a
+subdir: ""
+description: "Role-based authorization for Hermes Agent: OWNER, ADMIN, USER, GUEST roles, default-deny, per-tool and per-bot scoping, tamper-evident receipts, governed Linear issue creation, and versioned policy sync. Disclosure — a local Node MCP server whose principal is one static identity per profile (OWNER by default), so everyone who can talk to that profile acts as that principal; its roles govern only its own eight tools, not Hermes tools. `entity54_linear_create_issue` creates issues on api.linear.app with your LINEAR_API_KEY without a Hermes approval prompt; it needs a one-time `npm ci --omit=dev` in the installed `server/` directory and a manual `node scripts/setup.mjs` run that writes the signing keys to a local env file you copy into the profile `.env`."
+maintainer: AGENTROPOLIS
+tier: community
+category: tools
+version: "0.1.0"
+docs_url: https://github.com/AGENTROPOLIS-CITY-OF-AGENTS/AGENTROPOLIS-HERMES-ENTITY-54
+platforms: []
+capabilities:
+  provides_tools:
+  - entity54_authorize
+  - entity54_linear_create_issue
+  - entity54_policy_export
+  - entity54_policy_import
+  - entity54_policy_activate
+  - entity54_receipts_verify
+  - entity54_events_list
+  - entity54_status
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - ENTITY54_DATA_DIR
+  - ENTITY54_PRINCIPAL_ID
+  - ENTITY54_BOT_ID
+  - ENTITY54_POLICY_KEY
+  - ENTITY54_PSEUDONYM_KEY
+  - ENTITY54_EVENTS_ENABLED
+  - ENTITY54_LINEAR_TRANSPORT
+  - LINEAR_API_KEY
+known_issues:
+- "Requires Node 22+ and a Hermes Agent install that supports Agent Plugins 1.0.0."
+- "After install, run npm ci --omit=dev once inside the installed plugin directory (server/) to install the MCP server dependency."
+- "Live Linear transport needs a LINEAR_API_KEY; without it Linear calls fail closed as not configured. A mock transport is available for demos and tests."

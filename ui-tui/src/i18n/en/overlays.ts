@@ -6,11 +6,21 @@ export const overlaysEn = {
   prompt: {
     approval: {
       title: '⚠ approval required',
-      moreLines: (count: number) => `… +${count} more line${count === 1 ? '' : 's'} (full text above)`,
+      pageMore: (from: number, to: number, total: number) =>
+        `lines ${from}–${to} of ${total} · press v to see the rest before choosing`,
+      pageEnd: (from: number, to: number, total: number) =>
+        `lines ${from}–${to} of ${total} (end) · press v to go back to the top`,
       once: 'Allow once',
       session: 'Allow this session',
       always: 'Always allow',
-      deny: 'Deny'
+      deny: 'Deny',
+      tell: 'No, and tell Hermes what to do instead',
+      tellHint: 'type what Hermes should do instead · Enter deny and send · Esc back'
+    },
+    rewind: {
+      prime: 'esc again to edit previous message',
+      browse: 'Browsing transcript · ↑↓/jk scroll · ←→/hl prompts · ↵ edit · f fork · esc back',
+      pending: (turn: string) => `↺ Editing prompt ${turn} — Enter rewinds here and sends · Esc Esc cancels`
     },
     clarify: {
       other: 'Other (type your answer)',

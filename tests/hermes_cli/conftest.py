@@ -103,6 +103,15 @@ def _source_channels_resolve_locally(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_detached_commit_graph_writer(monkeypatch):
+    """The update's maintenance starts a detached ``git commit-graph write`` on the checkout it ran
+    from: in a test, this repository or a tmp copy deleted under it. In-process runs never spawn it."""
+    from hermes_cli import git_commit_graph
+
+    monkeypatch.setattr(git_commit_graph, "spawn_commit_graph_refresh", lambda root: False)
+
+
+@pytest.fixture(autouse=True)
 def _discharge_host_update_obligation():
     """Start and end every ``hermes_cli`` test with NO host update-restart obligation.
 

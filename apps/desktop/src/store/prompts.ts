@@ -472,10 +472,10 @@ export const $activeSessionAwaitingInput = computed(
 )
 
 /** True when `sessionId` is parked on a blocking prompt that typing cannot
- *  answer (approval / sudo / secret). Clarify is deliberately excluded: typing
- *  a real message IS an answer to a clarify ("none of these" — the composer
- *  skips it and routes the words), but no message text can approve a command
- *  or supply a password. Imperative read — the composer checks this on Enter,
+ *  answer (approval / sudo / secret). Clarify is deliberately excluded: typed
+ *  text answers a clarify's next question (the composer locks it through
+ *  `answerParkedCard`), but no message text can approve a command or supply a
+ *  password. Imperative read — the composer checks this on Enter,
  *  not on every render. */
 export const hasBlockingPromptRequest = (sessionId: string | null | undefined): boolean => {
   const key = keyFor(sessionId)

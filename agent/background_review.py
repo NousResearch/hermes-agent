@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from agent.i18n import t
-from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
+from agent.prompt_cache_scope import conversation_id, resolve_prompt_cache_scope_safe
 from agent.thread_scoped_output import thread_scoped_silence
 
 logger = logging.getLogger(__name__)
@@ -228,6 +228,14 @@ def _review_input_token_budget(
 def load_background_review_settings() -> tuple[bool, dict[str, Any]]:
     """Single config read -> ``(enabled, task_cfg)``. Fail-open (``enabled=True``) so a broken
     config never silently disables reviews — but WARN so the cost is visible."""
+    from agent.safe_worker_policy import safe_worker_enabled
+    from gateway.session_finite import finite_turn_required
+
+    # A finite gateway turn (`chat -q` / `-z`) is one-shot like the in-process run, whose exit
+    # takes the daemon review thread with it; the long-lived gateway would otherwise fork a
+    # ~30K-token review after the viewer has already gone.
+    if safe_worker_enabled() or finite_turn_required() is True:
+        return False, {}
     try:
         from hermes_cli.config import load_config_readonly
         from utils import is_truthy_value
@@ -370,6 +378,14 @@ _MEMORY_ROUTING_BLOCK = (
     "their size limits and crowds out the facts that matter; misrouting it puts it where the next "
     "session won't look. If the tool schema lists only one "
     "target, that store is the only one enabled — use it and skip the other.\n\n"
+    # Without a grounding rule the reviewer saved trait guesses and one-off requests as standing
+    # facts. Store-neutral on purpose: scoped to USER.md only, the same guess moved to MEMORY.md.
+    "Save only facts GROUNDED in this conversation — a user message or tool result you can point "
+    "to. Never infer the user's traits, skill level, role, mood or preferences from topic, tone or "
+    "tools used, and never turn a one-off request into a standing preference (in either store) "
+    "unless the user marked it general ('always', 'from now on', 'remember') or stated a standing "
+    "like/dislike ('I hate X', 'stop doing Y'). If unsure, leave it "
+    "out — a wrong fact misleads every future session.\n\n"
 )
 
 _MEMORY_REVIEW_PROMPT = (
@@ -464,7 +480,9 @@ _SKILL_REVIEW_PROMPT = (
     "new learning, PATCH that one first (re-load it with skill_view during this review — see "
     "Read-before-write below). It is the skill that was in play, so it's the right one to extend — "
     "whoever wrote it: hand-written, installed, bundled, and pinned skills are all yours to "
-    "improve.\n"
+    "improve. The one exception is a skill the user LOCKED (`hermes curator lock`): skill_manage "
+    "refuses it — do not retry and do not recreate it under another name; put the suggested "
+    "change in your summary instead.\n"
     "  2. UPDATE AN EXISTING UMBRELLA (via skills_list + skill_view). If no loaded skill fits but "
     "an existing class-level skill does, patch it. Add a subsection, a pitfall, or broaden a "
     "trigger.\n"
@@ -567,7 +585,8 @@ def _preview(text: str, limit: int) -> str:
 
 # Memory op -> (glyph, which field carries the preview, preview length).
 _MEMORY_OP_FORMATS: dict[str, tuple[str, str, int]] = {
-    "add": ("➕", "content", 120), "replace": ("✏️", "content", 120), "remove": ("➖", "old_text", 60)
+    "add": ("➕", "content", 120), "replace": ("✏️", "content", 120), "patch": ("✏️", "content", 120),
+    "remove": ("➖", "old_text", 60)
 }
 
 
@@ -765,19 +784,23 @@ def _snapshot_review_usage(review_agent: Any) -> dict[str, Any]:
     }
 
 
-def _record_review_usage_to_parent(parent_agent: Any, usage: dict[str, Any]) -> None:
-    """Record a fork's usage against the parent session (best-effort, never raises). The fork has
-    ``_session_db = None`` so conversation_loop's DB-gated accounting never sees its calls; route
-    them through the aux-accounting chokepoint, which writes only ``session_model_usage`` — never
-    the transcript or ``sessions`` row."""
+def _record_review_usage_to_parent(
+    parent_agent: Any, usage: dict[str, Any], *, task: str = "background_review",
+    session_id: Optional[str] = None,
+) -> None:
+    """Record a fork's usage against the parent session (or ``session_id`` when given) under
+    ``task`` (best-effort, never raises). The fork has ``_session_db = None`` so
+    conversation_loop's DB-gated accounting never sees its calls; route them through the
+    aux-accounting chokepoint, which writes only ``session_model_usage`` — never the transcript
+    or ``sessions`` row."""
     try:
         session_db = getattr(parent_agent, "_session_db", None)
-        session_id = getattr(parent_agent, "session_id", None)
+        session_id = session_id or getattr(parent_agent, "session_id", None)
         counts = {key: int(usage.get(key) or 0) for key in _USAGE_COUNTERS}
         if session_db is None or not session_id or not any(counts.values()):
             return  # no DB, or the fork made no successful API calls (e.g. failed at spawn)
         session_db.record_auxiliary_usage(
-            session_id, task="background_review", model=usage.get("model"),
+            session_id, task=task, model=usage.get("model"),
             billing_provider=usage.get("provider"), billing_base_url=usage.get("base_url"),
             estimated_cost_usd=usage.get("estimated_cost_usd"),
             api_call_count=counts.pop("api_calls"), **counts,
@@ -994,6 +1017,8 @@ def build_cache_parity_fork(
     review_agent._end_session_on_close = False
     review_agent._session_db = None
     review_agent.session_id = agent.session_id
+    # No DB, so the fork can't walk to the root itself: plugin tool hooks get the parent's conversation.
+    review_agent._inherited_conversation_id = conversation_id(agent)
     # Same model only: share the warm cached system prompt (~26% cost cut; a rebuilt prompt misses
     # the byte-exact prefix key) and pin session_start so any re-render (compression, plugin
     # hooks) stays byte-identical.
@@ -1044,6 +1069,18 @@ def _bg_review_auto_deny(command, description, **kwargs):
     which would deadlock against the parent's TUI."""
     logger.warning("Background review auto-denied dangerous command: %s (%s)", command, description)
     return "deny"
+
+
+def _bg_review_skip_secret(var_name, prompt, metadata=None):
+    """Non-interactive secret capture: a skill the review opens never asks the user for a key.
+
+    The review thread inherits the turn's ContextVars, including the session owner's turn-scoped
+    secret prompt, so without this a ``skill_view`` of a skill with a missing required env var would
+    pop the masked "enter value" panel on the user's screen after the turn already finished.
+    """
+    logger.info("Background review skipped the secret prompt for %s", var_name)
+    return {"success": True, "reason": "background_review", "stored_as": var_name, "validated": False,
+            "skipped": True, "message": "Secret setup was skipped."}
 
 
 def _set_thread_approval_callback(callback: Any) -> None:
@@ -1133,6 +1170,20 @@ def _release_fork_clients(review_agent: Any) -> None:
     session-bound (close() kills that session's terminal processes), so release only clients."""
     with suppress(Exception):
         review_agent.release_clients()
+
+
+def release_cache_parity_fork(
+    parent_agent: Any, fork: Any, *, task: str, session_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """Teardown for a one-shot :func:`build_cache_parity_fork` caller (``/btw``, plugin side
+    questions): attribute the fork's usage under ``task`` to ``session_id`` (default: the parent's
+    current session), then release only its clients (never ``close()``, which tears down the
+    shared session's terminal sandbox, browser and file state). Never raises; returns the usage
+    snapshot."""
+    usage = _snapshot_review_usage(fork)
+    _record_review_usage_to_parent(parent_agent, usage, task=task, session_id=session_id)
+    _release_fork_clients(fork)
+    return usage
 
 
 def _run_review_fork(
@@ -1244,7 +1295,8 @@ def _run_review_in_thread(
         # driving a Telegram long-poll — for the full duration of the review (tens of seconds), swallowing
         # their console output (#55769 / #55925). ``thread_scoped_silence`` routes only this thread's writes
         # to devnull and leaves all other threads on the real streams.
-        with thread_scoped_silence():
+        from tools.skills_tool import bind_turn_secret_capture
+        with thread_scoped_silence(), bind_turn_secret_capture(_bg_review_skip_secret):
             _run_review_fork(agent, messages_snapshot, prompt, task_cfg, review_run, st, review_memory, explicit)
         # A buggy/legacy tool response shape must NOT take down the whole review (the outer
         # except would discard every action the fork DID complete), so coerce to an empty list.

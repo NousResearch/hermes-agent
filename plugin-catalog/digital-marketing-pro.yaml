@@ -1,0 +1,16 @@
+name: digital-marketing-pro
+repo: https://github.com/indranilbanerjee/neels-plugins
+sha: 76fe70cf73f57c27031913e493dabe6aeb7eb3c0
+subdir: hermes/digital-marketing-pro
+description: "Open-source marketing toolkit for agencies and in-house teams, one listing with three skill groups and 207 skills registered as Hermes skills: Digital Marketing Pro (strategy, SEO/AEO/GEO, paid media, CRM, analytics; 164 skills), ContentForge (fact-checked long-form content with a run auditor; 22 skills) and SocialForge (a content calendar to images, carousels, video and copy; 21 skills). Skills only: no tools, hooks or background processes. Disclosure — Skills only (no tools, hooks or MCP servers). The optional scripts the skills run call third-party APIs (ad, CRM, e-mail, Slack, LLM and image/video providers) only when run, using the user's own keys from environment variables. Live writes need the user's typed yes. For writes the plugin sends itself, the script creates a single-use approval record when it prepares the write, and the agent approves that record after the yes, so Hermes does not prompt before those script runs. Writes through MCP tools rely on the typed yes alone. Paid image and video generation is quoted first. refresh_models.py reads your Anthropic, OpenAI, Gemini and (strategy group) Evolink keys. Keys and data live outside the Hermes profile: SocialForge stores API keys in plain text, plus a copy of any Google service-account file, in ~/socialforge-workspace; brand data goes to ~/.claude-marketing; deliverables are copied to ~/Documents/DigitalMarketingPro and ~/Documents/ContentForge. Nothing installs unless the user says yes; installs are exact-pinned pip packages into the Python that runs the script, plus Playwright's Chromium download. See the README and each group's PRIVACY.md."
+maintainer: Indranil Banerjee
+tier: community
+category: tools
+docs_url: https://github.com/indranilbanerjee/neels-plugins/tree/76fe70cf73f57c27031913e493dabe6aeb7eb3c0/hermes/digital-marketing-pro#readme
+version: "3.58.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -19,6 +19,10 @@ on:
   workflow_dispatch:
   workflow_call:
     inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
       release:
         description: 'Stable-release candidate run (ignored by the jobs; uniform callable surface).'
         required: false
@@ -38,14 +42,13 @@ concurrency:
 jobs:
   contracts:
     name: Termux packaging contracts on Linux
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
-          # github.sha is the exact candidate commit on a stable tag-dispatched
-          # caller and the head SHA on every other event.
-          ref: ${{ github.sha }}
+          # A stable run passes the claim commit. Every other event tests its own head SHA.
+          ref: ${{ inputs.commit || github.sha }}
           persist-credentials: false
       - name: Install the native linker test prerequisite
         run: |
@@ -58,7 +61,7 @@ jobs:
           cache-python: false
       - name: Run the native linker and wheel contracts
         run: |
-          bash scripts/run_tests.sh -j 2 \
+          just test -j 2 \
             tests/scripts/test_termux_python_linkage.py tests/scripts/test_termux_retag_wheel.py \
             tests/scripts/test_termux_build_wheels.py \
             tests/scripts/test_termux_wheelhouse_cache.py tests/scripts/test_termux_runtime_libs.py \
@@ -69,14 +72,13 @@ jobs:
 
   tui:
     name: Prebuilt TUI checks
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
-          # github.sha is the exact candidate commit on a stable tag-dispatched
-          # caller and the head SHA on every other event.
-          ref: ${{ github.sha }}
+          # A stable run passes the claim commit. Every other event tests its own head SHA.
+          ref: ${{ inputs.commit || github.sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-pm
         with:
@@ -84,13 +86,15 @@ jobs:
           # tests-js generates real icons; the wrapper needs core Pillow/resvg.
           extras: '[]'
           cache-node: false
+      # tests-js builds desktop fixtures with apps/desktop's own toolchain (vite,
+      # node-pty): pnpm installs only the selected workspaces, so select it too.
       - name: Install the locked JS workspace
-        run: npm ci --workspace ui-tui --workspace tests-js --include-workspace-root --include=dev --no-fund --no-audit
+        run: pnpm install --frozen-lockfile --filter "{./ui-tui}..." --filter "{./tests-js}..." --filter "{./apps/desktop}..."
       - name: Check and bundle the TUI
         run: |
-          npm run check --workspace tests-js
-          npm run check --workspace ui-tui
-          npm run build --workspace ui-tui
+          pnpm --dir tests-js run check
+          pnpm --dir ui-tui run check
+          pnpm --dir ui-tui run build
 
   # A job-level `if` cannot read `secrets`, so the gate is a job that exports
   # whether the release-signing environment is provisioned. Without R2 the
@@ -99,7 +103,7 @@ jobs:
   r2-provisioned:
     name: Detect R2 credentials
     if: github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     environment: release-signing
     timeout-minutes: 5
     outputs:
@@ -118,7 +122,7 @@ jobs:
     # A stable-release candidate run still fails loudly on missing R2: the
     # release must not pass on a skipped verification.
     if: needs.r2-provisioned.outputs.configured == 'true' || inputs.release == true
-    runs-on: ubuntu-24.04-arm
+    runs-on: blacksmith-4vcpu-ubuntu-2404-arm
     environment: release-signing
     timeout-minutes: 45
     env:
@@ -127,11 +131,10 @@ jobs:
       CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
       CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
-          # github.sha is the exact candidate commit on a stable tag-dispatched
-          # caller and the head SHA on every other event.
-          ref: ${{ github.sha }}
+          # A stable run passes the claim commit. Every other event tests its own head SHA.
+          ref: ${{ inputs.commit || github.sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-pm
         with:
@@ -140,11 +143,7 @@ jobs:
       - name: Preserve and retrieve pinned inputs
         run: python -m scripts.ci.archive_inputs --target linux-arm64-bionic --payload termux-build/payload --store "$HERMES_RUNTIME_DIR"
       - name: Stage the pinned bionic runtimes
-        run: |
-          bash scripts/termux/build_cpython.sh termux-build/payload
-          bash scripts/termux/build_uv.sh termux-build/payload
-          bash scripts/termux/termux_pkg_build.sh ffmpeg ffmpeg termux-build/payload
-          python3 scripts/termux/stage_runtime_libs.py termux-build/payload
+        run: just termux-payload termux-build/payload python uv ffmpeg
       - name: Verify ffmpeg on the bare bionic runtime
         run: |
           digest=$(python3 -c 'from pm.lock import termux_docker_digest; print(termux_docker_digest())')

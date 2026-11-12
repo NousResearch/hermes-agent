@@ -34,12 +34,19 @@ Behaviour (all behaviours selectable via env var ``MOCK_LSP_SCRIPT``):
   no ``version`` field in any publishDiagnostics (the client credits
   each push with its current document version at receipt).  Push-only:
   the pull endpoint rejects.
+- ``"by_content"`` — push-only; pushes one error iff the synced text contains ``bad``, else empty
+  diagnostics.  Holds every push until the file named by ``MOCK_LSP_GATE`` exists (a server slower
+  than the write, released by the test), else after ``MOCK_LSP_PUSH_DELAY`` (default 0.4s).
 - ``"incremental"`` — apply ranged edits as UTF-16 and expose the server's
   document mirror through hover, for synchronization contract tests.
 - ``"clean_eof"`` — closes stdout after ``didOpen`` but keeps the
   process and stdin alive.
 - ``"malformed_frame"`` — writes an invalid frame after ``didOpen``,
   then keeps the process and stdin alive.
+- ``"late_pull"`` — holds every ``textDocument/diagnostic`` and ``shutdown`` unanswered.  On
+  ``$/cancelRequest`` it appends the cancelled id to the file named by
+  ``MOCK_LSP_TRACE`` and only then answers that id with a result carrying a
+  ``late`` marker: a server that finishes work the client already abandoned.
 
 The script writes JSON-RPC framed messages to stdout and reads from
 stdin.  No third-party dependencies — uses only stdlib so it runs
@@ -53,6 +60,52 @@ import signal
 import subprocess
 import sys
 import time
+
+
+def _push_by_content(params, is_change, error_diag):
+    """``by_content``: once MOCK_LSP_GATE exists (else after MOCK_LSP_PUSH_DELAY), one error iff the
+    synced text contains "bad" (so a baseline of the pre-edit text differs from the edit's verdict)."""
+    td = params.get("textDocument") or {}
+    text = (params.get("contentChanges") or [{}])[-1].get("text", "") if is_change else td.get("text")
+    gate = os.environ.get("MOCK_LSP_GATE")
+    deadline = time.monotonic() + 60
+    while gate and not os.path.exists(gate) and time.monotonic() < deadline:
+        # health: allow HX013 -- a separate process can only poll the test's gate file
+        time.sleep(0.01)
+    if not gate:
+        # health: allow HX013 -- the delay IS the behaviour under test (a server slower than the write)
+        time.sleep(float(os.environ.get("MOCK_LSP_PUSH_DELAY", "0.4")))
+    write_message({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics",
+                   "params": {"uri": td.get("uri", ""), "version": td.get("version", 0),
+                              "diagnostics": error_diag if "bad" in (text or "") else []}})
+
+
+def _push_slow(params, is_change, error_diag):
+    """``slow_push``: one error on didOpen; on didChange sleep MOCK_LSP_PUSH_DELAY, then push empty."""
+    td = params.get("textDocument") or {}
+    if is_change:
+        # health: allow HX013 -- the delay IS the behaviour under test (a slow re-check)
+        time.sleep(float(os.environ.get("MOCK_LSP_PUSH_DELAY", "1.0")))
+    write_message({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics",
+                   "params": {"uri": td.get("uri", ""), "version": td.get("version", 0),
+                              "diagnostics": [] if is_change else error_diag}})
+
+
+_PUSH_HANDLERS = {"by_content": _push_by_content, "slow_push": _push_slow}
+_IGNORED_NOTIFICATIONS = {"initialized", "workspace/didChangeConfiguration", "workspace/didChangeWatchedFiles"}
+
+
+def _late_pull(msg: dict) -> bool:
+    """``late_pull``: hold diagnostic pulls and ``shutdown``; answer one only after the client cancels it."""
+    if msg.get("method") in {"textDocument/diagnostic", "shutdown"}:
+        return True
+    if msg.get("method") != "$/cancelRequest":
+        return False
+    cancelled = (msg.get("params") or {}).get("id")
+    with open(os.environ["MOCK_LSP_TRACE"], "a", encoding="utf-8") as fh:
+        fh.write(f"{cancelled}\n")
+    write_message({"jsonrpc": "2.0", "id": cancelled, "result": {"kind": "full", "items": [{"late": True}]}})
+    return True
 
 
 def read_message():
@@ -154,13 +207,7 @@ def main():
                 return 0
             continue
 
-        if msg.get("method") == "initialized":
-            continue
-
-        if msg.get("method") == "workspace/didChangeConfiguration":
-            continue
-
-        if msg.get("method") == "workspace/didChangeWatchedFiles":
+        if msg.get("method") in _IGNORED_NOTIFICATIONS:
             continue
 
         if msg.get("method") == "workspace/didChangeWorkspaceFolders":
@@ -231,18 +278,8 @@ def main():
                         }
                     )
                 continue
-            if script == "slow_push":
-                diagnostics = error_diag
-                if is_change:
-                    time.sleep(float(os.environ.get("MOCK_LSP_PUSH_DELAY", "1.0")))
-                    diagnostics = []
-                write_message(
-                    {
-                        "jsonrpc": "2.0",
-                        "method": "textDocument/publishDiagnostics",
-                        "params": {"uri": uri, "version": version, "diagnostics": diagnostics},
-                    }
-                )
+            if script in _PUSH_HANDLERS:
+                _PUSH_HANDLERS[script](params, is_change, error_diag)
                 continue
             diagnostics = []
             if script == "errors":
@@ -264,8 +301,11 @@ def main():
             }})
             continue
 
+        if script == "late_pull" and _late_pull(msg):
+            continue
+
         if msg.get("method") == "textDocument/diagnostic":
-            if script in {"stale", "slow_push", "versionless", "silent"}:
+            if script in {"stale", "slow_push", "versionless", "silent", "by_content"}:
                 # These scripts model push-only servers so the ghost
                 # can't be papered over by the pull channel.
                 write_message(

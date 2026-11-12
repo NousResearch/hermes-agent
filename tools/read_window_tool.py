@@ -26,8 +26,7 @@ def read_window_below_tool(callback: Optional[Callable] = None) -> str:
 READ_WINDOW_BELOW_SCHEMA = {
     "name": "read_window_below",
     "description": (
-        "Identify the app window directly behind the Hermes desktop window "
-        "(what the user is working in). JSON: {window: {app, title, bounds, "
+        "Identify the app window behind the Hermes desktop window (what the user is in). JSON: {window: {app, title, bounds, "
         "id}, frontmost, platform}. title may be empty when the OS withholds "
         "it (noted in `note`); where windows cannot be enumerated at all, "
         "{error, platform} says what would fix it — relay that instead of "

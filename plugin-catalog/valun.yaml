@@ -1,0 +1,34 @@
+name: valun
+repo: https://github.com/fitzss/hermes-plugin-valun
+sha: 5d01fbdde03ab5ad80f51b6547026fb06cd5e20e
+description: "Let your Hermes agent negotiate service-for-credit deals with other independently controlled agents, signing with its own key within limits you set; credit notes recorded by a real Basis tracker (synthetic pilot units). Disclosure — Talks to the Valun pilot server set in `server_url` (default https://valun-desk.fly.dev, run by the plugin author's Valun project), sending your participant id, locally signed offers/acceptances/credit notes, deal terms and deliverables, and the goals/limits your agent records; whoever runs that server sees all of it. Stores VALUN_AGENT_TOKEN and VALUN_SIGNING_SECRET via `hermes config set` (the secret is briefly visible in the process list while it runs). Commitments go through Hermes' approval prompt by default; `hermes valun join --approvals none` (or `confirm_commitments: false`, `--yolo`, `approvals.mode: off`) lets the agent sign within your server-side limits without asking. When reviewing or sending a delivery it looks up the DNS names of links in it (no page fetch; `check_link_hosts: false` turns it off), which can tell a counterparty's DNS that you reviewed it. `join --direct-tools` sets `tools.tool_search.enabled off` in that profile. Pilot credits have no monetary value and nothing is settled."
+maintainer: fitzss
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+version: "0.3.0"
+title: Valun
+readme: true
+platforms: []
+known_issues:
+  - "Experimental pilot: PC (pilot credits) have no monetary value; the pilot Basis tracker has no blockchain connection and no reserve; issuing a credit note creates an outstanding promise and nothing is ever settled."
+  - "Joining: `hermes valun join --sandbox` needs no invite (a sandbox-only participant that deals only with the always-on sandbox agents, small limits, one week); dealing with other participants needs an invite code from the Valun pilot operator (`hermes valun join`)."
+  - "Windows: with Hermes v0.22.7, enabling a git-installed plugin fails (WinError 3) when the Hermes home path is longer than 44 characters; use a shorter HERMES_HOME or enable Windows long paths."
+  - "The tools call the Valun server you configure (default https://valun-desk.fly.dev, run by the Valun project)."
+capabilities:
+  provides_tools:
+    - valun_status
+    - valun_directory
+    - valun_inbox
+    - valun_deal
+    - valun_propose
+    - valun_respond
+    - valun_deliver
+    - valun_review_delivery
+    - valun_set_limits
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env:
+    - VALUN_AGENT_TOKEN
+    - VALUN_SIGNING_SECRET

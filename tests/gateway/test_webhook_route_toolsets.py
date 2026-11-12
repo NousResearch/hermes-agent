@@ -161,6 +161,9 @@ class TestToolsetsBindToAuthenticatedRoute:
 
         adapter.handle_message = _capture
         app = web.Application()
+        # Admission is durable: the route handler acks only through a session authority.
+        from tests.gateway.fixtures.webhook_route_authority import mount_authority
+        mount_authority(app, adapter)
         app.router.add_post("/webhooks/{route_name}", adapter._handle_webhook)
         body = json.dumps({"text": "hi"}).encode()
         sig = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()

@@ -5,6 +5,8 @@ import type {
 } from '@hermes/shared/gateway-events'
 import { atom } from 'nanostores'
 
+import { t } from '../i18n/runtime.js'
+
 import { patchOverlayState } from './overlayStore.js'
 
 export interface ConnectionOperationSnapshot {
@@ -49,6 +51,15 @@ const outcomeWord = (target: ConnectionOperationTarget): string => {
   return target.state === 'skipped' ? 'skipped' : 'not connected'
 }
 
+// The card is gone once a row connects, so the account name the agent chose is told here.
+const settledLines = (target: ConnectionOperationTarget): string[] => {
+  const outcome = `${target.name}${target.alias ? ` (${target.alias})` : ''}: ${outcomeWord(target)}`
+
+  return target.state === 'connected' && target.alias
+    ? [outcome, t('connection.namedAccount', target.name, target.alias)]
+    : [outcome]
+}
+
 export function applyConnectionRequest(payload: ConnectionRequestPayload): void {
   if (isSettledOperation(payload.op_id) || isDismissedOperation(payload.op_id)) {
     return
@@ -85,7 +96,7 @@ export function applyConnectionUpdate(payload: ConnectionUpdatePayload): string[
       clearConnectionOperation()
     }
 
-    return payload.targets.map(target => `${target.name}: ${outcomeWord(target)}`)
+    return payload.targets.flatMap(settledLines)
   }
 
   if (!shown || !current || payload.seq <= current.seq) {

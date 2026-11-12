@@ -64,6 +64,8 @@ def host_owner(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     home = tmp_path / "root"
+    # A live owner holds the host lock for its lifetime; a record without that flock is a corpse.
+    assert hr.claim_host_lock(hr.ROLE_GATEWAY)[0] is hr.HostLockOutcome.ACQUIRED
     _write_record(child.pid, home, ("default", "ops", "coder"))
     monkeypatch.setattr(
         "gateway.control_socket.identify_gateway",
@@ -72,6 +74,7 @@ def host_owner(tmp_path, monkeypatch):
     try:
         yield SimpleNamespace(pid=child.pid, home=home, proc=child)
     finally:
+        hr.release_host_lock(hr.ROLE_GATEWAY)
         child.terminate()
         child.wait(timeout=10)
 
@@ -208,7 +211,7 @@ def test_named_profile_restart_all_with_host_down_restarts_the_default_root(monk
     assert len(spawned) == 1
     cmd, kwargs = spawned[0]
     assert cmd[-3:] == ["gateway", "run", "--replace"]
-    assert "--profile" not in cmd
+    assert cmd[-5:-3] == ["--profile", "default"] and "leinad" not in cmd
     env = kwargs["env"]
     assert Path(env["HERMES_HOME"]) == root
     assert env.get("DISCORD_BOT_TOKEN") == "root-discord"
@@ -271,7 +274,7 @@ def test_named_profile_restart_all_reaches_the_all_aware_branch(monkeypatch):
     monkeypatch.setattr(gw, "_guard_named_profile_under_multiplexer",
                         lambda **k: pytest.fail("the generic guard pre-empted the --all branch"))
     called: list[bool] = []
-    monkeypatch.setattr(gw, "_restart_all", lambda system: called.append(True))
+    monkeypatch.setattr(gw, "_restart_all", lambda system, detach=False: called.append(True))
 
     gw._cmd_restart(SimpleNamespace(system=False, all=True, force=False))
 

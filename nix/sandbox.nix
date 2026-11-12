@@ -1,7 +1,7 @@
 {
   # Electron needs its native runtime libraries on LD_LIBRARY_PATH when the
-  # sandboxed command launches the desktop app (`sandbox hermes desktop`,
-  # `sandbox npm run dev`); nothing else in the sandbox is nix-specific.
+  # sandboxed command launches the desktop app (`sandbox hermes-checkout desktop`,
+  # `sandbox pnpm run dev`); nothing else in the sandbox is nix-specific.
   alsa-lib,
   at-spi2-atk,
   atk,
@@ -33,6 +33,7 @@
 
   writeShellApplication,
   lib,
+  stdenv,
 }:
 let
   electronRuntime = [
@@ -68,8 +69,10 @@ let
 in
 writeShellApplication {
   name = "sandbox";
-  text = ''
+  # darwin's Electron is self-contained, and these libraries are Linux-only.
+  text = lib.optionalString stdenv.hostPlatform.isLinux ''
     export LD_LIBRARY_PATH=${lib.makeLibraryPath electronRuntime}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+  '' + ''
     exec ${../scripts/dev-sandbox.sh} "$@"
   '';
 }

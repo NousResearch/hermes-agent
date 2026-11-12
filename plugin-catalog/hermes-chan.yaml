@@ -1,0 +1,38 @@
+name: hermes-chan
+repo: https://github.com/AlleyBo55/hermes-chan
+sha: "54041f8180c69f0d5100aee8bd87c623b89fb920"
+maintainer: AlleyBo55
+tier: community
+category: desktop
+version: "0.2.0"
+title: "Hermes-chan"
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/AlleyBo55/hermes-chan#readme
+platforms: [macos, windows, linux]
+description: "A chibi desktop companion who walks around your screen, reacts to Hermes, and does its computer-use clicks and typing. Disclosure — on first run builds its Rust overlay from source with cargo (downloads the crates pinned in Cargo.lock from crates.io, several minutes; needs a Rust toolchain) and then runs it as a long-lived always-on-top desktop window that Hermes restarts on crash; the build and the overlay get a minimal environment without your API keys; with computer_use.backend: hermes-chan it performs real mouse clicks and keyboard input through the core computer_use tool; its mischief setting (on by default) visually glitches and, after 20 s of user inactivity, moves or shakes the active app window; optional heartbeat/watch modes (off by default) send the active window title and a screenshot to your current model; its chat bubble injects your typed messages into the local chat only after you allow plugin injection; the desktop-tidy tools move files on your Desktop into a \"Hermes-chan Tidy\" folder after you approve each run and each undo in Hermes's approval prompt (journaled, undoable); no network calls besides the cargo build, no credentials read."
+image: https://raw.githubusercontent.com/AlleyBo55/hermes-chan/c208b969bf45b1ce845cae6289991e6597b2d0f4/sprites/hermeschan-v1/frames/emotion__happy__00.png
+known_issues:
+  - "Linux needs X11 or XWayland; on Wayland she only sees and acts on X11/XWayland apps."
+  - "macOS window move/track uses osascript/System Events (tens of ms per call), so window pranks are gesture-cadence, not per-frame smooth."
+  - "The overlay is built from source on first run; without a Rust toolchain the plugin runs headless (tools/hooks only)."
+capabilities:
+  provides_tools:
+    - hermeschan_say
+    - hermeschan_emote
+    - hermeschan_point_at
+    - hermeschan_grab_window
+    - hermeschan_glitch_window
+    - hermeschan_visual_effect
+    - hermeschan_tidy_desktop
+    - hermeschan_undo_tidy
+  provides_hooks:
+    - on_session_start
+    - on_session_end
+    - pre_llm_call
+    - post_llm_call
+    - pre_tool_call
+    - post_tool_call
+    - pre_approval_request
+    - on_human_input_request
+  provides_middleware: []
+  requires_env: []

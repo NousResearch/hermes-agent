@@ -32,7 +32,8 @@ const apiMocks = vi.hoisted(() => ({
   resumeSubscription: vi.fn(),
   scheduleSubscriptionChange: vi.fn(),
   stepUp: vi.fn(),
-  updateAutoReload: vi.fn()
+  updateAutoReload: vi.fn(),
+  updateKeepGoingOnCredits: vi.fn()
 }))
 
 vi.mock('./api', () => ({
@@ -47,7 +48,8 @@ vi.mock('./api', () => ({
     resumeSubscription: apiMocks.resumeSubscription,
     scheduleSubscriptionChange: apiMocks.scheduleSubscriptionChange,
     stepUp: apiMocks.stepUp,
-    updateAutoReload: apiMocks.updateAutoReload
+    updateAutoReload: apiMocks.updateAutoReload,
+    updateKeepGoingOnCredits: apiMocks.updateKeepGoingOnCredits
   })
 }))
 
@@ -204,6 +206,25 @@ describe('BillingSettings', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
     expect(apiMocks.updateAutoReload).not.toHaveBeenCalled()
+  })
+
+  it('shows "Keep going on credits" only on window plans and flips it', async () => {
+    renderBilling()
+    await screen.findByRole('button', { name: 'Manage' })
+    expect(screen.queryByRole('switch', { name: 'Keep going on credits' })).toBeNull()
+    cleanup()
+
+    apiMocks.fetchBillingState.mockResolvedValue(okBilling({ ...todayBillingState, keep_going_on_credits: false }))
+    apiMocks.updateKeepGoingOnCredits.mockResolvedValue({ data: { ok: true }, ok: true })
+    const client = renderBilling()
+    const invalidate = vi.spyOn(client, 'invalidateQueries')
+
+    const toggle = await screen.findByRole('switch', { name: 'Keep going on credits' })
+    expect(toggle.getAttribute('aria-checked')).toBe('false')
+    fireEvent.click(toggle)
+
+    await waitFor(() => expect(apiMocks.updateKeepGoingOnCredits).toHaveBeenCalledWith(true))
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['billing', 'state'] }))
   })
 
   it('renders the enabled auto-refill row without crashing when the card is null', async () => {

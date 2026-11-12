@@ -15,6 +15,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+# The real resolver goes into the mocked module: server._launch_home() calls it for the launch
+# state.db, and a MagicMock's return value is os.fspath()-able as the RELATIVE path
+# "MagicMock/<name>/<id>", so the store landed in the cwd (the repo checkout). The real one
+# follows the test's isolated HERMES_HOME.
+from hermes_constants import get_process_hermes_home as _real_get_process_hermes_home
+
 
 @pytest.fixture()
 def server():
@@ -24,7 +30,8 @@ def server():
         "sys.modules",
         {
             "hermes_constants": MagicMock(
-                get_hermes_home=MagicMock(return_value="/tmp/hermes_test_review_summary")
+                get_hermes_home=MagicMock(return_value="/tmp/hermes_test_review_summary"),
+                get_process_hermes_home=_real_get_process_hermes_home,
             ),
             "hermes_cli.env_loader": MagicMock(),
             "hermes_cli.banner": MagicMock(),

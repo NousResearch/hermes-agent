@@ -103,6 +103,12 @@ class CatalogEntry:
     architecture: str = ""
     mmproj: AssetFile | None = None    # vision projector, downloads with model
     draft: AssetFile | None = None     # spec-decode draft model (e.g. DSpark)
+    # How the draft decodes. draft-dspark drafts only for a model spilled past GPU memory;
+    # draft-dflash replaces MTP whenever it fits, on one slot (each slot keeps a recurrent-state
+    # copy per draft position). Optional: a missing draft leaves the model as it was.
+    draft_spec_type: str = "draft-dspark"
+    draft_depth: int = 3
+    draft_min_engine: str = ""          # oldest llama.cpp release that loads the draft
     # MTP head shipped as its own file (the model carries none): the engine loads it as the
     # draft for MTP spec decode. Downloads with the model.
     mtp_head: AssetFile | None = None
@@ -119,6 +125,9 @@ class CatalogEntry:
     # MoE. With memory bandwidth this predicts decode speed — the physics half of the
     # recommendation.
     decode_fraction: float = 1.0
+    # False lists the entry for explicit choice only: it is never the automatic recommendation or
+    # quickstart's pick on any machine, so it needs no quality ordering.
+    recommend: bool = True
 
     @property
     def mtp_capable(self) -> bool:
@@ -152,6 +161,12 @@ class CatalogEntry:
 
     def download_bytes(self, variant: QuantVariant) -> int:
         return sum(f.size_bytes for f in self.download_files(variant))
+
+    def install_files(self, variant: QuantVariant) -> tuple:
+        """The files a variant needs to count as downloaded. The draft is optional: a model
+        installed before its draft joined the catalog stays installed."""
+        extras = tuple(a for a in (self.mmproj, self.mtp_head) if a is not None)
+        return tuple(variant.files) + extras
 
 
 @dataclass(frozen=True)
@@ -251,13 +266,14 @@ def recommended_entry(budget: HardwareBudget,
     """The catalog's default pick for THIS machine, with its reason key.
 
     Callers pass pre-filtered entries when some are ineligible for reasons the catalog can't know
-    (engine too old). Reasons: product-default (the product's maker chose this entry and it runs
-    resident); best-quality-resident (quality won among resident entries clearing the pleasant
-    floor); speed-gated-quality (same, but the floor eliminated a HIGHER quality candidate).
+    (engine too old). Entries marked ``recommend: false`` are never picked. Reasons:
+    product-default (the product's maker chose this entry and it runs resident);
+    best-quality-resident (quality won among resident entries clearing the pleasant floor);
+    speed-gated-quality (same, but the floor eliminated a HIGHER quality candidate).
     Returns None when no eligible entry runs resident at the pleasant floor; slower and spilled
     models remain available for explicit selection.
     """
-    pool = CATALOG if entries is None else entries
+    pool = tuple(e for e in (CATALOG if entries is None else entries) if e.recommend)
     fitting = [(e, c) for e in pool if (c := select_variant(e, budget)) is not None]
     if not fitting:
         return None
@@ -290,10 +306,12 @@ def recommended_entry(budget: HardwareBudget,
 
 _CATALOG_URL = ("https://raw.githubusercontent.com/NousResearch/hermes-agent"
                 "/main/hermes_cli/local_runtime/catalog.json")
-_SCHEMA_VERSION = 2  # bump when an older app would read a newer catalog but launch its entries wrongly
+_SCHEMA_VERSION = 3  # bump when an older app would read a newer catalog but launch its entries wrongly
 _REFRESH_TTL_S = 6 * 3600
 _refresh_lock = threading.Lock()
-_last_refresh_attempt = 0.0
+# None = never attempted: monotonic() counts from boot, so a 0.0 sentinel read as "refreshed at
+# boot" and suppressed the first fetch for the first six awake hours after every reboot.
+_last_refresh_attempt: float | None = None
 
 
 def _asset_from(d: dict | None) -> AssetFile | None:
@@ -311,6 +329,8 @@ _SCALAR_FIELDS = {
     "moe": (bool, False), "mtp": (bool, False), "mtp_draft_depth": (int, 3),
     "n_vocab": (int, 0), "sampling": (dict, {}), "min_engine": (str, ""),
     "quality": (int, 0), "decode_fraction": (float, 1.0), "architecture": (str, ""),
+    "recommend": (bool, True), "draft_spec_type": (str, "draft-dspark"), "draft_depth": (int, 3),
+    "draft_min_engine": (str, ""),
 }
 
 
@@ -355,7 +375,7 @@ def refresh_catalog(force: bool = False) -> bool:
 
     now = time.monotonic()
     with _refresh_lock:
-        if not force and now - _last_refresh_attempt < _REFRESH_TTL_S:
+        if not force and _last_refresh_attempt is not None and now - _last_refresh_attempt < _REFRESH_TTL_S:
             return False
         _last_refresh_attempt = now
     try:
@@ -374,7 +394,8 @@ def refresh_catalog(force: bool = False) -> bool:
 def refresh_catalog_soon() -> None:
     """TTL-gated background refresh; returns immediately. The current request serves the catalog
     it already has — the refresh lands for the next one."""
-    if time.monotonic() - _last_refresh_attempt < _REFRESH_TTL_S:
+    last = _last_refresh_attempt
+    if last is not None and time.monotonic() - last < _REFRESH_TTL_S:
         return
     threading.Thread(target=refresh_catalog, daemon=True, name="catalog-refresh").start()
 

@@ -1,8 +1,8 @@
+import type { BillingStateResponse } from '@hermes/shared/gateway-types'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { topupCommands } from '../app/slash/commands/topup.js'
-import type { BillingStateResponse } from '../gatewayTypes.js'
 import { t } from '../i18n/runtime.js'
 
 vi.mock('../lib/openExternalUrl.js', () => ({
@@ -382,5 +382,20 @@ describe('/billing slash command (overlay-driven)', () => {
     const ok = await getOverlayState().billing!.ctx.applyAutoReload(true, 20, 100)
     expect(ok).toBe(false)
     expect(printed(sys)).toContain(t('slashCmd.topup.error.monthlyCapExceeded'))
+  })
+
+  it('ctx.applyKeepGoingOnCredits(on/off) → billing.keep_going_on_credits with just {enabled}', async () => {
+    const { run, calls } = buildCtx({
+      'billing.state': ownerState({ keep_going_on_credits: false }),
+      'billing.keep_going_on_credits': { ok: true }
+    })
+
+    await run('')
+    expect(await getOverlayState().billing!.ctx.applyKeepGoingOnCredits(true)).toBe(true)
+    expect(await getOverlayState().billing!.ctx.applyKeepGoingOnCredits(false)).toBe(true)
+    expect(calls.filter(c => c.method === 'billing.keep_going_on_credits').map(c => c.params)).toEqual([
+      { enabled: true },
+      { enabled: false }
+    ])
   })
 })

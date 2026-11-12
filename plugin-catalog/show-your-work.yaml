@@ -1,0 +1,28 @@
+name: show-your-work
+title: Show Your Work
+repo: https://github.com/kenpritchard/show-your-work
+sha: 2ada81ff5a8b2aca974f464a6d32c250319ba1e0
+version: "0.2.1"
+requires_hermes: ">=0.23.0"
+description: "An evidence board for a change's acceptance criteria: which requirements your agent actually tested, what the imported results say, whether they still match the code, and whether you signed off. Point it at the requirements you already have (a ticket, bug report or spec in Markdown) and it shows four separate statuses per requirement, never merged into one green check: coverage (is a test linked?), outcome (latest imported JUnit run), freshness (tracked files changed since?) and human review. For review, click a requirement and then a linked test to see that test's source and its own diff against the base branch (new, changed or unchanged), plus the change under review. The agent links tests and imports reports from wherever they ran (terminal, Docker, CI); it has no tool to accept or reject. Sign-off comes from the Desktop page, /syw or hermes syw. Five tools (syw_board, syw_link, syw_import, syw_run_detail, syw_test_evidence), a /syw command, a hermes syw CLI, a Desktop page and a workflow skill. Disclosure — runs no tests and makes no network or model calls; reads syw.toml, the criteria file, tracked files (to hash them) and JUnit XML inside the project folder (paths outside it and symlinks refused), runs read-only git (rev-parse, merge-base, diff, show, ls-files) in the project folder when you open a test's evidence or the change panel, stores links, results, hashes and reviews in SQLite under the profile's plugin-data, and writes show-your-work-review.md into the project only when you export."
+maintainer: kenpritchard
+tier: community
+category: tools
+docs_url: https://github.com/kenpritchard/show-your-work/blob/2ada81ff5a8b2aca974f464a6d32c250319ba1e0/docs/USAGE.md
+readme: true
+platforms: [linux, macos, windows]
+known_issues:
+  - "Sign-off is human-only through the plugin's tools, but `hermes syw accept` is an ordinary CLI command, so an agent with a terminal tool could run it (recorded as human:cli). The bundled skill tells agents never to."
+  - "With a remote backend (Docker, SSH), `hermes plugins update` on the server updates only the agent half; update the Desktop page from Desktop (Install from Git / Update with Desktop ticked) and Reload desktop plugins. After installing or updating, restart the dashboard backend so the page's API and the plugin host load the new code."
+  - "On native Windows, `hermes plugins install` can fail with WinError 32/5 (Hermes installer, #136120); docs/USAGE.md has a manual-clone workaround."
+  - "Finding a test's source from its JUnit id is a best guess (Java/Kotlin/Scala/Groovy, Python, Go, simple JS); when it can't, the panel says so."
+capabilities:
+  provides_tools:
+    - syw_board
+    - syw_link
+    - syw_import
+    - syw_run_detail
+    - syw_test_evidence
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

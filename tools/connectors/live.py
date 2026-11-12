@@ -7,11 +7,15 @@ session's profile scope) resolves it through ``hermes_home_key``."""
 
 from __future__ import annotations
 
+import logging
 import threading
 from typing import Dict, Optional, Tuple
 
 from hermes_constants import get_process_hermes_home, hermes_home_key
 from tools.connectors.operation import ConnectionOperation
+
+
+logger = logging.getLogger(__name__)
 
 
 class OperationAlreadyOpen(RuntimeError):
@@ -42,6 +46,8 @@ def open(operation: ConnectionOperation) -> None:
         if existing is not None and not existing.settled:
             raise OperationAlreadyOpen(existing)
         _open[key] = operation
+    logger.info("connection op %s opened: %s", operation.op_id,
+                ", ".join(f"{t.kind}:{t.name}:{t.action}" for t in operation.targets))
 
 
 def current(session_key: str, *, profile_home: Optional[str] = None) -> Optional[ConnectionOperation]:
@@ -63,12 +69,16 @@ def get_by_op_id(op_id: str, *, profile_home: Optional[str] = None) -> Optional[
                      if key == profile_key and operation.op_id == op_id and not operation.settled), None)
 
 
-def find_target(name: str, *, profile_home: Optional[str] = None) -> Optional[ConnectionOperation]:
+def find_target(name: str, *, alias: Optional[str] = None, repair_id: Optional[str] = None,
+                profile_home: Optional[str] = None) -> Optional[ConnectionOperation]:
+    """The open operation connecting this account: the connector ``name`` and the same ``alias`` and
+    repaired account id, so an open operation for one account is never reused for another of the same app."""
     profile_key = _profile_key(profile_home)
     with _lock:
         return next((operation for (key, _), operation in _open.items()
                      if key == profile_key and not operation.settled
-                     and (target := operation.target(name)) is not None and target.kind == "connector"), None)
+                     and (target := operation.target(name)) is not None and target.kind == "connector"
+                     and target.alias == alias and target.repair_id == repair_id), None)
 
 
 def close(operation: ConnectionOperation) -> None:

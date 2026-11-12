@@ -134,7 +134,7 @@ _tokens = count(1)
 _packs: list[PackEntry] = []
 _pack_cache: dict[tuple[str, str], dict[str, str]] = {}
 _overlay_cache: dict[tuple[str, str, str], dict[str, str]] = {}
-_overlay_languages_cache: dict[str, frozenset[str]] = {}
+_overlay_files_cache: dict[str, frozenset[tuple[str, str]]] = {}
 
 
 def _reset_facade() -> None:
@@ -184,9 +184,14 @@ def pack_layer(lang: str, surface: str = CORE_SURFACE) -> dict[str, str]:
         return merged
 
 
-def pack_languages() -> frozenset[str]:
+def pack_surfaces() -> frozenset[tuple[str, str]]:
+    """``(lang, surface)`` for every registered pack layer."""
     with _lock:
-        return frozenset(entry.lang for entry in _packs)
+        return frozenset((entry.lang, entry.surface) for entry in _packs)
+
+
+def pack_languages() -> frozenset[str]:
+    return frozenset(lang for lang, _surface in pack_surfaces())
 
 
 def pack_info(lang: str) -> dict[str, Any] | None:
@@ -230,17 +235,22 @@ def overlay_layer(home: Path | str, lang: str, surface: str = CORE_SURFACE) -> d
     return flat
 
 
-def overlay_languages(home: Path | str) -> frozenset[str]:
-    """Language ids that have at least one overlay file (any surface) under *home*."""
+def overlay_surfaces(home: Path | str) -> frozenset[tuple[str, str]]:
+    """``(lang, surface)`` for every overlay file under *home*."""
     key = str(home)
     with _lock:
-        cached = _overlay_languages_cache.get(key)
+        cached = _overlay_files_cache.get(key)
         if cached is not None:
             return cached
-    langs = frozenset(lang for lang, _surface, _path in scan_locale_dir(overlay_dir(home)))
+    found = frozenset((lang, surface) for lang, surface, _path in scan_locale_dir(overlay_dir(home)))
     with _lock:
-        _overlay_languages_cache[key] = langs
-    return langs
+        _overlay_files_cache[key] = found
+    return found
+
+
+def overlay_languages(home: Path | str) -> frozenset[str]:
+    """Language ids that have at least one overlay file (any surface) under *home*."""
+    return frozenset(lang for lang, _surface in overlay_surfaces(home))
 
 
 def surface_catalog(home: Path | str, lang: str, surface: str = CORE_SURFACE) -> dict[str, str]:
@@ -261,7 +271,7 @@ def clear_cache() -> None:
     with _lock:
         _pack_cache.clear()
         _overlay_cache.clear()
-        _overlay_languages_cache.clear()
+        _overlay_files_cache.clear()
 
 
 def _reset_registry_for_tests() -> None:
@@ -289,9 +299,11 @@ __all__ = [
     "overlay_dir",
     "overlay_languages",
     "overlay_layer",
+    "overlay_surfaces",
     "pack_info",
     "pack_languages",
     "pack_layer",
+    "pack_surfaces",
     "parse_locale_file",
     "register_pack",
     "registered_packs",

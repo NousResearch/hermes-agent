@@ -294,6 +294,10 @@ Gateway-driven update prompts use a native Feishu `Yes` / `No` card instead of f
 
 Card action events are dispatched with `MessageType.COMMAND`, so they flow through the normal command processing pipeline.
 
+**Clarify questions** use cards too: when the agent asks a multiple-choice question with the `clarify` tool, the card shows the options with one numbered button each plus "✏️ Other (type answer)". A tap answers at once and the card updates in place for everyone in the chat; "Other" switches to text capture, so your next message is the answer. Typing a number or the option text instead of tapping also works. Open-ended questions arrive as plain text. The same authorization as approval buttons applies: only an allowed user can answer.
+
+**Finite-choice slash commands** (`/reasoning`, `/fast`) send a card picker: one tap applies the setting, the card settles with the selection, and the command's confirmation follows in the chat.
+
 This is also how **command approval** works — when the agent needs to run a dangerous command, it sends an interactive card with Allow Once / Session / Always / Deny buttons. The user clicks a button, and the card action callback delivers the approval decision back to the agent.
 
 ### Required Feishu App Configuration

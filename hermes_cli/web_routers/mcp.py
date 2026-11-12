@@ -18,7 +18,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from hermes_cli.web_deps import late
-from hermes_cli.web_server_mcp import _mcp_oauth_flows, _mcp_server_summary, _normalize_mcp_server_create
+from hermes_cli.web_server_mcp import _mcp_oauth_flows, _mcp_server_summary, normalize_mcp_server_create
 from hermes_cli.web_models import MCPCatalogInstall, MCPEnabledToggle, MCPServerCreate, MCPServersReplace
 from hermes_cli.web_routers._common import (
     _profile_cli_args, _profile_scope, _spawn_hermes_action, config_write_scope, http_failure,
@@ -71,7 +71,7 @@ def _mcp_oauth_callback_url(request: Request, server_name: str) -> str:
     from hermes_cli.dashboard_auth.prefix import prefix_from_request, resolve_public_url
 
     suffix = f"/api/mcp/oauth/callback/{quote(server_name, safe='')}"
-    public_url = resolve_public_url()
+    public_url = resolve_public_url(request.app.state)
     if public_url:
         return f"{public_url}{suffix}"
     base = urlparse(str(request.base_url))
@@ -113,7 +113,7 @@ async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
     from hermes_cli.mcp_config import _get_mcp_servers, _save_bearer_auth_token, _save_mcp_server
 
     try:
-        name, server_config, bearer_token = _normalize_mcp_server_create(body)
+        name, server_config, bearer_token = normalize_mcp_server_create(body)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

@@ -1,0 +1,51 @@
+name: signal-platform
+label: Signal
+kind: platform
+version: 1.0.0
+description: >
+  Signal gateway adapter for Hermes Agent via a signal-cli daemon in HTTP
+  mode (SSE inbound, JSON-RPC 2.0 outbound). Supports DMs, allowlisted
+  groups, attachments, reactions and home-channel cron delivery. Phone
+  numbers are treated as PII in logs.
+author: NousResearch
+# ``requires_env`` / ``optional_env`` entries are surfaced in the ``hermes config`` UI via the
+# platform-plugin env var injector in ``hermes_cli/config.py``.
+requires_env:
+  - name: SIGNAL_HTTP_URL
+    description: "signal-cli HTTP daemon URL (e.g. http://127.0.0.1:8080)"
+    prompt: "signal-cli HTTP URL"
+    url: "https://github.com/AsamK/signal-cli"
+    password: false
+  - name: SIGNAL_ACCOUNT
+    description: "Signal account phone number in E.164 format (e.g. +15551234567)"
+    prompt: "Signal account number"
+    password: false
+optional_env:
+  - name: SIGNAL_ALLOWED_USERS
+    description: "Comma-separated phone numbers or UUIDs allowed to DM the bot"
+    prompt: "Allowed users (comma-separated)"
+    password: false
+  - name: SIGNAL_ALLOW_ALL_USERS
+    description: "Allow any Signal user to talk to the bot (dev only)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: SIGNAL_GROUP_ALLOWED_USERS
+    description: "Comma-separated group IDs allowed to talk to the bot (* for all groups)"
+    prompt: "Allowed group IDs"
+    password: false
+  - name: SIGNAL_REQUIRE_MENTION
+    description: "Only answer group messages that mention the bot (true/false, default: false)"
+    prompt: "Require mention in groups? (true/false)"
+    password: false
+  - name: SIGNAL_IGNORE_STORIES
+    description: "Ignore Signal stories (true/false, default: true)"
+    prompt: "Ignore stories? (true/false)"
+    password: false
+  - name: SIGNAL_HOME_CHANNEL
+    description: "Default chat (phone number or group:<id>) for cron / notification delivery"
+    prompt: "Home channel"
+    password: false
+  - name: SIGNAL_HOME_CHANNEL_NAME
+    description: "Display name for the Signal home channel"
+    prompt: "Home channel name"
+    password: false

@@ -26,24 +26,20 @@ def _info_lines(*lines: str) -> None:
         _print_info(f"    {line}")
 
 
-def _ensure_browser_use_cli(*, verbose_hints: bool = False) -> None:
-    """Confirm the Browser Use CLI engine is runnable. It is browser-harness, a core dependency of
-    Hermes's own venv, so there is nothing to download; a miss means the venv needs a re-sync.
-    Primary driver engine for EVERY browser backend except Camofox (Firefox-based, no CDP surface)."""
+def _ensure_browser_use_cli() -> None:
+    """Confirm browser_exec's engine is runnable. It is browser-harness, a core dependency of
+    Hermes's own venv, so there is nothing to download; a miss means the venv needs a re-sync."""
     from tools.browser_use_cli import _find_cli
 
     if _find_cli() is not None:
-        _print_success("    Browser Use CLI ready (browser-harness, bundled with Hermes)")
+        _print_success("    browser_exec ready (browser-harness, bundled with Hermes)")
     else:
         _print_warning("    browser-harness is missing from Hermes's Python environment")
         _print_info("    Re-sync it with: hermes update")
-    if verbose_hints:
-        _info_lines("Local Chrome needs remote debugging: chrome://inspect/#remote-debugging",
-                    "Cloud browsers: set BROWSER_USE_API_KEY")
 
 
 def _post_setup_lightpanda() -> None:
-    # Browser Use mode spawns ``lightpanda serve``; built-in tools go through agent-browser. No Chromium needed.
+    # browser_exec spawns ``lightpanda serve`` and attaches over CDP. No Chromium needed.
     _ensure_browser_use_cli()
     from tools.browser_lightpanda import LIGHTPANDA_INSTALL_HINT, find_lightpanda_binary
 
@@ -57,44 +53,29 @@ def _post_setup_lightpanda() -> None:
             _print_info("    Lightpanda has no native Windows build; run Hermes under WSL2.")
 
 
-def _post_setup_agent_browser(post_setup_key: str) -> None:
-    """PM owns the driver and Chromium; Termux and Docker own their native payloads."""
-    # Every non-Camofox backend drives through the Browser Use CLI — install it here too.
+def _post_setup_chromium() -> None:
+    """Local Browser row: browser_exec launches pm's Chromium. Termux (system Chromium) and the Hermes
+    Docker image (its baked build) own their payloads, so a miss there is a hint, never a download."""
+    import pm
+    from hermes_cli.browser_runtime import BAKED_EXECUTABLE_FILE, chromium_executable, chromium_missing_hint
+    from hermes_constants import is_termux
+
     _ensure_browser_use_cli()
-    try:
-        from tools.browser_tool_install import (
-            _browser_install_hint, _chromium_installed, _running_in_docker, _find_agent_browser)
-        from hermes_constants import is_termux
-    except Exception as exc:  # pragma: no cover — defensive
-        _print_warning(f"    Could not check Chromium status: {exc}")
-        return
-
-    termux = is_termux()
-    docker = _running_in_docker()
-    if termux or docker:
+    if chromium_executable() is None and not (is_termux() or BAKED_EXECUTABLE_FILE.exists()):
         try:
-            _find_agent_browser(validate=False)
-        except FileNotFoundError:
-            _print_warning(f"    agent-browser is missing. Install it explicitly: {_browser_install_hint()}")
+            pm.ensure("chromium", explicit=True)
+        except (RuntimeError, OSError) as exc:  # pm.InstallError, a download or worker failure
+            _print_warning(f"    Chromium install failed: {exc}")
+            _info_lines("Retry with: hermes tools post-setup chromium")
             return
-        if docker and post_setup_key == "agent_browser" and not _chromium_installed():
-            _print_warning("    Chromium is missing but you're running in Docker.")
-            _info_lines("Pull the latest image to get the bundled Chromium:",
-                        "  docker pull ghcr.io/nousresearch/hermes-agent:latest")
+    found = chromium_executable()
+    if found is None:
+        _print_warning(f"    {chromium_missing_hint()}")
         return
-
-    try:
-        import pm
-        # Chromium is a declared dependency; do not acquire it a second time.
-        pm.ensure("agent-browser", explicit=True)
-    except Exception as exc:
-        _print_warning(f"    agent-browser install failed: {exc}")
-        _info_lines("Retry with: hermes tools post-setup " + post_setup_key)
-        return
-    _print_success("    Managed agent-browser and Chromium are ready")
+    _print_success(f"    Chromium ready: {found}")
 
     # OS libraries are host-owned. Never download another package manager to install them.
-    if post_setup_key == "agent_browser" and sys.platform == "linux":
+    if sys.platform == "linux" and not is_termux():
         _info_lines("Chromium also needs system libraries supplied by your distribution.")
         if shutil.which("apt-get") and _module_installed("playwright"):
             command = shlex.join([sys.executable, "-m", "playwright", "install-deps", "chromium"])
@@ -102,18 +83,6 @@ def _post_setup_agent_browser(post_setup_key: str) -> None:
         else:
             _info_lines("System dependency installation guide:",
                         "  https://playwright.dev/python/docs/browsers#install-system-dependencies")
-
-
-def _post_setup_camofox() -> None:
-    from tools.browser_camofox import check_camofox_available
-
-    _info_lines("Camofox is an externally managed server; Hermes does not install or start it.")
-    if check_camofox_available():
-        _print_success("    Configured Camofox server is reachable")
-        return
-    _print_warning("    Camofox server is not reachable. Start your server and check CAMOFOX_URL.")
-    _info_lines("Server setup: https://github.com/jo-inc/camofox-browser",
-                "Docker: docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
 
 
 # The hook key is the UI provider identifier; extra names belong to pyproject.toml.
@@ -157,26 +126,6 @@ def _post_setup_python(spec: dict) -> None:
     _print_success(f"    {label} dependencies ready. Restart Hermes to use them.")
     _info_lines(*spec["on_install"], *spec["always"])
 
-
-def _post_setup_langfuse() -> None:
-    import pm
-
-    # The bundled plugin has no dependency member; its SDK is an application extra.
-    _print_info("    Preparing langfuse SDK...")
-    try:
-        pm.sync_venv(["langfuse"], explicit=True)
-    except (pm.InstallError, OSError, ValueError) as exc:
-        _print_warning(f"    langfuse SDK install failed: {exc}")
-        _info_lines("Retry with: hermes tools")
-        return
-    try:
-        from hermes_cli.plugins_cmd import cmd_enable
-        cmd_enable("observability/langfuse")
-    except (Exception, SystemExit) as exc:
-        _print_warning(f"    Could not enable plugin automatically: {exc}")
-        _info_lines("Run manually: hermes plugins enable observability/langfuse")
-        return
-    _info_lines("Restart Hermes for tracing to take effect.", "Verify: hermes plugins list")
 
 
 def _post_setup_xai_grok() -> None:
@@ -290,12 +239,10 @@ _POST_SETUP_AUTH_READY: dict = {
 # post_setup key -> hook. Unknown keys are a silent no-op (callers validate against valid_post_setup_keys()).
 _POST_SETUP_HOOKS: dict = {
     "lightpanda": _post_setup_lightpanda,
-    "agent_browser": lambda: _post_setup_agent_browser("agent_browser"),
-    "browserbase": lambda: _post_setup_agent_browser("browserbase"),
-    "browser_use_cli": lambda: _ensure_browser_use_cli(verbose_hints=True),
-    "camofox": _post_setup_camofox,
+    "chromium": _post_setup_chromium,
+    # Cloud browser rows (plugins.browser.*): the vendor hosts Chromium; browser_exec attaches over CDP.
+    "browserbase": lambda: _ensure_browser_use_cli(),
     "cua_driver": lambda: install_cua_driver(upgrade=False),
-    "langfuse": _post_setup_langfuse,
     "xai_grok": _post_setup_xai_grok,
     "openai_codex": _post_setup_openai_codex,
     **{key: (lambda spec=spec: _post_setup_python(spec)) for key, spec in _PYTHON_POST_SETUP_HOOKS.items()},
@@ -374,19 +321,19 @@ def _module_installed(module_name: str) -> bool:
         return False
 
 
-def _agent_browser_installed() -> bool:
-    """True when everything ``_run_post_setup("agent_browser")`` installs is present: the agent-browser CLI
-    *and* the Chromium build it drives (or the Lightpanda engine, which needs no Chromium), so "Run
-    setup" flips to installed only when re-running it would be a no-op."""
-    from hermes_cli.nous_subscription import _local_browser_runnable
+def _chromium_installed() -> bool:
+    """Everything ``_run_post_setup("chromium")`` provides is present: browser-harness and a Chromium, so
+    "Run setup" flips to installed only when re-running it would be a no-op."""
+    from hermes_cli.browser_runtime import chromium_executable
 
-    return _local_browser_runnable()
+    return _browser_harness_installed() and chromium_executable() is not None
 
 
-def _camofox_installed() -> bool:
-    """Readiness belongs to the configured external server, not root node_modules."""
-    from tools.browser_camofox import check_camofox_available
-    return check_camofox_available()
+def _browser_harness_installed() -> bool:
+    """Installed-check for the ``browserbase`` hook: cloud providers host their own Chromium, so
+    browser_exec's engine is the whole local contract."""
+    from tools.browser_use_cli import _find_cli
+    return _find_cli() is not None
 
 
 def _lightpanda_installed() -> bool:
@@ -398,22 +345,13 @@ def _lightpanda_installed() -> bool:
         return False
 
 
-def _cloud_agent_browser_installed() -> bool:
-    """Installed-check for the ``browserbase`` hook: cloud providers host their own Chromium, so
-    presence of the agent-browser CLI is the whole contract."""
-    from hermes_cli.nous_subscription import _has_agent_browser
-    return _has_agent_browser()
-
-
 # post_setup_key -> predicate(): True when the install side-effect is satisfied. Used by
 # ``provider_readiness_status`` to mark a keyless post_setup row "ready" vs "needs_setup"; mirrors the
 # installed-checks the hooks perform. Credential bootstraps (``xai_grok``, ``openai_codex``) are absent —
 # they live in ``_POST_SETUP_AUTH_READY`` as auth checks. Late-bound lambdas so tests can monkeypatch the underlying predicates.
 _POST_SETUP_READY: dict = {
     **{key: (lambda m=spec["module"]: _module_installed(m)) for key, spec in _PYTHON_POST_SETUP_HOOKS.items()},
-    "langfuse": lambda: _module_installed("langfuse"),
-    "agent_browser": lambda: _agent_browser_installed(),
-    "browserbase": lambda: _cloud_agent_browser_installed(),
-    "camofox": lambda: _camofox_installed(),
+    "chromium": lambda: _chromium_installed(),
+    "browserbase": lambda: _browser_harness_installed(),
     "lightpanda": lambda: _lightpanda_installed(),
     "cua_driver": lambda: _cua_driver_install_ready()}

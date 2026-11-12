@@ -86,3 +86,30 @@ def test_tag_fetch_preserves_a_non_default_partial_clone_filter(tmp_path):
 
     assert _git(checkout, "config", "--get", "remote.origin.partialclonefilter") == "blob:none"
     assert "v0.21.6" in _git(checkout, "tag", "--list")
+
+
+def test_a_tag_refresh_is_bounded_short_and_a_history_fill_keeps_the_long_budget(tmp_path, monkeypatch):
+    # A tags-only refresh on a full-history checkout is a ref listing; a slow remote must not hold
+    # the update for 15 minutes when a miss only leaves the version label stale. Filling a shallow
+    # checkout's history really transfers commits, so it keeps the long budget.
+    from hermes_cli import gitlock
+
+    server = _server_repo(tmp_path)
+    _git(server, "config", "uploadpack.allowFilter", "true")
+    full = _clone(tmp_path, server, "full", "--no-tags")
+    shallow = _clone(tmp_path, server, "shallow", "--depth", "1")
+    seen = {}
+    real = gitlock.run_git
+
+    def recording(git_cmd, args, **kwargs):
+        if args[:1] == ["fetch"]:
+            seen[kwargs["cwd"]] = kwargs["timeout"]
+        return real(git_cmd, args, **kwargs)
+
+    monkeypatch.setattr(gitlock, "run_git", recording)
+    assert fetch_full_commit_graph(full) is False
+    assert fetch_full_commit_graph(shallow) is True
+
+    assert seen[str(full)] == gitlock._TAG_REFRESH_TIMEOUT_SECONDS == 30
+    assert seen[str(shallow)] == gitlock._HISTORY_FETCH_TIMEOUT_SECONDS == 900
+    assert "v0.21.6" in _git(full, "tag", "--list")

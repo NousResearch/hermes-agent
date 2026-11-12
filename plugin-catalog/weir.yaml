@@ -1,0 +1,31 @@
+name: weir
+title: Weir
+repo: https://github.com/tarun-khatri/weir-mcp
+sha: bd3d49b98754913f59df12dbc76a5e2e3a8ec7af
+subdir: plugins/hermes
+version: "1.0.0"
+description: >-
+  Public X (Twitter) and Reddit data through Weir's hosted MCP server: search posts with X's
+  operators, and read profiles, timelines, replies, threads, Lists, subreddits and comments.
+  Portable Agent Plugins v1 package with the hosted MCP server (remote streamable-http, OAuth 2.1
+  with a client ID metadata document or dynamic client registration, so no keys in config) and one
+  skill; no code, no executables, no stored credentials. Disclosure: every tool call goes to
+  api.weirapp.io and spends Weir credits (5,000 free a month, then prepaid packs); the search terms,
+  handles and links you look up are sent to Weir. Data tools are annotated read-only; the optional
+  monitor tools appear only with the monitors:write scope, and the package marks its server
+  untrusted, so Hermes asks before any call that is not read-only and refuses those calls in
+  unattended runs; a `weir` server you define in config.yaml replaces the package's and drops that
+  prompt unless you add `trust: untrusted`. Weir is not affiliated with X or Reddit. The tool set is
+  served by the remote server at runtime and is not covered by the pinned sha.
+maintainer: Weir
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://docs.weirapp.io/mcp
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

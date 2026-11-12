@@ -76,6 +76,9 @@ class TestProcFallback:
             patch("os.path.isdir", side_effect=_isdir),
             patch("os.listdir", side_effect=_listdir),
             patch("builtins.open", side_effect=_open),
+            # The fake /proc entries are ours: the other-users filter stats the REAL /proc/<pid>,
+            # so a root-owned runner process that happens to hold PID 12345 dropped the fake gateway.
+            patch("hermes_cli.gateway_migrate_guards.pid_is_other_users", return_value=False),
             patch("hermes_cli.gateway._get_ancestor_pids", return_value=set()),
             patch("subprocess.run") as mock_ps,
         ):

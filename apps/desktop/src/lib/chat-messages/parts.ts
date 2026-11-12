@@ -313,6 +313,20 @@ export function partsText(parts: ChatMessagePart[]): string {
     .join('')
 }
 
+/** The bubble's last non-empty text part, trimmed. A hydrated tool-call turn
+ *  folds several messages into one bubble; this is the newest of them. */
+export function lastTextPartText(message: ChatMessage): string {
+  for (let index = message.parts.length - 1; index >= 0; index -= 1) {
+    const part = message.parts[index]
+
+    if (part.type === 'text' && part.text.trim()) {
+      return part.text.trim()
+    }
+  }
+
+  return ''
+}
+
 export function chatMessageText(message: ChatMessage): string {
   return partsText(message.parts)
 }

@@ -160,6 +160,7 @@ def spawn_async_diagnostic(log_path: Path, signal_name: str, *,
     try:  # start_new_session: outlive systemd killing our cgroup (KillMode=control-group) to flush
         return subprocess.Popen(
             [*bound, "bash", "-c", script], stdout=fd,
+            # detached-spawn: ok — forensics dump runs while the gateway dies; bounded by timeout(1)
             stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True,
             close_fds=True).pid
     except OSError:

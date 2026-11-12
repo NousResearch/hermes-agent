@@ -106,7 +106,6 @@ def _make_runner(adapter):
     runner._fallback_model = None
     runner._session_db = None
     runner._running_agents = {}
-    runner._session_run_generation = {}
     runner.hooks = types.SimpleNamespace(loaded_hooks=False)
     runner.config = types.SimpleNamespace(
         thread_sessions_per_user=False,

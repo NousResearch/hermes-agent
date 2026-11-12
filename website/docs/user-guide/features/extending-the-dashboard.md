@@ -12,7 +12,7 @@ The Hermes web dashboard (`hermes dashboard`) is built to be reskinned and exten
 2. **UI plugins** — a directory with `manifest.json` + a JavaScript bundle that registers a tab, replaces a built-in page, augments one via page-scoped slots, or injects components into named shell slots.
 3. **Backend plugins** — a Python file inside that plugin directory that exposes a FastAPI `router`; routes are mounted under `/api/plugins/<name>/` and called from the plugin's UI.
 
-All three are **drop-in at runtime**: no repo clone, no `npm run build`, no patching the dashboard source. This page is the canonical reference for all three.
+All three are **drop-in at runtime**: no repo clone, no `pnpm run build`, no patching the dashboard source. This page is the canonical reference for all three.
 
 If you just want to use the dashboard, see [Web Dashboard](./web-dashboard). If you want to reskin the terminal CLI (not the web dashboard), see [Skins & Themes](./skins) — the CLI skin system is unrelated to dashboard themes.
 
@@ -547,7 +547,7 @@ SDK.fetchJSON("/api/plugins/my-plugin/data")
   .catch((err) => console.error("API call failed:", err));
 ```
 
-`fetchJSON` injects the session auth token, surfaces errors as thrown exceptions, and parses JSON automatically.
+`fetchJSON` injects the session auth token, surfaces errors as thrown exceptions, and parses JSON automatically. `fetchJSON` and `authedFetch` only call this dashboard's own origin: an absolute URL to another host is rejected rather than sent the session token, so fetch third-party URLs (CDN assets, a game server) with plain `fetch`.
 
 #### Calling built-in Hermes endpoints
 
@@ -749,6 +749,17 @@ Routes are mounted under `/api/plugins/<name>/`, so the above becomes:
 
 Plugin API routes sit behind the dashboard's normal auth gate — unauthenticated requests get a `401` before the plugin route runs, and requests to a disabled plugin's routes are rejected at request time. Still, **don't expose the dashboard on a public interface with `--host 0.0.0.0` if you run untrusted plugins** — an authenticated session can reach their routes too.
 
+#### Don't block the event loop
+
+With the default `plugins.isolation: in_process`, API handlers run on the gateway's event loop, the same
+loop that answers every other dashboard, Desktop and chat request. A handler that blocks (`time.sleep`, a
+synchronous HTTP client, a long file scan) holds all of them until it returns: a handler sleeping 3 s
+delays an unrelated `/api/status` by seconds and can time out Desktop's connection. Use `async def` with
+async I/O, or move blocking work off the loop with `await asyncio.to_thread(...)` (a plain `def` handler
+also runs in a worker thread). `plugins.isolation: host` runs the handlers in a separate process
+([plugin host](plugins.md#running-plugins-out-of-process-pluginsisolation)): a slow handler there
+delays only that profile's hosted plugin requests, and one with no answer after 60 s gets HTTP 504.
+
 #### Accessing Hermes internals
 
 Backend routes run inside the dashboard process, so they can import from the hermes-agent codebase directly:
@@ -812,6 +823,13 @@ The dashboard scans three directories for `dashboard/manifest.json`:
 | 2 | `<repo>/plugins/memory/<name>/dashboard/` | `bundled` |
 | 2 | `<repo>/plugins/<name>/dashboard/` | `bundled` |
 | 3 | `./.hermes/plugins/<name>/dashboard/` | `project` — only when `HERMES_ENABLE_PROJECT_PLUGINS` is set |
+
+On a gateway serving several profiles, a request for a profile other than the one the gateway started
+with sees that profile's own `plugins/<name>/dashboard/`, then the root `~/.hermes/plugins/<name>/dashboard/`
+(as a standalone `hermes --profile <name> dashboard` did; the profile's own copy wins a same-name
+conflict), then the bundled ones, gated by that profile's `plugins.enabled` / `plugins.disabled`. Its
+plugin API, a root plugin's included, runs in that profile's [plugin host](plugins.md#running-plugins-out-of-process-pluginsisolation),
+never inside the gateway.
 
 Discovery results are cached per dashboard process. After adding a new plugin, either:
 

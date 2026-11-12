@@ -54,8 +54,9 @@ class GatewayFake:
         self.lists += 1
         return [{"connector": s, "enabled": True, "connected": s in self.connected} for s in ("gmail", "notion")]
 
-    def connections(self, connectors, *, reinitiate=False, return_to=None, op=None):
-        self.mints.append({"connectors": tuple(connectors), "reinitiate": reinitiate, "return_to": return_to, "op": op})
+    def connections(self, connectors, *, reinitiate=False, alias=None, connection_id=None, return_to=None, op=None):
+        self.mints.append({"connectors": tuple(connectors), "reinitiate": reinitiate, "alias": alias,
+                           "return_to": return_to, "op": op})
         results = []
         for slug in connectors:
             status = self.mint_overrides.get(slug, self.mint_status)
@@ -236,6 +237,40 @@ def test_mint_failure_detail_survives_and_only_an_unlisted_catalog_name_is_misro
         out = _run({"action": "connect", "connectors": ["notion"]}, gw,
                    callback=_desktop_callback(), tick=0.01)
     assert out["targets"][0]["detail"] == "gateway hiccup"
+
+
+def test_a_guessed_slug_fails_naming_the_listed_one_and_status_names_it_too():
+    # The gateway lists granola as granola_mcp and refuses "granola" as a policy block, with the
+    # reason in its instruction.
+    class Fake(GatewayFake):
+        def list_connectors(self, *, timeout=None):
+            self.lists += 1
+            return [{"connector": s, "enabled": True, "connected": False} for s in ("gmail", "granola_mcp")]
+
+        def connections(self, connectors, **kw):
+            out = super().connections(connectors, **kw)
+            for row in out["results"]:
+                row["instruction"] = "This connector is not allowed by your organization's policy."
+            return out
+
+    gw = Fake(mint_status="failed")
+    card = _desktop_callback()
+    with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 30.0), \
+         patch("tools.connectors.managed.catalog_names", return_value=set()):
+        out = _run({"action": "connect", "connectors": ["granola"]}, gw, callback=card, tick=0.01)
+    assert card.seen == [] and out["settled_by"] == "all_resolved"
+    assert out["targets"][0]["detail"] == "'granola' is not a connector slug; use granola_mcp"
+
+    gw = Fake(mint_status="failed")
+    with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.05), \
+         patch("tools.connectors.managed.catalog_names", return_value=set()):
+        out = _run({"action": "connect", "connectors": ["gmail"]}, gw, callback=_desktop_callback(), tick=0.01)
+    assert out["targets"][0]["detail"] == "This connector is not allowed by your organization's policy."
+
+    with patch("tools.connectors.managed.portal_accounts", return_value=[]):
+        out = _run({"action": "status", "connectors": ["granola"]}, Fake())
+    assert out["connectors"] == []
+    assert out["unknown"] == {"granola": "'granola' is not a connector slug; use granola_mcp"}
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,31 @@
+name: hermes-aac
+title: Hermes AAC
+repo: https://github.com/TREE-Ind/hermes-aac
+sha: 45d855ff2d8f448e1f98b62870aa72c3a02ea013
+subdir: ""
+description: "Communication boards, explicit speech, switch scanning and reviewed AI proposals for Hermes Desktop. Disclosure — Desktop-only page; Speak sends your message text through the Hermes gateway to the TTS provider configured in Hermes (cloud providers receive it) and the audio plays on the gateway host, which may be remote; the AI helpers open a separate Hermes chat session per request and send your topic or message as a normal agent turn on your model provider; saved phrases and approved boards are kept in plaintext in the plugin's Desktop storage."
+maintainer: TREE-Ind
+tier: community
+category: desktop
+version: "0.1.1"
+requires_hermes: ">=0.21.7"
+readme: true
+onboarding: false
+platforms: [windows]
+screenshots:
+  - https://raw.githubusercontent.com/TREE-Ind/hermes-aac/45d855ff2d8f448e1f98b62870aa72c3a02ea013/evidence/cockpit-1366.png
+  - https://raw.githubusercontent.com/TREE-Ind/hermes-aac/45d855ff2d8f448e1f98b62870aa72c3a02ea013/evidence/studio-1366.png
+  - https://raw.githubusercontent.com/TREE-Ind/hermes-aac/45d855ff2d8f448e1f98b62870aa72c3a02ea013/evidence/focus-1366.png
+known_issues:
+  - Experimental, nonclinical AAC; requires Hermes Desktop and configured services for optional AI and speech.
+  - Screenshots are actual React renders with mocked SDK/native boundaries, not live provider proof.
+  - Saved phrases and approved boards persist locally in plaintext; full config is read-only through SDK.
+  - Speech is submission acknowledgement only; backend-owned audio may play on a remote gateway host.
+  - No speech Stop, request-scoped cancellation, completion or later playback error tracking; Stop scanning remains independent.
+  - No voice catalog or model/provider/settings writes; configure in Hermes Settings.
+  - Explicit expression tags require a current ElevenLabs v3 config snapshot, not an atomic guarantee or provider attestation.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

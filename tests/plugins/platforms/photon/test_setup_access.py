@@ -147,3 +147,84 @@ def test_setup_regenerates_when_existing_secret_invalid(
     out = capsys.readouterr().out
     assert "new secret saved" in out
     assert "restart it so the sidecar" in out
+
+
+def test_setup_without_opt_in_does_not_report_complete(
+    monkeypatch: pytest.MonkeyPatch, capsys,
+) -> None:
+    """A number that never texted its assigned line cannot route: setup must not end on
+    "complete" (non-TTY run, so the opt-in wait is skipped rather than blocking)."""
+    monkeypatch.setattr(cli.photon_auth, "load_photon_token", lambda: "token")
+    monkeypatch.setattr(cli.photon_auth, "check_photon_token_valid", lambda token: True)
+    monkeypatch.setattr(cli.photon_auth, "load_dashboard_project_id", lambda: "dashboard")
+    monkeypatch.setattr(cli.photon_auth, "load_project_credentials", lambda: ("dashboard", "s"))
+    monkeypatch.setattr(cli.photon_auth, "list_users", lambda pid, secret: [])
+    monkeypatch.setattr(cli.photon_auth, "store_project_credentials", lambda **kwargs: None)
+    monkeypatch.setattr(cli.photon_auth, "register_user_if_absent", lambda *a, **k: (
+        {"id": "u1", "phoneNumber": "+15551234567", "assignedPhoneNumber": "+16282679185", "meta": {}}, True))
+    monkeypatch.setattr(cli.photon_auth, "store_user_numbers", lambda **kwargs: None)
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False, raising=False)
+
+    rc = cli._cmd_setup(argparse.Namespace(
+        project_name=None, phone="+15551234567", first_name=None, last_name=None,
+        email=None, no_browser=True, skip_sidecar_install=True))
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "setup complete" not in out
+    assert "routing is NOT live" in out and "+16282679185" in out
+
+
+@pytest.mark.parametrize("dedicated_line", ["+16282679185", None])
+def test_opt_in_wait_always_names_a_line_to_text(
+    monkeypatch: pytest.MonkeyPatch, capsys, dedicated_line,
+) -> None:
+    """A row with no assignedPhoneNumber: the project-line lookup runs BEFORE the wait, and
+    with no line at all the wait is skipped (the user would have nothing to text)."""
+    monkeypatch.setattr(cli.photon_auth, "load_photon_token", lambda: "token")
+    monkeypatch.setattr(cli.photon_auth, "check_photon_token_valid", lambda token: True)
+    monkeypatch.setattr(cli.photon_auth, "load_dashboard_project_id", lambda: "dashboard")
+    monkeypatch.setattr(cli.photon_auth, "load_project_credentials", lambda: ("dashboard", "s"))
+    monkeypatch.setattr(cli.photon_auth, "list_users", lambda pid, secret: [])
+    monkeypatch.setattr(cli.photon_auth, "store_project_credentials", lambda **kwargs: None)
+    monkeypatch.setattr(cli.photon_auth, "register_user_if_absent", lambda *a, **k: (
+        {"id": "u1", "phoneNumber": "+15551234567", "meta": {}}, True))
+    monkeypatch.setattr(cli.photon_auth, "get_imessage_line", lambda token, pid: (
+        {"phoneNumber": dedicated_line} if dedicated_line else None))
+    monkeypatch.setattr(cli.photon_auth, "store_user_numbers", lambda **kwargs: None)
+    waited: list = []
+    monkeypatch.setattr(cli, "_wait_for_opt_in", lambda d, s, phone, line: waited.append(line))
+
+    rc = cli._cmd_setup(argparse.Namespace(
+        project_name=None, phone="+15551234567", first_name=None, last_name=None,
+        email=None, no_browser=True, skip_sidecar_install=True))
+
+    out = capsys.readouterr().out
+    assert rc == 0 and "setup complete" not in out
+    if dedicated_line:
+        assert waited == [dedicated_line]
+    else:
+        assert waited == [] and "skipping the opt-in wait" in out and "hermes photon status" in out
+
+
+def test_setup_without_phone_does_not_report_complete(
+    monkeypatch: pytest.MonkeyPatch, capsys,
+) -> None:
+    """No --phone and an empty answer: nothing is registered, so nothing can route."""
+    monkeypatch.setattr(cli.photon_auth, "load_photon_token", lambda: "token")
+    monkeypatch.setattr(cli.photon_auth, "check_photon_token_valid", lambda token: True)
+    monkeypatch.setattr(cli.photon_auth, "load_dashboard_project_id", lambda: "dashboard")
+    monkeypatch.setattr(cli.photon_auth, "load_project_credentials", lambda: ("dashboard", "s"))
+    monkeypatch.setattr(cli.photon_auth, "list_users", lambda pid, secret: [])
+    monkeypatch.setattr(cli.photon_auth, "store_project_credentials", lambda **kwargs: None)
+    monkeypatch.setattr(cli.photon_auth, "get_imessage_line", lambda token, pid: None)
+    monkeypatch.setattr(cli, "_prompt", lambda *a, **k: "")
+
+    rc = cli._cmd_setup(argparse.Namespace(
+        project_name=None, phone=None, first_name=None, last_name=None,
+        email=None, no_browser=True, skip_sidecar_install=True))
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "setup complete" not in out
+    assert "routing is NOT live" in out and "--phone" in out

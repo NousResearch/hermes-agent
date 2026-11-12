@@ -461,3 +461,52 @@ def test_desktop_session_container_binds_its_workspace_not_the_backend_launch_di
     assert (plans['desktop-a'][1], plans['desktop-b'][1]) == (str(ws1), str(ws2))
     # The profile container, shared by every session without a workspace, keeps the legacy mount.
     assert plans['desktop-none'] == ('default', str(launch_home))
+
+
+def _desktop_shared_mode(monkeypatch, launch_home):
+    from tools import terminal_tool
+    for name, value in (('TERMINAL_ENV', 'docker'), ('TERMINAL_CONTAINER_PERSISTENT', 'true'),
+                        ('TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE', 'true'), ('TERMINAL_CWD', str(launch_home))):
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(terminal_tool, '_terminal_config_bridge_attempted', True)
+
+
+def test_workspace_container_never_falls_back_to_the_launch_dir(home, tmp_path, monkeypatch):
+    """#119170: a ``:ws:`` container whose workspace is gone mounts nothing, never the launch dir."""
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tui_gateway import server
+    launch_home = tmp_path / 'user-home'
+    (launch_home / '.ssh').mkdir(parents=True)
+    ws = tmp_path / 'ws'
+    ws.mkdir()
+    _desktop_shared_mode(monkeypatch, launch_home)
+    tokens = set_session_vars(session_key='desktop-gone', profile='')
+    try:
+        vars(server)['_register_session_cwd'](
+            {'session_key': 'desktop-gone', 'cwd': str(ws), 'explicit_cwd': True, 'source': 'desktop'})
+        ws.rmdir()
+        key, mount = _plan('desktop-gone')
+    finally:
+        clear_session_vars(tokens)
+    assert ':ws:' in key and mount is None
+
+
+@pytest.mark.parametrize('workspace', ['/rootfs/project', '/workspace2/project'])
+def test_workspace_merely_prefixed_like_a_container_path_is_mounted(home, tmp_path, monkeypatch, workspace):
+    """The in-container guard matches path segments: ``/rootfs`` is a host dir, not ``/root``."""
+    import os
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tui_gateway import server
+    launch_home = tmp_path / 'user-home'
+    launch_home.mkdir()
+    _desktop_shared_mode(monkeypatch, launch_home)
+    real_isdir = os.path.isdir
+    monkeypatch.setattr(os.path, 'isdir', lambda p: p == workspace or real_isdir(p))
+    tokens = set_session_vars(session_key='desktop-rootfs', profile='')
+    try:
+        vars(server)['_register_session_cwd'](
+            {'session_key': 'desktop-rootfs', 'cwd': workspace, 'explicit_cwd': True, 'source': 'desktop'})
+        key, mount = _plan('desktop-rootfs')
+    finally:
+        clear_session_vars(tokens)
+    assert ':ws:' in key and mount == workspace

@@ -697,7 +697,8 @@ def _session_workspace_mount_source(task_id: Optional[str]) -> Optional[str]:
         return None
     candidate = os.path.abspath(os.path.expanduser(candidate))
     # Must exist on the host and not already be an in-container path.
-    if not os.path.isdir(candidate) or candidate.startswith(("/workspace", "/root")):
+    if not os.path.isdir(candidate) or any(
+            candidate == root or candidate.startswith(root + "/") for root in ("/workspace", "/root")):
         return None
     return candidate
 
@@ -738,6 +739,10 @@ def _resolve_task_host_cwd(config: dict[str, Any], task_id: Optional[str]) -> Op
             source = _session_workspace_mount_source(owner)
             if source and key.endswith(f":ws:{workspace_key_for(source)}"):
                 return source
+        # A workspace-keyed container whose workspace is refused (deleted, in-container path)
+        # mounts nothing: the launch dir is exactly what it must never get.
+        if ":ws:" in key:
+            return None
         return config.get("host_cwd")
     return _session_workspace_mount_source(task_id)
 

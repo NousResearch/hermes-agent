@@ -32,7 +32,7 @@ import type { ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
 import { scheduleResumeScrollToBottom } from './sessionResumeView.js'
 import { renameCanonicalSession } from './slash/canonicalSessionCommands.js'
-import { captureDestination } from './submissionDestination.js'
+import { captureDestination, isCurrentDestination } from './submissionDestination.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
@@ -195,7 +195,9 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   const closeSession = useCallback(
     async (targetSid?: null | string, deferMessages = false) => {
       const closed =
-        targetSid && !gw.isCanonical ? await rpc<SessionCloseResponse>('session.close', { session_id: targetSid }) : null
+        targetSid && !gw.isCanonical
+          ? await rpc<SessionCloseResponse>('session.close', { session_id: targetSid })
+          : null
 
       if (!deferMessages) {
         closed?.messages?.forEach(message => sys(message))
@@ -273,7 +275,9 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   const closeForExit = useCallback(async () => {
     const open = [...canonicalSubscriptions.current.entries()]
 
-    await Promise.all(open.map(([sessionId, subscriptionId]) => detachCanonical(sessionId, subscriptionId, 'tui_shutdown')))
+    await Promise.all(
+      open.map(([sessionId, subscriptionId]) => detachCanonical(sessionId, subscriptionId, 'tui_shutdown'))
+    )
   }, [detachCanonical])
 
   // The Ink session switcher's `^d` close of a live row. On the legacy transport it is main's
@@ -373,7 +377,11 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         previousSubscription &&
         (previousSid !== result.session_id || previousSubscription !== result.subscription_id)
       ) {
-        detachCanonical(previousSid, previousSubscription, closePrevious && previousSid !== result.session_id ? 'tui_close' : undefined)
+        detachCanonical(
+          previousSid,
+          previousSubscription,
+          closePrevious && previousSid !== result.session_id ? 'tui_close' : undefined
+        )
       }
     },
     [detachCanonical, gw.isCanonical]
@@ -667,21 +675,36 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   )
 
   const resumeById = useCallback(
-    (id: string) => {
+    (target: string, resolveId?: () => Promise<null | string>) => {
       const flight = ++attachmentFlight.current
       pendingAttachments.current.add(flight)
       const current = captureDestination()
       const previousSid = current.sid
       const previousSubscription = previousSid ? canonicalSubscriptions.current.get(previousSid) : undefined
 
-      const destination =
-        current.sid === id || current.storedSid === id ? current : { ...current, sid: id, storedSid: id }
+      const attach = (id: null | string) => {
+        if (flight !== attachmentFlight.current) {
+          return Promise.resolve()
+        }
 
-      patchOverlayState({ sessions: false })
-      patchUiState({ status: t('session.status.resuming') })
+        if (id === null) {
+          const ui = getUiState()
 
-      return (gw.isCanonical ? Promise.resolve(null) : rpc<SetupStatusResponse>('setup.status', {}))
-        .then(setup => {
+          // A rejected lookup must not leave a superseded attachment's loading status behind.
+          if (isCurrentDestination(current) && !ui.busy && ui.status === t('session.status.resuming')) {
+            patchUiState({ status: 'ready' })
+          }
+
+          return Promise.resolve()
+        }
+
+        const destination =
+          current.sid === id || current.storedSid === id ? current : { ...current, sid: id, storedSid: id }
+
+        patchOverlayState({ sessions: false })
+        patchUiState({ status: t('session.status.resuming') })
+
+        return (gw.isCanonical ? Promise.resolve(null) : rpc<SetupStatusResponse>('setup.status', {})).then(setup => {
           if (flight !== attachmentFlight.current) {
             return
           }
@@ -773,7 +796,10 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             })
             .finally(() => gw.settleAttach?.(hold))
         })
-        .finally(() => finishAttachment(flight))
+      }
+
+      // Claim the flight before resolving a title so older attach replies are already stale.
+      return (resolveId ? resolveId().then(attach) : attach(target)).finally(() => finishAttachment(flight))
     },
     [
       adoptAttachment,

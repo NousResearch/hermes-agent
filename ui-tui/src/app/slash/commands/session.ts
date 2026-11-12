@@ -23,6 +23,7 @@ import { patchOverlayState } from '../../overlayStore.js'
 import { getUiState, patchUiState } from '../../uiStore.js'
 import { canonicalReasoning, canonicalUsage } from '../canonicalSessionCommands.js'
 import { runCanonicalSessionControl } from '../canonicalSessionControls.js'
+import { resumeSession } from '../resumeSession.js'
 import type { SlashCommand, SlashRunCtx } from '../types.js'
 import { usageTotalsSections } from '../usagePanel.js'
 
@@ -241,7 +242,7 @@ export const sessionCommands: SlashCommand[] = [
           return
         }
 
-        return ctx.session.resumeById(trimmed)
+        return resumeSession(trimmed, ctx)
       }
 
       patchOverlayState({ sessions: true })

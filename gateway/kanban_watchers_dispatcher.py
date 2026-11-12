@@ -132,6 +132,57 @@ class _KanbanDispatcher:
         self.kb = kb
         self.settings = settings
         self.disabled_corrupt_boards: dict[str, tuple[tuple[str, int | None, int | None], float]] = {}
+        self._cap_read_warned = False
+
+    def refresh_caps(self, load_config) -> None:
+        """Re-read the two concurrency caps so an edit applies on the next tick.
+
+        The boot snapshot froze them: editing ``kanban.max_in_progress`` did
+        nothing until a gateway restart, and a restart strands in-flight
+        workers. ``_cmd_dispatch`` resolves config per invocation already, so
+        the embedded loop re-reading is the same agreement ``dispatch_interval``
+        and the auto-decompose toggle already keep (see the matching live
+        re-read in ``gateway/kanban_watchers.py``).
+
+        Uses the boot path's exact expressions, including the memory-derived
+        default, so the two cannot drift. On a config read failure the previous
+        values are kept — a half-saved file must not stall the fleet, and the
+        boot path already reported the real failure — warned once, not per tick.
+        """
+        try:
+            cfg = load_config()
+        except Exception as exc:  # health: allow BLE001 -- load_config can raise OSError/YAML/decode mid-write; the last good caps must keep serving, and boot already logged the real failure
+            if not self._cap_read_warned:
+                logger.warning(
+                    "kanban dispatcher: cap re-read cannot load config (%s); keeping "
+                    "max_in_progress=%s max_in_progress_per_profile=%s",
+                    exc, self.settings.max_in_progress,
+                    self.settings.max_in_progress_per_profile,
+                    exc_info=True,
+                )
+                self._cap_read_warned = True
+            return
+        self._cap_read_warned = False
+        kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+
+        explicit = _positive_int_setting(kanban_cfg, "max_in_progress")
+        effective = _kbd().resolve_max_in_progress(explicit)
+        if effective != self.settings.max_in_progress:
+            logger.info(
+                "kanban dispatcher: max_in_progress %s -> %s (config changed; applies "
+                "without a restart)",
+                self.settings.max_in_progress, effective,
+            )
+            self.settings.max_in_progress = effective
+
+        per_profile = _positive_int_setting(kanban_cfg, "max_in_progress_per_profile")
+        if per_profile != self.settings.max_in_progress_per_profile:
+            logger.info(
+                "kanban dispatcher: max_in_progress_per_profile %s -> %s (config changed; "
+                "applies without a restart)",
+                self.settings.max_in_progress_per_profile, per_profile,
+            )
+            self.settings.max_in_progress_per_profile = per_profile
 
     def _board_slugs(self) -> list:
         return _board_slugs(self.kb)

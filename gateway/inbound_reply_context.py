@@ -9,6 +9,7 @@ about the report, and is framed as reference material the new message has to sel
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from typing import Any, Awaitable, Callable, Optional
 
 # The ``cron.wrap_response`` header (cron/scheduler_delivery.py); unwrapped deliveries carry no marker.
@@ -55,6 +56,29 @@ async def recording_cron_delivery(send: Awaitable, record: Callable[..., Any]) -
         raise
     await asyncio.to_thread(record, result)
     return result
+
+
+def reply_author(event: Any, platform: Any) -> Optional[str]:
+    """The quoted author as the pointer names them, on one line, or ``None``. Some adapters fill
+    ``reply_to_author_id`` with a phone number, so only an author whose authorisation the adapter
+    checked is named, and a bare ID is hashed under ``privacy.redact_pii``."""
+    if getattr(event, "reply_to_is_own_message", False) or event.reply_to_author_authorized is None:
+        return None
+    from gateway.session import _hash_sender_id, _should_redact_pii, neutralize_untrusted_inline_text
+    author = event.reply_to_author_name
+    if not author and event.reply_to_author_id:
+        author = event.reply_to_author_id
+        if _should_redact_pii(platform, _redact_pii_configured()):
+            author = _hash_sender_id(author)
+    return neutralize_untrusted_inline_text(author) if author else None
+
+
+def _redact_pii_configured() -> bool:
+    """``privacy.redact_pii``, re-read per message like the session-context prompt does."""
+    from gateway.run import _load_gateway_config
+    with suppress(Exception):
+        return bool((_load_gateway_config().get("privacy") or {}).get("redact_pii", False))
+    return False
 
 
 def reply_pointer(

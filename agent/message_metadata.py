@@ -343,6 +343,15 @@ def keep_newest_channel_state(
     if state is None or newest_channel_state(rewritten) == state:
         return
     carrier["display_metadata"] = {**(carrier.get("display_metadata") or {}), CHANNEL_STATE_METADATA_KEY: state}
+
+
+def keep_newest_channel_state_on_summary(original: list[Any], compacted: list[Any], summary_key: str) -> list[Any]:
+    """``keep_newest_channel_state`` for a compaction: the carrier is the newest row of *compacted* that
+    holds the summary (marked by *summary_key*); the rows after it are kept tail rows. Returns *compacted*."""
+    carrier = next((row for row in reversed(compacted) if isinstance(row, MutableMapping) and row.get(summary_key)), None)
+    if carrier is not None:
+        keep_newest_channel_state(original, compacted, carrier)
+    return compacted
 def _is_empty_content(content: Any) -> bool:
     """Nothing to fold: any part (an image too) is content, unlike ``is_content_blank``'s text-only test."""
     return content is None or content == [] or (isinstance(content, str) and not content.strip())

@@ -30,7 +30,6 @@ from gateway.response_filters import (
     display_kind_for_event, display_metadata_for_event, is_machinery_display_kind, persisted_user_metadata_for_event,
     reply_expected_metadata,
 )
-from gateway.run_inbound_turn_context import channel_state_metadata
 from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
@@ -1785,7 +1784,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                     channel_prompt=next_channel_prompt, message_type=next_message_type,
                     persist_user_message=next_persist_message, persist_user_display_kind=next_display_kind,
                     reply_expected=next_reply_expected, persist_user_display_metadata={
-                        **display_metadata_for_event(pending_event), **channel_state_metadata(pending_event),
+                        **display_metadata_for_event(pending_event),
                         **reply_expected_metadata(next_reply_expected), **diagnostic_metadata(pending_event)} or None,
                 )
         except asyncio.CancelledError:

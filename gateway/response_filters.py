@@ -216,19 +216,19 @@ def _producer_card(event: Any) -> dict:
 
 def display_metadata_for_event(event: Any) -> dict:
     """``{"display_text": ...}`` for an internal event whose producer named an async-result card, plus the
-    ``title_preview`` (titler-only) a canonical admission committed for this exact event."""
+    ``title_preview`` (titler-only) a canonical admission committed for this exact event and the chat
+    snapshot the adapter reported for this turn (``prepare_turn_context``)."""
+    from gateway.run_inbound_turn_context import channel_state_metadata
     from gateway.session_display import admission_display
     preview = admission_display(event).get("title_preview")
-    return {**_producer_card(event), **({"title_preview": preview} if preview else {})}
+    return {**_producer_card(event), **({"title_preview": preview} if preview else {}), **channel_state_metadata(event)}
 
 
 def persisted_user_metadata_for_event(event: Any) -> dict:
     """The user row's display metadata: ``display_metadata_for_event`` plus the canonical admission's
-    ``submission_id``, which lets a client match a send whose ack it never received to its stored row,
-    and the chat snapshot the adapter reported for this turn (``prepare_turn_context``)."""
-    from gateway.run_inbound_turn_context import channel_state_metadata
+    ``submission_id``, which lets a client match a send whose ack it never received to its stored row."""
     from gateway.session_display import admission_submission
-    return {**display_metadata_for_event(event), **admission_submission(event), **channel_state_metadata(event)}
+    return {**display_metadata_for_event(event), **admission_submission(event)}
 
 
 def is_machinery_display_kind(display_kind: Any) -> bool:

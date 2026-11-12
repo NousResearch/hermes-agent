@@ -21,7 +21,7 @@ from pathlib import Path
 
 from agent.i18n import t
 from gateway.config import Platform
-from gateway.inbound_reply_context import reply_pointer
+from gateway.inbound_reply_context import reply_author, reply_pointer
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType, clean_attachment_filename
 from gateway.run_busy import approval_input_words
@@ -1697,9 +1697,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         return message_text
 
     @staticmethod
-    def _prepend_inbound_reply_context(
-        event: MessageEvent, source: SessionSource, message_text: str, *, redact_pii: bool = False,
-    ) -> str:
+    def _prepend_inbound_reply_context(event: MessageEvent, source: SessionSource, message_text: str) -> str:
         """Prepend the reply-to pointer, then the Discord triggering-message note (outermost)."""
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
             # Always inject the reply-to pointer even when the quoted text is already in history:
@@ -1709,23 +1707,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             reply_text = event.reply_to_text
             own = bool(getattr(event, "reply_to_is_own_message", False))
             replied_to = (source.platform, source.chat_id, event.reply_to_message_id)
-            author = None
-            if not own and event.reply_to_author_authorized is not None:
-                # Some adapters fill reply_to_author_id with a phone number. Identify the author
-                # only when the adapter has checked their authorisation, and hash a bare ID
-                # under redact_pii.
-                from gateway.session import _hash_sender_id, _should_redact_pii, neutralize_untrusted_inline_text
-
-                author = event.reply_to_author_name
-                if not author and event.reply_to_author_id:
-                    author = event.reply_to_author_id
-                    if _should_redact_pii(source.platform, redact_pii):
-                        author = _hash_sender_id(author)
-                author = neutralize_untrusted_inline_text(author) if author else None
-            pointer = reply_pointer(
-                str(reply_text), own_message=own, replied_to=replied_to, author=author,
-                unverified=event.reply_to_author_authorized is False,
-            )
+            author = reply_author(event, source.platform)
+            pointer = reply_pointer(str(reply_text), own_message=own, replied_to=replied_to, author=author,
+                                    unverified=event.reply_to_author_authorized is False)
             message_text = f"{pointer}\n\n{message_text}"
 
         # Discord: the triggering message id goes on the per-turn user message, never the cached
@@ -1847,17 +1831,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             return None
         # After expansion: the quoted reply is someone else's text and stays literal — an
         # ``@file:`` inside it must never read a local file on the replier's behalf.
-        redact_pii = False
-        if event.reply_to_text:
-            from gateway.run import _load_gateway_config
-
-            with suppress(Exception):
-                redact_pii = bool((_load_gateway_config().get("privacy") or {}).get("redact_pii", False))
-        message_text = self._prepend_inbound_reply_context(event, source, message_text, redact_pii=redact_pii)
+        message_text = self._prepend_inbound_reply_context(event, source, message_text)
         return await prepend_turn_context_note(
-            self, event=event, source=source, session_key=session_key, history=history,
-            message_text=message_text,
-        )
+            self, event=event, source=source, session_key=session_key, history=history, message_text=message_text)
 
     async def _prepare_profile_scoped_inbound_message_text(
         self, *, event: MessageEvent, source: SessionSource, history: list[dict[str, Any]],

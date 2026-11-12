@@ -1456,11 +1456,19 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             # DISPATCH stamp must not leak into this connection's liveness samples (#109521).
             # READY itself is a DISPATCH event, so a healthy connection stamps almost immediately.
             self._last_dispatched_event_monotonic = None
+            from .config import apply_presence, build_presence
+
+            # connect() still runs in this adapter's profile scope; Discord calls on_ready later.
+            presence = build_presence(self.config, discord, _extra_or_secret)
+            client = self._client
             adapter_self = self  # capture for closure
 
             @self._client.event
             async def on_ready():
+                if adapter_self._client is not client:
+                    return
                 logger.info("[%s] Connected as %s", adapter_self.name, adapter_self._client.user)
+                await apply_presence(client, presence, adapter_self.name, discord, logger)
                 await adapter_self._resolve_allowed_usernames()
                 adapter_self._ready_event.set()
                 if adapter_self._post_connect_task and not adapter_self._post_connect_task.done():
@@ -7210,6 +7218,9 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     if _discord_rtm is not None:
         _env_default("DISCORD_REPLY_TO_MODE", "off" if _discord_rtm is False else str(_discord_rtm).lower())
     # Public config keys win over the generic ``extra`` form.
+    from .config import seed_presence_config
+
+    seed_presence_config(discord_cfg, seeded_extra)
     _websocket_liveness_cfg = {**_discord_extra, **discord_cfg}
     # WebSocket health knobs (REST 200 is not Gateway health); legacy liveness_* aliases accepted.
     for primary_key, legacy_key, env_key in _YAML_WEBSOCKET_LIVENESS_KEYS:

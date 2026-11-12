@@ -1,14 +1,14 @@
 name: hermes-remote-hands
 repo: https://github.com/Vishnu-Aithal/hermes-remote-hands
-sha: f807ba317cc55ff8b6cbf7668f243f98fb9218b4
-version: "0.5.2"
+sha: b332a5461048b55f52b474683381a11cecc772b8
+version: "0.5.3"
 title: Hermes Remote Hands
 description: "One Hermes brain on a server, hands on your own Mac. Over plain OpenSSH (e.g. on a tailnet), with no agent, memory or model on the Mac, it adds six tools: mac_computer_use drives the Mac's screen with the same actions, element indices, hard blocks and verify ladder as the built-in computer_use (through cua-driver, in the background), while computer_use keeps driving the server's own screen in the same chat; mac_shell runs commands; mac_file, mac_patch and mac_search read, edit and search code; mac_process runs dev servers in a private tmux server. Disclosure — runs commands, reads and writes files, takes screenshots and sends input on the Mac named by the ssh_host setting, using the system ssh client and the key named in your SSH config (the plugin never reads, stores or copies keys). Every call goes through Hermes's approval gate with its own mac_* keys: commands, typed text and set_value are approved per exact text by default; credential stores, startup files, LaunchAgents, writes into .git or outside the configured project folders, and sensitive commands prompt every time; a pre_tool_call hook sends other tools' calls that mention the Mac or this plugin's code to a single-use approval; unattended runs fail closed (all of this while Hermes approvals are on, not in YOLO mode). No third-party network calls or telemetry. Background processes: an SSH ControlMaster for up to 30 s after the last call (socket under $HERMES_HOME/cache/ssh), one `ssh … cua-driver mcp` session per chat while mac_computer_use is in use, and mac_process jobs in `tmux -L hermes` on the Mac."
 maintainer: Vishnu-Aithal
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-docs_url: https://github.com/Vishnu-Aithal/hermes-remote-hands/tree/f807ba317cc55ff8b6cbf7668f243f98fb9218b4#readme
+docs_url: https://github.com/Vishnu-Aithal/hermes-remote-hands/tree/b332a5461048b55f52b474683381a11cecc772b8#readme
 readme: true
 platforms: [linux, macos]
 known_issues:

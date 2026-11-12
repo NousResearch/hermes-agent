@@ -23,17 +23,33 @@ def scoped_lock_pid_is_ours(record: dict[str, Any]) -> bool:
     return persistent_record_pidns_checkable(record.get("pidns"))
 
 
+def _same_owner(existing: dict[str, Any], holder: Any) -> bool:
+    """Whether the home's ``gateway.lock`` record names the process that wrote *existing*: same pid in
+    the same namespace, and the same start time when both carry one."""
+    if not isinstance(holder, dict) or not holder.get("pid"):
+        return True  # unpublished or torn (flock taken, record not yet written): unknown is not dead
+    if (_status._pid_from_record(holder), holder.get("pidns")) != (_status._pid_from_record(existing),
+                                                                    existing.get("pidns")):
+        return False
+    return not _status._start_times_conflict(existing.get("start_time"), holder.get("start_time"))
+
+
 def _foreign_owner_is_live(existing: dict[str, Any]) -> bool:
     """A gateway in another PID namespace holds its home's ``gateway.lock`` flock for as long as it
-    lives, and that flock answers from here where its PID cannot. No home, or a process-kind owner
-    (setup worker, dashboard) that never takes that flock, stays live: unknown is not dead."""
+    lives, and that flock answers from here where its PID cannot. A held flock proves only that SOME
+    gateway runs on that home: the record it published must name this lock's owner, or a successor on
+    the same home kept a dead predecessor's token reserved for its whole life. No home, or a
+    process-kind owner (setup worker, dashboard) that never takes that flock, stays live: unknown is
+    not dead."""
     from gateway.runtime_ownership import runtime_lock_held_elsewhere
     home, metadata = existing.get("hermes_home"), existing.get("metadata")
     if not isinstance(home, str) or not home.strip():
         return True
     if isinstance(metadata, dict) and metadata.get("owner_kind") == "process":
         return True
-    return runtime_lock_held_elsewhere(Path(home))
+    if not runtime_lock_held_elsewhere(Path(home)):
+        return False
+    return _same_owner(existing, _status._read_gateway_lock_record(Path(home) / "gateway.lock"))
 
 
 def _scoped_lock_record_is_stale(existing: dict[str, Any], existing_pid: Optional[int]) -> bool:

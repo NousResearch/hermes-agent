@@ -377,9 +377,23 @@ def test_dispatcher_grants_only_the_assigned_worker_scope(tmp_path, monkeypatch)
     root = str(Path(__file__).resolve().parents[2])
     worker.write_text(
         f"#!{sys.executable}\nimport sys, os, json;sys.path.insert(0, {root!r})\n"
+        "from pathlib import Path\n"
+        "from hermes_cli.kanban_db_connect import connect\n"
+        "from hermes_cli.kanban_db_dispatch import adopt_worker_pid\n"
+        # This test bypasses the launch loop, so the worker takes the production
+        # self-registration path (a dispatcher that died between spawn and _set_worker_pid):
+        # it publishes its OWN pid/fingerprint for the run, then bootstraps identity the way
+        # every worker does before its first tool call.
+        "conn=connect(Path(os.environ['HERMES_KANBAN_DB']))\n"
+        "adopt=adopt_worker_pid(conn, os.environ['HERMES_KANBAN_TASK'], "
+        "int(os.environ['HERMES_KANBAN_RUN_ID']), os.getpid())\n"
+        "from agent.kanban_execution_identity import bootstrap_worker_identity\n"
+        "ident=bootstrap_worker_identity()\n"
         "from tools.kanban_tools import _handle_complete, heartbeat_current_worker_from_env\n"
         "beat=heartbeat_current_worker_from_env()\n"
         f"result=json.loads(_handle_complete({{'summary':'assigned worker'}}));result['beat']=beat\n"
+        "result['role']=ident.role\n"
+        "result['adopted']=adopt\n"
         f"open({str(output)!r}, 'w').write(json.dumps(result))\n"
     )
     worker.chmod(0o700)
@@ -397,6 +411,7 @@ def test_dispatcher_grants_only_the_assigned_worker_scope(tmp_path, monkeypatch)
     assert os.waitstatus_to_exitcode(status) == 0
     result = json.loads(output.read_text())
     assert result["ok"] and result["beat"] is True, result
+    assert result["role"] == "OWNER", result
     assert kb.get_task(conn, tid).status == "done"
     assert os.environ["HERMES_KANBAN_TASK"] == "prior-task"
     conn.close()

@@ -136,6 +136,11 @@ def _check_dispatcher_presence(hermes_home: Optional[Path] = None) -> tuple[bool
 
 # --- Command dispatch ---
 
+#: Actions whose only effect must be observation: no board creation, no schema work,
+#: no readiness recomputation (see :func:`hermes_cli.kanban_db_connect.connect_readonly`).
+_READ_ONLY_ACTIONS: frozenset[str] = frozenset({"list", "show"})
+
+
 def kanban_command(args: argparse.Namespace) -> int:
     """Entry point from ``hermes kanban …``; returns a shell-style exit code."""
     action = getattr(args, "kanban_action", None)
@@ -181,12 +186,16 @@ def kanban_command(args: argparse.Namespace) -> int:
         # KanbanDbCorruptError, which would turn every repair into "could not initialize database".
         if action == "repair":
             return _cmd_repair(args)
-        # init_db is idempotent (one sqlite_master SELECT when tables exist) and prevents
-        # "no such table: tasks" on first use from a fresh HERMES_HOME.
-        try:
-            kb.init_db()
-        except Exception as exc:
-            return _err(f"kanban: could not initialize database: {exc}")
+        # Observation never initializes: `list`/`show` must not create a board, run the
+        # schema script or promote ready cards. Everything else keeps the existing
+        # idempotent auto-init.
+        if action not in _READ_ONLY_ACTIONS:
+            # init_db is idempotent (one sqlite_master SELECT when tables exist) and prevents
+            # "no such table: tasks" on first use from a fresh HERMES_HOME.
+            try:
+                kb.init_db()
+            except Exception as exc:
+                return _err(f"kanban: could not initialize database: {exc}")
 
         handler = _HANDLERS.get(action)
         if not handler:
@@ -420,14 +429,17 @@ def _cmd_list(args: argparse.Namespace) -> int:
     assignee = args.assignee
     if args.mine and not assignee:
         assignee = _profile_author()
-    with kbc.connect_closing() as conn:
-        # Cheap mini-dispatch so list reflects dependencies cleared since the last tick.
-        kb.recompute_ready(conn)
-        tasks = kb.list_tasks(
-            conn, assignee=assignee, status=args.status, tenant=args.tenant, session_id=args.session,
-            include_archived=args.archived, order_by=getattr(args, "sort", None),
-            workflow_template_id=args.workflow_template_id, current_step_key=args.current_step_key,
-        )
+    try:
+        # Observation only: a listing must not promote ready cards, migrate the schema
+        # or create a board. Readiness is the dispatcher's / real lifecycle writes' job.
+        with kbc.connect_readonly_closing() as conn:
+            tasks = kb.list_tasks(
+                conn, assignee=assignee, status=args.status, tenant=args.tenant, session_id=args.session,
+                include_archived=args.archived, order_by=getattr(args, "sort", None),
+                workflow_template_id=args.workflow_template_id, current_step_key=args.current_step_key,
+            )
+    except kbc.KanbanDbUnavailable as exc:
+        return _err(str(exc))
     if _json_out(args, [_task_to_dict(t) for t in tasks]):
         return 0
     # Passive discoverability: only multi-board users see which board this is.
@@ -471,25 +483,46 @@ def _print_section(title: str, lines) -> None:
         print(line)
 
 
+def _read_task_snapshot(args: argparse.Namespace, rsk: dict, want_json: bool) -> Optional[dict]:
+    """Read one task's whole board state on a read-only connection.
+
+    Observation only: this must not create a board, run the schema script or promote
+    ready cards (see ``kanban_db_connect.connect_readonly``).
+    """
+    with kbc.connect_readonly_closing() as conn:
+        task = kb.get_task(conn, args.task_id)
+        if not task:
+            return None
+        return {
+            "task": task,
+            "comments": kb.list_comments(conn, args.task_id),
+            "events": kb.list_events(conn, args.task_id),
+            "parents": kb.parent_ids(conn, args.task_id),
+            "children": kb.child_ids(conn, args.task_id),
+            "runs": kb.list_runs(conn, args.task_id, **rsk),
+            # Workers hand off via task_runs.summary; tasks.result stays NULL unless set.
+            "latest_summary": kb.latest_summary(conn, args.task_id),
+            "graph": None if want_json else kb.task_graph_context(conn, task.id),
+        }
+
+
 def _cmd_show(args: argparse.Namespace) -> int:
     rsk, rc = _run_state_kwargs(args, "show")
     if rc:
         return rc
-    graph = None
+    from agent.kanban_execution_identity import identity_snapshot
+
     want_json = getattr(args, "json", False)
-    with kbc.connect_closing() as conn:
-        task = kb.get_task(conn, args.task_id)
-        if not task:
-            return _err(f"no such task: {args.task_id}")
-        comments = kb.list_comments(conn, args.task_id)
-        events = kb.list_events(conn, args.task_id)
-        parents = kb.parent_ids(conn, args.task_id)
-        children = kb.child_ids(conn, args.task_id)
-        runs = kb.list_runs(conn, args.task_id, **rsk)
-        # Workers hand off via task_runs.summary; tasks.result stays NULL unless set.
-        latest_summary = kb.latest_summary(conn, args.task_id)
-        if not want_json:
-            graph = kb.task_graph_context(conn, task.id)
+    try:
+        snap = _read_task_snapshot(args, rsk, want_json)
+    except kbc.KanbanDbUnavailable as exc:
+        return _err(str(exc))
+    if snap is None:
+        return _err(f"no such task: {args.task_id}")
+    task = snap["task"]
+    comments, events = snap["comments"], snap["events"]
+    parents, children = snap["parents"], snap["children"]
+    runs, latest_summary, graph = snap["runs"], snap["latest_summary"], snap["graph"]
 
     if want_json:
         _print_json({
@@ -497,6 +530,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
             "comments": [_obj_dict(c, ("author", "body", "created_at")) for c in comments],
             "events": [_obj_dict(e, ("kind", "payload", "created_at", "run_id")) for e in events],
             "runs": [_obj_dict(r, _SHOW_RUN_FIELDS) for r in runs],
+            # Trusted identity of the CLI caller: a shell is an observer, not the owner.
+            "execution_identity": identity_snapshot(),
         })
         return 0
 
@@ -971,11 +1006,20 @@ def _cmd_edit(args: argparse.Namespace) -> int:
 
 
 def _commented(conn, reason: Optional[str], author, prefix: str, op):
-    """Wrap a per-task ``op`` so a ``reason`` is first recorded as a ``PREFIX: reason`` comment."""
+    """Wrap a per-task ``op`` so a ``reason`` is recorded as a ``PREFIX: reason`` comment.
+
+    The comment is written only once ``op`` reports the mutation succeeded. A refused
+    lifecycle write raises ``KanbanAuthorizationError`` before it commits anything, and a
+    denial must leave the task, its runs and its event/comment stream untouched
+    (DESIGN-kanban-authority.md, "Task/run denial has zero lifecycle/event changes"), so
+    nothing — least of all a ``BLOCKED:``/``SCHEDULED:``/``UNBLOCK:`` note from a caller the
+    authorizer refused — may be recorded ahead of the authorized mutation.
+    """
     def run(tid):
-        if reason:
+        done = op(tid)
+        if done and reason:
             kb.add_comment(conn, tid, author, f"{prefix}: {reason}")
-        return op(tid)
+        return done
     return run
 
 

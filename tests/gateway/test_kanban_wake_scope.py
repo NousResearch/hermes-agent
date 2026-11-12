@@ -1,3 +1,4 @@
+import pytest
 """Kanban wake events must key to the same session as inbound messages.
 
 Slack session keys include the workspace id, so the wake source the notifier
@@ -19,6 +20,13 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
 from plugins.platforms.slack.adapter import SlackAdapter
+
+
+# This suite drives the board's own kernel from the seat that advances cards
+# (dispatcher-side mechanics), so it declares that seat explicitly. The fixture
+# is never autouse: a write from a scope that did not ask for it still fails
+# closed with KanbanAuthorizationError.
+pytestmark = pytest.mark.usefixtures("kanban_maintenance_authority")
 
 TEAM = "T0B8U2M6NRE"
 CHANNEL = "C0BCDG3H66P"

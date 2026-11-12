@@ -9,6 +9,7 @@ Split out of ``hermes_cli.kanban_db``; origin-resident helpers are reached late-
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import time
@@ -18,6 +19,8 @@ import hermes_cli.kanban_db as _kb
 
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Attachment, Comment, Task
+
+_log = logging.getLogger(__name__)
 
 # build_worker_context() caps, sized for a ~100k-char prompt with headroom.
 _CTX_MAX_PRIOR_ATTEMPTS = 10      # most recent N prior runs shown in full
@@ -237,3 +240,34 @@ def _ctx_comments(lines: list[str], comments: list[Comment], now: int) -> None:
         lines.append(f"comment from worker `{safe_author}` at {_ctx_stamp(c.created_at, now)}:")
         lines.append(_ctx_cap(c.body, _CTX_MAX_COMMENT_BYTES))
         lines.append("")
+
+
+def _ctx_identity(lines: list[str], conn: sqlite3.Connection) -> None:
+    """Render the caller's trusted execution identity in the startup context.
+
+    Same snapshot ``kanban_show`` returns: the worker that starts a turn with this
+    context knows, before reading any transcript, whether it is the live owner of
+    its card or a detached observer.  A detached role is stated with its reason so
+    a scrubbed terminal can never be read as \"ownership lost\".
+    """
+    try:
+        from agent.kanban_execution_identity import ROLE_OWNER, identity_snapshot
+
+        snap = identity_snapshot(conn)
+    except (ImportError, sqlite3.Error, OSError, TypeError, ValueError):
+        _log.debug("kanban worker context: execution identity unavailable", exc_info=True)
+        return
+    role = str(snap.get("role") or "unknown")
+    if role == ROLE_OWNER and snap.get("claim_match"):
+        lines.append(
+            f"Identity: OWNER of {snap.get('owned_task_id')} "
+            f"run {snap.get('owned_run_id')} (claim_match=true)"
+        )
+    else:
+        reason = str(snap.get("reason") or "").strip()
+        detail = f" ({reason})" if reason else ""
+        lines.append(
+            f"Identity: {role}{detail} — this execution owns no live run; "
+            "Kanban lifecycle writes will be refused."
+        )
+    lines.append("")

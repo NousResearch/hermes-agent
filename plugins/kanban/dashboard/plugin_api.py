@@ -24,7 +24,8 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
 from fastapi import (
-    APIRouter, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status as http_status)
+    APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, WebSocket,
+    WebSocketDisconnect, status as http_status)
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -40,7 +41,61 @@ from hermes_cli.kanban_db import KANBAN_ATTACHMENT_MAX_BYTES, _collision_free_pa
 
 log = logging.getLogger(__name__)
 
-router = APIRouter()
+
+def _admin_transport_provenance(request: Request) -> tuple[str, str]:
+    """Verified administrative provenance for this dashboard request.
+
+    The dashboard's own middleware has already authenticated the request by the time any
+    route here runs (``/api/`` is gated by session cookie, OAuth session or bearer token —
+    see ``hermes_cli/web_server.py``). This returns the principal and the transport name
+    for the audit record; it never returns, stores or logs a token.
+    """
+    session = getattr(request.state, "session", None)
+    if session is not None:
+        principal = str(getattr(session, "email", "") or getattr(session, "user_id", "") or "").strip()
+        return (principal or "dashboard-session"), "dashboard_session"
+    token_principal = getattr(request.state, "token_principal", None)
+    if token_principal is not None:
+        principal = str(getattr(token_principal, "principal", "") or "").strip()
+        return (principal or "dashboard-token"), "dashboard_token"
+    if getattr(request.state, "token_authenticated", False):
+        return "dashboard-token", "dashboard_token"
+    return "", ""
+
+
+async def kanban_admin_authority(request: Request):
+    """Mint the internal ADMIN_RECOVERY scope for one authenticated dashboard request.
+
+    This is the ONLY ingress that mints it. Chat/model dispatch never reaches an
+    authenticated HTTP administration route, a request body cannot name a role, and a
+    caller with no verified transport gets a read-only foreign scope instead — its
+    lifecycle writes then fail closed in the kernel.
+
+    Mounted on the plugin's HTTP router only. The WebSocket route lives on
+    :data:`_ws_router` because a socket upgrade is not an administrative HTTP request
+    (it has its own canonical gate, :func:`_ws_upgrade_authorized`) and FastAPI injects
+    ``Request`` only into HTTP routes.
+    """
+    from agent.kanban_execution_identity import admin_recovery_scope, foreign_inspector_scope
+
+    principal, transport = _admin_transport_provenance(request)
+    if not principal:
+        with foreign_inspector_scope(reason="unauthenticated_dashboard_request"):
+            yield
+        return
+    board = ""
+    try:
+        board = str(request.query_params.get("board") or "")
+    except (AttributeError, TypeError, ValueError):
+        board = ""
+    with admin_recovery_scope(principal=principal, transport=transport, board=board or None):
+        yield
+
+
+# HTTP routes carry the administrative authority dependency; the socket route does
+# not (see ``_ws_router``). ``router`` below joins both into the single object the
+# dashboard mounts.
+_http_router = APIRouter(dependencies=[Depends(kanban_admin_authority)])
 
 _BOARD_Q = Query(None, description="Kanban board slug (omit for current)")
 
@@ -356,7 +411,7 @@ def get_board(
 _read_board = coalesced_read(get_board)
 
 
-@router.get("/board")
+@_http_router.get("/board")
 async def get_board_endpoint(
     tenant: Optional[str] = Query(None, description="Filter to a single tenant"),
     include_archived: bool = Query(False),
@@ -376,7 +431,7 @@ async def get_board_endpoint(
 
 # --- GET /tasks/:id ---------------------------------------------------------
 
-@router.get("/tasks/{task_id}")
+@_http_router.get("/tasks/{task_id}")
 def get_task(
     task_id: str,
     board: Optional[str] = Query(None),
@@ -432,7 +487,7 @@ class CreateTaskBody(BaseModel):
     project_id: Optional[str] = None  # None inherits the board's scoped project (if any)
 
 
-@router.post("/tasks")
+@_http_router.post("/tasks")
 def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn), _value_error_400():
         # CreateTaskBody field names match create_task's keyword parameters.
@@ -461,14 +516,14 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
 # Size cap, filename sanitiser, and collision resolver live in ``kanban_db`` so the
 # dashboard, agent toolset, and CLI share one implementation.
 
-@router.get("/tasks/{task_id}/attachments")
+@_http_router.get("/tasks/{task_id}/attachments")
 def list_task_attachments(task_id: str, board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn):
         _require_task(conn, task_id)
         return {"attachments": [_attachment_dict(a) for a in kanban_db.list_attachments(conn, task_id)]}
 
 
-@router.post("/tasks/{task_id}/attachments")
+@_http_router.post("/tasks/{task_id}/attachments")
 async def upload_task_attachment(
     task_id: str,
     file: UploadFile = File(...),
@@ -502,7 +557,7 @@ async def upload_task_attachment(
         return {"attachment": _attachment_dict(att) if att else None}
 
 
-@router.get("/attachments/{attachment_id}")
+@_http_router.get("/attachments/{attachment_id}")
 def download_attachment(attachment_id: int, board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn):
         att = kanban_db.get_attachment(conn, attachment_id)
@@ -520,7 +575,7 @@ def download_attachment(attachment_id: int, board: Optional[str] = Query(None)):
         return FileResponse(path=str(stored), filename=att.filename, media_type=att.content_type or "application/octet-stream")
 
 
-@router.delete("/attachments/{attachment_id}")
+@_http_router.delete("/attachments/{attachment_id}")
 def remove_attachment(attachment_id: int, board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn):
         if kanban_db.delete_attachment(conn, attachment_id) is None:
@@ -689,7 +744,7 @@ def _patch_title_body(conn, task_id: str, payload: UpdateTaskBody, board: Option
         conn, task_id, [f for f in ("title", "body") if getattr(payload, f) is not None], board=board)
 
 
-@router.patch("/tasks/{task_id}")
+@_http_router.patch("/tasks/{task_id}")
 def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn):
         _require_task(conn, task_id)
@@ -716,7 +771,7 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
         ) if updated else None}
 
 
-@router.delete("/tasks/{task_id}")
+@_http_router.delete("/tasks/{task_id}")
 def delete_task(task_id: str, board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn):
         if not kanban_db.delete_task(conn, task_id):
@@ -799,7 +854,7 @@ class CommentBody(BaseModel):
     author: Optional[str] = "dashboard"
 
 
-@router.post("/tasks/{task_id}/comments")
+@_http_router.post("/tasks/{task_id}/comments")
 def add_comment(task_id: str, payload: CommentBody, board: Optional[str] = Query(None)):
     if not payload.body.strip():
         raise HTTPException(status_code=400, detail="body is required")
@@ -814,14 +869,14 @@ class LinkBody(BaseModel):
     child_id: str
 
 
-@router.post("/links")
+@_http_router.post("/links")
 def add_link(payload: LinkBody, board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn), _value_error_400():
         gated = kanban_db.link_tasks(conn, payload.parent_id, payload.child_id)
         return {"ok": True, "gated": gated}
 
 
-@router.delete("/links")
+@_http_router.delete("/links")
 def delete_link(parent_id: str = Query(...), child_id: str = Query(...), board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn):
         return {"ok": bool(kanban_db.unlink_tasks(conn, parent_id, child_id))}
@@ -855,7 +910,7 @@ def _bulk_apply_one(conn, tid: str, payload: BulkTaskBody, board: Optional[str],
                 entry.update(ok=False, error=str(e))
 
 
-@router.post("/tasks/bulk")
+@_http_router.post("/tasks/bulk")
 def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
     """Apply the same patch to every id. Independent iteration — per-task
     failures don't abort siblings; returns per-id outcome for partials."""
@@ -879,7 +934,7 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
 
 # --- Diagnostics — fleet-wide distress signals (see kanban_diagnostics) ------
 
-@router.get("/diagnostics")
+@_http_router.get("/diagnostics")
 def list_diagnostics(
     board: Optional[str] = _BOARD_Q,
     severity: Optional[str] = Query(None, description="Filter by severity: warning|error|critical")):
@@ -917,7 +972,7 @@ except ImportError:
     _psutil = None  # type: ignore[assignment]
 
 
-@router.get("/workers/active")
+@_http_router.get("/workers/active")
 def list_active_workers(board: Optional[str] = _BOARD_Q):
     """Every running worker: an open ``task_runs`` row with a ``worker_pid`` whose
     task is ``running``. Returns ``{workers, count, checked_at}``."""
@@ -933,14 +988,14 @@ def list_active_workers(board: Optional[str] = _BOARD_Q):
         return {"workers": workers, "count": len(workers), "checked_at": int(time.time())}
 
 
-@router.get("/runs/{run_id}")
+@_http_router.get("/runs/{run_id}")
 def get_run_endpoint(run_id: int, board: Optional[str] = _BOARD_Q):
     """``{run: {...}}`` with the same serialisation as ``GET /tasks/{id}``; 404 if unknown."""
     with _board_conn(board) as (board, conn):
         return {"run": asdict(_require_run(conn, run_id))}
 
 
-@router.get("/runs/{run_id}/inspect")
+@_http_router.get("/runs/{run_id}/inspect")
 def inspect_run_endpoint(run_id: int, board: Optional[str] = _BOARD_Q):
     """Live psutil stats for a run's worker; ``{alive: false, reason}`` when unavailable and
     access-denied reported inline rather than as a 500."""
@@ -982,7 +1037,7 @@ class TerminateRunBody(BaseModel):
     reason: Optional[str] = None
 
 
-@router.post("/runs/{run_id}/terminate")
+@_http_router.post("/runs/{run_id}/terminate")
 def terminate_run_endpoint(run_id: int, payload: TerminateRunBody, board: Optional[str] = _BOARD_Q):
     """Terminate an in-flight run via ``reclaim_task`` (same SIGTERM->SIGKILL flow, bookkeeping
     and events as ``POST /tasks/{id}/reclaim``); 409 if already ended / not reclaimable.
@@ -1005,7 +1060,7 @@ class ReclaimBody(BaseModel):
     reason: Optional[str] = None
 
 
-@router.post("/tasks/{task_id}/reclaim")
+@_http_router.post("/tasks/{task_id}/reclaim")
 def reclaim_task_endpoint(task_id: str, payload: ReclaimBody, board: Optional[str] = Query(None)):
     """Release an active worker claim without waiting for the claim TTL
     (``hermes kanban reclaim <task_id> --reason ...``)."""
@@ -1022,7 +1077,7 @@ class SpecifyBody(BaseModel):
     author: Optional[str] = None
 
 
-@router.post("/tasks/{task_id}/specify")
+@_http_router.post("/tasks/{task_id}/specify")
 def specify_task_endpoint(task_id: str, payload: SpecifyBody, board: Optional[str] = Query(None)):
     """Flesh out a triage task via the auxiliary LLM (``hermes kanban specify``). Non-OK is NOT
     an HTTP error — the UI renders the reason inline. Sync ``def`` → runs in the threadpool."""
@@ -1036,7 +1091,7 @@ class ReassignBody(BaseModel):
     reason: Optional[str] = None
 
 
-@router.post("/tasks/{task_id}/reassign")
+@_http_router.post("/tasks/{task_id}/reassign")
 def reassign_task_endpoint(task_id: str, payload: ReassignBody, board: Optional[str] = Query(None)):
     """Reassign to another profile, optionally reclaiming first
     (``hermes kanban reassign <task_id> <profile> [--reclaim]``)."""
@@ -1068,13 +1123,13 @@ class EstimateBody(BaseModel):
     body: Optional[str] = None
 
 
-@router.post("/estimate")
+@_http_router.post("/estimate")
 def estimate_text_endpoint(payload: EstimateBody):
     """Estimate from raw title/body (create dialog, before a task exists)."""
     return _run_estimate(payload.title, payload.body, task_id=None)
 
 
-@router.post("/tasks/{task_id}/estimate")
+@_http_router.post("/tasks/{task_id}/estimate")
 def estimate_task_endpoint(task_id: str, board: Optional[str] = Query(None)):
     """Estimate for an existing task; ``{ok, est_tokens, complexity, rationale, model}``."""
     with _board_conn(board) as (board, conn):
@@ -1146,7 +1201,7 @@ def _load_config_or_empty() -> dict:
         return {}
 
 
-@router.get("/config")
+@_http_router.get("/config")
 def get_config():
     """Kanban dashboard preferences from the ``dashboard.kanban`` config section."""
     k_cfg = (_load_config_or_empty().get("dashboard") or {}).get("kanban") or {}
@@ -1193,7 +1248,7 @@ def _home_for_platform(platform: str, detail: str) -> dict:
     return home
 
 
-@router.get("/home-channels")
+@_http_router.get("/home-channels")
 def get_home_channels(task_id: Optional[str] = Query(None), board: Optional[str] = Query(None)):
     """Every platform with a home channel plus whether *task_id* (if given) is
     subscribed to it; without ``task_id`` every ``subscribed`` is false."""
@@ -1208,7 +1263,7 @@ def get_home_channels(task_id: Optional[str] = Query(None), board: Optional[str]
         {**home, "subscribed": (home["platform"], home["chat_id"], home["thread_id"]) in subscribed_homes} for home in homes]}
 
 
-@router.post("/tasks/{task_id}/home-subscribe/{platform}")
+@_http_router.post("/tasks/{task_id}/home-subscribe/{platform}")
 def subscribe_home(task_id: str, platform: str, board: Optional[str] = Query(None)):
     """Subscribe *task_id* to *platform*'s home channel. Idempotent at the DB
     layer; 404 when the platform has no home or the task doesn't exist."""
@@ -1225,7 +1280,7 @@ def subscribe_home(task_id: str, platform: str, board: Optional[str] = Query(Non
         return {"ok": True, "task_id": task_id, "home_channel": home}
 
 
-@router.delete("/tasks/{task_id}/home-subscribe/{platform}")
+@_http_router.delete("/tasks/{task_id}/home-subscribe/{platform}")
 def unsubscribe_home(task_id: str, platform: str, board: Optional[str] = Query(None)):
     """Remove any notify subscription on *task_id* matching *platform*'s home."""
     home = _home_for_platform(platform, f"No home channel configured for platform {platform!r}.")
@@ -1237,14 +1292,14 @@ def unsubscribe_home(task_id: str, platform: str, board: Optional[str] = Query(N
 
 # --- Stats / assignees / worker log / dispatch / model options ---------------
 
-@router.get("/stats")
+@_http_router.get("/stats")
 def get_stats(board: Optional[str] = Query(None)):
     """Per-status + per-assignee counts + oldest-ready age (HUD and router profiles)."""
     with _board_conn(board) as (board, conn):
         return kanban_db.board_stats(conn)
 
 
-@router.get("/assignees")
+@_http_router.get("/assignees")
 def get_assignees(board: Optional[str] = Query(None)):
     """Union of on-disk profiles and assignees used on the board, so a fresh
     profile appears in the picker before it has any task."""
@@ -1252,7 +1307,7 @@ def get_assignees(board: Optional[str] = Query(None)):
         return {"assignees": kanban_db.known_assignees(conn)}
 
 
-@router.get("/tasks/{task_id}/log")
+@_http_router.get("/tasks/{task_id}/log")
 def get_task_log(task_id: str, tail: Optional[int] = Query(None, ge=1, le=2_000_000), board: Optional[str] = Query(None)):
     """Worker stdout/stderr log. ``tail`` caps the response bytes; 404 if the
     task never spawned. On-disk log rotates at 2 MiB with one ``.log.1`` kept."""
@@ -1266,7 +1321,7 @@ def get_task_log(task_id: str, tail: Optional[int] = Query(None, ge=1, le=2_000_
         "size_bytes": size, "content": content or "", "truncated": bool(tail and size > tail)}
 
 
-@router.post("/dispatch")
+@_http_router.post("/dispatch")
 def dispatch(dry_run: bool = Query(False), max_n: int = Query(8, alias="max"), board: Optional[str] = Query(None)):
     """Dispatch nudge so the UI doesn't wait out the 60 s dispatcher tick."""
     with _board_conn(board) as (board, conn):
@@ -1277,7 +1332,7 @@ def dispatch(dry_run: bool = Query(False), max_n: int = Query(8, alias="max"), b
             return {"result": str(result)}
 
 
-@router.get("/model-options")
+@_http_router.get("/model-options")
 def model_options():
     """Providers + curated models for the override dropdown via ``inventory.build_models_payload``
     (same substrate as the Models page) so it can't offer a pair Hermes rejects. Skips pricing
@@ -1395,7 +1450,7 @@ def _annotate_board_meta(meta: dict) -> dict:
     return meta
 
 
-@router.get("/projects")
+@_http_router.get("/projects")
 def list_kanban_projects():
     """Live (non-archived) projects available for board scoping."""
     with _errors_to_500("failed to list projects"):
@@ -1408,7 +1463,7 @@ def list_kanban_projects():
         for p in projects]}
 
 
-@router.get("/boards")
+@_http_router.get("/boards")
 def list_boards(include_archived: bool = Query(False)):
     """Every board on disk with task counts and the active slug."""
     boards = kanban_db.list_boards(include_archived=include_archived)
@@ -1437,7 +1492,7 @@ def _validate_workdir(raw: str) -> str:
     return str(requested.resolve())
 
 
-@router.post("/boards")
+@_http_router.post("/boards")
 def create_board_endpoint(payload: CreateBoardBody):
     """Create a board. Idempotent — ``slug`` collision returns the existing one."""
     default_workdir = _validate_workdir(payload.default_workdir) if payload.default_workdir else None
@@ -1454,7 +1509,7 @@ def create_board_endpoint(payload: CreateBoardBody):
     return {"board": _annotate_board_meta(meta), "current": kanban_db.get_current_board()}
 
 
-@router.patch("/boards/{slug}")
+@_http_router.patch("/boards/{slug}")
 def rename_board(slug: str, payload: RenameBoardBody):
     """Update display metadata / default workdir / project scope (slug is immutable)."""
     normed = _existing_board_slug(slug)
@@ -1477,7 +1532,7 @@ def rename_board(slug: str, payload: RenameBoardBody):
     return {"board": _annotate_board_meta(meta)}
 
 
-@router.delete("/boards/{slug}")
+@_http_router.delete("/boards/{slug}")
 def delete_board(slug: str, delete: bool = Query(False, description="Hard-delete instead of archive")):
     """Archive (default) or hard-delete a board."""
     with _value_error_400():
@@ -1499,7 +1554,7 @@ async def _run_transfer(fn, log_label: str):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@router.post("/boards/{slug}/export")
+@_http_router.post("/boards/{slug}/export")
 async def export_board_endpoint(slug: str, body: ExportBoardBody):
     """Write ``slug`` to a portable archive; return the path written."""
     from hermes_cli import kanban_transfer
@@ -1517,7 +1572,7 @@ async def export_board_endpoint(slug: str, body: ExportBoardBody):
         f"POST /boards/{slug}/export")
 
 
-@router.post("/boards/import")
+@_http_router.post("/boards/import")
 async def import_board_endpoint(body: ImportBoardBody):
     """Import a board archive as a NEW board; return the landed board."""
     from hermes_cli import kanban_transfer
@@ -1531,7 +1586,7 @@ async def import_board_endpoint(body: ImportBoardBody):
     return {**result, "current": kanban_db.get_current_board()}
 
 
-@router.post("/boards/{slug}/switch")
+@_http_router.post("/boards/{slug}/switch")
 def switch_board(slug: str):
     """Persist ``slug`` as the active board for CLI / slash-command parity
     (dashboard users pick boards client-side via localStorage)."""
@@ -1550,7 +1605,7 @@ class DescribeAutoBody(BaseModel):
     overwrite: bool = False
 
 
-@router.get("/profiles")
+@_http_router.get("/profiles")
 def list_profile_roster():
     """Every installed profile with its description (profiles without one are
     still routable on name alone, just less precisely)."""
@@ -1564,7 +1619,7 @@ def list_profile_roster():
         for p in profiles]}
 
 
-@router.patch("/profiles/{profile_name}")
+@_http_router.patch("/profiles/{profile_name}")
 def update_profile_description(profile_name: str, payload: DescribeBody):
     """Set (``description_auto: false`` so the auto-describer won't overwrite it
     without ``--overwrite``) or clear (empty string) a profile's description."""
@@ -1583,7 +1638,7 @@ def update_profile_description(profile_name: str, payload: DescribeBody):
     return {"ok": True, "profile": canon, "description": text}
 
 
-@router.post("/profiles/{profile_name}/describe-auto")
+@_http_router.post("/profiles/{profile_name}/describe-auto")
 def auto_describe_profile(profile_name: str, payload: DescribeAutoBody):
     """``hermes profile describe <name> --auto``: persist with ``description_auto: true``.
     Non-OK outcomes are NOT HTTP errors — the UI renders the reason inline."""
@@ -1599,7 +1654,7 @@ class DecomposeBody(BaseModel):
     author: Optional[str] = None
 
 
-@router.post("/tasks/{task_id}/decompose")
+@_http_router.post("/tasks/{task_id}/decompose")
 def decompose_task_endpoint(task_id: str, payload: DecomposeBody, board: Optional[str] = Query(None)):
     """Fan a triage task out into child tasks via the auxiliary LLM (``hermes kanban decompose``).
     Non-OK is NOT an HTTP error. Sync ``def`` → runs in the threadpool."""
@@ -1622,7 +1677,7 @@ class OrchestrationSettingsBody(BaseModel):
 _PROFILE_SETTINGS = ("orchestrator_profile", "default_assignee")
 
 
-@router.get("/workflow")
+@_http_router.get("/workflow")
 def get_workflow():
     """Board columns (order, label, icon, drag target) and the manual move
     allow-list. Every board uses the default workflow today; per-board
@@ -1630,7 +1685,7 @@ def get_workflow():
     return kanban_workflow.DEFAULT_WORKFLOW.to_dict()
 
 
-@router.get("/orchestration")
+@_http_router.get("/orchestration")
 def get_orchestration_settings():
     """Current orchestration knobs from config.yaml plus the resolved effective
     values. An unset/unknown profile resolves to the active profile here; the
@@ -1672,7 +1727,7 @@ def _validated_profile_name(raw: Optional[str], profiles_mod) -> str:
     return name
 
 
-@router.put("/orchestration")
+@_http_router.put("/orchestration")
 def set_orchestration_settings(payload: OrchestrationSettingsBody):
     """Update orchestration knobs in config.yaml. Only fields explicitly passed
     are written; empty profile strings clear the override."""
@@ -1799,7 +1854,14 @@ class _EventTail:
             self._executor.shutdown(wait=True, cancel_futures=True)
 
 
-@router.websocket("/events")
+# WS routes live on their own router: the HTTP router mounts the administrative
+# authority dependency, which needs a `Request` that FastAPI cannot inject into a
+# socket route. Included back into ``router`` at the end of the module so the
+# dashboard mounts one object.
+_ws_router = APIRouter()
+
+
+@_ws_router.websocket("/events")
 async def stream_events(ws: WebSocket):
     if not _ws_upgrade_authorized(ws):
         await ws.close(code=http_status.WS_1008_POLICY_VIOLATION)
@@ -1845,3 +1907,10 @@ async def stream_events(ws: WebSocket):
             pass
     finally:
         await tail.shutdown()
+
+
+# One mountable object: the plugin contract is a single ``router``, so join the
+# HTTP router (with the administrative dependency) and the socket router.
+router = APIRouter()
+router.include_router(_http_router)
+router.include_router(_ws_router)

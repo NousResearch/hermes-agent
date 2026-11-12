@@ -48,7 +48,7 @@ def test_concurrent_renewal_installed_during_prepare_is_not_overwritten(profile)
 
     def renew(entry):
         with pool._lock:
-            object.__setattr__(entry, "_runtime_override", fresh)
+            object.__setattr__(row, "_runtime_override", fresh)
 
     profile.during_prepare = renew
     prepared = pool.prepare_runtime_entry(row)
@@ -62,7 +62,7 @@ def test_grant_rotated_during_prepare_installs_nothing(profile):
 
     def rotate(entry):
         with pool._lock:
-            object.__setattr__(entry, "access_token", "rotated-grant")
+            object.__setattr__(row, "access_token", "rotated-grant")
 
     profile.during_prepare = rotate
     assert pool.prepare_runtime_entry(row) is None

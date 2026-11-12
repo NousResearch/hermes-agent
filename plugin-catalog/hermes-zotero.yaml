@@ -1,18 +1,19 @@
 name: hermes-zotero
 repo: https://github.com/gerdosi/hermes-zotero
-sha: f25a01ed2e481d30cca26f0ac79958337836478f
+sha: 159886063c9e51e6ae09d76c4ef58d007d0c6fd7
 title: "Zotero Library"
-description: "Search and read the papers in your own Zotero library before going to the web: a local, read-only full-text index (SQLite FTS5, BM25) built from a copy of Zotero's database, so it works with Zotero open or closed. Four tools (zotero_search with a strong/thin/none coverage verdict, zotero_read for passages, your own highlights and notes and a citation line, zotero_status, zotero_sync), a bundled skill that sends literature questions to the library first, and a `hermes zotero` command (doctor, snapshot, sync). Disclosure — reads outside its own data folder: the Zotero data directory (copies zotero.sqlite and its write-ahead log, reads the .zotero-ft-cache text files in storage/), Zotero's prefs.js to find that directory, and a Markdown folder only if the user sets one; writes only to its plugin-data folder (snapshot, index, lock file) and never to Zotero; the index holds the full text of the user's papers and stays on the machine; its only network request goes to Zotero's local API on 127.0.0.1:23119 for formatted citations, bypassing any proxy, and succeeds only when the user has switched that API on (off by default); no credentials, no shell commands, no background processes, no telemetry. Independent community plugin, not affiliated with Zotero."
+description: "Search and read the papers in your own Zotero library before going to the web: a local, read-only full-text index (SQLite FTS5, BM25) built from a copy of Zotero's database, so it works with Zotero open or closed. Four tools (zotero_search with a strong/thin/none coverage verdict, zotero_read for passages, your own highlights and notes and a citation line, zotero_status, zotero_sync), a bundled skill that sends literature questions to the library first, and a `hermes zotero` command (doctor, snapshot, sync). Since 0.2.0, for users who supply their own Markdown conversions: tables are searched and read as tables (in_tables, mode=tables) and papers carry the flags ocr and text_damaged; the plugin contains no converter. Disclosure — reads outside its own data folder: the Zotero data directory (copies zotero.sqlite and its write-ahead log, reads the .zotero-ft-cache text files in storage/), Zotero's prefs.js to find that directory, and a Markdown folder only if the user sets one; writes only to its plugin-data folder (snapshot, index, lock file) and never to Zotero; the index holds the full text of the user's papers and stays on the machine; its only network request goes to Zotero's local API on 127.0.0.1:23119 for formatted citations, bypassing any proxy, and succeeds only when the user has switched that API on (off by default); no credentials, no shell commands, no background processes, no telemetry. Independent community plugin, not affiliated with Zotero."
 maintainer: gerdosi
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-version: "0.1.0"
+version: "0.2.0"
 docs_url: https://github.com/gerdosi/hermes-zotero#readme
 readme: true
 platforms: []
 known_issues:
-  - "The first `hermes zotero sync` builds the index before the tools return results: about 70 s and 3.5 GB for 19,000 papers with full text (roughly 180 KB per paper); later syncs take seconds"
+  - "The first `hermes zotero sync` builds the index before the tools return results: about 2.5 minutes and 3.5 GB for 19,000 papers with full text (roughly 180 KB per paper); later syncs take seconds"
+  - "Updating from 0.1.0 rebuilds the index once: run `hermes zotero sync` after `hermes plugins update hermes-zotero`; until then the tools answer with the error index_outdated"
   - "Citations come from Zotero itself only while Zotero is running with its local API switched on (Settings → Advanced, off by default); otherwise the citation line is an approximate author-year line marked approximate: true"
   - "Search is lexical (BM25 with stemming), not semantic: synonyms and brand names can miss, and PDFs without a text layer are found by title and abstract only"
   - "Tested on macOS with Zotero 11; the Windows and Linux data-directory paths are implemented but not yet tested"

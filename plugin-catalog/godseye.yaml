@@ -2,6 +2,7 @@ name: godseye
 title: Eye Of Hermes (EOH)
 repo: https://github.com/mojomast/EOH
 sha: 9d433e49645df8ee549b58467876eb1e5daa0f34
+image: https://raw.githubusercontent.com/mojomast/EOH/9d433e49645df8ee549b58467876eb1e5daa0f34/docs/images/eoh-banner.jpg
 description: >-
   Eye Of Hermes (EOH) puts a live 3D globe beside your Hermes chat that the
   agent can fly, read, annotate and watch. It is built on God's Eye View

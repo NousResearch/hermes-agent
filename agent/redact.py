@@ -869,8 +869,8 @@ def _is_opaque_prefixed_token(token: str) -> bool:
 def _mask_prefix_match(m: "re.Match[str]", mask) -> str:
     glued = m.start() > 0 and m.string[m.start() - 1] in "-_"
     token = m.group(1)
-    # GOCSPX- is distinctive even when base64url separators break every long alphanumeric run.
-    if glued and not token.startswith("GOCSPX-") and not _is_opaque_prefixed_token(token):
+    # Google OAuth prefixes are distinctive even when base64url separators break every long run.
+    if glued and not token.startswith(("GOCSPX-", "ya29.")) and not _is_opaque_prefixed_token(token):
         return m.group(0)
     return mask(token)
 

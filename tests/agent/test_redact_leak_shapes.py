@@ -219,6 +219,12 @@ class TestGoogleOAuthCredentials:
         # Full base64url secrets need masking even if no body run reaches 16 alphanumerics.
         _assert_masked(f"msg='archive{separator}{self.SECRET}'", self.SECRET)
 
+    @pytest.mark.parametrize("separator", ["-", "_"])
+    def test_access_token_glued_to_identifier_is_masked(self, separator):
+        # Same shape for ya29.: separators every few chars leave no 16-alphanumeric run.
+        token = "ya29.a0AfH6SM_q7z-P2mX9vL_k4n-Rt8wYb1c-Df6gHj3s_A0x"
+        _assert_masked(f"msg='log{separator}{token}'", token)
+
     @pytest.mark.parametrize("text", ["GOCSPX-short", "ya29.short", "ya29.c.short", "notGOCSPX-" + "A" * 24, "mya29." + "A" * 24])
     def test_short_or_embedded_lookalikes_kept(self, text):
         _assert_unchanged(text)

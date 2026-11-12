@@ -168,12 +168,14 @@ def clamp_effort(
 
 def route_supported_efforts(
     provider: Optional[str], model: Optional[str], api_mode: Optional[str] = None,
+    base_url: Optional[str] = None,
 ) -> tuple[str, ...]:
     """Levels the (provider, model) route's ENTRY clamp accepts: the Codex/OpenAI Responses set per
-    model generation, else the widest OpenAI-compatible vocabulary (narrower providers clamp again
-    downstream, never upward). On the Codex app-server runtime ``ultra`` is codex's own harness mode,
-    accepted wherever the model's ladder reaches ``max`` (codex runs it at ``max``; a model without
-    ``max`` rejects it), so it is sent verbatim there.
+    model generation, the levels a managed local model's chat template accepts, else the widest
+    OpenAI-compatible vocabulary (narrower providers clamp again downstream, never upward). On the
+    Codex app-server runtime ``ultra`` is codex's own harness mode, accepted wherever the model's
+    ladder reaches ``max`` (codex runs it at ``max``; a model without ``max`` rejects it), so it is
+    sent verbatim there.
 
     MiniMax's own Anthropic-compatible endpoints publish their own ladder (``low``..``max``) for
     ``output_config.effort``; declaring it here makes the Desktop's picker show the honest clamp
@@ -181,26 +183,53 @@ def route_supported_efforts(
     if (provider or "").strip().lower() == "openai-codex":
         supported = codex_supported_efforts(model)
         return (*supported, "ultra") if api_mode == "codex_app_server" and "max" in supported else supported
-    if (provider or "").strip().lower() in _MINIMAX_PROVIDERS and _is_minimax_adaptive_model(model):
+    if _is_minimax_adaptive_route(provider, model, base_url):
         return MINIMAX_M31_EFFORTS
-    return OPENAI_COMPAT_WIRE_EFFORTS
+    from hermes_cli.local_runtime.capabilities import managed_reasoning_efforts
+    local = managed_reasoning_efforts(provider or "", base_url or "", model or "")
+    # llama-server turns thinking off for ``none`` itself, so a chat template never sees that level.
+    return ("none", *local) if local else OPENAI_COMPAT_WIRE_EFFORTS
 
 
-def _is_minimax_adaptive_model(model: Optional[str]) -> bool:
-    """True for a MiniMax M3.1-family slug (the models that take ``output_config.effort``)."""
+def chat_endpoint_efforts(model: Optional[str], base_url: Optional[str]) -> tuple[str, ...]:
+    """Levels an OpenAI-compatible chat request to ``base_url`` may carry for ``model``. The endpoint
+    decides, whatever provider name the route carries: the managed local server answers with the
+    levels the model's chat template accepts, every other endpoint with the OpenAI-compatible set."""
+    return route_supported_efforts("custom", model, None, base_url)
+
+
+def _is_minimax_adaptive_route(
+    provider: Optional[str], model: Optional[str], base_url: Optional[str] = None,
+) -> bool:
+    """True for the MiniMax M3.1 line served by MiniMax's own Anthropic-compatible endpoint.
+
+    The endpoint carries the contract (``output_config.effort``) and the model carries the
+    ladder it applies to, so both halves are checked:
+
+    - a known ``base_url`` must be MiniMax's own endpoint — a relay serving the same slug
+      speaks a different contract and keeps its own vocabulary;
+    - when the route carries no ``base_url`` (the ``/reasoning`` menus know the provider and
+      the model, not the endpoint), the provider name decides: ``minimax``, ``minimax-cn`` and
+      ``minimax-oauth`` are MiniMax's own routes.
+    """
+    from agent.anthropic_endpoints import _is_minimax_anthropic_endpoint
     slug = (model or "").strip().lower().rsplit("/", 1)[-1]
-    return slug.startswith("minimax-m3.1") or slug.startswith("minimax-m3-1")
+    if not (slug.startswith("minimax-m3.1") or slug.startswith("minimax-m3-1")):
+        return False
+    if base_url:
+        return _is_minimax_anthropic_endpoint(base_url)
+    return (provider or "").strip().lower() in _MINIMAX_PROVIDERS
 
 
 def effort_display_label(
     effort: Optional[str], provider: Optional[str] = None, model: Optional[str] = None,
-    api_mode: Optional[str] = None,
+    api_mode: Optional[str] = None, base_url: Optional[str] = None,
 ) -> str:
     """Picker / ``/reasoning`` status label for a ladder level: the level itself when the route sends
     it verbatim, else ``"<level> (sends <clamped> on this route)"`` so a Hermes-internal step such as
     ``ultra`` (#61634) is never presented as a distinct wire level the route does not have."""
     requested = str(effort or "").strip().lower()
-    clamped = clamp_effort(requested, route_supported_efforts(provider, model, api_mode))
+    clamped = clamp_effort(requested, route_supported_efforts(provider, model, api_mode, base_url))
     return requested if not requested or clamped == requested else f"{requested} (sends {clamped} on this route)"
 
 

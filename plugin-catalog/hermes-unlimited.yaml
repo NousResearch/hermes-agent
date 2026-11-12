@@ -1,6 +1,6 @@
 name: hermes-unlimited
-repo: https://github.com/nsolland/hermes-unlimited
-sha: e96b25434f9f03039f22696ece1b2fccfe3ebfae
+repo: https://github.com/rrglab/hermes-unlimited
+sha: 36ad68d1eb539e2fbdcc2f68c5bd0f7cb22feb9d
 description: Create and operate AI-native provider organizations with scoped services and Hermes tasks.
 maintainer: nsolland
 tier: community
@@ -21,6 +21,7 @@ capabilities:
     - unlimited_service_request
     - unlimited_company_task
     - unlimited_company_result
+    - unlimited_a2ui_surface
     - unlimited_service_dispatch
     - unlimited_service_result
   provides_hooks: []

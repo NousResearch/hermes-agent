@@ -2431,6 +2431,11 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
     # Agents & AI Apps feature; a feature error sets ``_native_stream_unsupported`` → edit-based.
     # Cursor glyphs (streaming.cursor) are stripped before deltas because the API is append-only.
     _STREAM_CURSOR_GLYPHS = ("\u2589", "▍", "▌", "…")
+    # chat.appendStream is append-only: the stream consumer must hand send_draft() raw,
+    # un-fence-closed frames. A display-only closer (…`code` / ```) is never a prefix of
+    # the next frame, so the adapter seals the half-streamed message and the answer is
+    # posted a second time.
+    DRAFT_STREAM_PREFIX_STABLE = True
     _NATIVE_STREAM_UNSUPPORTED_MARKERS = (
         "not_allowed", "missing_scope", "feature_not_enabled", "invalid_method", "unknown_method",
         "method_deprecated", "not_authed", "streaming_not_allowed")

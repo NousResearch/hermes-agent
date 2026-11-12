@@ -372,3 +372,34 @@ class TestDisconnectCleanup:
         client.chat_stopStream.assert_awaited()
         assert client.chat_stopStream.await_args.kwargs["channel"] == "D1"
         assert not adapter._active_streams
+
+
+class TestConsumerFrameStability:
+    """The consumer closes orphaned code markers AFTER appending the cursor (``…`code ▉```).
+    Slack's stream is append-only, so such a frame must never reach send_draft: the next
+    frame is no longer a prefix, the half-streamed message gets sealed and the answer is
+    posted a second time (every reply shown twice in the thread)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("chunks", [
+        ["Result lands in `Claude outputs/conn", "ect/RESULT.md`. Done, plus more text."],
+        ["Run this:\n```bash\ngit status\n", "git log\n```\nDone, plus more text."],
+    ])
+    async def test_open_code_marker_mid_stream_does_not_duplicate(self, chunks):
+        adapter, client = _make_adapter()
+        cfg = StreamConsumerConfig(transport="auto", chat_type="dm",
+                                   edit_interval=0.01, buffer_threshold=1)
+        sc = GatewayStreamConsumer(adapter, "D1", cfg, metadata=META)
+        task = asyncio.create_task(sc.run())
+        for chunk in chunks:
+            sc.on_delta(chunk)
+            await asyncio.sleep(0.05)
+        sc.finish("".join(chunks))
+        await task
+
+        client.chat_postMessage.assert_not_awaited()
+        client.chat_startStream.assert_awaited_once()
+        frames = [client.chat_startStream.await_args.kwargs.get("markdown_text", "")]
+        frames += [c.kwargs["markdown_text"] for c in client.chat_appendStream.await_args_list]
+        assert "▉" not in "".join(frames)
+        assert "".join(frames) == "".join(chunks)

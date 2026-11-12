@@ -156,3 +156,55 @@ async def test_authority_busy_follow_up_deletes_its_own_progress_bubbles(monkeyp
     assert adapter.sent == ['reply to one', 'reply to two']
     assert sorted(adapter.deleted) == ['bubble-one', 'bubble-two']
     assert key not in adapter._post_delivery_callbacks, "the follow-up's slot was left behind"
+
+@pytest.mark.asyncio
+async def test_busy_follow_up_goal_notice_keeps_its_bubble_cleanup_without_adapter_guard(monkeypatch):
+    """A queued authority turn's /goal notice must not erase its generated cleanup slot."""
+    from gateway.config import GatewayConfig
+    from gateway.run import GatewayRunner
+    from gateway.session_ingress import _run_own_post_delivery
+
+    runner = GatewayRunner(GatewayConfig())
+    adapter = CleanupAdapter()
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    event = _event("follow-up")
+    event._hermes_run_generation = 7
+    notices = []
+
+    async def session(*_args, **_kwargs):
+        return SimpleNamespace(session_id="goal-test")
+
+    async def manager(*_args, **_kwargs):
+        return SimpleNamespace(
+            is_active=lambda: True,
+            evaluate_after_turn=lambda *_a, **_kw: {"message": "goal reached"},
+        )
+
+    async def executor(fn):
+        return fn()
+
+    async def notice(_source, message):
+        notices.append(message)
+
+    async def no_loop(**_kwargs):
+        return None
+
+    monkeypatch.setattr(runner.async_session_store, "get_or_create_session", session)
+    monkeypatch.setattr(runner, "_post_turn_manager", manager)
+    monkeypatch.setattr(runner, "_run_in_executor_with_context", executor)
+    monkeypatch.setattr(runner, "_send_goal_status_notice", notice)
+    monkeypatch.setattr(runner, "_post_turn_loop_completion", no_loop)
+    monkeypatch.setattr(runner, "_session_key_for_source", lambda _source: KEY)
+    monkeypatch.setattr(runner, "_goal_notice_adapter", lambda _source: adapter)
+
+    _register_cleanup(adapter, 7, ["102"])
+    assert not adapter._active_sessions  # busy observers have no adapter task guard
+    await runner._run_post_turn_hooks(
+        agent_result={"final_response": "done"}, source=event.source,
+        is_internal=False, event=event,
+    )
+    assert notices == []  # status follows the reply, not the agent hook
+    await _run_own_post_delivery(adapter, KEY, event)
+    assert adapter.deleted == ["102"]
+    assert notices == ["goal reached"]
+    assert KEY not in adapter._post_delivery_callbacks

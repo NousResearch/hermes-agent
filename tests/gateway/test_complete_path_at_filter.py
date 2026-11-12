@@ -96,10 +96,17 @@ def test_unrelatable_entry_does_not_drop_completion_response(tmp_path, monkeypat
 
     monkeypatch.setattr(server.os.path, "relpath", windows_relpath)
 
-    texts = [t for t, _, _ in _items("")]
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "complete.path",
+            "params": {"word": "@file:", "cwd": str(tmp_path)},
+        }
+    )
+    texts = [item["text"] for item in resp["result"]["items"]]
 
-    assert "normal.txt" in texts
-    assert "nul" not in texts
+    assert "@file:normal.txt" in texts
+    assert "@file:nul" not in texts
 
 
 # ── Non-local terminal backend: the popup must show the backend's tree ──
@@ -376,4 +383,3 @@ def test_completion_ignores_real_terminal_cwd(tmp_path, monkeypatch):
         f"_completion_cwd resolved to {resolved} instead of {tmp_path} — "
         f"the autouse fixture may not be patching _launch_configured_cwd"
     )
-

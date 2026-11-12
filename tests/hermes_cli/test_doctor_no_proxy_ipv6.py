@@ -49,13 +49,20 @@ def test_run_probes_sanitizes_env_before_any_worker_builds_a_client(clash_env, m
 
 
 def test_run_probes_leaves_a_clean_environment_untouched(clash_env, monkeypatch):
-    monkeypatch.setenv("NO_PROXY", "example.com,10.0.0.0/8")
-    monkeypatch.delenv("no_proxy", raising=False)
-    (result,) = dc.run_probes([("stand-in", lambda: dc._row("stand-in", "ok"))])
-    assert "✓" in result.lines[0][0]
     import os
 
-    assert os.environ["NO_PROXY"] == "example.com,10.0.0.0/8"
+    # A proxy list with no IPv6 form: the sanitizer has nothing to rewrite and must return it byte-stable.
+    clean = "example.com,10.0.0.0/8"
+    monkeypatch.setenv("NO_PROXY", clean)
+    # Windows' os.environ is ONE case-insensitive map: `no_proxy` IS `NO_PROXY`, so deleting the
+    # lowercase spelling would delete the clean value this test just set. Clear the lowercase alias
+    # only where it is a genuinely distinct variable (POSIX); on Windows setenv above replaced the
+    # clash value and the clean one must survive.
+    if os.environ.get("no_proxy") not in (None, clean):
+        monkeypatch.delenv("no_proxy", raising=False)
+    (result,) = dc.run_probes([("stand-in", lambda: dc._row("stand-in", "ok"))])
+    assert "✓" in result.lines[0][0]
+    assert os.environ["NO_PROXY"] == clean
 
 
 def test_run_probes_keeps_aws_instance_metadata_only_when_asked(monkeypatch):

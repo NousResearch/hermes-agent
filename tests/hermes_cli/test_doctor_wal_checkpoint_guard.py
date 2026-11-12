@@ -54,12 +54,18 @@ def test_doctor_checkpoint_runs_only_on_the_exclusive_repair_guard(tmp_path, mon
 
 
 def test_session_count_reads_a_home_with_uri_reserved_characters(tmp_path):
-    """`file:` URIs treat '?' and '#' as delimiters; a home named `profile?blue` must still count."""
+    """`file:` URIs treat '?' and '#' as delimiters; a home carrying them must still count.
+
+    NTFS rejects '?' in a file name, so the on-disk home carries '#' on every platform. That '?'
+    and '#' can never truncate the URI is asserted on the URI itself, where the delimiter is read.
+    """
     import sqlite3
 
     from hermes_cli.doctor_state import _session_count
+    from hermes_state_holders import read_only_db_uri
 
-    home = tmp_path / "profile?blue#x"
+    assert "%3Fblue%23x" in read_only_db_uri(tmp_path / "profile?blue#x" / "state.db")
+    home = tmp_path / "profile#x"
     home.mkdir()
     db = home / "state.db"
     conn = sqlite3.connect(db)

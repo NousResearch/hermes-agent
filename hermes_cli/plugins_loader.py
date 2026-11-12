@@ -591,7 +591,8 @@ class PluginLoaderMixin:
             # Declared language packs register before any plugin code runs, inside the same ledger slice
             # so a failing register() unwinds them too.
             self._register_declared_locales(manifest, ctx)
-            if in_host and not self._is_manifest_only_language_pack(manifest):
+            if in_host and not self._is_manifest_only_language_pack(manifest) \
+                    and not self._is_dashboard_only_plugin(manifest):
                 self._plugin_host().load(manifest, ctx, module_name=module_name,
                                          entrypoint=manifest.source not in {"user", "project"})
                 return True
@@ -601,6 +602,8 @@ class PluginLoaderMixin:
             if module is None and manifest.source in {"user", "project", "bundled"}:
                 if self._is_manifest_only_language_pack(manifest):
                     return True  # pure pack: locales/ is the whole plugin, no register() to run
+                if self._is_dashboard_only_plugin(manifest):
+                    return True  # dashboard-only pack: the dashboard mounts it; no Python to run
                 module = self._load_directory_module(manifest, module_name=module_name)
             elif module is None:
                 module = self._load_entrypoint_module(manifest)
@@ -651,11 +654,69 @@ class PluginLoaderMixin:
         self._plugins[plugin_key] = loaded
 
     @staticmethod
+    def _ensure_framework_plugins_package() -> None:
+        """Make the framework's own ``plugins`` package the one imports resolve to.
+
+        A bundled provider imports its shared helper absolutely
+        (``from plugins.image_gen._common import ...``). ``plugins`` is a regular package
+        only while the framework root wins the name on ``sys.path``; ``plugins/image_gen``
+        is a NAMESPACE subpackage, so when an earlier ``plugins/`` directory (for example
+        the user's own plugin bucket under HERMES_HOME) comes first, ``plugins.image_gen``
+        binds to that directory and the shared helper becomes unreachable - the provider
+        then fails with ``No module named 'plugins.image_gen._common'`` even though the
+        file exists. Entry points that do not put the framework root first (a bare
+        ``python -c`` started in HERMES_HOME) hit this.
+
+        Bind the framework's ``plugins`` package explicitly, before any plugin import, so
+        the name resolves to the framework copy. The user plugin bucket keeps its own
+        directory (plugins are loaded by path, never as ``plugins.<name>``), so this
+        does not change how user plugins are discovered or loaded.
+        """
+        import sys as _sys
+
+        from hermes_cli.plugins import get_bundled_plugins_dir
+
+        framework_plugins = Path(get_bundled_plugins_dir()).resolve()
+        if not (framework_plugins / "__init__.py").is_file():
+            return  # a packaged install without the regular package: nothing to bind
+        existing = _sys.modules.get("plugins")
+        if existing is not None:
+            origin = getattr(existing, "__file__", None)
+            if origin and Path(origin).resolve().parent == framework_plugins:
+                return  # already the framework package
+        spec = importlib.util.spec_from_file_location(
+            "plugins", framework_plugins / "__init__.py",
+            submodule_search_locations=[str(framework_plugins)],
+        )
+        if spec is None or spec.loader is None:
+            return
+        module = importlib.util.module_from_spec(spec)
+        _sys.modules["plugins"] = module
+        try:
+            spec.loader.exec_module(module)
+        except BaseException:
+            _sys.modules.pop("plugins", None)
+            raise
+
+    @staticmethod
     def _is_manifest_only_language_pack(manifest: PluginManifest) -> bool:
         """A ``provides_locales`` plugin with no ``__init__.py`` is complete without Python — like a
         manifest-only desktop plugin, it loads from its declared files alone."""
         return bool(manifest.provides_locales and manifest.path
                     and not (Path(manifest.path) / "__init__.py").is_file())
+
+    @staticmethod
+    def _is_dashboard_only_plugin(manifest: PluginManifest) -> bool:
+        """A ``dashboard/manifest.json`` beside the manifest, with no ``__init__.py``, is complete
+        without Python: the dashboard mounts such a package from its own directory scan and the
+        package's API is served from that manifest. Treating it as a Python plugin makes every
+        discovery fail with "No __init__.py" even though the package is intact."""
+        if not manifest.path:
+            return False
+        plugin_dir = Path(manifest.path)
+        if (plugin_dir / "__init__.py").is_file():
+            return False
+        return (plugin_dir / "dashboard" / "manifest.json").is_file()
 
     def _register_declared_locales(self, manifest: PluginManifest, ctx) -> None:
         """``provides_locales`` -> ``ctx.register_locale_dir(<plugin>/locales)``; a declared id with no file
@@ -820,6 +881,7 @@ class PluginLoaderMixin:
         init_file = plugin_dir / "__init__.py"
         if not init_file.exists():
             raise FileNotFoundError(f"No __init__.py in {plugin_dir}")
+        self._ensure_framework_plugins_package()
         if _NS_PARENT not in sys.modules:
             ns_pkg = types.ModuleType(_NS_PARENT)
             ns_pkg.__path__ = []  # type: ignore[attr-defined]

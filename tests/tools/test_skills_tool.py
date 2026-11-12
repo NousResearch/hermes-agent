@@ -633,6 +633,424 @@ class TestFindAllSkillsSecureSetup:
 
 
 class TestSkillViewPrerequisites:
+    def test_parses_and_validates_required_commands(self):
+        from tools.skills_tool_setup import _get_required_commands
+
+        assert _get_required_commands({}) == []
+        assert _get_required_commands({"prerequisites": None}) == []
+        assert _get_required_commands({"prerequisites": "not-a-dict"}) == []
+        assert _get_required_commands({"prerequisites": {"commands": "memo"}}) == ["memo"]
+        assert _get_required_commands(
+            {
+                "prerequisites": {
+                    "commands": [
+                        " memo ",
+                        "remindctl",
+                        "memo",  # duplicate dropped, order preserved
+                        "",
+                        "   ",
+                        None,
+                        123,
+                        {"name": "bad"},
+                        ["nested"],
+                        "bad --flag",
+                        "bad;cmd",
+                        "../traversal",
+                        "/abs/path",
+                        "blogwatcher-cli",
+                        "python3.11",
+                    ]
+                }
+            }
+        ) == ["memo", "remindctl", "blogwatcher-cli", "python3.11"]
+
+    def test_local_missing_required_command_marks_setup_needed_and_preserves_key_order(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        missing_cmd = "hermes_nonexistent_cmd_9f8e7d"
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "apple-notes-like",
+                frontmatter_extra=f"prerequisites:\n  commands: [{missing_cmd}]\n",
+            )
+            raw = skill_view("apple-notes-like")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["required_commands"] == [missing_cmd]
+        assert result["missing_required_commands"] == [missing_cmd]
+        assert result["setup_needed"] is True
+        assert result["readiness_status"] == "setup_needed"
+        assert (
+            result["setup_note"]
+            == f"Setup needed before using this skill: missing command '{missing_cmd}'."
+        )
+        assert list(result.keys()) == [
+            "success",
+            "name",
+            "description",
+            "tags",
+            "related_skills",
+            "content",
+            "path",
+            "skill_dir",
+            "linked_files",
+            "usage_hint",
+            "required_environment_variables",
+            "required_commands",
+            "missing_required_environment_variables",
+            "missing_credential_files",
+            "missing_required_commands",
+            "setup_needed",
+            "setup_skipped",
+            "readiness_status",
+            "setup_note",
+        ]
+
+    def test_local_present_command_on_terminal_path_is_available(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        bin_dir = tmp_path / "hermes_home" / "bin"
+        bin_dir.mkdir(parents=True)
+        fake_cmd = "hermes_custom_tool_bin"
+        exe = bin_dir / fake_cmd
+        exe.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        exe.chmod(0o755)
+        # Put the binary only in $HERMES_HOME/bin (which the local terminal tool
+        # adds via _make_run_env), not in the raw process PATH.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+            _make_skill(
+                skills_root,
+                "custom-tool-skill",
+                frontmatter_extra=f"prerequisites:\n  commands: [{fake_cmd}]\n",
+            )
+            raw = skill_view("custom-tool-skill")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["required_commands"] == [fake_cmd]
+        assert result["missing_required_commands"] == []
+        assert result["setup_needed"] is False
+        assert result["readiness_status"] == "available"
+        assert "setup_note" not in result
+
+    def test_local_command_in_shell_init_file_path_is_not_reported_missing(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+        init_bin = tmp_path / "nvm-node" / "bin"
+        init_bin.mkdir(parents=True)
+        fake_cmd = "hermes_shell_init_only_cli"
+        exe = init_bin / fake_cmd
+        exe.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        exe.chmod(0o755)
+        init_file = tmp_path / "custom-init.sh"
+        init_file.write_text(f'export PATH="{init_bin}:$PATH"\n', encoding="utf-8")
+
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", skills_root),
+            patch(
+                "tools.environments.local._read_terminal_shell_init_config",
+                return_value=([str(init_file)], False),
+            ),
+        ):
+            _make_skill(
+                skills_root,
+                "shell-init-skill",
+                frontmatter_extra=f"prerequisites:\n  commands: [{fake_cmd}]\n",
+            )
+            raw = skill_view("shell-init-skill")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["required_commands"] == [fake_cmd]
+        assert result["missing_required_commands"] == []
+        assert result["setup_needed"] is False
+        assert result["readiness_status"] == "available"
+        assert "setup_note" not in result
+
+    def test_local_login_shell_lookup_failure_or_timeout_yields_no_missing_commands(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        import subprocess
+
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+        missing_cmd = "hermes_nonexistent_cmd_on_timeout_777"
+
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+        _make_skill(
+            skills_root,
+            "timeout-skill",
+            frontmatter_extra=f"prerequisites:\n  commands: [{missing_cmd}]\n",
+        )
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", skills_root),
+            patch(
+                "subprocess.Popen",
+                side_effect=subprocess.TimeoutExpired(cmd=["bash"], timeout=5),
+            ),
+            caplog.at_level("DEBUG", logger="tools.skills_tool"),
+        ):
+            raw = skill_view("timeout-skill")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["required_commands"] == [missing_cmd]
+        assert result["missing_required_commands"] == []
+        assert result["setup_needed"] is False
+        assert result["readiness_status"] == "available"
+        assert "setup_note" not in result
+        assert any("login-shell" in r.getMessage().lower() for r in caplog.records)
+
+    @pytest.mark.platforms("posix")
+    def test_local_login_shell_probe_timeout_kills_process_group_children(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+        pid_file = tmp_path / "rc_child.pid"
+        init_file = tmp_path / "slow-init.sh"
+        init_file.write_text(
+            f"sleep 3 &\necho $! > {pid_file}\nsleep 3\n",
+            encoding="utf-8",
+        )
+        missing_cmd = "hermes_nonexistent_cmd_group_timeout_888"
+
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+        _make_skill(
+            skills_root,
+            "group-timeout-skill",
+            frontmatter_extra=f"prerequisites:\n  commands: [{missing_cmd}]\n",
+        )
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", skills_root),
+            patch(
+                "tools.environments.local._read_terminal_shell_init_config",
+                return_value=([str(init_file)], False),
+            ),
+            patch(
+                "tools.skills_tool_setup._LOGIN_SHELL_PROBE_TIMEOUT_SECONDS",
+                0.3,
+            ),
+        ):
+            raw = skill_view("group-timeout-skill")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["missing_required_commands"] == []
+        assert pid_file.exists(), "rc background child should have started"
+        child_pid = int(pid_file.read_text(encoding="utf-8").strip())
+        with pytest.raises(ProcessLookupError):
+            os.kill(child_pid, 0)
+
+    def test_normalize_snapshot_path_converts_msys_entries_for_windows_lookup(self):
+        from tools.skills_tool_setup import _normalize_snapshot_path
+
+        assert (
+            _normalize_snapshot_path(
+                "/c/Users/me/.nvm/bin:/usr/bin",
+                is_windows=False,
+                pathsep=":",
+            )
+            == "/c/Users/me/.nvm/bin:/usr/bin"
+        )
+        translated = {
+            "/c/Users/me/.nvm/bin": r"C:\Users\me\.nvm\bin",
+            "/d/Tools/bin": r"D:\Tools\bin",
+        }
+        assert (
+            _normalize_snapshot_path(
+                "/c/Users/me/.nvm/bin::/d/Tools/bin:/usr/bin",
+                is_windows=True,
+                pathsep=";",
+                to_native=lambda p: translated.get(p, p),
+            )
+            == r"C:\Users\me\.nvm\bin;D:\Tools\bin;/usr/bin"
+        )
+
+    @pytest.mark.platforms("windows")
+    def test_local_windows_msys_snapshot_path_resolves_command_without_login_shell(
+        self, tmp_path, monkeypatch
+    ):
+        from types import SimpleNamespace
+        from tools.environments.local import _windows_to_msys_path
+
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        snap_bin = tmp_path / "snap-bin"
+        snap_bin.mkdir(parents=True)
+        fake_cmd = "hermes_win_snap_cli"
+        (snap_bin / f"{fake_cmd}.cmd").write_text("@echo off\r\nexit /b 0\r\n", encoding="utf-8")
+        msys_snap_bin = _windows_to_msys_path(str(snap_bin))
+        snap_file = tmp_path / "hermes-snap-win.sh"
+        snap_file.write_text(
+            f'declare -x PATH="{msys_snap_bin}:/usr/bin:/mingw64/bin"\n',
+            encoding="utf-8",
+        )
+        fake_env = SimpleNamespace(
+            is_local=True, _snapshot_ready=True, _snapshot_path=str(snap_file)
+        )
+
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+        _make_skill(
+            skills_root,
+            "win-snap-skill",
+            frontmatter_extra=f"prerequisites:\n  commands: [{fake_cmd}]\n",
+        )
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", skills_root),
+            patch(
+                "tools.terminal_tool_lifecycle.get_active_env",
+                return_value=fake_env,
+            ),
+            patch(
+                "tools.skills_tool_setup._probe_missing_via_login_shell",
+                side_effect=AssertionError("should not spawn login shell"),
+            ),
+        ):
+            raw = skill_view("win-snap-skill")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["required_commands"] == [fake_cmd]
+        assert result["missing_required_commands"] == []
+        assert result["setup_needed"] is False
+        assert result["readiness_status"] == "available"
+
+    def test_local_reuses_live_session_snapshot_path_without_spawning_login_shell(
+        self, tmp_path, monkeypatch
+    ):
+        from types import SimpleNamespace
+
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+        snap_bin = tmp_path / "snap-bin"
+        snap_bin.mkdir(parents=True)
+        fake_cmd = "hermes_snapshot_only_cli"
+        exe = snap_bin / fake_cmd
+        exe.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        exe.chmod(0o755)
+        snap_file = tmp_path / "hermes-snap-test.sh"
+        snap_file.write_text(
+            f'declare -x PATH="{snap_bin}:/usr/bin:/bin"\n', encoding="utf-8"
+        )
+        fake_env = SimpleNamespace(
+            is_local=True, _snapshot_ready=True, _snapshot_path=str(snap_file)
+        )
+
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+        _make_skill(
+            skills_root,
+            "snap-skill",
+            frontmatter_extra=f"prerequisites:\n  commands: [{fake_cmd}]\n",
+        )
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", skills_root),
+            patch(
+                "tools.terminal_tool_lifecycle.get_active_env",
+                return_value=fake_env,
+            ),
+            patch(
+                "subprocess.Popen",
+                side_effect=AssertionError("should not spawn login shell"),
+            ),
+        ):
+            raw = skill_view("snap-skill")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["required_commands"] == [fake_cmd]
+        assert result["missing_required_commands"] == []
+        assert result["setup_needed"] is False
+        assert result["readiness_status"] == "available"
+        assert "setup_note" not in result
+
+    def test_setup_note_combines_env_vars_credential_files_and_commands(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        monkeypatch.delenv("MISSING_SKILL_KEY_ABC", raising=False)
+        missing_cmd = "hermes_missing_cli_xyz"
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "tools.credential_files.register_credential_files",
+                return_value=["~/.config/missing/creds.json"],
+            ),
+        ):
+            _make_skill(
+                tmp_path,
+                "combo-skill",
+                frontmatter_extra=(
+                    "required_credential_files:\n"
+                    "  - ~/.config/missing/creds.json\n"
+                    "prerequisites:\n"
+                    "  env_vars: [MISSING_SKILL_KEY_ABC]\n"
+                    f"  commands: [{missing_cmd}]\n"
+                ),
+            )
+            raw = skill_view("combo-skill")
+
+        result = json.loads(raw)
+        assert result["setup_needed"] is True
+        assert result["readiness_status"] == "setup_needed"
+        assert result["missing_required_environment_variables"] == ["MISSING_SKILL_KEY_ABC"]
+        assert result["missing_credential_files"] == ["~/.config/missing/creds.json"]
+        assert result["missing_required_commands"] == [missing_cmd]
+        assert result["setup_note"] == (
+            "Setup needed before using this skill: missing "
+            "env $MISSING_SKILL_KEY_ABC, "
+            "file ~/.config/missing/creds.json, "
+            f"command '{missing_cmd}'."
+        )
+
+    @pytest.mark.parametrize(
+        "backend",
+        ["docker", "ssh", "modal", "daytona", "vercel_sandbox"],
+    )
+    def test_non_local_backend_reports_required_commands_without_marking_missing(
+        self, tmp_path, monkeypatch, backend
+    ):
+        monkeypatch.setenv("TERMINAL_ENV", backend)
+        missing_cmd = "hermes_nonexistent_host_cmd_123"
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "remote-cmd-skill",
+                frontmatter_extra=f"prerequisites:\n  commands: [{missing_cmd}]\n",
+            )
+            raw = skill_view("remote-cmd-skill")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["required_commands"] == [missing_cmd]
+        assert result["missing_required_commands"] == []
+        assert result["setup_needed"] is False
+        assert result["readiness_status"] == "available"
+        assert "setup_note" not in result
+
     def test_legacy_prerequisites_expose_required_env_setup_metadata(
         self, tmp_path, monkeypatch
     ):

@@ -20,7 +20,8 @@ from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS, is_skill_support_path as _is_skill_support_path)
 from tools.skills_tool_setup import (
     SkillReadinessStatus, _build_setup_note, _capture_required_environment_variables,
-    _get_required_environment_variables, _is_env_var_persisted, _is_remote_env_backend)
+    _get_required_commands, _get_required_environment_variables, _is_env_var_persisted,
+    _is_remote_env_backend, _resolve_required_commands)
 from tools.skills_tool_plugin import (
     MAX_DESCRIPTION_LENGTH, MAX_NAME_LENGTH, _INJECTION_PATTERNS, _fail, _json,
     _mark_background_review_read, _preprocess_skill, _read_skill_text, _safe_frontmatter,
@@ -467,7 +468,7 @@ def _skill_linked_files(skill_dir: Optional[Path]) -> dict:
     return files
 
 
-def _skill_readiness(frontmatter: dict[str, Any], skill_name: str) -> tuple[dict, dict]:
+def _skill_readiness(frontmatter: dict[str, Any], skill_name: str, task_id: str | None = None) -> tuple[dict, dict]:
     """Resolve required env vars / credential files (prompting for secrets where the surface
     allows) and register what's available for sandboxes. Returns ``(fields, extras)``: fields go
     before the readiness extras in the skill_view result — key order is tool output."""
@@ -485,7 +486,6 @@ def _skill_readiness(frontmatter: dict[str, Any], skill_name: str) -> tuple[dict
     remaining = [
         e["name"] for e in required_env_vars if not e.get("optional")
         and (e["name"] in still_missing or not _is_env_var_persisted(e["name"], env_snapshot))]
-    setup_needed = bool(remaining)
     # Only vars actually set pass through to sandboxed execution (execute_code, terminal).
     if available_env_names := [e["name"] for e in required_env_vars if e["name"] not in remaining]:
         try:
@@ -501,14 +501,15 @@ def _skill_readiness(frontmatter: dict[str, Any], skill_name: str) -> tuple[dict
         try:
             from tools.credential_files import register_credential_files
             missing_cred_files = register_credential_files(required_cred_files_raw)
-            setup_needed = setup_needed or bool(missing_cred_files)
         except Exception:
             logger.debug("Could not register credential files for skill %s", skill_name, exc_info=True)
+    required_commands, missing_commands = _resolve_required_commands(frontmatter, backend, task_id=task_id)
+    setup_needed = bool(remaining or missing_cred_files or missing_commands)
     status = SkillReadinessStatus.SETUP_NEEDED if setup_needed else SkillReadinessStatus.AVAILABLE
     fields = {
-        "required_environment_variables": required_env_vars, "required_commands": [],
+        "required_environment_variables": required_env_vars, "required_commands": required_commands,
         "missing_required_environment_variables": remaining,
-        "missing_credential_files": missing_cred_files, "missing_required_commands": [],
+        "missing_credential_files": missing_cred_files, "missing_required_commands": missing_commands,
         "setup_needed": setup_needed, "setup_skipped": capture_result["setup_skipped"],
         "readiness_status": status.value}
     extras: dict = {}
@@ -516,7 +517,9 @@ def _skill_readiness(frontmatter: dict[str, Any], skill_name: str) -> tuple[dict
         extras["setup_help"] = setup_help
     if capture_result["gateway_setup_hint"]:
         extras["gateway_setup_hint"] = capture_result["gateway_setup_hint"]
-    missing_items = [f"env ${n}" for n in remaining] + [f"file {p}" for p in missing_cred_files]
+    missing_items = (
+        [f"env ${n}" for n in remaining] + [f"file {p}" for p in missing_cred_files]
+        + [f"command '{c}'" for c in missing_commands])
     if setup_needed and (setup_note := _build_setup_note(status, missing_items, setup_help)):
         if _is_remote_env_backend(backend):
             setup_note = f"{setup_note} {backend.upper()}-backed skills need these requirements available inside the remote environment as well."
@@ -665,7 +668,7 @@ def skill_view(
         except ValueError:  # external skill — relative to its own parent dir
             rel_path = str(skill_md.relative_to(skill_md.parent.parent)) if skill_md.parent.parent else skill_md.name
         skill_name = frontmatter.get("name", skill_md.stem if not skill_dir else skill_dir.name)
-        readiness, readiness_extras = _skill_readiness(frontmatter, skill_name)
+        readiness, readiness_extras = _skill_readiness(frontmatter, skill_name, task_id=task_id)
         rendered_content = content if not preprocess else _preprocess_skill(
             content, skill_dir, task_id, "Could not preprocess skill content for %s", skill_name)
         # ── pm tool deps (`deps: [ffmpeg]` frontmatter) ──────────────

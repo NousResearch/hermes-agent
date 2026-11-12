@@ -340,6 +340,37 @@ class TestSkillReadiness:
         assert success is True
         assert agent_constructed is True
 
+    def test_skill_with_missing_command_blocks_via_real_skill_view(
+        self, tmp_path, monkeypatch
+    ):
+        """End-to-end with real skill_view: a cron job naming a skill whose
+        prerequisites.commands entry is missing on the local backend is blocked
+        by preflight before constructing the agent."""
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        missing_cmd = "hermes_nonexistent_cron_cmd_456"
+        skills_dir = tmp_path / "skills"
+        skill_dir = skills_dir / "memo-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: memo-skill\ndescription: test\nprerequisites:\n  commands: [{missing_cmd}]\n---\n# Body\n",
+            encoding="utf-8",
+        )
+
+        job = _job(skills=["memo-skill"])
+        with (
+            cron_jobs.use_cron_store(tmp_path),
+            patch("tools.skills_tool.SKILLS_DIR", skills_dir),
+        ):
+            cron_jobs.save_jobs([job])
+            success, output, _final_response, error, agent_constructed = (
+                _run_job_patched(job, tmp_path)
+            )
+
+        assert agent_constructed is False
+        assert success is False
+        assert error is not None and "[blocked_config]" in error
+        assert f"command '{missing_cmd}'" in f"{error} {output}"
+
 
 class TestDeliveryPlatform:
     def test_unknown_delivery_platform_blocks(self, tmp_path):

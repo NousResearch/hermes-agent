@@ -616,6 +616,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                     # adopt only the LAST chunk as the preview; the next seal then overwrites that
                     # chunk with the head of the whole remainder (duplicated + lost text, #25349).
                     sent_heads = await self._seal_overflow_heads(final=tick.got_done)
+                    if sent_heads and self._turn_reset():  # the sealing edit awaited: no split for a dead turn
+                        await self._abandon_native_stream()
+                        return
                     # Overflow split.  Native streaming bypasses this: the adapter
                     # truncates against the stream protocol's own limit.
                     if not self._use_native_streaming and self._first_send_overflows():

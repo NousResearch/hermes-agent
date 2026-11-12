@@ -44,8 +44,8 @@ jobs:
       scan-args: |-
         --lockfile=uv.lock
         --lockfile=pnpm-lock.yaml
-        --lockfile=website/package-lock.json
+        --lockfile=website/pnpm-lock.yaml
         --lockfile=plugins/platforms/photon/sidecar/package-lock.json
-        --lockfile=scripts/whatsapp-bridge/package-lock.json
+        --lockfile=scripts/whatsapp-bridge/pnpm-lock.yaml
       results-file-name: osv-results.sarif
       fail-on-vuln: false

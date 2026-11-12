@@ -23,10 +23,10 @@ js-install:
 js-install-tests:
     pnpm install --frozen-lockfile --filter "{./tests-js}..." --prod --ignore-scripts
 
-# Install the WhatsApp bridge's own npm lockfile, without native builds
+# Install the WhatsApp bridge's own pnpm lockfile, without native builds
 [group('setup')]
 js-install-whatsapp-bridge:
-    npm ci --ignore-scripts --no-audit --no-fund --prefix scripts/whatsapp-bridge
+    pnpm install --dir scripts/whatsapp-bridge --frozen-lockfile --ignore-scripts
 
 # Prepare the pm-locked Electron binary the desktop app and its E2E suites launch
 [group('setup')]

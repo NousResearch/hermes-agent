@@ -1,6 +1,6 @@
 name: agssh
 repo: https://github.com/mosesman831/agssh
-sha: 0ca72f7482e25961bfc30770f10c32dde60028ba
+sha: e5cce644c8bff0d33949111871ede3f87115ee08
 subdir: "plugin/agssh"
 description: >-
   SSH hosts as first-class agent tools. Register your hosts once, then the model calls
@@ -19,7 +19,7 @@ maintainer: mosesman831
 tier: community
 category: tools
 docs_url: https://github.com/mosesman831/agssh#readme
-version: "1.1.0"
+version: "1.2.0"
 platforms: [linux, macos]
 capabilities:
   provides_tools: [agssh, agssh-read, agssh-find, agssh-hosts]

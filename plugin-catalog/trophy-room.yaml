@@ -2,18 +2,12 @@ name: trophy-room
 repo: https://github.com/abundantbeing/hermes-trophy-room
 sha: 80852baa4207e8269f83e4a5681d77b5e9ae5016
 title: Trophy Room
-description: 'Achievements for Hermes Desktop: 120 illustrated trophies earned from real Hermes work
-  (tools, skills, profiles, cron, plugins, messaging, kanban, media), collectible cards across five
-  tiers, unlock pop-ups with a synth sting, optional OS notifications, recent trophies and replayable
-  away collections. Hooks only on the agent side (no tools, middleware or env vars); progress is stored
-  in the plugin''s own data directory. No telemetry or third-party services; artwork is bundled and the
-  sound is synthesized locally. Optional read-only import from the bundled hermes-achievements plugin.
-  Derived in part from hermes-achievements by PCinkusz (MIT): the 60 original achievement definitions.'
+description: 'Achievements for Hermes Desktop: 120 illustrated trophies earned from real Hermes work (tools, skills, profiles, cron, plugins, messaging, kanban, media), collectible cards across five tiers, unlock pop-ups with a synth sting, optional OS notifications, recent trophies and replayable away collections. Hooks only on the agent side (no tools, middleware or env vars); progress is stored in the plugin''s own data directory. No telemetry or third-party services; artwork is bundled and the sound is synthesized locally. Optional read-only import from the bundled hermes-achievements plugin. Derived in part from hermes-achievements by PCinkusz (MIT): the 60 original achievement definitions.'
 maintainer: abundantbeing
 tier: community
 category: desktop
 version: "0.1.0"
-requires_hermes: ">=0.22.0"
+requires_hermes: ">=0.23.0"
 docs_url: https://github.com/abundantbeing/hermes-trophy-room#readme
 screenshots:
   - https://raw.githubusercontent.com/abundantbeing/hermes-trophy-room/80852baa4207e8269f83e4a5681d77b5e9ae5016/docs/screenshots/release-gallery-dark.png

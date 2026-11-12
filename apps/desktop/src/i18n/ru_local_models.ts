@@ -35,6 +35,7 @@ export const ruLocalModels: TranslationOverride<Translations['settings']['localM
   downloadAction: size => `Скачать \u00B7 ${size}`,
   downloadProgress: (done, total) => `Скачано ${done} из ${total}`,
   downloadStatusRunning: 'Скачивание',
+  downloadSpeed: rate => `${rate}`,
   downloadEta: time => `Осталось примерно ${time}`,
   downloadEtaSeconds: count => `${count} с`,
   downloadEtaMinutes: count => `${count} мин`,
@@ -61,6 +62,8 @@ export const ruLocalModels: TranslationOverride<Translations['settings']['localM
   updateTitle: 'Доступно обновление движка',
   updateDetail: (next, current) =>
     `Готова к установке более новая сборка llama.cpp (${next}) \u2014 сейчас у вас ${current}. Во время скачивания модели продолжают работать.`,
+  updateSameBuildDetail: tag =>
+    `Теперь Hermes поставляет llama.cpp ${tag} вместе с файлами, нужными для запуска. При обновлении движок скачивается заново; модели продолжают работать во время загрузки.`,
   updateAction: 'Обновить движок',
   updating: 'Обновляем движок…',
   upToDateTitle: 'Движок обновлён',

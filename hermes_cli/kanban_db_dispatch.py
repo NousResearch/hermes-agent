@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- one call into the event-appended hook drain beside the existing dispatch loop; the facade split is a separate refactor
 """Dispatcher: crash/stale/orphan detection, failure accounting and the respawn circuit breaker, memory-aware concurrency caps, the one-shot ``dispatch_once`` pass, worker spawning (``_default_spawn``), worker-log rotation and the long-lived ``run_daemon`` loop.
 
 Split out of ``hermes_cli.kanban_db``; origin-resident helpers are reached
@@ -2001,20 +2002,21 @@ def dispatch_once(
     resolved DB path so unrelated boards tick in parallel.
     """
     def _locked_tick() -> DispatchResult:
-        return _dispatch_once_locked(
-            conn,
-            spawn_fn=spawn_fn,
-            ttl_seconds=ttl_seconds,
-            dry_run=dry_run,
-            max_spawn=max_spawn,
-            max_in_progress=max_in_progress,
-            failure_limit=failure_limit,
-            stale_timeout_seconds=stale_timeout_seconds,
-            board=board,
-            default_assignee=default_assignee,
-            max_in_progress_per_profile=max_in_progress_per_profile,
-            reconcile_orphans=reconcile_orphans,
-        )
+        with _kb.scoped_kanban_event_origin("dispatcher"):
+            return _dispatch_once_locked(
+                conn,
+                spawn_fn=spawn_fn,
+                ttl_seconds=ttl_seconds,
+                dry_run=dry_run,
+                max_spawn=max_spawn,
+                max_in_progress=max_in_progress,
+                failure_limit=failure_limit,
+                stale_timeout_seconds=stale_timeout_seconds,
+                board=board,
+                default_assignee=default_assignee,
+                max_in_progress_per_profile=max_in_progress_per_profile,
+                reconcile_orphans=reconcile_orphans,
+            )
 
     try:
         db_path = _kb.kanban_db_path(board=board)

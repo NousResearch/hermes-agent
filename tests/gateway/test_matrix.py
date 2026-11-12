@@ -342,23 +342,6 @@ class TestMatrixTypingIndicator:
 
 
 # ---------------------------------------------------------------------------
-# mxc:// URL conversion
-# ---------------------------------------------------------------------------
-
-class TestMatrixMxcToHttp:
-    def setup_method(self):
-        self.adapter = _make_adapter()
-
-
-    def test_mxc_with_different_server(self):
-        """mxc:// from a different server should still use our homeserver."""
-        mxc = "mxc://other.server/media456"
-        result = self.adapter._mxc_to_http(mxc)
-        assert result.startswith("https://matrix.example.org/")
-        assert "other.server/media456" in result
-
-
-# ---------------------------------------------------------------------------
 # DM detection
 # ---------------------------------------------------------------------------
 
@@ -1894,9 +1877,6 @@ class TestMatrixImageOnlyMediaNormalization:
         self.adapter._is_dm_room = AsyncMock(return_value=True)
         self.adapter._get_display_name = AsyncMock(return_value="Alice")
         self.adapter._background_read_receipt = MagicMock()
-        self.adapter._mxc_to_http = (
-            lambda url: "https://matrix.example.org/_matrix/media/v3/download/example/30.png"
-        )
 
     @pytest.mark.asyncio
     async def test_image_only_filename_body_is_not_forwarded_as_text(self):
@@ -1925,9 +1905,9 @@ class TestMatrixImageOnlyMediaNormalization:
 
         assert captured_event is not None
         assert captured_event.text == ""
-        assert captured_event.media_urls == [
-            "https://matrix.example.org/_matrix/media/v3/download/example/30.png"
-        ]
+        # Caching failed (download_media → None): the attachment is skipped, but the message —
+        # and its text — still dispatches instead of failing ingress admission on a remote URL.
+        assert captured_event.media_urls is None
         assert captured_event.message_type == MessageType.PHOTO
 
 

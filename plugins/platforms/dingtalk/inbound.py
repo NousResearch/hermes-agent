@@ -154,18 +154,36 @@ def extract_media(message: Any) -> tuple[MessageType, list[str], list[str]]:
     return msg_type, media_urls, media_types
 
 
-def collect_download_codes(message: Any) -> list[tuple[Any, str]]:
-    """Return ``(container, key)`` pairs whose download code should be resolved to a URL."""
-    codes: list[tuple[Any, str]] = []
+def collect_download_codes(message: Any) -> list[tuple[Any, str, str]]:
+    """Return ``(container, key, media kind)`` triples whose download code should be
+    resolved to a locally cached file. The kind (image/audio/video/file) picks which
+    cache family the downloaded bytes land in — same mapping ``extract_media`` uses.
+
+    One code is one download: a repeated ``downloadCode``, or an item carrying both
+    ``downloadCode`` and ``pictureDownloadCode`` with the same value, is fetched and
+    written once — ingress would count both copies against the message's media budget.
+    """
+    codes: list[tuple[Any, str, str]] = []
+    seen: set[str] = set()
+
+    def _take(container: Any, key: str, kind: str) -> None:
+        value = container.get(key) if isinstance(container, dict) else getattr(container, key, None)
+        if not value or str(value) in seen:
+            return
+        seen.add(str(value))
+        codes.append((container, key, kind))
+
     img_content = getattr(message, "image_content", None)
     if img_content and getattr(img_content, "download_code", None):
-        codes.append((img_content, "download_code"))
-    rich_text = getattr(message, "rich_text_content", None)
-    for item in (getattr(rich_text, "rich_text_list", []) or []) if rich_text else []:
+        _take(img_content, "download_code", "image")
+    for item in _rich_list(message) or ():
         if isinstance(item, dict):
-            codes.extend((item, key) for key in ("downloadCode", "pictureDownloadCode", "download_code") if item.get(key))
-    if (getattr(message, "message_type", "") or "") in ("file", "image"):
+            kind = DINGTALK_TYPE_MAPPING.get(item.get("type", ""), "file")
+            for key in ("downloadCode", "pictureDownloadCode", "download_code"):
+                _take(item, key, kind)
+    msg_type = getattr(message, "message_type", "") or ""
+    if msg_type in ("file", "image"):
         ext_content = _ext_content(message)
         if ext_content and ext_content.get("downloadCode"):
-            codes.append((ext_content, "downloadCode"))
+            _take(ext_content, "downloadCode", "image" if msg_type == "image" else "file")
     return codes

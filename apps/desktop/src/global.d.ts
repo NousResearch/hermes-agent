@@ -317,6 +317,11 @@ declare global {
       readFileDataUrl: (filePath: string) => Promise<string | HermesReadFileErrorResult>
       /** Remote non-image attach: higher dedicated cap than preview/Settings default. */
       readFileDataUrlForAttach?: (filePath: string) => Promise<string | HermesReadFileErrorResult>
+      /** Stat-only size preflight for attachment uploads (no bytes read). Absent on older shells. */
+      statFilesForAttach?: (filePaths: string[]) => Promise<{
+        limits: { maxFileBytes: number; maxTotalBytes: number }
+        files: Array<{ path: string; size?: number; error?: string }>
+      }>
       /** Settings → Chat: max size for local files loaded as data URLs (attach/preview). */
       dataUrlReadMax?: {
         get: () => Promise<{ defaultMaxMb: number; maxBytes: number; maxMb: number }>

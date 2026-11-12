@@ -14,10 +14,19 @@ import {
 } from '../../shared/src/data-url-read-max'
 
 const DEFAULT_FETCH_TIMEOUT_MS = 30_000
-// Remote file.attach sends one base64 JSON-RPC frame. Cap the dedicated attach
-// reader so the payload still fits uvicorn's raised ws_max_size (384 MiB)
-// after base64 + framing. Preview stays on the Settings-configurable path.
-const ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES = 256 * 1024 * 1024
+// Remote file.attach sends one base64 JSON-RPC frame. The whole file is read
+// into the main process, base64-encoded (+33%), structured-cloned into the
+// renderer and serialized again for the wire, so peak renderer memory is a
+// small multiple of the file size. At 256 MiB a single ~238 MB video was
+// enough to abort the renderer (V8 fatal → SIGTRAP, "exit code 5") and, with
+// the turn still queued, every relaunch re-drained it into the same crash.
+// Keep the per-file cap well below that, and bound the per-message total so
+// several individually-acceptable files cannot add up to the same failure.
+// Both checks are stat-only and run BEFORE any byte is read or encoded.
+const ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES = 64 * 1024 * 1024
+const ATTACHMENT_UPLOAD_MAX_TOTAL_BYTES = 128 * 1024 * 1024
+/** Upper bound on paths one statFilesForAttach call will look at. */
+const ATTACHMENT_STAT_MAX_PATHS = 256
 const TEXT_PREVIEW_SOURCE_MAX_BYTES = 64 * 1024 * 1024
 
 function dataUrlReadMaxBytesFromMb(maxMb) {
@@ -595,6 +604,60 @@ async function readFileDataUrlForIpc(
   return `data:${options.mimeType};base64,${data.toString('base64')}`
 }
 
+interface AttachmentSizeProbe {
+  path: string
+  size?: number
+  error?: string
+}
+
+interface AttachmentSizeReport {
+  limits: { maxFileBytes: number; maxTotalBytes: number }
+  files: AttachmentSizeProbe[]
+}
+
+/**
+ * Size every attachment a send is about to upload, WITHOUT reading any bytes,
+ * so the renderer can refuse an oversized file (or an oversized batch) before
+ * the first base64 read starts. Goes through the same path resolution and
+ * sensitive-path checks as the reader itself. A path that cannot be sized is
+ * reported per file (the reader will surface the real error later); it never
+ * rejects the whole probe. The limits travel with the answer so the main
+ * process stays the single source of truth for them.
+ */
+async function statFilesForAttachIpc(
+  filePaths: unknown,
+  options: { fs?: typeof fs; resolvePath?: (filePath: string) => string } = {}
+): Promise<AttachmentSizeReport> {
+  const list = Array.isArray(filePaths) ? filePaths.slice(0, ATTACHMENT_STAT_MAX_PATHS) : []
+  const resolvePath = options.resolvePath || ((filePath: string) => filePath)
+
+  const files = await Promise.all(
+    list.map(async (raw): Promise<AttachmentSizeProbe> => {
+      const filePath = typeof raw === 'string' ? raw : ''
+
+      if (!filePath) {
+        return { path: '', error: 'EINVAL' }
+      }
+
+      try {
+        const { stat } = await resolveReadableFileForIpc(resolvePath(filePath), {
+          fs: options.fs,
+          purpose: 'Attachment upload'
+        })
+
+        return { path: filePath, size: stat.size }
+      } catch (error) {
+        return { path: filePath, error: (error as NodeJS.ErrnoException)?.code || 'EUNKNOWN' }
+      }
+    })
+  )
+
+  return {
+    limits: { maxFileBytes: ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES, maxTotalBytes: ATTACHMENT_UPLOAD_MAX_TOTAL_BYTES },
+    files
+  }
+}
+
 /** True when a read failed because the file (or its parent) is not on disk.
  *  Preview reads routinely race a file's lifecycle — a restored preview tab or
  *  a transcript reference can point at something that was deleted, moved, or
@@ -628,7 +691,9 @@ function missingFileResult(requestedPath: unknown, error: unknown) {
 
 export {
   assertExistingPathForOpen,
+  ATTACHMENT_STAT_MAX_PATHS,
   ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
+  ATTACHMENT_UPLOAD_MAX_TOTAL_BYTES,
   clampDataUrlReadMaxMb,
   DATA_URL_READ_DEFAULT_MAX_MB,
   DATA_URL_READ_MAX_MAX_MB,
@@ -651,6 +716,7 @@ export {
   SAFE_STORAGE_ENCODING,
   SECRET_FILE_MODE,
   sensitiveFileBlockReason,
+  statFilesForAttachIpc,
   TEXT_PREVIEW_SOURCE_MAX_BYTES,
   tightenSecretFileMode,
   writeSecretFileAtomic

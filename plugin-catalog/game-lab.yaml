@@ -1,24 +1,21 @@
 name: game-lab
 title: Game Lab
 repo: https://github.com/flabanabba8/game-lab
-sha: 3173e1b09860be1c4aac3c952cf97b9447cdc55e
-version: 0.2.2
-description: Game Lab combines ModLab, Game Localization Studio, Sprites and experimental
-  Playtest Pilot. ModLab works on a private game copy and invokes separately installed
-  tools; localization drafts and exports RPG Maker text; Sprites inspects and previews
-  character sheets. Playtest Pilot uses approved X11 input, captures screen pixels
-  within the selected window, stores private evidence frames and returns reduced previews
-  and optional local OCR hints. The plugin makes no network calls of its own.
+sha: 36f028dbc0f462dafdc802340eb3703243e39774
+version: 0.3.1
+description: 'Game Lab combines ModLab, Game Localization Studio, Sprites and experimental Playtest Pilot. ModLab works on a private game copy and invokes separately installed tools; localization drafts and exports RPG Maker text; Sprites inspects and previews character sheets. Playtest Pilot uses approved X11 input, captures screen pixels within the selected window, stores private evidence frames and returns reduced previews and optional local OCR hints. On first use ModLab reads file names (never contents) in your Steam library folders and the chosen game folder, runs read-only hardware checks, and asks which modding route to use. It never fills a disk: a free-space reserve, a total cap, pruning of old revisions and a confirm-first cleanup tool. The Universal Modder and REA programs are the ones you set in the plugin settings or find on PATH (the model cannot name a program), and each toolkit call and each playtest check asks for your approval. Every program it starts gets a minimal environment, never your provider keys. The plugin makes no network calls of its own.'
 maintainer: flabanabba8
 tier: community
 category: tools
 requires_hermes: '>=0.22.0'
-docs_url: https://github.com/flabanabba8/game-lab/blob/3173e1b09860be1c4aac3c952cf97b9447cdc55e/README.md
-image: https://raw.githubusercontent.com/flabanabba8/game-lab/3173e1b09860be1c4aac3c952cf97b9447cdc55e/assets/thumbnail.jpg
+docs_url: https://github.com/flabanabba8/game-lab/blob/36f028dbc0f462dafdc802340eb3703243e39774/README.md
+image: https://raw.githubusercontent.com/flabanabba8/game-lab/36f028dbc0f462dafdc802340eb3703243e39774/assets/thumbnail.jpg
 platforms:
 - linux
 capabilities:
   provides_tools:
+  - modlab_setup
+  - modlab_cleanup
   - modlab_resources
   - modlab_toolkit
   - modlab_rea_native

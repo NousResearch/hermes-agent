@@ -302,10 +302,10 @@ def recover_abandoned_delegations() -> int:
     if alive is None:
         return 0
     now, recovered = time.time(), 0
-    from tools.delegate_tool_resumable import plan_recovery, recover_abandoned
+    from tools.delegate_tool_resumable import continuable_of, plan_recovery, recover_abandoned
     plan = plan_recovery(_db_path(), alive)  # its git probes run before the write lock below
     with _DB_LOCK, _transaction() as conn:
-        resumable = recover_abandoned(conn, plan)
+        recover_abandoned(conn, plan)
         rows = conn.execute("""SELECT delegation_id, origin_session, origin_ui_session_id,
                       parent_session_id, dispatched_at, owner_pid,
                       owner_started_at, task_json, origin_session_id, result_json, state
@@ -329,7 +329,7 @@ def recover_abandoned_delegations() -> int:
                 diagnostics["transcript_tails"] = tails
             if hint := git_state_hint(task.get("owner_cwd")):
                 diagnostics["git_state_hint"] = hint
-            if continuable := resumable.get(delegation_id):
+            if continuable := continuable_of(conn, delegation_id):
                 diagnostics["resumable_subagent_ids"] = continuable
                 error += (" Its subagents can be continued on their own conversation and worktree: "
                           "delegate_task(action='continue', subagent_id=..., message=...); check git state and the "

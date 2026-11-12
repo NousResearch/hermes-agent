@@ -783,6 +783,7 @@ from hermes_cli.old_updater_main import (
     _windows_shim_in_process_chain,
     _write_web_ui_build_stamp,
 )
+# Driven by hermes_cli.main_startup, which reads them back through this facade.
 from hermes_cli.main_install_repair import _cleanup_quarantined_exes, _recover_update_debts_on_startup
 from hermes_cli.main_install_repair import (  # frozen updater surface: update_cmd*.py resolve these via _m()
     _UPDATE_REEXEC_ENV,
@@ -811,7 +812,7 @@ from hermes_cli.main_desktop import (  # frozen updater surface: update_cmd*.py 
     _install_rebuilt_desktop_app,
     _installed_desktop_apps,
 )
-from hermes_cli.main_web_build import (
+from hermes_cli.main_web_build import (  # the sweep itself runs from hermes_cli.main_startup
     _sweep_stale_bytecode_if_checkout_changed,
 )
 from hermes_cli.main_web_build import (  # frozen updater surface: update_cmd*.py resolve these via _m()
@@ -3357,36 +3358,13 @@ def main():
 
     install_truststore()
 
-    # Sweep stale ``hermes.exe.old.*`` quarantine files from previous Windows
-    # updates. No-op elsewhere.
-    try:
-        _cleanup_quarantined_exes()
-    except Exception:
-        pass
+    # Sweep stale ``hermes.exe.old.*`` quarantine files, the once-per-checkout
+    # bytecode cache, owed fleet restarts / gateways a killed update paused, the
+    # boot registry and the PM verdict. Skipped for argv shapes that cannot be
+    # affected by any of it (help, version, read-only reads): see main_startup.
+    from hermes_cli.main_startup import run_startup_prelude
 
-    # Checkout changed since last launch → sweep stale __pycache__ once so no
-    # process resolves fresh source against old bytecode. Never raises.
-    _sweep_stale_bytecode_if_checkout_changed()
-
-    _recover_update_debts_on_startup()  # owed fleet restarts, gateways a killed update paused
-
-    if _first_positional_argv() != "update":
-        from hermes_cli.boot_bootstrap import maybe_run_boot_bootstrap
-        from pm.paths import install_root
-        maybe_run_boot_bootstrap(install_root())
-
-    # Every dispatch, including fast chat/serve, gets one passive PM verdict.
-    try:
-        from hermes_cli.venv_sync import check_runtime
-        from pm.paths import install_root
-
-        problem = check_runtime(install_root())
-        if problem:
-            print(f"⚠ {problem}", file=sys.stderr)
-    except Exception:
-        import logging
-
-        logging.getLogger(__name__).debug("pm startup check failed", exc_info=True)
+    run_startup_prelude()
 
     if _try_termux_fast_tui_launch():
         return

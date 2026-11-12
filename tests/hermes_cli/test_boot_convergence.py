@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 
-@pytest.mark.parametrize("surface", ["serve", "version", "gateway"])
+@pytest.mark.parametrize("surface", ["serve", "completion", "gateway"])
 def test_each_start_checks_pm_once_before_dispatch(surface, tmp_path, monkeypatch, capsys, caplog):
     import pm
     from hermes_cli import boot_bootstrap
@@ -60,8 +60,16 @@ def test_each_start_checks_pm_once_before_dispatch(surface, tmp_path, monkeypatc
         from hermes_cli import main
 
         monkeypatch.setattr(main, "cmd_dashboard", lambda args: dispatched.append(len(checked)))
-        monkeypatch.setattr(main, "cmd_version", lambda args: dispatched.append(len(checked)))
-        monkeypatch.setattr(sys, "argv", ["hermes", "serve" if surface == "serve" else "--version"])
+        monkeypatch.setattr(
+            main, "cmd_completion",
+            lambda args, parser=None: dispatched.append(len(checked)),
+        )
+        # `completion` is a real dispatch (prints and returns) and, unlike
+        # `serve`, is not on main_startup's read-only allowlist — so it still
+        # runs the startup prelude this test is about. `--version` no longer
+        # reaches main() at all (pre-import fast path) and `--help` skips the
+        # prelude by design.
+        monkeypatch.setattr(sys, "argv", ["hermes", "serve" if surface == "serve" else "completion"])
         run = main.main
     for _ in range(2):
         checked.clear()

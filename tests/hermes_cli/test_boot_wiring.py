@@ -53,7 +53,9 @@ def _run_cli_main(argv):
 
 
 def test_cli_main_runs_boot_bootstrap_once(hermes_home, boot_probe, capsys):
-    _run_cli_main(["hermes", "--version"])
+    # `completion` is a real dispatch that prints and returns (no state, no session);
+    # it is NOT on main_startup's read-only allowlist, so the prelude runs for it.
+    _run_cli_main(["hermes", "completion"])
 
     assert len(boot_probe) == 1, "every dispatch through main() reaches the registry"
     # the root probed is THIS checkout (identity: git HEAD)
@@ -62,8 +64,16 @@ def test_cli_main_runs_boot_bootstrap_once(hermes_home, boot_probe, capsys):
     assert boot_probe[0] == str(install_root())
 
 
-def test_cli_main_skips_boot_bootstrap_during_update(hermes_home, boot_probe):
-    _run_cli_main(["hermes", "update", "--help"])
+def test_startup_prelude_skips_boot_bootstrap_for_update(hermes_home, boot_probe, monkeypatch):
+    from hermes_cli import main as cli_main
+    from hermes_cli.main_startup import run_startup_prelude
+
+    monkeypatch.setattr(cli_main, "_cleanup_quarantined_exes", lambda: None)
+    monkeypatch.setattr(cli_main, "_sweep_stale_bytecode_if_checkout_changed", lambda: None)
+    monkeypatch.setattr(cli_main, "_recover_update_debts_on_startup", lambda: None)
+    monkeypatch.setattr("hermes_cli.venv_sync.check_runtime", lambda root: None)
+
+    run_startup_prelude(["update"])
 
     assert boot_probe == [], "the update flow owns its own maintenance pass"
 

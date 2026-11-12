@@ -100,19 +100,22 @@ def test_startup_uses_one_verdict(checked_store, monkeypatch, capsys, caplog, su
     else:
         from hermes_cli import main
 
-        # Stop at --help: exercise the actual startup block, not an agent session.
+        # A real dispatch that prints and returns: exercise the actual startup block,
+        # not an agent session. (`--help` is no longer usable here — it skips the
+        # prelude on purpose, see hermes_cli/main_startup.py.)
         monkeypatch.setattr("hermes_cli.boot_bootstrap.maybe_run_boot_bootstrap", lambda _root: None)
         for name in ("_set_process_title", "_advertise_agent_env",
                      "_sweep_stale_bytecode_if_checkout_changed",
                      "_try_termux_fast_tui_launch", "_try_termux_fast_cli_launch",
                      "_try_fast_serve_launch", "_try_fast_chat_launch"):
             monkeypatch.setattr(main, name, lambda: None)
-        monkeypatch.setattr(sys, "argv", ["hermes", "--help"])
+        monkeypatch.setattr(sys, "argv", ["hermes", "completion"])
 
         def start():
-            with pytest.raises(SystemExit) as exit_info:
+            try:
                 main.main()
-            assert exit_info.value.code == 0
+            except SystemExit as exit_info:  # a dispatch may exit itself; 0 is success
+                assert exit_info.code == 0
 
     if damaged:
         binaries[1].unlink()

@@ -1,7 +1,7 @@
 name: tenure
 title: tenure
 repo: https://github.com/otsoa-dubief/tenure
-sha: f4a62855e592b9e170ab0c54d9278aabef05f370
+sha: 038e8c2ad6f5ec1a3b3af336852d49be9e71d0b0
 subdir: tenure
 version: "1.0.0"
 description: >-
@@ -20,26 +20,25 @@ description: >-
   A friction bench in the repo replays an ordinary 30-call coding session: 3 questions Hermes would not ask, against 23 when every kind of action asks first.
   Disclosure — hooks only (pre_api_request, pre_tool_call, post_approval_response, post_tool_call,
   post_llm_call, subagent_start, subagent_stop), no tools. No network, no LLM call, runs no command. Reads the
-  profile's config.yaml and its own plugin settings; writes them back only through
-  hermes_cli.plugins_settings.save_plugin_settings when the owner saves Settings. Writes under
+  profile's config.yaml and its own plugin settings; writes them back only through ctx.set_config when the
+  owner saves Settings. Writes under
   plugin-data/tenure: a SQLite record and a hash-chained ledger (action types and outcomes, no paths, no
   commands, no free text), a signing key and an undo HMAC key, and undo snapshots of the project files an action
   is about to change (file bytes and paths, owner-only, deleted after 24 hours, 5 MB per action). Imports
-  plugins.plugin_storage.plugin_data_dir, hermes_cli.config, agent.i18n.get_language,
-  hermes_cli.plugin_events.broadcast_plugin_event and, for the switch preview's model list,
-  hermes_cli.inventory (disk cache only), each guarded.
+  plugins.plugin_storage.plugin_data_dir, hermes_cli.config.load_config, hermes_constants and
+  hermes_cli.plugin_events.broadcast_plugin_event, each guarded.
 maintainer: otsoa-dubief
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/otsoa-dubief/tenure#readme
-image: https://raw.githubusercontent.com/otsoa-dubief/tenure/f4a62855e592b9e170ab0c54d9278aabef05f370/docs/images/social-preview.png
+image: https://raw.githubusercontent.com/otsoa-dubief/tenure/038e8c2ad6f5ec1a3b3af336852d49be9e71d0b0/docs/images/social-preview.png
 screenshots:
-  - https://raw.githubusercontent.com/otsoa-dubief/tenure/f4a62855e592b9e170ab0c54d9278aabef05f370/docs/images/hero.gif
-  - https://raw.githubusercontent.com/otsoa-dubief/tenure/f4a62855e592b9e170ab0c54d9278aabef05f370/docs/images/desktop-trusted.png
-  - https://raw.githubusercontent.com/otsoa-dubief/tenure/f4a62855e592b9e170ab0c54d9278aabef05f370/docs/images/desktop-probation.png
-  - https://raw.githubusercontent.com/otsoa-dubief/tenure/f4a62855e592b9e170ab0c54d9278aabef05f370/docs/images/desktop-asks-first.png
-  - https://raw.githubusercontent.com/otsoa-dubief/tenure/f4a62855e592b9e170ab0c54d9278aabef05f370/docs/images/passport.gif
+  - https://raw.githubusercontent.com/otsoa-dubief/tenure/038e8c2ad6f5ec1a3b3af336852d49be9e71d0b0/docs/images/hero.gif
+  - https://raw.githubusercontent.com/otsoa-dubief/tenure/038e8c2ad6f5ec1a3b3af336852d49be9e71d0b0/docs/images/desktop-trusted.png
+  - https://raw.githubusercontent.com/otsoa-dubief/tenure/038e8c2ad6f5ec1a3b3af336852d49be9e71d0b0/docs/images/desktop-probation.png
+  - https://raw.githubusercontent.com/otsoa-dubief/tenure/038e8c2ad6f5ec1a3b3af336852d49be9e71d0b0/docs/images/desktop-asks-first.png
+  - https://raw.githubusercontent.com/otsoa-dubief/tenure/038e8c2ad6f5ec1a3b3af336852d49be9e71d0b0/docs/images/passport.gif
 platforms: []
 known_issues: []
 capabilities:

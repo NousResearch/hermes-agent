@@ -50,6 +50,19 @@ export const ruPreviewWeb: TranslationOverride<Translations['preview']['web']> =
   unreachableDescription: 'Страница предпросмотра недоступна.',
   openTarget: url => `Открыть ${url}`,
   fallbackTitle: 'Предпросмотр',
+  annotate: 'Размечать',
+  annotateOn: 'Остановить разметку',
+  annotateNeedPage: 'Сначала откройте страницу во встроенном браузере.',
+  annotateFailed: 'Не удалось включить режим разметки',
+  commenting: 'Комментирование',
+  addComments: count =>
+    count === 1
+      ? 'Добавить 1 комментарий'
+      : `Добавить ${count} ${RU_NOUN(count, 'комментарий', 'комментария', 'комментариев')}`,
+  commentPlaceholder: 'Добавьте комментарий...',
+  commentTitle: n => `Комментарий ${n}`,
+  saveComment: 'Сохранить',
+  cancelComment: 'Отменить комментарий',
   vaultFill: 'Подставить сохранённый вход',
   vaultTitle: site => `Сохранённые входы для ${site}`,
   vaultLoading: 'Загрузка сохранённых входов…',

@@ -22,6 +22,8 @@ export const ruPluginSettings = {
     failed: 'ошибка',
     kinds: { bundled: 'встроенный', disk: 'на диске', runtime: 'runtime' },
     installModal: {
+      installFromGit: 'Установить из Git',
+      reviewRepository: 'Посмотреть репозиторий',
       title: 'Установка плагина',
       description: 'Перед установкой посмотрите, что содержит этот репозиторий.',
       repoLabel: 'Репозиторий',
@@ -32,6 +34,7 @@ export const ruPluginSettings = {
       agentTargetLocal: (profile, dir) => `Устанавливается в локальный бэкенд ${profile} (${dir})`,
       agentTargetRemote: profile => `Устанавливается в подключённый бэкенд ${profile}`,
       desktopTarget: 'Устанавливается в локальную папку desktop-plugins этого приложения',
+      desktopTargetFromPackage: 'Загружается в это приложение из пакета выше — одинаково для всех профилей',
       desktopOnlyNote: 'Пакеты только для приложения не устанавливают плагин агента.',
       insecureWarning:
         'Этот URL использует небезопасную или локальную схему. Для боевой установки предпочитайте https:// или git@.',
@@ -64,6 +67,8 @@ export const ruPluginSettings = {
       skillsReady: names => (names.length === 1 ? `навык ${names[0]} готов` : `готово навыков: ${names.length}`),
       nextChat: 'остальные инструменты появятся в следующем чате',
       serverNotConnected: (server, reason) => `MCP-сервер ${server} не подключён${reason ? `: ${reason}` : '.'}`,
+      missingEnvAction: 'Настроить',
+      alreadyInstalled: name => `${name} уже установлен.`,
       verified: 'Проверен',
       unverified: 'Не проверен',
       reviewedByNous: 'Проверен Nous.',

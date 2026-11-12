@@ -2,7 +2,7 @@
 
 name: flower-shop
 repo: https://github.com/k-reeeee/hermes-flower-shop
-sha: "4649a56fa3168c93902f0b7dc6bd426de1358a68"
+sha: "2ca5f77a566c62b30146efccec5ebb82c44a0c52"
 title: Flower Shop
 description: >-
   An AI business operating workspace inside Hermes Desktop for a small flower
@@ -33,12 +33,12 @@ docs_url: https://github.com/k-reeeee/hermes-flower-shop#readme
 version: "0.1.0"
 screenshots:
 
-  - https://raw.githubusercontent.com/k-reeeee/hermes-flower-shop/4649a56fa3168c93902f0b7dc6bd426de1358a68/docs/screenshots/overview.png
-  - https://raw.githubusercontent.com/k-reeeee/hermes-flower-shop/4649a56fa3168c93902f0b7dc6bd426de1358a68/docs/screenshots/orders.png
-  - https://raw.githubusercontent.com/k-reeeee/hermes-flower-shop/4649a56fa3168c93902f0b7dc6bd426de1358a68/docs/screenshots/inventory.png
-  - https://raw.githubusercontent.com/k-reeeee/hermes-flower-shop/4649a56fa3168c93902f0b7dc6bd426de1358a68/docs/screenshots/production.png
-  - https://raw.githubusercontent.com/k-reeeee/hermes-flower-shop/4649a56fa3168c93902f0b7dc6bd426de1358a68/docs/screenshots/shop-floor-3d.png
-  - https://raw.githubusercontent.com/k-reeeee/hermes-flower-shop/4649a56fa3168c93902f0b7dc6bd426de1358a68/docs/screenshots/approval-card.png
+  - https://raw.githubusercontent.com/k-reeeee/hermes-flower-shop/2ca5f77a566c62b30146efccec5ebb82c44a0c52/docs/screenshots/overview.png
+  - https://raw.githubusercontent.com/k-reeeee/hermes-flower-shop/2ca5f77a566c62b30146efccec5ebb82c44a0c52/docs/screenshots/orders.png
+  - https://raw.githubusercontent.com/k-reeeee/hermes-flower-shop/2ca5f77a566c62b30146efccec5ebb82c44a0c52/docs/screenshots/inventory.png
+  - https://raw.githubusercontent.com/k-reeeee/hermes-flower-shop/2ca5f77a566c62b30146efccec5ebb82c44a0c52/docs/screenshots/production.png
+  - https://raw.githubusercontent.com/k-reeeee/hermes-flower-shop/2ca5f77a566c62b30146efccec5ebb82c44a0c52/docs/screenshots/shop-floor-3d.png
+  - https://raw.githubusercontent.com/k-reeeee/hermes-flower-shop/2ca5f77a566c62b30146efccec5ebb82c44a0c52/docs/screenshots/approval-card.png
 readme: true
 platforms: []
 onboarding: false

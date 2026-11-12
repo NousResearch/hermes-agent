@@ -338,6 +338,7 @@ def _load_provider_from_entry_point(entry_point, *, register_skills: bool = True
             return loaded()
         except Exception:
             pass
+    collector = None
     if hasattr(loaded, "register"):
         collector = _ProviderCollector(entry_point.name, register_skills=register_skills)
         collector.collect(loaded.register, source=getattr(loaded, "__file__", None))
@@ -355,6 +356,8 @@ def _load_provider_from_entry_point(entry_point, *, register_skills: bool = True
         return collector.provider
 
     provider = _instantiate_subclass(loaded)
+    if collector is not None:
+        collector.provider = provider  # tool wrappers must gate the subclass fallback too
     if provider is None:
         logger.debug("Memory provider entry point '%s' loaded no provider", entry_point.name)
     return provider
@@ -372,6 +375,7 @@ def _load_provider_from_dir(provider_dir: Path, *, register_skills: bool = True)
     if mod is None:
         return None
 
+    collector = None
     if hasattr(mod, "register"):
         collector = _ProviderCollector(name, register_skills=register_skills)
         try:
@@ -391,7 +395,10 @@ def _load_provider_from_dir(provider_dir: Path, *, register_skills: bool = True)
         if collector.provider:
             return collector.provider
 
-    return _instantiate_subclass(mod)
+    provider = _instantiate_subclass(mod)
+    if collector is not None:
+        collector.provider = provider  # ctx tools registered before subclass fallback still need a claim
+    return provider
 
 
 class _ClaimGatedHandler:

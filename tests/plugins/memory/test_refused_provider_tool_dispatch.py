@@ -30,6 +30,12 @@ _provider = None
 
 class SharedProvider(MemoryProvider):
     stores = {}
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
 
     @property
     def name(self):
@@ -134,3 +140,27 @@ def test_owning_profile_still_reaches_its_provider_through_registry_tools(homes)
     _build_manager(alpha_home)  # the refused profile's load re-registers the tools in its own scope
 
     assert _registry_call(beta_home) == {"rows": ["beta-row"]}
+
+
+def test_subclass_fallback_ctx_tool_still_refuses_shared_instance(homes):
+    """A register(ctx) that only adds tools may let the loader find the provider subclass."""
+    alpha_home, beta_home = homes
+    source = alpha_home.parents[2] / "site" / "sharedmem_singleton.py"
+    fallback_source = _SHARED_MODULE.replace("    ctx.register_memory_provider(_provider)\n", "")
+    assert fallback_source != _SHARED_MODULE
+    source.write_text(fallback_source, encoding="utf-8")
+    for home in (alpha_home, beta_home):
+        (home / "plugins" / "sharedmem" / "__init__.py").write_text(
+            "# MemoryProvider\nfrom sharedmem_singleton import SharedProvider, register\n",
+            encoding="utf-8",
+        )
+
+    owner, _ = _build_manager(beta_home)
+    type(owner).stores[str(beta_home)] = ["beta-private"]
+    shared, refused_manager = _build_manager(alpha_home)
+    assert shared is owner and refused_manager.providers == []
+
+    denied = _registry_call(alpha_home)
+    assert "beta-private" not in json.dumps(denied), denied
+    assert "refused" in denied.get("error", ""), denied
+    assert _registry_call(beta_home) == {"rows": ["beta-private"]}

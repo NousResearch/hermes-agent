@@ -747,6 +747,7 @@ spinner:
 
 branding:
   agent_name: "My Agent"
+  icon: "⚔"
   welcome: "Welcome message"
   response_label: " ⚔ Agent "
   prompt_symbol: "⚔"

@@ -89,7 +89,7 @@ async def test_attachments_are_fetched_only_for_authorized_senders(mattermost):
 
     denied = await dm("p1", STRANGER, {"stranger_doc": 1024})
     assert hits == []
-    assert denied.media_urls is None
+    assert denied.media_urls == []
     assert denied.source.user_id == STRANGER  # still dispatched so the runner can deny/pair
 
     allowed = await dm("p2", OWNER, {"owner_doc": 1024})
@@ -108,5 +108,5 @@ async def test_attachment_body_is_read_under_inbound_media_cap(mattermost):
 
     event = await dm("p3", OWNER, {"huge_doc": 4 * cap})
 
-    assert event.media_urls is None
+    assert event.media_urls == []
     assert all(p.stat().st_size <= cap for p in get_document_cache_dir().iterdir())

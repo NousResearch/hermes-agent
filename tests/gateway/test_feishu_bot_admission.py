@@ -358,9 +358,10 @@ def test_hydrate_bot_identity_populates_self_ids_from_bot_v3_info(monkeypatch):
 def test_resolve_sender_profile_uses_open_id_for_bot_name_lookup():
     import asyncio
 
+    from gateway.config import PlatformConfig
     from plugins.platforms.feishu.adapter import FeishuAdapter
 
-    adapter = object.__new__(FeishuAdapter)
+    adapter = FeishuAdapter(PlatformConfig(enabled=True))
     adapter._client = object()
     adapter._sender_name_cache = {}
     seen_ids = []

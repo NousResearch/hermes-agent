@@ -101,7 +101,7 @@ class FeishuChoiceCardsMixin:
             return self._card_response()
         checked = self._validate_card_action(event=event, state=state, label="clarify", ident=clarify_id)
         if checked is None:
-            return self._card_response()
+            return self._card_toast(t("platform.shared.not_authorized"))
         open_id, _chat_id, user_name, user_id, _union_id = checked
         from gateway.approval_actor import clarify_refusal, refusal_text
         # SessionSource.user_id is the tenant user_id when the app can see it, else the open_id.
@@ -197,7 +197,7 @@ class FeishuChoiceCardsMixin:
             return self._card_response()
         checked = self._validate_card_action(event=event, state=state, label="choice picker", ident=picker_id)
         if checked is None:
-            return self._card_response()
+            return self._card_toast(t("platform.shared.not_authorized"))
         from gateway.approval_actor import picker_refusal, refusal_text
         if requester := picker_refusal(state["on_choice_selected"], checked[3] or checked[0], extra=self.config.extra):
             return self._card_toast(refusal_text(requester))  # another member's tap: only they see it, card stays open

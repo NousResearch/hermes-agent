@@ -153,7 +153,8 @@ async def test_webhook_tap_answers_the_clarify_and_returns_the_settled_card(adap
     adapter._loop = asyncio.get_running_loop()
     values = await _ask(adapter)
 
-    assert await _webhook_tap(adapter, values[1], open_id="ou_stranger") == {}
+    refused = await _webhook_tap(adapter, values[1], open_id="ou_stranger")
+    assert refused["toast"]["type"] == "warning" and "card" not in refused
     assert cg.get_pending("c1") is not None
 
     reply = await _webhook_tap(adapter, values[1])

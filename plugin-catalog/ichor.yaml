@@ -1,0 +1,21 @@
+name: ichor
+title: Ichor
+repo: https://github.com/mystiquemide/ichor
+sha: e204b791a23a2495ef556a26b5627b5511290e3c
+description: "Catches the moments you correct Hermes (a correction, /retry or /undo), pairs the rejected answer with the accepted one, scrubs secrets and personal data locally, and asks you once to keep, share or discard it with a one-letter reply. Kept pairs export as TRL preference JSONL and an Atropos environment, ready to fine-tune or run RL on your own model. Disclosure — captures your corrections (rejected and accepted answers, your feedback) into a local SQLite store in its plugin data directory after local secret/PII scrubbing, posts and edits its own card messages in the chat, and claims the bare replies k, s, d, keep, share or discard in a direct chat within 120 seconds of an open card; asks the session model for a one-word mistake label per captured pair via the optional llm.side_question capability (spends main-model tokens); makes network calls only on /ichor share, uploading scrubbed pairs to a Hugging Face dataset under the HF_TOKEN owner's account (private unless /ichor set public); the store is shared per profile, so on a multi-user gateway every allowlisted user can review, share or publish pairs captured from other users' chats."
+maintainer: mystiquemide
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+version: "0.1.2"
+screenshots:
+  - https://github.com/mystiquemide/ichor/releases/download/v0.1.2/ichor-card.png
+  - https://github.com/mystiquemide/ichor/releases/download/v0.1.2/ichor-top-mistakes.png
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - post_llm_call
+    - on_session_finalize
+    - post_gateway_admission
+  provides_middleware: []
+  requires_env: []

@@ -23,10 +23,6 @@
     {
       devShells.default = pkgs.mkShell {
         packages = with pkgs; [
-          (pkgs.runCommand "hermes" { } ''
-            mkdir -p $out/bin
-            install -Dm755 ${../hermes} $out/bin/hermes
-          '')
           self'.packages.sandbox
         ]
         # Wayland-only: cage and ghostty pull alsa-lib, which does not
@@ -62,7 +58,7 @@
           export NIX_SSL_CERT_FILE="$SSL_CERT_FILE"
 
           echo "Hermes Agent dev shell in $HERMES_PYTHON_SRC_ROOT"
-          echo "Ready. Run 'hermes' or 'sandbox hermes' to start."
+          echo "Ready. 'hermes-checkout' runs this checkout; 'hermes' stays your installed Hermes."
         '';
       };
     };

@@ -1,0 +1,20 @@
+name: everything-nothing
+repo: https://github.com/dmkjr/hermes-everything-nothing
+sha: 74b8f45c7a4c8d6c67beb42a0b74b5e82e251577
+title: Everything Nothing
+description: Save reusable templates, create frontend design briefs, and choose how concise Hermes replies are.
+maintainer: dmkjr
+tier: community
+category: desktop
+version: "1.0.0"
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/dmkjr/hermes-everything-nothing#readme
+platforms: [macos, linux, windows]
+screenshots:
+  - https://raw.githubusercontent.com/dmkjr/hermes-everything-nothing/74b8f45c7a4c8d6c67beb42a0b74b5e82e251577/docs/template-studio.png
+  - https://raw.githubusercontent.com/dmkjr/hermes-everything-nothing/74b8f45c7a4c8d6c67beb42a0b74b5e82e251577/docs/design-brief.png
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_llm_call]
+  provides_middleware: []
+  requires_env: []

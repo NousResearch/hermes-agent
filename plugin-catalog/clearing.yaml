@@ -1,0 +1,34 @@
+name: clearing
+title: The Clearing
+repo: https://github.com/Dgardenhire/hermes-clearing
+sha: f6310b4d29924be7087cdd650bccc31eafb7066a
+description: "The Clearing is a writing editor inside Hermes with 159 editing methods you can run by name: 11 editor passes, 9 composition checks drawn from Strunk's rules, 33 editorial methods, 56 craft techniques and 44 figures of speech it can find in your draft or suggest where one would help. Press Read my piece and it marks your own words with what to change, most important first. Nothing changes until you press Use this. Three reviewers, a newcomer, a skeptic and a line editor, can each read the piece and then argue it out. When a suggestion adds a fact you never wrote, it says so before you keep it, and the page shows how much of the piece is still your own words. A built-in quick check and dictionary work without a model. An independent community plugin, not made or endorsed by Nous Research. Disclosure: no network calls of its own. Editor passes go to the model you set in Hermes, only when you start one, with secrets removed by Hermes first; Bring in a link hands a public address to Hermes's web_extract after refusing non-public hosts; dictation goes to Hermes speech-to-text and, for a cloud service, waits until you press Send. Reads only files you pick, plus Hermes's speech-to-text setting and the Hugging Face model cache, both read-only. No shell commands, background processes, stored credentials or telemetry; one observe-only post_auxiliary_call hook reads the finish reason, model name and token counts of its own calls. When it falls back to a local faster-whisper model it sets KMP_DUPLICATE_LIB_OK=TRUE in the Hermes process. Your writing, its versions and a quote-stripped debug.log stay in <HERMES_HOME>/plugin-data/clearing/; Delete forever in the Trash erases a piece."
+maintainer: Dgardenhire
+tier: community
+category: desktop
+requires_hermes: ">=0.21.6"
+docs_url: https://linchpin.studio/hermes/clearing/manual/
+version: "0.1.0"
+image: https://raw.githubusercontent.com/Dgardenhire/hermes-clearing/f6310b4d29924be7087cdd650bccc31eafb7066a/docs/catalog/card.jpg
+screenshots:
+  - "https://raw.githubusercontent.com/Dgardenhire/hermes-clearing/f6310b4d29924be7087cdd650bccc31eafb7066a/docs/shots/live/show-me.jpg"
+  - "https://raw.githubusercontent.com/Dgardenhire/hermes-clearing/f6310b4d29924be7087cdd650bccc31eafb7066a/docs/shots/live/read-my-piece.jpg"
+  - "https://raw.githubusercontent.com/Dgardenhire/hermes-clearing/f6310b4d29924be7087cdd650bccc31eafb7066a/docs/shots/live/all-methods.jpg"
+  - "https://raw.githubusercontent.com/Dgardenhire/hermes-clearing/f6310b4d29924be7087cdd650bccc31eafb7066a/docs/shots/live/desk.jpg"
+readme: true
+platforms: []
+known_issues:
+  - "Tested on macOS. Windows and Linux are untested."
+  - "Every editor pass needs a model set in Hermes. Without one, a pass says so and offers Open Settings; Quick check, Other words and Bring in (except a link and dictation) still work."
+  - "Bring in a link needs a web tool set up in Hermes, and Talk it through needs Hermes speech-to-text (or a faster-whisper speech model already downloaded). Without speech-to-text the Talk it through buttons are left out."
+  - "Dictation imports tools.voice_mode.transcribe_recording, which is not in Hermes's public plugin API. It is guarded and falls back to faster-whisper, so a Hermes release that moves it can disable Hermes-backed dictation."
+  - "Run live on a Claude model (Haiku) through Hermes. OpenAI and local-model routes are untested; a model that cannot return the answer format shows a plain message and leaves the page unchanged."
+  - "On Hermes 0.21.6 to 0.22.5 there is no desktop file store: Save as .md and .txt offer Copy instead, and the scene photographs are fetched on each open. Not yet run on a real 0.21.6."
+  - "Colors come from your Hermes theme. Text contrast was measured against stand-ins for Hermes's default light and dark themes and four accents over every scene; an unusual custom theme was not checked."
+  - "Removing the plugin leaves your writing in <HERMES_HOME>/plugin-data/clearing/ until you delete that folder."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - post_auxiliary_call
+  provides_middleware: []
+  requires_env: []

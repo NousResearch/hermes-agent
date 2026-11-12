@@ -1,0 +1,29 @@
+name: ghostwriter
+title: Ghostwriter
+repo: https://github.com/nevpit/ghostwriter
+sha: "90a9f5364e681ad2fd4ff4dcf953f37a768420d2"
+version: "0.1.0"
+description: "Write, revise, and export screenplays in a Hermes Desktop workspace with a project-aware assistant."
+maintainer: nevpit
+tier: community
+category: desktop
+requires_hermes: ">=0.22.7"
+capabilities:
+  provides_tools:
+    - ghost_status
+    - ghost_list_projects
+    - ghost_create_project
+    - ghost_get_project
+    - ghost_read_script
+    - ghost_read_scene
+    - ghost_propose
+    - ghost_check_proposal
+    - ghost_accept_proposal
+    - ghost_reject_proposal
+    - ghost_set_title_page
+    - ghost_update_rules
+    - ghost_find_replace
+    - ghost_history
+    - ghost_restore
+    - ghost_undo
+    - ghost_export

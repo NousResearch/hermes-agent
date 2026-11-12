@@ -1,0 +1,27 @@
+name: passkey-gate
+repo: https://github.com/codepilots/hermes-plugin-passkey-gate
+sha: 1042d6c379efc1c6aff41d1a43c48d512b73bc4c
+subdir: plugin
+description: "Approve your agents' risky actions with your phone's passkey, even when you're not at the agent's keyboard. An agent asks for approval of an exact action (and optionally the exact command); you get a link in any chat, read it on your phone and sign with Face ID, a fingerprint or your screen lock; the agent then verifies your signature locally against your pinned key before acting. A relayed 'the human said yes' proves nothing; only your signature counts. Optional enforcement blocks matching tool calls until you approve them, and each approval runs once. Includes a guided `setup` wizard, a background service, a hash-chained audit log, and approvals between agents owned by different people. It is an honest approval record, and becomes a hard boundary only when agents can't modify the gate (see the README's Security model). Lanes choose which conversations need a passkey: you at the keyboard, your own chat accounts, other people, bots or other agents. Disclosure — runs a small web server on 127.0.0.1 that your phone reaches over HTTPS (by default published to your own tailnet with `tailscale serve`); can install a background service (systemd user unit or LaunchAgent) that runs as you; runs `tailscale`, `systemctl --user`/`launchctl` and a short Python process to time new patterns, never with elevated privileges; contacts only its own address and any peer gates you allowlist, follows no redirects, no telemetry; stores passkey public keys, requests, the pinned key, an audit log and a remote-minting token in its plugin data folder (no private keys); its hooks note each turn's platform, sender id and bot flag in memory only; with enforcement on, any failure blocks the call; only your pinned passkey can approve, and anyone with an approval link can read and deny that request; patterns are a best-effort list, not a sandbox."
+maintainer: codepilots
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/codepilots/hermes-plugin-passkey-gate
+version: "0.8.1"
+platforms: [linux, macos]
+screenshots:
+  - https://raw.githubusercontent.com/codepilots/hermes-plugin-passkey-gate/b0c183545de1873c2aa7c3417413fb9caac5c212/docs/images/phone-register.png
+  - https://raw.githubusercontent.com/codepilots/hermes-plugin-passkey-gate/b0c183545de1873c2aa7c3417413fb9caac5c212/docs/images/phone-code.png
+  - https://raw.githubusercontent.com/codepilots/hermes-plugin-passkey-gate/f50b315530beea1f0dc2739049b675ad69f83d26/docs/images/phone-approve.png
+capabilities:
+  provides_tools:
+    - gate_challenge
+    - gate_verify
+    - gate_status
+  provides_hooks:
+    - pre_tool_call
+    - pre_llm_call
+    - post_gateway_admission
+  provides_middleware: []
+  requires_env: []

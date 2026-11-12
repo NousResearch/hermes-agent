@@ -279,6 +279,7 @@ class GatewayAgentCacheMixin:
                 source.platform, str(source.chat_id) if source.chat_id else "",
                 thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
                 parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
+                source=source,
             )
         else:
             model = _resolve_gateway_model()
@@ -403,8 +404,8 @@ class GatewayAgentCacheMixin:
     def _clear_conversation_scope(self, session_key: str, *, reason: str) -> None:
         """THE single conversation-boundary funnel (/new, /resume, suspension replacement,
         compression-exhausted reset). New conversation-scoped dicts go in _CONVERSATION_SCOPED_STATE
-        so every boundary picks them up. Turn-scoped state (_running_agents/_ts, slot leases, turn-
-        lease tokens) is owned by _release_running_agent_state and NOT cleared. Idle agent-cache
+        so every boundary picks them up. Turn-scoped state (_running_agents/turn.started_ts, slot leases,
+        turn-lease tokens) is owned by _release_running_agent_state and NOT cleared. Idle agent-cache
         eviction is NOT a boundary (a resumed turn rebuilds from these). getattr-guarded.
 
         Why a funnel: these boundaries used to each carry a hand-copied pop-list of the per-session dicts,
@@ -554,6 +555,10 @@ class GatewayAgentCacheMixin:
             session_key, interrupt_reason=interrupt_reason, invalidation_reason=invalidation_reason,
         )
         from gateway.run import _AGENT_PENDING_SENTINEL
+        if running_agent is _AGENT_PENDING_SENTINEL:
+            # No agent to interrupt yet: end the setup itself, or the turn keeps its FIFO claim (#138358).
+            from gateway.run_turn_setup_guard import cancel_preagent_setup
+            cancel_preagent_setup(self, session_key)
         # The turn's hard interrupt reaches only its in-turn children; background delegations were
         # detached at dispatch and would otherwise run to completion and wake the session later.
         # Each interrupted unit still returns as a completion (status=interrupted, partial output).
@@ -921,8 +926,15 @@ class GatewayAgentCacheMixin:
                 except Exception:
                     logger.warning("Could not resolve the owning profile for %s; releasing under the default profile",
                                    session_key, exc_info=True)
+                else:
+                    named_for = getattr(store, "_named_profile_for_key", None)
+                    named = named_for(session_key) if owner is None and named_for is not None else None
+                    if named:  # a profile whose home is gone: the memory guard refuses its hooks under root
+                        logger.warning("Profile %r owning %s has no home; releasing under the default profile, "
+                                       "so its end-of-session memory is not saved", named, session_key)
             owner_home = Path(owner) if owner else get_default_hermes_root()
-            if current_secret_scope() is None or hermes_home_key(get_hermes_home()) != hermes_home_key(owner_home):
+            # No key names no owner: an in-turn caller's own scope is the owner's, never swap it for the default.
+            if current_secret_scope() is None or (session_key and hermes_home_key(get_hermes_home()) != hermes_home_key(owner_home)):
                 scope = _profile_runtime_scope(owner_home)
         with scope:
             target(*args)

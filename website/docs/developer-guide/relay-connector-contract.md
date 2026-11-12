@@ -433,6 +433,11 @@ The gateway calls the transport with action dicts. Source of truth:
 `get_chat_info(chat_id)` is a separate proxied call returning at least
 `{name, type}`.
 
+**A split `send` cannot report a lost chunk.** The `send` result has no partial-delivery field, so the
+gateway cannot tell a whole delivery from one whose connector split the content and dropped or capped a
+chunk. An exec-approval card whose preview is shortened is therefore preceded by the full command only
+as proof when that command fits one message (`max_message_length`); a longer one leaves the card Deny-only.
+
 **`metadata.profile` (multiplex round-trip).** Every chat-addressed outbound
 frame's `metadata` carries the tenant discriminators the gateway captured from
 the inbound (`scope_id`, `user_id`) and, on a multiplexed gateway, the Hermes

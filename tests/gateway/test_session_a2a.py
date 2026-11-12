@@ -6,6 +6,8 @@ import pytest
 
 from gateway.session_controls import AuthorityConnection
 
+pytestmark = pytest.mark.usefixtures("authority_cwd_in_tmp")  # symbolic profile ids are relative homes
+
 
 @pytest.mark.asyncio
 async def test_forwarded_identity_survives_reconnect_without_policy_override(tmp_path, monkeypatch):

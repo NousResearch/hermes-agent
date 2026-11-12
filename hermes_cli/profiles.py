@@ -680,6 +680,12 @@ class ProfileInfo:
     # Bot Mode title (``profile.yaml`` ``ui_meta['hermes-bots'].title``) — the name
     # the Bots roster shows. Presentation-only, like ``display_name``.
     bot_title: str = ""
+    # Full ``profile.yaml`` ``ui_meta`` block, verbatim. Bot Mode reads
+    # ``ui_meta['hermes-bots'].sectionId/.sectionName`` from here: without it the
+    # Desktop's fleet enumeration (connection-registry.profileMetadataFromApiProfiles)
+    # has no section to attach, so every bot on a SECONDARY connection renders under
+    # "Unassigned" even though its profile.yaml carries the section.
+    ui_meta: dict = field(default_factory=dict)
     # Canonical ids this profile was previously known by (``hermes profile rename``
     # appends here). Lets Bot Mode group chats re-link persisted member
     # descriptors to the renamed live profile (#110200).
@@ -888,6 +894,8 @@ def read_profile_meta(profile_dir: Path) -> dict:
             "description_auto": bool(data.get("description_auto", False)),
             "display_name": str(data.get("display_name") or "").strip(),
             "bot_title": bot_title,
+            # Verbatim ui_meta: Bot Mode sections live here (see ProfileInfo.ui_meta).
+            "ui_meta": dict(ui_meta) if isinstance(ui_meta, dict) else {},
             "previous_names": _clean_previous_names(data.get("previous_names")),
         }
 

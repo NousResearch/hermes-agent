@@ -1,0 +1,5 @@
+name: inworld-provider
+kind: model-provider
+version: 1.0.0
+description: Inworld Router — OpenAI-compatible LLM router
+author: Nous Research

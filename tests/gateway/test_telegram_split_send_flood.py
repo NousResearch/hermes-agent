@@ -33,6 +33,10 @@ def _three_chunk_text() -> str:
     return "\n".join(" ".join(f"w{i * 20 + j}" for j in range(20)) for i in range(80))  # ~9.5k chars, 3 chunks
 
 
+def _large_split_text() -> str:
+    return " ".join(f"word-{index}" for index in range(50_000))
+
+
 @pytest.mark.asyncio
 async def test_split_send_resumes_from_undelivered_tail_without_resending_head(monkeypatch):
     """Chunk 2 refused with a 7s RetryAfter (> the 5s adapter cap, < the 60s base cap): the retry
@@ -94,6 +98,63 @@ async def test_over_cap_flood_returns_partial_overflow_and_arms_cooldown(monkeyp
     assert again.success is False and again.error.startswith("flood_control:") and calls["n"] == 2
     other = await adapter.send("999", "hello other")
     assert other.success is True and calls["n"] == 3
+
+
+@pytest.mark.asyncio
+async def test_degenerate_reply_is_capped_before_sending():
+    sent: list[str] = []
+
+    async def fake_send_message(text: str, **_kw):
+        sent.append(text)
+        return MagicMock(message_id=1000 + len(sent))
+
+    adapter = _adapter(AsyncMock(side_effect=fake_send_message))
+    result = await adapter.send("4242", _large_split_text())
+
+    assert result.success is True
+    assert len(sent) == 8
+    assert "Response truncated" in sent[-1]
+    assert r"\(7/8\)" in sent[-2]
+
+
+@pytest.mark.asyncio
+async def test_partial_flood_retry_only_contains_the_capped_tail():
+    calls = 0
+    sent: list[str] = []
+
+    async def fake_send_message(text: str, **_kw):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise _FloodError(120.0)
+        sent.append(text)
+        return MagicMock(message_id=1000 + calls)
+
+    adapter = _adapter(AsyncMock(side_effect=fake_send_message))
+    result = await adapter.send("4242", _large_split_text())
+
+    assert result.success is False
+    assert result.raw_response["partial_overflow"] is True
+    assert result.raw_response["total_chunks"] == 8
+    assert len(result.raw_response["undelivered_chunks"]) == 7
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_split_indicators_match_the_cap_when_warning_notices_are_hidden():
+    sent: list[str] = []
+
+    async def fake_send_message(text: str, **_kw):
+        sent.append(text)
+        return MagicMock(message_id=1000 + len(sent))
+
+    adapter = _adapter(AsyncMock(side_effect=fake_send_message))
+    adapter.warning_text = lambda *_args, **_kwargs: None
+    result = await adapter.send("4242", _large_split_text())
+
+    assert result.success is True
+    assert len(sent) == 7
+    assert r"\(7/7\)" in sent[-1]
 
 
 @pytest.mark.asyncio

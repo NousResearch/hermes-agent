@@ -448,6 +448,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
     _ptb_proxy_url: str | None = None  # set by _build_ptb_requests; error text then shows no detail
 
     MAX_MESSAGE_LENGTH = 4096
+    # Bound a single reply so a degenerate turn cannot flood a chat with split messages.
+    MAX_SPLIT_MESSAGES = 8
     supports_code_blocks = True  # MarkdownV2 renders fenced code blocks
     allow_from_covers_groups = True  # allow_from is global (DMs + groups); group_allow_from adds group-only users
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
@@ -3457,6 +3459,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                         await self._retrigger_typing(chat_id, metadata)
                     return rich_result
             chunks = self.truncate_message(self.format_message(content), self.MAX_MESSAGE_LENGTH, len_fn=utf16_len)
+            chunks = self._cap_split_chunks(chunks)
             if len(chunks) > 1:
                 # truncate_message appends a raw " (1/2)" suffix; escape the MarkdownV2-special parentheses.
                 chunks = [
@@ -3467,6 +3470,27 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         except Exception as e:
             classified = self._classify_send_exception(e, error_types)
             return self._with_partial_send(classified, chunks[len(delivered):], delivered, tail_certain=classified.retryable)
+
+    def _cap_split_chunks(self, chunks: list[str]) -> list[str]:
+        """Bound one reply and make the omitted tail explicit."""
+        if len(chunks) <= self.MAX_SPLIT_MESSAGES:
+            return chunks
+
+        kept = chunks[: self.MAX_SPLIT_MESSAGES - 1]
+        dropped_chars = sum(len(chunk) for chunk in chunks[self.MAX_SPLIT_MESSAGES - 1 :])
+        notice = to_markdown_v2(t(
+            "platform.discord.limits.response_truncated",
+            max_messages=str(self.MAX_SPLIT_MESSAGES),
+            dropped_chars=str(dropped_chars),
+        ))
+        warning = self.warning_text("\n\n" + notice)
+        total = self.MAX_SPLIT_MESSAGES if warning else len(kept)
+        for index, chunk in enumerate(kept, start=1):
+            kept[index - 1] = re.sub(r" \(\d+/\d+\)$", f" ({index}/{total})", chunk)
+
+        if warning:
+            kept.append(warning)
+        return kept
 
     def _classify_send_exception(self, e: Exception, error_types: tuple) -> SendResult:
         """The failed ``SendResult`` for an exception escaping the chunk loop. ``retryable`` doubles as

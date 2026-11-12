@@ -436,6 +436,10 @@ def _run_single_child(
         heartbeat.start()
         _safe_progress(child_progress_cb, "subagent.start", preview=goal)
         run.seed_workspace()
+        if isinstance(cancelled := getattr(child, "_delegate_auto_cancelled", None), str):  # the parent's stop won
+            run.worktree_info = None  # still the parent's to keep or release; finalizing it here could prune it
+            return run.settle(run.finish_failed(_fabricated_entry(task_index, "interrupted", cancelled, child),
+                                                run.close_steering(), preview=cancelled, summary=cancelled))
         result, failure_entry, _child_close_deferred = run.await_child()
         if failure_entry is not None:
             return run.settle(failure_entry)

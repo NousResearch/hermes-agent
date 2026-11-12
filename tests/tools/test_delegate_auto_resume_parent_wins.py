@@ -85,3 +85,56 @@ def test_a_parent_with_no_gateway_scheduler_gets_the_manual_continue_hint(tmp_pa
     with patch('run_agent.AIAgent', side_effect=_ScriptedModel()):
         assert tick(_scheduler(parent, dispatched), capacity=3) == []
     assert _db_rows(parent)[sid][0] == 'resumable'
+
+
+@pytest.mark.parametrize('action', ['slash_stop', 'stop_child'])
+def test_a_stop_after_the_last_pre_dispatch_check_still_wins(tmp_path, action):
+    """The parent stops it between the scheduler's last check and the child registering (nothing live to interrupt
+    yet): the run-start write sees the decision, the child never runs, and the decision stays on the record."""
+    import tools.delegate_tool_auto_resume as ar
+    from tools.async_delegation import interrupt_for_session
+    from tools.delegate_tool import delegate_task
+    _enable()
+    parent, dispatched = _parent(), []
+    sid, _first = _limited_child(tmp_path, parent)
+    real = ar.confirm_start
+
+    def confirm_then_parent_acts(path, s):
+        out = real(path, s)
+        if action == 'slash_stop':
+            interrupt_for_session(parent_session_id=parent.session_id, reason='stop_command')
+        else:
+            assert json.loads(delegate_task(action='stop', subagent_id=s, parent_agent=parent))['status'] == 'dismissed'
+        return out
+
+    model = _ScriptedModel()
+    with patch.object(ar, 'confirm_start', confirm_then_parent_acts), patch('run_agent.AIAgent', side_effect=model):
+        ar.tick(_scheduler(parent, dispatched), capacity=3)
+        if dispatched:
+            _completion(dispatched[-1])
+    assert len(model.turns) == 0, "the parent's stop was lost"
+    state, _pinned, rec = _db_rows(parent)[sid]
+    assert state == ('stopped' if action == 'stop_child' else 'superseded') and not rec.get('auto_attempts')
+
+
+def test_a_promise_belongs_to_one_stop(tmp_path):
+    """A resumed run's record carries no earlier stop's promise: should it die before its own stop is recorded,
+    boot recovery decides afresh whether to promise anything."""
+    from tools.delegate_tool_auto_resume import tick
+    _enable()
+    parent, dispatched, seen = _parent(), [], []
+    sid, _first = _limited_child(tmp_path, parent)
+    assert _db_rows(parent)[sid][2].get('auto_promised') is True
+    model = _ScriptedModel()
+
+    def build(**kw):
+        child = model(**kw)
+        ok = child.run_conversation.side_effect
+        child.run_conversation.side_effect = lambda *a, **k: (seen.append(_db_rows(parent)[sid]), ok(*a, **k))[1]
+        return child
+
+    with patch('run_agent.AIAgent', side_effect=build):
+        assert tick(_scheduler(parent, dispatched), capacity=3) == [sid]
+        _completion(dispatched[-1])
+    state, _pinned, running = seen[0]
+    assert state == 'running' and not running.get('auto_promised')

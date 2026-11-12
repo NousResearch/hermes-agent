@@ -41,7 +41,7 @@ export function parseCurlTitleResponse(bodyWithTrailer: Buffer, tail: Buffer): C
  * curl arguments that make one hop dial exactly what admission vetted.
  *
  * Direct: `--noproxy '*'` (no env proxy the guard did not account for) and
- * `--resolve host:port:addr` pinned to a vetted DNS answer, so curl never
+ * `--resolve host:port:addr[,addr]` pinned to the vetted DNS answers, so curl never
  * resolves the name a second time — a rebinding answer between the check and
  * the connect cannot reach a private address. Proxied: the same proxy the
  * guard saw, with `--noproxy ''` overriding NO_PROXY, so a host the guard
@@ -52,13 +52,13 @@ export function curlTitleTargetArgs(target: TitleFetchTarget): string[] {
     return ['--proxy', target.proxy, '--noproxy', '']
   }
 
-  const [address] = target.addresses
-
-  if (!address) {
+  if (!target.addresses.length) {
     return ['--noproxy', '*']
   }
 
-  const pinned = address.includes(':') ? `[${address}]` : address
+  // Every vetted answer, so curl still falls back across them (an unreachable
+  // first family) without resolving the name again.
+  const pinned = target.addresses.map(address => (address.includes(':') ? `[${address}]` : address)).join(',')
 
   return ['--noproxy', '*', '--resolve', `${target.hostname}:${target.port}:${pinned}`]
 }

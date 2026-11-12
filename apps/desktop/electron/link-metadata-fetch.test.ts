@@ -161,8 +161,13 @@ describe('resolveTitleFetchTarget', () => {
 describe('curlTitleTargetArgs', () => {
   test('pins a direct dial to the vetted answer and ignores env proxies', () => {
     assert.deepEqual(
-      curlTitleTargetArgs({ addresses: ['93.184.216.34', '10.0.0.1'], hostname: 'a.test', port: '443', proxy: '' }),
-      ['--noproxy', '*', '--resolve', 'a.test:443:93.184.216.34']
+      curlTitleTargetArgs({
+        addresses: ['93.184.216.34', '2606:2800:220:1::1'],
+        hostname: 'a.test',
+        port: '443',
+        proxy: ''
+      }),
+      ['--noproxy', '*', '--resolve', 'a.test:443:93.184.216.34,[2606:2800:220:1::1]']
     )
     assert.deepEqual(
       curlTitleTargetArgs({ addresses: ['2606:2800:220:1::1'], hostname: 'a.test', port: '80', proxy: '' }),
@@ -181,11 +186,12 @@ describe('curlTitleTargetArgs', () => {
     )
   })
 
-  test.skipIf(!curlAvailable)('real curl connects to the pinned address without resolving the name', async () => {
+  test.skipIf(!curlAvailable)('real curl connects to a pinned address without resolving the name', async () => {
     const port = await listen((request, response) => response.end(`host=${request.headers.host}`))
 
+    // The fixture is not on ::1, so only a pin that keeps every answer reaches it.
     const args = curlTitleTargetArgs({
-      addresses: ['127.0.0.1'],
+      addresses: ['::1', '127.0.0.1'],
       hostname: 'pinned.invalid',
       port: String(port),
       proxy: ''

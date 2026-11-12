@@ -6,6 +6,7 @@ host and the public full-backup paths, rather than inferring liveness from PIDs.
 
 from __future__ import annotations
 
+import errno
 import os
 import signal
 import sqlite3
@@ -290,3 +291,209 @@ def test_signal_guard_preserves_embedding_handlers_and_worker_threads():
         assert signal.getsignal(signal.SIGTERM) is custom
     finally:
         signal.signal(signal.SIGTERM, previous)
+
+
+@pytest.mark.platforms("windows", "posix")
+@pytest.mark.parametrize("automatic", [False, True])
+def test_backup_completes_when_output_filesystem_refuses_locks(
+    tmp_path, monkeypatch, caplog, automatic
+):
+    from hermes_cli import backup_staging
+
+    home = _home(tmp_path / "home")
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    output = output_dir / "backup.zip"
+
+    def refuse_lock(lease):
+        raise OSError(errno.ENOLCK, "output filesystem has no lock support")
+
+    monkeypatch.setattr(backup_staging, "_lock", refuse_lock)
+    monkeypatch.setattr(backup, "_collect_external_entries", lambda: ([], []))
+    monkeypatch.setattr(backup, "get_default_hermes_root", lambda: home)
+    if automatic:
+        assert backup._write_full_zip_backup(output, home) == output
+    else:
+        assert backup.run_backup(Namespace(output=str(output)))
+    with zipfile.ZipFile(output) as archive:
+        assert archive.testzip() is None
+        restored = tmp_path / "restored.db"
+        restored.write_bytes(archive.read("state.db"))
+    with sqlite3.connect(restored) as snapshot:
+        assert snapshot.execute("SELECT text FROM messages").fetchall() == [
+            ("keep me",)
+        ]
+    assert "Continuing without a recovery marker" in caplog.text
+    assert list(output_dir.iterdir()) == [output]
+
+
+@pytest.mark.platforms("windows", "posix")
+def test_unlocked_stage_is_preserved_after_lock_support_returns(tmp_path, monkeypatch):
+    from hermes_cli import backup_staging
+
+    real_lock = backup_staging._lock
+
+    def refuse_lock(lease):
+        raise OSError(errno.ENOLCK, "locks unavailable")
+
+    monkeypatch.setattr(backup_staging, "_lock", refuse_lock)
+    with backup_staging.staged_backup_file(tmp_path, "snapshot.db") as staged:
+        staged.write_bytes(b"active backup")
+        assert not backup_staging.is_backup_staging(staged.parent)
+        monkeypatch.setattr(backup_staging, "_lock", real_lock)
+        backup_staging.reclaim_backup_staging(tmp_path)
+        assert staged.read_bytes() == b"active backup"
+    assert not staged.parent.exists()
+
+
+@pytest.mark.platforms("windows", "posix")
+@pytest.mark.parametrize("automatic", [False, True])
+def test_retry_elsewhere_reclaims_default_backup_stages_but_preserves_live_ones(
+    tmp_path, monkeypatch, automatic
+):
+    home = _home(tmp_path / "home")
+    backup_dir = home / "backups"
+    backup_dir.mkdir()
+    lookalike = backup_dir / (".hermes-backup-stage-" + "0" * 32)
+    lookalike.mkdir()
+    user_file = lookalike / "snapshot.db"
+    user_file.write_bytes(b"user data")
+    child, snapshot = _child(home, backup_dir / "interrupted.zip")
+    monkeypatch.setattr(backup, "_collect_external_entries", lambda: ([], []))
+    output = tmp_path / "elsewhere.zip"
+
+    def run():
+        if automatic:
+            assert backup._write_full_zip_backup(output, home) == output
+        else:
+            assert backup._run_backup_locked(Namespace(output=str(output)), home)
+
+    try:
+        run()
+        assert snapshot.read_bytes() == b"\0" * 4096
+    finally:
+        _kill(child)
+    run()
+    assert not snapshot.parent.exists()
+    assert set(backup_dir.glob(".hermes-backup-stage-*")) == {lookalike}
+    assert user_file.read_bytes() == b"user data"
+    with zipfile.ZipFile(output) as archive:
+        assert archive.testzip() is None
+        assert "state.db" in archive.namelist()
+
+
+@pytest.mark.platforms("posix")
+def test_default_backup_cleanup_does_not_follow_a_linked_output_folder(
+    tmp_path, monkeypatch
+):
+    home = _home(tmp_path / "home")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (home / "backups").symlink_to(outside, target_is_directory=True)
+    child, snapshot = _child(home, outside / "interrupted.zip")
+    _kill(child)
+    monkeypatch.setattr(backup, "_collect_external_entries", lambda: ([], []))
+    output = tmp_path / "backup.zip"
+    assert backup._write_full_zip_backup(output, home) == output
+    assert snapshot.read_bytes() == b"\0" * 4096
+
+
+@pytest.mark.platforms("windows", "posix")
+@pytest.mark.parametrize("automatic", [False, True])
+def test_failed_legacy_snapshot_names_possible_residue_without_deleting_it(
+    tmp_path, monkeypatch, caplog, automatic
+):
+    home = _home(tmp_path / "home")
+    legacy = home / "tmpabc123.db"
+    legacy.write_bytes(b"unfinished legacy snapshot")
+    output = tmp_path / "backup.zip"
+    monkeypatch.setattr(backup, "_collect_external_entries", lambda: ([], []))
+    if automatic:
+        assert backup._write_full_zip_backup(output, home) is None
+    else:
+        assert not backup._run_backup_locked(Namespace(output=str(output)), home)
+    assert legacy.read_bytes() == b"unfinished legacy snapshot"
+    assert "Possible leftover from an interrupted backup" in caplog.text
+    assert str(legacy) in caplog.text
+    assert "Inspect this file before removing it" in caplog.text
+
+
+@pytest.mark.platforms("windows", "posix")
+def test_legacy_zip_partial_is_reported_and_preserved(tmp_path, monkeypatch, caplog):
+    home = _home(tmp_path / "home")
+    legacy = home / ".backup.zip.123-456.partial"
+    legacy.write_bytes(b"legacy partial")
+    notes = home / ".notes.partial"
+    notes.write_bytes(b"user notes")
+    output = tmp_path / "backup.zip"
+    monkeypatch.setattr(backup, "_collect_external_entries", lambda: ([], []))
+    assert backup._write_full_zip_backup(output, home) == output
+    assert str(legacy) in caplog.text
+    assert str(notes) not in caplog.text
+    assert legacy.read_bytes() == b"legacy partial"
+    with zipfile.ZipFile(output) as archive:
+        assert archive.read(legacy.name) == b"legacy partial"
+        assert archive.read(notes.name) == b"user notes"
+
+
+@pytest.mark.platforms("windows", "posix")
+def test_lease_open_failure_removes_the_new_empty_stage(tmp_path, monkeypatch):
+    from hermes_cli import backup_staging
+
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    real_open = Path.open
+
+    def refuse_lease(path, *args, **kwargs):
+        if path.name == "owner.lock":
+            raise OSError(errno.EMFILE, "too many open files")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", refuse_lease)
+    with pytest.raises(OSError, match="too many open files"):
+        with backup_staging.staged_backup_file(output_dir, "snapshot.db"):
+            pytest.fail("lease creation should fail")
+    assert list(output_dir.iterdir()) == []
+
+
+@pytest.mark.platforms("posix")
+def test_termination_immediately_after_mkdir_removes_the_empty_stage(
+    tmp_path, monkeypatch
+):
+    from hermes_cli import backup_staging
+
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    real_mkdir = Path.mkdir
+
+    def terminate_after_mkdir(path, *args, **kwargs):
+        real_mkdir(path, *args, **kwargs)
+        if path.name.startswith(".hermes-backup-stage-"):
+            signal.raise_signal(signal.SIGTERM)
+
+    previous = signal.getsignal(signal.SIGTERM)
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    monkeypatch.setattr(Path, "mkdir", terminate_after_mkdir)
+    try:
+        with pytest.raises(SystemExit, match=str(128 + signal.SIGTERM)):
+            with backup_staging.staged_backup_file(output_dir, "snapshot.db"):
+                pytest.fail("termination should unwind directory creation")
+        assert list(output_dir.iterdir()) == []
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
+@pytest.mark.platforms("windows", "posix")
+def test_failed_stage_creation_preserves_the_existing_path(tmp_path, monkeypatch):
+    from hermes_cli import backup_staging
+
+    token = "0" * 32
+    existing = tmp_path / (".hermes-backup-stage-" + token)
+    existing.mkdir()
+    user_file = existing / "notes.txt"
+    user_file.write_bytes(b"keep me")
+    monkeypatch.setattr(backup_staging.uuid, "uuid4", lambda: Namespace(hex=token))
+    with pytest.raises(FileExistsError):
+        with backup_staging.staged_backup_file(tmp_path, "snapshot.db"):
+            pytest.fail("stage creation should fail")
+    assert user_file.read_bytes() == b"keep me"

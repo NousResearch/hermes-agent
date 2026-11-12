@@ -29,3 +29,18 @@ def test_a_reader_signs_the_rooms_of_a_file_whose_driver_tables_were_never_set_u
         rows = reader.hosted_room_driver.room_change_rows(placement=placement)
     assert dict(rows) == {ROOM: RoomChangeRows(room["latest_seq"] + 1, room["revision"], ())}
     assert schema(path, "hosted_room_driver_tasks") == []
+
+
+@pytest.mark.parametrize("placement", ["profile", "shared"])
+def test_a_reader_answers_no_rows_for_a_placement_that_holds_no_rooms(placement):
+    hosted = make_hosted("profile-a")
+    try:
+        hosted.store.ready()
+        home, path = hosted.scope.profile_dir, hosted.path(placement)
+    finally:
+        hosted.backend.close()
+    existed = path.exists()
+    with open_persistence_reader(home) as reader:
+        rows = reader.hosted_room_driver.room_change_rows(placement=placement)
+    assert dict(rows) == {}
+    assert path.exists() == existed and (not existed or schema(path, "hosted_room*") == [])

@@ -128,8 +128,8 @@ def _w(app, pid, wid, title, z):
     return {"app_name": app, "pid": pid, "window_id": wid, "title": title, "off_screen": False, "z_index": z}
 
 
-def test_macos_capture_prefers_the_titled_window_behind_the_title_strip(monkeypatch):
-    monkeypatch.setattr("tools.computer_use.cua_backend_capture.sys.platform", "darwin")
+@pytest.mark.platforms("macos")
+def test_macos_capture_prefers_the_titled_window_behind_the_title_strip():
     strip, content = _w("Claude", 20, 38792, "", 9), _w("Claude", 20, 38782, "Claude", 8)
 
     assert _select_capture_target([strip, content], app_requested=True) == content

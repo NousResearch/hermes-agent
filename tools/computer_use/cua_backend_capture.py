@@ -197,7 +197,7 @@ class _CaptureMixin:
         try:
             out = self._call_capture_tool("list_windows", {"on_screen_only": False, "session": self._session_id})
         except Exception as exc:
-            logger.debug("computer_use list_windows across Spaces failed: %s", exc)
+            logger.debug("computer_use list_windows across Spaces failed: %s", exc, exc_info=True)
             return []
         rows = [w for w in _windows_from_tool_result(out) if isinstance(w, dict) and w.get("space_ids")]
         return sorted(_ingest_windows(rows), key=lambda w: w["z_index"], reverse=True)

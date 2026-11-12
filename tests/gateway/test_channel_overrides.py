@@ -154,3 +154,9 @@ class TestResolveSessionAgentRuntimePriority:
         assert runtime["provider"] == "openrouter"
 
 
+def test_fallback_providers_round_trip_through_platform_config():
+    chain = [{"provider": "openai-codex", "model": "gpt-6.1-terra"}]
+    cfg = PlatformConfig.from_dict({"enabled": True, "channel_overrides": {"c1": {"model": "m", "fallback_providers": chain}}})
+
+    assert cfg.channel_overrides["c1"].fallback_providers == chain
+    assert PlatformConfig.from_dict(cfg.to_dict()).channel_overrides["c1"].fallback_providers == chain

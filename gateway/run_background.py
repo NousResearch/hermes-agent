@@ -108,7 +108,7 @@ class GatewayBackgroundMixin:
                     session_db=getattr(self._session_db, "_db", self._session_db),
                     # Reload from disk — do not reuse the startup snapshot.
                     # See #60955.
-                    fallback_model=self._refresh_fallback_model(),
+                    fallback_model=self._fallback_chain_for(source),
                 )
                 # Built outside the turn wiring, so it takes its chat's Daybreak verdicts here.
                 agent.daybreak_surface = self._daybreak_surface(source) is True

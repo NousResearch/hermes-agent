@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.session_policy import policy_scope
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 from tests.acp_adapter.test_session_mcp_policy import owner, policy
 
 
@@ -109,7 +109,7 @@ def test_editor_mcp_change_requires_control_in_the_owning_profile(server_spec, a
 
 def test_store_payload_carries_only_the_fingerprint(server_spec):
     from gateway.session_local_mcp import fingerprint, private_mutation_payload
-    from hermes_state_mutations import validate_action
+    from hermes_agent.hermes_state_mutations import validate_action
     payload, servers = private_mutation_payload('editor_mcp', {'mcp_servers': [server_spec]})
     assert servers == [server_spec]
     assert payload == {'mcp_servers': {'fingerprint': fingerprint([server_spec])}}

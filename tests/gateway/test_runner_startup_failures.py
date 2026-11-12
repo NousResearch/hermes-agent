@@ -108,7 +108,7 @@ async def test_start_gateway_verbosity_imports_redacting_formatter(monkeypatch, 
     class _CleanExitRunner:
         def __init__(self, config):
             from gateway.session import SessionStore
-            from hermes_state import SessionDB
+            from hermes_agent.hermes_state import SessionDB
             from hermes_constants import get_hermes_home
             self.session_store = SessionStore(get_hermes_home() / 'sessions', config)
             self._session_db = SessionDB(get_hermes_home() / 'state.db')
@@ -256,7 +256,7 @@ async def test_start_gateway_replace_writes_takeover_marker_before_sigterm(
     class _CleanExitRunner:
         def __init__(self, config):
             from gateway.session import SessionStore
-            from hermes_state import SessionDB
+            from hermes_agent.hermes_state import SessionDB
             from hermes_constants import get_hermes_home
             self.session_store = SessionStore(get_hermes_home() / 'sessions', config)
             self._session_db = SessionDB(get_hermes_home() / 'state.db')
@@ -494,7 +494,7 @@ async def test_start_gateway_propagates_fatal_config_exit_code(monkeypatch, tmp_
     class _FatalConfigRunner:
         def __init__(self, config):
             from gateway.session import SessionStore
-            from hermes_state import SessionDB
+            from hermes_agent.hermes_state import SessionDB
             from hermes_constants import get_hermes_home
             self.session_store = SessionStore(get_hermes_home() / 'sessions', config)
             self._session_db = SessionDB(get_hermes_home() / 'state.db')

@@ -8,7 +8,7 @@ CLI resume surfaces it protects: startup `--resume` (`_preload_resumed_session`)
 from io import StringIO
 from unittest.mock import patch
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def _db(tmp_path, *, source="cli", flip_source_to=None, parent=None, end_reason=None,

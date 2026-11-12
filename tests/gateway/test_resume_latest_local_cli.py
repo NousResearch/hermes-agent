@@ -20,7 +20,7 @@ def _owner(home, monkeypatch):
     from gateway.session import SessionStore
     from gateway.session_authority import SessionAuthority
     from gateway.session_controls import AuthorityConnection
-    import hermes_state_runtime as rt
+    import hermes_agent.hermes_state_runtime as rt
     home.mkdir(parents=True, exist_ok=True)
     (home / 'config.yaml').write_text(json.dumps({'model': {'default': 'm'}}))
     monkeypatch.setenv('HERMES_HOME', str(home))
@@ -109,8 +109,8 @@ def _set_created(db, sid, value):
 
 def _reset(authority, store, sid, child):
     from gateway.session import SessionEntry
-    from hermes_state_local import local_receipt
-    from hermes_state_local_lineage import reset_local_target
+    from hermes_agent.hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local_lineage import reset_local_target
 
     live = authority.sessions[sid]
     store._record_gateway_session_peer(sid, live.route, live.source)
@@ -155,8 +155,8 @@ async def test_reset_copies_the_parent_surface_and_falls_back_to_policy(tmp_path
 async def test_compress_mutation_copies_parent_or_uses_the_policy_surface(tmp_path, monkeypatch):
     """The compress mutation copies the parent's surface. A NULL or ``local`` parent is not a
     surface, so the child falls back to the policy label."""
-    from hermes_state_mutation_compress import compress_in_transaction
-    from hermes_state_mutation_prepared import local_snapshot
+    from hermes_agent.hermes_state_mutation_compress import compress_in_transaction
+    from hermes_agent.hermes_state_mutation_prepared import local_snapshot
 
     store, authority, owner = _owner(tmp_path / 'home', monkeypatch)
     try:

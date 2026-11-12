@@ -11,7 +11,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import PlatformConfig
 from gateway.platforms.webhook import WebhookAdapter
-from hermes_state_runtime import claim_session_input, settle_session_input
+from hermes_agent.hermes_state_runtime import claim_session_input, settle_session_input
 from tests.gateway.fixtures.webhook_route_authority import mount_authority
 
 

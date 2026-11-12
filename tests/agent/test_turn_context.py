@@ -428,7 +428,7 @@ def test_a_row_rewrite_keeps_a_reaction_another_writer_added(tmp_path, vetoed):
     """A TUI submit row exists before the prologue, so a reaction can land on it while the agent builds;
     the in-place rewrite (stamp backfill or veto) must merge its metadata, not replace the row's."""
     import threading
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from agent.turn_context import _append_multimodal_context, _withhold_blocked_prompt
 
     db = SessionDB(tmp_path / "state.db")
@@ -452,7 +452,7 @@ def test_gateway_notes_alone_on_a_stored_image_turn_backfill_the_row(tmp_path):
     """Only gateway notes landed on an already-stored image turn (no memory, no hook context): the row
     still gets the notes and the stamp, or a restart would read the notes back as the ask."""
     import threading
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from agent.turn_context import _append_multimodal_context, _merge_gateway_notes, _previous_user_message_text
 
     db = SessionDB(tmp_path / "state.db")

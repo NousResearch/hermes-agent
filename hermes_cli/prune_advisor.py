@@ -167,7 +167,7 @@ def advise(home: Optional[Path] = None) -> Optional[Advice]:
     prunable = total = prunable_bytes = total_bytes = 0
     estimate_ok = True
     try:
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
         db = SessionDB(db_path=_home(home) / "state.db", read_only=True)
         try:
             where, params = db._prune_where(retention, None, {}, whole_lineages=True)

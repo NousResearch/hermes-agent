@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 @pytest.mark.parametrize("linked,explicit", [(False, None), (True, None), (False, "override")])

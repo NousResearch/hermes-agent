@@ -4,7 +4,7 @@ import pytest
 
 def test_sessions_delete_accepts_unique_id_prefix(monkeypatch, capsys):
     import hermes_cli.main as main_mod
-    import hermes_state
+    from hermes_agent import hermes_state
 
     captured = {}
 
@@ -45,9 +45,9 @@ def test_sessions_delete_with_unfinished_turn_points_to_discard(tmp_path, monkey
     """P3: the ledger's session_busy / unknown_execution refusal is a user-facing answer (exit 1
     with what to do), not an uncaught RuntimeStoreError traceback."""
     import hermes_cli.main as main_mod
-    import hermes_state
-    import hermes_state_runtime as rt
-    from hermes_state import SessionDB
+    from hermes_agent import hermes_state
+    import hermes_agent.hermes_state_runtime as rt
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(tmp_path / 'state.db')
     db.create_session('s1', source='cli')
@@ -73,7 +73,7 @@ def _run_prune(monkeypatch, capsys, argv_tail, candidates=None, skipped_open=0, 
     """Run `hermes sessions <sub> <argv_tail>` (prune/archive) against a FakeDB, capturing
     the filter kwargs passed to list_prune_candidates. Auto-confirms."""
     import hermes_cli.main as main_mod
-    import hermes_state
+    from hermes_agent import hermes_state
 
     seen = {}
     rows = candidates if candidates is not None else [

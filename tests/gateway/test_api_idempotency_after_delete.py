@@ -79,7 +79,7 @@ async def test_deleted_session_idempotency_key_does_not_run_again(api, owner):
 async def test_a_live_session_that_already_ran_the_key_still_replays_it(api, owner):
     """A session that ran the key while the deleted one's tombstone was unread (code from before
     this check) still replays its own completion; only a session that never ran it conflicts."""
-    from hermes_state_terminal import ADMISSION_PREFIX
+    from hermes_agent.hermes_state_terminal import ADMISSION_PREFIX
     calls = []
     api._api_key = _API_KEY
     _execute(owner, calls)
@@ -110,7 +110,7 @@ def test_only_a_client_key_pays_for_the_tombstone_scan(api, owner, monkeypatch):
     """Only a client Idempotency-Key can name a deleted session's admission. A key-less turn's
     fresh id (or a server-minted run id) never matches one, so the admission's write transaction
     skips the tombstone scan for it."""
-    import hermes_state_terminal
+    from hermes_agent import hermes_state_terminal
     from gateway.session_api_turn import admit_api_turn
     real = hermes_state_terminal.terminal_api_admissions
     scanned = []

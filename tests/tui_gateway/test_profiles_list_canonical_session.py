@@ -45,7 +45,7 @@ def home(tmp_path, monkeypatch):
 
 
 def _db(profile_dir):
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     return SessionDB(db_path=profile_dir / "state.db")
 
@@ -588,7 +588,7 @@ def test_canonical_session_scoped_per_profile_db(home):
 
 def test_profiles_list_opens_session_db_read_only(home, monkeypatch):
     """Roster inspection must not take a writable SessionDB (20s lock patience)."""
-    import hermes_state
+    from hermes_agent import hermes_state
 
     db = _db(home)
     _add_session(db, "bot", title="Bot Chat", ts=1000, text="hello")

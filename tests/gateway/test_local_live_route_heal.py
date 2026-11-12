@@ -9,7 +9,7 @@ async def test_live_session_rebuilds_a_route_entry_missing_from_the_store(tmp_pa
     from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
     from gateway.session_local_recovery import restore_local_session
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
 
     served, db, secondary = await _served_authority(tmp_path, monkeypatch, 'first')
     actor = SessionActor('owner', str(secondary), frozenset({'session:create', 'session:read'}), 'socket')

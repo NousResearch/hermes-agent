@@ -71,7 +71,7 @@ def test_clarify_without_an_answering_viewer_is_declined(ask, owner):
     from gateway.run_turn_runner_clarify_delivery import UNDELIVERED_DECLINED
     from gateway.session_authority import LiveSession
     from gateway.session_contract import SessionActor
-    from hermes_state_runtime import admit_session_input, claim_session_input
+    from hermes_agent.hermes_state_runtime import admit_session_input, claim_session_input
     forwarded = {'source': 'a2a', 'a2a_identity': ['dev', '', 'peer', 'ctx']}
     (response, answered), elapsed = ask('a2a', request=forwarded)
     assert (response, answered) == (UNDELIVERED_DECLINED, False) and elapsed < 5

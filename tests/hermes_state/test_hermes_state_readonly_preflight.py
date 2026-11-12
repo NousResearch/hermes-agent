@@ -22,8 +22,8 @@ from pathlib import Path
 
 import pytest
 
-import hermes_state
-from hermes_state import SessionDB, preflight_db_writability
+from hermes_agent import hermes_state
+from hermes_agent.hermes_state import SessionDB, preflight_db_writability
 
 pytestmark = [
     pytest.mark.platforms("posix"),  # POSIX chmod semantics

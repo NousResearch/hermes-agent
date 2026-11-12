@@ -21,7 +21,7 @@ async def probe(mode, peer):
     from gateway.session import SessionSource
     from gateway.session_authority import initialize_session_authority
     from gateway.session_envelope import restore_native, snapshot_native
-    from hermes_state_runtime import RuntimeStoreError, claim_session_input, list_session_admissions
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError, claim_session_input, list_session_admissions
 
     class Adapter(BasePlatformAdapter):
         def __init__(self):
@@ -171,7 +171,7 @@ async def probe(mode, peer):
         return
 
     # A committed text row from before media support must keep its retry identity.
-    from hermes_state_runtime import admit_session_input, cancel_session_input
+    from hermes_agent.hermes_state_runtime import admit_session_input, cancel_session_input
     old_event = MessageEvent(text='legacy native input', source=source, message_id='legacy-text')
     ref = authority.register(source)
     encoded_source = source.to_dict()

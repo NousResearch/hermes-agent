@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from agent.message_metadata import DB_ROW_SNAPSHOT, RESTORED_FROM_STORE
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 SID = "sess1"
 SUMMARY_TEXT = "[CONTEXT COMPACTION] summary of the earlier turns"

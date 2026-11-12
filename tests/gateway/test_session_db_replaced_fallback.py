@@ -8,7 +8,7 @@ import pytest
 
 from gateway.config import GatewayConfig
 from gateway.session import SessionStore
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def _assert_diverted(tmp_path, sid, needle):
@@ -29,7 +29,7 @@ def _assert_diverted(tmp_path, sid, needle):
 
 @pytest.mark.platforms("posix")
 def test_replaced_state_db_diverts_pending_without_fts_rebuild(tmp_path, monkeypatch):
-    import hermes_state
+    from hermes_agent import hermes_state
 
     live = tmp_path / "state.db"
     other = tmp_path / "other.db"
@@ -68,7 +68,7 @@ def test_replaced_state_db_diverts_pending_without_fts_rebuild(tmp_path, monkeyp
 def test_copyfile_replaced_state_db_diverts_pending_without_fts_rebuild(
     tmp_path, monkeypatch
 ):
-    import hermes_state
+    from hermes_agent import hermes_state
 
     live = tmp_path / "state.db"
     other = tmp_path / "other.db"

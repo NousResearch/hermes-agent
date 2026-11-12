@@ -12,8 +12,8 @@ import pytest
 
 
 from gateway.owner_identity import host_owner_subject, same_owner
-from hermes_state import SessionDB
-from hermes_state_runtime import begin_runtime_epoch
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 
 MEMBERS = [{'member_id': 'one', 'profile': 'default', 'handle': 'one'},
            {'member_id': 'two', 'profile': 'two', 'handle': 'two'}]
@@ -94,7 +94,7 @@ def store(tmp_path, monkeypatch):
 
 
 def _bind(store, sid, subject, **row):
-    from hermes_state_mutation_binding import BINDING_PREFIX
+    from hermes_agent.hermes_state_mutation_binding import BINDING_PREFIX
     store.db.create_session(sid, **row)
     binding = json.dumps([store.profile_id, subject], separators=(',', ':'))
     store.db._execute_write(lambda conn: conn.execute(
@@ -105,7 +105,7 @@ def test_a_chat_a_webapp_tab_imported_before_the_upgrade_still_opens(store):
     """The sidebar (authorize_history) and the open (mount_history) read a binding by one rule."""
     from gateway.session_contract import SessionActor
     from gateway.session_history_mount import mount_history
-    from hermes_state_mutation_binding import authorize_history
+    from hermes_agent.hermes_state_mutation_binding import authorize_history
     caps = frozenset({'session:create', 'session:read'})
     owner, stranger = (SessionActor(s, store.profile_id, caps, 't') for s in (OWNER, 'uid:999999'))
     _bind(store, 'imported-web', WEBAPP_LOGIN, source='webui')
@@ -117,8 +117,8 @@ def test_a_chat_a_webapp_tab_imported_before_the_upgrade_still_opens(store):
 
 
 def test_an_old_chat_a_webapp_tab_edited_is_adopted_by_the_owner(store):
-    from hermes_state_local_migration import bind_legacy_target
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_local_migration import bind_legacy_target
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     _bind(store, 'legacy-web', WEBAPP_LOGIN, source='cli')
 
     def adopt(subject):

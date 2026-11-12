@@ -8,7 +8,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 from gateway.session_identity import replace_source
-from hermes_state_runtime import RuntimeStoreError, get_session_admission, list_session_admissions
+from hermes_agent.hermes_state_runtime import RuntimeStoreError, get_session_admission, list_session_admissions
 from tests.gateway.test_automation_compression_media import _admit_human, _discord_owner
 from tests.gateway.test_automation_notification_category import _SOURCE, _authority, _native_owner
 

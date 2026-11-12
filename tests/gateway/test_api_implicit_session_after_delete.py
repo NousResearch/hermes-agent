@@ -51,7 +51,7 @@ async def _delete(client, session_id):
 
 
 def _prune_past_horizon(owner):
-    from hermes_state_mutation_retirement import prune_retired_tombstones
+    from hermes_agent.hermes_state_mutation_retirement import prune_retired_tombstones
     owner.db._execute_write(lambda conn: prune_retired_tombstones(conn, older_than=0))
 
 

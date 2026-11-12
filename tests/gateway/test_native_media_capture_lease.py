@@ -38,7 +38,7 @@ async def test_same_bytes_captured_for_a_new_turn_survive_an_older_turns_cleanup
     row holds, and that row's cleanup runs while the new admission write is still in flight."""
     from gateway import session_authority
     from gateway.session_ingress_media import release_admission_media, restore_attachments
-    from hermes_state_runtime import (cancel_session_input, claim_session_input, get_session_admission,
+    from hermes_agent.hermes_state_runtime import (cancel_session_input, claim_session_input, get_session_admission,
                                       settle_session_input)
     from gateway.platforms.base import cache_image_from_bytes
     authority = await _authority(tmp_path, monkeypatch)
@@ -74,7 +74,7 @@ async def test_refused_native_admission_leaves_no_fresh_capture(tmp_path, monkey
     on a changed redelivery): the fresh capture no admission owns must not stay retained."""
     from gateway import session_authority
     from gateway.session_ingress_media import _media_root, capture_native_media
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     authority = await _authority(tmp_path, monkeypatch)
     from gateway.platforms.base import cache_image_from_bytes
 

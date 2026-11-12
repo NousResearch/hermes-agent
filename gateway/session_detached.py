@@ -182,7 +182,7 @@ def recover_detached_sessions(authority, pending):
     from gateway.session_contract import SessionRef
     from gateway.session_route_recovery import restore_routed_session
     scheduled = []
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     for session_id in sorted(pending):
         if session_id in authority.sessions or not any(  # a lost (unknown) turn waits for /discard
                 row['status'] == 'queued' for row in list_session_admissions(authority.db, session_id=session_id)):
@@ -261,7 +261,7 @@ def _mounted(authority, session_id):
     if session_id not in authority.sessions:
         from gateway.session_authorities import owner_scope
         from gateway.session_route_recovery import restore_routed_session
-        from hermes_state_runtime import RuntimeStoreError
+        from hermes_agent.hermes_state_runtime import RuntimeStoreError
         try:
             with owner_scope(authority):
                 restore_routed_session(authority, session_id)

@@ -666,7 +666,7 @@ def _schedule_row_git_meta(session: dict, key: str, db) -> None:
 
 def _workdir_reraise_disk_full(exc: BaseException, log_msg: str) -> None:
     """Re-raise a disk-full write error (the caller must surface it); debug-log the rest."""
-    from hermes_state_errors import is_disk_full_error
+    from hermes_agent.hermes_state_errors import is_disk_full_error
     if is_disk_full_error(exc):
         raise exc
     logger.debug(log_msg, exc_info=True)
@@ -845,7 +845,7 @@ def _workdir_owner_db(session: dict, fail_log: str):
     db, close_db = None, False
     if profile_home := session.get("profile_home"):
         try:
-            from hermes_state_registry import acquire
+            from hermes_agent.hermes_state_registry import acquire
             db, close_db = acquire(Path(profile_home) / "state.db"), True
         except Exception:
             logger.debug(fail_log, exc_info=True)
@@ -857,7 +857,7 @@ def _workdir_owner_db(session: dict, fail_log: str):
     finally:
         if close_db and db is not None:
             with contextlib.suppress(Exception):
-                from hermes_state_registry import release_or_close
+                from hermes_agent.hermes_state_registry import release_or_close
                 release_or_close(db)
 
 

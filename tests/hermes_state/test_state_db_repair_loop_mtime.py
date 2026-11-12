@@ -28,9 +28,9 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
-import hermes_state
-import hermes_state_repair
-from hermes_state_repair import _MAX_MALFORMED_BACKUPS, _MAX_PERSISTENT_REPAIR_ATTEMPTS, _REPAIR_BACKUP_MIN_FREE_BYTES, _backup_content_identity, _backup_db_file, _db_fingerprint, _existing_malformed_backups, _persistent_repair_attempts_exhausted, _record_repair_outcome, _repair_backup_headroom_bytes
+from hermes_agent import hermes_state
+from hermes_agent import hermes_state_repair
+from hermes_agent.hermes_state_repair import _MAX_MALFORMED_BACKUPS, _MAX_PERSISTENT_REPAIR_ATTEMPTS, _REPAIR_BACKUP_MIN_FREE_BYTES, _backup_content_identity, _backup_db_file, _db_fingerprint, _existing_malformed_backups, _persistent_repair_attempts_exhausted, _record_repair_outcome, _repair_backup_headroom_bytes
 
 
 def _damaged_db(tmp_path: Path, size: int = 200_000) -> Path:

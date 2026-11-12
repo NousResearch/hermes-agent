@@ -57,7 +57,7 @@ def _local(runner, live) -> bool:
 
 def _launched_by_classic_cli(runner, live) -> bool:
     from gateway.session_policy import policy_for_source
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     try:
         policy = policy_for_source(runner, live.source)
     except RuntimeStoreError:

@@ -10,7 +10,7 @@ import pytest
 from agent.prompt_builder import SKILLS_GUIDANCE
 from hermes_cli import sessions_cmd
 from hermes_cli.sessions_cmd import _cmd_repair_prompts
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 HEALTHY = (
     "You are Hermes.\n"

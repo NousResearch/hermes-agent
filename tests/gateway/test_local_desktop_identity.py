@@ -148,7 +148,7 @@ async def test_a_trial_users_desktop_chat_runs_on_the_free_model(tmp_path, monke
         await _request(conn, 1, "client.capabilities", {"desktop_local": True})
         created = await _request(conn, 2, "session.create", {"source": "gui", "request_id": "a"})
         assert "result" in created, created
-        from hermes_state_local import local_receipt
+        from hermes_agent.hermes_state_local import local_receipt
         receipt = local_receipt(conn.authority.db, created["result"]["stored_session_id"])
         assert receipt["policy"]["model"] == anon_auth.GUEST_MODEL
 
@@ -272,7 +272,7 @@ async def test_a_chat_opened_on_the_trial_moves_to_the_provider_the_user_connect
     """A trial-only chat runs on the free model; once the user connects a real provider, the same
     chat's next turn runs on that provider's model instead of asking a paid route for nous/welcome."""
     from hermes_cli import anon_auth
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
     from gateway.session_policy import restore_policy
     guest = {"auth_method": anon_auth.ANON_AUTH_METHOD, anon_auth.WELCOME_CLAIM_FLAG: True}
     monkeypatch.setattr(anon_auth, "current_nous_state", lambda *a, **k: guest)
@@ -334,7 +334,7 @@ async def test_a_desktop_chat_saved_before_the_mark_moved_still_resumes_and_runs
     from gateway.session_local_recovery import local_source
     from gateway.session_policy import local_desktop_turn
     from hermes_cli.anon_auth import on_local_desktop_backend
-    from hermes_state_local import POLICY_PREFIX
+    from hermes_agent.hermes_state_local import POLICY_PREFIX
 
     conn = await _connect(tmp_path, monkeypatch,
                           config="model:\n  provider: openrouter\n  default: anthropic/claude-sonnet-4\n")

@@ -19,10 +19,10 @@ from pathlib import Path
 
 import pytest
 
-import hermes_state
+from hermes_agent import hermes_state
 from gateway.config import GatewayConfig
 from gateway.session import SessionStore
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 # These probe the live-DB guard against the real root on purpose.
 pytestmark = pytest.mark.allow_real_home_io
@@ -157,7 +157,7 @@ class TestSubprocessChildCovered:
         env["PYTEST_CURRENT_TEST"] = "tests/fake.py::test_child (call)"
         env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2])
         code = (
-            "from hermes_state import SessionDB\n"
+            "from hermes_agent.hermes_state import SessionDB\n"
             "SessionDB()\n"
         )
         proc = subprocess.run(
@@ -182,7 +182,7 @@ class TestSubprocessChildCovered:
         env["HERMES_HOME"] = str(tmp_path / "child-home")
         env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2])
         code = (
-            "from hermes_state import SessionDB\n"
+            "from hermes_agent.hermes_state import SessionDB\n"
             "db = SessionDB()\n"
             "db.close()\n"
             "print('OK', db.db_path)\n"

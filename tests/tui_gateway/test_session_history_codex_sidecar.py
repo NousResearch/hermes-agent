@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from tui_gateway import server
 
 

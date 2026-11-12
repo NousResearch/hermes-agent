@@ -5,7 +5,7 @@ import pytest
 @pytest.mark.asyncio
 async def test_removed_workspace_reads_and_moves_but_refuses_a_turn(tmp_path, monkeypatch):
     from gateway.session_policy import policy_for_source, policy_scope
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     from tests.gateway.test_session_policy_verbs import _mutation, _owner
 
     store, db, authority, owner, ref = _owner(tmp_path, monkeypatch, None)

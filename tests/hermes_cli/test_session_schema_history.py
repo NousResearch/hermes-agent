@@ -13,7 +13,7 @@ import sqlite3
 import pytest
 
 from hermes_cli import session_schema_history as history
-from hermes_state_common import SCHEMA_SQL
+from hermes_agent.hermes_state_common import SCHEMA_SQL
 
 
 def _declared_now(table: str) -> tuple[str, ...]:

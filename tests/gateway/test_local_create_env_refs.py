@@ -24,7 +24,7 @@ async def _owner(home, monkeypatch):
 def _created_model(owner, actor, home, request_id):
     from gateway.session_local import create_local_session
     from gateway.session_policy import restore_policy
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
     ref = create_local_session(owner, actor, {'request_id': request_id, 'source': 'cli', 'cwd': str(home),
                                               'toolsets': []})
     return restore_policy(local_receipt(owner.db, ref.session_id)['policy']).config()['model']
@@ -69,7 +69,7 @@ async def test_exact_create_retry_after_an_env_rotation_returns_the_original_ses
     from gateway.session_local import create_local_session
     from gateway.session_policy import restore_policy
     from hermes_cli import model_switch
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
     home = tmp_path / 'home'
     home.mkdir()
     (home / 'config.yaml').write_text(
@@ -106,7 +106,7 @@ async def test_new_alias_session_uses_the_current_profile_env(tmp_path, monkeypa
     from gateway.session_local import create_local_session
     from gateway.session_policy import restore_policy
     from hermes_cli import model_switch
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
     home = tmp_path / 'home'
     home.mkdir()
     (home / 'config.yaml').write_text(

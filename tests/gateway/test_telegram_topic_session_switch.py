@@ -14,7 +14,7 @@ import pytest
 
 from gateway.config import HomeChannel, Platform
 from gateway.session import SessionEntry, build_session_key
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from tests.gateway.test_telegram_topic_mode import _make_event, _make_runner, _make_source
 from tests.waiting import async_wait_until
 

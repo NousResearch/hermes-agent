@@ -27,7 +27,7 @@ async def test_only_the_local_cli_owner_may_submit_an_unattended_turn(monkeypatc
     from gateway import run
     from gateway.session_controls import AuthorityConnection
     from hermes_constants import get_hermes_home
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     home = get_hermes_home()
     home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(run, '_hermes_home', home)

@@ -6,7 +6,7 @@ import asyncio
 import pytest
 
 from gateway import run_runtime
-from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions
 from tests.gateway.test_profile_retire_stops_turns import ACTOR, REF, _Agent, _authority
 from gateway.session_contract import Submission
 from tests.waiting import async_wait_until

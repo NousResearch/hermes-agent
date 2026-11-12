@@ -104,7 +104,7 @@ def test_session_branch_idempotency_key_dedupes_retry(monkeypatch, tmp_path):
     }
     server._sessions["parent"] = parent
     monkeypatch.setattr(server, "_get_db", lambda: ProfileDB())
-    monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB)
+    monkeypatch.setattr("hermes_agent.hermes_state_registry.acquire", ProfileDB)
     monkeypatch.setattr(server, "_claim_active_session_slot", lambda *a, **k: (None, None))
     monkeypatch.setattr(server, "_make_agent", lambda *a, **k: FakeAgent())
     monkeypatch.setattr(server, "_set_session_context", lambda *a, **k: {})

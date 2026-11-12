@@ -2,8 +2,8 @@
 import pytest
 
 from agent.runtime_session_store import RuntimeSessionStore
-from hermes_state import SessionDB
-from hermes_state_runtime import (
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_runtime import (
     admit_session_input, begin_runtime_epoch, claim_session_input,
     get_session_admission, mutate_worker_execution, register_worker_execution,
 )

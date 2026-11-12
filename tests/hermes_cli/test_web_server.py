@@ -227,8 +227,8 @@ def mutation_owner(monkeypatch, _isolate_hermes_home):
     from gateway.session_authority import SessionAuthority
     from hermes_constants import get_hermes_home
     from hermes_cli.web_server import app
-    from hermes_state import SessionDB
-    from hermes_state_runtime import begin_runtime_epoch
+    from hermes_agent.hermes_state import SessionDB
+    from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 
     home = get_hermes_home()
     db = SessionDB(db_path=home / 'state.db')
@@ -252,7 +252,7 @@ class TestWebServerEndpoints:
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
 
-        import hermes_state
+        from hermes_agent import hermes_state
         from hermes_constants import get_hermes_home
         from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
@@ -267,7 +267,7 @@ class TestWebServerEndpoints:
         import sqlite3
 
         from hermes_constants import get_hermes_home
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         _web_server_sessions._last_auto_archive_check.clear()
         db_path = get_hermes_home() / "state.db"
@@ -346,7 +346,7 @@ class TestWebServerEndpoints:
         from hermes_cli import web_server
         from hermes_cli.config import load_config, save_config
         from hermes_constants import get_hermes_home
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         db_path = get_hermes_home() / "state.db"
         seed = SessionDB(db_path=db_path)
@@ -409,9 +409,9 @@ class TestWebServerEndpoints:
         dashboard (close-time checkpoint, possible FTS rebuild) is the
         two-writer corruption vector. Only the stale-schema heal may write.
         """
-        import hermes_state
+        from hermes_agent import hermes_state
         from hermes_constants import get_hermes_home
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         SessionDB(db_path=get_hermes_home() / "state.db").close()
 
@@ -432,7 +432,7 @@ class TestWebServerEndpoints:
         """A store the eager reconcile cannot open must not break startup."""
         import sqlite3 as sqlite3_module
 
-        import hermes_state
+        from hermes_agent import hermes_state
 
 
         def boom(*args, **kwargs):
@@ -445,7 +445,7 @@ class TestWebServerEndpoints:
     def test_failed_schema_probes_never_escalate_reads(self, monkeypatch):
         from fastapi import HTTPException
         from hermes_constants import get_hermes_home
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         db_path = get_hermes_home() / "state.db"
         seed = SessionDB(db_path=db_path)
@@ -467,7 +467,7 @@ class TestWebServerEndpoints:
         """Unscoped SQLITE_CORRUPT must not escalate a dashboard read to writes."""
         import sqlite3
 
-        import hermes_state
+        from hermes_agent import hermes_state
 
         db_path = tmp_path / "state.db"
         db_path.write_bytes(b"not-empty")
@@ -486,7 +486,7 @@ class TestWebServerEndpoints:
         assert opens == [True]
 
     def test_decode_error_never_triggers_writable_heal(self, tmp_path, monkeypatch):
-        import hermes_state
+        from hermes_agent import hermes_state
         from fastapi import HTTPException
 
         db_path = tmp_path / "state.db"
@@ -884,7 +884,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
 
 
     def test_import_sessions_endpoint_imports_exported_json(self, mutation_owner):
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         payload = {
             "id": "imported-web-session",
@@ -934,7 +934,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         """Regression for the #39140 CTE salvage: a corrupted parent chain
         that loops (a -> b -> a) must terminate (UNION dedup) instead of
         recursing forever like UNION ALL would."""
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         db = SessionDB()
         try:
@@ -958,7 +958,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         subagent run (``_delegate_from``) or a /branch fork (``_branched_from``) is its own conversation and
         never listed as a continuation, so following it parks the user's chat in a hidden row; only
         compression continuations are followed."""
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         db = SessionDB()
         try:
@@ -2099,7 +2099,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
 
 
     def test_get_sessions_positive_limit_still_works(self):
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         db = SessionDB()
         try:
@@ -2123,7 +2123,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
 
 
     def test_profiles_sessions_positive_limit_still_works(self):
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         db = SessionDB()
         try:
@@ -2142,7 +2142,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
     def test_profiles_sessions_pages_past_500_rows(self):
         """The aggregate route must not strand rows after its old 500-row
         per-profile source cap (issue #88438)."""
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         db = SessionDB()
         try:
@@ -2166,7 +2166,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
     def test_get_session_messages_rejects_negative_limit(self):
         """limit=-1 previously bypassed the documented 500-row clamp because
         min(-1, 500) == -1, which SQLite treats as 'no limit'."""
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         db = SessionDB()
         try:
@@ -2186,7 +2186,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         """A limit above the documented 500-row cap is silently clamped
         (existing ``min(limit, 500)`` behaviour), not rejected — the request
         still succeeds."""
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         db = SessionDB()
         try:
@@ -2206,7 +2206,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         Guards the #80680 contract — display reads opt into compacted history
         explicitly; the dashboard default view stays as it was.
         """
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         db = SessionDB()
         try:
@@ -2238,7 +2238,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         """include_compacted=true returns the full display history: archived
         (active=0, compacted=1) rows plus live rows, in insertion order.
         """
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         db = SessionDB()
         try:
@@ -2276,7 +2276,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             _MERGED_SUMMARY_DELIMITER,
             _SUMMARY_END_MARKER,
         )
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         handoff = (
             f"{SUMMARY_PREFIX}\n{HISTORICAL_TASK_HEADING}\nold task\n\n"
@@ -2338,7 +2338,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         order=latest + include_compacted=true) pages back from the newest
         message and returns the window in chronological order.
         """
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         db = SessionDB()
         try:
@@ -2374,7 +2374,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
 
     def test_get_session_messages_omitted_limit_defaults_to_500(self):
         """The dashboard must never load an entire unbounded transcript."""
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         db = SessionDB()
         try:
@@ -2422,7 +2422,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         ]
 
     def test_export_session_streams_bounded_message_pages(self, monkeypatch):
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         db = SessionDB()
         try:
@@ -2666,7 +2666,7 @@ class TestNewEndpoints:
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
 
-        import hermes_state
+        from hermes_agent import hermes_state
         from hermes_constants import get_hermes_home
         from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
@@ -2982,7 +2982,7 @@ class TestNewEndpoints:
 
 
     def test_analytics_usage_includes_skill_breakdown(self):
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         db = SessionDB()
         try:
@@ -3042,7 +3042,7 @@ class TestNewEndpoints:
         from datetime import datetime
         from zoneinfo import ZoneInfo
 
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         db = SessionDB()
         try:
@@ -4081,7 +4081,7 @@ class TestDeleteSessionEndpoint:
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
 
-        import hermes_state
+        from hermes_agent import hermes_state
         from hermes_constants import get_hermes_home
         from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
@@ -4093,7 +4093,7 @@ class TestDeleteSessionEndpoint:
         self.auth_client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
 
     def _seed(self, ids):
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         db = SessionDB()
         try:
@@ -4103,7 +4103,7 @@ class TestDeleteSessionEndpoint:
             db.close()
 
     def _exists(self, sid) -> bool:
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         db = SessionDB()
         try:
@@ -4166,8 +4166,8 @@ class TestDeleteSessionEndpoint:
         from gateway.session_authority import SessionAuthority
         from hermes_cli import profiles as profiles_mod
         from hermes_cli.web_server import app
-        from hermes_state import SessionDB
-        from hermes_state_runtime import begin_runtime_epoch
+        from hermes_agent.hermes_state import SessionDB
+        from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 
         profile_home = profiles_mod.get_profile_dir("worker")
         profile_home.mkdir(parents=True)
@@ -4237,7 +4237,7 @@ class TestBulkDeleteSessionsEndpoint:
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
 
-        import hermes_state
+        from hermes_agent import hermes_state
         from hermes_constants import get_hermes_home
         from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
@@ -4250,7 +4250,7 @@ class TestBulkDeleteSessionsEndpoint:
         self.auth_client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
 
     def _seed(self, ids):
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         db = SessionDB()
         try:
@@ -4261,7 +4261,7 @@ class TestBulkDeleteSessionsEndpoint:
 
 
     def test_deletes_listed_sessions_only(self):
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         self._seed(["a", "b", "c"])
         resp = self.auth_client.post(
@@ -4304,7 +4304,7 @@ class TestDeleteEmptySessionsEndpoint:
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
 
-        import hermes_state
+        from hermes_agent import hermes_state
         from hermes_constants import get_hermes_home
         from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
@@ -4326,7 +4326,7 @@ class TestDeleteEmptySessionsEndpoint:
         * ``live``    — un-ended, empty → must survive (active)
         * ``archived``— ended, empty, archived → must survive
         """
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         db = SessionDB()
         try:
@@ -4362,7 +4362,7 @@ class TestDeleteEmptySessionsEndpoint:
         """DELETE returns the deleted count and removes only the
         empty-ended-unarchived rows — same shape contract as the
         DB-level method's unit tests."""
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         self._seed()
         resp = self.auth_client.delete("/api/sessions/empty")
@@ -4420,7 +4420,7 @@ class TestPluginAPIAuth:
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
 
-        import hermes_state
+        from hermes_agent import hermes_state
         from hermes_constants import get_hermes_home
         from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
@@ -5311,7 +5311,7 @@ class TestDashboardComponentHealth:
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
 
-        import hermes_state
+        from hermes_agent import hermes_state
         from hermes_constants import get_hermes_home
         import hermes_cli.web_server as ws
 
@@ -5378,7 +5378,7 @@ class TestSessionPatchUnread:
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
 
-        import hermes_state
+        from hermes_agent import hermes_state
         from hermes_constants import get_hermes_home
         from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
@@ -5391,7 +5391,7 @@ class TestSessionPatchUnread:
         self.auth_client = TestClient(app)
         self.auth_client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
 
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         db = SessionDB()
         try:

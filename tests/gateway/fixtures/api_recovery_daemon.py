@@ -1,7 +1,7 @@
 """Hold only execution scheduling after a real API commit and HTTP ACK."""
 import runpy
 from gateway.session_authority import SessionAuthority
-from hermes_state_runtime import list_session_admissions
+from hermes_agent.hermes_state_runtime import list_session_admissions
 
 schedule = SessionAuthority._schedule
 

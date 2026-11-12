@@ -102,7 +102,7 @@ def test_partial_override_falls_back_to_defaults(settings_env):
 
 
 def test_persisted_override_is_shown_before_the_first_turn_after_restart(settings_env, monkeypatch):
-    import hermes_state
+    from hermes_agent import hermes_state
     from gateway.session import SessionStore
 
     def _no_sqlite():

@@ -18,7 +18,7 @@ from agent.context_compressor import (
     SUMMARY_PREFIX,
     _SUMMARY_END_MARKER,
 )
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 HANDOFF_CONTENT = (
     f"{SUMMARY_PREFIX}\n{HISTORICAL_TASK_HEADING}\n"

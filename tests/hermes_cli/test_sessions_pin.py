@@ -48,7 +48,7 @@ class _FakeDB:
 
 def _run(monkeypatch, capsys, argv_tail, db):
     import hermes_cli.main as main_mod
-    import hermes_state
+    from hermes_agent import hermes_state
 
     def open_db(**kwargs):
         assert kwargs.get("read_only", False) == (argv_tail[0] == "pinned")

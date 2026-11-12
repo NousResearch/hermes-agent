@@ -6,7 +6,7 @@ import pytest
 from dataclasses import replace
 from datetime import datetime, timedelta
 from unittest.mock import patch, MagicMock
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from gateway.config import Platform, GatewayConfig, PlatformConfig
 from gateway.platforms.event import MessageEvent
 from gateway.session import (
@@ -302,7 +302,7 @@ class TestSessionStoreRewriteTranscript:
 
     @pytest.fixture()
     def store(self, tmp_path, monkeypatch):
-        import hermes_state
+        from hermes_agent import hermes_state
         monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
         config = GatewayConfig()
         s = SessionStore(sessions_dir=tmp_path, config=config)
@@ -337,7 +337,7 @@ class TestLoadTranscriptDBOnly:
 
 
     def test_db_only_returns_messages(self, tmp_path, monkeypatch):
-        import hermes_state
+        from hermes_agent import hermes_state
         monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
         config = GatewayConfig()
         store = SessionStore(sessions_dir=tmp_path, config=config)
@@ -356,7 +356,7 @@ class TestSessionStoreSwitchSession:
     """Regression coverage for gateway /resume session switching semantics."""
 
     def test_switch_session_reopens_target_session_in_db(self, tmp_path):
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         config = GatewayConfig()
         with patch("gateway.session.SessionStore._ensure_loaded"):
@@ -406,7 +406,7 @@ class TestSessionStoreSwitchSession:
         assert switched is not None and switched.session_id == "target"
 
     def test_switch_session_rebinds_full_compression_lineage(self, tmp_path):
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         config = GatewayConfig()
         with patch("gateway.session.SessionStore._ensure_loaded"):
@@ -748,7 +748,7 @@ class TestSlackWorkspaceSessionKeys:
         self, tmp_path, monkeypatch
     ):
         # Given
-        import hermes_state
+        from hermes_agent import hermes_state
 
         monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
         legacy_source = SessionSource(
@@ -793,7 +793,7 @@ class TestSlackWorkspaceSessionKeys:
         self, tmp_path, monkeypatch
     ):
         # Given
-        import hermes_state
+        from hermes_agent import hermes_state
 
         monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
         source = SessionSource(
@@ -1143,7 +1143,7 @@ class TestRewriteTranscriptPreservesReasoning:
     """rewrite_transcript must not drop reasoning fields from SQLite."""
 
     def test_reasoning_survives_rewrite(self, tmp_path):
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         db = SessionDB(db_path=tmp_path / "test.db")
         session_id = "reasoning-test"
@@ -1293,7 +1293,7 @@ class TestGatewaySessionDbRecovery:
     def test_transcript_reroute_migrates_remaining_backlog_to_child(self):
         import threading
         from types import SimpleNamespace
-        from hermes_state_errors import CompressionSessionClosedError
+        from hermes_agent.hermes_state_errors import CompressionSessionClosedError
 
         class FakeDb:
             def get_compression_tip(self, session_id):
@@ -1486,7 +1486,7 @@ class TestGatewayRoutingTable:
         # Each test gets its own state.db — DEFAULT_DB_PATH is module-level
         # and would otherwise be shared by every SessionDB() in this file's
         # subprocess, leaking gateway_routing rows between tests.
-        import hermes_state
+        from hermes_agent import hermes_state
         monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
 
     def _source(self, chat_id="chat-1", user_id="user-1"):

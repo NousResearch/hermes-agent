@@ -10,8 +10,8 @@ import os
 import threading
 from pathlib import Path
 
-import hermes_state as hs
-import hermes_state_repair
+import hermes_agent.hermes_state as hs
+from hermes_agent import hermes_state_repair
 
 
 def test_preflight_cannot_observe_db_mid_quarantine(tmp_path, monkeypatch):

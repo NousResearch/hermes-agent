@@ -68,7 +68,7 @@ def _app():
 async def _app_turn(authority, ref, text):
     """The app's prompt, settled: ``(status, outcome)`` of its admission."""
     from gateway.session_contract import Submission
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     receipt = await authority.submit(_app(), Submission(text, ref, {'text': text}, 'queue'))
 
     def settled():

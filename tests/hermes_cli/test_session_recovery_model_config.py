@@ -13,7 +13,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from hermes_cli.session_recovery import recover_session_database
 
 _TRUNCATED_JSON = '{"model": "sonnet", "cw'

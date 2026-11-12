@@ -14,7 +14,7 @@ import pytest
 @pytest.fixture()
 def client(monkeypatch, _isolate_hermes_home):
     starlette = pytest.importorskip("starlette.testclient")
-    import hermes_state
+    from hermes_agent import hermes_state
     from hermes_constants import get_hermes_home
     from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
 

@@ -12,9 +12,9 @@ def _reserve_homes(tmp_path, monkeypatch, names=('alpha', 'beta')):
     root.mkdir(mode=0o700)
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.setenv('HERMES_HOME', str(root))
-    # The autouse isolation fixture pins hermes_state.DEFAULT_DB_PATH to its own fake home once
+    # The autouse isolation fixture pins hermes_agent.hermes_state.DEFAULT_DB_PATH to its own fake home once
     # hermes_state is imported; per-home stores must follow the scoped HERMES_HOME here.
-    import hermes_state
+    from hermes_agent import hermes_state
     monkeypatch.setattr(hermes_state, 'DEFAULT_DB_PATH', hermes_state._IMPORT_DEFAULT_DB_PATH)
     homes = [('default', root)]
     for name in names:

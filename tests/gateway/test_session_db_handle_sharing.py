@@ -36,7 +36,7 @@ def _live_count(path) -> int:
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     """A gateway home under tmp_path, with path resolution going through it."""
-    import hermes_state
+    from hermes_agent import hermes_state
 
     root = tmp_path / "hermes"
     root.mkdir(parents=True)
@@ -166,7 +166,7 @@ def test_a_handle_the_registry_tore_down_is_reopened_through_the_registry(store,
     know about, so the agent's ``acquire`` got a second writer on the same file, and after a
     delete + recreate every call raised ``StateDbReplacedError`` until restart.
     """
-    import hermes_state_registry as registry
+    import hermes_agent.hermes_state_registry as registry
 
     runner = _runner_with(store)
     first = store._db
@@ -193,7 +193,7 @@ def test_a_handle_the_registry_tore_down_is_reopened_through_the_registry(store,
 def test_api_server_profile_cache_reopens_a_handle_the_registry_tore_down(home):
     """The API adapter's per-home cache serves routed profiles under their runtime scope; the
     same ``close_all_under`` must evict its entry too."""
-    import hermes_state_registry as registry
+    import hermes_agent.hermes_state_registry as registry
     from gateway.platforms.api_server import APIServerAdapter
 
     adapter = APIServerAdapter.__new__(APIServerAdapter)

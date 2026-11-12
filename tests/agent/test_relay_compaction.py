@@ -224,7 +224,7 @@ def test_every_rotation_in_one_turn_is_marked_on_that_turn(relay, tmp_path, monk
     no Relay scope while the turn that rotated into it is still running. A second rotation in that turn (a
     multi-pass preflight) must still be marked on the live turn, not dropped."""
     from agent.agent_runtime_helpers import note_turn_persisted, note_turn_start
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from run_agent import AIAgent
 
     fake, runtime, coordinator = relay
@@ -269,7 +269,7 @@ def test_a_post_turn_micro_compaction_in_a_rotated_child_is_marked_on_the_turn(r
 
     from agent.agent_runtime_helpers import note_turn_persisted, note_turn_start
     from agent.turn_finalizer import _micro_compact_after_turn
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from run_agent import AIAgent
 
     fake, runtime, coordinator = relay

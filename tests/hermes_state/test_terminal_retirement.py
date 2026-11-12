@@ -3,14 +3,14 @@ import sqlite3
 from types import SimpleNamespace
 
 import pytest
-from hermes_state import SessionDB
-import hermes_state_runtime as rt
+from hermes_agent.hermes_state import SessionDB
+import hermes_agent.hermes_state_runtime as rt
 from gateway.session_results import retain_result, admission_result
 
 
 def test_used_history_retirement_is_atomic_and_exact(tmp_path, monkeypatch):
-    import hermes_state_mutation_retirement as retirement
-    import hermes_state_mutations
+    import hermes_agent.hermes_state_mutation_retirement as retirement
+    from hermes_agent import hermes_state_mutations
     monkeypatch.setattr(hermes_state_mutations, '_delete',
         getattr(retirement, 'delete_in_transaction', hermes_state_mutations._delete))
     path = tmp_path / 'state.db'
@@ -53,7 +53,7 @@ def test_used_history_retirement_is_atomic_and_exact(tmp_path, monkeypatch):
         # Settlement stores this turn's suffix, flagged so no reader re-derives a boundary from it.
         assert admission_result(db, row['admission_id']) == {
             'result': {**result['result'], '_messages_are_turn_suffix': True}, 'usage': result['usage']}
-        from hermes_state_terminal import terminal_worker_receipt
+        from hermes_agent.hermes_state_terminal import terminal_worker_receipt
         worker_args = dict(execution_id='worker', session_id='used', generation=row['generation'], sequence=1,
             adoption_secret='owned-proof', payload_digest=rt.admission_fingerprint(canonical_target='used',
                 payload={'operation': 'transcript.append', 'payload': worker_append}))
@@ -73,8 +73,8 @@ def test_used_history_retirement_is_atomic_and_exact(tmp_path, monkeypatch):
 
 
 def test_nonterminal_obligations_prevent_any_retirement(tmp_path):
-    import hermes_state_mutation_retirement as retirement
-    import hermes_state_mutations
+    import hermes_agent.hermes_state_mutation_retirement as retirement
+    from hermes_agent import hermes_state_mutations
     delete_in_transaction = getattr(retirement, 'delete_in_transaction', hermes_state_mutations._delete)
     with SessionDB(tmp_path / 'state.db') as db:
         epoch = rt.begin_runtime_epoch(db, instance_id='owner')
@@ -133,8 +133,8 @@ def test_late_accounting_backfill_cannot_resurrect_a_retired_session(tmp_path):
 def test_deletion_tombstone_keeps_only_the_closing_worker_result(tmp_path):
     """Full worker results (history reads) must not outlive the user's delete;
     only the closing receipt stays replayable, earlier digests still detect conflicts."""
-    import hermes_state_mutation_retirement as retirement
-    from hermes_state_terminal import terminal_worker_receipt
+    import hermes_agent.hermes_state_mutation_retirement as retirement
+    from hermes_agent.hermes_state_terminal import terminal_worker_receipt
     with SessionDB(tmp_path / 'state.db') as db:
         db.create_session('gone', source='api_server')
         db.append_message('gone', 'user', 'SECRET_HISTORY_LINE')
@@ -220,7 +220,7 @@ def test_a_malformed_unrelated_route_or_policy_row_cannot_abort_a_delete(tmp_pat
                                                   (old, old, 'target')))
             assert db.prune_sessions(older_than_days=30) == 1
         assert db.get_session('target') is None
-        from hermes_state_mutation_retirement import retired_session
+        from hermes_agent.hermes_state_mutation_retirement import retired_session
         assert retired_session(db, 'target')
         with db._read_ctx() as c:  # the unrelated row is left exactly as it was
             assert c.execute("SELECT (SELECT COUNT(*) FROM gateway_routing) + (SELECT COUNT(*) FROM state_meta "
@@ -232,7 +232,7 @@ def test_deleted_history_is_not_recoverable_from_worker_or_mutation_receipts(tmp
     receipt, so its last receipt may be a history read; a rewind/compress receipt copies the
     rewound message / summary. Neither may replay the deleted transcript after the delete."""
     import json
-    from hermes_state_terminal import terminal_worker_receipt
+    from hermes_agent.hermes_state_terminal import terminal_worker_receipt
     with SessionDB(tmp_path / 'state.db') as db:
         db.create_session('gone', source='cli')
         epoch = rt.begin_runtime_epoch(db, instance_id='owner')
@@ -335,7 +335,7 @@ def test_tombstones_past_the_retry_horizon_are_reclaimed_by_the_prune_pass(tmp_p
     """Deletion tombstones keep byte-exact retry replies for the 7-day horizon, then the maintenance
     prune pass reclaims every row they hold but the deletion fence itself (B2-06)."""
     import time
-    import hermes_state_mutation_retirement as retirement
+    import hermes_agent.hermes_state_mutation_retirement as retirement
     now = time.time()
     with SessionDB(tmp_path / 'state.db') as db:
         epoch = rt.begin_runtime_epoch(db, instance_id='owner')
@@ -358,7 +358,7 @@ def test_tombstones_past_the_retry_horizon_are_reclaimed_by_the_prune_pass(tmp_p
         young, young_id = settle_and_delete('young', now - 6 * 86400)
 
         def rows_naming(sid, admission_id):
-            from hermes_state_terminal import ADMISSION_PREFIX, RESULT_PREFIX, identity_key
+            from hermes_agent.hermes_state_terminal import ADMISSION_PREFIX, RESULT_PREFIX, identity_key
             keys = (ADMISSION_PREFIX + admission_id, RESULT_PREFIX + admission_id,
                     identity_key('api', sid, 'r'), retirement.RETIRED_PREFIX + sid)
             return [k for k in keys if db.get_meta(k) is not None]

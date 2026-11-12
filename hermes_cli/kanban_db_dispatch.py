@@ -2681,7 +2681,7 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
     if workspaces_root_path in _retagged_workspace_roots:
         return
     try:
-        from hermes_state_registry import acquire, release_or_close
+        from hermes_agent.hermes_state_registry import acquire, release_or_close
 
         # Inside the gateway the dispatcher shares the process's registry handle; a bare
         # SessionDB() here was one more writer connection on the same state.db (#100896).

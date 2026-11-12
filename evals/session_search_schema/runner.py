@@ -73,7 +73,7 @@ def extract_arm(ref: str, workdir: Path, name: str) -> Path:
 
 def load_arm(path: Path, name: str, work_db_path: Path):
     """Import an arm module and make profile resolution hermetic."""
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     spec = importlib.util.spec_from_file_location(f"ss_arm_{name}", path)
     mod = importlib.util.module_from_spec(spec)
@@ -104,7 +104,7 @@ def build_tools(arm_mod):
 
 
 def exec_tool(arm_mod, args, main_db_path: Path):
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=main_db_path)
     try:

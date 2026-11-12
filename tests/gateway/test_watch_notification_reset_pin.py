@@ -50,7 +50,7 @@ async def _gateway(monkeypatch):
 
 
 def _settled(authority, session_id):
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     rows = list_session_admissions(authority.db, session_id=session_id, pending_only=False) if session_id else []
     return bool(rows) and all(row['status'] not in ('queued', 'started') for row in rows)
 
@@ -73,7 +73,7 @@ def _restart_wait(runner):
 
 
 def _queued_admissions(authority, session_id):
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     return [row for row in list_session_admissions(authority.db, session_id=session_id, pending_only=False)
             if row['principal_id'].startswith('automation:')]
 

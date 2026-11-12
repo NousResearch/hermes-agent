@@ -122,11 +122,11 @@ def _connect() -> sqlite3.Connection:
     if is_worker_process():
         raise WorkerPersistenceError('worker_delegation_ledger_unavailable')
     from hermes_cli.sqlite_util import open_db
-    # Same state.db as hermes_state.SessionDB -- reuse its owner-only (0600)
+    # Same state.db as hermes_agent.hermes_state.SessionDB -- reuse its owner-only (0600)
     # hardening so this writer doesn't create/leave the file (and its WAL
-    # sidecars) at the process umask. See hermes_state._secure_state_db_files.
+    # sidecars) at the process umask. See hermes_agent.hermes_state._secure_state_db_files.
     from hermes_constants import mkdir_under_hermes_home
-    from hermes_state import _secure_state_db_files
+    from hermes_agent.hermes_state import _secure_state_db_files
 
     path = _db_path()
     # A late replay or writer must not resurrect a removed named profile (#123265).
@@ -140,8 +140,8 @@ def _connect() -> sqlite3.Connection:
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
-    from hermes_state_repair import apply_durability_barriers
-    from hermes_state_schema import reconcile_state_schema
+    from hermes_agent.hermes_state_repair import apply_durability_barriers
+    from hermes_agent.hermes_state_schema import reconcile_state_schema
     # Preserve the journal mode SessionDB configured on state.db: forcing WAL from
     # every short-lived connection collides with live transcript/FTS writers.
     apply_durability_barriers(conn)

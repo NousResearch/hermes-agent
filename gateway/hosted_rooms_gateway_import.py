@@ -129,7 +129,7 @@ def import_standalone_rooms(target_db: Path, *, runtime_epoch: int | None = None
     from gateway.hosted_rooms_common import clock
     from gateway.hosted_rooms_legacy_import import _copy_rows
     from gateway.owner_identity import host_owner_subject
-    from hermes_state_runtime import RuntimeStoreError, _epoch
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError, _epoch
 
     source = source_for(target_db)
     if source is None:

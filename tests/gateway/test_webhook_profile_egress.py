@@ -147,7 +147,7 @@ async def test_retained_destination_keeps_profile_and_freezes_its_home(profile_h
 
 def test_destination_missing_profile_home_does_not_borrow_default(profile_homes):
     from hermes_constants import get_hermes_home
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     from gateway.platforms.webhook_delivery import snapshot_destination, validate_destination
 
     (get_hermes_home() / "profiles" / "sec" / "config.yaml").write_text("platforms: {}\n")

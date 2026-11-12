@@ -15,7 +15,7 @@ from hermes_cli.session_export import iter_user_prompt_records
 from hermes_cli.session_export_html import generate_multi_session_html_export
 from hermes_cli.session_export_md import _iso_timestamp
 from hermes_cli.sessions_cmd import _cmd_list
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 @pytest.fixture

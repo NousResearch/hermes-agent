@@ -35,7 +35,7 @@ async def pick(tmp_path, monkeypatch, before, after, provider, *, request=None, 
     from gateway.session_mutation_model import prepare_model
     from gateway.session_policy import build_policy, bind_launch_key, restore_policy
     from gateway.run_turn_prepare import _resolve_policy_agent_runtime
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     monkeypatch.setenv('HERMES_HOME', str(hermes_home or tmp_path))
     (tmp_path / 'config.yaml').write_text(json.dumps(before))
     private = {}
@@ -104,7 +104,7 @@ async def test_legacy_provider_respelling_picks_new_endpoint(tmp_path, monkeypat
 @pytest.mark.asyncio
 @pytest.mark.parametrize('bypass', ['ignore_user_config', 'safe_mode'])
 async def test_config_only_pick_does_not_import_profile_provider(tmp_path, monkeypatch, bypass):
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     with peers() as (_a, au, b, bu):
         before = {'model': {'provider':'custom', 'base_url':au,'default':'original'}}
         after = {**before, 'providers': {'reviewprovider':{'base_url':bu,'api_key':'profile-only-key'}}}

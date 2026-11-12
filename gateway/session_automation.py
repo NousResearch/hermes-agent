@@ -12,7 +12,7 @@ import re
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session_contract import SessionRef
-from hermes_state_runtime import RuntimeStoreError, admit_session_input, list_session_admissions
+from hermes_agent.hermes_state_runtime import RuntimeStoreError, admit_session_input, list_session_admissions
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ def completion_admission(runner, event):
     entry = route_entry(authority, str(event.get('session_key') or ''))
     if entry is None:
         return None
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     identity = producer_identity(runner, event)
     for row in list_session_admissions(authority.db, session_id=_route_owner(authority, entry), pending_only=False):
         descriptor = row['payload'].get('local_automation_v1') or row['payload'].get('native_text_v1', {}).get('automation', {})
@@ -75,7 +75,7 @@ async def deliver_heartbeat(runner, event):
 
 def _replaced_tick_claimed(runner, prepared):
     from gateway.session_authorities import active_authority
-    from hermes_state_runtime import get_session_admission
+    from hermes_agent.hermes_state_runtime import get_session_admission
     replaced = prepared.get('_replaces')
     authority = active_authority(runner) if replaced else None
     row = authority and get_session_admission(authority.db, admission_id=replaced)
@@ -195,7 +195,7 @@ async def prepare_heartbeat(runner, event):
         logger.debug("Dropped heartbeat %s of process %s: its completion is already admitted",
                      event.get('event_id'), process)
         return None
-    from hermes_state_runtime import find_session_admission
+    from hermes_agent.hermes_state_runtime import find_session_admission
     if await asyncio.to_thread(find_session_admission, authority.db, principal_id='automation:' + entry.session_key,
                                session_id=owner, request_id=producer_identity(runner, event)):
         return None  # a retry of a tick already admitted (its acknowledgement lost)
@@ -450,7 +450,7 @@ def admission_display(payload):
 def committed_route_envelope(authority, entry):
     """The route's last committed native envelope with connector provenance (what a producer turn
     borrows), or ``None`` while no human message was admitted there."""
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     # Admissions belong to the logical root; ``entry.session_id`` is only the transcript tip.
     prior = list_session_admissions(authority.db, session_id=authority.logical_owner(entry.session_id),
                                     pending_only=False)
@@ -675,7 +675,7 @@ async def move_route_wakes(runner, session_key, old_session_id):
     from gateway.session_contract import SessionActor
     from gateway.session_detached import lane_source
     from gateway.session_runtime_workers import tracked_write
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     old = SessionRef(authority.profile_id, authority.logical_owner(old_session_id))
     new = SessionRef(authority.profile_id, authority.logical_owner(entry.session_id))
     if old.session_id not in authority.sessions or old == new:
@@ -721,7 +721,7 @@ async def _reset_and_retarget_local(authority, runner, session_key, old_session_
     in the same ordered worker step as the rotation; left stale, the drain refuses them
     (``admission_conflict``) and the Bot Chat's FIFO pauses for good, across restarts."""
     from gateway.session_runtime_workers import tracked_write
-    from hermes_state_runtime import retarget_local_automation
+    from hermes_agent.hermes_state_runtime import retarget_local_automation
     live = authority.sessions[owner.session_id]
 
     def rotate_and_retarget():
@@ -767,7 +767,7 @@ async def reset_and_rehome_messages(runner, session_key, old_session_id):
     import asyncio
     from gateway.session_authority import LiveSession
     from gateway.session_runtime_workers import tracked_write
-    from hermes_state_runtime import rehome_queued_inputs
+    from hermes_agent.hermes_state_runtime import rehome_queued_inputs
 
     from gateway.session_detached import lane_source
     chat_source = lane_source(live.source)  # the rotation detaches the old conversation off the route

@@ -96,7 +96,7 @@ async def test_resume_after_restart_rereads_config_derived_fields_and_keeps_pick
                                               'backend': 'docker', 'model': 'm1'}
         # A new policy generation the resume reply already reports, durable in the receipt.
         assert resumed['execution_generation'] == before + 1 == store._db.get_session(plain)['runtime_generation']
-        from hermes_state_local import local_receipt
+        from hermes_agent.hermes_state_local import local_receipt
         from gateway.session_policy import restore_policy
         assert restore_policy(local_receipt(store._db, plain)['policy']) == _policy(cold, plain)
         # The launch flags stay the session's own; a config-derived field still follows.
@@ -128,7 +128,7 @@ async def test_resume_never_changes_a_running_turns_policy(tmp_path, monkeypatch
     from gateway.session_authority import initialize_session_authority
     from gateway.session_contract import Submission
     from gateway.session_controls import AuthorityConnection
-    import hermes_state_runtime as rt
+    import hermes_agent.hermes_state_runtime as rt
     home = _home(monkeypatch)
     store = SessionStore(home / 'sessions', GatewayConfig())
     assert store._db.db_path.parent.resolve() == home.resolve()
@@ -210,10 +210,10 @@ async def test_a_resume_cancelled_mid_commit_still_publishes_the_committed_polic
     policy ahead of the live one (restore_local_session refuses that mismatch, and a later refresh that finds
     the stored policy current returns early without repairing it)."""
     import threading
-    import hermes_state_mutation_prepared as prepared
+    import hermes_agent.hermes_state_mutation_prepared as prepared
     from gateway.session_policy import restore_policy
     from gateway.session_runtime_workers import mutation_tasks
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
     home = _home(monkeypatch)
     store, authority = await _owner_authority(home)
     owner, viewer = _connect(authority), _connect(authority)
@@ -311,7 +311,7 @@ def hold_refresh_commit(monkeypatch):
     """A barrier at the refresh's commit seam (its preflight has read the stored policy and generation, its
     write transaction has not begun): ``(entered, release, done, outcome)``, *outcome* what the commit did."""
     import threading
-    import hermes_state_mutation_prepared as prepared
+    import hermes_agent.hermes_state_mutation_prepared as prepared
     entered, release, done, outcome = threading.Event(), threading.Event(), threading.Event(), []
     commit = prepared.commit_refreshed_policy
 
@@ -334,10 +334,10 @@ async def admit_during_refresh(authority, actor, sid, refresh, barrier):
     while that admission is still queued: the owner loop is held until it finishes, so the drain (a task the
     admission scheduled) cannot start the turn first. The refused transaction left the stored policy and its
     generation as they were. ``(refresh result, admission)``."""
-    import hermes_state_runtime as rt
+    import hermes_agent.hermes_state_runtime as rt
     from gateway.session_contract import SessionRef, Submission
-    from hermes_state_local import local_receipt
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     entered, release, done, outcome = barrier
     task = asyncio.create_task(refresh)
     await async_wait_until(entered.is_set, what='the refresh to reach its commit')
@@ -359,8 +359,8 @@ async def admit_during_refresh(authority, actor, sid, refresh, barrier):
 async def test_an_admission_queued_during_an_attach_refresh_keeps_the_old_policy(tmp_path, monkeypatch):
     """The idle check is inside the refresh's write transaction: a turn queued after the refresh read the
     stored policy refuses the commit, and that turn runs the policy it was admitted under."""
-    import hermes_state_runtime as rt
-    from hermes_state_local import local_receipt
+    import hermes_agent.hermes_state_runtime as rt
+    from hermes_agent.hermes_state_local import local_receipt
     home = _home(monkeypatch)
     seen = []
 
@@ -432,8 +432,8 @@ async def test_a_branch_stored_before_receipts_carried_picks_keeps_its_lineages_
     """A branch stored before its receipt recorded ``picks`` takes them from its lineage: the parent's pick
     receipts committed before the branch, and the parent's own inherited picks, walking up. A pick the parent
     committed after the branch is not the branch's."""
-    from hermes_state_local import POLICY_PREFIX
-    from hermes_state_mutation_prepared import policy_picks
+    from hermes_agent.hermes_state_local import POLICY_PREFIX
+    from hermes_agent.hermes_state_mutation_prepared import policy_picks
     home = _home(monkeypatch)
     store, authority = await _owner_authority(home)
     owner, later = _connect(authority), _connect(authority)
@@ -598,7 +598,7 @@ async def test_the_next_command_after_a_workspace_move_runs_in_the_new_folder(tm
         # A teardown that fails must not leave the committed move unpublished (the queue would stall).
         from gateway import session_policy_refresh
         from gateway.session_policy import restore_policy
-        from hermes_state_local import local_receipt
+        from hermes_agent.hermes_state_local import local_receipt
         monkeypatch.setattr(session_policy_refresh, 'drop_session_terminal', _raise)
         again = tmp_path / 'again'
         again.mkdir()
@@ -660,7 +660,7 @@ def test_a_skipped_resume_refresh_warns_unless_the_session_is_busy(monkeypatch, 
     silent no-refresh, so it is a WARNING."""
     import logging
     from gateway import session_policy_refresh as refresh
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     for failure in (RuntimeStoreError('session_busy'), RuntimeStoreError('launch_credentials_unavailable'),
                     OSError('config.yaml unreadable')):
         async def fail(authority, ref, failure=failure):

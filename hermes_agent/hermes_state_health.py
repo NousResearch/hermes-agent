@@ -27,7 +27,7 @@ import threading
 from pathlib import Path
 from typing import Dict, Optional
 
-from hermes_state_errors import (
+from hermes_agent.hermes_state_errors import (
     classify_persistence_error,
     is_fts_scoped_corruption_error,
     is_malformed_schema_error,

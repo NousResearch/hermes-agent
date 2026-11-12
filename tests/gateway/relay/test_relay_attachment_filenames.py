@@ -296,7 +296,7 @@ async def test_native_admission_envelope_round_trips_the_names(tmp_path, monkeyp
     from gateway.run import GatewayRunner
     from gateway.session_authority import initialize_session_authority
     from gateway.session_envelope import restore_native, snapshot_native
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     chat = "15551234567@s.whatsapp.net"

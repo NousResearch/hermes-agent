@@ -7,7 +7,7 @@ import pytest
 
 from agent.agent_init import _init_session_state
 from agent.session_persistence import SessionPersistenceMixin
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 @pytest.mark.parametrize("legacy_enabled", [False, True])

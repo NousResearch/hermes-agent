@@ -214,7 +214,7 @@ agent 通过 `IterationBudget` 追踪迭代次数：
 ### Session 持久化
 
 每轮结束后：
-- 消息保存到 session 存储（通过 `hermes_state.py` 使用 SQLite）
+- 消息保存到 session 存储（通过 `hermes_agent/hermes_state.py` 使用 SQLite）
 - 内存变更刷写到 `MEMORY.md` / `USER.md`
 - 可通过 `/resume` 或 `hermes chat --resume` 恢复 session
 

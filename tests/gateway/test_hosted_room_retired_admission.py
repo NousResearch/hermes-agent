@@ -8,7 +8,7 @@ import asyncio
 import time
 from pathlib import Path
 
-from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions
 
 
 def _queued_member_turn(hosted_owner, monkeypatch, task_id, prompt):

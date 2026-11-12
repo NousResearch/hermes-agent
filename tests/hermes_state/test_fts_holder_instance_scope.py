@@ -9,7 +9,7 @@ holder scan falls back to ``/proc/<pid>/cmdline`` + ``_looks_like_hermes``.
 The demo process's argv matches the Hermes patterns exactly, so the fallback
 flagged it as an uninspectable holder of the MAIN instance's state.db even
 though ``lsof`` proved zero open handles on it.  Consequence: the stale-FTS
-rebuild in ``hermes_state_schema._recover_stale_fts`` was deferred 42 times
+rebuild in ``hermes_agent.hermes_state_schema._recover_stale_fts`` was deferred 42 times
 across 6 gateway restarts, the ``fts_stale`` breadcrumb never cleared, and
 FTS self-repair stayed permanently disabled.
 
@@ -28,7 +28,7 @@ import os
 
 import pytest
 
-import hermes_state_holders
+from hermes_agent import hermes_state_holders
 
 # Capture the pristine stdlib functions at import time: monkeypatched calls
 # re-enter these closures, and re-capturing ``os.listdir`` after a previous

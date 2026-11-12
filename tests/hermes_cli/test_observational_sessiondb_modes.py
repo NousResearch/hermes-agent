@@ -10,7 +10,7 @@ from hermes_cli import sessions_cmd
 
 def test_sessions_observational_commands_on_missing_store_stay_empty(monkeypatch, tmp_path, capsys):
     """Fresh profile: list/stats/pinned report empty without creating a writable store."""
-    import hermes_state
+    from hermes_agent import hermes_state
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(hermes_state, "_default_db_path", lambda: db_path)
@@ -34,8 +34,8 @@ def test_doctor_write_probe_never_touches_a_store_a_live_writer_holds(monkeypatc
     """The write probe runs against a read-only snapshot when a gateway holds state.db, in place otherwise."""
     import sqlite3
 
-    import hermes_state_holders
-    import hermes_state_repair
+    from hermes_agent import hermes_state_holders
+    from hermes_agent import hermes_state_repair
     from hermes_cli import doctor_state
 
     state_db = tmp_path / "state.db"

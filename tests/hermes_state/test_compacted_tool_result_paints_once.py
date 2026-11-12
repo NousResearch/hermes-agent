@@ -3,8 +3,8 @@ read paints that tool result once, as the archived full original, while the mode
 no stored row changes (#132939, #135655)."""
 import pytest
 
-from hermes_state import SessionDB
-from hermes_state_timeline import get_session_messages_around
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_timeline import get_session_messages_around
 
 FULL = "FULL " * 1000
 STUB = "[read_file] pruned stub"

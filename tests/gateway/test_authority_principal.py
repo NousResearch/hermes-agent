@@ -5,8 +5,8 @@ import pytest
 
 from gateway.session_authority import LiveSession, SessionAuthority
 from gateway.session_controls import AuthorityConnection
-from hermes_state import SessionDB
-from hermes_state_runtime import begin_runtime_epoch
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 
 
 @pytest.mark.asyncio
@@ -39,7 +39,7 @@ async def test_connection_preserves_server_grant(tmp_path, binding):
 @pytest.mark.asyncio
 async def test_question_response_does_not_grant_execution_control(tmp_path):
     from gateway.session_contract import SessionActor, SessionRef
-    from hermes_state_runtime import RuntimeStoreError, admit_session_input, claim_session_input
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError, admit_session_input, claim_session_input
     from tools import clarify_gateway
 
     with SessionDB(db_path=tmp_path / 'state.db') as db:

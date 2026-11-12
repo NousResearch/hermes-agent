@@ -9,8 +9,8 @@ runs before a model pick: a level picked with a later model pick wins, a later l
 import json
 import logging
 
-from hermes_state_mutation_prepared import DEFERRED_PICK_PREFIX as _PREFIX
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_mutation_prepared import DEFERRED_PICK_PREFIX as _PREFIX
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +22,8 @@ def defer_pick(authority, actor, ref, params):
     Blocking SQLite: callers run it off the event loop. Acceptance writes the request's durable
     mutation receipt in the same transaction, so an exact retry returns this result instead of
     overwriting a newer pick, and the stored pick carries a stable application id."""
-    from hermes_state_mutations import validate_action
-    from hermes_state_runtime import _epoch, _json, mutation_receipt_key, replay_mutation_receipt
+    from hermes_agent.hermes_state_mutations import validate_action
+    from hermes_agent.hermes_state_runtime import _epoch, _json, mutation_receipt_key, replay_mutation_receipt
     operation = params.get('operation', 'model')
     validate_action(operation, params['payload'])
     shown = None
@@ -85,8 +85,8 @@ async def _commit(authority, ref, entry, operation):
     the transcript (the pick waits for the next boundary), else the mutation's result."""
     import asyncio
     from gateway.session_mutations import write_mutation
-    from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
-    from hermes_state_mutation_retirement import has_mutation_receipt
+    from hermes_agent.hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
+    from hermes_agent.hermes_state_mutation_retirement import has_mutation_receipt
     if await asyncio.to_thread(has_mutation_receipt, authority.db, entry['principal_id'], ref.session_id,
                                entry['application_id']):
         return {'status': 'replayed'}  # committed before a restart, not yet removed: never apply it twice
@@ -114,7 +114,7 @@ async def _commit_level(authority, ref, key, raw, pick):
     """Commit the level deferred in *pick* (stored as *raw*) and drop it from the slot. Returns the
     remaining slot value, or None when nothing is left or a worker still holds the transcript."""
     import asyncio
-    from hermes_state_runtime import _json
+    from hermes_agent.hermes_state_runtime import _json
     result = await _commit(authority, ref, pick.pop('reasoning'), 'reasoning')
     if result is None:
         return None
@@ -163,7 +163,7 @@ async def apply_deferred_pick(authority, ref, live):
         # A guarded target (cost / data policy / large context): nothing was written. The pick stays
         # pending, marked as asked, and the owner's confirmation exchange goes to every viewer; the
         # confirmed resend (``payload.confirm``) commits it through session.mutate.
-        from hermes_state_runtime import _json
+        from hermes_agent.hermes_state_runtime import _json
         await asyncio.to_thread(authority.db._execute_write, lambda conn: conn.execute(
             'UPDATE state_meta SET value=? WHERE key=? AND value=?',
             (_json({**pick, 'awaiting_confirm': result['confirm']}), key, raw)))

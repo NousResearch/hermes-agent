@@ -8,9 +8,9 @@ import logging
 from gateway.config import Platform
 from gateway.session import SessionEntry, SessionSource, _is_path_unsafe
 from gateway.session_contract import SessionRef
-from hermes_state_runtime import RuntimeStoreError, _epoch, _json
+from hermes_agent.hermes_state_runtime import RuntimeStoreError, _epoch, _json
 
-from hermes_state_local import API_BINDING_PREFIX as _BINDING_PREFIX, API_DECLARED_PREFIX as _DECLARED_PREFIX
+from hermes_agent.hermes_state_local import API_BINDING_PREFIX as _BINDING_PREFIX, API_DECLARED_PREFIX as _DECLARED_PREFIX
 
 
 def declared_api_session(db, key):
@@ -34,8 +34,8 @@ def implicit_api_session(db, session_id, request_id=None):
     only, so every later turn of that conversation (same opening) lands on the same session. An
     exact retry stays on the generation holding its request id's terminal identity; explicit ids
     never come here."""
-    from hermes_state_mutation_retirement import first_generation
-    from hermes_state_terminal import identity_key
+    from hermes_agent.hermes_state_mutation_retirement import first_generation
+    from hermes_agent.hermes_state_terminal import identity_key
     pinned = None if not request_id else lambda conn, sid: conn.execute(
         'SELECT 1 FROM state_meta WHERE key=?', (identity_key('api', sid, request_id),)).fetchone() is not None
     return first_generation(db, partial(api_generation_id, session_id), pinned=pinned)[1]
@@ -69,7 +69,7 @@ def hosted_member_session(db, identity):
     """``(generation, session_id)`` of the hidden session a hosted room member's dispatches land on:
     a deleted one stays retired, so the room's next task moves to the next generation. A room
     retry is replayed by the run's Idempotency-Key, never by this id, so nothing pins it."""
-    from hermes_state_mutation_retirement import first_generation
+    from hermes_agent.hermes_state_mutation_retirement import first_generation
     return first_generation(db, lambda n: room_session_id(identity, n))
 
 
@@ -201,7 +201,7 @@ def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=
     def write(conn):
         _epoch(conn, authority.epoch)
         authority._require_admission_open()  # a drain that began while this waited on the writer wins
-        from hermes_state_mutation_retirement import RETIRED_PREFIX, keep_passed_fences
+        from hermes_agent.hermes_state_mutation_retirement import RETIRED_PREFIX, keep_passed_fences
         if conn.execute('SELECT 1 FROM state_meta WHERE key=?', (RETIRED_PREFIX + session_id,)).fetchone():
             raise RuntimeStoreError('not_found')
         # The walk ran before this write: a sweep marker it passed may have been reclaimed since,

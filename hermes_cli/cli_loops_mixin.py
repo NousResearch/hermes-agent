@@ -142,7 +142,7 @@ class CLILoopsMixin:
 
     def _cmd_title(self, cmd_original: str):
         from cli import _cprint
-        from hermes_state import format_session_db_unavailable
+        from hermes_agent.hermes_state import format_session_db_unavailable
         parts = cmd_original.split(maxsplit=1)
         if len(parts) == 1:
             # No argument: show current title and session ID.
@@ -169,7 +169,7 @@ class CLILoopsMixin:
         # long) prints that one reason and stops — never a second, contradictory
         # "empty after cleanup" error (SC-05).
         try:
-            from hermes_state import SessionDB
+            from hermes_agent.hermes_state import SessionDB
             new_title = SessionDB.sanitize_title(raw_title)
         except ValueError as e:
             _cprint(f"  {e}")

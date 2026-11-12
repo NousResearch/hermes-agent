@@ -18,7 +18,7 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter
 from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 from gateway.session_group_peers import dispatch_target, room_link
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from tests.waiting import async_wait_until
 
 ROOM = dict(room_id='lent', home_install_id='install:home', authority_gateway_id='install:home',

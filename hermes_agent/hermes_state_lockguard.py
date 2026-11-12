@@ -32,7 +32,7 @@ import sys
 import threading
 from typing import Dict, Optional, Set, Tuple
 
-logger = logging.getLogger("hermes_state")
+logger = logging.getLogger("hermes_agent.hermes_state")
 
 # SQLite's unix VFS lock geometry (os_unix.c): the SHARED range on the main file and the
 # deadman-switch byte of the -shm file.

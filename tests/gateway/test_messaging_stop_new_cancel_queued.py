@@ -21,7 +21,7 @@ async def test_busy_stop_and_new_cancel_the_queued_messaging_followup(tmp_path, 
     from gateway.session_ingress import admit_message
     from gateway.session_ingress_context import native_callback
     from hermes_constants import get_hermes_home
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     from plugins.platforms.discord.adapter import DiscordAdapter
 
     monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)

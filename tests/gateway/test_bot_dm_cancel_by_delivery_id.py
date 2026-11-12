@@ -9,7 +9,7 @@ import asyncio
 
 import pytest
 
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 from tests.gateway import test_session_bot_retry as retry_suite
 from tests.gateway.test_session_bot_retry import KEY, _admissions, _settle_quietly
 

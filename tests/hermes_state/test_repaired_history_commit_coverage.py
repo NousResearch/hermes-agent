@@ -11,7 +11,7 @@ import pytest
 
 from agent.agent_runtime_helpers import repair_message_sequence
 from agent.conversation_compression_archive import coverage_for_commit
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 SUMMARY = "summary of the held rows"
 UNSEEN = [("user", "UNSEEN_USER", {}), ("assistant", "UNSEEN_REPLY", {})]

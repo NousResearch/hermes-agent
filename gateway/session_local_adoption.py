@@ -10,7 +10,7 @@ import asyncio
 import logging
 from functools import partial
 
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ def on_owner_loop():
 def _due(authority, sid):
     """*sid*'s stored receipt when a catch-up would commit for it on this owner, else None. Read-only."""
     from gateway.session_local_recovery import owned_receipt
-    from hermes_state_local_lineage import adoptable_compression
+    from hermes_agent.hermes_state_local_lineage import adoptable_compression
     try:
         receipt = owned_receipt(authority, sid)[0]
         with authority.db._read_ctx() as conn:
@@ -36,7 +36,7 @@ def _due(authority, sid):
 
 
 def _adopt(authority, sid, receipt):
-    from hermes_state_local_lineage import adopt_untracked_compression
+    from hermes_agent.hermes_state_local_lineage import adopt_untracked_compression
     adopt_untracked_compression(authority.db, epoch=authority.epoch, session_id=sid, expected=receipt)
 
 

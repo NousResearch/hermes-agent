@@ -104,8 +104,8 @@ def test_corrupt_guidance_pins_the_failing_profile(tmp_path, monkeypatch):
     import asyncio
 
     import gateway.run as gateway_run
-    from hermes_state import _default_db_path
-    from hermes_state_repair import _persistent_repair_exhausted_error
+    from hermes_agent.hermes_state import _default_db_path
+    from hermes_agent.hermes_state_repair import _persistent_repair_exhausted_error
     from run_agent import AIAgent
 
     root = tmp_path / "hermes"
@@ -118,7 +118,7 @@ def test_corrupt_guidance_pins_the_failing_profile(tmp_path, monkeypatch):
     explanation = AIAgent._format_turn_completion_explanation("session_persistence_failed", "corrupt")
     commands = [line.strip() for line in explanation.splitlines() if "hermes " in line]
     assert commands and all("hermes -p research " in line for line in commands), commands
-    # The conftest pins hermes_state.DEFAULT_DB_PATH, so the store named is whatever the
+    # The conftest pins hermes_agent.hermes_state.DEFAULT_DB_PATH, so the store named is whatever the
     # process resolves — the contract is "the same path the runtime would open".
     assert f"--source {_default_db_path()} " in explanation
 

@@ -100,7 +100,7 @@ async def probe(peer):
             sessions.append(sid)
             created_ids[sid] = created['result']['stored_session_id']
             from gateway.session_policy import policy_for_source
-            from hermes_state_runtime import RuntimeStoreError
+            from hermes_agent.hermes_state_runtime import RuntimeStoreError
             live_source = authority.sessions[sid].source
             adapter = runner._adapter_for_source(live_source)
             saved_policy = adapter.policies.pop(live_source.chat_id)

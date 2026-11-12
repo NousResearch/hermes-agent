@@ -22,7 +22,7 @@ async def probe(peer):
     from gateway.platforms.webhook import WebhookAdapter
     from gateway.run import GatewayRunner
     from gateway.session_authority import initialize_session_authority
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     from tests.waiting import async_wait_until
 
     runner = GatewayRunner()

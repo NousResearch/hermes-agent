@@ -17,7 +17,7 @@ async def test_completion_uses_logical_owner_after_route_restore(tmp_path, monke
     from gateway.session_automation import completion_admission
     from gateway.session_ingress_context import native_callback
     from hermes_constants import get_hermes_home
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     from plugins.platforms.discord.adapter import DiscordAdapter
     from plugins.platforms.telegram.adapter import TelegramAdapter
     from tests.gateway.test_completion_admission import pending
@@ -81,7 +81,7 @@ async def test_completion_uses_logical_owner_after_route_restore(tmp_path, monke
 async def test_local_null_origin_never_acknowledges_the_wrong_owner(tmp_path, monkeypatch, compressed):
     from gateway.session import SessionEntry
     from gateway.session_automation import completion_admission
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     from tests.gateway.test_completion_admission import pending
     from tests.gateway.test_session_end_delegations import _local
     from tests.gateway.test_unviewed_completion_notes import _compress

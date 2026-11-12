@@ -12,8 +12,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from hermes_state import SessionDB
-import hermes_state_runtime as rt
+from hermes_agent.hermes_state import SessionDB
+import hermes_agent.hermes_state_runtime as rt
 
 
 def _old_ended(db, sid, source='cli'):
@@ -79,7 +79,7 @@ def test_legacy_delete_publishes_the_full_retirement_fence(tmp_path, delete):
     """Same contract as the canonical mutate(delete): the exact retry of a settled request
     still returns its terminal receipt, and a late accounting backfill cannot recreate the
     row (which would let the same request be admitted a second time)."""
-    from hermes_state_mutation_retirement import retired_session
+    from hermes_agent.hermes_state_mutation_retirement import retired_session
     with closing(SessionDB(tmp_path / 'state.db')) as db:
         epoch = rt.begin_runtime_epoch(db, instance_id='owner')
         _old_ended(db, 's', source='tui')
@@ -98,7 +98,7 @@ def test_legacy_delete_publishes_the_full_retirement_fence(tmp_path, delete):
 
 
 def test_legacy_delete_fences_cascaded_delegate_children(tmp_path):
-    from hermes_state_mutation_retirement import retired_session
+    from hermes_agent.hermes_state_mutation_retirement import retired_session
     with closing(SessionDB(tmp_path / 'state.db')) as db:
         epoch = rt.begin_runtime_epoch(db, instance_id='owner')
         db.create_session('parent', source='cli')
@@ -167,7 +167,7 @@ def test_startup_repair_latches_after_a_refusal_and_warns_once(monkeypatch, capl
 
 def _local_session(db, epoch):
     """Commit a local (CLI-owned) logical session; returns ``(session_id, reset_entry_dict)``."""
-    from hermes_state_local import commit_local_session
+    from hermes_agent.hermes_state_local import commit_local_session
     from gateway.config import Platform
     from gateway.session import SessionEntry, SessionSource
     from gateway.session_lifecycle import _now
@@ -188,7 +188,7 @@ def _local_session(db, epoch):
 
 
 def test_local_reset_refuses_over_started_admission_then_fences_generation(tmp_path):
-    from hermes_state_local_lineage import reset_local_target
+    from hermes_agent.hermes_state_local_lineage import reset_local_target
     with closing(SessionDB(tmp_path / 'state.db')) as db:
         epoch = rt.begin_runtime_epoch(db, instance_id='owner')
         sid, reset = _local_session(db, epoch)
@@ -216,7 +216,7 @@ def test_local_reset_refuses_over_live_compute_worker_but_not_a_queued_follower(
     idle-registered worker has none; an adopted one may finish through execution.finish). Reset
     over it would bump the generation, strand the worker's persists as stale_generation and
     leave the queued follower unclaimable. A queued follower alone must still allow reset."""
-    from hermes_state_local_lineage import reset_local_target
+    from hermes_agent.hermes_state_local_lineage import reset_local_target
     with closing(SessionDB(tmp_path / 'state.db')) as db:
         epoch = rt.begin_runtime_epoch(db, instance_id='owner')
         sid, reset = _local_session(db, epoch)
@@ -245,7 +245,7 @@ def test_discarding_an_unadmitted_row_leaves_no_fence_but_an_admitted_row_is_fen
     """Seed-copy compensation removes a row nobody was admitted against WITHOUT the retirement
     marker (the lazy first-prompt path must be able to recreate the id); once any receipt
     exists the same call takes the fenced delete so the id cannot be resurrected."""
-    from hermes_state_mutation_retirement import RETIRED_PREFIX
+    from hermes_agent.hermes_state_mutation_retirement import RETIRED_PREFIX
     with closing(SessionDB(db_path=tmp_path / 'state.db')) as db:
         db.create_session('fresh', source='desktop')
         assert db.discard_unadmitted_session('fresh') is True
@@ -265,7 +265,7 @@ def test_local_reset_stamps_ended_at_on_the_same_float_clock_as_started_at(tmp_p
     """``ended_at`` uses the ``time.time()`` clock of ``started_at`` and every sibling end path:
     SQLite's integer-second clock truncates, so a reset in the same second as the creation
     recorded a session that ended before it started."""
-    from hermes_state_local_lineage import reset_local_target
+    from hermes_agent.hermes_state_local_lineage import reset_local_target
     with closing(SessionDB(tmp_path / 'state.db')) as db:
         epoch = rt.begin_runtime_epoch(db, instance_id='owner')
         sid, reset = _local_session(db, epoch)
@@ -279,9 +279,9 @@ def test_pending_and_idle_probes_do_not_scan_finished_history(tmp_path, monkeypa
     """pastels minor: ``status!='terminal'`` cannot bound the (session, status) indexes, so every
     pending/idle probe walked the session's whole finished ledger. Probes must stay O(live rows)."""
     from contextlib import nullcontext
-    from hermes_state_local import end_idle_local_session
-    from hermes_state_mutation_guards import require_idle
-    from hermes_state_mutation_retirement import _LIVE_LEDGER_SQL
+    from hermes_agent.hermes_state_local import end_idle_local_session
+    from hermes_agent.hermes_state_mutation_guards import require_idle
+    from hermes_agent.hermes_state_mutation_retirement import _LIVE_LEDGER_SQL
     with closing(SessionDB(tmp_path / 'state.db')) as db:
         db.create_session('s', source='api_server')
         epoch = rt.begin_runtime_epoch(db, instance_id='owner')

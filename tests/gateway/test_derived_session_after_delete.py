@@ -12,7 +12,7 @@ import pytest_asyncio
 
 
 def _delete_past_the_horizon(authority, sid):
-    from hermes_state_mutation_retirement import prune_retired_tombstones
+    from hermes_agent.hermes_state_mutation_retirement import prune_retired_tombstones
     assert authority.db.delete_session(sid)
     authority.sessions.pop(sid, None)
     authority.db._execute_write(lambda conn: prune_retired_tombstones(conn, older_than=0))

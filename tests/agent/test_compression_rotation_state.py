@@ -32,7 +32,7 @@ from agent.conversation_compression import (
     _is_real_user_message,
 )
 from agent.message_metadata import DB_ROW_SNAPSHOT
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 import itertools
 
 

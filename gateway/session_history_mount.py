@@ -11,7 +11,7 @@ here: resume adopts them as writable conversations (gateway/session_local_migrat
 app's self-labelled chat (``mobile``, ``ios``) for its native owner; anyone else still reads that one here.
 """
 
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 # Never a lane key, so no lane publishing a conversation takes this mount over.
 _ROUTE_PREFIX = 'history:'
@@ -20,7 +20,7 @@ _ROUTE_PREFIX = 'history:'
 def _reader(authority, actor, sid):
     """The importer an import binding names, else the profile's owner: its native peer (the evidence
     legacy adoption takes) or an operator. Knowing an old id is not ownership."""
-    from hermes_state_mutation_binding import binding_names, history_binding
+    from hermes_agent.hermes_state_mutation_binding import binding_names, history_binding
     with authority.db._read_ctx() as conn:
         binding = history_binding(conn, sid)
     if binding is not None:
@@ -31,8 +31,8 @@ def _reader(authority, actor, sid):
 
 def mount_history(authority, actor, sid):
     """Mount *sid* read-only for its owner; False when another loader owns it or the actor may not."""
-    from hermes_state_local import API_BINDING_PREFIX
-    from hermes_state_local_migration import LEGACY_LOCAL_SOURCES
+    from hermes_agent.hermes_state_local import API_BINDING_PREFIX
+    from hermes_agent.hermes_state_local_migration import LEGACY_LOCAL_SOURCES
     row = authority.db.get_session(sid)
     if (row['source'] in LEGACY_LOCAL_SOURCES | {'local'}
             or row.get('profile_name') not in (None, '', authority.db._own_profile_name() or 'default')
@@ -57,7 +57,7 @@ def require_history_leaf(authority, sid):
     chain nothing else hangs off (as #140692 by @pnpwin did for subagents)."""
     if not is_history_mount(authority.sessions[sid]):
         return
-    from hermes_state_mutation_guards import delete_targets
+    from hermes_agent.hermes_state_mutation_guards import delete_targets
     chain = set(authority.db.get_compression_lineage(sid))
     with authority.db._read_ctx() as conn:
         targets = delete_targets(conn, sid)

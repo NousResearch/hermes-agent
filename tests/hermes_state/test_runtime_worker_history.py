@@ -5,8 +5,8 @@ import pytest
 
 from agent.prompt_cache_scope import resolve_prompt_cache_scope
 from agent.runtime_session_store import RuntimeSessionStore
-from hermes_state import SessionDB
-from hermes_state_runtime import begin_runtime_epoch, mutate_worker_execution, register_worker_execution
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_runtime import begin_runtime_epoch, mutate_worker_execution, register_worker_execution
 
 
 def test_history_and_lineage_keep_cache_scope_distinct_from_attribution(tmp_path):
@@ -74,7 +74,7 @@ def test_terminal_worker_keeps_no_full_history_receipt(tmp_path):
     """N19: every managed turn reads compression.history; once execution.finish (or settlement)
     makes the execution terminal, that full-transcript copy must not stay in worker_receipts,
     while its digest still makes a late duplicate with other content conflict."""
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     db = SessionDB(tmp_path / 'state.db')
     try:
         db.create_session('s', 'cli')

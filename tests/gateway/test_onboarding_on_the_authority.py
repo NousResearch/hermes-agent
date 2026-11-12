@@ -148,7 +148,7 @@ def test_an_onboarding_chat_folds_in_setup_beat_for_its_whole_life(tmp_path):
     from agent import onboarding_record
     from agent.onboarding_flow import End
     from agent.onboarding_session import onboarding_chat_toolsets
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     db = SessionDB(db_path=tmp_path / "state.db")
     try:
         db.create_session("onb", source="local")
@@ -168,7 +168,7 @@ def test_the_authority_turn_plays_the_opening_and_skips_the_note_while_a_card_wa
     from agent.onboarding_text import GREETING
     from gateway.session_onboarding import arm_onboarding_turn
     from gateway.session_server_requests import _Pending, _lock, _open
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     db = SessionDB(db_path=tmp_path / "state.db")
     try:
         db.create_session("onb", source="local")
@@ -208,7 +208,7 @@ async def test_start_from_a_secondary_profile_claims_in_the_default_home(tmp_pat
     from gateway.session_authority import initialize_session_authority
     from gateway.session_controls import AuthorityConnection
     from hermes_constants import get_hermes_home
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     desktop = await _desktop(tmp_path, monkeypatch, [])
     home = tmp_path / ".hermes"
     work = home / "profiles" / "work"

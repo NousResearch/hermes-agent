@@ -44,7 +44,7 @@ async def test_rewind_under_a_held_compression_lock_names_the_lock(tmp_path, mon
 
 @pytest.mark.asyncio
 async def test_rewind_with_an_admitted_turn_stays_a_plain_busy_refusal(tmp_path, monkeypatch):
-    import hermes_state_runtime as rt
+    import hermes_agent.hermes_state_runtime as rt
 
     async def handle(event):
         return 'ok'
@@ -65,7 +65,7 @@ async def test_rewind_with_an_admitted_turn_stays_a_plain_busy_refusal(tmp_path,
 def test_authorize_reads_a_null_profile_as_this_owner():
     from types import SimpleNamespace
     from gateway.session_busy_controls import authorize
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     seen = []
     authority = SimpleNamespace(profile_id='/nonexistent/owner-home', authorize=lambda *a: seen.append(a))

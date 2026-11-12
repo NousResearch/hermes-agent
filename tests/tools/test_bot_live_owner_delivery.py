@@ -102,7 +102,7 @@ def test_live_dm_bom_readers_preserve_pinned_intent(tmp_path, monkeypatch, inten
     intent read back intact, a pinned intent is never replaced by a rewritten payload, and a
     damaged intent retains its evidence instead of retrying a transport."""
     import hermes_cli.gateway_runtime as runtime
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from tools import bot_mode_dm
 
     db = SessionDB(db_path=tmp_path / "state.db")
@@ -180,7 +180,7 @@ def _ready(instance_id):
 
 
 def test_canonical_owner_is_the_authority_and_follows_compression(tmp_path, monkeypatch):
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     import hermes_cli.gateway_runtime as runtime
 
     from types import SimpleNamespace

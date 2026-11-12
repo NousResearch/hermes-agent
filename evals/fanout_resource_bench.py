@@ -167,7 +167,7 @@ def main() -> None:
     from run_agent import AIAgent
     from tools import delegate_tool
 
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     db_path = os.path.join(home, "state.db")
     from pathlib import Path
     session_db = SessionDB(db_path=Path(db_path))

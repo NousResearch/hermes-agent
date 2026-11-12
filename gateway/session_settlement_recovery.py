@@ -4,7 +4,7 @@ import logging
 import sqlite3
 
 from gateway.session_producer_lifecycle import drop_producer_turn
-from hermes_state_runtime import RuntimeStoreError, _admission, _epoch, get_session_admission, settle_steer_transfers
+from hermes_agent.hermes_state_runtime import RuntimeStoreError, _admission, _epoch, get_session_admission, settle_steer_transfers
 
 logger = logging.getLogger(__name__)
 

@@ -1,7 +1,7 @@
 """Rewind fences the generation and preserves archived history."""
 import pytest
-from hermes_state import SessionDB
-import hermes_state_runtime as rt
+from hermes_agent.hermes_state import SessionDB
+import hermes_agent.hermes_state_runtime as rt
 
 
 def test_rewind_has_existing_semantics_with_atomic_retry(tmp_path):

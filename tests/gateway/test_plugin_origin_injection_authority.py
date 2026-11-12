@@ -28,7 +28,7 @@ def _publish(runner, manager) -> None:
 
 
 def _plugin_rows(authority, session_id, text):
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     return [row for row in list_session_admissions(authority.db, session_id=session_id, pending_only=False)
             if row["payload"].get("text") == text]
 

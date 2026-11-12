@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from tests.hermes_cli.test_cli_init import _make_cli
 from tools.checkpoint_manager import CheckpointManager
 

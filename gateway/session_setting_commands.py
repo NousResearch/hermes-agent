@@ -90,8 +90,8 @@ async def commit_reasoning_command(authority, actor, ref, value, persist_global)
     from gateway.config import Platform
     from gateway.session_mutations import mutate_session
     from hermes_constants import parse_reasoning_effort
-    from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     if value == 'reset' and not persist_global:  # ``reset --global`` is the handler's named refusal
         effort = None
     elif value != 'reset' and parse_reasoning_effort(value) is not None:
@@ -126,8 +126,8 @@ async def apply_pending_reasoning(authority, ref, live):
     under the claim gate and mutation lock, before a deferred model pick (whose level wins, as on main)."""
     import asyncio
     from gateway.session_mutations import write_mutation
-    from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     pending, live.pending_reasoning = live.pending_reasoning, None
     if pending is None:
         return
@@ -152,7 +152,7 @@ def defer_local_model_pick(authority, live, result, effort=''):
     import uuid
     from gateway.session_contract import SessionRef
     from gateway.session_deferred_pick import defer_pick
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
     sid = live.source.chat_id
     owner = SimpleNamespace(subject=local_receipt(authority.db, sid)['principal_id'])
     # The alias the user typed, not the bare model it names: two aliases may name one model on one

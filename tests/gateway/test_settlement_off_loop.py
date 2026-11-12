@@ -5,7 +5,7 @@ import threading
 import pytest
 
 from gateway.session_contract import Submission
-from hermes_state_runtime import get_session_admission
+from hermes_agent.hermes_state_runtime import get_session_admission
 from tests.gateway.test_session_authority_cancel_settlement import _authority, ACTOR, REF
 from tests.waiting import async_wait_until
 

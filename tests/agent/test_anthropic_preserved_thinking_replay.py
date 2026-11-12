@@ -77,7 +77,7 @@ def _native_turn(agent, question, size, sig):
 
 
 def _session_db(tmp_path, *session_ids):
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / "state.db")
     for session_id in session_ids:

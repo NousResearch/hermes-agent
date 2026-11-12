@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 
 from agent.context_compressor import SUMMARY_PREFIX, _DB_PERSISTED_MARKER
 from agent.conversation_compression import COMPACTION_DONE_STATUS, COMPACTION_STATUS
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from run_agent import AIAgent
 import run_agent
 

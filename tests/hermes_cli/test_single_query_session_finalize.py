@@ -71,7 +71,7 @@ def test_finalize_settles_session_before_a_successor_can_take_over(tmp_path, mon
     the flush's unconditional ``end_session`` stamps the successor's interval and
     this test fails."""
     from hermes_cli import active_sessions
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     home = tmp_path / ".hermes"
     monkeypatch.setenv("HERMES_HOME", str(home))

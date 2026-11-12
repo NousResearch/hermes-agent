@@ -114,7 +114,7 @@ def test_cli_close_preflush_resumed_prefix_is_not_duplicated(tmp_path, monkeypat
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
 
     import cli as cli_mod
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "cli-close-preflush-resume"
@@ -205,7 +205,7 @@ def test_cli_close_hands_staged_user_marker_to_turn_start(tmp_path, monkeypatch)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
 
     import cli as cli_mod
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "cli-close-staged-user"
@@ -252,7 +252,7 @@ def test_cli_close_uses_clean_override_for_shortened_pending_snapshot(tmp_path, 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
 
     import cli as cli_mod
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "cli-close-shortened-noted-pending"
@@ -300,7 +300,7 @@ def test_cli_close_builds_prompt_before_creating_first_session_row(tmp_path, mon
 
     import agent.conversation_loop as loop_mod
     import cli as cli_mod
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "cli-close-first-turn"

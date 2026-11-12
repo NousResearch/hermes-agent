@@ -227,7 +227,7 @@ def test_reader_opens_once_the_gateway_created_state_db(store, tmp_path, monkeyp
     db, _ = store
     monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
     assert db.get_session("x") is None and db._reader is None
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     SessionDB(db_path=tmp_path / "state.db").close()
     assert db.get_session("x") is None and db._reader is not None
 
@@ -265,7 +265,7 @@ def test_rename_refusal_prints_mains_title_in_use_text(store, tmp_path, monkeypa
     main prints comes from the read-only reader."""
     db, client = store
     monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     writer = SessionDB(db_path=tmp_path / "state.db")
     writer.create_session("local-other", source="local")
     writer.set_session_title("local-other", "Alpha Title")
@@ -388,7 +388,7 @@ def test_cli_listings_include_gateway_rows_created_by_the_cli(store, tmp_path, m
     import sqlite3
     db, _ = store
     monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     writer = SessionDB(db_path=tmp_path / "state.db")
     rows = (("local-cli", "local", "cli"), ("local-tui", "local", "tui"), ("legacy", "cli", "cli"),
             ("one", "oneshot", "oneshot"))
@@ -425,7 +425,7 @@ def test_bare_continue_finds_the_last_session_the_cli_created(tmp_path, monkeypa
     ``local`` that the CLI created is CLI history."""
     import sqlite3
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     writer = SessionDB(db_path=tmp_path / "state.db")
     writer.create_session("local-cli", source="local")
     writer.append_message("local-cli", "user", "hi")

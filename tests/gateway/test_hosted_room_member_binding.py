@@ -8,7 +8,7 @@ import pytest
 def test_member_producer_admits_its_own_member_and_refuses_another(hosted_owner):
     from gateway.hosted_room_driver import TaskIdentity
     from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
-    from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions
     authority, loop, principal, _ = hosted_owner
     rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='member', profile='default',
                                  principal=principal, authorize=lambda *args: True)
@@ -28,7 +28,7 @@ def test_canonical_resolver_binds_the_member_the_driver_names(hosted_owner, monk
     from gateway import hosted_room_driver as tasks
     from gateway.hosted_rooms import create_room, local_authority_gateway_id
     from gateway.session_hosted_service import CanonicalHostedRoomService
-    from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions
     from tui_gateway.hosted_room_driver import HostedRoomBinding, _member_id
     authority, loop, _, _ = hosted_owner
     service = CanonicalHostedRoomService(authority, loop)

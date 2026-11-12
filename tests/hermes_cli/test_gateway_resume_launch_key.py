@@ -135,7 +135,7 @@ def _refuse_the_rebind(monkeypatch, code):
     """The owner refuses the keyed resume with ``code`` where it takes the key back (a receipt read that
     fails is ``storage_unavailable``); a plain resume never gets there."""
     from gateway import session_policy
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     def refuse(*_a):
         raise RuntimeStoreError(code)
@@ -186,7 +186,7 @@ async def test_a_refused_keyed_resume_retries_plain_only_when_the_key_does_not_a
 async def test_a_read_only_viewer_still_gets_the_plain_attach(tmp_path, monkeypatch, caplog):
     """The owner checks ``session:control`` before it takes a key back: a read-only viewer's keyed resume is
     ``permission_denied``, and it still gets main's ``session:read`` attach, binding nothing."""
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     caplog.set_level(logging.DEBUG, logger='hermes_cli.gateway_connection')
     owners = await _Owners().start(tmp_path, monkeypatch)
     await owners.boot('restarted')
@@ -283,7 +283,7 @@ async def test_slash_resume_in_a_typed_key_cli_switches_to_a_keyless_session_on_
     the session keeps its own frozen route."""
     from unittest.mock import patch
     from cli import HermesCLI
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     owners = await _Owners().start(tmp_path, monkeypatch)
     conn = GatewayConnection(connect=owners.dial)
     try:

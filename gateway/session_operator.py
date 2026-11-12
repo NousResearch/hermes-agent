@@ -6,7 +6,7 @@ path. Only SessionAuthority.submit writes this envelope after authorization;
 public submission parameters cannot supply it.
 """
 from gateway.owner_identity import same_owner
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 # Fields ``SessionAuthority.submit`` commits for a local session's input; producers commit their own envelope.
 LOCAL_INPUT_FIELDS = frozenset({'text', 'attachments_v1', 'finite', 'unattended', 'surface_v1', 'display_v1',

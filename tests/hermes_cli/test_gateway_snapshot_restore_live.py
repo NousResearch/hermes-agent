@@ -122,7 +122,7 @@ def _default_profile_state(home):
 
 def _legacy_row(home):
     """A pre-authority CLI row the gateway has not imported yet, as the old in-process CLI wrote it."""
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     db = SessionDB(home / "state.db")
     try:
         db.create_session("legacy-cli", source="cli", model="fixture")
@@ -161,7 +161,7 @@ def test_snapshot_restore_rejoins_the_restored_authority(local_gateway, multiple
     assert store.get_messages_as_conversation(sid) == history_before
     old_reader = store._reader
     assert old_reader is not None
-    from hermes_state_registry import acquire
+    from hermes_agent.hermes_state_registry import acquire
     shared_reader = acquire(home / "state.db")
     before = discover_gateway_endpoint(home).endpoint
     assert before is not None

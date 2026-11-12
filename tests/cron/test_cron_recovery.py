@@ -8,8 +8,8 @@ from gateway import run, session_cron
 from gateway.session import SessionStore
 from gateway.session_authority import SessionAuthority
 from gateway.config import GatewayConfig
-from hermes_state import SessionDB
-from hermes_state_runtime import begin_runtime_epoch, claim_session_input, settle_session_input
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_runtime import begin_runtime_epoch, claim_session_input, settle_session_input
 
 
 def test_lost_ack_reconciles_frozen_delivery_once(tmp_path, monkeypatch):
@@ -47,7 +47,7 @@ def test_lost_ack_reconciles_frozen_delivery_once(tmp_path, monkeypatch):
                 unknown = dict(params, request_id='unknown')
                 accepted = await session_cron.operation(authority, 'submit', unknown)
                 claim_session_input(db, epoch=authority.epoch, session_id=accepted['session_id'])
-                from hermes_state_runtime import recover_session_inputs
+                from hermes_agent.hermes_state_runtime import recover_session_inputs
                 authority.epoch = begin_runtime_epoch(db, instance_id='restart')
                 recover_session_inputs(db, epoch=authority.epoch)
                 unknown_journal = scheduler_authority.journal_path(job['id'], 'unknown')

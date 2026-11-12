@@ -59,7 +59,7 @@ async def test_gateway_titles_original_request_without_changing_model_input(tmp_
         raise exc
     runner._hmwa_agent_error_reply = propagate_error
 
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     db = SessionDB(tmp_path / "state.db")
     agent = AIAgent(session_db=db, model="test-model", api_key="test-key", base_url="http://127.0.0.1:1/v1",
                     platform="discord", session_id=entry.session_id, enabled_toolsets=[],

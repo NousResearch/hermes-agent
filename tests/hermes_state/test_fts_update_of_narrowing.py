@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def _trigger_sql(conn: sqlite3.Connection, name: str) -> str | None:

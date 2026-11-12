@@ -33,7 +33,7 @@ def _quit_clean_session_with_history(tmp_path, monkeypatch):
     from hermes_cli import main_tui_launch
     from hermes_cli.worktree_ops import _setup_worktree
     from hermes_constants import get_hermes_home
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     repo = _repo(tmp_path)
     monkeypatch.chdir(repo)
@@ -72,7 +72,7 @@ def _resume(session_id, **extra):
 def _turn_runs_in(cwd):
     """The owner's readiness gate a resumed turn passes through (``policy_scope``)."""
     from gateway.session_policy import policy_scope
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     try:
         with policy_scope(SimpleNamespace(cwd=str(cwd))):
             pass
@@ -106,7 +106,7 @@ def test_resume_reuses_the_surviving_branch(tmp_path, monkeypatch):
     """A tree removed while its branch survived comes back on that branch, at its commit."""
     from hermes_cli.worktree_ops import _setup_worktree
     from hermes_constants import get_hermes_home
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     repo = _repo(tmp_path)
     monkeypatch.chdir(repo)
@@ -132,7 +132,7 @@ def test_resume_reuses_the_surviving_branch(tmp_path, monkeypatch):
 
 def test_resume_never_creates_a_missing_dir_the_launcher_did_not_make(tmp_path, monkeypatch):
     from hermes_constants import get_hermes_home
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     repo = _repo(tmp_path)
     foreign = repo / '.worktrees' / 'hermes-deadbeef'  # looks like ours; no launcher record
@@ -154,10 +154,10 @@ def test_a_store_error_reading_the_policy_falls_back_to_the_row_cwd(tmp_path, mo
     the tree from the row's cwd instead of skipping the resume step."""
     import sqlite3
 
-    import hermes_state_local
+    from hermes_agent import hermes_state_local
     from hermes_cli.worktree_ops import _setup_worktree
     from hermes_constants import get_hermes_home
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     repo = _repo(tmp_path)
     monkeypatch.chdir(repo)

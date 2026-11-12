@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 
 import hermes_agent.hermes_startup_watchdog as sw
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def test_maintenance_steps_renew_the_armed_watchdog_lease(tmp_path, monkeypatch):

@@ -11,7 +11,7 @@ from gateway.run import GatewayRunner, _profile_runtime_scope
 from gateway.session import SessionStore, SessionSource
 from hermes_cli import goals
 from hermes_cli.heartbeat import HeartbeatManager, HeartbeatState
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 @pytest.mark.asyncio

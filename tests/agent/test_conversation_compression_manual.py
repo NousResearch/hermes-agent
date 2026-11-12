@@ -115,7 +115,7 @@ def _coro(value):
 
 @pytest.fixture
 def session_db(tmp_path):
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     db = SessionDB(db_path=tmp_path / "state.db")
     yield db
     db.close()

@@ -12,7 +12,7 @@ import sys
 import pytest
 import hermes_yaml as yaml
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 _HOLD_S = 2.0  # longer than the old 1 s read budget, well inside the new one
 

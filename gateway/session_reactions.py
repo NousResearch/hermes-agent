@@ -8,7 +8,7 @@ rows of the session's visible resume lineage only), on the conversation's curren
 from functools import partial
 
 from gateway.session_busy_controls import authorize
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 _FIELDS = frozenset({'session_id', 'profile', 'row_id', 'newest_role', 'emoji', 'author'})
 

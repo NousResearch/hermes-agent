@@ -11,7 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def test_session_search_honours_requested_profile_db(tmp_path, monkeypatch):

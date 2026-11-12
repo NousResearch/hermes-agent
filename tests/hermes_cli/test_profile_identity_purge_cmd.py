@@ -58,7 +58,7 @@ def test_purge_identity_refuses_a_same_name_profile_created_after_the_delete(pro
     import json
 
     from hermes_cli.profiles import create_profile
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     create_profile("gone", no_alias=True)
     scope = str(profile_env / ".hermes" / "sessions")

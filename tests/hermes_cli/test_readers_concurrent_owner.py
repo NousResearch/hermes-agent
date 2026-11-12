@@ -14,7 +14,7 @@ def test_cli_readers_observe_committed_state_during_writer_transaction(tmp_path)
     code = '''
 import os, subprocess, sys
 from pathlib import Path
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 path = Path(os.environ['HERMES_HOME']) / 'state.db'
 with SessionDB(db_path=path) as owner:
     owner.create_session('committed-fixture', source='cli')

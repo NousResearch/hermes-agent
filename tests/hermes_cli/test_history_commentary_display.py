@@ -131,7 +131,7 @@ def test_rest_pages_bind_the_history_owner_for_messages_and_around(
 ):
     from hermes_cli import config as config_mod
     from hermes_cli.web_routers import sessions
-    import hermes_state_timeline
+    from hermes_agent import hermes_state_timeline
 
     row = _row()
     homes = {name: tmp_path / name for name in ("visible", "hidden")}
@@ -196,7 +196,7 @@ def test_unscoped_rest_history_uses_custom_home_of_its_database(monkeypatch, tmp
     from hermes_cli import config as config_mod
     from hermes_cli.web_routers import sessions
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    import hermes_state_timeline
+    from hermes_agent import hermes_state_timeline
 
     custom, default = tmp_path / "custom", tmp_path / "default"
     monkeypatch.setattr(

@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(sys.argv[1]).resolve()))
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 db = SessionDB(db_path=Path(sys.argv[2]))
 db.append_message(

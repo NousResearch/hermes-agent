@@ -41,7 +41,7 @@ def _assert_not_available(error: dict, method: str) -> None:
 
 def test_unknown_method_is_named_unavailable_on_both_routes(tmp_path, monkeypatch):
     from gateway.session_controls import AuthorityConnection
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     _assert_not_available(srv.handle_request(
         {"jsonrpc": "2.0", "id": 1, "method": "groups.no_such_verb", "params": {}})["error"],

@@ -17,7 +17,7 @@ import json
 from dataclasses import dataclass
 
 from gateway.session_contract import SessionHandle, SessionRef
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 # Sessions per worker-thread read; each batch is one await, so the loop serves other work between them.
 LISTING_BATCH = 256
@@ -41,7 +41,7 @@ def _store_facts(db, session_ids):
     ``target_ended_at`` is the local receipt target's ``ended_at`` (``closed_and_unviewed``'s read):
     SQLite extracts the target from the receipt, so no receipt is parsed in Python. A malformed or
     non-local receipt reads as no target, as ``_local_target`` does."""
-    from hermes_state_local import POLICY_PREFIX
+    from hermes_agent.hermes_state_local import POLICY_PREFIX
     ids = json.dumps(list(session_ids))
     with db._read_ctx() as conn:
         rows = conn.execute(

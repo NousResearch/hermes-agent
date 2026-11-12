@@ -8,8 +8,8 @@ import time
 
 import pytest
 
-from hermes_state import SessionDB
-from hermes_state_common import SCHEMA_VERSION
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_common import SCHEMA_VERSION
 
 
 @pytest.fixture()

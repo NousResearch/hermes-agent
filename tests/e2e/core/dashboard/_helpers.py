@@ -352,7 +352,7 @@ def run_py(sb: Sandbox, code: str, *args: str, hermes_home: Path | None = None,
 
 SEED_SESSIONS = """
 import sys
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 prefix, n = sys.argv[1], int(sys.argv[2])
 db = SessionDB()
 for i in range(n):

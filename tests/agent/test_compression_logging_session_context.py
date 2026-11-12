@@ -18,7 +18,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import hermes_logging
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def _build_agent_with_db(db: SessionDB, session_id: str):

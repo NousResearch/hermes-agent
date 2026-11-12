@@ -782,7 +782,7 @@ class TestSteerRowIsHumanInput:
         from agent.context_compressor import ContextCompressor, is_user_originated_turn
         from agent.conversation_compression import _is_real_user_message
         from agent.prompt_builder import steer_user_row
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         row = steer_user_row("focus on the error handling")
         assert _is_real_user_message(row)

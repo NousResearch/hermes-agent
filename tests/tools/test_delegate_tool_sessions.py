@@ -8,7 +8,7 @@ or through an orchestrator child) resolves it.
 
 def test_spawned_children_resolve_by_subagent_id_only_under_their_conversation(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from run_agent import AIAgent
     from tools import delegate_tool as dt
     import tools.delegate_tool_config as dtc
@@ -46,7 +46,7 @@ def test_spawned_children_resolve_by_subagent_id_only_under_their_conversation(t
 def test_a_child_rotated_past_any_hop_budget_resolves_to_its_newest_segment(tmp_path):
     """Compression rotations count as hops on the walk to the conversation: a long-lived child
     (compression.in_place: false) must still resolve to its newest segment, never an older one."""
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from tools.delegate_tool_sessions import stored_child_session
     db = SessionDB(db_path=tmp_path / "state.db")
     try:
@@ -69,7 +69,7 @@ def test_a_child_rotated_past_any_hop_budget_resolves_to_its_newest_segment(tmp_
 def test_a_finished_child_resolves_to_its_continuation_after_a_backward_clock_step(tmp_path):
     """The terminal segment follows verified compression links, not ``started_at``: a wall clock that
     stepped back between the rotation's two rows must not hand back the root."""
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from tools.delegate_tool_sessions import stored_child_session
     db = SessionDB(db_path=tmp_path / "state.db")
     try:

@@ -837,7 +837,7 @@ class WebhookAdapter(BasePlatformAdapter):
         return "accepted"
 
     async def _finalize_delivery(self, event, authority, receipt):
-        from hermes_state_runtime import get_session_admission
+        from hermes_agent.hermes_state_runtime import get_session_admission
         try:
             row = get_session_admission(authority.db, admission_id=receipt.admission_id)
             if row['status'] in {'queued', 'started'}:

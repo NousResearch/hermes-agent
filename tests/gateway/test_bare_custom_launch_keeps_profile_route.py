@@ -63,7 +63,7 @@ def test_an_endpointless_bare_custom_profile_still_finds_the_entry_serving_the_m
 
 
 def test_a_launch_key_on_an_endpointless_bare_custom_profile_gets_the_model_only_refusal(tmp_path):
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     with pytest.raises(RuntimeStoreError) as refused:
         _launch(tmp_path, ENDPOINTLESS, 'sk-launch', model='qwen3-32b')
     assert (refused.value.reason, refused.value.field) == ('invalid_params', 'api_key')
@@ -108,7 +108,7 @@ def test_a_named_profile_keeps_its_entry_when_it_serves_the_model(tmp_path):
 
 def test_a_launch_key_is_refused_for_an_entry_only_the_model_chose(tmp_path):
     """Only another entry lists the model: the gateway would guess its host, so the user's key is not sent there."""
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     config = {'model': {'provider': 'custom:local', 'default': 'qwen3-32b'},
               'providers': {'relay': {'api': RELAY, 'key_env': 'RELAY_KEY', 'models': ['relay-only']},
                             'local': {'api': LOCAL, 'key_env': 'LOCAL_KEY', 'default_model': 'qwen3-32b'}}}

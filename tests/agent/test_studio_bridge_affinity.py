@@ -41,7 +41,7 @@ from uuid import uuid4
 import pytest
 
 from agent.prompt_cache_scope import resolve_prompt_cache_scope
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from run_agent import AIAgent
 
 # The bridge stamps its rows with the ``source`` carried by ``bridge.chat``

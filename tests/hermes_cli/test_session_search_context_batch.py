@@ -1,6 +1,6 @@
 """Batched context preserves neighboring rows and projection fast paths."""
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def test_search_context_batches_hits_without_cross_session_neighbors(tmp_path):

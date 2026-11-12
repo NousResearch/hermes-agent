@@ -30,7 +30,7 @@ def _sweep(authority, sid):
 
 
 def _past_the_horizon(authority):
-    from hermes_state_mutation_retirement import prune_retired_tombstones
+    from hermes_agent.hermes_state_mutation_retirement import prune_retired_tombstones
     authority.db._execute_write(lambda conn: prune_retired_tombstones(conn, older_than=0))
 
 
@@ -85,7 +85,7 @@ async def test_an_a2a_context_resumed_after_a_sweep_keeps_its_new_session(a2a):
 
 def test_an_ordinary_swept_session_still_ages_out(owner):
     """Housekeeping on a cron-heavy store: an id no door derives keeps an expiring marker."""
-    from hermes_state_mutation_retirement import RETIRED_PREFIX
+    from hermes_agent.hermes_state_mutation_retirement import RETIRED_PREFIX
     owner.db.create_session('cron_job_run_1', source='cron')
     _sweep(SimpleNamespace(db=owner.db, sessions={}), 'cron_job_run_1')
     assert owner.db.get_meta(RETIRED_PREFIX + 'cron_job_run_1') is not None
@@ -266,7 +266,7 @@ def test_keep_passed_fences_reports_a_walk_it_could_not_pin(owner):
     import json
     from functools import partial
     from gateway.session_api import api_generation_id
-    from hermes_state_mutation_retirement import RETIRED_PREFIX, keep_passed_fences, retire_routes
+    from hermes_agent.hermes_state_mutation_retirement import RETIRED_PREFIX, keep_passed_fences, retire_routes
     derive = partial(api_generation_id, 'root-x')
     passed = ['root-x', derive(1)]
     owner.db._execute_write(lambda conn: retire_routes(conn, passed, expiring=passed))

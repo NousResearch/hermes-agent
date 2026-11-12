@@ -109,7 +109,7 @@ def test_successful_marker_ending_output_survives_persisted_replay(tmp_path):
     from agent.codex_runtime import _persist_projected_messages
     from agent.replay_cleanup import canonicalize_replay_history
     from agent.session_persistence import SessionPersistenceMixin
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     output = "Documentation example:\n[Command interrupted]\n"
     item = {"type": "commandExecution", "id": "child", "command": "cat doc", "cwd": str(tmp_path),

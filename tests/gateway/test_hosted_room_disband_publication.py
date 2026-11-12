@@ -137,7 +137,7 @@ async def test_expiring_active_peer_can_stop_without_holding_publication_locks(g
 @pytest.mark.parametrize('outcome', ['failed', 'ended', 'ended_without_route'])
 async def test_registration_during_disband_preserves_surviving_grants(gateway, monkeypatch, linked_peer, surface, phase, outcome):
     from gateway.platforms import api_server_runs
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     from tui_gateway.hosted_room_peer_transport import build_member_dispatch
 
     async def complete(adapter, run, **kwargs):

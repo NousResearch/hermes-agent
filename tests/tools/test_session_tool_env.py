@@ -161,7 +161,7 @@ async def test_a_sessions_terminal_runs_with_its_clients_path(tmp_path, monkeypa
     """Two CLI sessions on one gateway: each terminal command sees its own client's PATH and venv."""
     from gateway.session_local import create_local_session
     from gateway.session_policy import restore_policy
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
     home = tmp_path / 'home'
     home.mkdir()
     (home / 'config.yaml').write_text(

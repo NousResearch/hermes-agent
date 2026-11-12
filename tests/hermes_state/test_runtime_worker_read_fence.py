@@ -1,5 +1,5 @@
 """Worker read receipts leave the session CAS fence where a client last saw it (W14)."""
-from hermes_state_runtime import mutate_runtime_session
+from hermes_agent.hermes_state_runtime import mutate_runtime_session
 from tests.hermes_state.test_runtime_worker_lifecycle import setup_store
 
 

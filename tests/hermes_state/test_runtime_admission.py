@@ -3,7 +3,7 @@ import sqlite3
 
 import pytest
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def store(tmp_path):
@@ -16,7 +16,7 @@ def store(tmp_path):
 
 def test_admission_retry_claim_and_restart_are_fenced(tmp_path):
     db = store(tmp_path)
-    import hermes_state_runtime as rt
+    import hermes_agent.hermes_state_runtime as rt
     from gateway.session_admission import admission_fingerprint
     assert admission_fingerprint(canonical_target='s', payload={'a': 1, 'b': 2}) == admission_fingerprint(canonical_target='s', payload={'b': 2, 'a': 1})
     with pytest.raises(ValueError):
@@ -66,7 +66,7 @@ def test_admission_retry_claim_and_restart_are_fenced(tmp_path):
 
 def test_sqlite_failure_never_acknowledges_or_partially_claims(tmp_path):
     db = store(tmp_path)
-    import hermes_state_runtime as rt
+    import hermes_agent.hermes_state_runtime as rt
     try:
         epoch = rt.begin_runtime_epoch(db, instance_id='boot')
         args = dict(epoch=epoch, principal_id='human', session_id='s', request_id='one', payload={'text': 'hello'})

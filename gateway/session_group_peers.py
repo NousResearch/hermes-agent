@@ -8,7 +8,7 @@ service like any other member (``CanonicalHostedRoomService`` inherits the peer 
 import sqlite3
 from pathlib import Path
 
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 TARGET_METHODS = frozenset({'groups.peer.invite', 'groups.peer.revoke'})
 _GRANT_ERRORS = frozenset({'invalid_room_grant', 'room_reauthorization_required'})

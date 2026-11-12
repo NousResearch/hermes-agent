@@ -13,7 +13,7 @@ export consumers (trace upload, context guard) read the transcript as-is.
 
 import pytest
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 import itertools
 
 

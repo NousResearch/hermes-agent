@@ -6,8 +6,8 @@ from threading import Barrier
 
 import pytest
 
-from hermes_state import SessionDB
-from hermes_state_local import POLICY_PREFIX, _cached_local_lineage_index
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_local import POLICY_PREFIX, _cached_local_lineage_index
 
 
 @pytest.fixture

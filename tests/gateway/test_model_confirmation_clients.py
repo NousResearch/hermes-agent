@@ -22,7 +22,7 @@ class _Owner:
         from gateway.session_controls import AuthorityConnection
         from gateway.session_local import create_local_session
         from hermes_cli import model_cost_guard, model_switch
-        import hermes_state_runtime as rt
+        import hermes_agent.hermes_state_runtime as rt
         monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {})
         monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(
             success=True, new_model=k['raw_input'], target_provider='custom', base_url='http://127.0.0.1:9/v1'))

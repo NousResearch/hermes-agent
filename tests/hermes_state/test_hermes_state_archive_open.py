@@ -1,7 +1,7 @@
 """`hermes sessions archive --include-open`: archive (reversible) may reach never-ended sessions (#139597)."""
 import pytest
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 @pytest.fixture()

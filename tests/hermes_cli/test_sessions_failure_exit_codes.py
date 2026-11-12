@@ -20,7 +20,7 @@ def _run_cli(monkeypatch, argv_tail):
 
 
 def _old_ended_session(db_path):
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     with SessionDB(db_path=db_path) as db:
         db.create_session("s-old", "cli")
@@ -39,7 +39,7 @@ def _garbage_store(db_path):
 
 
 def _legacy_inline_fts_store(db_path):
-    from hermes_state_common import LEGACY_FTS_SQL, LEGACY_FTS_TRIGRAM_SQL, SCHEMA_SQL
+    from hermes_agent.hermes_state_common import LEGACY_FTS_SQL, LEGACY_FTS_TRIGRAM_SQL, SCHEMA_SQL
 
     raw = sqlite3.connect(str(db_path))
     with raw:
@@ -51,7 +51,7 @@ def _legacy_inline_fts_store(db_path):
 
 
 def _vacuum_fails(monkeypatch):
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     def vacuum(self):
         raise sqlite3.OperationalError("database is locked")
@@ -59,7 +59,7 @@ def _vacuum_fails(monkeypatch):
 
 
 def _store(monkeypatch, tmp_path, build):
-    import hermes_state
+    from hermes_agent import hermes_state
     from hermes_constants import get_hermes_home
 
     db_path = get_hermes_home() / "state.db"

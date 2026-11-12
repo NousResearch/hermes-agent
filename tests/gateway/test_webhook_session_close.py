@@ -6,7 +6,7 @@ from gateway.platforms.event import MessageEvent
 from gateway.platforms.webhook import WebhookAdapter
 from gateway.run import GatewayRunner
 from gateway.session_authority import initialize_session_authority
-from hermes_state_runtime import admit_session_input, claim_session_input, settle_session_input
+from hermes_agent.hermes_state_runtime import admit_session_input, claim_session_input, settle_session_input
 
 
 @pytest.mark.asyncio

@@ -10,17 +10,17 @@ this gate covers the locked-reader subset).
 pool, no lock, with a byte-identical fallback to the locked writer when
 WAL is off. Reads have no reason to hold the writer lock.
 
-The gate parses ``hermes_state.py`` with ``ast`` and flags any method
+The gate parses ``hermes_agent/hermes_state.py`` with ``ast`` and flags any method
 that (a) opens ``with self._lock:`` and (b) runs ONLY read statements
 (SELECT/PRAGMA-read) on ``self._conn`` inside it — i.e. a pure reader
 convoying on the writer lock. Methods that write under the lock are the
 lock's legitimate users and pass. New violations fail with the method
 name and the fix (route through ``_read_ctx()``).
 
-``SessionDB`` itself is declared in ``hermes_state.py`` as
+``SessionDB`` itself is declared in ``hermes_agent/hermes_state.py`` as
 ``class SessionDB(SessionSearchMixin, SessionSchemaMixin,
 SessionPortabilityMixin)`` — its actual methods live across four files.
-A gate that only opens ``hermes_state.py`` never sees a locked reader
+A gate that only opens ``hermes_agent/hermes_state.py`` never sees a locked reader
 declared in one of the three mixin files, so ``_ALL_STATE_SOURCES`` scans
 each of them under their own class name.
 
@@ -42,7 +42,7 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _STATE_PY = _REPO_ROOT / "hermes_state.py"
 
-# SessionDB's own class body lives in hermes_state.py; the rest of its
+# SessionDB's own class body lives in hermes_agent/hermes_state.py; the rest of its
 # methods come from these mixins (see module docstring). Each entry is
 # (source file, class name to scan in that file).
 _ALL_STATE_SOURCES: list[tuple[Path, str]] = [
@@ -217,7 +217,7 @@ def _scan_locked_readers(
 
 def _scan_all_state_sources() -> list[str]:
     """Run ``_scan_locked_readers`` over every file that contributes methods
-    to ``SessionDB`` — the class body in ``hermes_state.py`` plus each mixin
+    to ``SessionDB`` — the class body in ``hermes_agent/hermes_state.py`` plus each mixin
     it inherits from (see module docstring). Violations are prefixed with
     their source filename since methods can share names across mixins.
     """
@@ -269,7 +269,7 @@ class TestNoPureReadersUnderWriterLock:
 
     def test_scan_all_state_sources_visits_every_mixin_file(self, tmp_path):
         """Sabotage self-check for the multi-file scope itself: a locked
-        reader planted in a MIXIN file (not hermes_state.py) must still be
+        reader planted in a MIXIN file (not hermes_agent/hermes_state.py) must still be
         caught. Guards against the gate's scope silently narrowing back to
         one file — exactly how the real 2026-08 gap (9 locked readers across
         three mixin files, invisible to the single-file scanner) happened.

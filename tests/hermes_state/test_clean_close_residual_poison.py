@@ -10,7 +10,7 @@ healthy handle. ``normal`` is the control.
 import sqlite3
 import threading
 import pytest
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 @pytest.mark.requires_wal  # the sticky flag exists only for a recorded WAL/SHM generation; DELETE mode has none

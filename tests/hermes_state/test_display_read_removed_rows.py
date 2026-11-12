@@ -4,7 +4,7 @@ those rows, and repeated in-place compaction leaves one removed copy of the carr
 (review of #140971). Real SessionDB, real ``archive_and_compact``."""
 import sqlite3
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 BIG = 'x' * 100_000
 
@@ -64,7 +64,7 @@ def test_a_rewound_turn_stays_hidden_without_its_body(tmp_path):
 
 def test_the_worker_history_read_agrees_with_the_owner_display_read(tmp_path):
     """``worker_history`` (a worker's display read) applies the same removed-copy rule as the owner's."""
-    from hermes_state_worker_compression import worker_history
+    from hermes_agent.hermes_state_worker_compression import worker_history
     with SessionDB(db_path=tmp_path / 'state.db') as db:
         db.create_session('s', source='test')
         db.append_messages_batch('s', [{'role': 'user', 'content': 'KEEP'}, {'role': 'assistant', 'content': 'OK'},

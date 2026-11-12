@@ -388,7 +388,7 @@ class CLIChatTurnMixin:
             # pre-refusal history; this makes the durable model read match it.
             if (turn.result or {}).get("failure_reason") == "content_policy_blocked":
                 from agent.turn_failure_copy import CONTENT_REFUSED_NOTICE
-                from hermes_state_rewind import retain_refused_turn_for_display
+                from hermes_agent.hermes_state_rewind import retain_refused_turn_for_display
                 retain_refused_turn_for_display(
                     getattr(self.agent, "_session_db", None), getattr(self.agent, "session_id", None),
                     notice=CONTENT_REFUSED_NOTICE,

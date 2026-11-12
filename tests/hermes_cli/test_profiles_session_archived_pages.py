@@ -4,10 +4,10 @@ from starlette.testclient import TestClient
 
 
 def test_archived_profiles_pages_do_not_lose_rows_to_non_archived_pins(_isolate_hermes_home, monkeypatch):
-    import hermes_state
+    from hermes_agent import hermes_state
     from hermes_constants import get_hermes_home
     from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
     client = TestClient(app)

@@ -14,7 +14,7 @@ from agent.turn_author import parse_turn_author
 from gateway.session_contract import SessionActor, SessionRef
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
-from hermes_state_runtime import RuntimeStoreError, get_session_admission
+from hermes_agent.hermes_state_runtime import RuntimeStoreError, get_session_admission
 from tools.bot_failure_reasons import HELD_NOT_SENT, UNKNOWN
 from tools.bot_live_delivery import _TERMINAL, _delivery_id, _read
 logger = logging.getLogger(__name__)
@@ -155,7 +155,7 @@ def _pin_committed(authority, record, request_id):
     admissions moved to retired receipts keyed by the route principal the pin never recorded)."""
     if _admission_at(authority, record['session_id'], request_id) is not None:
         return True
-    from hermes_state_mutation_retirement import RETIRED_PREFIX
+    from hermes_agent.hermes_state_mutation_retirement import RETIRED_PREFIX
     with authority.db._read_ctx() as conn:
         return conn.execute('SELECT 1 FROM state_meta WHERE key=?',
                             (RETIRED_PREFIX + record['session_id'],)).fetchone() is not None
@@ -219,8 +219,8 @@ def displaceable_bot_chat(authority, row, subject=None):
     minted, a messaging row, or a lineage whose compression tip (the row a delivery adopts) is
     unbound local history ``_kept_local_history`` does not keep for the delivering *subject*.
     Else None: a bound local chat and kept history are never moved."""
-    from hermes_state_local import POLICY_PREFIX
-    from hermes_state_local_migration import LEGACY_PREFIX
+    from hermes_agent.hermes_state_local import POLICY_PREFIX
+    from hermes_agent.hermes_state_local_migration import LEGACY_PREFIX
 
     if str(row.get('chat_id') or '').startswith('local-'):
         return None  # every delivery asks: a bound local chat answers from its own row, with no read
@@ -252,7 +252,7 @@ def release_superseded_bot_chat(db, store, route, session_id):
     stop naming it and the next click or delivery mints a fresh Bot Chat (#143286). Every route
     transition calls this, and so does boot (an older build's transition)."""
     from gateway.session_route_recovery import _messaging_platform
-    from hermes_state_local_migration import LEGACY_LOCAL_SOURCES
+    from hermes_agent.hermes_state_local_migration import LEGACY_LOCAL_SOURCES
     root = (db.get_compression_lineage(session_id) or [session_id])[0]
     row = db.get_session(root)
     if (row is None or row.get('title') != 'Bot Chat' or row.get('created_source') not in LEGACY_LOCAL_SOURCES
@@ -285,7 +285,7 @@ def _kept_local_history(db, row, subject=None):
     turn enters the chat."""
     from gateway.owner_identity import host_owner_subject, same_owner
     from gateway.session_identity import parse_authenticated_subject
-    from hermes_state_local_migration import LEGACY_LOCAL_SOURCES, legacy_account_label, validate_legacy_row
+    from hermes_agent.hermes_state_local_migration import LEGACY_LOCAL_SOURCES, legacy_account_label, validate_legacy_row
     if row.get('source') not in LEGACY_LOCAL_SOURCES:
         return False
     user_id = row.get('user_id')
@@ -348,7 +348,7 @@ async def _create_bot_chat(authority, actor, *, displace=None):
     from gateway.session_local_recovery import restore_local_session
     from gateway.session_local_title import title_new_session
     from gateway.session_runtime_workers import tracked_write
-    from hermes_state_local import commit_local_session
+    from hermes_agent.hermes_state_local import commit_local_session
     lock = getattr(authority, '_titled_create_lock', None)
     if lock is None:
         lock = authority._titled_create_lock = asyncio.Lock()
@@ -391,14 +391,14 @@ def _bot_chat_creation_id(authority, actor):
     title, and reusing that row would put the next delivery into the archived chat (#139779)."""
     from gateway.session_local_recovery import local_identity
     from gateway.session_route_recovery import _messaging_platform
-    from hermes_state_mutation_retirement import first_generation
+    from hermes_agent.hermes_state_mutation_retirement import first_generation
     base = 'bot-chat:' + authority.profile_id
     request_id = lambda generation: base if generation == 0 else f'{base}:{generation}'
 
     def spent(conn, sid):
         row = conn.execute('SELECT title, source, archived FROM sessions WHERE id=?', (sid,)).fetchone()
         # Handed off (``/handoff``), it is a messaging lane's conversation: its receipt went with it,
-        # and a reset's head carried its name there (``hermes_state_local.hand_off_conversations``).
+        # and a reset's head carried its name there (``hermes_agent.hermes_state_local.hand_off_conversations``).
         return row is not None and (bool(row[0]) or bool(row[2]) or _messaging_platform(row[1]) is not None)
     generation, _sid = first_generation(
         authority.db, lambda n: local_identity(authority.profile_id, actor.subject, request_id(n)), spent=spent)
@@ -447,7 +447,7 @@ def _expired_outcome(authority, record):
     (``prune_retired_tombstones``). A final receipt keeps the answer it already holds; a pending one
     whose session was deleted (retired, or its row gone) can never learn its outcome and becomes
     ``ambiguous``, never resent. A live session missing its admission is still a storage fault."""
-    from hermes_state_mutation_retirement import retired_session
+    from hermes_agent.hermes_state_mutation_retirement import retired_session
     record = record or {}
     if record.get('status') in _TERMINAL:
         return record['status'], record.get('reply', '')
@@ -755,7 +755,7 @@ async def recover_bot_deliveries(authority):
         target = authority.db.get_session(authority.db.get_compression_tip(row['id']))
         if target is None:
             return
-        from hermes_state_local import POLICY_PREFIX
+        from hermes_agent.hermes_state_local import POLICY_PREFIX
         with authority.db._read_ctx() as conn:
             bound = conn.execute('SELECT 1 FROM state_meta WHERE key=?',
                 (POLICY_PREFIX + (target.get('chat_id') or target['id']),)).fetchone()

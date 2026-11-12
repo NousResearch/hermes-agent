@@ -61,7 +61,7 @@ async def test_a_pick_committed_after_the_turn_settles_supersedes_only_what_it_p
     from gateway import session_deferred_pick
     from gateway.session_contract import Submission
     from gateway.session_policy import policy_for_source
-    import hermes_state_runtime as rt
+    import hermes_agent.hermes_state_runtime as rt
     started, release = threading.Event(), asyncio.Event()
     seen, state = [], {}
 

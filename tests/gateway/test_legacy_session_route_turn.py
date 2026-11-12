@@ -27,7 +27,7 @@ def _adopt_and_resolve(home, legacy_route, source='tui', billing=None):
     from gateway.session_authority import initialize_session_authority
     from gateway.session_local_migration import bind_native_transport, resolve_local_target
     from gateway.session_policy import restore_policy
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
 
     store = SessionStore(home / 'sessions', GatewayConfig())
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,

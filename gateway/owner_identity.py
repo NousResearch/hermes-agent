@@ -86,7 +86,7 @@ def same_owner(stored, subject) -> bool:
         return True
     if not isinstance(stored, str) or not stored or not subject:
         return False
-    from hermes_state_mutation_binding import _login_label as label_of
+    from hermes_agent.hermes_state_mutation_binding import _login_label as label_of
     if stored == label_of(subject):
         return True
     return subject == host_owner_subject() and (_login_subject(stored) or _login_label(stored))

@@ -27,9 +27,9 @@ from hermes_cli.web_models import (
 from hermes_cli.web_routers._common import (
     CORRUPT_STORE_DETAIL, corrupt_store_as_status, log as _log, destructive_profile, http_failure,
 )
-from hermes_state import is_malformed_db_error
-from hermes_state_errors import SessionActiveWriteGuardError, StateDbReplacedError, is_transient_sqlite_error
-from hermes_state_health import STORAGE_CORRUPT, note_storage_error, storage_state
+from hermes_agent.hermes_state import is_malformed_db_error
+from hermes_agent.hermes_state_errors import SessionActiveWriteGuardError, StateDbReplacedError, is_transient_sqlite_error
+from hermes_agent.hermes_state_health import STORAGE_CORRUPT, note_storage_error, storage_state
 
 list_router = APIRouter()
 search_router = APIRouter()
@@ -815,7 +815,7 @@ async def get_session_timeline(
     ``next_cursor`` is a stable logical first-row id; pass it as ``after_row_id``.
     Entry ``row_id`` addresses the current representative for /messages/around.
     """
-    from hermes_state_timeline import get_session_timeline as read_timeline
+    from hermes_agent.hermes_state_timeline import get_session_timeline as read_timeline
 
     owner = _serving_profile(profile)
 
@@ -833,7 +833,7 @@ async def get_session_messages_around(
     limit: int = Query(120, ge=1, le=120),
 ):
     """Bounded display page starting at a timeline prompt; no intervening payloads."""
-    from hermes_state_timeline import get_session_messages_around as read_around
+    from hermes_agent.hermes_state_timeline import get_session_messages_around as read_around
 
     owner = _serving_profile(profile)
 
@@ -855,7 +855,7 @@ async def delete_session_endpoint(session_id: str, request: Request, profile: Op
                                   request_id: Optional[str] = None, expected_revision: Optional[int] = None,
                                   expected_generation: Optional[int] = None):
     from hermes_cli.web_server_sessions import _mutate_session_request
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     try:
         result = await _mutate_session_request(request, profile, session_id,
             request_id=request_id, expected_revision=expected_revision,
@@ -888,7 +888,7 @@ def _owner_db_for(request: Request, profile: Optional[str]):
     if runner is None:
         return None
     from gateway.session_authorities import authority_for_home
-    from hermes_state import _default_db_path
+    from hermes_agent.hermes_state import _default_db_path
     home = Path(_cron_profile_home(profile)[1]) if profile else Path(_default_db_path()).parent
     authority = authority_for_home(runner, home)
     return getattr(authority, "db", None)

@@ -64,7 +64,7 @@ def test_background_notification_history_replay_is_not_new_delivery():
 
 
 def test_retained_result_lookup_does_not_initialize_session_store(tmp_path, monkeypatch):
-    import hermes_state
+    from hermes_agent import hermes_state
     from gateway.session_context import scoped_current_session_id
     from tools import process_registry_results as receipts
 
@@ -304,7 +304,7 @@ def test_receipts_are_bounded_redacted_and_session_scoped(tmp_path, monkeypatch)
     with scoped_current_session_id("unrelated-session"):
         assert load_completed_results(recovered.id) == {}
         assert fresh.get(recovered.id) is None
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     db = SessionDB()
     try:
         db.create_session("owner-session", "cli")

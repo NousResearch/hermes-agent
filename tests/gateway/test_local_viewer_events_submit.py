@@ -20,7 +20,7 @@ async def test_cli_turn_fields_are_admitted_and_bound_to_their_own_turn(tmp_path
     from gateway.session_cli_turn import cli_turn
     from gateway.session_controls import AuthorityConnection
     from gateway.session_ingress import admission_author
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
 
     seen = []
     async def answer(event):

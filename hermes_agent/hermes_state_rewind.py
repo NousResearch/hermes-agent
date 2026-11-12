@@ -85,7 +85,7 @@ def _comparison_content(message: dict[str, Any]) -> Any:
     """Project content the way the durable row stores it (flush projection, then the read-side sanitize) so a
     warm row and its durable twin compare equal."""
     from agent.session_persistence import _durable_content
-    from hermes_state_messages import SessionMessagesMixin
+    from hermes_agent.hermes_state_messages import SessionMessagesMixin
     return SessionMessagesMixin._loaded_view_content(message.get("role"), _durable_content(message.get("content")))
 
 
@@ -128,7 +128,7 @@ class SessionRewindMixin:
         # ``content_refused``: ``compacted = 1`` keeps it shown the way compaction-archived rows are,
         # ``active`` stays 0 so the model never sees it again.
         def _do(conn) -> bool:
-            from hermes_state_mutation_transcript import rewind_in_transaction
+            from hermes_agent.hermes_state_mutation_transcript import rewind_in_transaction
             rewind_in_transaction(
                 self, conn, session_id, target_row_id,
                 preserve_compaction_handoff=preserve_handoff,

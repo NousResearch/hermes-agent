@@ -18,7 +18,7 @@ def test_sessions_optimize_accepts_the_force_override_it_advertises(_isolate_her
 
 
 def test_sessions_list_and_stats_use_isolated_session_store(_isolate_hermes_home):
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB()
     try:
@@ -43,8 +43,8 @@ def test_sessions_export_rejects_oversized_single_before_touching_output(
     monkeypatch,
     tmp_path,
 ):
-    import hermes_state
-    from hermes_state import SessionDB
+    from hermes_agent import hermes_state
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB()
     try:
@@ -93,8 +93,8 @@ def test_sessions_export_all_uses_per_session_budget(
     """
     import json
 
-    import hermes_state
-    from hermes_state import SessionDB
+    from hermes_agent import hermes_state
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB()
     try:
@@ -134,8 +134,8 @@ def test_sessions_export_all_rejects_single_oversized_session(
     monkeypatch,
     tmp_path,
 ):
-    import hermes_state
-    from hermes_state import SessionDB
+    from hermes_agent import hermes_state
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB()
     try:
@@ -181,8 +181,8 @@ def test_sessions_export_zero_limit_disables_guard(
     monkeypatch,
     tmp_path,
 ):
-    import hermes_state
-    from hermes_state import SessionDB
+    from hermes_agent import hermes_state
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB()
     try:

@@ -14,9 +14,9 @@ import sqlite3
 
 import pytest
 
-import hermes_state_wal
-from hermes_state import apply_database_pragmas
-from hermes_state_wal import resolve_synchronous_level
+from hermes_agent import hermes_state_wal
+from hermes_agent.hermes_state import apply_database_pragmas
+from hermes_agent.hermes_state_wal import resolve_synchronous_level
 
 
 def _wal_conn(tmp_path):

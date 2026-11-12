@@ -190,7 +190,7 @@ def _eager_reconcile_own_session_db() -> None:
     """
     try:
         from hermes_cli.web_server_sessions import _open_session_db_for_profile
-        from hermes_state_registry import release_or_close
+        from hermes_agent.hermes_state_registry import release_or_close
 
         release_or_close(_open_session_db_for_profile(None, read_only=True))
     except Exception as exc:

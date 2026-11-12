@@ -51,7 +51,7 @@ def multiplex_homes(tmp_path, monkeypatch):
     home, serving a ``fitness`` profile whose store lives under
     ``profiles/fitness``.
     """
-    import hermes_state
+    from hermes_agent import hermes_state
 
     root = tmp_path / "hermes"
     profile = root / "profiles" / "fitness"
@@ -60,7 +60,7 @@ def multiplex_homes(tmp_path, monkeypatch):
     (profile / "config.yaml").write_text("{}\n", encoding="utf-8")  # identity marker: a bare dir is not a profile
     monkeypatch.setenv("HERMES_HOME", str(root))
 
-    # The suite-wide fixture in conftest re-points ``hermes_state.DEFAULT_DB_PATH``
+    # The suite-wide fixture in conftest re-points ``hermes_agent.hermes_state.DEFAULT_DB_PATH``
     # at a fake home, which trips the deliberate escape hatch in
     # ``_default_db_path()``: a re-pointed constant wins over everything,
     # including the context-local override.  That is correct for tests that
@@ -247,7 +247,7 @@ def test_two_primary_routed_turns_reload_profile_transcript(multiplex_homes):
     """A second routed turn sees the first turn in the profile database."""
     from gateway.profile_routing import ProfileRoute
     from gateway.run import GatewayRunner
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     root, profile = multiplex_homes
     (profile / "config.yaml").write_text("{}\n", encoding="utf-8")

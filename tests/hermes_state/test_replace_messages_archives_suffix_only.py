@@ -8,7 +8,7 @@ transcript on every rewind/edit with nothing pruning it.  Invariants pinned:
 - the kept prefix keeps its row ids across rounds (stable ids prove no re-insert).
 """
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def _turn(i: int, tag: str) -> dict:

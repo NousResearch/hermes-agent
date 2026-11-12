@@ -3,7 +3,7 @@ is blocked by a concurrent opener, apply_wal_with_fallback reports "wal" as the 
 touched; SessionDB must not turn that assumption into pooled readers on a file that is really DELETE."""
 import sqlite3
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def test_blocked_probe_on_delete_file_does_not_enable_read_pool(tmp_path):

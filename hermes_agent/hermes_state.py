@@ -28,60 +28,60 @@ from hermes_dir_acl import make_user_dir
 from hermes_constants import get_hermes_home, mkdir_under_hermes_home
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TypeVar, cast
 
-from hermes_state_common import (
+from hermes_agent.hermes_state_common import (
     TITLE_SOURCE_DERIVED as _TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM as _TITLE_SOURCE_LLM,
     TITLE_SOURCE_USER as _TITLE_SOURCE_USER,
     escape_like as _escape_like, _placeholders,
     stat_db_file_identity as _stat_db_file_identity,
 )
-from hermes_state_holders import read_only_db_uri
-from hermes_state_pidns import holder_pid_checkable
-from hermes_state_health import (
+from hermes_agent.hermes_state_holders import read_only_db_uri
+from hermes_agent.hermes_state_pidns import holder_pid_checkable
+from hermes_agent.hermes_state_health import (
     STORAGE_CORRUPT, mark_storage_corrupt, note_storage_error, storage_corrupt_reason, storage_state,
 )
-from hermes_state_errors import (
+from hermes_agent.hermes_state_errors import (
     _DELETED_WAL_GENERATION_MSG, _DISK_IO_ERROR_MARKER, _STATE_DB_CORRUPT_MSG, _STATE_DB_GENERATION_KEY,
     _STATE_DB_REPLACED_MSG, DeletedWalGenerationError, SessionCompressionInProgressError, StateDbCorruptError,
     StateDbReplacedError, _is_no_more_rows, classify_persistence_error, is_malformed_db_error,
     is_malformed_schema_error, is_sqlite_lock_error,
 )
-from hermes_state_guard import (
+from hermes_agent.hermes_state_guard import (
     _STATE_DB_GUARD_BYPASS_ENV, _in_test_context, _is_production_state_db, _real_platform_state_root,
     _register_test_instance, _set_last_init_error, get_last_init_error,
 )
-from hermes_state_readpool import _READ_POOL_MAX, _proc_fd_targets, _read_budget_for
-from hermes_state_sessions import SessionSessionsMixin
-from hermes_state_fts import SessionFtsSetupMixin
-from hermes_state_portability import SessionPortabilityMixin
-from hermes_state_telegram import SessionTelegramTopicsMixin
-from hermes_state_profile_repair import SessionProfileRepairMixin
-from hermes_state_schema import SessionSchemaMixin
-import hermes_state_holders as _state_holders
-import hermes_state_lockguard as _lockguard
-from hermes_state_lockowners import log_write_lock_holders
-from hermes_state_dbfile import (
+from hermes_agent.hermes_state_readpool import _READ_POOL_MAX, _proc_fd_targets, _read_budget_for
+from hermes_agent.hermes_state_sessions import SessionSessionsMixin
+from hermes_agent.hermes_state_fts import SessionFtsSetupMixin
+from hermes_agent.hermes_state_portability import SessionPortabilityMixin
+from hermes_agent.hermes_state_telegram import SessionTelegramTopicsMixin
+from hermes_agent.hermes_state_profile_repair import SessionProfileRepairMixin
+from hermes_agent.hermes_state_schema import SessionSchemaMixin
+import hermes_agent.hermes_state_holders as _state_holders
+import hermes_agent.hermes_state_lockguard as _lockguard
+from hermes_agent.hermes_state_lockowners import log_write_lock_holders
+from hermes_agent.hermes_state_dbfile import (
     _connect_tracked_db, _fd_is_truly_unlinked, _prepare_connection_retirement,
     _read_sqlite_application_id, _stat_sqlite_sidecar_identity,
     _watched_sqlite_sidecar_paths, has_invalid_sqlite_header_preopen, is_zeroed_state_db, quarantine_cross_process_lock,
     quarantine_invalid_state_db,
     RetiredGenerationCaptureError, capture_retired_wal_generation, refuse_deleted_wal_generation,
 )
-from hermes_state_messages import SessionMessagesMixin
-from hermes_state_prune_rewrite import SessionPruneRewriteMixin
-from hermes_state_api_content import SessionApiContentMixin
-from hermes_state_coverage import SessionCoverageMixin
-from hermes_state_rewind import SessionRewindMixin
-from hermes_state_wal import (
+from hermes_agent.hermes_state_messages import SessionMessagesMixin
+from hermes_agent.hermes_state_prune_rewrite import SessionPruneRewriteMixin
+from hermes_agent.hermes_state_api_content import SessionApiContentMixin
+from hermes_agent.hermes_state_coverage import SessionCoverageMixin
+from hermes_agent.hermes_state_rewind import SessionRewindMixin
+from hermes_agent.hermes_state_wal import (
     _WAL_INCOMPAT_MARKERS, _on_disk_journal_mode, apply_database_pragmas, apply_wal_with_fallback,
 )
-from hermes_state_repair import _claim_repair_attempt, preflight_db_writability, repair_state_db_schema
-from hermes_state_titles import SessionTitlesMixin
-from hermes_state_prompt_refresh import SessionPromptRefreshMixin
-from hermes_state_usage import SessionUsageMixin
-from hermes_state_maintenance import SessionMaintenanceMixin
-from hermes_state_gateway import SessionGatewayMixin
-from hermes_state_compression import SessionCompressionMixin
-from hermes_state_search import SessionSearchMixin
+from hermes_agent.hermes_state_repair import _claim_repair_attempt, preflight_db_writability, repair_state_db_schema
+from hermes_agent.hermes_state_titles import SessionTitlesMixin
+from hermes_agent.hermes_state_prompt_refresh import SessionPromptRefreshMixin
+from hermes_agent.hermes_state_usage import SessionUsageMixin
+from hermes_agent.hermes_state_maintenance import SessionMaintenanceMixin
+from hermes_agent.hermes_state_gateway import SessionGatewayMixin
+from hermes_agent.hermes_state_compression import SessionCompressionMixin
+from hermes_agent.hermes_state_search import SessionSearchMixin
 
 try:  # Hard dependency, but tolerate scaffold-phase imports before pip install.
     import psutil
@@ -205,7 +205,7 @@ def _default_db_path() -> Path:
 
 
 # Live-DB guard knobs live HERE (not in hermes_state_guard): the hermetic conftest monkeypatches
-# ``hermes_state._STATE_DB_GUARD_BYPASS`` (``@pytest.mark.live_system_guard_bypass`` escape hatch)
+# ``hermes_agent.hermes_state._STATE_DB_GUARD_BYPASS`` (``@pytest.mark.live_system_guard_bypass`` escape hatch)
 # and ``_EXTRA_DENY_ROOTS`` (the pre-sandbox root, so custom-HERMES_HOME deployments are covered).
 _STATE_DB_GUARD_BYPASS = False
 _STATE_DB_GUARD_EXTRA_DENY_ROOTS: tuple[Path, ...] = ()
@@ -400,7 +400,7 @@ def format_session_db_unavailable(
             f"{prefix}. {_SESSION_DB_CONSEQUENCE} Run `hermes {profile_arg}doctor` to check the "
             "storage location."
         )
-    from hermes_state_user_copy import describe_storage_failure
+    from hermes_agent.hermes_state_user_copy import describe_storage_failure
     failure = describe_storage_failure(cause)
     gloss, action, hint = failure.gloss, failure.action, ""
     if any(m in cause.lower() for m in _WAL_INCOMPAT_MARKERS):
@@ -410,7 +410,7 @@ def format_session_db_unavailable(
             hint = _NETWORK_DRIVE_HINT
     text = f"{prefix}: {gloss}. {_SESSION_DB_CONSEQUENCE} {action}{hint}"
     if details:
-        from hermes_state_user_copy import storage_failure_details
+        from hermes_agent.hermes_state_user_copy import storage_failure_details
         text += f"\nDetails: {storage_failure_details(cause)}"
     return text
 
@@ -449,7 +449,7 @@ def divert_session_transcript_jsonl(session_id: str, messages) -> Optional[Path]
 
 
 # Process-wide shared SessionDB registry: long-lived in-process callers share ONE writer
-# connection per resolved path via hermes_state_registry.acquire(); one-shots use SessionDB() + close().
+# connection per resolved path via hermes_agent.hermes_state_registry.acquire(); one-shots use SessionDB() + close().
 def _foreign_state_db_holders(db_path: Path) -> list[tuple[int, str]]:
     """Compatibility delegate to the state-holder authority."""
     return _state_holders.foreign_state_db_holders(db_path)
@@ -457,7 +457,7 @@ def _foreign_state_db_holders(db_path: Path) -> list[tuple[int, str]]:
 
 # ── Process-wide shared SessionDB registry (#90837) ── lives in hermes_state_registry.py (acquire /
 # release / close_all / release_or_close). Long-lived in-process callers (gateway, tui_gateway, cron,
-# in-process tools) share ONE writer connection per resolved path via hermes_state_registry.acquire(); CLI
+# in-process tools) share ONE writer connection per resolved path via hermes_agent.hermes_state_registry.acquire(); CLI
 # one-shots, recovery flows, and read-only cross-profile opens use SessionDB() directly with their own close().
 
 
@@ -631,7 +631,7 @@ class SessionDB(
         self._retired_capture_lock = threading.Lock()
         self._retire_connection: Optional[Callable[[Any], None]] = None
         self._connection_pinned = False  # one unmatched C reference taken at most once per handle
-        self._wal_lock_guard: dict = {}  # hermes_state_lockguard.hold() record, see _open_writer
+        self._wal_lock_guard: dict = {}  # hermes_agent.hermes_state_lockguard.hold() record, see _open_writer
         self._db_corrupt, self._db_corrupt_reason = False, ""  # sticky quarantine (StateDbCorruptError)
         self._fts_usermerge_floor_applied = False  # one-shot usermerge-floor write guard
         self._fts_enabled = self._fts_stale = self._trigram_available = False
@@ -643,8 +643,8 @@ class SessionDB(
         self._token_writer_thread: Optional[threading.Thread] = None
         self._token_writer_stop = self._token_writer_busy = False
         self._token_atexit_hook: Optional[Callable[[], None]] = None
-        # Opened via hermes_state_registry.acquire(): close() releases a refcount instead.
-        # Set True when this instance is opened via hermes_state_registry.acquire(). Makes close() a no-op so the
+        # Opened via hermes_agent.hermes_state_registry.acquire(): close() releases a refcount instead.
+        # Set True when this instance is opened via hermes_agent.hermes_state_registry.acquire(). Makes close() a no-op so the
         # registry (not individual callers) controls the connection lifecycle (#90837).
         self._shared_registry_owned = False
         initialization_complete = False
@@ -1415,7 +1415,7 @@ class SessionDB(
         sqlite3_close would write the retired frames over the newer generation, so the exact
         connection is retired unclosed instead. A failed capture leaves the handle open for a retry
         -- but the pin is taken FIRST on such a runtime: every production caller reaches close()
-        through hermes_state_registry.release_or_close, which swallows the error, so an interpreter
+        through hermes_agent.hermes_state_registry.release_or_close, which swallows the error, so an interpreter
         exit before the retry must not be able to checkpoint the stale frames either."""
         self._db_wal_generation_lost = True
         retire_without_close = not self._disable_close_time_checkpoint() and self._retire_connection is not None
@@ -1531,14 +1531,14 @@ class SessionDB(
 
         Drains queued token deltas first (the background writer needs the connection). Read-only connections
         never request a checkpoint. See #45383.
-        When this instance is shared (opened via ``hermes_state_registry.acquire``), ``close()`` RELEASES one
+        When this instance is shared (opened via ``hermes_agent.hermes_state_registry.acquire``), ``close()`` RELEASES one
         refcount instead of tearing down the connection: the registry owns the lifecycle and only closes on
         the final release (#90837). This prevents one caller's close from tearing down the writer connection
         that other callers in the same process are still using — while still letting legacy ``close()`` call
         sites return their reference instead of leaking it.
         """
         if self._shared_registry_owned:
-            from hermes_state_registry import release
+            from hermes_agent.hermes_state_registry import release
             release(self)
             return
         self._stop_token_writer()

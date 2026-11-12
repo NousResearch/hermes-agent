@@ -2,7 +2,7 @@
 
 Hermes Agent 使用 SQLite 数据库（`~/.hermes/state.db`）跨 CLI 和 gateway 会话持久化会话元数据、完整消息历史及模型配置。这替代了早期的逐会话 JSONL 文件方案。
 
-源文件：`hermes_state.py`
+源文件：`hermes_agent/hermes_state.py`
 
 ## Hermes home 与 profile 隔离
 
@@ -209,7 +209,7 @@ _CHECKPOINT_EVERY_N_WRITES = 50
 ### 初始化
 
 ```python
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 db = SessionDB()                           # 默认：~/.hermes/state.db
 db = SessionDB(db_path=Path("/tmp/test.db"))  # 自定义路径

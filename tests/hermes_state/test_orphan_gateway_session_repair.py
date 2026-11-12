@@ -17,7 +17,7 @@ import time
 
 import pytest
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 PEER = {
@@ -324,7 +324,7 @@ def test_donor_must_share_the_orphans_profile(tmp_path, monkeypatch):
     sibling profile's keyed row in a shared legacy store must never be named as donor
     (by contiguity or lineage), and the write-time re-verify must refuse the pair even
     from a stale report. A legacy NULL-stamped row still reads as this store's own."""
-    import hermes_state
+    from hermes_agent import hermes_state
 
     root = tmp_path / "hermes"
     root.mkdir()

@@ -101,7 +101,7 @@ def restore_retired(authority, session_id):
         restore_local_session(authority, session_id)
     else:
         from gateway.session_api import restore_api_session
-        from hermes_state_runtime import RuntimeStoreError
+        from hermes_agent.hermes_state_runtime import RuntimeStoreError
         try:
             restore_api_session(authority, session_id)
         except RuntimeStoreError:

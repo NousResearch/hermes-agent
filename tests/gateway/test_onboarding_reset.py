@@ -28,7 +28,7 @@ async def test_skip_after_new_in_the_onboarding_chat_ends_the_run(tmp_path, monk
     from agent.onboarding_record import open_session_ids
     from hermes_cli.config import read_user_config_raw
     from hermes_cli.onboarding_run import _root_config
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     turns = []
     desktop = await _desktop(tmp_path, monkeypatch, turns)
     try:

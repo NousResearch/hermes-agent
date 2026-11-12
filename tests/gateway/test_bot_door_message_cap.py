@@ -7,7 +7,7 @@ import pytest
 from tests.waiting import async_wait_until
 
 from gateway.session_contract import SessionActor
-from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions
 
 pytest_plugins = ['tests.gateway.test_session_bot_retry']
 

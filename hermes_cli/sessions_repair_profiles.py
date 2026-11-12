@@ -85,15 +85,15 @@ class _Session:
         path = store.db_path
         if path not in self._dbs:
             if self.read_only:
-                from hermes_state import SessionDB
+                from hermes_agent.hermes_state import SessionDB
                 self._dbs[path] = SessionDB(path, read_only=True) if path.exists() else _EMPTY_STORE
             else:
-                from hermes_state_registry import acquire
+                from hermes_agent.hermes_state_registry import acquire
                 self._dbs[path] = acquire(path)
         return self._dbs[path]
 
     def close(self) -> None:
-        from hermes_state_registry import release_or_close
+        from hermes_agent.hermes_state_registry import release_or_close
         for db in self._dbs.values():
             if db is _EMPTY_STORE:
                 continue
@@ -276,7 +276,7 @@ class RepairPlan:
                 _fix=lambda s, st=store, r=row: s.db(st).relabel_telegram_topic_rows([r])))
 
     def _scan_routing(self, session: _Session, store: Store) -> None:
-        from hermes_state_profile_repair import session_key_profile
+        from hermes_agent.hermes_state_profile_repair import session_key_profile
         rows = session.db(store).list_gateway_routing_rows()
         for row in rows:
             key_profile = session_key_profile(row["session_key"])
@@ -339,7 +339,7 @@ class RepairPlan:
                 _fix=lambda s, p=path, k=key, o=owner: _rekey_voice_mode_entry(p, k, o)))
 
     def _scan_sessions_json(self, store: Store) -> None:
-        from hermes_state_profile_repair import session_key_profile
+        from hermes_agent.hermes_state_profile_repair import session_key_profile
         path = store.home / "sessions" / "sessions.json"
         try:
             data = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -406,7 +406,7 @@ class _MoveBatch:
         if self._result is not None:
             return self._result
         src_db, dst_db = session.db(self.src), session.db(self.dst)
-        from hermes_state_profile_repair import SessionLedgeredError
+        from hermes_agent.hermes_state_profile_repair import SessionLedgeredError
         payloads: dict[str, Optional[dict[str, Any]]] = {}
         for sid in self.ids:
             try:

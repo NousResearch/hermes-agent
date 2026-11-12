@@ -7,7 +7,7 @@ registration pinning the instance alive — ballooning to 16-25 GB RSS.
 
 The fix is two-sided:
 
-* ``hermes_state_guard._register_test_instance`` adds every successfully
+* ``hermes_agent.hermes_state_guard._register_test_instance`` adds every successfully
   constructed SessionDB to a WeakSet registry when the
   ``HERMES_TEST_ISOLATION`` marker is set (test-isolation runs only).
 * the autouse ``_close_leaked_session_dbs`` fixture in ``tests/conftest.py``
@@ -23,8 +23,8 @@ from __future__ import annotations
 import threading
 import time
 
-import hermes_state_guard
-from hermes_state import SessionDB
+from hermes_agent import hermes_state_guard
+from hermes_agent.hermes_state import SessionDB
 
 # Deliberate cross-test handoff: test_leaked_instance_* leaks an instance;
 # the later test (pytest runs file order deterministically without a

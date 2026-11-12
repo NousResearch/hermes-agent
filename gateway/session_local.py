@@ -13,7 +13,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.session import SessionSource
 from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +133,7 @@ class LocalSessionAdapter(BasePlatformAdapter):
         with live.event_stream.lock:
             if any('session:respond' in member.capabilities for member in live.subscribers.values()):
                 return None
-        from hermes_state_runtime import list_session_admissions
+        from hermes_agent.hermes_state_runtime import list_session_admissions
         started = next((row for row in list_session_admissions(self.authority.db, session_id=chat_id)
                         if row['status'] == 'started'), None)
         if started is not None and 'local_automation_v1' in started['payload']:
@@ -241,7 +241,7 @@ def create_local_session(authority, actor, params, *, trusted_policy=None, trust
                          client_local=False):
     """Stage, commit and publish a local session inline (synchronous callers)."""
     from gateway.session_local_recovery import restore_local_session
-    from hermes_state_local import commit_local_session
+    from hermes_agent.hermes_state_local import commit_local_session
     staged = stage_local_session(authority, actor, params, trusted_policy=trusted_policy,
                                  trusted_secrets=trusted_secrets, skills_prompt=skills_prompt,
                                  client_local=client_local)
@@ -262,7 +262,7 @@ def staged_creation_follows(authority, actor, request_id):
     if not isinstance(request_id, str) or not request_id:
         return True
     from gateway.session_local_recovery import local_identity
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
     sid = local_identity(authority.profile_id, actor.subject, request_id)
     if authority.db.get_session(sid) is None:
         return True
@@ -334,10 +334,10 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
     sid = local_identity(authority.profile_id, actor.subject, request_id)
     from gateway.session_policy import bind_launch_key, restore_policy, launch_key
     if authority.db.get_session(sid) is not None:
-        from hermes_state_local import local_receipt
+        from hermes_agent.hermes_state_local import local_receipt
         saved = local_receipt(authority.db, sid)
         original = restore_policy(saved['policy'])
-        from hermes_state_local import same_create_retry
+        from hermes_agent.hermes_state_local import same_create_retry
         if not same_create_retry(saved['policy'], policy.request_json, params):
             raise RuntimeStoreError('invalid_params', field='request_id',
                                     detail='a resumed request_id must carry the same frozen request')
@@ -385,7 +385,7 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
 
 
 def publish_local_policy(authority, session_id, *, evict=True):
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
     from gateway.session_policy import restore_policy
     live = authority.sessions[session_id]
     from gateway.session_local_recovery import local_adapter_map
@@ -507,7 +507,7 @@ def _classic_cli_fields(authority, ref, live, agent, policy):
     import contextlib
     stored_id = ref.session_id
     with contextlib.suppress(Exception):
-        from hermes_state_local import local_receipt
+        from hermes_agent.hermes_state_local import local_receipt
         stored_id = local_receipt(authority.db, ref.session_id)['entry']['session_id'] or stored_id
     row = {}
     with contextlib.suppress(Exception):

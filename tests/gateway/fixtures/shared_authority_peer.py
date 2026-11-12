@@ -176,7 +176,7 @@ async def probe():
                         receipt["same_agent"] = server._sessions[sid].get("agent") is warm_agent
             receipt["messaging_outputs"] = adapter.sent
             if getattr(runner, 'session_authority', None) is not None:
-                from hermes_state_runtime import list_session_admissions
+                from hermes_agent.hermes_state_runtime import list_session_admissions
                 await adapter.handle_message(MessageEvent(text='BLOCK_FIFO', source=source, message_id='fifo-1'))
                 assert await asyncio.to_thread(peer.blocked.wait, 5)
                 queued_event = MessageEvent(text='FIFO_SECOND', source=source, message_id='fifo-2')

@@ -25,7 +25,7 @@ from tests.gateway.test_normal_runtime_boot import control
 
 def _seed(home, rows):
     """Rows as the pre-authority clients wrote them: no route, no owner binding."""
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     db = SessionDB(db_path=home / 'state.db')
     try:
         for sid, source, user_id in rows:

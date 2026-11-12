@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 import sqlite3
 
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
 def build_kanban_policy(connection, params, config):
@@ -77,7 +77,7 @@ async def run_task(connection, params):
     from gateway.session_local import create_local_session
     from gateway.session_contract import Submission
     from gateway.session_local_recovery import local_identity
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
     from gateway.session_policy import restore_policy
     authority = connection.authority
     # Resolved off-loop up front: no await separates the saved-claim check from session
@@ -135,7 +135,7 @@ async def run_task(connection, params):
     # card (approvals.single_query_mode applies). Never unattended: that is `-z`'s auto-approval.
     # A retry of an attempt admitted before cards were finite resubmits its committed payload,
     # so the store returns the original receipt instead of admission_conflict.
-    from hermes_state_runtime import find_session_admission
+    from hermes_agent.hermes_state_runtime import find_session_admission
     committed = None if not saved else await asyncio.to_thread(find_session_admission, authority.db,
         principal_id=connection.actor.subject, session_id=ref.session_id, request_id=request_id)
     payload: dict = {'text': f'work kanban task {params["task_id"]}'}
@@ -248,7 +248,7 @@ def _worker_workspace(frame):
     from gateway.session_authorities import served_profile_name
     from gateway.session_context import clear_session_vars, set_session_vars
     from gateway.session_policy import bind_turn_workspace, restore_policy
-    from hermes_state_keys import profile_from_session_key
+    from hermes_agent.hermes_state_keys import profile_from_session_key
     policy = restore_policy(frame['policy'])
     route = frame.get('route') or session_id
     # The profile its in-process turns bind, so persistent Docker keys the container they and the

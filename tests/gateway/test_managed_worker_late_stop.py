@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 # Harmless child: says hello, then on Stop either acknowledges (finished) or keeps chattering.
 CHILD = """import json, sys, threading, time

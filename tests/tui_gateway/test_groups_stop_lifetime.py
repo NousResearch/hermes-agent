@@ -7,7 +7,7 @@ import pytest
 
 from gateway import hosted_room_driver as driver, hosted_rooms
 from gateway.session_group_controls import _group
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from tests.tui_gateway.test_hosted_room_service import _FakeRPC
 from tests.tui_gateway.test_hosted_room_stop_replay import _service
 

@@ -4,8 +4,8 @@
 work on a file several Hermes processes share (gateway service, the Desktop
 app's `hermes serve` backend, CLI sessions, the TUI slash worker):
 
-* `hermes_state_common.fts_rebuild_admission` — full structural FTS rebuilds
-* `hermes_state_repair._cross_process_repair_lock`   — writable_schema surgery / VACUUM
+* `hermes_agent.hermes_state_common.fts_rebuild_admission` — full structural FTS rebuilds
+* `hermes_agent.hermes_state_repair._cross_process_repair_lock`   — writable_schema surgery / VACUUM
 
 Both document themselves as fail-closed, and both honoured that only for a
 *timed-out* acquire. When the lock file could not be `open()`ed at all they
@@ -33,11 +33,11 @@ from pathlib import Path
 
 import pytest
 
-import hermes_state
-import hermes_state_repair
-import hermes_state_common
-from hermes_state import SessionDB
-from hermes_state_repair import repair_state_db_schema
+from hermes_agent import hermes_state
+from hermes_agent import hermes_state_repair
+from hermes_agent import hermes_state_common
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_repair import repair_state_db_schema
 
 
 def _make_unopenable(lock_path: Path) -> None:

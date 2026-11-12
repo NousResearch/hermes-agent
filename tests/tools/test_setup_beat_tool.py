@@ -11,7 +11,7 @@ import pytest
 from agent import onboarding_record
 from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
 from agent.onboarding_flow import End, Facts
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from tools.registry import registry
 
 SID = "onb-session"

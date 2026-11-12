@@ -16,8 +16,8 @@ from gateway.session_authority import initialize_session_authority
 from gateway.session_group_controls import _disband
 from gateway.session_hosted_member_homes import _HOMES, record_member_home
 from gateway.session_hosted_service import CanonicalHostedRoomService
-from hermes_state import SessionDB
-from hermes_state_runtime import (
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_runtime import (
     begin_runtime_epoch, claim_session_input, list_session_admissions, settle_session_input,
 )
 from tests.gateway.test_session_hosted_transport import _SourceTask, _server

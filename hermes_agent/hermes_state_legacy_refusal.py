@@ -44,7 +44,7 @@ import logging
 import time
 from typing import Any, Optional
 
-logger = logging.getLogger("hermes_state")
+logger = logging.getLogger("hermes_agent.hermes_state")
 
 LEGACY_REFUSAL_REPAIR_DONE = "legacy_refusal_repair"
 _SCAN_CURSOR = "legacy_refusal_repair_session_cursor"
@@ -59,7 +59,7 @@ _NON_CHAT_SOURCES = ("subagent", "cron", "batch", "kanban", "curator", "tool")
 
 
 def _discover_sql() -> str:
-    from hermes_state_common import _ephemeral_child_sql, _sql_json_extract
+    from hermes_agent.hermes_state_common import _ephemeral_child_sql, _sql_json_extract
     sources = ", ".join(f"'{source}'" for source in _NON_CHAT_SOURCES)
     # The newest settled assistant row: a failure boundary or a real answer, the row _locked_tail
     # keys on. It is the boundary's display_metadata when that row is a failure boundary, else NULL.
@@ -101,7 +101,7 @@ def _is_final_reply(row) -> bool:
 
 
 def _continued_parent_sql() -> str:
-    from hermes_state_common import _non_continuation_child_sql
+    from hermes_agent.hermes_state_common import _non_continuation_child_sql
     return ("SELECT p.id FROM sessions c JOIN sessions p ON p.id = c.parent_session_id "
             "WHERE c.id = ? AND p.end_reason = 'compression'\n" + _non_continuation_child_sql("c.", "p.id"))
 
@@ -182,7 +182,7 @@ def _repair_session(db, conn, session_id: str, notice: str) -> str:
     """``"repaired"`` / ``"skipped"`` / ``"deferred"`` (live lease or compression lock) for one session,
     inside the caller's write transaction."""
     from agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY
-    from hermes_state_errors import SessionCompressionInProgressError, SessionTurnLeaseLostError
+    from hermes_agent.hermes_state_errors import SessionCompressionInProgressError, SessionTurnLeaseLostError
     row = conn.execute("SELECT end_reason FROM sessions WHERE id = ?", (session_id,)).fetchone()
     if row is None or row[0] == "compression" or _compaction_holds_refusal(db, conn, session_id):
         return "skipped"

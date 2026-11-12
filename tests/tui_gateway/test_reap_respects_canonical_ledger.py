@@ -9,8 +9,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from hermes_state import SessionDB
-from hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
 from tui_gateway.server import _teardown_session
 
 

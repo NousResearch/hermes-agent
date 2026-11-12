@@ -19,7 +19,7 @@ from gateway.platforms.api_server import (
     APIServerAdapter,
     _is_compressed_summary_message,
 )
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 STANDALONE_SUMMARY = (

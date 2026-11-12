@@ -1,7 +1,7 @@
 """Disband drops the room's recorded member homes with its tombstone: they never pile up per room."""
 from gateway import hosted_rooms
 from gateway.session_hosted_member_homes import _recorded_homes, record_member_home
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def test_disband_forgets_the_rooms_member_homes(tmp_path, monkeypatch):

@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence, Set, Tuple
 
-from hermes_state_errors import is_sqlite_lock_error
+from hermes_agent.hermes_state_errors import is_sqlite_lock_error
 
 try:  # Hard dependency, but tolerate scaffold-phase imports before pip install.
     import psutil
@@ -574,7 +574,7 @@ def in_process_state_db_holders(
     (auto-VACUUM admission) need this arm too: a VACUUM plus its TRUNCATE checkpoint retires
     the generation a sibling SessionDB in this very process still holds.
     """
-    from hermes_state_registry import other_generations_for_path
+    from hermes_agent.hermes_state_registry import other_generations_for_path
 
     return [
         (os.getpid(), description)
@@ -594,7 +594,7 @@ def held_store_refusal(db_path: Path, *, command: str, force_hint: Optional[str]
     if not holders:
         return None
     from hermes_constants import profile_cli_selector
-    from hermes_state_errors import STORAGE_RECOVERY_DOCS_URL
+    from hermes_agent.hermes_state_errors import STORAGE_RECOVERY_DOCS_URL
 
     by_pid: dict[int, set[str]] = {}
     unknown: list[str] = []

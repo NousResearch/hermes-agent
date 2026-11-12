@@ -71,7 +71,7 @@ class SessionPersistenceMixin:
         sessions_file = self.sessions_dir / "sessions.json"
         if db is None or not sessions_file.exists():
             return
-        from hermes_state_mutation_retirement import route_retired
+        from hermes_agent.hermes_state_mutation_retirement import route_retired
         targets = None if session_ids is None else set(session_ids)
         with self._lazy("_save_lock", threading.Lock):  # never interleaves with a full save's write
             with open(sessions_file, "r", encoding="utf-8-sig") as f:
@@ -96,8 +96,8 @@ class SessionPersistenceMixin:
         Resolving here rather than once in ``__init__`` is the whole fix for #88532: it lets the scoping
         that the multiplexed inbound path already performs actually reach session storage.
         """
-        from hermes_state import _default_db_path
-        from hermes_state_registry import acquire
+        from hermes_agent.hermes_state import _default_db_path
+        from hermes_agent.hermes_state_registry import acquire
 
         path = Path(db_path) if db_path is not None else Path(_default_db_path())
 
@@ -250,7 +250,7 @@ class SessionPersistenceMixin:
         would strand secondary profiles' handles with their WAL lock held ('database is locked' on
         restart). Drained under the lock, closed outside it; a pinned handle is the pinner's."""
         def _close(db) -> None:
-            from hermes_state_registry import release_or_close  # shared instances no-op on close()
+            from hermes_agent.hermes_state_registry import release_or_close  # shared instances no-op on close()
             try:
                 release_or_close(db)
             except Exception as exc:
@@ -422,7 +422,7 @@ class SessionPersistenceMixin:
                         type(entry_data).__name__)
                     continue
                 try:
-                    from hermes_state_mutation_retirement import route_retired
+                    from hermes_agent.hermes_state_mutation_retirement import route_retired
                     db = self._routing_db
                     if db is not None and route_retired(db, key, json.dumps(
                             {'session_id': entry_data['session_id']})):

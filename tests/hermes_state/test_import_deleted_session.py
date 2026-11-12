@@ -7,9 +7,9 @@ nothing. An id a housekeeping sweep retired restores once its fence ages out, as
 """
 import pytest
 
-import hermes_state_runtime as rt
-from hermes_state import SessionDB
-from hermes_state_mutation_retirement import prune_retired_tombstones
+import hermes_agent.hermes_state_runtime as rt
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_mutation_retirement import prune_retired_tombstones
 
 
 def _exported_then_deleted(db, epoch, sid):

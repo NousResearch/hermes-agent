@@ -869,7 +869,7 @@ async def test_reply_into_dead_private_topic_reaches_chat_root_and_prunes_bindin
     """Topics turned off client-side: a private-topic reply is tried by thread id, then lands in the
     chat root without the dead topic's anchor, and the stale binding is pruned so inbound recovery
     stops steering into it."""
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / "state.db")
     db.enable_telegram_topic_mode(chat_id="123", user_id="123")
@@ -972,7 +972,7 @@ _GATEWAY_META = {**_GONE_META, "direct_messages_topic_id": "20197"}
 
 
 def _topic_db(tmp_path):
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / "state.db")
     db.enable_telegram_topic_mode(chat_id="123", user_id="123")

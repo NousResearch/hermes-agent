@@ -11,7 +11,7 @@ from tests.gateway.test_local_authority_transitions import local_session
 @pytest.mark.asyncio
 async def test_submit_waiting_on_delete_reports_not_found(tmp_path, monkeypatch):
     from gateway import session_mutations
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     owner, connection, ref = await local_session(tmp_path, monkeypatch)
     entered, release = threading.Event(), threading.Event()

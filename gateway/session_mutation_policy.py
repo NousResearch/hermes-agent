@@ -7,7 +7,7 @@ import asyncio
 import json
 from dataclasses import asdict, replace
 
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
 def _rebind(authority, prepared, old, policy, **extra):

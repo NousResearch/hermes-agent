@@ -8,7 +8,7 @@ import pytest
 def test_bypass_policy_is_typed_frozen_and_safe_implies_ignore(tmp_path):
     from dataclasses import asdict
     from gateway.session_policy import build_policy, restore_policy, CREATE_FIELDS
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     assert {'safe_mode', 'ignore_user_config'} <= CREATE_FIELDS
     cfg = {'platform_toolsets': {'cli': ['terminal']}}

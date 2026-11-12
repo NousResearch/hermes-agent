@@ -10,15 +10,15 @@ from contextlib import closing
 
 import pytest
 
-from hermes_state import SessionDB
-import hermes_state_runtime as rt
+from hermes_agent.hermes_state import SessionDB
+import hermes_agent.hermes_state_runtime as rt
 from tests.hermes_state.test_target_advance_fence import _local_session, _mutate
 
 
 def _store_reset(db, epoch, sid):
     from gateway.session import SessionEntry
-    from hermes_state_local import local_receipt
-    from hermes_state_local_lineage import reset_local_target
+    from hermes_agent.hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local_lineage import reset_local_target
     old = SessionEntry.from_dict(local_receipt(db, sid)['entry'])
     child = uuid.uuid4().hex
     entry = SessionEntry(old.session_key, child, old.created_at, old.updated_at, origin=old.origin,
@@ -30,7 +30,7 @@ def _store_reset(db, epoch, sid):
 @pytest.mark.parametrize('sweep', ['retention', 'empty'])
 @pytest.mark.parametrize('producer', ['canonical', 'session_store'])
 def test_sweeps_keep_the_owner_a_retained_reset_child_needs(tmp_path, producer, sweep):
-    from hermes_state_local_lineage import local_physical_target
+    from hermes_agent.hermes_state_local_lineage import local_physical_target
     with closing(SessionDB(tmp_path / 'state.db')) as db:
         epoch = rt.begin_runtime_epoch(db, instance_id='owner')
         sid = _local_session(db, epoch, tmp_path)

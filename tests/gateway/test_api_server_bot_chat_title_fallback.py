@@ -19,7 +19,7 @@ class FakeDB:
 
 @pytest.fixture(autouse=True)
 def reset_lineage(monkeypatch):
-    monkeypatch.setattr('hermes_state_local.local_receipt', lambda db, sid: {'lineage': [sid, 'fresh']})
+    monkeypatch.setattr('hermes_agent.hermes_state_local.local_receipt', lambda db, sid: {'lineage': [sid, 'fresh']})
 
 
 def test_the_reset_bot_chat_is_found():

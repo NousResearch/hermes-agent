@@ -8,8 +8,8 @@ leaves the model read, but the user's own message stays VISIBLE in the display p
 ``content_refused``, so a close+reopen still shows "you asked X → refused". This pins both halves.
 """
 from agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY
-from hermes_state import SessionDB
-from hermes_state_rewind import retain_refused_turn_for_display
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_rewind import retain_refused_turn_for_display
 
 _NOTICE = "This message was refused by the model's safety filter — try a different query."
 

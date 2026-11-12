@@ -18,7 +18,7 @@ async def test_last_viewer_or_shutdown_ends_only_idle_acp_sessions(tmp_path, mon
     from gateway.session_contract import Submission
     from gateway.session_controls import AuthorityConnection
     from gateway.session_local import create_local_session
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': [], 'acp': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
@@ -87,7 +87,7 @@ async def test_acp_session_left_mid_turn_ends_once_its_fifo_drains(tmp_path, mon
     from gateway.session_contract import Submission
     from gateway.session_controls import AuthorityConnection
     from gateway.session_local import create_local_session
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
 
     release, started = asyncio.Event(), asyncio.Event()
 

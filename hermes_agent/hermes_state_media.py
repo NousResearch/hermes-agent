@@ -2,7 +2,7 @@
 import hashlib
 import json
 
-from hermes_state_keys import prefix_range
+from hermes_agent.hermes_state_keys import prefix_range
 
 PREFIX = 'gateway.media.retired.v1.'
 SPILLOVER_PREFIX = 'gateway.spillover.retired.v1.'
@@ -21,7 +21,7 @@ def retire_media(conn, payload, request_id=''):
 def retire_spillover(conn, session_ids):
     """Record the spillover archives the doomed sessions' messages point at, inside the delete
     transaction (the pointers vanish with the rows), as durable candidates (#126351)."""
-    from hermes_state_common import _id_chunks, _placeholders
+    from hermes_agent.hermes_state_common import _id_chunks, _placeholders
     from tools.tool_result_storage import SPILLOVER_SQL_FILTER, spillover_names_in_text
     for chunk in _id_chunks(list(session_ids)):
         for content, api_content in conn.execute(

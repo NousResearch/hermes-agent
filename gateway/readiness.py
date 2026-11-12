@@ -26,7 +26,7 @@ def _probe_state_db(home: Path) -> dict[str, Any]:
     surfaces when a reader or writer touches it, and those publish into the latch. Reporting
     the latch here is what makes readiness and ``/api/status`` agree with the session list
     (#72046). ``detail="corrupt"`` is the one reason string consumers key off."""
-    from hermes_state_health import STORAGE_CORRUPT, note_storage_error, storage_state
+    from hermes_agent.hermes_state_health import STORAGE_CORRUPT, note_storage_error, storage_state
 
     path = home / "state.db"
     if not path.exists():

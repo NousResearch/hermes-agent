@@ -380,7 +380,7 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
             on_contended=None):
         # Reuse only the local polling orchestrator, not the SQLite mixin surface. Same signature
         # as the owner's (``on_contended``: a busy-database notice; the RPC try never raises it).
-        from hermes_state_compression import SessionCompressionMixin
+        from hermes_agent.hermes_state_compression import SessionCompressionMixin
         return SessionCompressionMixin.acquire_session_turn_lease(self, session_id, holder,
             ttl_seconds=ttl_seconds, wait_seconds=wait_seconds,
             poll_interval_seconds=poll_interval_seconds, on_wait=on_wait,
@@ -457,7 +457,7 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
         return self._session_number(session_id, 'compression_recovery_deadline', float, 0.0)
 
     def get_session_model_config_value(self, session_id, key, default=None):
-        from hermes_state_sessions import _parse_model_config
+        from hermes_agent.hermes_state_sessions import _parse_model_config
         return _parse_model_config(self.get_session(session_id).get('model_config')).get(key, default)
 
     def update_conversation_model_config_value(self, session_id, key, update):

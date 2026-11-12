@@ -259,7 +259,7 @@ async def test_multiplex_picker_global_persists_only_named_profile(
 
 def _make_store_runner(adapter, sessions_dir, monkeypatch):
     """Bare runner with a real JSONL SessionStore (the durable /model override lives there)."""
-    import hermes_state
+    from hermes_agent import hermes_state
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
 

@@ -1,4 +1,4 @@
-"""Behavior tests for hermes_state._wal_reset_repair_hint.
+"""Behavior tests for hermes_agent.hermes_state._wal_reset_repair_hint.
 
 The WAL-reset corruption warning's repair hint must match what the user's
 install can actually do: source checkouts get the venv-setup step, packaged
@@ -7,7 +7,7 @@ installs get their steward's update command (#75153).
 
 from unittest.mock import patch
 
-import hermes_state_wal as hermes_state
+import hermes_agent.hermes_state_wal as hermes_state
 
 
 def _hint_for(method):

@@ -163,7 +163,7 @@ class TestAnchorInvalidation:
     def test_persist_and_restore_across_processes(self, tmp_path):
         """A fresh agent (desktop per-turn ``serve``, ``--resume``) adopts the persisted anchor
         while the durable transcript still matches, and clears it once it does not."""
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         db = SessionDB(db_path=tmp_path / "state.db")
         sid = "anchor-restore"

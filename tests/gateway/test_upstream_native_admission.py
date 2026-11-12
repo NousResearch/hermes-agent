@@ -19,7 +19,7 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session_envelope import snapshot_native
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
 def _clear_authz_env(monkeypatch) -> None:
@@ -98,7 +98,7 @@ async def test_upstream_authorized_a2a_input_admits_durally_with_provenance(
     from gateway.session_authority import SessionAuthority, initialize_session_authority
     from gateway.session_ingress_context import native_callback, register_transport_home
     from hermes_constants import get_hermes_home
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     from plugins.platforms.a2a.adapter import A2AAdapter
 
     _clear_authz_env(monkeypatch)

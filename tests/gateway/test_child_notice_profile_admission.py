@@ -23,7 +23,7 @@ def _build_rig(monkeypatch, tmp_path, request, surface_a, mode):
     from gateway.run import _async_profile_runtime_scope
     from hermes_cli.profiles import get_profile_dir
     from hermes_constants import get_hermes_home
-    import hermes_state
+    from hermes_agent import hermes_state
     from tools import process_registry as pr_module
     from tools.process_registry import ProcessRegistry
 

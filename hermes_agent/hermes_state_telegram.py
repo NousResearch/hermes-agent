@@ -1,4 +1,4 @@
-"""Telegram DM topic-mode mixin for :class:`hermes_state.SessionDB`."""
+"""Telegram DM topic-mode mixin for :class:`hermes_agent.hermes_state.SessionDB`."""
 
 from __future__ import annotations
 
@@ -8,11 +8,11 @@ import sqlite3
 import time
 from typing import Any, Dict, List, Optional
 
-from hermes_state_common import _sql_preview_raw, _sql_session_last_active
-from hermes_state_errors import StateDbReplacedError
+from hermes_agent.hermes_state_common import _sql_preview_raw, _sql_session_last_active
+from hermes_agent.hermes_state_errors import StateDbReplacedError
 
 # caplog tests pin the "hermes_state" logger name.
-logger = logging.getLogger("hermes_state")
+logger = logging.getLogger("hermes_agent.hermes_state")
 
 
 def _normalize_telegram_topic_profile_name(profile_name: Optional[str] = None) -> str:

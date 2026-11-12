@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from gateway.config import GatewayConfig
 from gateway.session import SessionStore
 

@@ -54,13 +54,13 @@ def plugin_api(tmp_path, monkeypatch):
     # swap ``sys.modules['hermes_state']`` with auto-restoration. Without
     # this, a raw ``sys.modules[...] = fake`` assignment would leak the
     # fake into later tests in the same process — breaking every
-    # test that does ``from hermes_state import SessionDB``.
+    # test that does ``from hermes_agent.hermes_state import SessionDB``.
     module._test_monkeypatch = monkeypatch
     yield module
 
 
 class _FakeSessionDB:
-    """Stand-in for hermes_state.SessionDB that records scan calls."""
+    """Stand-in for hermes_agent.hermes_state.SessionDB that records scan calls."""
 
     def __init__(self, session_count: int, scan_delay: float = 0):
         self.session_count = session_count
@@ -124,7 +124,7 @@ def _install_fake_session_db(plugin_api, fake_db):
     """
     fake_module = type(sys)("hermes_state")
     fake_module.SessionDB = lambda **_kw: fake_db
-    plugin_api._test_monkeypatch.setitem(sys.modules, "hermes_state", fake_module)
+    plugin_api._test_monkeypatch.setitem(sys.modules, "hermes_agent.hermes_state", fake_module)
 
 
 def test_scan_sessions_default_scans_all_history_not_first_200(plugin_api):
@@ -308,8 +308,8 @@ def test_scan_sessions_never_opens_a_writable_session_db(plugin_api, tmp_path, m
     per /rescan). A writable ``SessionDB()`` there was one more writer connection on the
     dashboard's own state.db each time — the same-process handle leak behind the
     ``N live SessionDB handles`` precursor (#100896). Real store, real open, no fakes."""
-    import hermes_state
-    from hermes_state import SessionDB
+    from hermes_agent import hermes_state
+    from hermes_agent.hermes_state import SessionDB
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")

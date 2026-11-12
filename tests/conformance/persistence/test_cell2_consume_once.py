@@ -48,7 +48,7 @@ N_CLAIMANTS = 8
 
 
 def test_exactly_one_claimant_wins(tmp_path):
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db_path = tmp_path / "state.db"
     barrier = tmp_path / "go"

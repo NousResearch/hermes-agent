@@ -1,7 +1,7 @@
 """Tests for CLI resume model restoration and /model session persistence.
 
 Covers _restore_session_model, _persist_model_switch_to_session (cli.py) and
-SessionDB.session_gateway_runtime (hermes_state.py) — the round trip that
+SessionDB.session_gateway_runtime (hermes_agent/hermes_state.py) — the round trip that
 makes `hermes --resume` reopen a session on the model/provider it actually
 used instead of the ambient config default (#57588-class, #79536).
 """
@@ -10,7 +10,7 @@ import json
 
 
 import cli as cli_mod
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def _make_stub(**overrides):

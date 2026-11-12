@@ -141,7 +141,7 @@ def run_case(size_bytes, monkeypatch):
     from gateway.session_hosted_service import CanonicalHostedRoomService
     from gateway.session_hosted_transport import (
         HostedRoomOwnerRPC, check_remote_hosted_admission, install_hosted_transport)
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
 
     runner, homes, loop, call = _mux(monkeypatch)
     meter = SourceMeter(monkeypatch)

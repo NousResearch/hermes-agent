@@ -8,7 +8,7 @@ from gateway.config import Platform
 from gateway.session import SessionSource
 from gateway.session_authority import LiveSession
 from gateway.session_contract import SessionActor, SessionRef
-from hermes_state_runtime import (RuntimeStoreError, admit_session_input, begin_runtime_epoch,
+from hermes_agent.hermes_state_runtime import (RuntimeStoreError, admit_session_input, begin_runtime_epoch,
     get_session_admission, recover_session_inputs, register_worker_execution)
 
 

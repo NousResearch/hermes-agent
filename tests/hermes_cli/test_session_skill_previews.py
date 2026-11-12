@@ -22,7 +22,7 @@ from agent.context_compressor import (
 )
 from agent import skill_commands
 from tools import skills_tool
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 SKILL_BODY = (
     "Kick off a task in a fresh isolated git worktree instead of the current checkout. "

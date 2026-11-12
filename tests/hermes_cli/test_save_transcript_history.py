@@ -10,7 +10,7 @@ import pytest
 
 
 def _compacted_store(path):
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=path)
     db.create_session("s1", "telegram")
@@ -41,7 +41,7 @@ def _gateway_save(db, fmt, out):
     from gateway.platforms.event import MessageEvent
     from gateway.run import GatewayRunner
     from gateway.session import SessionEntry, SessionSource, build_session_key
-    from hermes_state import AsyncSessionDB
+    from hermes_agent.hermes_state import AsyncSessionDB
 
     source = SessionSource(platform=Platform.TELEGRAM, user_id="u1", chat_id="c1", user_name="t", chat_type="dm")
     runner = object.__new__(GatewayRunner)
@@ -116,7 +116,7 @@ def test_save_json_restores_compacted_history_as_archived(tmp_path, monkeypatch,
     in the display history, and stay out of the live context."""
     import json
 
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     db = _compacted_store(tmp_path / "state.db")

@@ -3,7 +3,7 @@
 While a gateway owns a profile the offline REST backfill is refused, so authority bring-up is
 the one place an upgraded install's legacy rows get their owner.
 """
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 from gateway.session_authority import backfill_legacy_session_owners
 

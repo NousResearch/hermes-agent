@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 ROOT_KEY = "agent:main:telegram:dm:100"
 ACME_KEY = "agent:acme:telegram:dm:200"

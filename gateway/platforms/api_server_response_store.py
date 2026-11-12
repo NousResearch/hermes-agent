@@ -66,7 +66,7 @@ class ResponseStore:
             self._conn = sqlite3.connect(":memory:", check_same_thread=False)
             self._db_path = None
         # Shared WAL-fallback so response_store.db degrades gracefully on NFS/SMB/FUSE homes.
-        from hermes_state_wal import apply_wal_with_fallback
+        from hermes_agent.hermes_state_wal import apply_wal_with_fallback
         apply_wal_with_fallback(self._conn, db_label="response_store.db")
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS responses ("
@@ -179,8 +179,8 @@ class ResponseStore:
         state_db = Path(self._db_path).parent / 'state.db'
         if not pending or not state_db.is_file():
             return
-        from hermes_state_holders import read_only_db_uri
-        from hermes_state_terminal import ADMISSION_PREFIX
+        from hermes_agent.hermes_state_holders import read_only_db_uri
+        from hermes_agent.hermes_state_terminal import ADMISSION_PREFIX
         terminal = []
         ids = list(pending)
         try:
@@ -296,7 +296,7 @@ class ResponseStore:
 
     @_locked
     def bind_request_admission(self, key: str, admission_id: str) -> None:
-        from hermes_state_runtime import RuntimeStoreError
+        from hermes_agent.hermes_state_runtime import RuntimeStoreError
         with self._conn:
             self._conn.execute('INSERT OR IGNORE INTO response_admissions VALUES (?,?)', (key, admission_id))
             if self.request_admission(key) != admission_id:

@@ -75,7 +75,7 @@ async def test_every_bundled_sign_in_acts_as_the_owner_and_keeps_durable_receipt
     from gateway.session_local import create_local_session
     from gateway.session_contract import SessionActor
     from hermes_cli.web_server_sessions import _session_mutation_context
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     from plugins.dashboard_auth.basic import BasicAuthProvider, hash_password
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
@@ -93,7 +93,7 @@ async def test_every_bundled_sign_in_acts_as_the_owner_and_keeps_durable_receipt
         assert auth(ws)[0] is None
         result = factory(authority, object(), ws._hermes_auth_identity).actor
         # HTTP mutation must use precisely the WS ownership/retry key.
-        monkeypatch.setattr('hermes_state._default_db_path', lambda: authority.db.db_path)
+        monkeypatch.setattr('hermes_agent.hermes_state._default_db_path', lambda: authority.db.db_path)
         assert _session_mutation_context(request, None)[1].subject == result.subject
         return result
 
@@ -139,7 +139,7 @@ async def test_private_native_subject_preserves_existing_creation_and_mutation_r
     from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
     from gateway.session_mutations import mutate_session
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())

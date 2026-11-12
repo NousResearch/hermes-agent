@@ -25,7 +25,7 @@ _ensure_telegram_mock()
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from tests.gateway.test_telegram_topic_mode import (
     _make_runner,

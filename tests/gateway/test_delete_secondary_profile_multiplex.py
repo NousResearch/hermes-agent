@@ -137,7 +137,7 @@ def test_a_failed_shared_fence_fails_the_canonical_delete_not_the_prune(monkeypa
     delete refuses ``storage_unavailable`` (its exact retry repeats the fence); a bulk prune,
     which has no retry receipt, keeps its committed result and only logs."""
     from gateway.session_mutations import retire_live_sessions
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     for target in ('gateway.session_policy.release_launch_secrets',
                    'gateway.session_local_mcp.release_editor_mcp',

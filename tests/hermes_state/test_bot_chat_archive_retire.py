@@ -4,8 +4,8 @@ the same way, live or already reaped, or the next bot click resolves the archive
 "Waking up" (#139779)."""
 import pytest
 
-import hermes_state_runtime as rt
-from hermes_state import SessionDB
+import hermes_agent.hermes_state_runtime as rt
+from hermes_agent.hermes_state import SessionDB
 
 
 @pytest.mark.parametrize('reaped', [False, True])

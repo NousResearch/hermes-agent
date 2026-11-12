@@ -11,8 +11,8 @@ import threading
 
 import pytest
 
-import hermes_state
-from hermes_state import AsyncSessionDB
+from hermes_agent import hermes_state
+from hermes_agent.hermes_state import AsyncSessionDB
 
 
 class _SpyDB:

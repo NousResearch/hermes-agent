@@ -37,7 +37,7 @@ from hermes_cli.web_server_profiles import (
     _fallback_profile_dicts, _hub_action_name,
 )
 from hermes_cli.web_server_sessions import _open_session_db_at_path
-from hermes_state_health import STORAGE_CORRUPT, note_storage_error, storage_state
+from hermes_agent.hermes_state_health import STORAGE_CORRUPT, note_storage_error, storage_state
 from starlette.concurrency import run_in_threadpool
 from hermes_cli.web_models import (
     ProfileCreate, ProfileActiveUpdate, ProfileExport, ProfileImport, ProfileRename,

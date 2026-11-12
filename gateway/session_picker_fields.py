@@ -23,7 +23,7 @@ def _last_reply(candidates):
     assistant row shows nothing, so the reply before it stands; a carrier shows the reply it wraps."""
     from agent.compaction_display import project_compaction_message_for_display
     from agent.message_content import flatten_message_text
-    from hermes_state_common import _shape_preview
+    from hermes_agent.hermes_state_common import _shape_preview
     for content, summary in candidates:
         shown = project_compaction_message_for_display(
             {'role': 'assistant', 'content': content, '_compressed_summary': summary})
@@ -36,8 +36,8 @@ def _last_reply(candidates):
 def fill_picker_fields(db, items):
     """Set the picker fields on each ``(row, root, segment, listed)``: *listed* is the segment's
     ``list_sessions_rich`` row (its ``preview`` / ``last_active`` / branch / pin), None to read them."""
-    from hermes_state_common import _shape_preview
-    from hermes_state_sessions import workspace_key
+    from hermes_agent.hermes_state_common import _shape_preview
+    from hermes_agent.hermes_state_sessions import workspace_key
     roots, segments, replies = db.picker_session_facts(
         [root for _, root, _, _ in items], [segment for _, _, segment, listed in items if listed is None],
         [segment for _, _, segment, _ in items])

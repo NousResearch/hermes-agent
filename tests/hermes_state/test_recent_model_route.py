@@ -1,5 +1,5 @@
 """get_recent_session_model_route picks the newest route deterministically on equal last_seen."""
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def test_recent_route_tie_on_last_seen_prefers_later_row(tmp_path):

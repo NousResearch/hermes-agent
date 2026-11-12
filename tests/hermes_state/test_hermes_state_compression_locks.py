@@ -20,8 +20,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import hermes_state
-from hermes_state import SessionDB
+from hermes_agent import hermes_state
+from hermes_agent.hermes_state import SessionDB
 
 
 @pytest.fixture
@@ -97,7 +97,7 @@ def test_non_expired_lock_from_dead_pid_is_reclaimed(
     # bought nothing.  The holder is stamped with this process's own PID
     # namespace (same-namespace kernel proof is still proof; foreign and
     # unstamped holders defer to TTL — see test_lease_pid_namespace.py).
-    from hermes_state_pidns import holder_namespace_token
+    from hermes_agent.hermes_state_pidns import holder_namespace_token
     dead_holder = f"pid=424242{holder_namespace_token()}:tid=1:agent=abc:nonce=deadbeef"
     assert db.try_acquire_compression_lock(
         "sess1", dead_holder, ttl_seconds=300
@@ -128,7 +128,7 @@ def test_probe_doubt_keeps_lease_until_ttl(
     # Stamped with this process's own namespace so the probe path is actually
     # reached (unstamped holders are gated before the probe — see
     # test_lease_pid_namespace.py).
-    from hermes_state_pidns import holder_namespace_token
+    from hermes_agent.hermes_state_pidns import holder_namespace_token
     holder = f"pid=424242{holder_namespace_token()}:tid=1:agent=abc:nonce=doubt"
     assert db.try_acquire_compression_lock(
         "sess1", holder, ttl_seconds=300

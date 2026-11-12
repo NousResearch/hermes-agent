@@ -8,8 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_state import SessionDB
-from hermes_state_runtime import RuntimeStoreError, begin_runtime_epoch, list_session_admissions
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_runtime import RuntimeStoreError, begin_runtime_epoch, list_session_admissions
 
 
 @pytest.mark.platforms("linux")

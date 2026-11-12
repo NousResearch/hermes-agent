@@ -8,7 +8,7 @@ from gateway.session_contract import SessionActor
 from gateway.session_authorities import active_authority, all_authorities, owner_scope, serving_authorities
 from gateway.session_hosted_controls import HostedControls
 from gateway.owner_identity import same_owner
-from hermes_state_runtime import RuntimeStoreError, _epoch
+from hermes_agent.hermes_state_runtime import RuntimeStoreError, _epoch
 from tui_gateway.hosted_room_service import HostedRoomService
 
 _OWNER = 'gateway.hosted.owner.v1:'

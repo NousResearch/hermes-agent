@@ -61,7 +61,7 @@ def _gateway_store(loop, authority, tmp_path):
     from hermes_cli.gateway_client import GatewayClientError
     from hermes_cli.gateway_connection import GatewayConnection, SessionState
     from hermes_cli.gateway_session_store import GatewaySessionStore
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     states = {}
     connection = types.SimpleNamespace(final=False, launch_api_key=None, launch_api_key_typed=False,
                                        state=lambda sid: states.setdefault(sid, SessionState(sid)))
@@ -135,7 +135,7 @@ def test_resume_of_a_compressed_root_addresses_the_receipt_owner(rig, path, monk
 
 def test_the_tip_segment_alone_still_has_no_receipt(rig):
     """The receipt check is not weakened: addressing the physical segment is still refused by name."""
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     with pytest.raises(RuntimeStoreError) as refused:
         _gateway_accepts(rig, 'seg-3')
     assert refused.value.reason == 'storage_unavailable'

@@ -183,8 +183,8 @@ def test_lock_tolerance_never_outlives_the_committed_row_expiry(tmp_path, monkey
     row's committed expiry (a renewal that waited for the lock), and a renewal blocked near expiry
     gives up and stops the turn BEFORE the row becomes reclaimable, never after a successor could
     take it. Control: the lock clearing lets the delayed renewal succeed with no interrupt."""
-    import hermes_state
-    import hermes_state_compression
+    from hermes_agent import hermes_state
+    from hermes_agent import hermes_state_compression
     from agent import turn_facade_lease
 
     clock = _MovingClock(1000.0)

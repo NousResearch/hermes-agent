@@ -222,8 +222,8 @@ def _db_content_sig(db_path: Path, cache: dict, read, *, fallback=lambda mtime: 
         return None
     conn = None
     try:
-        from hermes_state import _connect_tracked_db
-        from hermes_state_holders import read_only_db_uri
+        from hermes_agent.hermes_state import _connect_tracked_db
+        from hermes_agent.hermes_state_holders import read_only_db_uri
         conn = _connect_tracked_db(read_only_db_uri(db_path), tracking_path=db_path, uri=True, timeout=0.05)
         signature, is_fallback = read(conn, mtime)
     except Exception:  # health: allow BLE001 -- any failed read (busy, locked, foreign schema) falls back like a busy one

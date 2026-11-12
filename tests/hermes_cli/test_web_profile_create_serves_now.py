@@ -14,7 +14,7 @@ import pytest
 def client(monkeypatch, _isolate_hermes_home):
     from starlette.testclient import TestClient
 
-    import hermes_state
+    from hermes_agent import hermes_state
     from hermes_constants import get_hermes_home
     from hermes_cli import profiles
     from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app

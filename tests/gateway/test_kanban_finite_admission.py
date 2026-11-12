@@ -116,7 +116,7 @@ def test_durable_kanban_admission_preserves_headless_policy_in_worker(kanban_own
     from gateway.session_kanban import run_task
     from gateway.session_managed_worker import _bootstrap, worker_turn_scope
     from gateway.session_policy import policy_for_source
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     from tools.approval import request_tool_approval
     from tools.approval_context import _is_single_query_approval_context
 
@@ -152,9 +152,9 @@ def test_retry_of_pre_finite_kanban_admission_returns_original_receipt(kanban_ow
     """An attempt admitted before cards were finite keeps its committed payload on retry: the
     upgraded run_task must return the original receipt, not admission_conflict. The retry reads
     that payload by its exact admission key, never by listing the session's admissions."""
-    import hermes_state_runtime
+    from hermes_agent import hermes_state_runtime
     from gateway.session_kanban import run_task
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
 
     owner = kanban_owner(_CONFIG)
     authority = owner.authority
@@ -188,7 +188,7 @@ def test_admission_lookup_matches_only_the_exact_durable_key(kanban_owner):
     """The shared lookup is the UNIQUE (principal, target, request) key: it returns the same row
     the session listing holds, and nothing for another principal, target or request id."""
     from gateway.session_kanban import run_task
-    from hermes_state_runtime import find_session_admission, list_session_admissions
+    from hermes_agent.hermes_state_runtime import find_session_admission, list_session_admissions
 
     owner = kanban_owner(_CONFIG)
     db, principal = owner.authority.db, owner.connection.actor.subject
@@ -212,7 +212,7 @@ def _lose_across_restart(authority, sid):
     """Claim the card's admission under this owner, then a new owner epoch boots on the same store
     and runs the real boot recovery (fence ``unknown``, then settle the unattended ones)."""
     from gateway.session_unattended_unknown import settle_recovered_unattended
-    from hermes_state_runtime import (begin_runtime_epoch, claim_session_input, list_session_admissions,
+    from hermes_agent.hermes_state_runtime import (begin_runtime_epoch, claim_session_input, list_session_admissions,
                                       recover_session_inputs)
     db = authority.db
     claimed = claim_session_input(db, epoch=authority.epoch, session_id=sid)
@@ -277,7 +277,7 @@ def test_a_client_cannot_mint_the_kanban_card_marker(kanban_owner):
     authority's public payload both refuse it, so a person's turn can't opt out of the pause."""
     from gateway.session_contract import Submission
     from gateway.session_kanban import run_task
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     owner = kanban_owner(_CONFIG)
     authority = owner.authority

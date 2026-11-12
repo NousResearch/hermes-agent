@@ -3,7 +3,7 @@ its display SELECT and its removed-identities SELECT hides nothing (#150102 revi
 inside ``transcript_read_snapshot``, so its own race test no longer reaches ``_display_set``'s transaction).
 """
 from agent.context_compressor import SUMMARY_PREFIX
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def test_a_compaction_between_a_resume_reads_two_selects_drops_nothing(tmp_path, monkeypatch):

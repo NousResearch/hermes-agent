@@ -28,7 +28,7 @@ from gateway.platforms.api_server import (
     cors_middleware,
     security_headers_middleware,
 )
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 KEY = "agent:main:api_server:room-42:member-7"
 OTHER_KEY = "agent:main:api_server:room-42:member-8"

@@ -1,8 +1,8 @@
 """A physical worker excludes its whole FIFO lineage; an explicit reset revokes orphan unknowns."""
 import pytest
 
-from hermes_state import SessionDB
-import hermes_state_runtime as rt
+from hermes_agent.hermes_state import SessionDB
+import hermes_agent.hermes_state_runtime as rt
 
 
 def test_physical_worker_excludes_logical_fifo_and_second_registration(tmp_path):

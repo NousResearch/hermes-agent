@@ -14,7 +14,7 @@ import sqlite3
 
 import pytest
 
-from hermes_state_wal import is_sqlite_wal_reset_vulnerable
+from hermes_agent.hermes_state_wal import is_sqlite_wal_reset_vulnerable
 from tests.conftest import _wal_is_usable
 
 
@@ -66,12 +66,12 @@ def test_conftest_does_not_import_hermes_state_at_collection():
             )
         return real_import(name, *args, **kwargs)
 
-    saved = sys.modules.pop("hermes_state", None)
+    saved = sys.modules.pop("hermes_agent.hermes_state", None)
     builtins.__import__ = guard
     try:
         _wal_is_usable()  # must not raise
     finally:
         builtins.__import__ = real_import
         if saved is not None:
-            sys.modules["hermes_state"] = saved
+            sys.modules["hermes_agent.hermes_state"] = saved
     assert not blocked

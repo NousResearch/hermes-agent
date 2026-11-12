@@ -1,6 +1,6 @@
 """Session listing/rich rows, export, and import (portability) for SessionDB.
 
-Plain mixin for ``hermes_state.SessionDB`` (no ``__init__``/state of its own).
+Plain mixin for ``hermes_agent.hermes_state.SessionDB`` (no ``__init__``/state of its own).
 Must never import hermes_state (cycle); shared constants live in hermes_state_common.
 """
 
@@ -15,18 +15,18 @@ from typing import Any, Dict, List, Optional
 from agent.skill_commands import AUTO_LOAD_SCAFFOLD_SQL_LIKE, SKILL_SCAFFOLD_SQL_LIKE
 from utils import safe_json_loads
 from hermes_cli.timefmt import coerce_epoch
-from hermes_state_ids import new_session_id
-from hermes_state_keys import (
+from hermes_agent.hermes_state_ids import new_session_id
+from hermes_agent.hermes_state_keys import (
     CRON_PRINCIPAL_ID, CRON_REQUEST_PREFIX, cron_request_range, cron_run_from_request, legacy_cron_run_job,
     prefix_range,
 )
-from hermes_state_local import POLICY_PREFIX
-from hermes_state_common import SCHEMA_SQL, _shape_preview, _sql_preview_raw, _sql_session_last_active
-from hermes_state_messages import _parse_tool_calls, _tool_calls_count
+from hermes_agent.hermes_state_local import POLICY_PREFIX
+from hermes_agent.hermes_state_common import SCHEMA_SQL, _shape_preview, _sql_preview_raw, _sql_session_last_active
+from hermes_agent.hermes_state_messages import _parse_tool_calls, _tool_calls_count
 import itertools
 
 # Pre-split logger identity so log filtering/capture is unchanged.
-logger = logging.getLogger("hermes_state")
+logger = logging.getLogger("hermes_agent.hermes_state")
 
 _IMPORT_SESSION_TEXT_FIELDS = (
     "source", "user_id", "model", "system_prompt", "end_reason", "cwd", "git_branch", "git_repo_root",
@@ -810,7 +810,7 @@ class SessionPortabilityMixin:
             return {"ok": False, "imported": 0, "skipped": 0, "detached": 0, "errors": errors}
 
         def _do(conn):
-            from hermes_state_mutation_retirement import retired_in
+            from hermes_agent.hermes_state_mutation_retirement import retired_in
             # A user-deleted id stays fenced for good: its row restored beside the fence would list
             # fine and refuse every turn, so the import is refused by name and writes nothing.
             ids = [str(item["session"].get("id") or "").strip() for item in normalized]

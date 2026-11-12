@@ -79,7 +79,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from hermes_constants import get_hermes_home
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from hermes_cli.active_sessions import try_acquire_active_session
 
 sid, advertise, token = sys.argv[1], sys.argv[2], sys.argv[3]

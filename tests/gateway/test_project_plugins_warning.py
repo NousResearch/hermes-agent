@@ -22,7 +22,7 @@ async def _owner(home, monkeypatch):
     owner = await initialize_session_authority(runner, profile_id=str(home), instance_id='fixture')
     # This fixture's runner has no adapter table: hand session.info the session's frozen policy.
     from gateway import session_policy
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
     monkeypatch.setattr(session_policy, 'policy_for_source', lambda runner, source: session_policy.restore_policy(
         local_receipt(owner.db, source.chat_id)['policy']))
     return owner, AuthorityConnection(owner, object(), {'user_id': 'owner'})

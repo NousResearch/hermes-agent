@@ -1,13 +1,13 @@
 """Worker receipts cover the real transcript serializer, not a text-only substitute."""
 import pytest
 
-from hermes_state import SessionDB
-from hermes_state_runtime import RuntimeStoreError, begin_runtime_epoch, register_worker_execution
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_runtime import RuntimeStoreError, begin_runtime_epoch, register_worker_execution
 from agent.message_metadata import CANONICAL_ROW, DB_ROW_SNAPSHOT
 
 
 def test_structured_worker_receipts_are_atomic_and_scoped(tmp_path):
-    import hermes_state_runtime as runtime
+    import hermes_agent.hermes_state_runtime as runtime
     assert callable(getattr(runtime, 'mutate_worker_execution', None))
     db = SessionDB(tmp_path / 'state.db')
     try:

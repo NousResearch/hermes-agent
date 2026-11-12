@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent.turn_facade_lease import DurableTurnLease
-from hermes_state_runtime import mutate_worker_execution
+from hermes_agent.hermes_state_runtime import mutate_worker_execution
 
 
 def test_admitted_parent_lease_releases_after_rotation_without_stealing_successor(worker):

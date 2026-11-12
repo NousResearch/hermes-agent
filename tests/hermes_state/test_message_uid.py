@@ -16,7 +16,7 @@ import re
 
 import pytest
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 UID_RE = re.compile(r"^[0-9a-f]{32}$")
 
@@ -93,7 +93,7 @@ class TestMintAndRestore:
     def test_legacy_rows_are_backfilled_in_bounded_slices_across_opens(self, tmp_path, monkeypatch):
         """A single full-table UPDATE held the write lock for minutes on a large store; each open now
         mints at most one chunk past its time budget, keeps earlier uids, and converges."""
-        import hermes_state_schema
+        from hermes_agent import hermes_state_schema
 
         monkeypatch.setattr(hermes_state_schema, "_MESSAGE_UID_BACKFILL_CHUNK", 2)
         monkeypatch.setattr(hermes_state_schema, "_MESSAGE_UID_BACKFILL_BUDGET_S", 0.0)
@@ -127,7 +127,7 @@ class TestMintAndRestore:
         like (#141467)."""
         import sqlite3
 
-        import hermes_state_schema
+        from hermes_agent import hermes_state_schema
 
         monkeypatch.setattr(hermes_state_schema, "_MESSAGE_UID_BACKFILL_CHUNK", 2)
         path = tmp_path / "legacy.db"

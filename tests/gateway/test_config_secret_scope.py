@@ -48,7 +48,7 @@ def _older_gateway_reference(policy):
 
 
 def _store_reference(store, sid, ref):
-    from hermes_state_local import POLICY_PREFIX
+    from hermes_agent.hermes_state_local import POLICY_PREFIX
     def write(conn):
         saved = json.loads(conn.execute('SELECT value FROM state_meta WHERE key=?',
                                         (POLICY_PREFIX + sid,)).fetchone()[0])
@@ -59,7 +59,7 @@ def _store_reference(store, sid, ref):
 
 def _stored_policy(store, sid):
     from gateway.session_policy import restore_policy
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
     return restore_policy(local_receipt(store._db, sid)['policy'])
 
 
@@ -86,7 +86,7 @@ async def test_a_reference_stamped_by_an_older_gateway_still_runs_its_session(tm
         # Its values are still gated by their fingerprints: the route key rotated is refused by name.
         (home / 'config.yaml').write_text(CONFIG.replace('route-token', 'rotated-token'))
         fresh = SimpleNamespace(db=store._db, profile_id=cold.profile_id)
-        from hermes_state_runtime import RuntimeStoreError
+        from hermes_agent.hermes_state_runtime import RuntimeStoreError
         with pytest.raises(RuntimeStoreError, match='launch_credentials_unavailable') as refused:
             _stored_policy(store, sid).config(fresh)
         assert refused.value.field == 'model.api_key'
@@ -186,7 +186,7 @@ def test_a_non_secret_policy_change_keeps_the_reference(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize('scope', ['home', 'profile'])
 def test_another_home_or_profile_is_refused_by_name(tmp_path, monkeypatch, scope):
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     _home_dir, _cfg, owner, policy = _bound_policy(tmp_path, monkeypatch)
     wrong = owner(path=tmp_path) if scope == 'home' else owner(profile='other')
     with pytest.raises(RuntimeStoreError, match='launch_credentials_unavailable') as refused:
@@ -195,7 +195,7 @@ def test_another_home_or_profile_is_refused_by_name(tmp_path, monkeypatch, scope
 
 
 def test_a_revoked_route_secret_is_still_refused(tmp_path, monkeypatch):
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     home, cfg, owner, policy = _bound_policy(tmp_path, monkeypatch)
     del cfg['model']['api_key']
     (home / 'config.yaml').write_text(json.dumps(cfg))
@@ -208,7 +208,7 @@ def test_a_revoked_route_secret_is_still_refused(tmp_path, monkeypatch):
 def test_a_secret_paired_with_a_moved_endpoint_is_refused_by_name(tmp_path, monkeypatch, moved):
     """The scoped check still binds each secret to the endpoint it authenticates in the frozen policy: a
     policy rewrite that repoints it without re-binding never sends the key to the new endpoint."""
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     _home_dir, _cfg, owner, policy = _bound_policy(tmp_path, monkeypatch)
     config = json.loads(policy.config_json)
     if moved == 'model':
@@ -266,7 +266,7 @@ _ROUTED = {
 def test_a_secret_is_bound_to_the_endpoint_its_route_resolves_to(tmp_path, monkeypatch, case):
     """Independent review P2-2: moving the URL the secret actually authenticates, even when it lives in
     another block or under ``api``, refuses the secret by name instead of pairing it with the new URL."""
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     cfg, mutate, field = _ROUTED[case]
     owner, policy = _bind(tmp_path, monkeypatch, cfg)
     assert policy.config(owner())  # the unmoved policy recovers
@@ -284,7 +284,7 @@ def test_a_legacy_reference_keeps_the_endpoint_guard(tmp_path, monkeypatch):
     """Independent review P2-3: a reference without ``bound`` still matches its own policy (the later
     fields at their defaults are not hashed), but a moved endpoint, or any other policy rewrite its whole-
     policy hash covers, is refused instead of degrading to the fingerprints alone."""
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     _home_dir, _cfg, owner, policy = _bound_policy(tmp_path, monkeypatch)
     legacy = _legacy(policy)
     assert legacy.config(owner())['model']['api_key'] == 'route-token'
@@ -352,7 +352,7 @@ _SHAPES = {
 
 @pytest.mark.parametrize('case', sorted(_SHAPES))
 def test_every_route_shape_binds_its_secret_to_the_owning_route(tmp_path, monkeypatch, case):
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     cfg, mutate, field = _SHAPES[case]
     owner, policy = _bind(tmp_path, monkeypatch, json.loads(json.dumps(cfg)))
     assert policy.config(owner())  # the unmoved policy recovers
@@ -437,7 +437,7 @@ def test_a_moved_route_never_sends_its_frozen_key_to_the_new_endpoint(tmp_path, 
     """The review's wire repro: bind at loopback A, move the frozen route to loopback B without a re-bind,
     and drive the real consumer (the main runtime's fallback walker / the auxiliary client). A's key must
     reach A while the route is unmoved and never reach B."""
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     seen, urls, servers = _loopback()
     try:
         if route == 'fallback_providers_dict':

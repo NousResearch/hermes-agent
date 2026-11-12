@@ -44,7 +44,7 @@ def client(monkeypatch, profiles_on_disk):
     except ImportError:
         pytest.skip("fastapi/starlette not installed")
 
-    import hermes_state
+    from hermes_agent import hermes_state
     from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
     from hermes_constants import get_hermes_home
 
@@ -55,7 +55,7 @@ def client(monkeypatch, profiles_on_disk):
 
 
 def _seed_session(home, session_id, *, source="cli"):
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=home / "state.db")
     try:
@@ -85,7 +85,7 @@ class TestSidebarFailedLoad:
         self, client, profiles_on_disk, monkeypatch
     ):
         _seed_session(profiles_on_disk["worker"], "worker-chat")
-        import hermes_state
+        from hermes_agent import hermes_state
 
         def boom(self, *args, **kwargs):
             raise sqlite3.OperationalError(
@@ -113,7 +113,7 @@ class TestSidebarFailedLoad:
             "_session_db_read_probe_statements",
             lambda: ('SELECT "sessions"."not_a_real_column" FROM "sessions" LIMIT 0',),
         )
-        import hermes_state
+        from hermes_agent import hermes_state
 
         writable_opens = []
         real_init = hermes_state.SessionDB.__init__
@@ -141,7 +141,7 @@ class TestSidebarFailedLoad:
             _assert_failed_load(payload["recents"], "worker")
 
     def test_healthy_empty_store_stays_an_empty_list(self, client, profiles_on_disk):
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         SessionDB(db_path=profiles_on_disk["worker"] / "state.db").close()
 
@@ -156,7 +156,7 @@ class TestSidebarFailedLoad:
     ):
         _seed_session(profiles_on_disk["default"], "default-chat")
         _seed_session(profiles_on_disk["worker"], "worker-chat")
-        import hermes_state
+        from hermes_agent import hermes_state
 
         real_list = hermes_state.SessionDB.list_sessions_rich
         worker_db = (profiles_on_disk["worker"] / "state.db").resolve()

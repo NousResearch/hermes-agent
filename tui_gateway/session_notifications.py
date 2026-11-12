@@ -470,7 +470,7 @@ def _kb_stray_delegate_keys(session: dict, session_key: str) -> tuple:
         with _session_db(session) as db:
             if db is None:
                 return ()  # store unavailable: not cached, so a later poll retries
-            from hermes_state_delegate_children import delegate_descendant_ids
+            from hermes_agent.hermes_state_delegate_children import delegate_descendant_ids
             keys = tuple(delegate_descendant_ids(db, session_key))
     except sqlite3.Error as exc:  # busy/locked store: not cached, so a later poll retries
         _notif_log_failure("kanban stray-subscription lookup failed", exc)

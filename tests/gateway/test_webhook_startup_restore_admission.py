@@ -22,7 +22,7 @@ from tests.gateway.fixtures.webhook_route_authority import mount_authority
 async def test_admitted_webhook_runs_through_startup_restore_gate(monkeypatch):
     from gateway.session_contract import SessionRef
     from gateway.session_ingress import execute_admission
-    from hermes_state_runtime import get_session_admission
+    from hermes_agent.hermes_state_runtime import get_session_admission
 
     config = PlatformConfig(enabled=True, extra={
         'secret': 'owned-secret', 'routes': {'fixture': {'prompt': '{text}', 'deliver': 'log'}}})

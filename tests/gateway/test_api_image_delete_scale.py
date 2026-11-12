@@ -7,7 +7,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.session_api_turn import admit_api_turn, recover_api_turns
 from gateway.session_ingress_media import _media_root
-from hermes_state_runtime import claim_session_input, settle_session_input
+from hermes_agent.hermes_state_runtime import claim_session_input, settle_session_input
 
 
 def _plant(count):

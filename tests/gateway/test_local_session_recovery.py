@@ -13,7 +13,7 @@ async def test_local_create_receipt_survives_cold_authority_atomically(tmp_path,
     from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
     from gateway import run
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     config = {'platform_toolsets': {'cli': []}}
     monkeypatch.setattr(run, '_load_gateway_config', lambda: config)
@@ -57,7 +57,7 @@ async def test_local_create_receipt_survives_cold_authority_atomically(tmp_path,
         policies = conn.execute("SELECT value FROM state_meta WHERE key LIKE 'gateway.local_policy.v1:%'").fetchall()
     assert len(policies) == 1
     assert json.loads(policies[0][0])['principal_id'] == actor.subject
-    from hermes_state_runtime import admit_session_input, list_session_admissions
+    from hermes_agent.hermes_state_runtime import admit_session_input, list_session_admissions
     admit_session_input(db, epoch=cold.epoch, principal_id=actor.subject,
                         session_id=ref.session_id, request_id='preclaim', payload={'text': 'never run'})
     db._write_sql('UPDATE state_meta SET value=? WHERE key=?',
@@ -79,8 +79,8 @@ def test_messaging_session_history_follows_the_compression_tip(tmp_path, monkeyp
     from gateway.session_authority import LiveSession, SessionAuthority
     from gateway.session_contract import SessionRef
     from gateway.session_local_recovery import local_history
-    from hermes_state import SessionDB
-    from hermes_state_runtime import begin_runtime_epoch
+    from hermes_agent.hermes_state import SessionDB
+    from hermes_agent.hermes_state_runtime import begin_runtime_epoch
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     with SessionDB(db_path=tmp_path / 'state.db') as db:
         db.create_session('root', source='telegram', session_key='agent:telegram:dm:1')
@@ -155,7 +155,7 @@ async def test_delete_retires_owner_receipts_and_never_resurrects_the_id(tmp_pat
     from gateway.session_local import create_local_session
     from gateway.session_mutations import mutate_session
     from gateway import run
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())

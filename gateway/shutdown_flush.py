@@ -337,7 +337,7 @@ def recover_pending_spool(session_db=None, *, session_resolver=None) -> tuple[in
         return 0, set()
     own_db = session_db is None
     if own_db:
-        from hermes_state_registry import acquire
+        from hermes_agent.hermes_state_registry import acquire
         session_db = acquire()
     recovered = 0
     # Sessions whose spool replay already failed this pass -> files held back for them. Ordering is a
@@ -367,7 +367,7 @@ def recover_pending_spool(session_db=None, *, session_resolver=None) -> tuple[in
     finally:
         if own_db:  # shutdown cancellation/interrupt must not strand an owned DB
             with contextlib.suppress(Exception):
-                from hermes_state_registry import release_or_close
+                from hermes_agent.hermes_state_registry import release_or_close
                 release_or_close(session_db)
     if recovered:
         logger.info("Recovered %d pending message(s) from shutdown flush", recovered)

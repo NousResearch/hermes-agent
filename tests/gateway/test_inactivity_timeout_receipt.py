@@ -8,7 +8,7 @@ from gateway.config import Platform
 from gateway.session import SessionSource
 from gateway.session_authority import LiveSession
 from gateway.session_contract import SessionRef
-from hermes_state_runtime import admit_session_input, claim_session_input, get_session_admission
+from hermes_agent.hermes_state_runtime import admit_session_input, claim_session_input, get_session_admission
 
 
 @pytest.mark.asyncio

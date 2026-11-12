@@ -12,7 +12,7 @@ def test_compression_flush_returns_canonical_annotations_and_keeps_turn_guard(wo
     assert rows[0]['_row_id'] == db.get_messages_as_conversation('owned', include_row_ids=True)[0]['_row_id']
     assert db.get_messages_as_conversation('owned')[0]['api_content'] == ' original wire '
     import pytest
-    from hermes_state_runtime import mutate_worker_execution
+    from hermes_agent.hermes_state_runtime import mutate_worker_execution
     with pytest.raises(Exception, match='lease'):
         mutate_worker_execution(db, **store.scope, sequence=store.journal['next_sequence'],
             operation='compression.append', payload=dict(messages=[{'role': 'assistant', 'content': 'stale'}],

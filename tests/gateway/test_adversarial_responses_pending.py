@@ -55,7 +55,7 @@ async def test_pending_retry_pins_named_conversation_target(api, owner):
 @pytest.mark.asyncio
 async def test_unknown_retry_recovers_admission_after_pointer_commit_loss(api, owner):
     from gateway.session_contract import SessionRef
-    from hermes_state_runtime import begin_runtime_epoch, recover_session_inputs
+    from hermes_agent.hermes_state_runtime import begin_runtime_epoch, recover_session_inputs
     from gateway.platforms.api_server_response_store import ResponseStore
     started, release = asyncio.Event(), asyncio.Event()
     calls = []

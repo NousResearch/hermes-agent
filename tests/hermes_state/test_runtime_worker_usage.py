@@ -1,7 +1,7 @@
 import sqlite3
 import pytest
-from hermes_state import SessionDB
-import hermes_state_runtime as rt
+from hermes_agent.hermes_state import SessionDB
+import hermes_agent.hermes_state_runtime as rt
 
 
 def test_usage_receipt_includes_route_rows_and_rolls_back_on_receipt_failure(tmp_path):

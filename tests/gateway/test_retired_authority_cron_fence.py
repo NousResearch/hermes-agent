@@ -10,7 +10,7 @@ import pytest
 
 from gateway import run_runtime, session_bot, session_cron
 from gateway.session_contract import SessionActor, Submission
-from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions
 from tests.gateway.test_profile_retire_stops_turns import REF, _Agent, _authority
 
 CRON = SessionActor('cron-owner', 'owned', frozenset({'session:submit', 'session:control'}), 'cron-ticker')

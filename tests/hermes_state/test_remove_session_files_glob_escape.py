@@ -6,7 +6,7 @@ a PATTERN: its own dumps were left behind and another session's could be matched
 
 from __future__ import annotations
 
-from hermes_state_sessions import SessionSessionsMixin
+from hermes_agent.hermes_state_sessions import SessionSessionsMixin
 
 
 def test_remove_session_files_escapes_glob_metacharacters(tmp_path):

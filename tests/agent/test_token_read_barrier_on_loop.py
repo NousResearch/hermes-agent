@@ -9,7 +9,7 @@ import asyncio
 import threading
 import time
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def test_loop_thread_session_read_does_not_wait_for_a_stuck_writer(tmp_path):

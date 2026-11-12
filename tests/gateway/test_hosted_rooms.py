@@ -11,9 +11,9 @@ import pytest
 
 from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms as rooms
-import hermes_state_wal
+from hermes_agent import hermes_state_wal
 from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 USER = {"kind": "user", "id": "desktop-user", "display_name": "User"}
 GATEWAY_A = {"kind": "gateway", "id": "gateway-a"}

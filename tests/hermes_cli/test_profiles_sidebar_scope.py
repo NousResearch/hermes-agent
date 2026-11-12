@@ -51,7 +51,7 @@ def client(monkeypatch, profiles_on_disk):
     except ImportError:
         pytest.skip("fastapi/starlette not installed")
 
-    import hermes_state
+    from hermes_agent import hermes_state
     from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
     from hermes_constants import get_hermes_home
 
@@ -71,7 +71,7 @@ def _seed_session(home, session_id, *, source, cwd=None, tokens=None, cost=None,
     """
     import sqlite3
 
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=home / "state.db")
     try:
@@ -304,7 +304,7 @@ class TestSidebarShowSubagents:
 
     @staticmethod
     def _seed_subagent(home, parent_id, child_id):
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         _seed_session(home, parent_id, source="desktop")
         db = SessionDB(db_path=home / "state.db")

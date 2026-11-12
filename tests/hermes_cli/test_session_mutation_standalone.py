@@ -11,8 +11,8 @@ from fastapi import FastAPI
 from gateway.runtime_ownership import ProfileOwnership
 from hermes_cli.gateway_runtime import GatewayDiscovery
 from hermes_cli.web_routers.sessions import manage_router
-from hermes_state import SessionDB
-from hermes_state_runtime import admit_session_input, begin_runtime_epoch
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_runtime import admit_session_input, begin_runtime_epoch
 
 AUTH = {'Authorization': 'Bearer standalone-token'}
 
@@ -20,7 +20,7 @@ AUTH = {'Authorization': 'Bearer standalone-token'}
 def _standalone_app(tmp_path, monkeypatch):
     from hermes_cli import web_server
     monkeypatch.setattr(web_server, '_SESSION_TOKEN', 'standalone-token')
-    monkeypatch.setattr('hermes_state._default_db_path', lambda: tmp_path / 'state.db')
+    monkeypatch.setattr('hermes_agent.hermes_state._default_db_path', lambda: tmp_path / 'state.db')
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     app = FastAPI()
     app.include_router(manage_router)

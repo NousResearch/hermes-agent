@@ -10,7 +10,7 @@ import sys
 import pytest
 
 import hermes_cli.main as main_mod
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 SID = "20260929_120000_abcdef"
 

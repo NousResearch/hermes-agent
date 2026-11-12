@@ -11,9 +11,9 @@ import sqlite3
 
 import pytest
 
-from hermes_state import SessionDB, StateDbCorruptError
-from hermes_state_errors import classify_persistence_error
-from hermes_state_health import (
+from hermes_agent.hermes_state import SessionDB, StateDbCorruptError
+from hermes_agent.hermes_state_errors import classify_persistence_error
+from hermes_agent.hermes_state_health import (
     is_structural_corruption_error,
     note_storage_error,
     reset_storage_state,
@@ -175,7 +175,7 @@ def client(monkeypatch, _isolate_hermes_home):
     except ImportError:
         pytest.skip("fastapi/starlette not installed")
 
-    import hermes_state
+    from hermes_agent import hermes_state
     from hermes_cli.web_routers import profiles as profiles_routes
     from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
     from hermes_constants import get_hermes_home

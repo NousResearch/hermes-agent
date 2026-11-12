@@ -39,7 +39,7 @@ def _gateway_state(home: Path) -> None:
 def client(monkeypatch, _isolate_hermes_home):
     from starlette.testclient import TestClient
 
-    import hermes_state
+    from hermes_agent import hermes_state
     import hermes_constants
     import gateway.status as _gw_status
     from hermes_constants import get_hermes_home

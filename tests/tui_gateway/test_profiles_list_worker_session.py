@@ -29,7 +29,7 @@ def home(tmp_path, monkeypatch):
     return h
 
 def _db(profile_dir):
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     return SessionDB(db_path=profile_dir / "state.db")
 

@@ -163,8 +163,8 @@ async def test_failed_reservation_closes_unpublished_child_and_a_later_build_can
     monkeypatch,
     offline_children,
 ):
-    from hermes_state import SessionDB
-    from hermes_state_registry import stats
+    from hermes_agent.hermes_state import SessionDB
+    from hermes_agent.hermes_state_registry import stats
 
     connection, parent_ref = await _connect(tmp_path, monkeypatch, "sub-1")
     published = []

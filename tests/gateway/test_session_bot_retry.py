@@ -14,7 +14,7 @@ import pytest
 import pytest_asyncio
 
 from gateway.session_contract import SessionActor
-from hermes_state_runtime import list_session_admissions
+from hermes_agent.hermes_state_runtime import list_session_admissions
 
 KEY = 'c' * 32
 
@@ -27,7 +27,7 @@ async def bot(tmp_path, monkeypatch):
     from gateway.session_authority import initialize_session_authority
     from gateway.session_local import create_local_session
     from gateway.session_local_title import title_new_session
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})

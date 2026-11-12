@@ -1,7 +1,7 @@
 """Durable deletion fences outside prunable transcript rows."""
 import json
 import time
-from hermes_state_runtime import RuntimeStoreError, admission_fingerprint, mutation_receipt_key, _json, _text
+from hermes_agent.hermes_state_runtime import RuntimeStoreError, admission_fingerprint, mutation_receipt_key, _json, _text
 
 # This store's own retired session (its profile is the store's). Written as ``own`` since the
 # shared routing index also carries other profiles' fences; a marker without ``own`` predates
@@ -86,7 +86,7 @@ def _compact_result(conn, admission_id):
     """A retired result keeps the exact-retry outcome (final response, flags, usage/accounting)
     but not the transcript copies a turn result carries (cumulative ``messages``, reasoning, the
     settled ``_turn_user_row``)."""
-    from hermes_state_terminal import RESULT_PREFIX, encode_result, load_result
+    from hermes_agent.hermes_state_terminal import RESULT_PREFIX, encode_result, load_result
     saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (RESULT_PREFIX + admission_id,)).fetchone()
     if saved is None:
         return
@@ -98,7 +98,7 @@ def _compact_result(conn, admission_id):
 
 
 def retire_terminal_receipts(conn, session_ids):
-    from hermes_state_terminal import ADMISSION_PREFIX, WORKER_PREFIX, identity_key
+    from hermes_agent.hermes_state_terminal import ADMISSION_PREFIX, WORKER_PREFIX, identity_key
     for sid in session_ids:
         admissions = conn.execute('SELECT * FROM session_admissions WHERE target_session_id=?', (sid,)).fetchall()
         workers = conn.execute('SELECT * FROM worker_executions WHERE session_id=?', (sid,)).fetchall()
@@ -107,7 +107,7 @@ def retire_terminal_receipts(conn, session_ids):
             raise RuntimeStoreError('unknown_execution' if 'unknown' in states else 'session_busy')
         for raw in admissions:
             row = dict(raw)
-            from hermes_state_media import retire_media
+            from hermes_agent.hermes_state_media import retire_media
             retire_media(conn, json.loads(row['payload_json']), row['request_id'])
             # Keep the digest for exact retries, not another copy of user input/history.
             row['payload_json'] = '{}'
@@ -154,12 +154,12 @@ def retire_sessions(conn, session_ids, *, expiring=()):
     admitted a second time against it. Every delete path (canonical mutate, legacy
     ``delete_session*``, prunes and sweeps) must publish the whole fence, so it lives here once.
     The marker of an id in *expiring* (a housekeeping sweep's) ages out at the retry horizon."""
-    from hermes_state_media import retire_spillover
+    from hermes_agent.hermes_state_media import retire_spillover
     retire_spillover(conn, session_ids)  # before the caller's DELETEs take the pointers away
     retire_terminal_receipts(conn, session_ids)
     retire_mutation_receipts(conn, session_ids)
     retire_routes(conn, session_ids, expiring=expiring)
-    from hermes_state_local import retire_local_receipts
+    from hermes_agent.hermes_state_local import retire_local_receipts
     retire_local_receipts(conn, session_ids)
 
 
@@ -208,7 +208,7 @@ def _local_conversations(conn):
     (policy, FIFO, generation), each receipt lineage segment and the current target), and the ids
     of every derived (Bot Chat, A2A) conversation. One prefix scan, not a lookup per swept id.
     Malformed receipts name nothing."""
-    from hermes_state_local import POLICY_PREFIX
+    from hermes_agent.hermes_state_local import POLICY_PREFIX
     members, derived = {}, set()
     for (raw,) in conn.execute('SELECT value FROM state_meta WHERE key GLOB ?', (POLICY_PREFIX + '*',)):
         try:
@@ -259,7 +259,7 @@ def retire_prunable(conn, session_ids):
 
 
 def delete_in_transaction(db, conn, session_id, payload):
-    from hermes_state_mutation_guards import require_idle, delete_targets
+    from hermes_agent.hermes_state_mutation_guards import require_idle, delete_targets
     targets = delete_targets(conn, session_id)
     require_idle(db, conn, targets)
     retire_sessions(conn, targets)
@@ -416,7 +416,7 @@ def prune_retired_tombstones(conn, older_than=RETRY_HORIZON_S):
     reclaimed: it holds only ``retired_at``, and without it a deleted id could be recreated,
     re-admitted or reissued as a Bot Chat generation.
     Tombstones written before ``retired_at`` existed are stamped now and age from this pass."""
-    from hermes_state_terminal import ADMISSION_PREFIX, RESULT_PREFIX, WORKER_PREFIX, identity_key
+    from hermes_agent.hermes_state_terminal import ADMISSION_PREFIX, RESULT_PREFIX, WORKER_PREFIX, identity_key
     prefixes = (ADMISSION_PREFIX, WORKER_PREFIX)
     now = time.time()
     for prefix in prefixes:

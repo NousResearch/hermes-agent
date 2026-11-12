@@ -215,7 +215,7 @@ class GatewaySlashCommandsMixin(
 
     @staticmethod
     def _session_db_unavailable_reply() -> str:
-        from hermes_state import format_session_db_unavailable
+        from hermes_agent.hermes_state import format_session_db_unavailable
         return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
 
     def _reply_metadata(self, event: MessageEvent):

@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 import pytest
 from prompt_toolkit.utils import get_cwidth
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from tests.hermes_cli.test_cli_init import _make_cli
 
 

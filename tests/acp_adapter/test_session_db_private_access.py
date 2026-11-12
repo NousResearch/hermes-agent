@@ -11,7 +11,7 @@ import json
 from unittest.mock import MagicMock
 
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from hermes_agent.acp_adapter.session import SessionManager
 
 
@@ -24,7 +24,7 @@ def _mock_agent():
 
 
 # ---------------------------------------------------------------------------
-# hermes_state.SessionDB.update_session_meta — unit tests
+# hermes_agent.hermes_state.SessionDB.update_session_meta — unit tests
 # ---------------------------------------------------------------------------
 
 class TestUpdateSessionMeta:

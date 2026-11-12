@@ -20,7 +20,7 @@ import tempfile
 import threading
 from hermes_dir_acl import make_user_dir
 
-from hermes_state_runtime import ADMITTED_REQUEST_CONFLICT, RuntimeStoreError
+from hermes_agent.hermes_state_runtime import ADMITTED_REQUEST_CONFLICT, RuntimeStoreError
 from utils import fsync_directory
 
 logger = logging.getLogger(__name__)
@@ -437,7 +437,7 @@ def release_admission_media(db, admission_id):
     files can collect independently; physical aliases and uncertain stat results
     retain conservatively. A shared hardlink can consequently retain an extra old alias.
     """
-    from hermes_state_runtime import get_session_admission
+    from hermes_agent.hermes_state_runtime import get_session_admission
     row = get_session_admission(db, admission_id=admission_id)
     if row is None or row['status'] != 'terminal':
         return 0

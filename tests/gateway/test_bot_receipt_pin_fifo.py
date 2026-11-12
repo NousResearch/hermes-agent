@@ -6,7 +6,7 @@ ordered after it is admitted; tickets ordered before it, and pins whose admissio
 never hold the queue."""
 import pytest
 
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 from tests.gateway.test_bot_receipt_refusal import _refuse
 from tests.gateway.test_bot_receipt_stale_pin import HOUR, KEY, OTHER, _age, _legacy, _pin, _rows
 

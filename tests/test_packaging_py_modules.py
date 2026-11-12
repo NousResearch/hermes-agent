@@ -4,7 +4,7 @@
 (``run_agent``, ``hermes_state``, ``toolsets``...) reach the wheel through
 ``setup.py::_root_py_modules()``, which derives the list from the tree at build time. A
 static list drifted every time the root layout changed and broke installed wheels with
-``ModuleNotFoundError`` on ``import hermes_state``. This test pins the two halves of that
+``ModuleNotFoundError`` on ``from hermes_agent import hermes_state``. This test pins the two halves of that
 contract: the derived list covers every root module packaged code can import, and the
 helper stays the single source (no static ``py-modules`` creeping back into pyproject).
 """

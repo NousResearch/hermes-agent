@@ -656,7 +656,7 @@ class TestDispatchLoopCommand:
 
 class TestListMetaPrefix:
     def test_prefix_scan(self, hermes_home):
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         db = SessionDB()
         db.set_meta("lmp-test:aaa", "1")
@@ -666,7 +666,7 @@ class TestListMetaPrefix:
         assert rows == {"lmp-test:aaa": "1", "lmp-test:bbb": "2"}
 
     def test_wildcards_escaped(self, hermes_home):
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         db = SessionDB()
         db.set_meta("pre%fix:x", "1")
@@ -674,7 +674,7 @@ class TestListMetaPrefix:
         assert db.list_meta_prefix("pre%") == [("pre%fix:x", "1")]
 
     def test_empty_prefix(self, hermes_home):
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         db = SessionDB()
         assert db.list_meta_prefix("") == []

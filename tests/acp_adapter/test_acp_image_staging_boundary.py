@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 32
 

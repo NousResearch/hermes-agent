@@ -1013,7 +1013,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                         and _adb is not None and _adb is self.session_manager._get_db()
                         and getattr(state.agent, "_session_db_created", False)):
                     from agent.turn_failure_copy import CONTENT_REFUSED_NOTICE
-                    from hermes_state_rewind import retain_refused_turn_for_display
+                    from hermes_agent.hermes_state_rewind import retain_refused_turn_for_display
                     retain_refused_turn_for_display(
                         _adb, getattr(state.agent, "session_id", session_id),
                         notice=CONTENT_REFUSED_NOTICE,

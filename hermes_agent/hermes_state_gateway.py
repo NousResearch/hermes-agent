@@ -12,13 +12,13 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from hermes_state_common import (
+from hermes_agent.hermes_state_common import (
     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS_SQL, _sql_json_extract,
     _sql_session_last_active)
-from hermes_state_local import API_BINDING_PREFIX, POLICY_PREFIX, _receipt
+from hermes_agent.hermes_state_local import API_BINDING_PREFIX, POLICY_PREFIX, _receipt
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
-logger = logging.getLogger("hermes_state")
+logger = logging.getLogger("hermes_agent.hermes_state")
 
 # Recursive CTE naming a session plus its compression ancestors (rows a
 # resume must keep on one routing peer); branch/delegate/tool/reset rows stop it
@@ -241,8 +241,8 @@ class SessionGatewayMixin:
 
         Fails closed: anything whose parent, age, argv, or network connections
         cannot be proved safe remains a repair-blocking holder."""
-        from hermes_state import psutil
-        from hermes_state_dbfile import _concrete_state_db_holder_pids, _is_inactive_orphan_desktop_holder
+        from hermes_agent.hermes_state import psutil
+        from hermes_agent.hermes_state_dbfile import _concrete_state_db_holder_pids, _is_inactive_orphan_desktop_holder
         if not sys.platform.startswith("linux") or psutil is None:
             return []
         try:
@@ -328,7 +328,7 @@ class SessionGatewayMixin:
                 # An explicit repoint moved these rows to this lane: the local conversation whose receipt
                 # names one of them goes with it in the same write, or it would match neither lane (#143286).
                 from gateway.session_route_recovery import _messaging_platform
-                from hermes_state_local import hand_off_conversations, moved_receipts
+                from hermes_agent.hermes_state_local import hand_off_conversations, moved_receipts
                 moved = {row[0] for row in conn.execute(
                     f"{_COMPRESSION_LINEAGE_CTE} SELECT id FROM compression_lineage", (session_id,))}
                 hand_off_conversations(conn, {owner: found for owner, found in moved_receipts(conn, moved).items()
@@ -364,7 +364,7 @@ class SessionGatewayMixin:
         namespaces the index per sessions_dir so two stores never share routing state."""
         if not session_key or not entry_json:
             return
-        from hermes_state_mutation_retirement import ROUTE_RETIRED_SQL, route_retired_params
+        from hermes_agent.hermes_state_mutation_retirement import ROUTE_RETIRED_SQL, route_retired_params
         self._write_sql(
             f"""INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at)
                SELECT :scope, :key, :entry, :now WHERE NOT {ROUTE_RETIRED_SQL}
@@ -378,7 +378,7 @@ class SessionGatewayMixin:
         """Atomically replace the routing index for *scope* (keys absent from *entries*
         are removed); other scopes untouched. Returns the keys skipped as retired routes, which
         the sessions.json mirror must leave out too."""
-        from hermes_state_mutation_retirement import ROUTE_RETIRED_SQL, route_retired_params
+        from hermes_agent.hermes_state_mutation_retirement import ROUTE_RETIRED_SQL, route_retired_params
         now = time.time()
         rows = [{'scope': scope, 'key': k, **route_retired_params(k, v, now)} for k, v in entries.items() if k and v]
         def _do(conn):
@@ -485,7 +485,7 @@ class SessionGatewayMixin:
             return
 
         def _do(conn):
-            from hermes_state_mutation_retirement import fence_shared_routes
+            from hermes_agent.hermes_state_mutation_retirement import fence_shared_routes
             fence_shared_routes(conn, namespace, ids, expiring=expiring)
         self._execute_write(_do)
 
@@ -507,7 +507,7 @@ class SessionGatewayMixin:
         candidates = self.list_never_active_keyed_sessions(older_than_days=older_than_days)
         # A fresh local reset tip is its conversation's current target, not a never-active chat:
         # the conversation holds the earlier segments' history and the owner's queued work.
-        from hermes_state_local import owned_lineage_ids
+        from hermes_agent.hermes_state_local import owned_lineage_ids
         with self._read_ctx() as conn:
             ids = {str(row["id"]) for row in candidates if owned_lineage_ids(conn, str(row["id"])) == [str(row["id"])]}
         if not ids:
@@ -917,7 +917,7 @@ class SessionGatewayMixin:
         still restore the provider that served them; a bare ``custom`` billing class falls back
         to its ``billing_base_url`` endpoint for the readers' bare-custom heal (#136323).
         Empty dict on parse failure — resume uses ambient config."""
-        from hermes_state import _BARE_BILLING_PROVIDERS
+        from hermes_agent.hermes_state import _BARE_BILLING_PROVIDERS
         raw = (session_meta or {}).get("model_config")
         if isinstance(raw, str):
             try:

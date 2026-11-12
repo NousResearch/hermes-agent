@@ -18,7 +18,7 @@ def _owner(tmp_path, monkeypatch, handle):
     from gateway.session import SessionStore
     from gateway.session_authority import SessionAuthority
     from gateway.session_controls import AuthorityConnection
-    import hermes_state_runtime as rt
+    import hermes_agent.hermes_state_runtime as rt
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     db = store._db
@@ -39,7 +39,7 @@ def _local(authority, owner, tmp_path, source='cli', request_id='m'):
 
 
 async def _terminal(db, receipt):
-    import hermes_state_runtime as rt
+    import hermes_agent.hermes_state_runtime as rt
     await async_wait_until(lambda: rt.get_session_admission(db, admission_id=receipt.admission_id)['status'] == 'terminal',
                            timeout=10, interval=0.02, what='the admission to settle')
 
@@ -125,7 +125,7 @@ async def _initialize(authority, owner, tmp_path, db):
 async def _initialize_adoption(authority, owner, tmp_path, db):
     """Boot and hot-profile activation (``serve_profile_runtime`` -> ``_build_profile_authority``)
     recover through ``initialize_session_authority`` while the loop serves the other profiles."""
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
     from tests.gateway.test_local_receipt_untracked_compression import _compact_like_0_22_2
     ref = _local(authority, owner, tmp_path)
     _compact_like_0_22_2(db, ref.session_id, 'classic-child')
@@ -139,7 +139,7 @@ async def _first_read_adoption(authority, owner, tmp_path, db):
     from gateway.session import SessionStore
     from gateway.session_authority import SessionAuthority
     from gateway.session_controls import AuthorityConnection
-    import hermes_state_runtime as rt
+    import hermes_agent.hermes_state_runtime as rt
     from tests.gateway.test_local_receipt_untracked_compression import _compact_like_0_22_2
     ref = _local(authority, owner, tmp_path)
     _compact_like_0_22_2(db, ref.session_id, 'classic-child')

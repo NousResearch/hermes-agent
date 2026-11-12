@@ -72,7 +72,7 @@ class _Owners:
         yield await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(self._open(), self.loop))
 
     def rows(self):
-        from hermes_state_runtime import list_session_admissions
+        from hermes_agent.hermes_state_runtime import list_session_admissions
         return [row for row in list_session_admissions(self.store._db, session_id=self.sid, pending_only=False)
                 if row['payload'].get('text') == TEXT]
 

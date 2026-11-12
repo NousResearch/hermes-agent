@@ -12,7 +12,7 @@ from functools import partial
 from pathlib import Path
 import threading
 
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 _SESSION_CONTROL_KEYS = frozenset({'busy', 'verbose', 'yolo', 'show_reasoning', 'service_tier', 'model'})
 _DETAIL_SECTIONS = ('thinking', 'tools', 'subagents', 'activity')

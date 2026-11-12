@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes_state import SessionDB
-from hermes_state_repair import repair_state_db_schema
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_repair import repair_state_db_schema
 
 _HOLDER = """
 import sqlite3, sys
@@ -26,7 +26,7 @@ conn.close()
 
 @pytest.fixture
 def delete_mode_db(tmp_path, monkeypatch) -> Path:
-    import hermes_state_wal
+    from hermes_agent import hermes_state_wal
     monkeypatch.setattr(hermes_state_wal, "resolve_journal_mode", lambda: "delete")
     db = tmp_path / "state.db"
     handle = SessionDB(db_path=db)
@@ -64,7 +64,7 @@ def test_holder_scan_sees_through_a_symlinked_home(tmp_path):
     /proc leg already compares inodes; the textual psutil leg (macOS) is the one this pins."""
     import sqlite3
 
-    from hermes_state_holders import foreign_state_db_holders
+    from hermes_agent.hermes_state_holders import foreign_state_db_holders
 
     real = tmp_path / "real-home"
     real.mkdir()

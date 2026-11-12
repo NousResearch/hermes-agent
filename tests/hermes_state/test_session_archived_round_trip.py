@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 STRANDED_ID = "20260823_043331_c93770"
 

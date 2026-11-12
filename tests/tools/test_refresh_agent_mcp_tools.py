@@ -409,7 +409,7 @@ def test_resume_on_another_surface_restores_the_pinned_tool_bytes(monkeypatch, t
     PARAMETERS like delegate_task's, the one-shot footprint pruning skill_manage). tools[] heads
     every request, so a pin written by the same code hands back exactly what the session sent;
     one written by other code (``hermes update``) takes the current definitions instead."""
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from tools import registry as registry_mod
 
     def _described(name, description, **params):

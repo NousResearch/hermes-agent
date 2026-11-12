@@ -28,7 +28,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 SESSION_ID = "sid-profile"
 SESSION_KEY = "tui-profile-1"

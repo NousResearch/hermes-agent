@@ -9,7 +9,7 @@ from agent.interrupt_control import InterruptControlMixin
 from gateway.config import GatewayConfig
 from gateway.session import SessionStore
 from gateway.session_authority import initialize_session_authority
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from tests.gateway.test_api_unknown_resolution import _AUTH_HEADERS, _adapter, _runs_client
 
 

@@ -106,7 +106,7 @@ def db_connect(hermes_home: Path) -> sqlite3.Connection:
 
 def views(hermes_home: Path, sid: str) -> tuple[list[dict], list[dict]]:
     """(model_history, display_history) exactly as a resuming surface loads them."""
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=hermes_home / "state.db")
     try:
@@ -583,7 +583,7 @@ class InProcessSession:
     def __init__(self, base_url: str, hermes_home: Path, sid: str, *, platform: str = "cli") -> None:
         from hermes_cli.config import load_config
         from hermes_cli.tools_config import _get_platform_tools
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
         from run_agent import AIAgent
 
         self.db = SessionDB(db_path=hermes_home / "state.db")

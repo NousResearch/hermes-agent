@@ -116,7 +116,7 @@ def test_managed_workers_run_each_sessions_tools_under_its_client_toolchain(tmp_
     assert outputs['alpha'].strip().endswith('/nvm/alpha|alpha'), outputs
     assert outputs['beta'].strip().endswith('/nvm/beta|beta'), outputs
     assert outputs['desktop'].strip().endswith('|daemon'), outputs  # no client_env: the gateway's own
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     db = SessionDB(home / 'state.db')
     try:
         public += [db.export_session(sid, include_compacted=True) for sid in sessions.values()]

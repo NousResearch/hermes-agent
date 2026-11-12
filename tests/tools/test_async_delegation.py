@@ -1163,7 +1163,7 @@ print(json.dumps(q.get_nowait(), sort_keys=True))
 
 @pytest.mark.platforms("posix")  # POSIX mode bits not enforced on Windows
 def test_connect_creates_state_db_0o600_under_permissive_umask(tmp_path, monkeypatch):
-    """``_connect`` shares state.db with hermes_state.SessionDB -- a fresh
+    """``_connect`` shares state.db with hermes_agent.hermes_state.SessionDB -- a fresh
     HERMES_HOME must land the file (and its WAL sidecar, if created) at 0o600
     even under a permissive process umask, not the SessionDB-only path."""
     import stat

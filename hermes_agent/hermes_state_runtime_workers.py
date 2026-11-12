@@ -3,11 +3,11 @@ import json
 
 
 def runtime_lineage(conn, session_id):
-    from hermes_state_local import POLICY_PREFIX
-    from hermes_state_local_lineage import local_physical_target
-    from hermes_state_sessions import _expand_compression_lineage_ids
-    from hermes_state_compression import _CHAIN_CAP
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_local import POLICY_PREFIX
+    from hermes_agent.hermes_state_local_lineage import local_physical_target
+    from hermes_agent.hermes_state_sessions import _expand_compression_lineage_ids
+    from hermes_agent.hermes_state_compression import _CHAIN_CAP
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     targets = {session_id, local_physical_target(conn, session_id)}
     row = conn.execute('SELECT chat_id FROM sessions WHERE id=?', (session_id,)).fetchone()
     if row and row['chat_id']:

@@ -162,7 +162,7 @@ def _end_unless_ledger_busy(db, session_id: str, session_key, end_reason: str) -
         ids = {session_id, str(session_key or "")}
         if row is not None and str(row[0] or "").startswith("local-"):
             ids.add(str(row[0]))
-        from hermes_state_local import local_lineage_owner
+        from hermes_agent.hermes_state_local import local_lineage_owner
         ids.add(local_lineage_owner(conn, session_id))
         for sid in filter(None, ids):
             if conn.execute(_CANONICAL_PENDING_SQL, (sid, sid)).fetchone() is not None:

@@ -3,7 +3,7 @@ import time
 from contextlib import closing
 
 from hermes_cli.sessions_cmd import _note_pinned_skipped
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def _pinned_then_rotated(db):

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import hermes_state_holders
+from hermes_agent import hermes_state_holders
 
 
 @pytest.mark.platforms("linux")

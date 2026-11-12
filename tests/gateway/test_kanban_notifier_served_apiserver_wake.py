@@ -28,7 +28,7 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
 from hermes_constants import get_hermes_home
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 SESSION = "20260918_033413_0665eb"      # the originating (Relay/web-UI) session id
 WORKER_SESSION = "20260918_034333_945a5a"  # the dispatcher-spawned worker's own session

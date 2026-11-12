@@ -31,7 +31,7 @@ async def _admit_human(runner, authority, event):
 @pytest.mark.asyncio
 async def test_completion_after_compression_admits_to_the_logical_root(tmp_path, monkeypatch):
     from gateway.platforms.event import MessageEvent
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     from tests.gateway.test_completion_admission import pending
 
     runner, _, authority, source = await _discord_owner(tmp_path, monkeypatch)
@@ -61,7 +61,7 @@ async def test_text_completion_after_a_released_photo_input_is_admitted(tmp_path
     from gateway.platforms.base import get_image_cache_dir
     from gateway.platforms.event import MessageEvent, MessageType
     from gateway.session_ingress_media import release_admission_media
-    from hermes_state_runtime import claim_session_input, list_session_admissions, settle_session_input
+    from hermes_agent.hermes_state_runtime import claim_session_input, list_session_admissions, settle_session_input
     from tests.gateway.test_completion_admission import pending
 
     runner, _, authority, source = await _discord_owner(tmp_path, monkeypatch)

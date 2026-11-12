@@ -19,7 +19,7 @@ import io
 
 import pytest
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from hermes_cli import model_switch_providers
 
 

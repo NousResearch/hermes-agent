@@ -18,7 +18,7 @@ async def probe():
     from gateway.platforms.api_server import APIServerAdapter
     from gateway.session_context import get_session_env
     from gateway.wake import persist_delegation_delivery
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from tools.delegate_tool_dispatch import _resolve_async_wake_sid
     import gateway.session_context as sc
 

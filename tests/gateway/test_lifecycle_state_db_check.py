@@ -279,7 +279,7 @@ def test_deferred_scan_skips_a_rollback_journal_store(tmp_path: Path, monkeypatc
 
 
 def test_deferred_scan_skips_when_the_journal_mode_is_undeterminable(tmp_path: Path, monkeypatch) -> None:
-    import hermes_state_wal
+    from hermes_agent import hermes_state_wal
 
     _make_state_db(tmp_path, corrupt=False, journal_mode="wal")
     calls = _spy_on_scan(monkeypatch)

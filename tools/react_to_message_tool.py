@@ -15,7 +15,7 @@ from tools.registry import registry, tool_error
 def _open_session_db():
     """Open the SessionDB for the profile owning this turn, or ``None``."""
     try:
-        from hermes_state_registry import acquire
+        from hermes_agent.hermes_state_registry import acquire
         return acquire()
     except Exception:
         return None
@@ -55,7 +55,7 @@ def react_to_message_tool(emoji: str, message_row_id=None, messages_back=None) -
         return json.dumps({"success": True, "row_id": int(row_id), "reactions": reactions}, ensure_ascii=False)
     finally:
         with contextlib.suppress(Exception):
-            from hermes_state_registry import release_or_close
+            from hermes_agent.hermes_state_registry import release_or_close
             release_or_close(db)
 
 

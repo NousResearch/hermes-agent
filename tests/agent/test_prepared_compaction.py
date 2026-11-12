@@ -395,7 +395,7 @@ def test_prune_and_blank_echo_drop_do_not_invalidate_the_candidate():
 
 
 def test_identity_survives_a_session_db_round_trip_and_catches_a_rewind(tmp_path):
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     msgs = _messages(20)
     db = SessionDB(db_path=tmp_path / "state.db")
@@ -573,7 +573,7 @@ def test_a_held_candidate_starts_no_further_pass_however_far_the_prompt_grows(mo
 
 
 def test_failed_pass_backs_off_without_touching_live_failure_state(tmp_path, monkeypatch):
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     import agent.context_compressor as module
 
     db = SessionDB(db_path=tmp_path / "state.db")

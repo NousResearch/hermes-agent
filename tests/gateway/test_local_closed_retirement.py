@@ -17,7 +17,7 @@ async def _owner(tmp_path, monkeypatch):
     from gateway.config import GatewayConfig
     from gateway.run import GatewayRunner
     from gateway.session_authority import initialize_session_authority
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
@@ -80,7 +80,7 @@ async def test_prompt_admitted_while_the_close_runs_is_never_stranded(tmp_path, 
     ``rescan`` and start claiming, before the lifecycle returns): the turn runs and the session
     stays, whichever point of the claim the lifecycle returns at."""
     from gateway.session_contract import Submission
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
 
     runner, authority, db = await _owner(tmp_path, monkeypatch)
     claim_started, release_claim = asyncio.Event(), asyncio.Event()

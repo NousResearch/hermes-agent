@@ -11,8 +11,8 @@ async def exercise_control_boundaries(tmp_path, monkeypatch):
     from gateway.run_turn_runner import TurnRunner
     from gateway.session_authority import LiveSession, SessionAuthority
     from gateway.session_contract import SessionActor, SessionRef
-    from hermes_state import SessionDB
-    from hermes_state_runtime import (RuntimeStoreError, admit_session_input, begin_runtime_epoch,
+    from hermes_agent.hermes_state import SessionDB
+    from hermes_agent.hermes_state_runtime import (RuntimeStoreError, admit_session_input, begin_runtime_epoch,
                                      claim_session_input, settle_session_input)
     from tools.approval import list_gateway_approvals, resolve_gateway_approval
     from tools.approval_gateway_wait import _await_gateway_decision

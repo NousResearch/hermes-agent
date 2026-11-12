@@ -31,7 +31,7 @@ def inline_source_flag_index(tokens: list[str]) -> int | None:
     *tokens* must be CASE-PRESERVING: the operand-taking ``-Q``/``-W``/``-X`` differ from the
     operand-less ``-q``/``-b``, so a lowercased argv would skip the token after a plain ``-q``.
     """
-    from hermes_state_holders import (
+    from hermes_agent.hermes_state_holders import (
         _PYTHON_LONG_OPTIONS_WITH_OPERANDS,
         _PYTHON_SHORT_OPTIONS_WITH_OPERANDS,
     )

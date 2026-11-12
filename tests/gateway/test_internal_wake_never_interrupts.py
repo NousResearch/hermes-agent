@@ -23,7 +23,7 @@ async def test_kanban_wake_during_an_admitted_turn_queues_without_interrupting(m
     from gateway.session_authority import initialize_session_authority
     from gateway.session_results import execution_result
     from gateway.wake import deliver_wake
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     from plugins.platforms.discord.adapter import DiscordAdapter
 
     monkeypatch.setenv('DISCORD_ALLOWED_USERS', '42')
@@ -93,7 +93,7 @@ async def test_idle_loop_tick_runs_as_a_fifo_turn_not_beside_it(monkeypatch):
     from gateway.session_ingress import executing_admission
     from gateway.session_results import execution_result
     from hermes_cli import loops
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     from plugins.platforms.discord.adapter import DiscordAdapter
 
     monkeypatch.setenv('DISCORD_ALLOWED_USERS', '42')

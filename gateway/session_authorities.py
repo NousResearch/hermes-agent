@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from hermes_constants import get_hermes_home, get_hermes_home_override, hermes_home_key
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
 class SessionAuthorities:
@@ -223,7 +223,7 @@ def require_active_authority(runner, store=None):
         from gateway.run_runtime import refuse_parked_scope
         refuse_parked_scope(runner)  # retryable while its profile is parked
     if authority is None or (store is not None and store() is not authority.db):
-        from hermes_state_runtime import RuntimeStoreError
+        from hermes_agent.hermes_state_runtime import RuntimeStoreError
         raise RuntimeStoreError('profile_mismatch')
     return authority
 
@@ -258,7 +258,7 @@ def admission_owner(authority, session_id):
     """The admission identity a physical store row answers to: its compression root, then the
     local creation id a canonical reset forks under (a reset child is not a compression child, so
     ``logical_owner`` alone stops at the child and misses the conversation's admissions)."""
-    from hermes_state_local import local_lineage_owner
+    from hermes_agent.hermes_state_local import local_lineage_owner
     sid = authority.logical_owner(session_id)
     if not sid:
         return sid

@@ -12,7 +12,7 @@ import pytest
 from gateway.hosted_room_execution_policy import current_room_execution_policy
 from gateway.hosted_room_peer import catalog_mapping
 from gateway.session_api_turn import admit_api_turn, api_execution, api_policy_scope, check_api_turn
-from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions
 from tests.gateway.test_hosted_room_execution_policy import _dispatch, _policy
 
 

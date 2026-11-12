@@ -96,7 +96,7 @@ def _mcp_servers(policy, config, live, toolsets, secrets, replaced):
     names into the returned toolsets. An editor-MCP session keeps its frozen servers."""
     from gateway.session_policy import _extract_config_secrets, _resolve_toolsets
     from hermes_cli.tools_config import enabled_mcp_server_names
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     if policy.editor_mcp_json is not None:
         return toolsets
     request = json.loads(policy.request_json)
@@ -140,8 +140,8 @@ def _prepare(authority, session_id, mcp_only=False, adopt_only=False):
     of a frozen Bot Chat alone, without the config-derived settings (a later open on the same attachment)."""
     from gateway.session_local import load_profile_config
     from gateway.session_policy import SURFACES, restore_policy
-    from hermes_state_local import local_receipt
-    from hermes_state_mutation_prepared import policy_picks
+    from hermes_agent.hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_mutation_prepared import policy_picks
     from tools.terminal_scope import build_profile_terminal_scope
     generation = authority.db.get_session(session_id)['runtime_generation']
     stored = local_receipt(authority.db, session_id)['policy']
@@ -218,7 +218,7 @@ async def commit_refresh(authority, ref, *, mcp_only=False, adopt_only=False):
 
 async def _commit_refresh(authority, ref, mcp_only, adopt_only=False):
     from gateway.session_runtime_workers import tracked_write
-    from hermes_state_mutation_prepared import commit_refreshed_policy
+    from hermes_agent.hermes_state_mutation_prepared import commit_refreshed_policy
     prepared = await asyncio.to_thread(_prepare, authority, ref.session_id, mcp_only, adopt_only)
     # An MCP-only refresh never runs follow_bot_chat: it neither settles nor commits an adoption, so it
     # leaves a pending one for the next open.
@@ -265,7 +265,7 @@ def drop_session_terminal(authority, ref):
     isolation): the terminal tool reuses one by key whatever backend built it. A profile-shared one stays.
     Its recorded cwd (keyed by its route or task id) goes too: it wins over the new binding's directory."""
     from gateway.session_authorities import owner_scope
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
     from tools.terminal_tool import _qualify_task_key, clear_session_cwd
     from tools.terminal_tool_lifecycle import cleanup_vm
     ids = {ref.session_id, local_receipt(authority.db, ref.session_id)['entry']['session_id']}

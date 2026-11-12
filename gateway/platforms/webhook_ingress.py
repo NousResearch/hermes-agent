@@ -2,7 +2,7 @@
 import asyncio
 from contextlib import asynccontextmanager
 
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
 @asynccontextmanager
@@ -263,7 +263,7 @@ async def _webhook_retry(authority, event, payload, rows):
     # One-shot finalization ends the route. Resolve an existing provider receipt
     # before SessionStore would rotate it into a new physical session.
     from gateway.session_ingress_media import ingress_fingerprint
-    from hermes_state_runtime import get_session_admission
+    from hermes_agent.hermes_state_runtime import get_session_admission
     if not rows:
         return None
     row = get_session_admission(authority.db, admission_id=rows[0]['admission_id'])
@@ -312,7 +312,7 @@ async def recover_webhook_finalizations(authority):
     """Close settled original webhooks only after current route authorization succeeds."""
     from gateway.session_envelope import check_native_route
     from gateway.session_contract import SessionRef
-    from hermes_state_runtime import RuntimeStoreError, get_session_admission
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError, get_session_admission
 
     rows = authority.db._read_all("""
         SELECT a.admission_id FROM sessions AS s

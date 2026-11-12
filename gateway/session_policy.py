@@ -8,7 +8,7 @@ import json
 import logging
 from pathlib import Path
 
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
 
@@ -848,7 +848,7 @@ def bind_launch_key(authority, session_id, policy, api_key, *, config_secrets=No
     if owners is None:
         owners = authority._local_owner_key_requests = {}
     if owner_key and api_key is not None and old is not None and ref in owners:
-        from hermes_state_local import same_create_retry
+        from hermes_agent.hermes_state_local import same_create_retry
         api_key = old if same_create_retry(owners[ref], policy.request_json, client_request or {}) else api_key
     # Only a key that IS being bound can conflict: binding config secrets alone (a provider
     # change drops the launch key) must not be refused by the key the session already holds.
@@ -897,7 +897,7 @@ def rebind_launch_key(authority, session, api_key):
     source = authority.sessions[session.session_id].source
     if source is None or source.platform != Platform.LOCAL:
         raise RuntimeStoreError('admission_conflict')
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
     ref = restore_policy(local_receipt(authority.db, session.session_id)['policy']).credential_ref
     if ref is None:
         raise RuntimeStoreError('admission_conflict')

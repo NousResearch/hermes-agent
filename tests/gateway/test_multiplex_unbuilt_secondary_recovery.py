@@ -551,7 +551,7 @@ class TestSecondaryAdapterUnavailableRecovery:
         monkeypatch.setattr(runner, "_bounded_adapter_teardown", bounded_teardown)
         monkeypatch.setattr(runner, "_run_secondary_profile_reconnect", reconnect_until_cancelled)
         monkeypatch.setattr(runner, "_connect_initial_adapter_with_timeout", reserve_connect)
-        monkeypatch.setattr("hermes_state_registry.close_all_under", lambda directory: 0)
+        monkeypatch.setattr("hermes_agent.hermes_state_registry.close_all_under", lambda directory: 0)
         home = tmp_path / "a"
         process_ownership.reserve([home])
         runner._served_profile_homes, runner._served_profile_signatures = {"a": home}, {}

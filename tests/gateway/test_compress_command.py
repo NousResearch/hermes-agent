@@ -531,7 +531,7 @@ def test_rotated_compress_keeps_atomically_published_foreign_tail(tmp_path, monk
     ``fitness`` row is a multiplexed named profile: its child is published in
     ``profiles/fitness/state.db`` before the routing index knows the child id.
     """
-    import hermes_state
+    from hermes_agent import hermes_state
     from gateway.slash_commands_session import GatewaySessionCommandsMixin
     from gateway.session import AsyncSessionStore, SessionStore
 

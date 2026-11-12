@@ -12,7 +12,7 @@ removes any such stray harness message (and the assistant reply that followed
 it) so a polluted session resumes clean.
 """
 
-from hermes_state import (
+from hermes_agent.hermes_state import (
     _is_background_review_harness_message,
     _strip_background_review_harness,
 )
@@ -76,7 +76,7 @@ class TestGetMessagesAsConversationStripsHarness:
     def test_polluted_session_resumes_without_harness(self):
         import tempfile
         from pathlib import Path
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmp:
             db = SessionDB(db_path=Path(tmp) / "t.db")
@@ -116,7 +116,7 @@ class TestPersistDisabledHardStop:
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmp:
             db = SessionDB(db_path=Path(tmp) / "t.db")

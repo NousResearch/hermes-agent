@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.session_authority import LiveSession, SessionAuthority
-from hermes_state_runtime import (
+from hermes_agent.hermes_state_runtime import (
     begin_runtime_epoch, claim_session_input, find_session_admission, list_session_admissions,
     recover_session_inputs,
 )
@@ -129,8 +129,8 @@ async def test_steer_queued_refuses_by_name_and_leaves_the_admission_queued(tmp_
 
 def test_the_steer_transaction_fences_on_the_queued_row_and_the_running_generation(tmp_path, monkeypatch):
     """Atomic in the store: queued -> steered only while the named generation is the running one."""
-    import hermes_state_runtime as store
-    from hermes_state_runtime import RuntimeStoreError, admit_session_input
+    import hermes_agent.hermes_state_runtime as store
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError, admit_session_input
     assert hasattr(store, 'steer_session_input'), 'no store transaction steers a queued admission'
     steer_session_input = store.steer_session_input
     db, authority = _authority(tmp_path, monkeypatch)

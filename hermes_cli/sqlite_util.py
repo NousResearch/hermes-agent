@@ -37,7 +37,7 @@ def open_db(
     three. Only the transient ``database is locked`` from that pragma is retried (``wal_lock_retries``):
     a first opener initializing a shared DB can make it ignore the busy timeout, notably on Windows.
     """
-    from hermes_state_wal import apply_wal_with_fallback
+    from hermes_agent.hermes_state_wal import apply_wal_with_fallback
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -20,7 +20,7 @@ of them, but not all"). Invariants this module locks in:
    every other lineage and standalone row survives untouched.
 """
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def _make_chain(db, root="root", mid="mid", tip="tip"):

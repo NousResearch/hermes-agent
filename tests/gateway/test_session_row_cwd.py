@@ -24,7 +24,7 @@ async def test_row_cwd_is_recorded_apart_from_the_execution_cwd(tmp_path, monkey
     from gateway.session_controls import AuthorityConnection
     from gateway.session_local import create_local_session
     from gateway.session_policy import restore_policy
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
 
     store, runner = _authority_fixture(tmp_path, monkeypatch)
     authority = await initialize_session_authority(runner, profile_id='fixture', instance_id='owner')

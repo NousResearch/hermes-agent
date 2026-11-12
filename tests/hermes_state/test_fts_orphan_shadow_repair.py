@@ -7,7 +7,7 @@ shadows must survive untouched.
 
 import sqlite3
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def _orphan_family(db_path, family: str) -> None:

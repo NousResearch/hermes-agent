@@ -33,7 +33,7 @@ async def test_busy_burst_is_admitted_once(monkeypatch, tmp_path, case, follow_u
     from gateway.session_authority import initialize_session_authority
     from gateway.session_ingress_burst import holds_busy_burst
     from gateway.session_results import execution_result
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     from plugins.platforms.discord.adapter import DiscordAdapter
 
     monkeypatch.setenv('DISCORD_ALLOWED_USERS', '42,43')

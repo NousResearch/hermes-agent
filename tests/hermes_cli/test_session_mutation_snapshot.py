@@ -7,15 +7,15 @@ from fastapi import FastAPI
 
 from gateway.session_authority import SessionAuthority
 from hermes_cli.web_routers.sessions import manage_router
-from hermes_state import SessionDB
-from hermes_state_runtime import begin_runtime_epoch
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 
 
 @pytest.mark.asyncio
 async def test_snapshot_reports_real_counters_and_absent_import_anchor(tmp_path, monkeypatch):
     from hermes_cli import web_server
     monkeypatch.setattr(web_server, '_SESSION_TOKEN', 'snapshot-token')
-    monkeypatch.setattr('hermes_state._default_db_path', lambda: tmp_path / 'state.db')
+    monkeypatch.setattr('hermes_agent.hermes_state._default_db_path', lambda: tmp_path / 'state.db')
     app = FastAPI()
     app.include_router(manage_router)
     with SessionDB(db_path=tmp_path / 'state.db') as db:

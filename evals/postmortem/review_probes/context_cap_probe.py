@@ -29,7 +29,7 @@ from run_agent import AIAgent
 import tools.delegate_tool as dt
 import agent.context_compressor as mod
 from agent.model_metadata import estimate_messages_tokens_rough
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from unittest.mock import patch
 print('IDENTITY',json.dumps({'tag':tag,'tree':root,'delegate':dt.__file__,'compressor':mod.__file__,'cap_present':hasattr(dt,'_apply_child_compression_cap'),'home':home}),flush=True)
 db=SessionDB(Path(home,'state.db'))

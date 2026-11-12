@@ -42,7 +42,7 @@ for (label, tree), (name, command), populated in itertools.product(TREES.items()
             return subprocess.run([PYTHON, *args], cwd=tree, env=env, stdin=subprocess.DEVNULL,
                                   capture_output=True, text=True, timeout=45, check=False)
         if populated:
-            seed = run(['-c', "from hermes_state import SessionDB; db=SessionDB(); db.create_session('reader-fixture',source='tui'); db.append_message('reader-fixture',role='user',content='fixture'); db.set_session_pinned('reader-fixture',True); db.close()"])
+            seed = run(['-c', "from hermes_agent.hermes_state import SessionDB; db=SessionDB(); db.create_session('reader-fixture',source='tui'); db.append_message('reader-fixture',role='user',content='fixture'); db.set_session_pinned('reader-fixture',True); db.close()"])
             assert seed.returncode == 0, seed.stderr
         db = home / 'state.db'
         def digest():

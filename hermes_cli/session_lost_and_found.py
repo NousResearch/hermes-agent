@@ -16,7 +16,7 @@ from typing import Any, Callable, Optional, Sequence
 
 from hermes_cli.session_schema_history import SCHEMA_HISTORY, reachable_physical_layouts
 
-from hermes_state_ids import is_known_session_id  # every minted id shape: sentinel for schema-less rows
+from hermes_agent.hermes_state_ids import is_known_session_id  # every minted id shape: sentinel for schema-less rows
 from hermes_cli.session_recovery import (
     _AUXILIARY_TABLE_SCHEMAS, _AUXILIARY_TABLES, _CANONICAL_TABLES, _DANGLING_TOOL_PIN, _count_rows,
     _immediate_transaction, _placeholder_titles, _quoted_columns, _table_columns,
@@ -415,7 +415,7 @@ _SESSION_KEY_PATTERN = re.compile(r"^agent:[^:]+:")
 # Machine tokens (``compression``, ``agent.compression_timeout``, ``api_key``,
 # ``compute_host_shutdown``): never spaces, never mixed case.
 _TOKEN_PATTERN = re.compile(r"^[a-z][a-z0-9_.:-]*$")
-# The closed sets SessionDB writes (hermes_state.py: request/claim/complete/
+# The closed sets SessionDB writes (hermes_agent/hermes_state.py: request/claim/complete/
 # fail_handoff; TITLE_SOURCE_* + _title_rank). chat_type is platform-supplied
 # and open-ended, so it only gets the identifier shape.
 _HANDOFF_STATES = frozenset({"pending", "running", "completed", "failed"})

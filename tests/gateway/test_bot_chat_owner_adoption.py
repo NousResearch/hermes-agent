@@ -71,7 +71,7 @@ async def test_owner_login_chat_is_not_replaced_while_its_legacy_writer_is_live(
         release_active_session,
         try_acquire_active_session,
     )
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     monkeypatch.setattr(reservation, "owner_worker_subject", lambda: "uid:1000")
     db = headless.authority.db
@@ -144,7 +144,7 @@ async def test_a_forwarded_login_never_moves_the_owners_chat_aside(headless, mon
     # The owner's own Bot Chat stays where it is when a forwarded login that cannot adopt it
     # delivers: that delivery is refused, the owner's history keeps the title.
     import gateway.session_worker_reservation as reservation
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     monkeypatch.setattr(reservation, "owner_worker_subject", lambda: "uid:1000")
     db = headless.authority.db

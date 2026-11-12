@@ -7,7 +7,7 @@ honours that only in a channel's DM supergroup and sends a private chat's messag
 so the dead binding would never be pruned (#151852). Every retry removes exactly the constraint that failed
 (#136808): the dead route goes, and so does the reply anchor, which points into the dead topic and would
 otherwise steer the retry back there. Pruning the dead topic's binding (the chat's last one disables topic
-mode, ``hermes_state_telegram.delete_telegram_topic_binding``) stops inbound recovery steering into it.
+mode, ``hermes_agent.hermes_state_telegram.delete_telegram_topic_binding``) stops inbound recovery steering into it.
 """
 
 from __future__ import annotations

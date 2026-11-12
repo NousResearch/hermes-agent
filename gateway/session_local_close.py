@@ -6,8 +6,8 @@ session row it owned; pickers then listed it as resumable. The stamp itself is t
 decides which live rows read as closed.
 """
 from gateway.session_history_mount import is_history_mount
-from hermes_state_local import local_receipt
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_local import local_receipt
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
 def _local_target(authority, session_id):

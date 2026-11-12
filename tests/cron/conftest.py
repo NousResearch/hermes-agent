@@ -92,7 +92,7 @@ def owner_execution_runner():
     """
     from gateway.session_contract import SessionRef
     from gateway.session_cron import current_execution, execute
-    from hermes_state_registry import acquire, release
+    from hermes_agent.hermes_state_registry import acquire, release
 
     def run(job, *, extra_prompt=None, cancel_event=None, execution_id=None):
         from cron.scheduler import _get_hermes_home

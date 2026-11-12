@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 from gateway.session_contract import Submission
-from hermes_state_runtime import RuntimeStoreError, get_session_admission
+from hermes_agent.hermes_state_runtime import RuntimeStoreError, get_session_admission
 
 
 @pytest.mark.asyncio

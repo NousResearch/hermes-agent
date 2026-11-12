@@ -5,7 +5,7 @@ import gc
 import sqlite3
 from pathlib import Path
 
-import hermes_state_repair as repair
+import hermes_agent.hermes_state_repair as repair
 from tests.hermes_state import test_fts_cjk_index_retirement as retirement
 from tests.hermes_state.test_state_db_malformed_repair import _corrupt_duplicate_fts
 

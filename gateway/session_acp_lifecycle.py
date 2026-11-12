@@ -7,8 +7,8 @@ A later ``session/load`` + prompt reopens the row (``session_local_recovery.reop
 """
 import logging
 
-from hermes_state_local import POLICY_PREFIX, end_idle_local_session, local_receipt
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_local import POLICY_PREFIX, end_idle_local_session, local_receipt
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 ACP_END_REASON = 'acp_disconnect'
 

@@ -90,7 +90,7 @@ async def test_goal_command_slow_db_init_still_persists(tmp_path, monkeypatch):
     tests/hermes_cli/test_goals_db_bootstrap_off_loop.py; no wall-clock
     gap assertions here (those are their own flake class).
     """
-    import hermes_state
+    from hermes_agent import hermes_state
 
     monkeypatch.setattr(goals, "_DB_BOOTSTRAP_INIT_WAIT_S", 0.2)
     INIT_S = 0.8  # past the shrunk init window

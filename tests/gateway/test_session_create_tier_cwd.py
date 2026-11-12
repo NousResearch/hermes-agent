@@ -16,7 +16,7 @@ def _owner(home, monkeypatch, config):
     from gateway.session import SessionStore
     from gateway.session_authority import SessionAuthority
     from gateway.session_controls import AuthorityConnection
-    import hermes_state_runtime as rt
+    import hermes_agent.hermes_state_runtime as rt
     home.mkdir(parents=True, exist_ok=True)
     (home / 'config.yaml').write_text(json.dumps(config))
     monkeypatch.setenv('HERMES_HOME', str(home))

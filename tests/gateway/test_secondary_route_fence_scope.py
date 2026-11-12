@@ -86,7 +86,7 @@ def _durable(store):
 def _age_retirements(*dbs, days=8):
     """Move every retirement marker and routing fence *days* into the past: the wall clock passing
     the horizon, with no sweep run anywhere."""
-    from hermes_state_mutation_retirement import RETIRED_PREFIX, ROUTE_FENCE_PREFIX
+    from hermes_agent.hermes_state_mutation_retirement import RETIRED_PREFIX, ROUTE_FENCE_PREFIX
     for db in dbs:
         db._execute_write(lambda conn: conn.execute(
             "UPDATE state_meta SET value=json_set(value, '$.retired_at', json_extract(value, '$.retired_at') - ?) "
@@ -96,14 +96,14 @@ def _age_retirements(*dbs, days=8):
 
 def _past_the_horizon(*dbs):
     """The wall clock passes the horizon (every fence aged), then each store sweeps its tombstones."""
-    from hermes_state_mutation_retirement import prune_retired_tombstones
+    from hermes_agent.hermes_state_mutation_retirement import prune_retired_tombstones
     _age_retirements(*dbs)
     for db in dbs:
         db._execute_write(lambda conn: prune_retired_tombstones(conn, older_than=0))
 
 
 def _conflict(db, sid):
-    from hermes_state_mutation_retirement import create_conflict
+    from hermes_agent.hermes_state_mutation_retirement import create_conflict
     with db._read_ctx() as conn:
         return create_conflict(conn, sid)
 
@@ -188,7 +188,7 @@ async def test_a_shared_fence_an_earlier_release_wrote_still_guards_every_route(
     launch delete. Read through the new code it keeps both meanings: it still refuses every route to
     the id (a sessions.json mirror from before the delete must not bring one back), and the launch
     profile keeps refusing the id as deleted."""
-    from hermes_state_mutation_retirement import RETIRED_PREFIX
+    from hermes_agent.hermes_state_mutation_retirement import RETIRED_PREFIX
     async with _served(tmp_path, monkeypatch) as served:
         store = served.store
         served.launch.db.set_meta(RETIRED_PREFIX + 'gone', json.dumps({'retired_at': time.time() - 30 * 86400}))
@@ -420,7 +420,7 @@ async def test_a_malformed_retirement_value_fences_its_route_without_aborting_a_
     """No writer stores a marker or fence that isn't JSON, but reading one must not raise
     ``malformed JSON``: it fences its route (a fence as a permanent one, a marker as an unscoped
     one), and the rest of a whole-index save, a per-entry save and the sessions.json import go on."""
-    from hermes_state_mutation_retirement import (
+    from hermes_agent.hermes_state_mutation_retirement import (
         RETIRED_PREFIX, ROUTE_FENCE_PREFIX, _reclaim_expired, expiring_retirements, retire_routes)
     async with _served(tmp_path, monkeypatch) as served:
         store, launch = served.store, served.launch.db
@@ -458,7 +458,7 @@ async def test_deleting_the_launch_session_keeps_an_earlier_releases_shared_fenc
     fence. Deleting the launch session after the upgrade rewrites that marker. It must stay
     unscoped, or alpha's deleted route comes back through a late per-entry save or the
     sessions.json import on the next start."""
-    from hermes_state_mutation_retirement import RETIRED_PREFIX
+    from hermes_agent.hermes_state_mutation_retirement import RETIRED_PREFIX
     async with _served(tmp_path, monkeypatch) as served:
         store, key = served.store, 'agent:alpha:telegram:42'
         served.launch.db.create_session('user-42', source='cli')
@@ -484,7 +484,7 @@ async def test_deleting_the_launch_session_writes_a_launch_only_marker(tmp_path,
     """A launch delete with no earlier marker, or over an earlier release's sweep marker (only the
     launch profile's own sweep wrote one: an earlier release fenced a secondary's id permanently),
     writes the launch profile's own marker. Alpha's route to its own ``user-42`` still saves."""
-    from hermes_state_mutation_retirement import RETIRED_PREFIX
+    from hermes_agent.hermes_state_mutation_retirement import RETIRED_PREFIX
     async with _served(tmp_path, monkeypatch) as served:
         store, key = served.store, 'agent:alpha:telegram:42'
         for db in (served.launch.db, served.alpha.db):

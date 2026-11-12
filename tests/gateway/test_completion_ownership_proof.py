@@ -12,7 +12,7 @@ async def test_admitted_completion_survives_a_transient_owner_read_after_compres
     from gateway.platforms.event import MessageEvent
     from gateway.session_contract import SessionRef
     from gateway.session_ingress import execute_admission
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     from tests.gateway.test_completion_admission import pending
 
     runner, _, authority, source = await _discord_owner(tmp_path, monkeypatch)

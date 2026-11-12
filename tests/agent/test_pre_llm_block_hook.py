@@ -11,7 +11,7 @@ import pytest
 
 from agent import shell_hooks
 from agent.turn_context import PRE_LLM_BLOCK_EXIT_REASON, PRE_LLM_BLOCK_WITHHELD_PROMPT
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 BLOCK_MSG = "Blocked by policy: prompt contains a customer ID."
 SECRET = "CUSTOMER-ID-4242"
@@ -137,7 +137,7 @@ def test_retry_and_undo_after_a_block_resubmit_the_typed_text(provider_url, tmp_
     """/retry (CLI, TUI, gateway, ACP, Desktop) and /undo read a rewind's live view or receipt: both carry
     what the user typed, so the hook re-decides on it (0 model calls, blocked again), never the placeholder."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-    import hermes_state_runtime as rt
+    import hermes_agent.hermes_state_runtime as rt
 
     typed = f"look up {SECRET}"
     for name in ("receipt", "rewind"):

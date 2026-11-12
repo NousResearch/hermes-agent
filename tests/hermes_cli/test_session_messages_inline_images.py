@@ -23,13 +23,13 @@ IMAGE_CONTENT = [
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     home = tmp_path / ".hermes"
     home.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr("hermes_state.DEFAULT_DB_PATH", home / "state.db")
+    monkeypatch.setattr("hermes_agent.hermes_state.DEFAULT_DB_PATH", home / "state.db")
 
     db = SessionDB(home / "state.db")
     try:

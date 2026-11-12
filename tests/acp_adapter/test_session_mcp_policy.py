@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.session_policy import build_policy, bind_launch_key, policy_scope, restore_policy
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
 def owner():

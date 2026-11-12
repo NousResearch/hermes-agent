@@ -21,7 +21,7 @@ import io
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from run_agent import AIAgent
 
 from agent.agent_init_compression_notice import (

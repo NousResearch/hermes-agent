@@ -20,7 +20,7 @@ from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
-from hermes_state_holders import read_only_db_uri
+from hermes_agent.hermes_state_holders import read_only_db_uri
 from hermes_cli.backup_sqlite import _safe_copy_db
 from utils import (
     _preserve_file_mode, _preserve_file_owner, _restore_file_mode, _restore_file_owner, atomic_replace,

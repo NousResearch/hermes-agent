@@ -9,9 +9,9 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-import hermes_state_runtime as rt
+import hermes_agent.hermes_state_runtime as rt
 from gateway.session_results import retain_result
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from tools.bot_live_delivery import _locked, _read, _write
 
 KEY = "a" * 32

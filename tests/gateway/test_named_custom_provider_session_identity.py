@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.run_turn_prepare import GatewayTurnPrepareMixin
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from tui_gateway.server import _session_info, _stored_session_runtime_overrides, _runtime_model_config
 from gateway.session_local_inventory import agent_inventory
 

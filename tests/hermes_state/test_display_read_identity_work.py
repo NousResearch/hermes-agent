@@ -5,7 +5,7 @@ compare against the removed rows cost a warm 30k-row resume ~0.17 s (+12% end to
 can only share a removed row's key at one of the removed rows' timestamps. The guard counts hashes, not
 seconds. Real SessionDB, real rewind.
 """
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 LIVE_TURNS = 200
 

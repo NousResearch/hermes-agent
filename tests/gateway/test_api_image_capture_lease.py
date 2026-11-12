@@ -18,7 +18,7 @@ async def test_api_image_survives_a_sweep_before_its_admission_commits(api, owne
     from gateway import session_api_turn
     from gateway.session_api_turn import admit_api_turn, admit_api_turn_async
     from gateway.session_ingress_media import collect_unheld_api_images, restore_native_media
-    from hermes_state_runtime import claim_session_input, settle_session_input
+    from hermes_agent.hermes_state_runtime import claim_session_input, settle_session_input
     _, _, older = admit_api_turn(api, session_id='older', request_id='older', user_message=_image(),
                                  conversation_history=[])
     started = claim_session_input(owner.db, epoch=owner.epoch, session_id='older')

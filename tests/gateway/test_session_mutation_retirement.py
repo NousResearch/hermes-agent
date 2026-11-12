@@ -56,8 +56,8 @@ def test_native_delete_exact_retry_survives_owner_restart(tmp_path):
 def test_route_retirement_rolls_back_with_receipt_and_rejects_stale_mirror(tmp_path):
     from gateway.config import GatewayConfig, Platform
     from gateway.session import SessionStore, SessionSource
-    from hermes_state import SessionDB
-    import hermes_state_runtime as rt
+    from hermes_agent.hermes_state import SessionDB
+    import hermes_agent.hermes_state_runtime as rt
     with SessionDB(db_path=tmp_path / 'state.db') as db:
         store = SessionStore(tmp_path / 'sessions', GatewayConfig())
         store._db = db

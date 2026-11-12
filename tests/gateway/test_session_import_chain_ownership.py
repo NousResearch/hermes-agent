@@ -6,8 +6,8 @@ import pytest
 from gateway.session_authority import SessionAuthority
 from gateway.session_contract import SessionActor, SessionRef
 from gateway.session_mutations import mutate_session
-from hermes_state import SessionDB
-from hermes_state_runtime import begin_runtime_epoch
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 
 _CAPS = frozenset({'session:read', 'session:control', 'session:create'})
 

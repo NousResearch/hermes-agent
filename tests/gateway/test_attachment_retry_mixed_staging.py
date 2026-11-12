@@ -2,7 +2,7 @@
 import pytest
 
 from gateway.session_ingress_media import admit_attachments
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
 @pytest.mark.parametrize('missing_index', [0, 1])

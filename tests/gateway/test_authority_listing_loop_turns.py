@@ -95,7 +95,7 @@ async def test_a_closed_unviewed_local_session_still_leaves_the_live_feed(owner)
     """The batched read keeps ``closed_and_unviewed``: a local session whose receipt target is ended
     and that nobody views is listed as resumable (stored feed), not live; an open one stays live."""
     import json
-    from hermes_state_local import POLICY_PREFIX
+    from hermes_agent.hermes_state_local import POLICY_PREFIX
     closed, open_ = owner.sids[0], owner.sids[1]
     owner.db.create_session('target-closed', source='tui')
     owner.db.create_session('target-open', source='tui')

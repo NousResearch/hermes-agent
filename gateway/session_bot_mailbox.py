@@ -64,7 +64,7 @@ def _write_receipt(home, record, expect=_UNCHECKED):
         if expect is not _UNCHECKED and (current or {}).get('status') != expect:
             return False
         if current is not None and current.get('principal_id'):
-            from hermes_state_runtime import RuntimeStoreError
+            from hermes_agent.hermes_state_runtime import RuntimeStoreError
             fields = ('profile_home', 'session_id', 'principal_id', 'message', 'author')
             if (any(current.get(key) != record.get(key) for key in fields)
                     or current.get('notification_category', 'result') != record.get('notification_category', 'result')

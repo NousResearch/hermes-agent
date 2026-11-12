@@ -20,7 +20,7 @@ from gateway.session_contract import SessionActor
 from gateway.session_authorities import owner_scope
 from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
 from gateway.owner_identity import same_owner
-from hermes_state_runtime import RuntimeStoreError, _epoch
+from hermes_agent.hermes_state_runtime import RuntimeStoreError, _epoch
 
 _BINDING = 'gateway.hosted.transport.v1:'
 _OPERATIONS = frozenset({'resolve_exact', 'create', 'resume', 'submit', 'history', 'results',

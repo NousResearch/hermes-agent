@@ -9,8 +9,8 @@ import pytest
 
 from hermes_cli.process_identity import worker_birth
 from agent.runtime_session_store import RuntimeSessionStore
-from hermes_state import SessionDB
-from hermes_state_runtime import (RuntimeStoreError, begin_runtime_epoch, register_worker_execution,
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_runtime import (RuntimeStoreError, begin_runtime_epoch, register_worker_execution,
                                   adopt_worker_execution, mutate_worker_execution)
 from tools.async_delegation import _initialize_schema
 

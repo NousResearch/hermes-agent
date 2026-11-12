@@ -10,7 +10,7 @@ from gateway import hosted_room_driver as driver
 from aiohttp import web
 
 from gateway.platforms import api_server_runs
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 from tests.gateway.test_session_group_peer_discard import (
     _never_admitted_deferred_turn, gateway as gateway_fixture, linked_peer as linked_peer_fixture,
 )

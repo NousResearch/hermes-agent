@@ -5,7 +5,7 @@ role is a separate OS process running ``_roles.py`` against it (see that module 
 protocol). This module owns:
 
 * journal-mode selection through the PRODUCTION decision path: the ``delete`` arm pins the version the
-  children's ``hermes_state_wal.is_sqlite_wal_reset_vulnerable()`` probe sees to a WAL-reset-vulnerable
+  children's ``hermes_agent.hermes_state_wal.is_sqlite_wal_reset_vulnerable()`` probe sees to a WAL-reset-vulnerable
   SQLite (the one CI's uv CPython 3.11.14 bundles), so ``apply_wal_with_fallback`` itself picks DELETE
   exactly as it does for every user on such a build — the same DELETE store its network/FUSE fallbacks end
   in; nothing in the harness issues a journal-mode pragma;

@@ -49,7 +49,7 @@ def main():
         refusals = {}
         if command.get('probe_constructors'):
             from concurrent.futures import ThreadPoolExecutor
-            from hermes_state_registry import release_or_close
+            from hermes_agent.hermes_state_registry import release_or_close
             from tools.delegate_tool import _open_child_session_db
             from tools.async_delegation import _connect
             from cron.scheduler import _open_cron_session_db, run_job

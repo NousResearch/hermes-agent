@@ -69,7 +69,7 @@ def test_sigterm_flushes_populated_session_into_state_db(
 ):
     """A populated in-memory session survives a SIGTERM into state.db."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / "state.db")
     sid = "sess-sigterm-flush"

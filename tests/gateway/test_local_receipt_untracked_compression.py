@@ -3,7 +3,7 @@
 0.22.1 was cut from the gateway line, so its sessions carry a ``gateway.local_policy.v1`` receipt.
 0.22.2 is the classic line again: it resumes such a session by id, and when it compacts it ends the
 tip with ``compression`` and publishes the child with the parent's route columns
-(``hermes_state_compression._publish_child_session_row`` at v0.22.2), but it never advances the
+(``hermes_agent.hermes_state_compression._publish_child_session_row`` at v0.22.2), but it never advances the
 receipt. Back on the gateway, the receipt's tip then has a compression child, and every restore
 refused the session with ``storage_unavailable``.
 """
@@ -63,7 +63,7 @@ def _unrecovered_owner(tmp_path, instance_id):
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
     from gateway.session_authority import SessionAuthority
-    from hermes_state_runtime import begin_runtime_epoch
+    from hermes_agent.hermes_state_runtime import begin_runtime_epoch
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None, _adapter_for_source=lambda source: None)
@@ -73,7 +73,7 @@ def _unrecovered_owner(tmp_path, instance_id):
 
 
 def _receipt(db, sid):
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
     return local_receipt(db, sid)
 
 
@@ -89,7 +89,7 @@ async def test_a_session_compacted_by_0_22_2_resumes_on_its_compressed_tip(tmp_p
     await connection.close()
     first.db.close()
 
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     classic = SessionDB(db_path=db_path)
     _compact_like_0_22_2(classic, ref.session_id, 'classic-child-1')
     _compact_like_0_22_2(classic, 'classic-child-1', 'classic-child-2')
@@ -116,7 +116,7 @@ async def test_a_child_without_the_receipts_route_is_not_adopted(tmp_path, monke
     compression child (a row that never had the route) keeps the receipt refused, unchanged."""
     from gateway.session_local import create_local_session
     from gateway.session_local_recovery import restore_local_session
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     first, connection = await _owner(tmp_path, monkeypatch, 'first')
     ref = create_local_session(first, connection.actor, {'request_id': 'r', 'source': 'tui',
@@ -126,7 +126,7 @@ async def test_a_child_without_the_receipts_route_is_not_adopted(tmp_path, monke
     await connection.close()
     first.db.close()
 
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     classic = SessionDB(db_path=db_path)
     _compact_like_0_22_2(classic, ref.session_id, 'unrouted-child', route_columns=False)
     classic.close()
@@ -147,7 +147,7 @@ async def test_a_compacted_receipt_with_a_foreign_origin_stays_refused(tmp_path,
     """The catch-up runs only for a receipt that already matches this owner: one naming another
     profile in its origin is refused, unchanged, even with a well-formed compression child."""
     from gateway.session_local import create_local_session
-    from hermes_state_local import POLICY_PREFIX
+    from hermes_agent.hermes_state_local import POLICY_PREFIX
 
     first, connection = await _owner(tmp_path, monkeypatch, 'first')
     ref = create_local_session(first, connection.actor, {'request_id': 'r', 'source': 'tui',
@@ -156,7 +156,7 @@ async def test_a_compacted_receipt_with_a_foreign_origin_stays_refused(tmp_path,
     await connection.close()
     first.db.close()
 
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     classic = SessionDB(db_path=db_path)
     _compact_like_0_22_2(classic, ref.session_id, 'classic-child')
     receipt = _receipt(classic, ref.session_id)
@@ -184,7 +184,7 @@ async def test_a_compacted_secondary_receipt_missing_its_origin_profile_restores
     from gateway.runtime_ownership import process_ownership
     from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
-    from hermes_state_local import POLICY_PREFIX
+    from hermes_agent.hermes_state_local import POLICY_PREFIX
     from tests.gateway.test_session_authorities_multiplex import _reserve_homes, _runner
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
@@ -233,7 +233,7 @@ async def test_a_compression_chain_longer_than_one_walk_is_adopted_whole(tmp_pat
     single walk is still complete and valid, so it is adopted to its real tip instead of being refused
     (and rolled back) on every restore."""
     from gateway.session_local import create_local_session
-    from hermes_state_compression import _CHAIN_CAP
+    from hermes_agent.hermes_state_compression import _CHAIN_CAP
 
     first, connection = await _owner(tmp_path, monkeypatch, 'first')
     ref = create_local_session(first, connection.actor, {'request_id': 'r', 'source': 'tui',
@@ -242,7 +242,7 @@ async def test_a_compression_chain_longer_than_one_walk_is_adopted_whole(tmp_pat
     await connection.close()
     first.db.close()
 
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     classic = SessionDB(db_path=db_path)
     children = [f'classic-child-{n}' for n in range(_CHAIN_CAP + 1)]
     _compact_chain_like_0_22_2(classic, ref.session_id, children)
@@ -264,7 +264,7 @@ async def test_a_chain_that_loops_back_past_one_walk_is_not_adopted(tmp_path, mo
     """Cycle detection holds across batches: a chain longer than one walk whose last step leads back
     into the receipt's lineage is never adopted, and the receipt stays as stored."""
     from gateway.session_local import create_local_session
-    from hermes_state_compression import _CHAIN_CAP
+    from hermes_agent.hermes_state_compression import _CHAIN_CAP
 
     first, connection = await _owner(tmp_path, monkeypatch, 'first')
     ref = create_local_session(first, connection.actor, {'request_id': 'r', 'source': 'tui',
@@ -274,7 +274,7 @@ async def test_a_chain_that_loops_back_past_one_walk_is_not_adopted(tmp_path, mo
     await connection.close()
     first.db.close()
 
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     classic = SessionDB(db_path=db_path)
     children = [f'classic-child-{n}' for n in range(_CHAIN_CAP + 1)]
     _compact_chain_like_0_22_2(classic, ref.session_id, children)
@@ -299,11 +299,11 @@ async def test_a_restore_on_the_owner_loop_hands_the_catch_up_to_a_worker(tmp_pa
     catch-up to a tracked worker and refuses this read; the worker's commit is published on the loop."""
     import asyncio
     import threading
-    import hermes_state_local_lineage as lineage
+    import hermes_agent.hermes_state_local_lineage as lineage
     from gateway.session_local import create_local_session
     from gateway.session_local_recovery import restore_local_session
     from gateway.session_runtime_workers import mutation_tasks
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     first, connection = await _owner(tmp_path, monkeypatch, 'first')
     ref = create_local_session(first, connection.actor, {'request_id': 'r', 'source': 'tui',

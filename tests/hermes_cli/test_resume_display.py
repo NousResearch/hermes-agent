@@ -301,7 +301,7 @@ class TestPreloadResumedSession:
         mock_db.reopen_session.assert_called_once_with("reopen_session")
 
     def test_rejects_runaway_transcript_before_history_load(self):
-        from hermes_state import SessionResumeTooLargeError
+        from hermes_agent.hermes_state import SessionResumeTooLargeError
 
         cli = _make_cli(resume="runaway-session")
         mock_db = MagicMock()

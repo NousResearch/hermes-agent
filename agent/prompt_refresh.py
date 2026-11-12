@@ -41,7 +41,7 @@ def requested_epoch(agent: Any) -> int:
 
 
 def _applied_epoch(session_row: Any) -> int:
-    from hermes_state_sessions import _parse_model_config
+    from hermes_agent.hermes_state_sessions import _parse_model_config
 
     value = _parse_model_config((session_row or {}).get("model_config")).get(SESSION_EPOCH_KEY)
     return value if isinstance(value, int) else 0

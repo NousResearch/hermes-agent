@@ -21,7 +21,7 @@ async def test_reopening_a_finalized_local_row_behind_a_contended_writer_keeps_t
     from gateway.session_contract import Submission
     from gateway.session_controls import AuthorityConnection
     from gateway.session_local import create_local_session
-    import hermes_state_runtime as rt
+    import hermes_agent.hermes_state_runtime as rt
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     db = store._db

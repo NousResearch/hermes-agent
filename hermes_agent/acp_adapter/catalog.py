@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from hermes_agent.acp_adapter.session import (
     _normalize_cwd_for_compare, _parse_model_config, _session_info, _updated_at_sort_key,
 )
@@ -24,7 +24,7 @@ def _local_owners(db):
     """Physical id -> retained logical owner, from each private local creation receipt's lineage.
     A canonical reset or compression advances the receipt's physical target but keeps policy/FIFO
     on the creation id. Legacy reset histories have no receipt and stay independent chats."""
-    from hermes_state_local import POLICY_PREFIX
+    from hermes_agent.hermes_state_local import POLICY_PREFIX
     owners = {}
     with db._read_ctx() as conn:
         rows = conn.execute('SELECT value FROM state_meta WHERE key GLOB ?', (POLICY_PREFIX + '*',)).fetchall()

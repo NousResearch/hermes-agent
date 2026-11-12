@@ -380,14 +380,24 @@ def decide_image_input_mode(
     requested_provider: str = "",
 ) -> str:
     """Return ``"native"`` or ``"text"`` for the given turn (``cfg`` None behaves as
-    auto; ``requested_provider`` is the identity before runtime canonicalization)."""
+    auto; ``requested_provider`` is the identity before runtime canonicalization).
+
+    In ``auto`` mode with ``agent.vision_capability_first: true``, capability is
+    resolved first (config override → probes) and a configured ``auxiliary.vision``
+    backend falls back to its documented role of covering text-only mains instead
+    of capturing every image. Unknown capability fails closed to ``text``."""
     mode_cfg = _coerce_mode(_dict_or_empty(_dict_or_empty(cfg).get("agent")).get("image_input_mode"))
     if mode_cfg != "auto":
         return mode_cfg
-    if _explicit_aux_vision_override(cfg):  # auto: an explicit auxiliary.vision backend wins
-        return "text"
+    agent_cfg = _dict_or_empty(_dict_or_empty(cfg).get("agent"))
     # Keep the three-argument call contract for callers/tests that replace the lookup hook.
     extra = {"requested_provider": requested_provider} if requested_provider else {}
+    if agent_cfg.get("vision_capability_first") is True:
+        # Capability (config override or probes) decides; unknown fails closed
+        # to text without a second probe round.
+        return "native" if _lookup_supports_vision(provider, model, cfg, **extra) is True else "text"
+    if _explicit_aux_vision_override(cfg):  # auto: an explicit auxiliary.vision backend wins
+        return "text"
     return "native" if _lookup_supports_vision(provider, model, cfg, **extra) is True else "text"
 
 

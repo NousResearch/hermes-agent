@@ -301,6 +301,8 @@ def recover_abandoned_delegations() -> int:
         return 0
     now, recovered = time.time(), 0
     with _DB_LOCK, _transaction() as conn:
+        from tools.delegate_tool_resumable import recover_abandoned
+        resumable = recover_abandoned(conn, alive)
         rows = conn.execute("""SELECT delegation_id, origin_session, origin_ui_session_id,
                       parent_session_id, dispatched_at, owner_pid,
                       owner_started_at, task_json, origin_session_id, result_json, state
@@ -324,6 +326,11 @@ def recover_abandoned_delegations() -> int:
                 diagnostics["transcript_tails"] = tails
             if hint := git_state_hint(task.get("owner_cwd")):
                 diagnostics["git_state_hint"] = hint
+            if continuable := resumable.get(delegation_id):
+                diagnostics["resumable_subagent_ids"] = continuable
+                error += (" Its subagents can be continued on their own conversation and worktree: "
+                          "delegate_task(action='continue', subagent_id=..., message=...); check git state and the "
+                          "last tool before re-running side effects.")
             event = {
                 "type": "async_delegation", "delegation_id": delegation_id, "session_key": session_key,
                 "origin_ui_session_id": origin_ui, "origin_session_id": origin_sid or "",
@@ -1405,10 +1412,14 @@ def _interrupt_records(targets: list[dict[str, Any]], caller: str, reason: str, 
     return count
 
 
-def interrupt_all(reason: str = "shutdown") -> int:
+def interrupt_all(reason: str = "shutdown", *, resumable: bool = False) -> int:
     """Signal every running async delegation to stop (``/stop``, shutdown). Returns how
     many. The child still emits a completion event (status='interrupted') via the
-    normal finalize path."""
+    normal finalize path. ``resumable`` (gateway shutdown): a restart, not a person, stops
+    them, so each child keeps a resumable record (``delegate_tool_resumable``)."""
+    if resumable:
+        from tools.delegate_tool_resumable import note_gateway_shutdown
+        note_gateway_shutdown()
     with _records_lock:
         targets = [r for r in _records.values() if r.get("status") in _ACTIVE_STATES]
     return _interrupt_records(targets, "interrupt_all", reason, "Interrupted %d async delegation(s) (%s)")

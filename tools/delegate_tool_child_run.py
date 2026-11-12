@@ -348,6 +348,7 @@ class _Heartbeat:
         # Threshold (seconds of frozen activity) the stale verdict fired at; None until it does.
         # ``await_child`` reads it to name the real cause when a configured cap was still pending.
         self.stale_threshold_seconds: Optional[float] = None
+        self.checkpoint: Any = None  # the run's durable cwd checkpoint (``delegate_tool_resumable.checkpoint``)
 
     def start(self) -> None:
         from agent.periodic_scheduler import schedule
@@ -363,6 +364,9 @@ class _Heartbeat:
         """Returning False stops the periodic callback."""
         from tools.delegate_tool import _HEARTBEAT_INTERVAL, _HEARTBEAT_STALE_CYCLES_IDLE, _HEARTBEAT_STALE_CYCLES_IN_TOOL
         child, parent_agent, task_index, last_seen = self.child, self.parent_agent, self.task_index, self.last_seen
+        if self.checkpoint is not None:
+            with _quiet("Durable subagent checkpoint failed: %s"):
+                self.checkpoint()
         touch = getattr(parent_agent, "_touch_activity", None) if parent_agent is not None else None
         if not touch:
             return None
@@ -708,6 +712,12 @@ def _build_result_entry(
         _failure_reason = result.get("failure_reason")
         if isinstance(_failure_reason, str) and _failure_reason:
             entry["failure_reason"] = _failure_reason
+        # When the limit resets (and the plan window it hit): what a resume is scheduled from.
+        _resets_at = result.get("failure_resets_at")
+        if isinstance(_resets_at, (int, float)) and not isinstance(_resets_at, bool):
+            entry["failure_resets_at"] = _resets_at
+        if isinstance(result.get("usage_limit"), dict):
+            entry["usage_limit"] = result["usage_limit"]
     elif interrupt_note:
         entry["error"] = interrupt_note
 
@@ -808,6 +818,16 @@ class _ChildRun:
     wall_start: float = 0.0
     parent_reads_snapshot: list = field(default_factory=list)
     deferred_future: Any = None
+    turn_exit_reason: Optional[str] = None  # the child turn's own exit reason (who stopped it)
+    final_entry: Optional[dict[str, Any]] = None
+
+    def settle(self, entry: dict[str, Any]) -> dict[str, Any]:
+        """The run's result entry, with how this stopped child may resume; kept for the durable record."""
+        from tools.delegate_tool_resumable import stamp_entry
+        with _quiet("Could not classify subagent outcome: %s"):
+            stamp_entry(self, entry)
+        self.final_entry = entry
+        return entry
 
     def elapsed(self) -> float:
         return round(time.monotonic() - self.child_start, 2)
@@ -845,15 +865,21 @@ class _ChildRun:
         # The parent's record is read in the parent's scope; the child's is written in the child's (cwd records
         # are keyed by the active profile, and a profile-routed child looks its own up as that profile).
         from tools.delegate_tool_routes import child_profile_scope
+        # action='continue': the child picks up where it stopped (its last cwd, its own worktree), not the parent's.
+        resumed = getattr(self.child, "_delegate_continue_workspace", None)
+        resumed = resumed if isinstance(resumed, dict) else None
         with _quiet("Child cwd seed failed: %s"):
             from tools.terminal_tool import get_session_cwd, record_session_cwd, register_container_alias
             parent_cwd = get_session_cwd(self.parent_task_id)
             with child_profile_scope(self.child):
-                record_session_cwd(self.child_task_id, parent_cwd)
+                record_session_cwd(self.child_task_id, resumed["cwd"] if resumed else parent_cwd)
             register_container_alias(self.child_task_id, self.parent_task_id)
 
-        self.worktree_info = _create_isolated_worktree(self.parent_agent, self.parent_task_id, self.subagent_id)
-        if self.worktree_info is not None:
+        if resumed is not None:
+            self.worktree_info = resumed.get("worktree")
+        else:
+            self.worktree_info = _create_isolated_worktree(self.parent_agent, self.parent_task_id, self.subagent_id)
+        if self.worktree_info is not None and resumed is None:
             with _quiet("worktree cwd seed failed: %s"), child_profile_scope(self.child):
                 from tools.terminal_tool import record_session_cwd as _rsc
                 _rsc(self.child_task_id, self.worktree_info["path"])
@@ -863,6 +889,11 @@ class _ChildRun:
             self.goal = self.goal + build_worktree_context_note(self.worktree_info)
         self.wall_start = time.time()
         self.parent_reads_snapshot = list(file_state.known_reads(self.parent_task_id)) if self.parent_task_id else []
+        with _quiet("Durable subagent record failed: %s"):
+            from tools.delegate_tool_resumable import checkpoint, record_start
+            record_start(self)
+            if self.heartbeat is not None:
+                self.heartbeat.checkpoint = lambda: checkpoint(self)
 
     def finish_failed(
         self, entry: dict[str, Any], late_steer: Optional[str], *, preview: str, summary: str = "", status: Optional[str] = None,
@@ -1181,6 +1212,9 @@ class _ChildRun:
         # All session/task cleanup must finish before the same IDs can be reused by continue.
         def finish():
             self.close_resources()
+            with _quiet("Durable subagent stop record failed: %s"):
+                from tools.delegate_tool_resumable import record_stop
+                record_stop(self, self.final_entry)
             if self.subagent_id:
                 _mark_subagent_resumable(self.subagent_id, retained)
 

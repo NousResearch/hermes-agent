@@ -1375,6 +1375,13 @@ DEFAULT_CONFIG = {
         # notifications to the PARENT; false suppresses them (the child's result is the
         # deliverable). Async-delegation results are NEVER suppressed.
         "surface_child_process_notifications": False,
+        # A child stopped by a restart, a crash or a provider failure (not by you) keeps a durable record:
+        # delegate_task(action="continue") resumes it on its own conversation and worktree, and that worktree is
+        # kept from the startup sweep. Hours a record lasts, and how many per profile keep their worktree pinned.
+        "resumable_ttl_hours": 48,
+        "max_resumable": 32,
+        # Resume such children automatically (at a limit's reset time, after a restart). Off: you continue them.
+        "auto_resume": False,
     },
     # Ephemeral prefill messages file — JSON list of {role, content} dicts injected at the start of
     # every API call for few-shot priming. Never saved to sessions/logs/trajectories.

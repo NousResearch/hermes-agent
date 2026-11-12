@@ -5,13 +5,7 @@
 name: neuron-steer
 repo: https://github.com/mrfentmen/hermes-neuron-steer
 sha: fc28e94ee55580a6b51ed281365f7d92a2deb1f6
-description: >-
-  Neuron steering for Hermes Agent, implementing Nous Research's own
-  Contrastive Neuron Attribution (arXiv:2605.12290). Find the sparse MLP
-  neurons that distinguish two behaviors with forward passes only, save
-  them as named circuits, then scale or ablate those neurons at inference
-  to steer a local model, plus a dose scan that maps where the behavior
-  turns on before output quality breaks.
+description: "Neuron steering for Hermes Agent, implementing Nous Research's own Contrastive Neuron Attribution (arXiv:2605.12290). Find the sparse MLP neurons that distinguish two behaviors with forward passes only, save them as named circuits, then scale or ablate those neurons at inference to steer a local model, plus a dose scan that maps where the behavior turns on before output quality breaks. Disclosure — loads local Hugging Face models with torch on this machine; when a tool call sets allow_download (the model can set it) or NEURON_STEER_ALLOW_DOWNLOAD=1, it downloads the named model from huggingface.co, which can be several GB."
 maintainer: mrfentmen
 tier: community
 category: tools

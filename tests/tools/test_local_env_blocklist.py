@@ -93,6 +93,44 @@ def test_terminal_child_observes_declared_policy(child_env, monkeypatch):
     assert dict(os.environ) == before
 
 
+def test_make_run_env_applies_plugin_strip_keys(child_env, monkeypatch):
+    """``_make_run_env`` consults the plugin terminal-env strip set:
+    a registered provider's ``strip_env_keys`` names are dropped from the terminal child
+    while an ordinary key survives."""
+    from agent.terminal_env_provider import TerminalEnvironmentProvider
+    from agent import terminal_env_registry as reg
+
+    class _PeerStrip(TerminalEnvironmentProvider):
+        name = "peer_strip_test"
+
+        @property
+        def strip_env_keys(self):
+            return frozenset({"PLUGIN_PRIVATE_TEST_KEY"})
+
+        def is_available(self):
+            return False
+
+        def create_environment(self, **kwargs):
+            raise RuntimeError("not a terminal backend")
+
+    reg.register_provider(_PeerStrip())
+    try:
+        monkeypatch.setenv("PLUGIN_PRIVATE_TEST_KEY", "synthetic-value")
+        monkeypatch.setenv("MY_APP_KEY", "ordinary-value")
+        env = local.LocalEnvironment(cwd=str(child_env), timeout=30, env={})
+        try:
+            observed = observe_terminal(env, ["PLUGIN_PRIVATE_TEST_KEY", "MY_APP_KEY", "HOME"])
+        finally:
+            env.cleanup()
+        assert observed == {
+            "PLUGIN_PRIVATE_TEST_KEY": None,
+            "MY_APP_KEY": "ordinary-value",
+            "HOME": str(child_env),
+        }
+    finally:
+        reg._reset_for_tests()
+
+
 # Secrets adapters read straight from the environment (webhook signing secrets, access tokens,
 # app secrets), declared in the gateway env-override table, a plugin manifest, or the policy's
 # own short list, none of them among the hand-written OPTIONAL_ENV_VARS entries.

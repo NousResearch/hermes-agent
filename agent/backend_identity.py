@@ -46,20 +46,49 @@ _CREDENTIAL_FINGERPRINT_CHARS = 16
 
 
 def credential_fingerprint(api_key: object) -> str:
-    """Non-reversible fingerprint of a STATIC api_key; "" when the credential is unknown.
+    """Non-reversible fingerprint of a configured credential; "" when it is unknown.
 
-    Only a statically configured key identifies a credential. An OAuth access token is
-    replaced by a refresh before a failed request is recovered (``agent_init_fallback``), so
-    fingerprinting the live token would drift between attempts and defeat the dedup it is
-    meant to serve; a callable (Entra ID) resolves per call and is not a key at all. Both
-    return "" — unknown — which every predicate below treats as "cannot prove difference".
+    A static key hashes its value. A ``key_cmd`` token source hashes its stable command
+    identity (``cache_identity``) WITHOUT minting, so a rotating token never drifts the
+    identity; the command namespace is tagged so it cannot collide with a static key. Any
+    other callable (Entra ID) resolves per call and is not a key at all: "" — unknown — which
+    every predicate below treats as "cannot prove difference".
     """
-    if not isinstance(api_key, str):
+    identity = getattr(api_key, "cache_identity", None) if callable(api_key) else None
+    if isinstance(identity, str) and identity.strip():
+        key = "key_cmd\0" + identity.strip()
+    elif isinstance(api_key, str) and api_key.strip():
+        key = api_key.strip()
+    else:
         return ""
-    key = api_key.strip()
-    if not key:
-        return ""
-    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:_CREDENTIAL_FINGERPRINT_CHARS]
+    return hashlib.sha256(key.encode("utf-8", "surrogatepass")).hexdigest()[:_CREDENTIAL_FINGERPRINT_CHARS]
+
+
+def route_credential(provider: Optional[str], entry: Optional[dict] = None) -> object:
+    """The credential a route would send, for :func:`credential_fingerprint` ONLY (never log it).
+
+    A fallback entry's own ``api_key`` / ``key_env`` wins (what the switch sends); otherwise a
+    named ``providers:`` / ``custom_providers:`` entry supplies it with the runtime's precedence
+    (``key_cmd`` first, then ``api_key`` / ``key_env``). Built-in providers and unresolvable
+    routes return None (unknown), so their dedup is unchanged.
+    """
+    try:
+        from agent.command_token_source import build_command_token_provider
+        from hermes_cli.fallback_config import resolve_entry_api_key
+
+        if explicit := resolve_entry_api_key(entry):
+            return explicit
+        if not (provider or "").strip():
+            return None
+        from hermes_cli.runtime_provider import _get_named_custom_provider
+
+        named = _get_named_custom_provider(str(provider))
+        if not named:
+            return None
+        return build_command_token_provider(str(named.get("key_cmd") or ""), "named") or named.get("api_key") or None
+    except Exception:
+        logger.debug("route_credential: could not resolve the credential of %s", provider, exc_info=True)
+        return None
 
 
 @dataclass(frozen=True)
@@ -122,6 +151,10 @@ def same_credential_surface(a: BackendIdentity, b: BackendIdentity) -> bool:
     Two KNOWN and different keys under one label are separate credentials (#151321)."""
     if _distinct_known_credentials(a, b):
         return False
+    if a.credential and b.credential:
+        # One identical known key under two labels (relay aliases, the #22548 family) is one credential:
+        # a 401/402 on it holds for both (#91078).
+        return True
     if a.provider and b.provider:
         # Different labels = different credential config (first-class registry providers explicitly so —
         # #70893; custom entries can each carry their own api_key, so sameness is unprovable and we must not

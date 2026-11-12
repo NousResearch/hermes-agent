@@ -19,14 +19,14 @@ _MISSING_ACTIVE_PROVIDER = object()
 
 
 def _identity(entry: dict[str, Any]):
-    """BackendIdentity for a ``{provider, model, base_url?, api_key?}`` entry.
+    """BackendIdentity for a ``{provider, model, base_url?, api_key?|key_env?}`` entry.
 
     ``api_key`` participates so two accounts of one provider on one URL are not refused as a
-    duplicate of each other (#151321); entries without a static key compare as before.
+    duplicate of each other (#151321); a named provider contributes its own key or key_cmd.
     """
-    from agent.backend_identity import BackendIdentity
+    from agent.backend_identity import BackendIdentity, route_credential
     return BackendIdentity.build(provider=entry.get("provider"), model=entry.get("model"),
-                                 base_url=entry.get("base_url"), api_key=entry.get("api_key"))
+                                 base_url=entry.get("base_url"), api_key=route_credential(entry.get("provider"), entry))
 
 
 def _write_chain(config: dict[str, Any], chain: list[dict[str, Any]]) -> None:

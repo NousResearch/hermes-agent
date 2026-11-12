@@ -1,6 +1,6 @@
 name: agentpass
 repo: https://github.com/shagghiesuperstar/agentpass-plugin
-sha: 5ac84898e454015464084c94851b7625f8b97013
+sha: c80ddf9d3955902591cdc053770f876d3c38318d
 description: >-
   Score any public site on the Agent Readiness Index (ARI-100) — 120 checks across
   eight weighted domains, 32 live AI-crawler probes, a grade and an L0-L5 level —

@@ -41,12 +41,22 @@ describe('the bot-chat set moves independently of session state', () => {
     expect($sessionStates.get()).toBe(statesBefore)
   })
 
-  it('answers for the live id behind a marked stored one, and stops when cleared', () => {
+  it('answers for the live id behind a marked stored one, and keeps answering through a scope-less re-open', () => {
     setSessionTileWorkspaceScope('stored-1', botScope)
 
     expect(isBotChatSession('runtime-1')).toBe(true)
     expect(isBotChatSession('stored-1')).toBe(true)
 
+    // A scope-less re-open is absence of information, not a revocation: ⌘W on
+    // another tab promotes a Bot tile into main by closing it FIRST, so the
+    // route open that follows can only report the ambient sessions scope.
+    // Forgetting the chat there flipped the composer back to coding chrome.
+    setSessionTileWorkspaceScope('stored-1', { workspaceMode: 'sessions', workspaceOwnerKey: '' })
+
+    expect(isBotChatSession('runtime-1')).toBe(true)
+  })
+
+  it('never invents a bot chat: a plain session opened with a sessions scope stays unmarked', () => {
     setSessionTileWorkspaceScope('stored-1', { workspaceMode: 'sessions', workspaceOwnerKey: '' })
 
     expect(isBotChatSession('runtime-1')).toBe(false)

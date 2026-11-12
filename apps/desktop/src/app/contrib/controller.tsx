@@ -32,7 +32,11 @@ import {
   togglePaneVisible,
   toggleTargetZoneTabStrip
 } from '@/components/pane-shell/tree/store'
-import { $workspaceOwnerLabels, workspaceOwnerTitle } from '@/components/pane-shell/workspace-scope'
+import {
+  $workspaceOwnerLabels,
+  workspaceOwnerTitle,
+  workspaceSessionBaseTitle
+} from '@/components/pane-shell/workspace-scope'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { discoverBundledPlugins } from '@/contrib/plugins'
 import { Slot } from '@/contrib/react/slot'
@@ -494,6 +498,10 @@ const syncWorkspaceTitle = () => {
   // the NEW_SESSION_TITLE placeholder — a loaded gateway chat titled
   // "New session" in the tab while its sidebar row read correctly.
   const stored = selected ? ownerLookupSessionRows().find(s => sessionMatchesStoredId(s, selected)) : null
+  // A canonical Bot Chat is hidden, so `stored` is null even while it is open.
+  // Its scope still knows the canonical title, which is what lets the caption
+  // resolve to the bot's name instead of "New session".
+  const botScope = selected ? $botChatScopes.get()[selected] : undefined
 
   registry.register({
     id: 'workspace',
@@ -503,8 +511,8 @@ const syncWorkspaceTitle = () => {
     // A bot chat reads as its BOT: every canonical Bot Chat is stored under
     // the same name, which told two open bots apart by nothing (#99152).
     title: workspaceOwnerTitle(
-      stored ? storedSessionTitle(stored) : NEW_SESSION_TITLE,
-      selected ? $botChatScopes.get()[selected] : undefined
+      workspaceSessionBaseTitle(stored ? storedSessionTitle(stored) : undefined, botScope, NEW_SESSION_TITLE),
+      botScope
     ),
     data: {
       // The tab's status dot — the SAME primitive the sidebar row and session

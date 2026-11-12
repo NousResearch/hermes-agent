@@ -2,8 +2,8 @@
 
 The policy (what is due, supersession, the attempt cap) lives in ``tools/delegate_tool_auto_resume.py``; this module
 binds each profile's scope (``_profile_runtime_scope``, never ``os.environ``) and performs the continue the way a
-parent turn would: a stand-in parent agent built on the profile's own route with the parent's session id, the parent
-conversation's routing bound in a fresh context, then ``delegate_task(action='continue')``'s own entry point. The
+parent turn would: a stand-in parent agent built on the parent conversation's own next-turn route with its session id,
+the parent conversation's routing bound in a fresh context, then ``delegate_task(action='continue')``'s own entry point. The
 continued child's completion goes through the normal completion queue to the parent's conversation.
 """
 
@@ -41,41 +41,70 @@ def _session_route(unit: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def _stand_in_parent(db: Any, record: dict[str, Any], parent_sid: str, session_key: str) -> Any:
-    """A parent agent for the continue only, on the bound profile's route with the parent's session id and the
-    profile's own store. It runs no turn. Its toolsets are the child's own, so the rebuild keeps every tool it had."""
-    from gateway.run import _load_gateway_config, _resolve_gateway_model, _resolve_runtime_agent_kwargs
+def _session_source(runner: Any, unit: dict[str, Any]) -> Any:
+    """The parent conversation's ``SessionSource``, rebuilt from its ledger row the way a completion is routed."""
+    if unit.get("origin_session_id") and not unit.get("origin_session"):
+        from gateway.config import Platform
+        from gateway.session import SessionSource
+        return SessionSource(platform=Platform.API_SERVER, chat_id=str(unit["origin_session_id"]))
+    return runner._build_process_event_source({"session_key": str(unit.get("origin_session") or "")})
+
+
+def _stand_in_parent(runner: Any, db: Any, record: dict[str, Any], source: Any, route: dict[str, str]) -> Any:
+    """A parent agent for the continue only, on the route the parent conversation's next turn would run on
+    (``_resolve_session_agent_runtime``: its ``/model``, channel override or launch policy), with the parent's session
+    id and the profile's own store. It runs no turn. Its toolsets are the child's own, so the rebuild keeps every tool
+    it had."""
     from run_agent import AIAgent
-    runtime = _resolve_runtime_agent_kwargs()
-    runtime.pop("_fallback_notice", None)
-    model = runtime.pop("model", None) or _resolve_gateway_model(_load_gateway_config())
-    parent = AIAgent(model=model, **runtime, quiet_mode=True, verbose_logging=False, session_id=parent_sid,
-                     platform="gateway", gateway_session_key=session_key or None, skip_memory=True,
-                     skip_context_files=True, session_db=db, enabled_toolsets=record.get("toolsets") or None)
+    model, runtime = runner._resolve_session_agent_runtime(source=source, session_key=route["session_key"] or None)
+    runner._pre_agent_fallback_notice = None  # a turn's notice; this agent runs none
+    turn = runner._resolve_turn_agent_config("", model, runtime)
+    parent = AIAgent(model=turn["model"], **turn["runtime"], request_overrides=turn.get("request_overrides"),
+                     quiet_mode=True, verbose_logging=False, session_id=route["session_id"], platform="gateway",
+                     gateway_session_key=route["session_key"] or None, skip_memory=True, skip_context_files=True,
+                     session_db=db, enabled_toolsets=record.get("toolsets") or None)
     parent._end_session_on_close = False
     parent._oneshot_session = False  # a background continue, never the joined one-shot variant
     return parent
 
 
-def _start_continue(record: dict[str, Any], unit: dict[str, Any], message: str) -> Optional[str]:
-    """Continue one child; None once it is dispatched, else the refusal text. Runs on a worker thread in the
+def _continue_as_parent(runner: Any, db: Any, record: dict[str, Any], unit: dict[str, Any], route: dict[str, str],
+                        message: str) -> dict[str, Any]:
+    from gateway.session_authorities import active_authority
+    from gateway.session_policy import policy_for_source, policy_scope
+    from tools.delegate_tool_auto_resume import STAND_IN_FAILED
+    from tools.delegate_tool_continue import continue_subagent
+    try:
+        source = _session_source(runner, unit)
+        policy = policy_for_source(runner, source)
+    except Exception as exc:  # health: allow BLE001 -- OUR stand-in failed, not the child's route: a later tick retries
+        return {"error": f"{STAND_IN_FAILED}: {type(exc).__name__}: {exc}"}
+    with policy_scope(policy, authority=active_authority(runner) if policy else None):
+        try:
+            parent = _stand_in_parent(runner, db, record, source, route)
+        except Exception as exc:  # health: allow BLE001 -- as above
+            logger.warning("automatic resume of %s: no stand-in parent", record["subagent_id"], exc_info=True)
+            return {"error": f"{STAND_IN_FAILED}: {type(exc).__name__}: {exc}"}
+        try:
+            return json.loads(continue_subagent(record["subagent_id"], message, parent, background=True, auto=True))
+        finally:
+            parent.release_clients()
+
+
+def _start_continue(runner: Any, record: dict[str, Any], unit: dict[str, Any], message: str) -> Optional[str]:
+    """Continue one claimed child; None once it is dispatched, else the refusal text. Runs on a worker thread in the
     profile's scope, inside a fresh context so the parent's routing binding never leaks into another task."""
     from gateway.session_context import reset_session_vars, set_session_vars
     from hermes_constants import get_hermes_home
     from hermes_state_registry import acquire, release_or_close
-    from tools.delegate_tool_continue import continue_subagent
     reset_session_vars()
     route = _session_route(unit)
     # An api_server parent has no push channel: its result is persisted for its next request, as at dispatch.
     set_session_vars(**route, async_delivery=not unit.get("origin_session_id"), cron_session="")
     db = acquire(get_hermes_home() / "state.db")  # the bound profile's store, never the launch profile's
-    parent = None
     try:
-        parent = _stand_in_parent(db, record, route["session_id"], route["session_key"])
-        out = json.loads(continue_subagent(record["subagent_id"], message, parent, background=True, auto=True))
+        out = _continue_as_parent(runner, db, record, unit, route, message)
     finally:
-        if parent is not None:
-            parent.release_clients()
         release_or_close(db)
     if out.get("status") == "dispatched":
         return None
@@ -107,7 +136,7 @@ def tick_profiles(runner: Any) -> list[str]:
         try:
             with _profile_runtime_scope(home, None):
                 start = (lambda record, unit, message:
-                         contextvars.copy_context().run(_start_continue, record, unit, message))
+                         contextvars.copy_context().run(_start_continue, runner, record, unit, message))
                 resumed += tick(start, capacity=_capacity())
         except Exception:  # health: allow BLE001 -- one profile's failure must not stop the others
             logger.warning("delegation auto-resume pass failed for profile %r", name, exc_info=True)

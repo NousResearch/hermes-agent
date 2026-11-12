@@ -37,9 +37,10 @@ logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the 
 MAX_AUTO_ATTEMPTS = 2
 SUPERSEDED = "superseded"
 CANCELLED = "Not continued: its parent cancelled the automatic resume"
+STAND_IN_FAILED = "Not continued: the scheduler could not build the parent's stand-in"
 # A continue refused for one of these reasons ran nothing and can succeed on a later tick: the attempt is refunded.
 _TRANSIENT_REFUSALS = ("still running", "being continued", "still stopping", "paused", "capacity", "depth limit",
-                       CANCELLED)
+                       CANCELLED, STAND_IN_FAILED)
 
 
 def enabled() -> bool:

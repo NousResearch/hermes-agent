@@ -3,21 +3,7 @@ title: Hebe Longevity
 repo: https://github.com/brainarts-lab/hebe-longevity
 sha: bf303ab6a9af2c431e22e8b595d037dda264cf06
 version: "0.7.2"
-description: >-
-  Personal Longevity Intelligence for Hermes, built on Insilico Medicine's open PLSI
-  toolbelt (MIT). Reads nine routine blood markers from a confirmed CSV or typed panel,
-  calculates Blood PhenoAge, shows trends and formula drivers across blood draws, and
-  drafts safety-screened research plans challenged by a separate model call before only
-  the user can start a plan. Includes a Hebe page and optional theme in Hermes Desktop
-  plus a chat result card. Disclosure — PhenoAge, trend and local HTML reports make no
-  network or model calls. The Desktop page loads Cormorant Garamond and Montserrat from
-  Google Fonts (falls back to system fonts offline). Planning tools run a pinned subset
-  of the PLSI CLI as a child process of Hermes' Python with fixed argument lists (no
-  shell) and query PubMed, Europe PMC, ClinicalTrials.gov, openFDA or Evipedia with
-  topic queries only. The challenger runs through Hermes' own auxiliary LLM task
-  (auxiliary.hebe_challenger); Hermes itself sends chat and tool outputs to the user's
-  configured model. Data is stored under HERMES_HOME/plugin-data/hebe-longevity. No
-  telemetry, self-updater or background daemon. Research prototype, not medical advice.
+description: "Personal Longevity Intelligence for Hermes, built on Insilico Medicine's open PLSI toolbelt (MIT). Reads nine routine blood markers from a confirmed CSV or typed panel, calculates Blood PhenoAge, shows trends and formula drivers across blood draws, and drafts safety-screened research plans challenged by a separate model call before only the user can start a plan. Includes a Hebe page and optional theme in Hermes Desktop plus a chat result card. Disclosure — PhenoAge, trend and local HTML reports make no network or model calls. The Desktop page loads Cormorant Garamond and Montserrat from Google Fonts (falls back to system fonts offline). Planning tools run a pinned subset of the PLSI CLI as a child process of Hermes' Python with fixed argument lists (no shell) and a minimal environment, and query PubMed, Europe PMC, ClinicalTrials.gov, openFDA, RxNav (NIH), doi.org or Evipedia with topic queries and plan action names only. The challenger runs through Hermes' own auxiliary LLM task (auxiliary.hebe_challenger); Hermes itself sends chat and tool outputs to the user's configured model. Data is stored under HERMES_HOME/plugin-data/hebe-longevity. No telemetry, self-updater or background daemon. Research prototype, not medical advice."
 maintainer: brainarts-lab
 tier: community
 category: desktop

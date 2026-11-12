@@ -1110,6 +1110,32 @@ class TestDebugSlashCommand:
         # (input() would hang inside prompt_toolkit's event loop).
         assert c["yes"] is True
 
+    def test_debug_upload_dpaste_fallback_matches_one_day_consent(self, capsys):
+        """A classic slash upload must not outlive the 1-day fallback disclosed before consent."""
+        from hermes_cli.debug import run_debug_slash
+
+        expiry_days = []
+
+        def _fake_dpaste(_content, expiry_days=1):
+            requested_days.append(expiry_days)
+            return "https://dpaste.com/TEST"
+
+        requested_days = expiry_days
+        with patch("hermes_cli.debug._best_effort_sweep_expired_pastes"), \
+             patch("hermes_cli.debug.collect_share_bundle",
+                   return_value={"report": "redacted summary"}), \
+             patch("hermes_cli.debug._upload_paste_rs",
+                   side_effect=OSError("paste.rs offline")), \
+             patch("hermes_cli.debug._upload_dpaste_com",
+                   side_effect=_fake_dpaste), \
+             patch("hermes_cli.debug._schedule_auto_delete"):
+            run_debug_slash("/debug upload")
+
+        output = capsys.readouterr().out
+        assert "default: 1 day" in output
+        assert expiry_days == [1]
+        assert "stay public for 1 day(s)" in output
+
     def test_word_parsing_is_case_insensitive(self):
         c = self._captured("/debug NOUS Upload")
         assert c["nous"] is True and c["yes"] is True

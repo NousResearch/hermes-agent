@@ -628,7 +628,7 @@ def run_debug_slash(cmd_original: str = "") -> None:
               "or `/debug local` to view the report without uploading.")
         return
     # The explicit `upload` word is the consent (yes=True); input() would hang in prompt_toolkit.
-    run_debug_share(SimpleNamespace(lines=200, expire=7, local=local, nous=nous, yes=True))
+    run_debug_share(SimpleNamespace(lines=200, expire=1, local=local, nous=nous, yes=True))
 
 
 def _run_debug_share_nous(args, *, log_lines: int, redact: bool) -> None:

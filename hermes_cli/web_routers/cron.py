@@ -668,7 +668,7 @@ def _update_cron_job_sync(job_id: str, body: CronJobUpdate, profile: Optional[st
             if "skills" in updates and "skill" not in updates:
                 effective["skill"] = None
             _validate_dashboard_cron_effective_job(effective)
-        _validate_dashboard_cron_security(effective, updates)
+        _validate_dashboard_cron_security(profile_name, effective, updates)
         job = _mutate_cron_for_profile(profile_name, "update_job", job_id, updates)
     except HTTPException:
         raise
@@ -965,7 +965,7 @@ async def instantiate_blueprint(body: AutomationBlueprintInstantiate, profile: s
         spec.pop("origin", None)
         # Slot values are user text interpolated into the stored prompt; the
         # blueprint path must not bypass the tool path's prompt/deliver guards.
-        _validate_dashboard_cron_security(spec)
+        await _run_cron_dashboard_io(_validate_dashboard_cron_security, profile, spec)
         # Off-loop like the siblings; partial keeps **spec keys from colliding
         # with the wrapper's own parameters.
         _create = functools.partial(_call_cron_for_profile, profile, "create_job", **spec)

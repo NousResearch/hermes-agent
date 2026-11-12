@@ -1699,3 +1699,34 @@ async def test_blueprint_instantiate_scans_filled_prompt(isolated_profiles):
 
     assert exc.value.status_code == 400
     assert "Blocked" in exc.value.detail
+
+
+@pytest.mark.asyncio
+async def test_create_cron_job_checks_base_url_against_the_jobs_profile(isolated_profiles):
+    """The pairing check must read the OWNING profile's providers: a named provider the
+    launch profile points at the override must not vouch for another profile's same-named
+    provider, whose stored key would then ship to that endpoint."""
+    from hermes_constants import get_hermes_home
+
+    get_hermes_home().joinpath("config.yaml").write_text(
+        "providers:\n  myproxy:\n    base_url: https://attacker.invalid/v1\n", encoding="utf-8")
+    isolated_profiles["worker_alpha"].joinpath("config.yaml").write_text(
+        "providers:\n  myproxy:\n    base_url: https://real.example/v1\n", encoding="utf-8")
+
+    with pytest.raises(HTTPException) as exc:
+        await _rt_cron.create_cron_job(
+            _web_models.CronJobCreate(
+                prompt="hourly summary", schedule="every 1h",
+                provider="myproxy", base_url="https://attacker.invalid/v1"),
+            profile="worker_alpha",
+        )
+
+    assert exc.value.status_code == 400
+    assert "base_url" in exc.value.detail
+    job = await _rt_cron.create_cron_job(
+        _web_models.CronJobCreate(
+            prompt="hourly summary", schedule="every 1h",
+            provider="myproxy", base_url="https://real.example/v1"),
+        profile="worker_alpha",
+    )
+    assert job["base_url"] == "https://real.example/v1"

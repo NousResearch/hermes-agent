@@ -68,7 +68,9 @@ def _validate_dashboard_cron_effective_job(job: dict[str, Any]) -> None:
         raise HTTPException(status_code=400, detail="agent cron jobs require a prompt, skill, or script")
 
 
-def _validate_dashboard_cron_security(effective: dict[str, Any], updates: Optional[dict[str, Any]] = None) -> None:
+def _validate_dashboard_cron_security(
+    profile: str, effective: dict[str, Any], updates: Optional[dict[str, Any]] = None,
+) -> None:
     """Prompt-scan and credential-safety guards the agent tool path applies
     (``tools/cronjob_tools.py``). A dashboard-created or -edited job must not
     bypass them.
@@ -78,7 +80,12 @@ def _validate_dashboard_cron_security(effective: dict[str, Any], updates: Option
     mirroring the tool's update path — while ``base_url`` always checks the
     EFFECTIVE pair so an unrelated edit cannot leave an unsafe
     provider+endpoint combination schedulable.
+
+    The base_url check reads ``providers:`` and stored secrets, so it runs in the
+    OWNING profile's config+secret scope: the launch profile's same-named provider
+    must not vouch for an endpoint that would receive another profile's key.
     """
+    from hermes_cli.web_server_profiles import _config_profile_scope
     from tools.cronjob_job_args import (
         _normalize_deliver_param, _validate_bot_chat_deliver, _validate_cron_base_url)
     from tools.cronjob_prompt_scan import _scan_cron_prompt
@@ -87,9 +94,11 @@ def _validate_dashboard_cron_security(effective: dict[str, Any], updates: Option
         return updates is None or key in updates
 
     prompt = _cron_optional_text(effective.get("prompt"))
+    with _config_profile_scope(profile):
+        base_url_error = _validate_cron_base_url(effective.get("provider"), effective.get("base_url"))
     error = (
         (_touched("prompt") and prompt and _scan_cron_prompt(prompt))
-        or _validate_cron_base_url(effective.get("provider"), effective.get("base_url"))
+        or base_url_error
         or (_touched("deliver") and _validate_bot_chat_deliver(
             _normalize_deliver_param(effective.get("deliver"))))
         or (_touched("failure_deliver") and _validate_bot_chat_deliver(
@@ -292,7 +301,7 @@ def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
             repeat = normalize_repeat_value(repeat)
         _validate_dashboard_cron_effective_job(
             {"prompt": body.prompt, "skills": skills, "script": script, "no_agent": no_agent})
-        _validate_dashboard_cron_security({
+        _validate_dashboard_cron_security(profile_name, {
             "prompt": body.prompt,
             "provider": _cron_optional_text(body.provider),
             "base_url": _cron_optional_text(body.base_url, strip_trailing_slash=True),

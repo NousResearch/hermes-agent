@@ -20,8 +20,8 @@ def test_scoped_members_respect_disabled_and_keep_other_profiles(tmp_path, monke
 
 def test_manifest_only_member_is_named_after_its_plugin_dir_and_stays_unique(tmp_path):
     """uv's conflict text names the workspace member (``hermes-plugin-<key> depends on …``);
-    a bare path hash left the user with nothing to disable. Two same-named plugins from
-    different homes must still be distinct members."""
+    a bare path hash left the user with nothing to disable. Two different same-named plugins
+    from different homes must still be distinct members."""
     import tomllib
     from pm.workspace import _workspace_member
 
@@ -29,7 +29,8 @@ def test_manifest_only_member_is_named_after_its_plugin_dir_and_stays_unique(tmp
     for home in ("home-a", "home-b"):
         plugin = tmp_path / home / "plugins" / "My Plugin!"
         plugin.mkdir(parents=True)
-        (plugin / "plugin.yaml").write_text("name: my-plugin\npip_dependencies: [left-pad-py]\n", encoding="utf-8")
+        (plugin / "plugin.yaml").write_text(f"name: my-plugin\npip_dependencies: [left-pad-py]\n# {home}\n",
+                                            encoding="utf-8")
         root = tmp_path / f"gen-{home}"
         root.mkdir()
         members.append(_workspace_member(plugin, root, identity=plugin))
@@ -44,7 +45,8 @@ def test_pyproject_member_is_renamed_by_its_key_and_stays_unique(tmp_path):
     uv identifies workspace members by that name — enabling the plugin in two
     profiles then fails ``uv lock`` with "Two workspace members are both named
     …". Rename metadata-only members by their unique key, like manifest-only
-    ones; a buildable member keeps the name its package metadata reports."""
+    ones; a buildable member keeps the name its package metadata reports.
+    (Byte-identical copies are one member: tests/pm/test_workspace_members.py.)"""
     import tomllib
     from pm.workspace import _workspace_member
 
@@ -53,7 +55,7 @@ def test_pyproject_member_is_renamed_by_its_key_and_stays_unique(tmp_path):
         plugin = tmp_path / home / "plugins" / "hindsight"
         plugin.mkdir(parents=True)
         (plugin / "pyproject.toml").write_text(
-            '[project]\nname = "hermes-plugin-hindsight"\nversion = "1.0.0"\n'
+            f'# {home}\n[project]\nname = "hermes-plugin-hindsight"\nversion = "1.0.0"\n'
             'dependencies = ["hindsight-client>=0.10.1"]\n',
             encoding="utf-8",
         )

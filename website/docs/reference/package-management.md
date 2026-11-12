@@ -145,7 +145,13 @@ PM prepares core requirements, enabled extras, and enabled plugin requirements
 together. It seeds resolution from the existing lock. Compatible transitive
 versions can change, but declared constraints and exact pins remain binding.
 Each candidate gets a fresh workspace with explicit source, lock seed, and
-prepared environment inputs. Plugin snapshots keep a plugin's runtime dependencies
+prepared environment inputs. A plugin snapshot holds the plugin's build inputs: in
+a plugin directory that is a git checkout, the files git keeps (tracked files, and
+untracked files its ignore rules admit); in any other directory, every file except
+`.git`, `.venv`, `venv`, `node_modules`, `__pycache__` and `*.egg-info`. Byte-identical
+copies of one plugin in several profiles are one snapshot, so a profile clone does not
+rebuild the environment. On APFS, Btrfs and XFS a snapshot shares its data blocks with
+the source. Plugin snapshots keep a plugin's runtime dependencies
 and the optional extras this install selects (or the plugin's own requirements name);
 its `dependency-groups`, legacy uv development dependencies and unselected extras
 (`dev`, `test`) are left out, together with the `tool.uv.sources` entries scoped to

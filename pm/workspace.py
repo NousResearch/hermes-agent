@@ -41,25 +41,15 @@ def member_sources(plugin_dirs) -> dict[Path, Path]:
 
 
 def members_stamp(plugin_dirs) -> str:
-    """Hash the member inputs copied into a generation, independent of staging paths."""
+    """Hash the members a generation holds, independent of staging and install paths: byte-identical
+    copies of one plugin (a profile clone's) are one member, so adding one changes nothing."""
+    from pm.workspace_members import member_digest
+
     h = hashlib.sha256()
-    for identity, entry in sorted(member_sources(plugin_dirs).items()):
-        h.update(str(identity).encode("utf-8"))
-        h.update(b"\0")
-        declaration = read_python_declaration(entry)
-        for source in declaration.files:
-            h.update(source.name.encode("utf-8"))
-            h.update(source.read_bytes())
-            h.update(b"\0")
-        if (entry / "pyproject.toml").is_file():
-            for directory, dirs, files in os.walk(entry):
-                dirs[:] = sorted(set(dirs) - set(_member_ignored(directory, dirs)))
-                for name in sorted(set(files) - set(_member_ignored(directory, files))):
-                    path = Path(directory) / name
-                    h.update(path.relative_to(entry).as_posix().encode())
-                    h.update(b"\0")
-                    h.update(os.readlink(path).encode() if path.is_symlink() else path.read_bytes())
-                    h.update(b"\0")
+    members = {(_member_name(identity), member_digest(identity, entry))
+               for identity, entry in member_sources(plugin_dirs).items()}
+    for name, digest in sorted(members):
+        h.update(f"{name}\0{digest}\0".encode())
     return h.hexdigest()
 
 
@@ -90,6 +80,8 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
     """Build from a writable snapshot, never from signed/read-only source."""
     import fnmatch
     import tomllib
+
+    from pm.workspace_members import clone_file
 
     metadata = tomllib.loads((source / "pyproject.toml").read_text(encoding="utf-8-sig"))
     project = metadata.get("project", {})
@@ -126,7 +118,7 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
                 and (entry.name in where_roots
                      or any(fnmatch.fnmatchcase(entry.name, pattern) for pattern in package_roots))):
             target = destination / entry.name
-            shutil.copytree(entry, target, ignore=ignore)
+            shutil.copytree(entry, target, ignore=ignore, copy_function=clone_file)
     for name in files:
         entry = source / name
         if not entry.is_file() or entry.is_symlink():
@@ -135,7 +127,7 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
             raise InstallError("venv", f"build input escapes the core project: {name}")
         target = destination / name
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(entry, target)
+        clone_file(entry, target)
 
 
 def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Path, *, source: Path,
@@ -149,11 +141,14 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
     core_pyproject = source / "pyproject.toml"
     core_text = core_pyproject.read_text(encoding="utf-8-sig")
 
-    candidates = {identity: source for identity, source in member_sources(plugin_dirs).items()
-                  if _is_member_candidate(source)}
+    # One member per key: byte-identical copies of a plugin in several homes build once.
+    candidates = {}
+    for identity, entry in sorted(member_sources(plugin_dirs).items()):
+        if _is_member_candidate(entry):
+            candidates.setdefault(_member_key(identity, entry), (identity, entry))
     target = _target_environment(python) if candidates else {}
-    members = [_workspace_member(source, root, identity=identity, extras=extras, target=target)
-               .relative_to(root).as_posix() for identity, source in candidates.items()]
+    members = [_workspace_member(entry, root, identity=identity, extras=extras, target=target)
+               .relative_to(root).as_posix() for identity, entry in candidates.values()]
 
     if members:
         import tomllib
@@ -330,15 +325,20 @@ def build_member_dirs(extras: Iterable[str], python: Path | None = None) -> list
             if not core_requirement_error(read_python_declaration(path), extras, target)]
 
 
-def _member_key(identity: Path) -> str:
-    """``<plugin dir name>-<sha256(path)[:16]>``: the hash keeps two same-named plugins from
-    different homes apart; the name is what a user sees in uv's conflict text
-    (``hermes-plugin-<key> depends on …``) — a bare hash told them nothing to disable."""
+def _member_name(identity: Path) -> str:
     import re
 
-    digest = hashlib.sha256(str(identity.resolve()).encode()).hexdigest()[:16]
-    name = re.sub(r"[^a-z0-9._-]+", "-", identity.name.lower()).strip("-.") or "plugin"
-    return f"{name}-{digest}"
+    return re.sub(r"[^a-z0-9._-]+", "-", identity.name.lower()).strip("-.") or "plugin"
+
+
+def _member_key(identity: Path, plugin_dir: Path) -> str:
+    """``<plugin dir name>-<content digest[:16]>``: the digest keeps two different same-named
+    plugins apart and folds byte-identical copies in several homes into one member (#154442); the
+    name is what a user sees in uv's conflict text (``hermes-plugin-<key> depends on …``) — a bare
+    hash told them nothing to disable."""
+    from pm.workspace_members import member_digest
+
+    return f"{_member_name(identity)}-{member_digest(identity, plugin_dir)[:16]}"
 
 
 def _selected_member_extras(document: dict, extras: Iterable[str],
@@ -606,13 +606,14 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path, extras: I
     import json
     import tomllib
 
-    key = _member_key(identity)
+    from pm.workspace_members import copy_member, external_source, uv_path_specs
+
+    key = _member_key(identity, plugin_dir)
     declaration = read_python_declaration(plugin_dir)
     pyproject = declaration.pyproject
     if pyproject is not None:
         member = root / "plugin-sources" / key
-        shutil.copytree(plugin_dir, member, symlinks=True,
-                        ignore=_member_ignored)
+        copy_member(plugin_dir, member)
         document = tomllib.loads(pyproject.read_text(encoding="utf-8-sig"))
         # uv identifies a workspace member by [project].name, so the same virtual
         # plugin enabled in two profiles would declare one name twice and fail
@@ -630,17 +631,10 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path, extras: I
             # Before the extras pass, so its self-reference closure reads the names uv will see.
             _rename_virtual_member(document, f"hermes-plugin-{key}")
         changed = _runtime_member_metadata(document, extras, target) or changed
-        for sources in document.get("tool", {}).get("uv", {}).get("sources", {}).values():
-            for spec in sources if isinstance(sources, list) else [sources]:
-                if not isinstance(spec, dict) or "path" not in spec:
-                    continue
-                relative = Path(spec["path"])
-                if relative.is_absolute():
-                    continue
-                resolved = (plugin_dir / relative).resolve()
-                if resolved.is_relative_to(plugin_dir.resolve()):
-                    continue  # The referenced tree was copied with this member.
-                spec["path"] = (identity / relative).resolve().as_posix()
+        for spec in uv_path_specs(document):
+            external = external_source(spec, plugin_dir, identity)
+            if external is not None:  # None: the referenced tree was copied with this member.
+                spec["path"] = external.as_posix()
                 changed = True
         project = document.get("project")
         # uv rejects any [project] table whose version is neither set nor dynamic, at
@@ -741,10 +735,12 @@ def lock_and_sync(
     else:
         if not (replay / "pyproject.toml").is_file() or not (replay / "uv.lock").is_file():
             raise InstallError("venv", f"recorded workspace is missing: {replay}")
+        from pm.workspace_members import clone_file
+
         # Sibling generations keep external relative paths at the same depth;
         # snapshotted members and their exact lock travel with the workspace.
         # Use the snapshot's exclusions: build/ may hold an in-tree backend.
-        shutil.copytree(replay, root, symlinks=True, ignore=_member_ignored)
+        shutil.copytree(replay, root, symlinks=True, ignore=_member_ignored, copy_function=clone_file)
         # A generation recorded before the cutoff left the user's machine still carries it.
         manifest = root / "pyproject.toml"
         manifest.write_text(_without_release_age(manifest.read_text(encoding="utf-8-sig")), encoding="utf-8")

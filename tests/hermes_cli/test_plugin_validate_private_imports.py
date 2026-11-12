@@ -188,6 +188,21 @@ def test_plugin_guide_file_safety_and_yaml_example_validates_clean(tmp_path):
     assert _private_warnings(validate_plugin_dir(whole)), "a whole-module import of file_safety must still warn"
 
 
+def test_plugin_guide_pricing_lookup_example_validates_clean(tmp_path):
+    """The price lookup the guide documents is public: a plugin copying the guide's example gets no
+    private-import warning, while another name from the same module still warns."""
+    import re
+
+    guide = Path(__file__).resolve().parents[2] / "website/docs/developer-guide/plugins/index.md"
+    [block] = [b for b in re.findall(r"```python\n(.*?)```", guide.read_text(encoding="utf-8"), re.DOTALL)
+               if "get_pricing_entry" in b]
+    clean = _plugin(tmp_path / "guide", {"example.py": block})
+    assert _private_warnings(validate_plugin_dir(clean)) == []
+
+    other = _plugin(tmp_path / "other", {"example.py": "from agent.usage_pricing import resolve_billing_route\n"})
+    assert _private_warnings(validate_plugin_dir(other)), "an unpublished name from usage_pricing must still warn"
+
+
 def test_private_method_calls_on_core_handles_warn_but_own_helpers_do_not(tmp_path):
     """opencode-sync calls SessionDB / GatewayRunner private methods on the objects it is handed;
     no import names them, so only the attribute pass can see it. The plugin's own ``_helper`` and

@@ -127,3 +127,5 @@ with a name allows that one name only.
 | `agent.file_safety` | `get_write_denied_error` | plugins/index.md § Check file paths and read YAML with Hermes's own helpers |
 | `hermes_yaml` | `safe_load` | plugins/index.md § Check file paths and read YAML with Hermes's own helpers |
 | `hermes_yaml` | `safe_dump` | plugins/index.md § Check file paths and read YAML with Hermes's own helpers |
+| `agent.usage_pricing` | `get_pricing_entry` | plugins/index.md § Look up a model's prices |
+| `agent.usage_pricing` | `PricingEntry` | plugins/index.md § Look up a model's prices |

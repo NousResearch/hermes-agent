@@ -127,11 +127,14 @@ def _link_chain(start: Path) -> Optional[list[Path]]:
     *start* is listed with its parent canonicalized, each later hop raw and canonicalized: ``d/srv.json``
     with ``d -> mcp-tokens`` only names the credential dir once ``d`` is resolved."""
     hops, current = [Path(os.path.realpath(start.parent), start.name)], start
-    for _ in range(_LINK_CHAIN_MAX_HOPS):
+    for hop in range(_LINK_CHAIN_MAX_HOPS + 1):  # the extra readlink tells a 40-link chain from a longer one
         try:
-            current = Path(os.path.dirname(current), os.readlink(current))
+            link = os.readlink(current)
         except OSError:
             return hops
+        if hop == _LINK_CHAIN_MAX_HOPS:
+            return None
+        current = Path(os.path.dirname(current), link)
         hops += (current, Path(os.path.realpath(current.parent), current.name))
     return None
 

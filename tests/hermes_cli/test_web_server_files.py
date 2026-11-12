@@ -1086,3 +1086,19 @@ def test_managed_writes_refuse_a_link_chain_past_the_hop_bound(forced_files_clie
 
     assert _refused_writes(client, previous) == (403, 403)
     assert store.read_text() == "safe\n"
+
+
+@pytest.mark.require_symlinks
+def test_managed_writes_allow_a_plain_chain_of_exactly_the_hop_bound(forced_files_client):
+    """A chain of exactly 40 links (the kernel's limit) is fully walked, so a plain target stays writable."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    store = root / "plain-store"
+    store.write_text("safe\n")
+    previous = store
+    for i in range(40):
+        link = root / f"hop{i}.txt"
+        link.symlink_to(previous.name)
+        previous = link
+
+    assert _refused_writes(client, previous) == (200, 200)

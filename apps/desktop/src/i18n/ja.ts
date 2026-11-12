@@ -2534,6 +2534,7 @@ export const jaOverrides = {
     running: '実行中',
     stop: '停止',
     dismiss: '閉じる',
+    stopped: '停止済み',
     exit: code => `終了コード ${code}`,
     control: {
       goalActiveTurns: (turn, maxTurns) => `ターン ${turn}/${maxTurns}`,

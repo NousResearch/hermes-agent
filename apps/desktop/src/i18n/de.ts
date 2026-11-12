@@ -585,6 +585,8 @@ export const deOverrides = {
       'nav.artifacts': 'Artefakte öffnen',
       'nav.cron': 'Zeitpläne öffnen',
       'nav.agents': 'Agenten öffnen',
+      'nav.back': 'Zurück',
+      'nav.forward': 'Vorwärts',
       'session.new': 'Neue Session',
       'session.newTab': 'Neuer Session-Tab',
       'session.newWindow': 'Neues Fenster',
@@ -668,6 +670,7 @@ export const deOverrides = {
       'profile.prev': 'Vorheriger Agent',
       'profile.toggleAll': 'Ansicht aller Agenten umschalten',
       'profile.create': 'Agent erstellen',
+      'agents.new': 'Neuer Agent (Seite „Agenten“)',
       'composer.send': 'Nachricht senden',
       'composer.newline': 'Neue Zeile einfügen',
       'composer.steer': 'Laufenden Turn steuern',
@@ -4590,7 +4593,13 @@ export const deOverrides = {
       connection: label => `Verbindung: ${label}`,
       recentActivity: 'Letzte Aktivität',
       viewAllLogs: 'Alle Logs ansehen →',
-      messagingPlatforms: 'Messaging-Plattformen'
+      messagingPlatforms: 'Messaging-Plattformen',
+      machineStatus: (machine, status) => `Status von ${machine}: ${status}`,
+      checkAgain: 'Erneut prüfen',
+      switchToMachine: 'Zu dieser Maschine wechseln',
+      machineSettings: 'Gateways & Maschinen',
+      restartTitle: 'Gateway neu starten?',
+      restartBody: 'Laufende Antworten auf dieser Maschine werden abgebrochen. Sie ist in wenigen Sekunden zurück und verbindet sich selbst neu.'
     },
     approvalMode: {
       title: 'Genehmigungsmodus',

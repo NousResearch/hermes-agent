@@ -1,0 +1,32 @@
+/* Pixel glyphs render only under the portal shell; the gate keeps that explicit. */
+
+/* A codicon's pixel twin is sized like the font glyph it replaces — by font-size — so the
+   `[&_svg]:size-*` utilities that buttons apply to Tabler SVGs do not shrink it. */
+:root[data-shell='portal'] svg.codicon[data-icon-set='pixel'] {
+  width: 1em;
+  height: 1em;
+}
+
+/* Menu rows draw their glyph at 16px (Figma menus: "Icon 16px op .6"); the rows' shared
+   `size-3.5` SVG utility is the classic 14px Tabler scale, which leaves a pixel glyph's 20-unit
+   ink at under 12px. */
+:root[data-shell='portal']
+  :is(
+    [data-slot='dropdown-menu-item'],
+    [data-slot='dropdown-menu-checkbox-item'],
+    [data-slot='dropdown-menu-radio-item'],
+    [data-slot='dropdown-menu-sub-trigger'],
+    [data-slot='context-menu-item'],
+    [data-slot='context-menu-sub-trigger'],
+    [data-slot='command-item']
+  )
+  > svg[data-icon-set='pixel'] {
+  width: 1rem;
+  height: 1rem;
+}
+
+/* One place for RTL: glyphs that point along the reading axis mirror. The individual `scale`
+   property composes with any `transform` an owner already sets (disclosure rotations). */
+:root[data-shell='portal'][dir='rtl'] [data-icon-set='pixel'][data-rtl-mirror] {
+  scale: -1 1;
+}

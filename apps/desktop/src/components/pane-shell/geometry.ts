@@ -14,6 +14,7 @@
 import { type RefObject, useLayoutEffect, useState, useSyncExternalStore } from 'react'
 
 import { $layoutTree } from '@/components/pane-shell/tree/store'
+import { $paneStates } from '@/store/panes'
 import { $connection } from '@/store/session'
 
 // ---------------------------------------------------------------------------
@@ -183,6 +184,9 @@ export function endSashDrag() {
 
 const sashDragging = () => sashDragDepth > 0
 
+/** The chat sidebar's pane (contrib/controller.tsx `sessionsPane`). */
+const CHAT_SIDEBAR_PANE = 'sessions'
+
 /**
  * Publish the workspace zone's viewport edges as root CSS vars:
  *   --workspace-left  : px from the viewport's left to the main zone
@@ -243,22 +247,51 @@ export function publishWorkspaceGeometry(): () => void {
     }
   }
 
+  // The chat sidebar's width, as --portal-sidebar-width: the redesign's page panels (Agents,
+  // Schedules, Settings) take exactly this width, so the panel edge, its divider and the stage's
+  // content edge never move between destinations. Unset (the CSS default) until the user sizes the
+  // sidebar; kept while it is collapsed or off screen, so the panels keep the width it last had.
+  let lastSidebar: number | undefined
+
+  const publishSidebarWidth = () => {
+    const width = $paneStates.get()[CHAT_SIDEBAR_PANE]?.widthOverride
+
+    if (sashDragging() || width === lastSidebar) {
+      return
+    }
+
+    lastSidebar = width
+
+    if (typeof width === 'number') {
+      root.style.setProperty('--portal-sidebar-width', `${width}px`)
+    } else {
+      root.style.removeProperty('--portal-sidebar-width')
+    }
+  }
+
   // Tree mutations move zones without resizing them (⌘\ flip) — re-measure a
   // frame later, after the DOM committed. RO covers width changes (sash drags,
   // side collapses); window resize covers the rest.
   const unsubTree = $layoutTree.listen(() => requestAnimationFrame(measure))
+  const unsubPanes = $paneStates.subscribe(publishSidebarWidth)
   // Drag released → publish the final geometry the deferral above skipped.
-  onSashDragEnd = () => requestAnimationFrame(measure)
+  onSashDragEnd = () =>
+    requestAnimationFrame(() => {
+      measure()
+      publishSidebarWidth()
+    })
   window.addEventListener('resize', measure)
   measure()
 
   return () => {
     unsubTree()
+    unsubPanes()
     onSashDragEnd = null
     window.removeEventListener('resize', measure)
     ro.disconnect()
     root.style.removeProperty('--workspace-left')
     root.style.removeProperty('--workspace-right')
+    root.style.removeProperty('--portal-sidebar-width')
   }
 }
 

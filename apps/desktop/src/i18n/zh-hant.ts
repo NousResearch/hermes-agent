@@ -16,6 +16,7 @@ import { zhHantSettings } from './zh-hant_settings'
 
 export const zhHantOverrides = {
   simplifiedAgents: simplifiedAgentsCopy['zh-hant'],
+  keybinds: { actions: { 'agents.new': '新增智慧體（智慧體頁面）', 'nav.back': '上一頁', 'nav.forward': '下一頁' } },
   gatewayGroupOpen: {
     opening: '正在開啟群組聊天…',
     lookupFailed: '無法在機器上查找此群組，請重試。',

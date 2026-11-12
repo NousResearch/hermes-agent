@@ -74,7 +74,8 @@ export function redesignSettingsNavigation(
       ...advanced,
       active: advanced.active || children.some(child => child.active),
       children,
-      gapBefore: true
+      // On the column's 40px rhythm: Figma's items stack with no gap (856:2764).
+      gapBefore: false
     })
   } else {
     result.push(...remaining.values())

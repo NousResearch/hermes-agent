@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { type ComponentProps, useCallback, useEffect } from 'react'
+import { type ComponentProps, useCallback, useEffect, useRef, useState } from 'react'
 
 import { TreeSkeleton } from '@/components/chat/skeletons'
 import { ErrorBoundary } from '@/components/error-boundary'
@@ -7,9 +7,11 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { useDelayedTrue } from '@/hooks/use-delayed-true'
+import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
 import { displayPath } from '@/lib/display-path'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
+import { middleEllipsis } from '@/lib/middle-ellipsis'
 import { cn } from '@/lib/utils'
 import { refreshRepoStatus, registerRepoStatusCwd } from '@/store/coding-status'
 import { $panesFlipped } from '@/store/layout'
@@ -254,19 +256,43 @@ function FilesystemTab({
   )
 }
 
-/** The pane's full path under its title, home collapsed to `~`. A long path gives way in the middle
- *  so its leaf (the folder you are in) stays readable. */
+/** The pane's full path under its title, home collapsed to `~`: one line that gives way in the
+ *  middle, so the leaf (the folder you are in) stays readable and nothing gaps between the ends. */
 function PanePath({ path }: { path: string }) {
   const shown = displayPath(path)
-  const cut = shown.lastIndexOf('/') + 1
+  const ref = useRef<HTMLSpanElement>(null)
+  const [text, setText] = useState(shown)
+
+  const fit = useCallback(
+    (entries: readonly ResizeObserverEntry[]) => {
+      const element = ref.current
+      const width = entries[0]?.contentRect.width ?? element?.clientWidth ?? 0
+
+      if (!element || !width) {
+        return
+      }
+
+      const style = getComputedStyle(element)
+      const context = textMeasure()
+      context.font = style.font
+      context.letterSpacing = style.letterSpacing
+      setText(middleEllipsis(shown, width, value => context.measureText(value).width))
+    },
+    [shown]
+  )
+
+  useResizeObserver(fit, ref)
 
   return (
-    <span className="flex min-w-0" data-slot="pane-subtitle" title={path}>
-      <span className="min-w-0 truncate">{shown.slice(0, cut)}</span>
-      <span className="shrink-0">{shown.slice(cut)}</span>
+    <span className="block min-w-0 overflow-hidden whitespace-nowrap" data-slot="pane-subtitle" ref={ref} title={path}>
+      {text}
     </span>
   )
 }
+
+let measureContext: CanvasRenderingContext2D | null = null
+
+const textMeasure = () => (measureContext ??= document.createElement('canvas').getContext('2d')!)
 
 export function RightSidebarSectionHeader({ children, className, ...props }: ComponentProps<'div'>) {
   return (

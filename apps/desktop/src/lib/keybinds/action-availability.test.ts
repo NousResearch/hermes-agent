@@ -23,9 +23,14 @@ describe('shell-dependent shortcuts', () => {
   it('updates a live list of offered actions when the shell flips', () => {
     const seen: boolean[] = []
 
-    const stop = $offeredKeybindActions.subscribe(actions =>
-      seen.push(actions.some(action => action.id === 'view.toggleStatusbar'))
-    )
+    // Other shell-dependent rows (Back/Forward) re-emit the list on the same flip; count changes only.
+    const stop = $offeredKeybindActions.subscribe(actions => {
+      const listedNow = actions.some(action => action.id === 'view.toggleStatusbar')
+
+      if (seen.at(-1) !== listedNow) {
+        seen.push(listedNow)
+      }
+    })
 
     $shellChoice.set(false)
     $shellChoice.set(null)

@@ -585,6 +585,8 @@ export const frOverrides = {
       'nav.artifacts': 'Ouvrir les artefacts',
       'nav.cron': 'Ouvrir les planifications',
       'nav.agents': 'Ouvrir les agents',
+      'nav.back': 'Retour',
+      'nav.forward': 'Suivant',
       'session.new': 'Nouvelle session',
       'session.newTab': 'Nouvel onglet de session',
       'session.newWindow': 'Nouvelle fenêtre',
@@ -668,6 +670,7 @@ export const frOverrides = {
       'profile.prev': 'Agent précédent',
       'profile.toggleAll': 'Basculer la vue tous agents',
       'profile.create': 'Créer un agent',
+      'agents.new': 'Nouvel agent (page Agents)',
       'composer.send': 'Envoyer le message',
       'composer.newline': 'Insérer un saut de ligne',
       'composer.steer': 'Diriger le tour en cours',
@@ -4598,7 +4601,13 @@ export const frOverrides = {
       connection: label => `Connexion : ${label}`,
       recentActivity: 'Activité récente',
       viewAllLogs: 'Voir tous les journaux →',
-      messagingPlatforms: 'Plateformes de messagerie'
+      messagingPlatforms: 'Plateformes de messagerie',
+      machineStatus: (machine, status) => `État de ${machine} : ${status}`,
+      checkAgain: 'Vérifier à nouveau',
+      switchToMachine: 'Passer à cette machine',
+      machineSettings: 'Passerelles et machines',
+      restartTitle: 'Redémarrer la passerelle ?',
+      restartBody: 'Les réponses en cours sur cette machine s’arrêtent. Elle revient en quelques secondes et se reconnecte seule.'
     },
     approvalMode: {
       title: "Mode d'approbation",

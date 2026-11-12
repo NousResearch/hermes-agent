@@ -273,7 +273,7 @@ export interface PanelMenuItem {
 
 // Bridge PanelMenuItem[] → the shared actions-menu render fn, so a panel row's
 // kebab and its right-click menu render from one source.
-function renderPanelMenuItems(items: PanelMenuItem[]) {
+export function renderPanelMenuItems(items: PanelMenuItem[]) {
   return (kit: MenuKit) =>
     items.map(item =>
       renderActionItem(kit, {
@@ -457,6 +457,7 @@ export function PanelAction({
   icon,
   onClick,
   primary,
+  size = 'sm',
   spinning
 }: {
   children: ReactNode
@@ -464,6 +465,8 @@ export function PanelAction({
   icon: string
   onClick: () => void
   primary?: boolean
+  /** `lg` is the page heading's 36px control (a redesign stage heading). */
+  size?: 'lg' | 'sm'
   spinning?: boolean
 }) {
   return (
@@ -475,7 +478,7 @@ export function PanelAction({
       )}
       disabled={disabled}
       onClick={onClick}
-      size="sm"
+      size={size}
       variant={primary ? 'default' : 'ghost'}
     >
       <Codicon name={icon} size="0.875rem" spinning={spinning} />

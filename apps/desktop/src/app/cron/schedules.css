@@ -1,0 +1,46 @@
+/* Schedules (redesign only: these classes render nowhere else). The page takes the whole stage and
+   lays the selected schedule in the 640px reading column at Figma's left inset: from the list
+   panel's edge while the panel shows (856:2827), from the stage's edge when it is folded away (919),
+   so the H1 lands where a Settings page's does. */
+[data-page-surface] .management-panel.cron-page {
+  max-width: none;
+  padding-inline: 0;
+}
+
+[data-page-surface] .management-panel.cron-page:has(> .page-sidebar-panel) {
+  position: relative;
+  padding-inline-start: var(--page-nav-width);
+}
+
+.cron-stage {
+  --cron-stage-inset: var(--page-stage-inset);
+  display: flex;
+  width: 100%;
+  max-width: calc(var(--cron-stage-inset) + var(--page-form-max-width) + var(--page-panel-inset));
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  padding-inline: var(--cron-stage-inset) var(--page-panel-inset);
+}
+
+.page-sidebar-panel ~ .cron-stage {
+  --cron-stage-inset: var(--page-panel-inset);
+}
+
+.cron-stage .panel-detail > div {
+  padding-inline: 0;
+}
+
+/* State pill and cadence on the description line under the H1. */
+.cron-stage-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.cron-stage-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.5rem;
+}

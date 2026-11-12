@@ -1,16 +1,15 @@
 import { Suspense, useRef, useState } from 'react'
 import { useLocation } from 'react-router'
 
-import { resolveOwnerNow } from '@/api/client'
 import { PageLoader } from '@/components/page-loader'
 import { lazyView } from '@/lib/lazy-view'
-import { $activeConnectionId } from '@/store/connections'
 import { usePortalShell } from '@/store/shell-variant'
 
 import { SettingsView as ClassicSettingsView } from '../settings'
 import { type ConfigSettingsDraft, ConfigSettingsDraftContext } from '../settings/config-draft'
 import type { SettingsPageProps } from '../settings/types'
 
+import { agentRouteOwner } from './overview-queries'
 import { AgentInstructionsDraftContext, EMPTY_AGENT_INSTRUCTIONS_DRAFT } from './settings-general'
 
 const AgentSettingsView = lazyView(async () => (await import('./index')).AgentSettingsView)
@@ -49,10 +48,7 @@ interface AgentSettingsRouteProps extends SettingsPageProps {
 
 function AgentSettingsRoute({ connectionId, profile, ...props }: AgentSettingsRouteProps) {
   // Pin the ambient owner on entry, not again when a gateway or presentation changes.
-  const [owner] = useState(() => ({
-    connectionId: resolveOwnerNow({ connectionId, profile }).connectionId ?? $activeConnectionId.get() ?? undefined,
-    profile
-  }))
+  const [owner] = useState(() => agentRouteOwner(connectionId, profile))
 
   const configDraft = useRef<ConfigSettingsDraft | null>(null)
   const instructionsDraft = useState(EMPTY_AGENT_INSTRUCTIONS_DRAFT)

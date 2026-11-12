@@ -25,13 +25,23 @@
    stage-coloured so the transcript never shows through beneath the edge. */
 :root[data-shell='portal'] [data-slot='composer-dock'][data-redesigned-composer]:not([data-popped-out]) {
   --portal-composer-dock-floor: 1.875rem;
+  --portal-composer-dock-fade: 1rem;
   width: calc(var(--portal-conversation-column) + 10px);
+  padding-top: var(--portal-composer-dock-fade);
   padding-bottom: var(--portal-composer-dock-floor);
-  background: linear-gradient(
-    to top,
-    var(--ui-chat-surface-background) var(--portal-composer-dock-floor),
-    transparent var(--portal-composer-dock-floor)
-  );
+  /* Stage-coloured under the card's floor, and a short fade above its top edge, so a line scrolling
+     under the composer dissolves instead of being cut mid-glyph (short windows show it most). */
+  background:
+    linear-gradient(
+      to top,
+      var(--ui-chat-surface-background) var(--portal-composer-dock-floor),
+      transparent var(--portal-composer-dock-floor)
+    ),
+    linear-gradient(to bottom, transparent, var(--ui-chat-surface-background) var(--portal-composer-dock-fade));
+  background-repeat: no-repeat;
+  background-size:
+    100% 100%,
+    100% var(--portal-composer-dock-fade);
 }
 
 :root[data-shell='portal']
@@ -49,7 +59,7 @@
     top: calc(50% - 0.9375rem);
     bottom: auto;
     translate: -50% -50%;
-    padding-bottom: 0;
+    padding-block: 0;
     background: none;
   }
 }
@@ -95,7 +105,14 @@
     );
   mask-composite: intersect;
   pointer-events: none;
-  transition: opacity 0.6s ease;
+}
+
+/* Landing → conversation: the photo settles to its trace on the slow step, never delaying the
+   transcript (it is decoration under it). */
+@media (prefers-reduced-motion: no-preference) {
+  :root[data-shell='portal'] .chat-stage-art {
+    transition: opacity var(--portal-motion-slow) var(--portal-ease);
+  }
 }
 
 :root.dark[data-shell='portal'] .chat-stage-art[data-landing] {

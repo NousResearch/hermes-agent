@@ -34,9 +34,11 @@ it('pins every read and routine write to the named gateway and profile', async (
 it('loads more history without changing its owner or including archived sessions', async () => {
   const request = vi.spyOn(client, 'hermesApi').mockResolvedValue({})
   await getAgentRecentSessions({ connectionId: 'beta', profile: 'research' }, 50)
-  expect(request).toHaveBeenCalledWith(expect.objectContaining({
-    connectionId: 'beta',
-    profile: 'research',
-    path: '/api/profiles/sessions?profile=research&limit=50&offset=0&archived=exclude&order=recent'
-  }))
+  expect(request).toHaveBeenCalledWith(
+    expect.objectContaining({
+      connectionId: 'beta',
+      profile: 'research',
+      path: '/api/profiles/sessions?profile=research&limit=50&offset=0&archived=exclude&order=recent'
+    })
+  )
 })

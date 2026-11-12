@@ -75,20 +75,26 @@ export interface HostedConnectorsView {
   titles: Record<string, string>
 }
 
-export function useHostedConnectors(scope: ProfileScope): HostedConnectorsView {
+/** The hosted connector list read, shared by the Connectors page and every count of it, so a count
+ *  never fetches what the page already has (and paints from the persisted seed when there is one). */
+export function useConnectorsListQuery(scope: ProfileScope) {
   const listSeed = useMemo(() => seedOptions<Awaited<ReturnType<typeof listConnectors>>>(scope, 'list'), [scope])
 
-  const catalogSeed = useMemo(
-    () => seedOptions<Awaited<ReturnType<typeof connectorCatalog>>>(scope, 'catalog'),
-    [scope]
-  )
-
-  const list = useQuery({
+  return useQuery({
     ...read('list'),
     ...listSeed,
     queryFn: () => listConnectors(scope).catch(reportVersionSkew),
     queryKey: connectorsListQueryKey(scope)
   })
+}
+
+export function useHostedConnectors(scope: ProfileScope): HostedConnectorsView {
+  const catalogSeed = useMemo(
+    () => seedOptions<Awaited<ReturnType<typeof connectorCatalog>>>(scope, 'catalog'),
+    [scope]
+  )
+
+  const list = useConnectorsListQuery(scope)
 
   const catalog = useQuery({
     ...read('catalog'),

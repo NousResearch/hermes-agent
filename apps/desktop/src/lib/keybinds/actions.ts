@@ -37,6 +37,14 @@ interface BrowserChords {
   other: string
 }
 
+function historyAction(id: string, mac: string, other: string): KeybindActionMeta {
+  return {
+    id,
+    category: 'navigation',
+    defaults: hostHas('browserShortcutDefaults') ? [] : [isMacPlatform() ? mac : other]
+  }
+}
+
 // The host and platform are fixed for the page's life; only the window kind
 // moves, so a Windows/Linux browser row reads it on every access.
 function hostAction(
@@ -171,6 +179,13 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   { id: 'profile.toggleAll', category: 'profiles', defaults: ['mod+shift+0'] },
   { id: 'profile.create', category: 'profiles', defaults: [] },
 
+  // The Agents page's "New agent" takes the new-chat chord there (its row draws the keycaps) and
+  // passes it through to `session.new` everywhere else, so it must stay listed before it.
+  // Assigned, not spread: a browser row's `defaults` is a getter that must keep following the window.
+  Object.assign(hostAction('agents.new', 'profiles', ['mod+n'], { mac: 'mod+ctrl+n', other: 'alt+n' }), {
+    passthrough: true as const
+  }),
+
   // ── Session ──────────────────────────────────────────────────────────────
   // `shift+n` was dropped from the defaults (#76185): a bare shifted letter
   // hijacked normal typing — pressing uppercase N outside an input (or via an
@@ -210,6 +225,10 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   { id: 'nav.artifacts', category: 'navigation', defaults: [] },
   { id: 'nav.cron', category: 'navigation', defaults: [] },
   { id: 'nav.agents', category: 'navigation', defaults: [] },
+  // The band's Back/Forward. A browser tab already walks the same (hash) history on its own
+  // Back/Forward chords and mouse buttons, so only an app window binds them.
+  historyAction('nav.back', 'mod+[', 'alt+left'),
+  historyAction('nav.forward', 'mod+]', 'alt+right'),
 
   // ── View (layout + appearance + the shortcuts panel itself) ───────────────
   { id: 'view.toggleSidebar', category: 'view', defaults: ['mod+b'] },

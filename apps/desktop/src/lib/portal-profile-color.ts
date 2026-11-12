@@ -21,6 +21,12 @@ const PRIMARIES: readonly { at: number; swatch: PortalAgentSwatch }[] = [
 /** The default agent, and any colour without a readable hue: the brand primary. */
 const BRAND = PRIMARIES[3]!.swatch
 
+/** The agent colour picker's swatches in Figma's order (895:9675): brand first, then by hue. */
+export const PORTAL_AGENT_HUES: readonly string[] = [
+  BRAND,
+  ...PRIMARIES.filter(p => p.swatch !== BRAND).map(p => p.swatch)
+].map(swatch => swatch.hue)
+
 function hexHue(hex: string): null | number {
   const value = hex.length === 4 ? hex.replace(/(\w)/g, '$1$1').slice(1) : hex.slice(1)
 

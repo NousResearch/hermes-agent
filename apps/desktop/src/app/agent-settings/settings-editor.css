@@ -1,10 +1,11 @@
 .agent-settings-editor {
   display: grid;
-  grid-template-columns: 184px minmax(0, 584px);
+  /* One column: the sections menu lives in the page sidebar panel (1036:7189) and the page takes
+     the stage's full width (x 360→1200 in the frame). */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   gap: 32px;
   width: 100%;
-  max-width: 800px;
   margin-inline: 0;
   height: 100%;
   min-height: 0;
@@ -76,7 +77,7 @@
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
-  padding-bottom: 32px;
+  padding-bottom: var(--portal-page-end-space);
   gap: 32px;
 }
 .agent-settings-body > header h2 {
@@ -262,8 +263,12 @@
   }
 }
 
+/* The panel is folded away (⌘B): the menu returns to the stage, beside the page. */
+.agent-settings-editor[data-inline-navigation] {
+  grid-template-columns: 184px minmax(0, 1fr);
+}
 @container agent-editor (max-width: 620px) {
-  .agent-settings-editor {
+  .agent-settings-editor[data-inline-navigation] {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
     gap: 24px;
@@ -295,6 +300,43 @@
   outline: 2px solid var(--portal-brand-ink);
   outline-offset: 3px;
 }
+
+/* The redesign's picker (895:9675): 16px dots on 32px centres; the current one inside a 24px
+   1.5px near-white ring. The dot is the button's own colour, so the ring can share the box. */
+:root[data-shell='portal'] .agent-color-swatches[data-variant='portal'] {
+  gap: 8px;
+}
+
+:root[data-shell='portal'] .agent-color-swatches[data-variant='portal'] > button {
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: radial-gradient(circle, currentColor 0 0.5rem, transparent calc(0.5rem + 0.5px));
+}
+
+:root[data-shell='portal'] .agent-color-swatches[data-variant='portal'] > button[aria-pressed='true'] {
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--ui-base) 98%, transparent);
+}
+
+/* The default agent always wears the brand colour: the other primaries still show at full
+   strength (they say what an agent can be), they just don't take a click. */
+:root[data-shell='portal'] .agent-color-swatches[data-variant='portal'] > button:disabled {
+  cursor: not-allowed;
+}
+
+/* Profile folder (895:9683): the home-relative path, one line, beside Copy path. */
+.agent-settings-path {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+/* A set-only switch that is on: it looks on, and only its cursor says it does not toggle back. */
+.agent-settings-locked-switch {
+  cursor: default;
+}
 /* Tools › Advanced (895:23456): key rows and the toolset config fields sit directly on the
    disclosure, under their group labels, not on a second card inside it. */
 .agent-settings-body .global-settings-disclosure-body .credential-keys-card,
@@ -302,4 +344,84 @@
   padding: 0;
   border: 0;
   background: none;
+}
+
+/* ── The Settings tab's sidebar panel (1036:7189) ──
+   "← Back to agents" where the panel title sits on the other tabs, the agent's own row, then the
+   settings menu: 10px group labels, 32px rows, 18px between groups. */
+.page-sidebar-panel.agent-settings-panel {
+  gap: 0;
+  padding-top: 1rem;
+}
+
+/* A text row, not the panel's 40px start row. */
+.page-sidebar-panel > .agent-settings-panel-back {
+  min-height: 0;
+  padding: 0;
+}
+
+.agent-settings-panel-back {
+  display: flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 0.25rem;
+  color: var(--ui-text-primary);
+  font-size: 0.8125rem;
+  letter-spacing: -0.01em;
+  line-height: 1.25rem;
+}
+
+.agent-settings-panel-back:hover {
+  color: var(--ui-text-secondary);
+}
+
+.agent-settings-panel-back:focus-visible {
+  border-radius: 2px;
+  outline: 2px solid var(--portal-brand-ink);
+  outline-offset: 2px;
+}
+
+.agent-settings-panel-agent {
+  display: flex;
+  min-height: 2.5rem;
+  align-items: center;
+  gap: 0.625rem;
+  margin: 0.9375rem 0 1.25rem;
+  padding-inline: 0.625rem;
+  color: var(--ui-text-primary);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+.agent-settings-panel .agent-settings-navigation {
+  gap: 18px;
+  padding-bottom: 0;
+  overflow: visible;
+}
+
+/* Name (1036:7189): the name in a 220×36 field, r3, field fill and stroke; it opens Rename. */
+.agent-settings-name-field {
+  overflow: hidden;
+  width: 13.75rem;
+  max-width: 100%;
+  height: 2.25rem;
+  padding-inline: 0.75rem;
+  border: 1px solid var(--portal-field-stroke);
+  border-radius: 3px;
+  background: var(--portal-field-fill);
+  color: var(--ui-text-primary);
+  font-size: 0.875rem;
+  text-align: start;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-settings-name-field:hover {
+  border-color: color-mix(in srgb, var(--ui-base) 20%, transparent);
+}
+
+.agent-settings-name-field:focus-visible {
+  outline: 2px solid var(--portal-brand-ink);
+  outline-offset: 1px;
 }

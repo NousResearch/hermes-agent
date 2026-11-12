@@ -7,6 +7,7 @@ import { setTerminalTakeover } from '@/app/right-sidebar/store'
 import { toggleTerminalPane } from '@/app/right-sidebar/terminal/reveal-focus'
 import { closeActiveTerminal, createTerminal, cycleTerminal } from '@/app/right-sidebar/terminal/terminals'
 import { appViewForPath, isOverlayView } from '@/app/routes'
+import { historyBack, historyForward } from '@/app/shell/history-position'
 import {
   activateTreeTabSlot,
   cycleTreeTabInFocusedZone,
@@ -52,6 +53,7 @@ import {
   toggleRightSide,
   toggleSidebarOpen
 } from '@/store/layout'
+import { requestNewAgent } from '@/store/new-agent-request'
 import { notifyError } from '@/store/notifications'
 import { toggleBrowserTab } from '@/store/preview'
 import {
@@ -326,6 +328,8 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'nav.artifacts': () => navigateToWorkspacePage(navigate, ARTIFACTS_ROUTE),
     'nav.cron': () => navigate(CRON_ROUTE),
     'nav.agents': () => navigate(AGENTS_ROUTE),
+    'nav.back': historyBack,
+    'nav.forward': historyForward,
 
     'session.new': () => {
       if (requestSimplifiedNewSession()) { return }
@@ -416,7 +420,8 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'profile.next': () => cycleProfile(1),
     'profile.prev': () => cycleProfile(-1),
     'profile.toggleAll': toggleShowAllProfiles,
-    'profile.create': requestProfileCreate
+    'profile.create': requestProfileCreate,
+    'agents.new': requestNewAgent
   }
 
   // Plugins run built-in actions by id (`ctx.runAction`) through this same

@@ -35,10 +35,10 @@ describe('$titlebarAppActionsSide', () => {
   })
 })
 
-it('reserves only the sidebar toggle in Portal Simple, and keeps developer tools in Advanced', () => {
+it('reserves Back, Forward and the sidebar toggle in Portal Simple, and keeps developer tools in Advanced', () => {
   for (const side of ['left', 'right'] as const) {
-    expect(titlebarAppActionsClusterCounts(side, 0, 0, 'simple', true)).toEqual({ left: 1, right: 0 })
+    expect(titlebarAppActionsClusterCounts(side, 0, 0, 'simple', true)).toEqual({ left: 3, right: 0 })
   }
 
-  expect(titlebarAppActionsClusterCounts('right', 0, 0, 'advanced', true)).toEqual({ left: 1, right: 4 })
+  expect(titlebarAppActionsClusterCounts('right', 0, 0, 'advanced', true)).toEqual({ left: 3, right: 4 })
 })

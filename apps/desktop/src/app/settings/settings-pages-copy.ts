@@ -39,6 +39,16 @@ export interface SettingsPagesCopy {
   providers: { addKey: string }
   messaging: { channels: string; channelsDesc: string; addChannel: string; manage: string; reconnect: string }
   vault: { credentials: string; credentialsDesc: string; managers: string; managersDesc: string }
+  /** Export / import / reset of the profile's config, which classic keeps as rail-footer icons. */
+  configuration: {
+    title: string
+    exportDesc: string
+    importDesc: string
+    resetDesc: string
+    export: string
+    import: string
+    reset: string
+  }
 }
 
 interface HostWording {
@@ -124,6 +134,15 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       credentialsDesc: 'Logins, cards and addresses, stored encrypted. The model never sees the password.',
       managers: 'Password managers',
       managersDesc: 'Unlock once per session to let the agent use them.'
+    },
+    configuration: {
+      title: 'Configuration',
+      exportDesc: "Download this profile's settings as a JSON file.",
+      importDesc: 'Replace settings with a previously exported JSON file.',
+      resetDesc: 'Return every setting to Hermes defaults. This cannot be undone.',
+      export: 'Export',
+      import: 'Import',
+      reset: 'Reset…'
     }
   },
   fr: {
@@ -202,6 +221,15 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       credentialsDesc: 'Identifiants, cartes et adresses, stockés chiffrés. Le modèle ne voit jamais le mot de passe.',
       managers: 'Gestionnaires de mots de passe',
       managersDesc: 'Déverrouillez-les une fois par session pour que l’agent puisse les utiliser.'
+    },
+    configuration: {
+      title: 'Configuration',
+      exportDesc: 'Télécharger les réglages de ce profil dans un fichier JSON.',
+      importDesc: 'Remplacer les réglages par un fichier JSON exporté.',
+      resetDesc: 'Rétablir tous les réglages par défaut de Hermes. Action irréversible.',
+      export: 'Exporter',
+      import: 'Importer',
+      reset: 'Réinitialiser…'
     }
   },
   de: {
@@ -276,6 +304,15 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       credentialsDesc: 'Logins, Karten und Adressen, verschlüsselt gespeichert. Das Modell sieht nie das Passwort.',
       managers: 'Passwortmanager',
       managersDesc: 'Einmal pro Sitzung entsperren, damit der Agent sie nutzen kann.'
+    },
+    configuration: {
+      title: 'Konfiguration',
+      exportDesc: 'Die Einstellungen dieses Profils als JSON-Datei herunterladen.',
+      importDesc: 'Einstellungen durch eine exportierte JSON-Datei ersetzen.',
+      resetDesc: 'Alle Einstellungen auf die Hermes-Standardwerte zurücksetzen. Nicht umkehrbar.',
+      export: 'Exportieren',
+      import: 'Importieren',
+      reset: 'Zurücksetzen…'
     }
   },
   es: {
@@ -350,6 +387,15 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       credentialsDesc: 'Inicios de sesión, tarjetas y direcciones, cifrados. El modelo nunca ve la contraseña.',
       managers: 'Gestores de contraseñas',
       managersDesc: 'Desbloquéalos una vez por sesión para que el agente pueda usarlos.'
+    },
+    configuration: {
+      title: 'Configuración',
+      exportDesc: 'Descarga los ajustes de este perfil como archivo JSON.',
+      importDesc: 'Sustituye los ajustes por un archivo JSON exportado.',
+      resetDesc: 'Restablece todos los ajustes a los valores de Hermes. No se puede deshacer.',
+      export: 'Exportar',
+      import: 'Importar',
+      reset: 'Restablecer…'
     }
   },
   ja: {
@@ -420,6 +466,15 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       credentialsDesc: 'ログイン、カード、住所を暗号化して保存します。モデルがパスワードを見ることはありません。',
       managers: 'パスワードマネージャー',
       managersDesc: 'セッションごとに一度ロックを解除すると、エージェントが利用できます。'
+    },
+    configuration: {
+      title: '構成',
+      exportDesc: 'このプロファイルの設定を JSON ファイルとしてダウンロードします。',
+      importDesc: 'エクスポートした JSON ファイルで設定を置き換えます。',
+      resetDesc: 'すべての設定を Hermes の既定値に戻します。元に戻せません。',
+      export: 'エクスポート',
+      import: 'インポート',
+      reset: 'リセット…'
     }
   },
   zh: {
@@ -489,6 +544,15 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       credentialsDesc: '登录信息、卡片和地址，加密存储。模型永远看不到密码。',
       managers: '密码管理器',
       managersDesc: '每个会话解锁一次，智能体即可使用。'
+    },
+    configuration: {
+      title: '配置',
+      exportDesc: '将此配置文件的设置下载为 JSON 文件。',
+      importDesc: '用之前导出的 JSON 文件替换设置。',
+      resetDesc: '将所有设置恢复为 Hermes 默认值。此操作无法撤销。',
+      export: '导出',
+      import: '导入',
+      reset: '重置…'
     }
   },
   'zh-hant': {
@@ -558,6 +622,15 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       credentialsDesc: '登入資訊、卡片和地址，加密儲存。模型永遠看不到密碼。',
       managers: '密碼管理工具',
       managersDesc: '每個工作階段解鎖一次，代理即可使用。'
+    },
+    configuration: {
+      title: '設定檔',
+      exportDesc: '將此設定檔的設定下載為 JSON 檔案。',
+      importDesc: '以先前匯出的 JSON 檔案取代設定。',
+      resetDesc: '將所有設定還原為 Hermes 預設值。此操作無法復原。',
+      export: '匯出',
+      import: '匯入',
+      reset: '重設…'
     }
   },
   ru: {
@@ -634,6 +707,15 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       credentialsDesc: 'Логины, карты и адреса хранятся зашифрованными. Модель никогда не видит пароль.',
       managers: 'Менеджеры паролей',
       managersDesc: 'Разблокируйте один раз за сеанс, чтобы агент мог ими пользоваться.'
+    },
+    configuration: {
+      title: 'Конфигурация',
+      exportDesc: 'Скачать настройки этого профиля в файле JSON.',
+      importDesc: 'Заменить настройки ранее экспортированным файлом JSON.',
+      resetDesc: 'Вернуть все настройки Hermes по умолчанию. Это нельзя отменить.',
+      export: 'Экспорт',
+      import: 'Импорт',
+      reset: 'Сбросить…'
     }
   },
   ar: {
@@ -707,6 +789,15 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       credentialsDesc: 'تسجيلات الدخول والبطاقات والعناوين مخزنة مشفرة. لا يرى النموذج كلمة المرور أبدًا.',
       managers: 'مديرو كلمات المرور',
       managersDesc: 'افتحها مرة واحدة لكل جلسة ليستخدمها الوكيل.'
+    },
+    configuration: {
+      title: 'الإعدادات',
+      exportDesc: 'نزّل إعدادات هذا الملف الشخصي كملف JSON.',
+      importDesc: 'استبدل الإعدادات بملف JSON صُدّر سابقًا.',
+      resetDesc: 'أعد كل الإعدادات إلى قيم Hermes الافتراضية. لا يمكن التراجع عن ذلك.',
+      export: 'تصدير',
+      import: 'استيراد',
+      reset: 'إعادة الضبط…'
     }
   }
 }

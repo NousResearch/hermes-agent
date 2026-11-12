@@ -1,6 +1,6 @@
 import './settings-editor.css'
 
-import { type ReactNode, useMemo, useRef } from 'react'
+import { type KeyboardEvent, type ReactNode, useLayoutEffect, useMemo, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
 import { Button } from '@/components/ui/button'
@@ -40,9 +40,12 @@ interface AgentSettingsEditorProps extends SettingsPageProps {
   onProfileRenamed: (name: string) => Promise<void>
   /** Counts from data the agent page already holds; absent ones stay blank. */
   counts?: AgentCapabilityCounts
+  /** The sections menu lives in the page's sidebar panel (1036:7189); when that panel is folded
+   *  away or the window is too narrow for it, the editor draws the menu above its page instead. */
+  inlineNavigation?: boolean
 }
 
-type AgentSettingsLabels = Record<
+export type AgentSettingsLabels = Record<
   AgentSettingsSection | 'agent' | 'behavior' | 'capabilities' | 'access' | 'runtime',
   string
 >
@@ -63,28 +66,13 @@ export function AgentSettingsEditor(props: AgentSettingsEditorProps) {
   )
 }
 
-function AgentSettingsEditorContent({
-  owner,
-  counts,
-  onClose,
-  onConfigSaved,
-  onMainModelChanged,
-  onProfileRenamed
-}: AgentSettingsEditorProps) {
+/** The section and group names the agent settings menu and page headings share. */
+export function useAgentSettingsLabels(): AgentSettingsLabels {
   const { t } = useI18n()
   const c = useAgentSettingsEditorCopy()
   const a = useAgentSettingsCopy()
-  const layout = useAgentSettingsLayoutCopy()
-  const location = useLocation()
-  const navigate = useNavigate()
-  const params = new URLSearchParams(location.search)
-  const section = resolveAgentSettingsSection(params)
-  const page = params.get('page') ?? undefined
-  const tab = params.get('tab')
-  const importInputRef = useRef<HTMLInputElement | null>(null)
-  const bodyRef = useRef<HTMLElement | null>(null)
 
-  const labels: AgentSettingsLabels = {
+  return {
     agent: t.sidebar.filter.profile,
     behavior: a.behavior,
     capabilities: a.capabilities,
@@ -109,14 +97,49 @@ function AgentSettingsEditorContent({
     limits: c.limits,
     'tools-advanced': a.tools
   }
+}
 
-  function open(next: AgentSettingsSection, preserveScroll = false) {
-    if (bodyRef.current && !preserveScroll) {
+/** Open a settings section in place (the URL is the selection, so deep links and Back work). */
+export function useOpenAgentSettingsSection() {
+  const location = useLocation()
+  const navigate = useNavigate()
+
+  return (next: AgentSettingsSection) =>
+    navigate({ pathname: location.pathname, search: agentSettingsSearch(location.search, next) }, { replace: true })
+}
+
+function AgentSettingsEditorContent({
+  owner,
+  counts,
+  inlineNavigation = false,
+  onClose,
+  onConfigSaved,
+  onMainModelChanged,
+  onProfileRenamed
+}: AgentSettingsEditorProps) {
+  const { t } = useI18n()
+  const layout = useAgentSettingsLayoutCopy()
+  const location = useLocation()
+  const navigate = useNavigate()
+  const params = new URLSearchParams(location.search)
+  const section = resolveAgentSettingsSection(params)
+  const page = params.get('page') ?? undefined
+  const tab = params.get('tab')
+  const importInputRef = useRef<HTMLInputElement | null>(null)
+  const bodyRef = useRef<HTMLElement | null>(null)
+
+  const labels = useAgentSettingsLabels()
+
+  const open = useOpenAgentSettingsSection()
+  // A newly selected page starts at its top, whichever menu chose it; Tools ⇄ its Advanced
+  // disclosure is one page and keeps its place.
+  const shownPage = section === 'tools-advanced' ? 'tools' : section
+
+  useLayoutEffect(() => {
+    if (bodyRef.current) {
       bodyRef.current.scrollTop = 0
     }
-
-    navigate({ pathname: location.pathname, search: agentSettingsSearch(location.search, next) }, { replace: true })
-  }
+  }, [shownPage])
 
   function openPage(key: string, value: string) {
     if (bodyRef.current) {
@@ -131,15 +154,17 @@ function AgentSettingsEditorContent({
   const configSection = resolveConfigSection(section)
 
   return (
-    <div className="agent-settings-editor">
-      <AgentSettingsNavigation
-        ariaLabel={t.commandCenter.settings}
-        counts={counts?.nav}
-        labels={labels}
-        onOpen={open}
-        section={section}
-      />
-      <section aria-label={t.commandCenter.settings} className="agent-settings-body" ref={bodyRef}>
+    <div className="agent-settings-editor" data-inline-navigation={inlineNavigation || undefined}>
+      {inlineNavigation && (
+        <AgentSettingsNavigation
+          ariaLabel={t.commandCenter.settings}
+          counts={counts?.nav}
+          labels={labels}
+          onOpen={open}
+          section={section}
+        />
+      )}
+      <section aria-label={t.commandCenter.settings} className="agent-settings-body scroll-fade-y" ref={bodyRef}>
         <AgentSettingsHeading counts={counts} labels={labels} section={section} />
         {section === 'general' && <AgentGeneralSettings onProfileRenamed={onProfileRenamed} owner={owner} />}
         {section === 'instructions' && <AgentInstructionsSettings owner={owner} />}
@@ -156,7 +181,7 @@ function AgentSettingsEditorContent({
         )}
         {section && ['tools', 'tools-advanced', 'skills', 'connectors', 'plugins'].includes(section) && (
           <AgentCapabilitiesSettings
-            onOpenAdvanced={() => open(section === 'tools-advanced' ? 'tools' : 'tools-advanced', true)}
+            onOpenAdvanced={() => open(section === 'tools-advanced' ? 'tools' : 'tools-advanced')}
             owner={owner}
             params={params}
             section={section}
@@ -398,9 +423,21 @@ interface AgentSettingsNavigationProps {
   onOpen: (section: AgentSettingsSection) => void
 }
 
-function AgentSettingsNavigation({ ariaLabel, labels, section, counts, onOpen }: AgentSettingsNavigationProps) {
+/** Up/Down, Home and End walk the menu's rows, like the page sidebar's lists. */
+function moveMenuFocus(event: KeyboardEvent<HTMLElement>) {
+  const rows = [...event.currentTarget.querySelectorAll<HTMLElement>('button')]
+  const at = rows.indexOf(document.activeElement as HTMLElement)
+  const target = { ArrowDown: rows[at + 1], ArrowUp: rows[at - 1], End: rows.at(-1), Home: rows[0] }[event.key]
+
+  if (at >= 0 && target) {
+    event.preventDefault()
+    target.focus()
+  }
+}
+
+export function AgentSettingsNavigation({ ariaLabel, labels, section, counts, onOpen }: AgentSettingsNavigationProps) {
   return (
-    <nav aria-label={ariaLabel} className="agent-settings-navigation">
+    <nav aria-label={ariaLabel} className="agent-settings-navigation" onKeyDown={moveMenuFocus}>
       {AGENT_SETTINGS_GROUPS.map(([group, sections]) => (
         <div className="agent-settings-nav-group" key={group}>
           <h2>{labels[group]}</h2>

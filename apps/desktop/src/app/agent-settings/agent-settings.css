@@ -1,93 +1,23 @@
+/* The page-frame contract (portal-layout.css): the agent column starts at the stage inset, or at
+   the panel inset beside the agents panel, and holds the form width at every window width. No
+   bottom padding: the scrollers run to the stage's edge and keep their own end space. */
 [data-page-surface] .management-panel.agent-management {
   --ui-bg-card: color-mix(in srgb, var(--ui-base) 2%, transparent);
   --ui-stroke-tertiary: color-mix(in srgb, var(--ui-base) 5%, transparent);
   width: 100%;
-  max-width: 1140px;
-  margin-inline: auto;
-  padding: 18px clamp(24px, 6vw, 88px) 32px;
+  max-width: calc(var(--page-stage-inset) + var(--page-form-max-width) + var(--page-panel-inset));
+  margin-inline: 0;
+  padding: 18px var(--page-panel-inset) 0 var(--page-stage-inset);
   font-family: var(--portal-font-body);
 }
 
-[data-page-surface] .management-panel.agent-management:has(.agent-management-nav) {
+/* Beside the list panel every tab hangs off the same frame inset (895:8991: header, tabs and the
+   settings column at x 400 = panel + 20), so switching Overview / History / Settings never moves
+   the header. */
+[data-page-surface] .management-panel.agent-management:has(> .page-sidebar-panel) {
   position: relative;
-  max-width: none;
-  padding-inline-start: calc(var(--page-nav-width) + 2.5rem);
-  padding-inline-end: 2.5rem;
-}
-
-[data-page-surface] .management-panel.agent-management:has(.agent-settings-editor) {
-  padding-inline: 20px;
-}
-
-[data-page-surface] .management-panel.agent-management:has(.agent-management-nav):has(.agent-settings-editor) {
-  padding-inline-start: calc(var(--page-nav-width) + 20px);
-}
-
-.agent-management-nav {
-  position: absolute;
-  inset-block: 0;
-  inset-inline-start: 0;
-  display: flex;
-  width: var(--page-nav-width);
-  flex-direction: column;
-  gap: 1.5rem;
-  padding: 1.34375rem 1.25rem 1.5rem;
-}
-
-/* New agent (895:9447): a 40px secondary row, 13px label, leading plus. */
-.agent-management-nav > button {
-  min-height: 2.5rem;
-  justify-content: flex-start;
-  gap: 0.625rem;
-  padding-inline: 0.625rem;
-  font-size: 0.8125rem;
-  font-weight: 400;
-}
-
-.agent-management-nav .page-sidebar-head {
-  /* With the column's 24px gap: Figma's title-to-New-agent spacing (895:8991). */
-  margin-bottom: 0.4375rem;
-}
-
-/* Group label (895:9473): 10px uppercase, +0.6px tracking. */
-.agent-management-nav-count {
-  margin: 0 0.625rem 0.5rem;
-  color: var(--ui-text-tertiary);
-  font-size: 0.625rem;
-  line-height: 1.4;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.agent-management-nav-row {
-  display: flex;
-  width: 100%;
-  min-height: 2.5rem;
-  align-items: center;
-  gap: 0.625rem;
-  padding: 0.5rem 0.625rem;
-  border: 1px solid transparent;
-  border-radius: 3px;
-  text-align: left;
-  font-size: 0.8125rem;
-  color: var(--ui-text-secondary);
-}
-
-.agent-management-nav-row:hover {
-  background: color-mix(in srgb, var(--ui-base) 3%, transparent);
-  color: var(--ui-text-primary);
-}
-
-.agent-management-nav-row:focus-visible {
-  outline: 2px solid var(--portal-brand-ink);
-  outline-offset: -2px;
-}
-.agent-management-nav-row[aria-current] {
-  border-color: transparent;
-  background: var(--portal-neutral-selection-background);
-  box-shadow: inset 0 0 0 0.5px var(--portal-neutral-selection-stroke);
-  color: var(--ui-text-primary);
-  font-weight: 500;
+  max-width: calc(var(--page-nav-width) + var(--page-panel-inset) + var(--page-form-max-width) + var(--page-panel-inset));
+  padding-inline: calc(var(--page-nav-width) + var(--page-panel-inset)) var(--page-panel-inset);
 }
 
 .agent-management-header {
@@ -140,11 +70,8 @@
   line-height: 1.4;
 }
 
-.agent-management-meta > span:not(.truncate) {
+.agent-management-meta > span:not([data-slot='path-text']) {
   flex-shrink: 0;
-}
-.agent-management-meta > .truncate {
-  min-width: 0;
 }
 
 .agent-management-machine {
@@ -274,6 +201,12 @@
   overflow: auto;
 }
 
+/* Every agent page scroller ends like a Settings page: the last row clears the stage edge by the
+   page's end space and the content fades out under it while more is below. */
+.agent-management-scroll {
+  padding-bottom: var(--portal-page-end-space);
+}
+
 .agent-management-scroll {
   container: agent-overview / inline-size;
 }
@@ -396,11 +329,23 @@
   -webkit-line-clamp: 3;
 }
 
-.agent-instructions-preview span {
-  display: block;
-  overflow: hidden;
+.agent-instructions-preview p.agent-instructions-skeleton {
+  display: grid;
+}
+
+/* Three 18px lines, the clamped preview's height. */
+.agent-instructions-skeleton > span {
+  height: 8px;
+  margin-block: 5px;
+  translate: none;
+}
+
+/* "SOUL.md · ~/.hermes" (877:4228): one line, the path elided in its middle. */
+.agent-instructions-source {
+  display: flex;
+  min-width: 0;
+  gap: 0.375em;
   margin-top: 10px;
-  text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--ui-text-tertiary);
   font-size: 11px;
@@ -427,15 +372,8 @@
 
 @media (max-width: 800px) {
   [data-page-surface] .management-panel.agent-management,
-  [data-page-surface] .management-panel.agent-management:has(.agent-management-nav) {
-    padding: 16px 24px 24px;
-  }
-
-  .agent-management-nav {
-    display: none;
-  }
-  [data-page-surface] .management-panel.agent-management:has(.agent-management-nav):has(.agent-settings-editor) {
-    padding-inline: 20px;
+  [data-page-surface] .management-panel.agent-management:has(> .page-sidebar-panel) {
+    padding: 16px 24px 0;
   }
 
   .agent-management-header {

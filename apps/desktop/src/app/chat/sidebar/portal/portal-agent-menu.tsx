@@ -92,7 +92,9 @@ export function PortalAgentMenu({ agent, hidden, pending, onOpen }: PortalAgentM
             side="right"
             sideOffset={12}
           >
-            <DropdownMenuItem onSelect={() => setSidebarAgentHidden(owner, true)}>
+            {/* The tooltip trigger would rename the row's slot; it stays a menu row, so it keeps the
+                menu's row inset and its icon lines up with the rows above. */}
+            <DropdownMenuItem data-slot="dropdown-menu-item" onSelect={() => setSidebarAgentHidden(owner, true)}>
               <EyeOff aria-hidden />
               <span className="flex-1">{c.hide}</span>
               <Info aria-hidden className="portal-hide-info" />

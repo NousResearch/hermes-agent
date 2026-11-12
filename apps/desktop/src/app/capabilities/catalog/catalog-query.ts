@@ -1,5 +1,7 @@
 import { sortCatalogPlugins } from '@hermes/shared'
 
+import { memoArgs } from '@/lib/memo-args'
+
 import { PLUGIN_TIER_ORDER, pluginTier } from './catalog-curation'
 import type { CatalogEntry, CatalogKind } from './catalog-data'
 import type { FacetRow } from './catalog-filters'
@@ -19,15 +21,18 @@ export const EMPTY_FACETS: CatalogFacets = { sources: [], categories: [], tags: 
 /** Facet value an entry files under: the normalized tier for plugins, the registry for skills. */
 export const facetSource = (entry: CatalogEntry, kind: CatalogKind) => (kind === 'plugins' ? pluginTier(entry) : entry.source)
 
+// The facet rows below each walk the whole feed (~100k skills). They are memoized on the arguments'
+// identities, so a revisit, or a render that changes nothing they read, reuses the last rows.
+
 /** Source facet rows; for plugins, the tiers present, in trust order. */
-export function catalogSources(entries: CatalogEntry[], kind: CatalogKind) {
+export const catalogSources = memoArgs((entries: CatalogEntry[], kind: CatalogKind) => {
   const present = new Set(entries.map(entry => facetSource(entry, kind)))
 
   return kind === 'plugins' ? PLUGIN_TIER_ORDER.filter(tier => present.has(tier)) : [...present]
-}
+})
 
 /** Category facet rows with counts, A–Z with "Other" last. */
-export function catalogCategories(entries: CatalogEntry[]) {
+export const catalogCategories = memoArgs((entries: CatalogEntry[]) => {
   const values = new Map<string, { label: string; count: number }>()
 
   for (const entry of entries) {
@@ -35,12 +40,12 @@ export function catalogCategories(entries: CatalogEntry[]) {
   }
 
   return [...values].sort((a, b) => categoryRank(a) - categoryRank(b) || a[1].label.localeCompare(b[1].label))
-}
+})
 
 const categoryRank = (row: [string, { label: string }]) => (row[0] === 'other' || row[1].label.toLowerCase() === 'other' ? 1 : 0)
 
 /** The most common tags plus whatever is selected; search covers the long tail. */
-export function catalogTags(entries: CatalogEntry[], selected: string[], limit: number): FacetRow[] {
+export const catalogTags = memoArgs((entries: CatalogEntry[], selected: string[], limit: number): FacetRow[] => {
   const counts = new Map<string, number>()
 
   for (const entry of entries) {
@@ -53,7 +58,7 @@ export function catalogTags(entries: CatalogEntry[], selected: string[], limit: 
   const shown = new Set([...ranked.slice(0, limit).map(([value]) => value), ...selected])
 
   return ranked.filter(([value]) => shown.has(value)).map(([value, count]) => ({ value, label: value, count }))
-}
+})
 
 /** Facets combine as AND across groups and OR within one. */
 export function filterCatalog(
@@ -64,6 +69,11 @@ export function filterCatalog(
   kind: CatalogKind
 ) {
   const { sources, categories, tags, installedOnly, updatesOnly } = facets
+
+  // Nothing narrows: the same list, so what derives from it downstream stays memoized.
+  if (!sources.length && !categories.length && !tags.length && !installedOnly && !updatesOnly && !query) {
+    return entries
+  }
 
   return entries.filter(
     entry =>

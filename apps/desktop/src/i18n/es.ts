@@ -588,6 +588,8 @@ export const esOverrides = {
       'nav.artifacts': 'Abrir artefactos',
       'nav.cron': 'Abrir programaciones',
       'nav.agents': 'Abrir agentes',
+      'nav.back': 'Atrás',
+      'nav.forward': 'Adelante',
       'session.new': 'Nueva sesión',
       'session.newTab': 'Nueva pestaña de sesión',
       'session.newWindow': 'Nueva ventana',
@@ -671,6 +673,7 @@ export const esOverrides = {
       'profile.prev': 'Agente anterior',
       'profile.toggleAll': 'Alternar vista de todos los agentes',
       'profile.create': 'Crear agente',
+      'agents.new': 'Nuevo agente (página Agentes)',
       'composer.send': 'Enviar mensaje',
       'composer.newline': 'Insertar salto de línea',
       'composer.steer': 'Guiar el turno en ejecución',
@@ -4573,7 +4576,13 @@ export const esOverrides = {
       connection: label => `Conexión: ${label}`,
       recentActivity: 'Actividad reciente',
       viewAllLogs: 'Ver todos los registros →',
-      messagingPlatforms: 'Plataformas de mensajería'
+      messagingPlatforms: 'Plataformas de mensajería',
+      machineStatus: (machine, status) => `Estado de ${machine}: ${status}`,
+      checkAgain: 'Comprobar de nuevo',
+      switchToMachine: 'Cambiar a esta máquina',
+      machineSettings: 'Gateways y máquinas',
+      restartTitle: '¿Reiniciar el gateway?',
+      restartBody: 'Las respuestas en curso en esta máquina se detendrán. Vuelve en unos segundos y se reconecta sola.'
     },
     approvalMode: {
       title: 'Modo de aprobación',

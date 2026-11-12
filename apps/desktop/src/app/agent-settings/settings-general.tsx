@@ -17,8 +17,11 @@ import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { CopyButton } from '@/components/ui/copy-button'
 import { ErrorState } from '@/components/ui/error-state'
+import { PathText } from '@/components/ui/path-text'
+import { Switch } from '@/components/ui/switch'
 import { getProfiles, getProfileSoul, updateProfileSoul } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { PORTAL_AGENT_HUES, portalAgentSwatch } from '@/lib/portal-profile-color'
 import { PROFILE_SWATCHES, resolveProfileColor } from '@/lib/profile-color'
 import { refreshFleetRoster } from '@/store/fleet-roster'
 import { $profileColors, setProfileColor } from '@/store/profile'
@@ -81,6 +84,7 @@ export function AgentGeneralSettings({
       mounted.current = false
     }
   }, [])
+  const redesign = usePortalShell()
   const profiles = useQuery({ queryKey: [...agentSettingsKey(owner), 'profiles'], queryFn: () => getProfiles(owner) })
   const profile = profiles.data?.profiles.find(item => item.name === owner.profile)
   const defaultAgent = useDefaultAgent(owner, profile)
@@ -108,18 +112,37 @@ export function AgentGeneralSettings({
       <AgentSettingsGroup title={g.identity}>
         <ListRow
           action={
-            <>
-              <span className="agent-settings-value">{settingsScopeLabel(profile)}</span>
-              <Button onClick={() => setDialog('rename')} variant="secondary">
-                {t.profiles.rename}
-              </Button>
-            </>
+            redesign ? (
+              // 1036:7189 draws the name in a 220px field; editing it is the rename flow (it can
+              // move the agent's folder), so the field opens that dialog with the name selected.
+              <button
+                aria-label={`${t.profiles.rename}: ${settingsScopeLabel(profile)}`}
+                className="agent-settings-name-field"
+                onClick={() => setDialog('rename')}
+                type="button"
+              >
+                {settingsScopeLabel(profile)}
+              </button>
+            ) : (
+              <>
+                <span className="agent-settings-value">{settingsScopeLabel(profile)}</span>
+                <Button onClick={() => setDialog('rename')} variant="secondary">
+                  {t.profiles.rename}
+                </Button>
+              </>
+            )
           }
           description={g.nameDescription}
           title={t.profiles.nameLabel}
         />
         <ListRow
-          action={<AgentColorSwatches label={g.colorSwatch} profile={owner.profile} />}
+          action={
+            redesign ? (
+              <PortalColorSwatches isDefault={profile.is_default} label={g.colorSwatch} profile={owner.profile} />
+            ) : (
+              <AgentColorSwatches label={g.colorSwatch} profile={owner.profile} />
+            )
+          }
           description={g.colorDescription}
           title={g.color}
         />
@@ -127,9 +150,19 @@ export function AgentGeneralSettings({
       {profile.path && (
         <AgentSettingsGroup title={g.profile}>
           <ListRow
-            action={<CopyButton buttonVariant="secondary" label={actions.copyPath} text={profile.path} />}
+            action={
+              redesign ? (
+                // 895:9683: the home-relative path on one line beside its Copy action.
+                <span className="agent-settings-path">
+                  <PathText className="agent-settings-value" path={profile.path} />
+                  <CopyButton buttonVariant="secondary" label={t.fileMenu.copyPath} text={profile.path} />
+                </span>
+              ) : (
+                <CopyButton buttonVariant="secondary" label={actions.copyPath} text={profile.path} />
+              )
+            }
             description={g.folderDescription}
-            hint={profile.path}
+            hint={redesign ? undefined : profile.path}
             title={g.folder}
           />
           <ListRow
@@ -141,13 +174,24 @@ export function AgentGeneralSettings({
             description={g.envKeysDescription}
             title={g.envKeys}
           />
-          <ToggleRow
-            checked={defaultAgent.isDefault}
-            description={defaultAgent.canSetDefault ? g.defaultAgentDescription : actions.defaultUnavailable}
-            disabled={defaultAgent.isDefault || !defaultAgent.canSetDefault || defaultAgent.saving}
-            label={g.defaultAgent}
-            onChange={on => on && void defaultAgent.makeDefault()}
-          />
+          {redesign && defaultAgent.isDefault ? (
+            // Set-only: the default agent's switch is on and stays on; another agent takes it over.
+            <ListRow
+              action={
+                <Switch aria-disabled aria-label={g.defaultAgent} checked className="agent-settings-locked-switch" />
+              }
+              description={g.isDefaultAgentDescription}
+              title={g.defaultAgent}
+            />
+          ) : (
+            <ToggleRow
+              checked={defaultAgent.isDefault}
+              description={defaultAgent.canSetDefault ? g.defaultAgentDescription : actions.defaultUnavailable}
+              disabled={defaultAgent.isDefault || !defaultAgent.canSetDefault || defaultAgent.saving}
+              label={g.defaultAgent}
+              onChange={on => on && void defaultAgent.makeDefault()}
+            />
+          )}
         </AgentSettingsGroup>
       )}
       <AgentSettingsGroup title={g.manage}>
@@ -174,6 +218,7 @@ export function AgentGeneralSettings({
       </AgentSettingsGroup>
       <RenameProfileDialog
         currentName={owner.profile}
+        displayName={settingsScopeLabel(profile)}
         isDefault={profile.is_default}
         onClose={() => setDialog(null)}
         onRenamed={async name => {
@@ -330,6 +375,37 @@ const AGENT_SWATCHES = PROFILE_SWATCHES.filter((_, index) => index % 2 === 0)
 interface AgentColorSwatchesProps {
   profile: string
   label: string
+}
+
+interface PortalColorSwatchesProps extends AgentColorSwatchesProps {
+  isDefault: boolean
+}
+
+/** The stored colour for a picked primary: the classic swatch that snaps back to it, so a pick
+ *  reads the same in both shells and the stored value stays one classic understands. */
+const storedSwatch = (hue: string) => PROFILE_SWATCHES.find(swatch => portalAgentSwatch(swatch).hue === hue)
+
+/** Figma's five primaries (895:9675), the current one ringed. The default agent always wears the
+ *  brand colour, so it offers no other. */
+function PortalColorSwatches({ profile, label, isDefault }: PortalColorSwatchesProps) {
+  const colors = useStore($profileColors)
+  const current = portalAgentSwatch(resolveProfileColor(profile, colors)).hue
+
+  return (
+    <div aria-label={label} className="agent-color-swatches" data-variant="portal" role="group">
+      {PORTAL_AGENT_HUES.map((hue, index) => (
+        <button
+          aria-label={`${label} ${index + 1}`}
+          aria-pressed={hue === current}
+          disabled={isDefault && hue !== current}
+          key={hue}
+          onClick={() => setProfileColor(profile, storedSwatch(hue) ?? hue)}
+          style={{ color: hue }}
+          type="button"
+        />
+      ))}
+    </div>
+  )
 }
 
 /** The same per-agent color the rail and agent list read; a local, cosmetic preference. */

@@ -12,6 +12,20 @@
   --titlebar-icon-size: 1rem;
   /* Figma's breadcrumb spacing (906:19467). */
   --titlebar-control-gap: 0.625rem;
+  /* The redesign's one motion scale: fast for hover returns and small state flips, base for
+     disclosures and reveals, slow for decorative fades. One easing (a quick settle). Navigation has
+     no enter animation, and every transition stands down under prefers-reduced-motion. */
+  --portal-motion-fast: 120ms;
+  --portal-motion-base: 180ms;
+  --portal-motion-slow: 240ms;
+  --portal-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* A page or route overlay paints over the chat it covers (contrib/route-cover.tsx). The chat keeps
+   its rendering state (scroll, draft) but is skipped by style, layout and paint, so covering and
+   uncovering cost a flip and a translucent page never shows it through. */
+[data-route-covered] {
+  content-visibility: hidden;
 }
 
 /* ── Panels ───────────────────────────────────────────────────────────────────────────────── */
@@ -96,9 +110,15 @@
   box-shadow: none;
   color: var(--ui-text-quaternary);
   font-size: 1rem;
-  transition:
-    background-color 100ms ease-out,
-    color 100ms ease-out;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* Hover paints at once; only the return eases (DESIGN.md › Motion). */
+  :root[data-shell='portal'] .portal-chrome-button:not(:hover) {
+    transition:
+      background-color var(--portal-motion-fast) var(--portal-ease),
+      color var(--portal-motion-fast) var(--portal-ease);
+  }
 }
 
 :root[data-shell='portal'] .portal-chrome-button .codicon[class*='codicon-'] {
@@ -188,6 +208,13 @@
   border-width: 0;
   background-color: transparent;
   box-shadow: none;
+}
+
+/* The terminal's text starts on the panel's standard inset, under its tab labels (the tab row's
+   10px gutter plus a tab's own 10px), not 8px off the panel edge. */
+:root[data-shell='portal'] [data-slot='terminal-instance'] {
+  padding-inline: 1.25rem;
+  padding-bottom: 0.75rem;
 }
 
 /* Header: a display-type title with the full path under it ("Project/Session Files", 491:41183),
@@ -406,4 +433,73 @@
    own resting hairline would also cross the band. It keeps its hover band. */
 :root[data-shell='portal'] [data-sash-overlap]:has(+ [data-tree-group][data-window-top]) > span:first-child {
   opacity: 0;
+}
+
+/* ── Toasts ── one place for every kind (components/notifications.tsx): the stage's end corner,
+   so they never cover a page header or the band (y 60-200 holds every page's title and actions).
+   They rest on top of the docked composer when there is one (the chat's primary composer names
+   itself the anchor; landing's centred composer does not), else 16px off the window floor. */
+:root[data-shell='portal']
+  [data-zone-pane='workspace']
+  [data-chat-surface]:not([data-chat-landing='true'])
+  [data-slot='composer-dock'][data-redesigned-composer]:not([data-popped-out]) {
+  anchor-name: --portal-toast-floor;
+}
+
+.hermes-toast-region {
+  /* Inside the stage, never across a seam: a narrow window's stage is narrower than a toast. */
+  right: calc(var(--workspace-right, 0px) + 1rem);
+  bottom: 1rem;
+  width: min(24rem, calc(100vw - var(--workspace-left, 0px) - var(--workspace-right, 0px) - 2rem));
+}
+
+@supports (bottom: anchor(--a top, 0px)) {
+  .hermes-toast-region {
+    /* The dock's own floor band is stage-coloured padding: rest on the card, not on that band. */
+    bottom: calc(anchor(--portal-toast-floor top, 0.25rem) + 0.75rem);
+  }
+}
+
+/* A toast arrives with a short rise on the shared motion scale; it leaves at once (a dismissal is the
+   user's own act, and a fading toast would linger over what they returned to). */
+@media (prefers-reduced-motion: no-preference) {
+  .hermes-toast-region .hermes-toast-surface {
+    animation: portal-toast-in var(--portal-motion-base) var(--portal-ease) both;
+  }
+}
+
+@keyframes portal-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.375rem);
+  }
+}
+
+/* A live Light/Dark switch paints the new mode at once (themes/context.tsx holds transitions for its
+   first frames): an easing colour would otherwise cross the new background and blank its label. The
+   one !important here: it must beat every transition declaration, whatever its specificity. */
+:root[data-shell='portal'][data-theme-switching] :is(*, ::before, ::after) {
+  transition: none !important;
+}
+
+/* ── Floating tools: find bar and the layout editor ──────────────────────────────────────────────
+   Both float over the stage, so they take the redesign's floating surface (portal-floating.css):
+   r8, hairline, the shared shadow; their buttons hover like menu rows. */
+:root[data-shell='portal'] :is([data-slot='find-bar'], [data-slot='layout-edit-card']) {
+  border-color: var(--portal-floating-stroke);
+  border-radius: 8px;
+  background-color: var(--portal-floating-surface);
+  box-shadow: var(--portal-floating-shadow);
+}
+
+:root[data-shell='portal'] [data-slot='find-bar'] button {
+  border-radius: 3px;
+}
+
+:root[data-shell='portal'] [data-slot='find-bar'] button:hover {
+  background-color: var(--portal-floating-item-hover);
+}
+
+:root[data-shell='portal'] [data-slot='find-bar'] input {
+  border-radius: 3px;
 }

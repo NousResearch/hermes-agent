@@ -13,6 +13,7 @@ import { canonicalizeCombo } from '@/lib/keybinds/combo'
 import { persistStore } from '@/lib/persist-store'
 import { arraysEqual, persistString, storedString, type WriteOptions } from '@/lib/storage'
 
+import { $portalPreferred } from './shell-variant'
 import { $statusbarStripAvailable } from './statusbar-strip'
 
 const STORAGE_KEY = 'hermes.desktop.keybinds'
@@ -128,6 +129,9 @@ followBrowserWindowKind($bindings, defaultBindings, keepOffUserChords)
 // Window-dependent actions, declared beside the bindings every keybind surface (panel, dispatcher,
 // hints) already reads, so none of them depends on which store happened to load first.
 declareKeybindAvailability('view.toggleStatusbar', $statusbarStripAvailable)
+// Back/Forward live in the redesign's band; the classic shell has no history controls.
+declareKeybindAvailability('nav.back', $portalPreferred)
+declareKeybindAvailability('nav.forward', $portalPreferred)
 
 /** Live combos for an action: explicit binding → stored override → default. */
 export function bindingsFor(id: string, bindings: KeybindBindings = $bindings.get()): string[] {

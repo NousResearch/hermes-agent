@@ -1,10 +1,12 @@
 import type { ProfileScope } from '@/api/client'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { PathText } from '@/components/ui/path-text'
 import { deleteProfile } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { activeGatewayConnectionId, retireLocalProfileGateways } from '@/store/gateway'
 import { $activeGatewayProfile, normalizeProfileKey, selectProfile, setActiveProfile } from '@/store/profile'
 import { dropTilesForProfile } from '@/store/session-states'
+import { usePortalShell } from '@/store/shell-variant'
 
 // Thin wrapper over ConfirmDialog: owns the deleteProfile call, inherits
 // Enter-to-confirm + busy/done/error from the shared dialog. The single choke
@@ -30,6 +32,7 @@ export function DeleteProfileDialog({
 }) {
   const { t } = useI18n()
   const p = t.profiles
+  const redesign = usePortalShell()
 
   return (
     <ConfirmDialog
@@ -42,7 +45,11 @@ export function DeleteProfileDialog({
             <span className="break-words font-medium text-foreground">{profile.name}</span>
             {gatewayLabel ? p.fleet.deleteOn(gatewayLabel) : null}
             {p.deleteDescMid}
-            <span className="break-all font-mono text-xs">{profile.path}</span>
+            {redesign ? (
+              <PathText className="max-w-full align-bottom text-xs" path={profile.path} />
+            ) : (
+              <span className="break-all font-mono text-xs">{profile.path}</span>
+            )}
             {p.deleteDescSuffix}
           </>
         ) : null

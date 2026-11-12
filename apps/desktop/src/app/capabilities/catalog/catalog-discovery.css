@@ -52,6 +52,13 @@
 .catalog-featured-slide > [data-catalog-card] { flex: 1; }
 .catalog-featured-controls { display: flex; align-items: center; justify-content: center; gap: var(--capabilities-gap-sticky); padding-top: var(--capabilities-gap-sticky); }
 .catalog-featured-dots { display: flex; align-items: center; gap: 6px; }
+/* The feed's first paint (CatalogSkeleton): the slots of the hero (its one-line copy at 1280), the
+   slider row's 24px controls and one shelf, so the loaded page lands on the same lines. */
+[data-catalog-skeleton] .catalog-skeleton-hero { height: 11.25rem; border-radius: var(--radius-lg); }
+[data-catalog-skeleton] .catalog-skeleton-dots { width: 7.5rem; height: 1.5rem; }
+[data-catalog-skeleton] .catalog-skeleton-title { width: 10rem; height: 1.4rem; margin-block: .2rem; }
+[data-catalog-skeleton] .catalog-skeleton-blurb { width: 14rem; height: .8125rem; margin-top: 10px; }
+[data-catalog-skeleton] .catalog-skeleton-card { height: 15.5rem; border-radius: var(--radius-lg); }
 .catalog-featured-dot { width: 6px; height: 6px; border-radius: 999px; background: var(--ui-text-quaternary); transition: width 200ms ease, background-color 200ms ease; }
 .catalog-featured-dot:hover { background: var(--ui-text-tertiary); transition: none; }
 .catalog-featured-dot.is-active { width: 18px; background: var(--ui-text-primary); }

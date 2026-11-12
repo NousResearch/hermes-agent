@@ -19,6 +19,7 @@ import {
   dismissNotification,
   type NotificationKind
 } from '@/store/notifications'
+import { usePortalShell } from '@/store/shell-variant'
 
 type ToneVariant = 'default' | 'destructive' | 'warning' | 'success'
 
@@ -66,6 +67,7 @@ export function NotificationStack() {
   const lastNotificationIdRef = useRef<string | null>(null)
   const [expanded, setExpanded] = useState(false)
   const copy = t.notifications
+  const redesign = usePortalShell()
 
   useEffect(() => {
     if (defaultStack.length <= 1) {
@@ -91,6 +93,12 @@ export function NotificationStack() {
       triggerHaptic('warning')
     }
   }, [notifications])
+
+  // The redesign has one place for every kind (portal-shell.css): the stage's end corner, clear of
+  // page headers and resting above a docked composer.
+  if (redesign) {
+    return <BottomRightStack anchored copy={copy} notifications={notifications} />
+  }
 
   return (
     <>
@@ -165,9 +173,12 @@ function TopCenterStack({
 
 // Ambient confirmations use the same bounded depth, rising from the corner.
 function BottomRightStack({
+  anchored = false,
   copy,
   notifications
 }: {
+  /** Placed by the redesign's stylesheet (`hermes-toast-region`) instead of the corner utilities. */
+  anchored?: boolean
   copy: ReturnType<typeof useI18n>['t']['notifications']
   notifications: AppNotification[]
 }) {
@@ -185,7 +196,8 @@ function BottomRightStack({
       aria-label={copy.region}
       className={cn(
         REGION_BASE,
-        'right-4 bottom-4 w-[min(24rem,calc(100%-2rem))] flex-col-reverse p-1',
+        anchored ? 'hermes-toast-region' : 'right-4 bottom-4',
+        'w-[min(24rem,calc(100%-2rem))] flex-col-reverse p-1',
         expanded && 'max-h-[70vh] overflow-y-auto overscroll-contain'
       )}
       role="region"

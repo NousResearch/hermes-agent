@@ -251,8 +251,16 @@ touch). Electron reads the shell choice from the shared UI preferences before
 creating a window and re-seats the macOS traffic lights (centred, in the rail
 column) and the Windows/Linux caption overlay when it flips
 (`electron/window-chrome.ts`); the popped-out Browser keeps the classic band.
-The band carries the leading cluster past the rail, the open session's title
-pill with "+" at the stage's leading edge, and the panel toggles at the end.
+The band carries the leading cluster past the rail (Back and Forward through the window's own router
+history on every screen, `app/shell/history-position.ts`; a page with nothing behind it closes to the
+chat), the open session's title pill with "+" at the stage's leading edge, and the panel toggles at
+the end. Pages cover the chat, they do not replace it (`contrib/route-cover.tsx`): a route overlay or
+workspace page paints over a chat that stays mounted, skipped by style, layout and paint
+(`content-visibility: hidden`), inert and aria-hidden, so returning to Chats is a flip with its
+scroll, draft and focus intact. Toasts of every kind stack at the stage's end corner, resting on a
+docked composer, clear of page headers. Page content columns start at Figma's left insets
+(`--page-panel-inset` past a sidebar panel, `--page-stage-inset` without one), and Schedules lists its
+schedules in the shared page sidebar panel like Agents.
 Workspace pages (Capabilities, Library, …) share the overlay pages' square,
 full-bleed frame. Without an explicit skin pick, the redesign paints the
 Hermes Portal skin and classic paints Nous (`defaultSkinName`); flipping the
@@ -283,7 +291,10 @@ organisation tag, status dot and label at the end), an expanded machine as one 5
 container under a 7% header bar, agents as a 20px solid tile in the agent's snapped
 Figma primary (`lib/portal-profile-color.ts`) over a name and a second line (roster
 description, else the chat count), and an agent's chats on a 31px pitch under a 1px
-guide. Hover is a 4% fill (2% on agents), the open pinned chat a 2% fill. Row and
+guide. An agent's card lists its three most recent chats (plus the open one and any running or unread)
+over a "Show all (N)" / "Show less" row remembered per agent; search lists every match. The open
+machine's header bar sticks to the top of the list while its card scrolls under it. Hover is a 4%
+fill (2% on agents), the open pinned chat a clearly stronger 7% pill. Row and
 agent actions (ellipsis, caret, kebab) are bare glyphs that appear on hover, keyboard
 focus or an open menu; touch keeps them visible. Arrow keys, Home and End walk the
 visible rows; right-click opens the row menu. Captions and meta keep the AA ladder
@@ -331,6 +342,21 @@ change anything for another agent?" → global, else Agent settings): Account & 
 Appearance, Notifications, Keyboard Shortcuts, Gateways & Machines, Sessions & History,
 About & Updates, Advanced (device-level and remaining global pages), and an Agent
 settings card. Provider accounts and keys live under Agent › Providers & Keys.
+Every routed page keeps one page frame (tokens in `portal-layout.css`): beside a sidebar
+panel the content column starts `--page-panel-inset` (20px, the freshest frames 1036:7189 /
+895:*) after the panel's divider, on Agents, Settings and Schedules alike; without a panel it
+starts `--page-stage-inset` (Figma 919: x 150 at 1280) into the stage. Columns are
+left-anchored at every window width, never centred, with one max width per page kind:
+`--page-form-max-width` (840) for forms and details, `--page-catalog-max-width` (980) for
+catalogs, lists and tables. Every H1 (or agent hero) tops out at the same y; header actions end
+at the column's right edge.
+An agent's page has one vertical menu (Figma 1036:7189). On Overview and History the
+page sidebar panel lists the agents; on the Settings tab the same panel swaps to
+"← Back to agents" (a history step back to the Overview), the agent's own row, and the
+settings sections (10px group labels, 32px rows, counts at the row end), while the stage
+holds the agent header, the tabs and the selected page at full width. When the panel is
+folded away (⌘B) or the window is too narrow for panels, the sections menu leads the
+page in the stage instead, so every section stays reachable.
 
 Transcript styling is isolated in `components/assistant-ui/thread/redesign.css`,
 following the Figma conversation (`491:40346`): one centred column shared with the
@@ -782,6 +808,16 @@ from their root base tokens; do not multiply the global tokens or nest CSS zoom.
 - Pick the vocabulary by semantic context and reuse the existing icon for an
   action. Do not introduce a third icon set or mix styles within one control
   group.
+- **The redesign (portal shell) draws every one of those glyphs from
+  Pixelarticons**, the brand set the Figma frames use. The swap is central:
+  `src/lib/pixel-icons.ts` maps each Tabler alias and codicon name to its pixel
+  twin (the Figma frame's icon where one draws the control), `src/lib/icons.ts`
+  aliases and `Codicon` pick the set from the shell, and classic is untouched.
+  A new alias or codicon needs a mapping entry (`KEEP_CLASSIC` for a brand or
+  language mark); the type and `pixel-icons.test.tsx` fail without one. A role
+  that the redesign draws differently from a shared glyph gets its own alias
+  (`Gateway`: the classic globe, the redesign's `server`). Directional glyphs
+  mirror in RTL from `RTL_MIRRORED`, not per component.
 - **`BrandMark`** (`src/components/brand-mark.tsx`) is the brand glyph — the
   `nous-girl` mark on a fixed tile, theme-aware: black girl on white in light
   mode, white girl on the `#0d1117` dark tile in dark mode (keyed off

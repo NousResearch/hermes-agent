@@ -74,6 +74,8 @@ export const arChrome = {
       'nav.artifacts': 'فتح العناصر',
       'nav.cron': 'فتح الجداول',
       'nav.agents': 'فتح الوكلاء',
+      'nav.back': 'رجوع',
+      'nav.forward': 'تقدّم',
       'session.new': 'جلسة جديدة',
       'session.newTab': 'علامة تبويب جلسة جديدة',
       'session.newWindow': 'جلسة جديدة في نافذة',
@@ -136,6 +138,7 @@ export const arChrome = {
       'profile.prev': 'الوكيل السابق',
       'profile.toggleAll': 'تبديل عرض كل الوكلاء',
       'profile.create': 'إنشاء وكيل',
+      'agents.new': 'وكيل جديد (صفحة الوكلاء)',
       'composer.send': 'إرسال الرسالة',
       'composer.newline': 'إدراج سطر جديد',
       'composer.steer': 'توجيه الدور الجاري',
@@ -424,7 +427,13 @@ export const arChrome = {
       connection: label => `الاتصال: ${label}`,
       recentActivity: 'النشاط الأخير',
       viewAllLogs: 'عرض كل السجلات',
-      messagingPlatforms: 'منصات المراسلة'
+      messagingPlatforms: 'منصات المراسلة',
+      machineStatus: (machine, status) => `حالة ${machine}: ${status}`,
+      checkAgain: 'تحقّق مجددًا',
+      switchToMachine: 'التبديل إلى هذا الجهاز',
+      machineSettings: 'البوابات والأجهزة',
+      restartTitle: 'إعادة تشغيل البوابة؟',
+      restartBody: 'ستتوقف الردود الجارية على هذا الجهاز. سيعود خلال ثوانٍ ويعيد الاتصال تلقائيًا.'
     },
     statusbar: {
       unknown: 'غير معروف',

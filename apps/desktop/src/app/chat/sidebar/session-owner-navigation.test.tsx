@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { $apiRequestScope } from '@/api/client'
 import * as apiClient from '@/api/client'
 import { openSession } from '@/app/open-session'
+import { StableNavigateProvider } from '@/app/stable-navigate'
 import { group } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import { RootTooltipProvider } from '@/components/ui/tooltip'
@@ -28,13 +29,13 @@ function mountRow(redesign: boolean) {
   setPortalPreferred(redesign)
 
   return render(
-    <MemoryRouter><RootTooltipProvider>
+    <MemoryRouter><StableNavigateProvider><RootTooltipProvider>
       {redesign ? <SimplifiedSessionList
         activeSessionId={null} ambiguousIds={new Set()} onArchiveSession={noop} onBranchSession={noop}
         onDeleteSession={noop} onResumeSession={noop} onUpdate={noop} pinnedIds={new Set()} sessions={[remote]}
       /> : <SidebarSessionRow isPinned={false} isSelected={false} onArchive={noop} onDelete={noop}
         onPin={noop} onResume={noop} onToggleUnread={noop} session={remote} unread={false} />}
-    </RootTooltipProvider></MemoryRouter>
+    </RootTooltipProvider></StableNavigateProvider></MemoryRouter>
   )
 }
 
@@ -104,10 +105,10 @@ it('highlights the focused background-owner tile, not its same-ID foreground twi
   $sessionTiles.set([{ storedSessionId: remote.id, dir: 'center', ownerRoute: owner }])
   $layoutTree.set(group([`session-tile:${remote.id}`], { id: 'focused', active: `session-tile:${remote.id}` }))
   noteActiveTreeGroup('focused')
-  render(<MemoryRouter><RootTooltipProvider><SimplifiedSessionList
+  render(<MemoryRouter><StableNavigateProvider><RootTooltipProvider><SimplifiedSessionList
     activeSessionId={remote.id} ambiguousIds={new Set([remote.id])} onArchiveSession={noop} onBranchSession={noop}
     onDeleteSession={noop} onResumeSession={noop} onUpdate={noop} pinnedIds={new Set()} sessions={[local, remote]}
-  /></RootTooltipProvider></MemoryRouter>)
+  /></RootTooltipProvider></StableNavigateProvider></MemoryRouter>)
   expect(screen.getByText(remote.title!).closest('button')?.getAttribute('aria-current')).toBe('page')
   expect(screen.getByText('Local twin').closest('button')?.hasAttribute('aria-current')).toBe(false)
   act(() => $apiRequestScope.set({ connectionId: 'another-gateway', profile: 'other' }))

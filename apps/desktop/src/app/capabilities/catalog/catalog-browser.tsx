@@ -8,9 +8,12 @@ import { Codicon } from '@/components/ui/codicon'
 import { ErrorState } from '@/components/ui/error-state'
 import { Masonry } from '@/components/ui/masonry'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Skeleton } from '@/components/ui/skeleton'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
+import { memoArgs } from '@/lib/memo-args'
 import { cn } from '@/lib/utils'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { DetailColumn, ListColumn, MasterDetail } from '../../master-detail'
 import { PanelEmpty } from '../../overlays/panel'
@@ -18,7 +21,8 @@ import {
   AgentCapabilityBanner,
   AgentCapabilityMore,
   AgentCapabilityRow,
-  AgentCapabilitySection
+  AgentCapabilitySection,
+  AgentCapabilitySkeleton
 } from '../ui/agent-capability'
 import { useAgentCapabilityCopy } from '../ui/agent-capability-copy'
 import { CapabilitySearch } from '../ui/capability-search'
@@ -45,6 +49,7 @@ import {
   relatedEntries,
   sortCatalog
 } from './catalog-query'
+import { CatalogSkeleton } from './catalog-skeleton'
 import { $catalogCardView } from './store'
 import { useCatalogFilters } from './use-catalog-filters'
 
@@ -80,11 +85,22 @@ const NO_ROWS: CatalogEntry[] = []
 /** Deriving the page from the ~100k-row feed is the costly render. Deferred, the page frame
  *  commits in the click's own frame and the shelves follow in an interruptible render; until
  *  then the page reads as loading (or keeps its previous rows on a refetch). */
-function useDeferredCatalog(kind: CatalogKind) {
+function useDeferredCatalog(kind: CatalogKind, installedEntries: CatalogEntry[] | undefined) {
   const { data: fetched, isPending, error, refetch } = useCatalog(kind)
   const data = useDeferredValue(fetched, NO_ROWS)
+  // Until the deferred feed lands, the installed rows alone would render a throwaway page of cards
+  // (about a thousand nodes in the click's frame) that the feed replaces a moment later: the page
+  // holds its skeleton instead.
+  const feedPending = data === NO_ROWS && fetched !== undefined
 
-  return { data, fetched, isPending: isPending || data !== fetched, error, refetch }
+  return {
+    data,
+    fetched,
+    installed: feedPending ? NO_ROWS : (installedEntries ?? NO_ROWS),
+    isPending: isPending || data !== fetched,
+    error,
+    refetch
+  }
 }
 
 /** Related entries listed under a detail. */
@@ -135,6 +151,34 @@ function mergeInstalled(
 
   return [...catalog, ...remaining.values()]
 }
+
+/** The feed as the browser lists it. Every visit used to redo this over ~100k rows (the merge alone
+ *  ran `matchInstalled` per row): memoized on the inputs' identities, a revisit with the same cached
+ *  feed and installed set is free. */
+const catalogRows = memoArgs(
+  (
+    data: CatalogEntry[],
+    installedEntries: CatalogEntry[],
+    matchInstalled: ((entry: CatalogEntry) => CatalogEntry | undefined) | undefined,
+    isSuperseded: ((entry: CatalogEntry) => boolean) | undefined
+  ) => {
+    const entries = mergeInstalled(data, installedEntries, matchInstalled)
+    const visible = isSuperseded ? entries.filter(entry => !isSuperseded(entry)) : entries
+
+    return { entries, visible, updateCount: visible.filter(entry => entry.updateAvailable).length }
+  }
+)
+
+const catalogResults = memoArgs(
+  (
+    visible: CatalogEntry[],
+    facets: CatalogFacets,
+    query: string,
+    isInstalled: (entry: CatalogEntry) => boolean,
+    kind: CatalogKind,
+    sort: CatalogSort
+  ) => sortCatalog(filterCatalog(visible, facets, query, isInstalled, kind), sort, kind)
+)
 
 function CatalogEntryInstall({
   entry,
@@ -353,12 +397,13 @@ const isDiscoverView = (facets: CatalogFacets, query: string, kind: CatalogKind,
   !facets.installedOnly &&
   !facets.updatesOnly
 
-function CatalogLoadState({ error, onRetry }: { error: Error | null; onRetry: () => void }) {
+function CatalogLoadState({ error, kind, onRetry }: { error: Error | null; kind: CatalogKind; onRetry: () => void }) {
   const { t } = useI18n()
   const c = t.catalog
+  const redesign = usePortalShell()
 
   if (!error) {
-    return <PageLoader label={t.skills.loading} />
+    return redesign ? <CatalogSkeleton kind={kind} /> : <PageLoader label={t.skills.loading} />
   }
 
   return (
@@ -410,6 +455,7 @@ interface AgentCatalogProps extends Pick<
   onDetailOpenChange: (open: boolean) => void
   onSelect: (id: string) => void
   details: ReactNode
+  installedPending: boolean
 }
 
 /** One agent's Skills or Plugins (Figma 895:14967, 895:16810): the library banner, then the
@@ -437,7 +483,8 @@ function AgentCatalog({
   detailOpen,
   onDetailOpenChange,
   onSelect,
-  details
+  details,
+  installedPending
 }: AgentCatalogProps) {
   const { t, locale } = useI18n()
   const c = t.catalog
@@ -467,7 +514,14 @@ function AgentCatalog({
             <Link to={`/capabilities?tab=${kind}`}>{banner.browse}</Link>
           </Button>
         }
-        description={libraryCount ? banner.bannerBody(libraryCount.toLocaleString(locale)) : undefined}
+        // The count line is held while the feed loads, so the sections below never move down.
+        description={
+          libraryCount ? (
+            banner.bannerBody(libraryCount.toLocaleString(locale))
+          ) : pending ? (
+            <Skeleton className="agent-capability-skeleton-line" />
+          ) : undefined
+        }
         title={banner.bannerTitle}
       />
       <CapabilitySearch
@@ -494,8 +548,14 @@ function AgentCatalog({
           {error.message}
         </CatalogAlert>
       )}
-      {!entries.length && pending ? <PageLoader label={t.skills.loading} /> : null}
+      {!entries.length && pending ? <AgentCapabilitySkeleton /> : null}
+      {/* Until the installed list answers, the agent's own section holds its place above the library. */}
+      {entries.length > 0 && installedPending ? <AgentCapabilitySkeleton /> : null}
       {sections.map(section => {
+        if (installedPending && section.id !== 'available') {
+          return null
+        }
+
         const all = expanded.has(section.id) || Boolean(query)
         // The library can hold ~100k entries: it opens on a preview, then pages, never "all".
         const cap = section.id === 'available' ? (all ? limit : AVAILABLE_PREVIEW) : all ? undefined : section.preview
@@ -571,7 +631,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
   const { t } = useI18n()
   const c = t.catalog
   const cardView = useStore($catalogCardView)
-  const { data, fetched, isPending, error, refetch } = useDeferredCatalog(kind)
+  const { data, fetched, installed, isPending, error, refetch } = useDeferredCatalog(kind, installedEntries)
   const deferredQuery = useDeferredValue((query ?? '').trim().toLowerCase())
   const [selectedId, setSelectedId] = useState<string | null>(selectedEntryId ?? null)
   const [detailOpen, setDetailOpen] = useState(false)
@@ -608,9 +668,9 @@ export const CatalogBrowser = memo(function CatalogBrowser({
   const root = useRef<HTMLDivElement>(null)
   useEffect(() => (CATALOG_POINTER_ENABLED && root.current ? trackCatalogPointer(root.current) : undefined), [])
 
-  const entries = mergeInstalled(data ?? [], installedEntries ?? [], matchInstalled)
-  const visible = isSuperseded ? entries.filter(entry => !isSuperseded(entry)) : entries
-  const filtered = sortCatalog(filterCatalog(visible, facets, deferredQuery, isInstalled, kind), sort, kind)
+  const { entries, visible, updateCount } = catalogRows(data ?? NO_ROWS, installed, matchInstalled, isSuperseded)
+
+  const filtered = catalogResults(visible, facets, deferredQuery, isInstalled, kind, sort)
 
   const discover = isDiscoverView(facets, deferredQuery, kind, sort)
   const pageOrder = filtered
@@ -703,6 +763,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
         error={error}
         facets={facets}
         headerActions={headerActions}
+        installedPending={Boolean(installedPending)}
         isInstalled={isInstalled}
         kind={kind}
         libraryCount={fetched?.length}
@@ -755,7 +816,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
             sortControl={sortControl}
             sources={catalogSources(visible, kind)}
             tags={catalogTags(visible, facets.tags, TAG_LIMIT)}
-            updateCount={visible.filter(entry => entry.updateAvailable).length}
+            updateCount={updateCount}
           />
           {notice}
           {error && entries.length > 0 && (
@@ -765,7 +826,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
           )}
           <div className="min-h-0 flex-1">
             {!entries.length && (isPending || error) ? (
-              <CatalogLoadState error={error} onRetry={() => void refetch()} />
+              <CatalogLoadState error={error} kind={kind} onRetry={() => void refetch()} />
             ) : !selected ? (
               <CatalogNoResults onClear={clearFilters} />
             ) : cardView ? (

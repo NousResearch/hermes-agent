@@ -108,12 +108,16 @@ it('reflects sidebar visibility live and changes only the actual profile on its 
   expect(setDefault).not.toHaveBeenCalled()
 })
 
-it('shows and copies the real profile path, and directs deletion to General without a delete action', async () => {
+it('shows and copies the real profile path, and starts deleting from the menu itself', async () => {
   render(<AgentOverviewActions owner={owner} profile={profile} />)
   openMenu()
-  expect(screen.getByText(profile.path)).toBeTruthy()
-  expect(screen.getByText('To delete this agent, go to Settings › General.')).toBeTruthy()
-  expect(screen.queryByRole('menuitem', { name: /^Delete/ })).toBeNull()
+  const copy = screen.getByRole('menuitem', { name: /Copy profile path/ })
+  // One line: the label, then the path as a trailing hint.
+  expect(copy.textContent).toBe(`Copy profile path${profile.path}`)
+  await act(async () => fireEvent.click(screen.getByRole('menuitem', { name: /^Delete agent/ })))
+  expect(screen.getByRole('dialog', { name: en.profiles.deleteTitle })).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: en.common.cancel }))
+  openMenu()
   await act(async () => fireEvent.click(screen.getByRole('menuitem', { name: /Copy profile path/ })))
   expect(writeClipboardText).toHaveBeenCalledWith(profile.path)
   vi.mocked(writeClipboardText).mockRejectedValueOnce(new Error('Clipboard unavailable'))

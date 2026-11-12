@@ -1,280 +1,279 @@
 import {
-  IconActivity as Activity,
-  IconAlertCircle as AlertCircle,
-  IconAlertTriangle as AlertTriangle,
-  IconAppWindow as AppWindow,
-  IconArchive as Archive,
-  IconArchiveOff as ArchiveOff,
-  IconArrowBarToDown as ArrowBarToDown,
-  IconArrowBarToUp as ArrowBarToUp,
-  IconArrowUp as ArrowUp,
-  IconArrowUpRight as ArrowUpRight,
-  IconAt as AtSign,
-  IconWaveSine as AudioLines,
-  IconChartBar as BarChart3,
-  IconBell as Bell,
-  IconBook as Book,
-  IconBookmark as Bookmark,
-  IconBookmarkFilled as BookmarkFilled,
-  IconBox as Box,
-  IconBrain as Brain,
-  IconBug as Bug,
-  IconCheck as Check,
-  IconCircleCheck as CheckCircle2,
-  IconCheck as CheckIcon,
-  IconChevronDown as ChevronDown,
-  IconChevronDown as ChevronDownIcon,
-  IconChevronLeft as ChevronLeft,
-  IconChevronLeft as ChevronLeftIcon,
-  IconChevronRight as ChevronRight,
-  IconChevronRight as ChevronRightIcon,
-  IconChevronUp as ChevronUp,
-  IconCircle as CircleIcon,
-  IconCircleLetterA as CircleLetterA,
-  IconClipboard as Clipboard,
-  IconClock as Clock,
-  IconCloud as Cloud,
-  IconCommand as Command,
-  IconCopy as Copy,
-  IconCopy as CopyIcon,
-  IconCornerDownLeft as CornerDownLeft,
-  IconCpu as Cpu,
-  IconCreditCard as CreditCard,
-  IconDownload as Download,
-  IconEar as Ear,
-  IconEarOff as EarOff,
-  IconEgg as Egg,
-  IconPlayerEjectFilled as Eject,
-  IconExternalLink as ExternalLink,
-  IconEye as Eye,
-  IconEyeOff as EyeOff,
-  IconPhoto as FileImage,
-  IconFileText as FileText,
-  IconFolderOpen as FolderOpen,
-  IconGitBranch as GitBranch,
-  IconGitBranch as GitBranchIcon,
-  IconGitFork as GitFork,
-  IconGitFork as GitForkIcon,
-  IconGlobe as Globe,
-  IconHash as Hash,
-  IconHelpCircle as HelpCircle,
-  IconPhoto as ImageIcon,
-  IconInfoCircle as Info,
-  IconKeyboard as Keyboard,
-  IconKey as KeyRound,
-  IconLayersIntersect2 as Layers3,
-  IconLayoutDashboard as LayoutDashboard,
-  IconLink as Link,
-  IconLink as Link2,
-  IconLink as LinkIcon,
-  IconLoader2 as Loader2,
-  IconLoader2 as Loader2Icon,
-  IconLock as Lock,
-  IconLockOpen as LockOpen,
-  IconLogin as LogIn,
-  IconMail as Mail,
-  IconMaximize as Maximize,
-  IconMessageCircle as MessageCircle,
-  IconMessageCode as MessageCode,
-  IconMessageQuestion as MessageQuestion,
-  IconMessage2 as MessageSquareText,
-  IconMicrophone as Mic,
-  IconMicrophoneOff as MicOff,
-  IconDeviceDesktop as Monitor,
-  IconDeviceDesktopAnalytics as MonitorPlay,
-  IconMoon as Moon,
-  IconDots as MoreHorizontal,
-  IconDots as MoreHorizontalIcon,
-  IconDotsVertical as MoreVertical,
-  IconNetwork as Network,
-  IconNotebook as NotebookTabs,
-  IconPackage as Package,
-  IconPalette as Palette,
-  IconLayoutBottombar as PanelBottom,
-  IconLayoutSidebar as PanelLeftIcon,
-  IconLayoutNavbar as PanelTop,
-  IconPlayerPause as Pause,
-  IconPaw as PawPrint,
-  IconPencil as Pencil,
-  IconPencil as PencilIcon,
-  IconPencil as PencilLine,
-  IconPin as Pin,
-  IconPlayerPlay as Play,
-  IconPlug as Plug,
-  IconPlus as Plus,
-  IconPower as Power,
-  IconQrcode as QrCode,
-  IconRefresh as RefreshCw,
-  IconRefresh as RefreshCwIcon,
-  IconDeviceFloppy as Save,
-  IconSearch as Search,
-  IconSearch as SearchIcon,
-  IconSend as Send,
-  IconSettings as Settings,
-  IconSettings2 as Settings2,
-  IconShieldLock as ShieldLock,
-  IconAdjustmentsHorizontal as SlidersHorizontal,
-  IconMoodPlus as SmilePlusIcon,
-  IconSquare as Square,
-  IconChartDots3 as Starmap,
-  IconSteeringWheel as SteeringWheel,
-  IconPlayerStopFilled as StopFilled,
-  IconSun as Sun,
-  IconTerminal2 as Terminal,
-  IconTrash as Trash2,
-  IconUpload as Upload,
-  IconUsers as Users,
-  IconVolume2 as Volume2,
-  IconVolume2 as Volume2Icon,
-  IconVolumeOff as VolumeX,
-  IconVolumeOff as VolumeXIcon,
-  IconTool as Wrench,
-  IconX as X,
-  IconX as XIcon,
-  IconBolt as Zap,
-  IconBoltFilled as ZapFilled,
-  IconZoomIn as ZoomIn,
-  IconZoomOut as ZoomOut
+  IconActivity,
+  IconAdjustmentsHorizontal,
+  IconAlertCircle,
+  IconAlertTriangle,
+  IconAppWindow,
+  IconArchive,
+  IconArchiveOff,
+  IconArrowBarToDown,
+  IconArrowBarToLeft,
+  IconArrowBarToUp,
+  IconArrowUp,
+  IconArrowUpRight,
+  IconAt,
+  IconBell,
+  IconBolt,
+  IconBoltFilled,
+  IconBook,
+  IconBookmark,
+  IconBookmarkFilled,
+  IconBox,
+  IconBrain,
+  IconBug,
+  IconCategory,
+  IconChartBar,
+  IconChartDots3,
+  IconCheck,
+  IconChevronDown,
+  IconChevronLeft,
+  IconChevronRight,
+  IconChevronUp,
+  IconCircle,
+  IconCircleCheck,
+  IconCircleLetterA,
+  IconClipboard,
+  IconClock,
+  IconCloud,
+  IconCommand,
+  IconCopy,
+  IconCornerDownLeft,
+  IconCpu,
+  IconCreditCard,
+  IconDatabase,
+  IconDeviceDesktop,
+  IconDeviceDesktopAnalytics,
+  IconDeviceFloppy,
+  IconDots,
+  IconDotsVertical,
+  IconDownload,
+  IconEar,
+  IconEarOff,
+  IconEgg,
+  IconExternalLink,
+  IconEye,
+  IconEyeOff,
+  IconFileText,
+  IconFilter2,
+  IconFolderOpen,
+  IconGitBranch,
+  IconGitFork,
+  IconGlobe,
+  IconHash,
+  IconHelpCircle,
+  IconInfoCircle,
+  IconKey,
+  IconKeyboard,
+  IconLayersIntersect2,
+  IconLayoutBottombar,
+  IconLayoutDashboard,
+  IconLayoutNavbar,
+  IconLayoutSidebar,
+  IconLink,
+  IconLoader2,
+  IconLock,
+  IconLockOpen,
+  IconLogin,
+  IconMail,
+  IconMaximize,
+  IconMessage,
+  IconMessage2,
+  IconMessageCircle,
+  IconMessageCode,
+  IconMessageQuestion,
+  IconMicrophone,
+  IconMicrophoneOff,
+  IconMoodPlus,
+  IconMoon,
+  IconNetwork,
+  IconNotebook,
+  IconPackage,
+  IconPalette,
+  IconPaw,
+  IconPencil,
+  IconPhoto,
+  IconPin,
+  IconPlayerEjectFilled,
+  IconPlayerPause,
+  IconPlayerPlay,
+  IconPlayerStopFilled,
+  IconPlug,
+  IconPlus,
+  IconPower,
+  IconQrcode,
+  IconRefresh,
+  IconRosetteDiscountCheck,
+  IconSearch,
+  IconSend,
+  IconSettings,
+  IconSettings2,
+  IconShieldLock,
+  IconSquare,
+  IconSteeringWheel,
+  IconSun,
+  IconTerminal2,
+  IconTool,
+  IconTrash,
+  IconUpload,
+  IconUsers,
+  IconVolume2,
+  IconVolumeOff,
+  IconWaveSine,
+  IconX,
+  IconZoomIn,
+  IconZoomOut
 } from '@tabler/icons-react'
+import { Puzzle as LucidePuzzle } from 'lucide-react'
 
-export {
-  Activity,
-  AlertCircle,
-  AlertTriangle,
-  AppWindow,
-  Archive,
-  ArchiveOff,
-  ArrowBarToDown,
-  ArrowBarToUp,
-  ArrowUp,
-  ArrowUpRight,
-  AtSign,
-  AudioLines,
-  BarChart3,
-  Bell,
-  Book,
-  Bookmark,
-  BookmarkFilled,
-  Box,
-  Brain,
-  Bug,
-  Check,
-  CheckCircle2,
-  CheckIcon,
-  ChevronDown,
-  ChevronDownIcon,
-  ChevronLeft,
-  ChevronLeftIcon,
-  ChevronRight,
-  ChevronRightIcon,
-  ChevronUp,
-  CircleIcon,
-  CircleLetterA,
-  Clipboard,
-  Clock,
-  Cloud,
-  Command,
-  Copy,
-  CopyIcon,
-  CornerDownLeft,
-  Cpu,
-  CreditCard,
-  Download,
-  Ear,
-  EarOff,
-  Egg,
-  Eject,
-  ExternalLink,
-  Eye,
-  EyeOff,
-  FileImage,
-  FileText,
-  FolderOpen,
-  GitBranch,
-  GitBranchIcon,
-  GitFork,
-  GitForkIcon,
-  Globe,
-  Hash,
-  HelpCircle,
-  ImageIcon,
-  Info,
-  Keyboard,
-  KeyRound,
-  Layers3,
-  LayoutDashboard,
-  Link,
-  Link2,
-  LinkIcon,
-  Loader2,
-  Loader2Icon,
-  Lock,
-  LockOpen,
-  LogIn,
-  Mail,
-  Maximize,
-  MessageCircle,
-  MessageCode,
-  MessageQuestion,
-  MessageSquareText,
-  Mic,
-  MicOff,
-  Monitor,
-  MonitorPlay,
-  Moon,
-  MoreHorizontal,
-  MoreHorizontalIcon,
-  MoreVertical,
-  Network,
-  NotebookTabs,
-  Package,
-  Palette,
-  PanelBottom,
-  PanelLeftIcon,
-  PanelTop,
-  Pause,
-  PawPrint,
-  Pencil,
-  PencilIcon,
-  PencilLine,
-  Pin,
-  Play,
-  Plug,
-  Plus,
-  Power,
-  QrCode,
-  RefreshCw,
-  RefreshCwIcon,
-  Save,
-  Search,
-  SearchIcon,
-  Send,
-  Settings,
-  Settings2,
-  ShieldLock,
-  SlidersHorizontal,
-  SmilePlusIcon,
-  Square,
-  Starmap,
-  SteeringWheel,
-  StopFilled,
-  Sun,
-  Terminal,
-  Trash2,
-  Upload,
-  Users,
-  Volume2,
-  Volume2Icon,
-  VolumeX,
-  VolumeXIcon,
-  Wrench,
-  X,
-  XIcon,
-  Zap,
-  ZapFilled,
-  ZoomIn,
-  ZoomOut
-}
+import { shellIcon } from '@/components/ui/pixel-icon'
+
+// Curated chrome icons. Each alias draws its Tabler glyph in the classic shell and its
+// Pixelarticons twin (`TABLER_PIXEL` in `pixel-icons.ts`) in the portal shell.
+
+export const Activity = shellIcon(IconActivity, 'Activity')
+export const AlertCircle = shellIcon(IconAlertCircle, 'AlertCircle')
+export const AlertTriangle = shellIcon(IconAlertTriangle, 'AlertTriangle')
+export const AppWindow = shellIcon(IconAppWindow, 'AppWindow')
+export const Archive = shellIcon(IconArchive, 'Archive')
+export const ArchiveOff = shellIcon(IconArchiveOff, 'ArchiveOff')
+export const ArrowBarToDown = shellIcon(IconArrowBarToDown, 'ArrowBarToDown')
+export const ArrowBarToLeft = shellIcon(IconArrowBarToLeft, 'ArrowBarToLeft')
+export const ArrowBarToUp = shellIcon(IconArrowBarToUp, 'ArrowBarToUp')
+export const ArrowUp = shellIcon(IconArrowUp, 'ArrowUp')
+export const ArrowUpRight = shellIcon(IconArrowUpRight, 'ArrowUpRight')
+export const AtSign = shellIcon(IconAt, 'AtSign')
+export const AudioLines = shellIcon(IconWaveSine, 'AudioLines')
+export const BarChart3 = shellIcon(IconChartBar, 'BarChart3')
+export const Bell = shellIcon(IconBell, 'Bell')
+export const Book = shellIcon(IconBook, 'Book')
+export const Bookmark = shellIcon(IconBookmark, 'Bookmark')
+export const BookmarkFilled = shellIcon(IconBookmarkFilled, 'BookmarkFilled')
+export const Box = shellIcon(IconBox, 'Box')
+export const Brain = shellIcon(IconBrain, 'Brain')
+export const Bug = shellIcon(IconBug, 'Bug')
+export const Category = shellIcon(IconCategory, 'Category')
+export const Check = shellIcon(IconCheck, 'Check')
+export const CheckCircle2 = shellIcon(IconCircleCheck, 'CheckCircle2')
+export const CheckIcon = shellIcon(IconCheck, 'CheckIcon')
+export const ChevronDown = shellIcon(IconChevronDown, 'ChevronDown')
+export const ChevronDownIcon = shellIcon(IconChevronDown, 'ChevronDownIcon')
+export const ChevronLeft = shellIcon(IconChevronLeft, 'ChevronLeft')
+export const ChevronLeftIcon = shellIcon(IconChevronLeft, 'ChevronLeftIcon')
+export const ChevronRight = shellIcon(IconChevronRight, 'ChevronRight')
+export const ChevronRightIcon = shellIcon(IconChevronRight, 'ChevronRightIcon')
+export const ChevronUp = shellIcon(IconChevronUp, 'ChevronUp')
+export const CircleIcon = shellIcon(IconCircle, 'CircleIcon')
+export const CircleLetterA = shellIcon(IconCircleLetterA, 'CircleLetterA')
+export const Clipboard = shellIcon(IconClipboard, 'Clipboard')
+export const Clock = shellIcon(IconClock, 'Clock')
+export const Cloud = shellIcon(IconCloud, 'Cloud')
+export const Command = shellIcon(IconCommand, 'Command')
+export const Copy = shellIcon(IconCopy, 'Copy')
+export const CopyIcon = shellIcon(IconCopy, 'CopyIcon')
+export const CornerDownLeft = shellIcon(IconCornerDownLeft, 'CornerDownLeft')
+export const Cpu = shellIcon(IconCpu, 'Cpu')
+export const CreditCard = shellIcon(IconCreditCard, 'CreditCard')
+export const Database = shellIcon(IconDatabase, 'Database')
+export const Download = shellIcon(IconDownload, 'Download')
+export const Ear = shellIcon(IconEar, 'Ear')
+export const EarOff = shellIcon(IconEarOff, 'EarOff')
+export const Egg = shellIcon(IconEgg, 'Egg')
+export const Eject = shellIcon(IconPlayerEjectFilled, 'Eject')
+export const ExternalLink = shellIcon(IconExternalLink, 'ExternalLink')
+export const Eye = shellIcon(IconEye, 'Eye')
+export const EyeOff = shellIcon(IconEyeOff, 'EyeOff')
+export const FileImage = shellIcon(IconPhoto, 'FileImage')
+export const FileText = shellIcon(IconFileText, 'FileText')
+export const Filter2 = shellIcon(IconFilter2, 'Filter2')
+export const FolderOpen = shellIcon(IconFolderOpen, 'FolderOpen')
+export const GitBranch = shellIcon(IconGitBranch, 'GitBranch')
+export const GitBranchIcon = shellIcon(IconGitBranch, 'GitBranchIcon')
+export const GitFork = shellIcon(IconGitFork, 'GitFork')
+export const GitForkIcon = shellIcon(IconGitFork, 'GitForkIcon')
+export const Gateway = shellIcon(IconGlobe, 'Gateway')
+export const Globe = shellIcon(IconGlobe, 'Globe')
+export const Hash = shellIcon(IconHash, 'Hash')
+export const HelpCircle = shellIcon(IconHelpCircle, 'HelpCircle')
+export const ImageIcon = shellIcon(IconPhoto, 'ImageIcon')
+export const Info = shellIcon(IconInfoCircle, 'Info')
+export const Keyboard = shellIcon(IconKeyboard, 'Keyboard')
+export const KeyRound = shellIcon(IconKey, 'KeyRound')
+export const Layers3 = shellIcon(IconLayersIntersect2, 'Layers3')
+export const LayoutDashboard = shellIcon(IconLayoutDashboard, 'LayoutDashboard')
+export const Link = shellIcon(IconLink, 'Link')
+export const Link2 = shellIcon(IconLink, 'Link2')
+export const LinkIcon = shellIcon(IconLink, 'LinkIcon')
+export const Loader2 = shellIcon(IconLoader2, 'Loader2')
+export const Loader2Icon = shellIcon(IconLoader2, 'Loader2Icon')
+export const Lock = shellIcon(IconLock, 'Lock')
+export const LockOpen = shellIcon(IconLockOpen, 'LockOpen')
+export const LogIn = shellIcon(IconLogin, 'LogIn')
+export const Mail = shellIcon(IconMail, 'Mail')
+export const Maximize = shellIcon(IconMaximize, 'Maximize')
+export const Message = shellIcon(IconMessage, 'Message')
+export const MessageCircle = shellIcon(IconMessageCircle, 'MessageCircle')
+export const MessageCode = shellIcon(IconMessageCode, 'MessageCode')
+export const MessageQuestion = shellIcon(IconMessageQuestion, 'MessageQuestion')
+export const MessageSquareText = shellIcon(IconMessage2, 'MessageSquareText')
+export const Mic = shellIcon(IconMicrophone, 'Mic')
+export const MicOff = shellIcon(IconMicrophoneOff, 'MicOff')
+export const Monitor = shellIcon(IconDeviceDesktop, 'Monitor')
+export const MonitorPlay = shellIcon(IconDeviceDesktopAnalytics, 'MonitorPlay')
+export const Moon = shellIcon(IconMoon, 'Moon')
+export const MoreHorizontal = shellIcon(IconDots, 'MoreHorizontal')
+export const MoreHorizontalIcon = shellIcon(IconDots, 'MoreHorizontalIcon')
+export const MoreVertical = shellIcon(IconDotsVertical, 'MoreVertical')
+export const Network = shellIcon(IconNetwork, 'Network')
+export const NotebookTabs = shellIcon(IconNotebook, 'NotebookTabs')
+export const Package = shellIcon(IconPackage, 'Package')
+export const Palette = shellIcon(IconPalette, 'Palette')
+export const PanelBottom = shellIcon(IconLayoutBottombar, 'PanelBottom')
+export const PanelLeftIcon = shellIcon(IconLayoutSidebar, 'PanelLeftIcon')
+export const PanelTop = shellIcon(IconLayoutNavbar, 'PanelTop')
+export const Pause = shellIcon(IconPlayerPause, 'Pause')
+export const PawPrint = shellIcon(IconPaw, 'PawPrint')
+export const Pencil = shellIcon(IconPencil, 'Pencil')
+export const PencilIcon = shellIcon(IconPencil, 'PencilIcon')
+export const PencilLine = shellIcon(IconPencil, 'PencilLine')
+export const Pin = shellIcon(IconPin, 'Pin')
+export const Play = shellIcon(IconPlayerPlay, 'Play')
+export const Plug = shellIcon(IconPlug, 'Plug')
+export const Plus = shellIcon(IconPlus, 'Plus')
+export const Power = shellIcon(IconPower, 'Power')
+export const Puzzle = shellIcon(LucidePuzzle, 'Puzzle')
+export const QrCode = shellIcon(IconQrcode, 'QrCode')
+export const RefreshCw = shellIcon(IconRefresh, 'RefreshCw')
+export const RefreshCwIcon = shellIcon(IconRefresh, 'RefreshCwIcon')
+export const RosetteDiscountCheck = shellIcon(IconRosetteDiscountCheck, 'RosetteDiscountCheck')
+export const Save = shellIcon(IconDeviceFloppy, 'Save')
+export const Search = shellIcon(IconSearch, 'Search')
+export const SearchIcon = shellIcon(IconSearch, 'SearchIcon')
+export const Send = shellIcon(IconSend, 'Send')
+export const Settings = shellIcon(IconSettings, 'Settings')
+export const Settings2 = shellIcon(IconSettings2, 'Settings2')
+export const ShieldLock = shellIcon(IconShieldLock, 'ShieldLock')
+export const SlidersHorizontal = shellIcon(IconAdjustmentsHorizontal, 'SlidersHorizontal')
+export const SmilePlusIcon = shellIcon(IconMoodPlus, 'SmilePlusIcon')
+export const Square = shellIcon(IconSquare, 'Square')
+export const Starmap = shellIcon(IconChartDots3, 'Starmap')
+export const SteeringWheel = shellIcon(IconSteeringWheel, 'SteeringWheel')
+export const StopFilled = shellIcon(IconPlayerStopFilled, 'StopFilled')
+export const Sun = shellIcon(IconSun, 'Sun')
+export const Terminal = shellIcon(IconTerminal2, 'Terminal')
+export const Trash2 = shellIcon(IconTrash, 'Trash2')
+export const Upload = shellIcon(IconUpload, 'Upload')
+export const Users = shellIcon(IconUsers, 'Users')
+export const Volume2 = shellIcon(IconVolume2, 'Volume2')
+export const Volume2Icon = shellIcon(IconVolume2, 'Volume2Icon')
+export const VolumeX = shellIcon(IconVolumeOff, 'VolumeX')
+export const VolumeXIcon = shellIcon(IconVolumeOff, 'VolumeXIcon')
+export const Wrench = shellIcon(IconTool, 'Wrench')
+export const X = shellIcon(IconX, 'X')
+export const XIcon = shellIcon(IconX, 'XIcon')
+export const Zap = shellIcon(IconBolt, 'Zap')
+export const ZapFilled = shellIcon(IconBoltFilled, 'ZapFilled')
+export const ZoomIn = shellIcon(IconZoomIn, 'ZoomIn')
+export const ZoomOut = shellIcon(IconZoomOut, 'ZoomOut')
 
 export type { Icon as IconComponent } from '@tabler/icons-react'
 

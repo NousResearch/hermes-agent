@@ -57,13 +57,17 @@
   scrollbar-gutter: auto;
 }
 
-/* Banner (895:14660): brand tint, 36px sparkle tile, text, one action. */
+/* Banner (895:14660): brand tint, 36px sparkle tile, text, one action. Figma's stroke is a 0.5px
+   brand line, which reads as a dim navy edge (measured #030390 on the 1x export), not a bright ring:
+   one device-independent hairline of the fill at that strength. */
 .agent-capability-banner {
+  --agent-capability-banner-stroke: color-mix(in srgb, var(--portal-brand-fill) 60%, transparent);
+
   display: flex;
   align-items: center;
   gap: 14px;
   padding: 16px;
-  border: 0.5px solid var(--portal-brand-ink);
+  border: 1px solid var(--agent-capability-banner-stroke);
   border-radius: 4px;
   background: color-mix(in srgb, var(--portal-brand-fill) 10%, transparent);
 }
@@ -74,7 +78,7 @@
   width: 36px;
   height: 36px;
   place-items: center;
-  border: 0.5px solid var(--portal-brand-ink);
+  border: 1px solid var(--agent-capability-banner-stroke);
   border-radius: 4px;
   background: color-mix(in srgb, var(--portal-brand-fill) 35%, transparent);
   color: var(--ui-text-primary);
@@ -226,6 +230,27 @@
   padding-top: 4px;
 }
 
+/* A loading section (AgentCapabilitySkeleton): its text lines at their type's height. */
+.agent-capability-skeleton-title {
+  width: 8rem;
+  height: 17px;
+}
+
+.agent-capability-skeleton-name {
+  width: 10rem;
+  height: 20px;
+}
+
+.agent-capability-skeleton-line {
+  width: min(18rem, 80%);
+  height: 18px;
+}
+
+.agent-capability-skeleton-note {
+  width: min(22rem, 70%);
+  height: 18px;
+}
+
 /* "2 tools ⌄" / "Less ⌃" (895:14675): 11px secondary label with a 12px chevron. */
 .agent-capability-expander {
   display: inline-flex;
@@ -299,4 +324,87 @@
 
 .agent-capability-rows > .global-settings-add-row {
   width: 100%;
+}
+
+/* ── Capabilities inventory header (919:9095) ──
+   The owner sits in the header's trailing slot, where Figma draws its one quiet link: a borderless
+   scope select and an underlined 13px Medium "Agent settings →" at .7 ink. Redesign-only classes. */
+.capability-header-scope {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 16px;
+}
+
+.capability-header-scope [data-slot='select-trigger'] {
+  height: var(--portal-chrome-button-size, 30px);
+  max-width: 16rem;
+  gap: 6px;
+  padding-inline: 10px;
+  border: 0;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--ui-base) 2%, transparent);
+  box-shadow: none;
+  color: var(--ui-text-secondary);
+  font-size: 13px;
+}
+
+.capability-header-scope [data-slot='select-trigger']:hover {
+  background: color-mix(in srgb, var(--ui-base) 5%, transparent);
+  color: var(--ui-text-primary);
+}
+
+.capability-header-link {
+  gap: 4px;
+  color: color-mix(in srgb, var(--ui-text-primary) 70%, transparent);
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  white-space: nowrap;
+}
+
+.capability-header-link:hover {
+  color: var(--ui-text-primary);
+}
+
+/* A skill's SKILL.md and a feed overview in the detail dialog (redesign): the dialog's type scale —
+   13px secondary body, 15/14/13 Medium headings, mono only for code. Overrides CompactMarkdown's
+   tool-detail sizes. */
+.capability-markdown {
+  color: var(--ui-text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.capability-markdown :is(h1, h2, h3, h4) {
+  margin: 20px 0 8px;
+  color: var(--ui-text-primary);
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1.4;
+}
+
+.capability-markdown :is(h1, h2, h3, h4):first-child {
+  margin-top: 0;
+}
+
+.capability-markdown h1 {
+  font-size: 15px;
+}
+
+.capability-markdown h2 {
+  font-size: 14px;
+}
+
+.capability-markdown :is(h3, h4) {
+  font-size: 13px;
+}
+
+.capability-markdown :is(p, ul, ol) {
+  margin-bottom: 10px;
+}
+
+.capability-markdown :is(pre, code) {
+  font-size: 12px;
 }

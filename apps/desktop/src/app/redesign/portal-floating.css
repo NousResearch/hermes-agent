@@ -55,6 +55,29 @@
   padding: 4px;
 }
 
+/* A select's menu is at least its trigger's width (the menu's own 4px inset, not the trigger plus
+   a second viewport inset), shows whole rows only (eight 32px rows, then it scrolls inside) and
+   never runs past the window. */
+:root[data-shell='portal'] [data-slot='select-content'] {
+  min-width: var(--radix-select-trigger-width);
+  max-height: min(calc(8 * 2rem + 10px), var(--radix-select-content-available-height, 100vh));
+}
+
+:root[data-shell='portal'] [data-slot='select-content'] > [data-radix-select-viewport] {
+  min-width: 0;
+  padding: 0;
+}
+
+/* The check trails the label at the row's end inset, as in every checkable menu (dropdown radio and
+   checkbox items, the language list); leading slots are for icons. */
+:root[data-shell='portal'] [data-slot='select-item'] {
+  padding-inline-end: calc(0.625rem + 0.875rem + 0.5rem);
+}
+
+:root[data-shell='portal'] [data-slot='select-item-indicator'] {
+  inset-inline-end: 0.625rem;
+}
+
 :root[data-shell='portal'] :is([data-slot='popover-content'], .hermes-floating-surface) {
   border-radius: var(--portal-popover-radius);
 }
@@ -155,6 +178,8 @@
 :root[data-shell='portal'] [data-slot='dialog-description'] {
   font-size: 0.8125rem;
   line-height: 1.4;
+  /* No one-word last line ("…stays / "default"."). */
+  text-wrap: pretty;
 }
 
 :root[data-shell='portal'] [data-slot='dialog-footer'] {

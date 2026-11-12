@@ -1,9 +1,9 @@
 import { useStore } from '@nanostores/react'
 import { type ReactNode, useEffect, useState } from 'react'
-import { useNavigate } from 'react-router'
 
 import { $apiRequestScope } from '@/api/client'
 import { openSession } from '@/app/open-session'
+import { useStableNavigate } from '@/app/stable-navigate'
 import { formatMessageTimestamp } from '@/components/assistant-ui/thread/timestamp'
 import { Button } from '@/components/ui/button'
 import { RowButton } from '@/components/ui/row-button'
@@ -24,10 +24,19 @@ import { $sessionTiles, canOpenSessionOwner, runtimeSessionOwner } from '@/store
 
 import { SessionStatusDot } from '../session-status-dot'
 
+import { capAgentChats } from './portal/agent-chat-cap'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 import { sessionRowKey } from './simplified-session-identity'
 
+/** An agent card's cap: its most recent chats, then a row that shows the rest or folds them back. */
+interface SessionListCap {
+  limit: number
+  showAll: boolean
+  onToggle: () => void
+}
+
 interface SimplifiedSessionListProps {
+  cap?: SessionListCap
   searching?: boolean
   showAgent?: boolean
   sessions: SessionInfo[]
@@ -93,7 +102,7 @@ function SessionAge({ row, now }: { row: SessionInfo; now: number }) {
   )
 }
 
-interface SessionRowProps extends Omit<SimplifiedSessionListProps, 'sessions' | 'activeSessionId'> {
+interface SessionRowProps extends Omit<SimplifiedSessionListProps, 'sessions' | 'activeSessionId' | 'cap'> {
   row: SessionInfo
   selected: boolean
   surface: ListSurface
@@ -102,7 +111,7 @@ interface SessionRowProps extends Omit<SimplifiedSessionListProps, 'sessions' | 
 
 function SessionRow({ row, selected, surface, meta, ...props }: SessionRowProps) {
   const { t } = useI18n()
-  const navigate = useNavigate()
+  const navigate = useStableNavigate()
   const title = sessionTitle(row)
   const pinned = props.pinnedIds.has(sessionRowKey(row))
   const ambiguous = props.ambiguousIds.has(row.id)
@@ -230,9 +239,10 @@ function useMinuteClock(enabled: boolean) {
 }
 
 /** A flat v2 list: owner-qualified keys, live status marks and the desktop's row menu. */
-export function SimplifiedSessionList({ sessions, activeSessionId, ...props }: SimplifiedSessionListProps) {
+export function SimplifiedSessionList({ cap, sessions, activeSessionId, ...props }: SimplifiedSessionListProps) {
   const { t } = useI18n()
   const isSelected = useFocusedOwner(activeSessionId)
+  const dots = useStore($sessionDotStateById)
   const now = useMinuteClock(!props.showAgent)
   const surface: ListSurface = props.searching ? 'search' : props.showAgent ? 'pinned' : 'agent'
 
@@ -261,9 +271,15 @@ export function SimplifiedSessionList({ sessions, activeSessionId, ...props }: S
     )
   }
 
+  // A search lists every match; otherwise the cap keeps whatever needs attention in reach.
+  const capped = cap && !cap.showAll && !props.searching
+  const keep = (row: SessionInfo) => isSelected(row) || row.unread === true || (dots[row.id] ?? 'idle') !== 'idle'
+  const shown = capped ? capAgentChats(ordered, cap.limit, keep) : ordered
+  const foldable = cap && !props.searching && ordered.length > cap.limit
+
   return (
     <div className="portal-session-list">
-      {ordered.map(row => (
+      {shown.map(row => (
         <SessionRow
           {...props}
           key={sessionRowKey(row)}
@@ -273,6 +289,11 @@ export function SimplifiedSessionList({ sessions, activeSessionId, ...props }: S
           surface={surface}
         />
       ))}
+      {foldable && (
+        <RowButton aria-expanded={cap.showAll} className="portal-session-more" onClick={cap.onToggle}>
+          {cap.showAll ? t.simplifiedAgents.showFewerChats : t.simplifiedAgents.showAllChats(ordered.length)}
+        </RowButton>
+      )}
     </div>
   )
 }

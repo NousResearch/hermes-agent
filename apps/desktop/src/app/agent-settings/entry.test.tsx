@@ -1,5 +1,5 @@
 import { QueryClientProvider } from '@tanstack/react-query'
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest'
 
@@ -29,6 +29,11 @@ const plugin = {
 const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
   if (method === 'plugins.manage') {
     return params?.action === 'list' ? { plugins: [plugin] } : { ok: true, plugin }
+  }
+
+  // The agent page counts connectors from the same list the Connectors page reads.
+  if (method === 'connectors.list') {
+    return { connectors: [] }
   }
 
   return {}
@@ -344,4 +349,36 @@ it('retains an in-flight instructions save across switching and clears only its 
     { connectionId: 'beta', profile: 'default', body: { content: 'Submitted instructions' } },
     { connectionId: 'beta', profile: 'default', body: { content: 'Later instructions' } }
   ])
+})
+
+it('keeps one settings menu, in the page panel, and Back to agents returns the panel to the agents', async () => {
+  let search = ''
+
+  function LocationProbe() {
+    search = useLocation().search
+
+    return null
+  }
+
+  render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter
+        initialEntries={['/settings?agentProfile=default&connection=beta&panel=settings&tab=agent:general']}
+      >
+        <SettingsView onClose={() => {}} />
+        <LocationProbe />
+      </MemoryRouter>
+    </QueryClientProvider>
+  )
+
+  const panel = await screen.findByRole('complementary', { name: en.commandCenter.settings })
+  // 1036:7189: the stage draws no second menu beside the page.
+  expect(screen.getAllByRole('navigation', { name: en.commandCenter.settings })).toHaveLength(1)
+  fireEvent.click(within(panel).getByRole('button', { name: 'Model' }))
+  await waitFor(() => expect(new URLSearchParams(search).get('tab')).toBe('config:model'))
+
+  fireEvent.click(within(panel).getByRole('button', { name: /Back to agents/ }))
+  await waitFor(() => expect(new URLSearchParams(search).get('panel')).toBeNull())
+  expect(screen.queryByRole('complementary', { name: en.commandCenter.settings })).toBeNull()
+  expect(screen.queryByRole('navigation', { name: en.commandCenter.settings })).toBeNull()
 })

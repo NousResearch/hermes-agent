@@ -5,8 +5,23 @@
   --radius-scalar: 0.6;
   --terminal-panel-min-width: min(22rem, 40vw);
   --global-nav-width: 3.75rem;
-  --page-nav-width: clamp(13rem, 25vw, 20rem);
+  /* ONE sidebar column for every rail destination: page panels (Agents, Schedules, Settings) take the
+     chat sidebar's width — the user's sash width once they size it (published by the pane tree as
+     --portal-sidebar-width), else its default — so switching destinations never moves the panel
+     edge, its divider or the stage's content edge. */
+  --page-nav-width: var(--portal-sidebar-width, var(--sessions-pane-width));
   --page-nav-row-height: 2.5rem;
+  /* The page-frame contract: where a page's content column starts, from the stage edge it shares
+     with the page's sidebar panel (the freshest frames, 1036:7189 / 895:*: 20px after the divider,
+     one value for Agents, Settings and Schedules alike), and from the stage's own edge on a page
+     with no panel (919:9281: x 90 in the stage). Left insets, never centring, at every window
+     width, so switching pages never moves the column sideways. */
+  --page-panel-inset: 1.25rem;
+  --page-stage-inset: 5.625rem;
+  /* The column's one max width per page kind: forms and details (1036:7189 General: 840) and
+     catalogs and tables (919:9281: 980). */
+  --page-form-max-width: 52.5rem;
+  --page-catalog-max-width: 61.25rem;
   --page-title-size: 1.875rem;
   --composer-width: 40rem;
   --dialog-body-padding: 1.5rem;
@@ -14,14 +29,28 @@
 }
 
 :root[data-shell='portal'] [data-page-surface] [data-slot='overlay-main'] {
-  max-width: 46rem;
-  padding: 1.125rem 0 0;
+  /* The form column at the panel inset. */
+  max-width: calc(var(--page-panel-inset) + var(--page-form-max-width) + var(--page-panel-inset));
+  margin-inline: 0;
+  padding: 1.125rem var(--page-panel-inset) 0;
 }
 
+/* Navigation folded away: the column spans the whole stage (not the empty nav track) and starts at
+   the stage inset, as a page without a panel does (919). */
+@media (min-width: 47.5rem) {
+  :root[data-shell='portal'] [data-page-surface] [data-tour='overlay-nav'].hidden ~ [data-slot='overlay-main'] {
+    grid-column: 1 / -1;
+    max-width: calc(var(--page-stage-inset) + var(--page-form-max-width) + var(--page-panel-inset));
+    padding-inline-start: var(--page-stage-inset);
+  }
+}
+
+/* The column owns the inset; the heading and sections inside it sit flush on it. */
 :root[data-shell='portal']
-  [data-page-surface]:not(:has(.agent-settings-editor))
+  [data-page-surface]
+  [data-slot='overlay-main']
   :is([data-slot='page-heading'], [data-slot='settings-content'] > div) {
-  padding-inline: clamp(1rem, 4vw, 3rem);
+  padding-inline: 0;
 }
 
 .page-nav-title {

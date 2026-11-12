@@ -314,6 +314,18 @@ function applyTypographyKnobs(root: HTMLElement, typo: Partial<DesktopThemeTypog
   }
 }
 
+/** A live Light/Dark switch swaps every colour token at once; a control whose `color` eases (hover
+ *  returns, chrome buttons) would spend its transition passing through the new background, so its
+ *  label reads blank for a frame. Transitions stand down until the new mode has painted. */
+function holdTransitionsThroughModeSwitch(root: HTMLElement, rendered: 'dark' | 'light') {
+  if (!root.dataset.hermesMode || root.dataset.hermesMode === rendered) {
+    return
+  }
+
+  root.dataset.themeSwitching = ''
+  requestAnimationFrame(() => requestAnimationFrame(() => delete root.dataset.themeSwitching))
+}
+
 function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark', chatFontFamily = $chatFontFamily.get()) {
   if (typeof document === 'undefined') {
     return
@@ -327,6 +339,7 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark', chatFontFamily 
   const midground = c.midground ?? c.ring
   const skinName = theme.name.endsWith(`-${mode}`) ? theme.name.slice(0, -mode.length - 1) : theme.name
 
+  holdTransitionsThroughModeSwitch(root, rendered)
   root.style.setProperty('color-scheme', rendered)
   root.dataset.hermesTheme = skinName
   root.dataset.hermesMode = rendered

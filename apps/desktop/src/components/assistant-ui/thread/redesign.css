@@ -396,8 +396,28 @@
   letter-spacing: 0.01em;
 }
 
-/* Timeline rail (timeline.css): the current turn is marked in ink, not the
-   theme accent, so the rail reads as quiet chrome at the stage edge. */
+/* Timeline rail (timeline.css): out of sight at rest, so a short thread's one or two ticks never
+   read as a stray dash at the stage edge or on a pane seam. It shows while the pointer is on the
+   transcript's edge, while a tick has focus and for a moment after the user scrolls; inset from the
+   stage edge. The current turn is marked in ink, not the theme accent: quiet chrome. */
+:root[data-shell='portal'] {
+  --thread-timeline-inset: 0.375rem;
+}
+
+:root[data-shell='portal'] [data-slot='thread-timeline'] {
+  opacity: 0;
+}
+
+:root[data-shell='portal'] [data-slot='thread-timeline']:is(:hover, :focus-within, [data-scrolling]) {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  :root[data-shell='portal'] [data-slot='thread-timeline'] {
+    transition: opacity var(--portal-motion-base) var(--portal-ease);
+  }
+}
+
 :root[data-shell='portal'] .thread-timeline-tick [data-slot='timeline-bar'] {
   background: var(--ui-text-quaternary);
 }

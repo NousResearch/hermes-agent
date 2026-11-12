@@ -3597,6 +3597,12 @@ export interface Translations extends NoticeTranslations {
       recentActivity: string
       viewAllLogs: string
       messagingPlatforms: string
+      machineStatus: (machine: string, status: string) => string
+      checkAgain: string
+      switchToMachine: string
+      machineSettings: string
+      restartTitle: string
+      restartBody: string
     }
     approvalMode: {
       title: string

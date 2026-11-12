@@ -306,6 +306,7 @@ export function FindBar() {
         'pointer-events-auto fixed right-4 top-[calc(var(--titlebar-band-height)+0.5rem)] z-50 [-webkit-app-region:no-drag]',
         'flex items-center gap-2 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-surface-background) px-2 py-1.5 shadow-md'
       )}
+      data-slot="find-bar"
       role="search"
       style={barStyle}
     >

@@ -2,6 +2,8 @@
    renders it, so element selectors stay ungated; body-portalled surfaces gate on the root. */
 :root[data-shell='portal'] {
   --sessions-pane-width: 20rem;
+  /* Below this the New-session split and the agents' two-line rows start to truncate (sash drags). */
+  --sessions-pane-min-width: 16.25rem;
   /* The brand block, New session and search sit on the 20px inset; below them the list follows
      Figma 147:7470: sections padded 12px (the gutter), rows bleeding 8px past the caption. */
   --portal-sidebar-inset: 1.25rem;
@@ -18,7 +20,9 @@
   --portal-sidebar-caption: 0.625rem;
   --portal-sidebar-hover: color-mix(in srgb, var(--ui-base) 4%, transparent);
   --portal-sidebar-press: color-mix(in srgb, var(--ui-base) 7%, transparent);
-  --portal-sidebar-selected: color-mix(in srgb, var(--ui-base) 2%, transparent);
+  --portal-sidebar-agent-hover: color-mix(in srgb, var(--ui-base) 2%, transparent);
+  /* Var1's soft pill: the open chat reads clearly stronger than a hovered row (4%). */
+  --portal-sidebar-selected: color-mix(in srgb, var(--ui-base) 7%, transparent);
   --portal-sidebar-card: color-mix(in srgb, var(--ui-base) 5%, transparent);
   /* The primary action (New session): Var1 draws it at light/20 with keycaps a step lighter; Brand
      rev light at dark/2 with dark/2 keycaps on a dark/5 rim. */
@@ -38,6 +42,13 @@
   --portal-sidebar-machine-ink: color-mix(in srgb, var(--ui-base) 80%, transparent);
   --portal-sidebar-green: var(--portal-status-online);
   --portal-sidebar-orange: var(--portal-status-pending);
+}
+
+:root[data-shell='portal']:not(.dark) {
+  /* Brand rev light steps the machine card in black 2% / 4%: a quiet card with a header a shade
+     deeper, never a grey slab. */
+  --portal-sidebar-machine-fill: color-mix(in srgb, var(--ui-base) 2%, transparent);
+  --portal-sidebar-machine-head: color-mix(in srgb, var(--ui-base) 4%, transparent);
 }
 
 :root.dark[data-shell='portal'] {
@@ -512,13 +523,18 @@ button.portal-section-title:hover {
 
   min-height: 0;
   flex: 0 1 auto;
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--ui-base) 15%, transparent) transparent;
 }
 
 .portal-sidebar [data-slot='agent-section'] .portal-section-scroll {
   flex: 1 1 auto;
   padding-bottom: 1.25rem;
+  /* Only the bottom edge fades: an open machine's header sticks to the top edge and must stay
+     legible over the agents scrolling under it. */
+  mask-image: linear-gradient(
+    to bottom,
+    #000 calc(100% - (var(--scroll-fade-pad) + var(--scroll-fade-size)) * var(--scroll-fade-bottom)),
+    transparent calc(100% - var(--scroll-fade-pad) * var(--scroll-fade-bottom))
+  );
 }
 
 /* ── Rows: pinned chats, group chats and machines (143:6240 / 143:6263) ─────────────────────── */
@@ -563,7 +579,7 @@ button.portal-section-title:hover {
 }
 
 .portal-session-row:active,
-.portal-machine-row:active {
+[data-slot='gateway-heading']:has(> :is(.portal-machine-row, .portal-machine-status):active) {
   background: var(--portal-sidebar-press);
 }
 
@@ -720,13 +736,24 @@ button.portal-section-title:hover {
   --portal-machine-tone: var(--portal-sidebar-orange);
 }
 
+/* A machine row is two hit targets on one 40px bar: the disclosure (name, tag) and, at its end, the
+   status, which opens the machine's health popover. The bar paints the row's states for both. */
+.portal-sidebar [data-slot='gateway-heading'] {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  border-radius: 6px;
+}
+
 .portal-machine-row {
+  flex: 1;
   min-height: var(--portal-sidebar-machine-row);
   gap: 0.375rem;
+  padding-inline-end: 0.25rem;
   color: var(--portal-sidebar-machine-ink);
 }
 
-.portal-machine-row:hover {
+.portal-sidebar [data-slot='gateway-heading']:hover {
   background: var(--portal-sidebar-hover);
 }
 
@@ -744,7 +771,21 @@ button.portal-section-title:hover {
 }
 
 .portal-machine-status {
+  height: 1.5rem;
+  margin-inline: 0 0.375rem;
+  padding-inline: 0.25rem;
+  border-radius: 4px;
   color: var(--portal-machine-tone);
+}
+
+.portal-machine-status:hover,
+.portal-machine-status[data-state='open'] {
+  background: var(--portal-sidebar-hover);
+}
+
+.portal-machine-status:focus-visible {
+  outline: 2px solid var(--portal-brand-ink);
+  outline-offset: -2px;
 }
 
 .portal-status-dot {
@@ -766,16 +807,7 @@ button.portal-section-title:hover {
 }
 
 .portal-sidebar [data-slot='gateway-group'][data-open='true'] > [data-slot='gateway-heading'] > .portal-machine-row {
-  border-radius: 6px 6px 0 0;
-  background: var(--portal-sidebar-machine-head);
   color: var(--ui-text-primary);
-}
-
-.portal-sidebar
-  [data-slot='gateway-group'][data-open='true']
-  > [data-slot='gateway-heading']
-  > .portal-machine-row:hover {
-  background: color-mix(in srgb, var(--ui-base) 10%, transparent);
 }
 
 .portal-sidebar [data-slot='gateway-group'][data-open='true'] .portal-machine-name {
@@ -788,6 +820,26 @@ button.portal-section-title:hover {
   > [data-slot='gateway-heading'][data-tone='offline']
   .portal-machine-status {
   color: var(--portal-sidebar-head-meta);
+}
+
+/* The open machine's header bar stays at the top of the list while its agents scroll under it,
+   until its card ends. Opaque: the card's fill over the panel's solid colour, so rows never show
+   through it (its row paints the header step on top). */
+.portal-sidebar [data-slot='gateway-group'][data-open='true'] > [data-slot='gateway-heading'] {
+  --portal-machine-head-state: var(--portal-sidebar-machine-head);
+
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  border-radius: 6px 6px 0 0;
+  background:
+    linear-gradient(var(--portal-machine-head-state), var(--portal-machine-head-state)),
+    linear-gradient(var(--portal-sidebar-machine-fill), var(--portal-sidebar-machine-fill)),
+    var(--portal-sidebar-background);
+}
+
+.portal-sidebar [data-slot='gateway-group'][data-open='true'] > [data-slot='gateway-heading']:hover {
+  --portal-machine-head-state: color-mix(in srgb, var(--ui-base) 10%, transparent);
 }
 
 .portal-machine-agents {
@@ -808,7 +860,7 @@ button.portal-section-title:hover {
 }
 
 .portal-sidebar [data-slot='agent-heading']:hover {
-  background: var(--portal-sidebar-selected);
+  background: var(--portal-sidebar-agent-hover);
 }
 
 .portal-sidebar [data-slot='agent-heading']:has(.portal-agent-chat:focus-visible) {
@@ -949,6 +1001,29 @@ button.portal-section-title:hover {
   background: var(--portal-sidebar-hover);
 }
 
+/* "Show all (15)" / "Show less" under an agent's most recent chats: a chat row's pitch and inset,
+   in the caption ink so it never reads as a chat. */
+.portal-session-more {
+  display: flex;
+  min-height: var(--portal-sidebar-chat-row);
+  align-items: center;
+  padding-inline: 1.375rem 0.625rem;
+  border-radius: 6px;
+  color: var(--portal-sidebar-meta);
+  font-size: 0.75rem;
+  text-align: start;
+}
+
+.portal-session-more:hover {
+  background: var(--portal-sidebar-hover);
+  color: var(--ui-text-primary);
+}
+
+.portal-session-more:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+}
+
 .portal-agent-sessions .portal-session-meta {
   margin-inline-start: 1rem;
 }
@@ -967,7 +1042,8 @@ button.portal-section-title:hover {
   .portal-sidebar
     :is(
       .portal-session-row,
-      .portal-machine-row,
+      [data-slot='gateway-heading'],
+      .portal-machine-status,
       [data-slot='agent-heading'],
       .portal-row-action,
       .portal-session-meta,
@@ -978,10 +1054,10 @@ button.portal-section-title:hover {
       .portal-new-session > button
     ) {
     transition:
-      background-color 120ms ease,
-      color 120ms ease,
-      opacity 120ms ease,
-      transform 160ms ease;
+      background-color var(--portal-motion-fast) var(--portal-ease),
+      color var(--portal-motion-fast) var(--portal-ease),
+      opacity var(--portal-motion-fast) var(--portal-ease),
+      transform var(--portal-motion-base) var(--portal-ease);
   }
 }
 
@@ -1082,7 +1158,6 @@ button.portal-section-title:hover {
   overflow-y: auto;
   border-top: 1px solid var(--ui-stroke-tertiary);
   padding-block: 0.5rem;
-  scrollbar-width: thin;
 }
 
 .portal-hidden-heading {

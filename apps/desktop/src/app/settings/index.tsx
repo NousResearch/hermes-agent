@@ -7,7 +7,6 @@ import { Navigate, useLocation, useNavigate } from 'react-router'
 import { codiconIcon } from '@/components/ui/codicon'
 import { KbdCombo } from '@/components/ui/kbd'
 import { Tip } from '@/components/ui/tooltip'
-import { getHermesConfigDefaults, getHermesConfigRecord, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import {
@@ -16,6 +15,7 @@ import {
   Bell,
   Cpu,
   Download,
+  Gateway,
   Globe,
   Info,
   Keyboard,
@@ -33,12 +33,10 @@ import { isEditableTarget } from '@/lib/keybinds/combo'
 import { typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
 import { cn } from '@/lib/utils'
 import { $commandPaletteOpen, openCommandPalettePage } from '@/store/command-palette'
-import { confirm } from '@/store/confirm'
 import { $activeConnectionId } from '@/store/connections'
 import { recordFeatureUse, settingsArea } from '@/store/desktop-metrics'
 import { bindingsFor } from '@/store/keybinds'
 import { $localModelsEnabled } from '@/store/local-models-flag'
-import { notifyError } from '@/store/notifications'
 import { $settingsScopeProfile } from '@/store/settings-scope'
 import { usePortalShell } from '@/store/shell-variant'
 
@@ -54,6 +52,7 @@ import { AppearanceSettings } from './appearance-settings'
 import { BILLING_VIEWS, BillingSettings, type BillingSubView } from './billing'
 import { deriveBillingView, useBillingState, useSubscriptionState } from './billing/use-billing-state'
 import { ConfigSettings } from './config-settings'
+import { useConfigTransfer } from './config-transfer'
 import { SECTIONS } from './constants'
 import { GatewaySettings } from './gateway-settings'
 import { KeybindSettings } from './keybind-settings'
@@ -288,41 +287,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
 
   const importInputRef = useRef<HTMLInputElement | null>(null)
 
-  const exportConfig = async () => {
-    try {
-      const cfg = await getHermesConfigRecord()
-      const blob = new Blob([JSON.stringify(cfg, null, 2)], { type: 'application/json' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = 'hermes-config.json'
-      a.click()
-      URL.revokeObjectURL(url)
-      triggerHaptic('success')
-    } catch (err) {
-      notifyError(err, t.settings.exportFailed)
-    }
-  }
-
-  const resetConfig = async () => {
-    const ok = await confirm({
-      confirmLabel: t.settings.resetToDefaults,
-      destructive: true,
-      title: t.settings.resetConfirm
-    })
-
-    if (!ok) {
-      return
-    }
-
-    try {
-      await saveHermesConfig(await getHermesConfigDefaults())
-      triggerHaptic('success')
-      onConfigSaved?.()
-    } catch (err) {
-      notifyError(err, t.settings.resetFailed)
-    }
-  }
+  const { exportConfig, importConfig, resetConfig } = useConfigTransfer(importInputRef, onConfigSaved)
 
   const webAccessAvailable = useWebAccessAvailable()
 
@@ -447,7 +412,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
           },
           {
             active: activeView === 'gateway',
-            icon: Globe,
+            icon: Gateway,
             id: 'gateway',
             label: t.settings.nav.gateway,
             onSelect: () => setActiveView('gateway')
@@ -565,7 +530,8 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     about: redesignCopy.about
   })
 
-  const navFooter = (
+  // The redesign draws these as labelled rows on Advanced (config-transfer.tsx); classic keeps its icons.
+  const navFooter = simplified ? undefined : (
     <>
       <Tip label={t.settings.exportConfig}>
         <OverlayIconButton onClick={() => void exportConfig()}>
@@ -573,23 +539,12 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
         </OverlayIconButton>
       </Tip>
       <Tip label={t.settings.importConfig}>
-        <OverlayIconButton
-          onClick={() => {
-            triggerHaptic('open')
-            importInputRef.current?.click()
-          }}
-        >
+        <OverlayIconButton onClick={importConfig}>
           <Upload />
         </OverlayIconButton>
       </Tip>
       <Tip label={t.settings.resetToDefaults}>
-        <OverlayIconButton
-          className="hover:text-destructive"
-          onClick={() => {
-            triggerHaptic('warning')
-            void resetConfig()
-          }}
-        >
+        <OverlayIconButton className="hover:text-destructive" onClick={() => void resetConfig()}>
           <RefreshCw />
         </OverlayIconButton>
       </Tip>

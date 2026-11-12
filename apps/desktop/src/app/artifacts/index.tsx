@@ -1,5 +1,5 @@
 import type * as React from 'react'
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import { TitlebarIcon } from '@/app/shell/titlebar-icon'
@@ -18,8 +18,8 @@ import {
   PaginationPrevious
 } from '@/components/ui/pagination'
 import { RowButton } from '@/components/ui/row-button'
+import { Skeleton } from '@/components/ui/skeleton'
 import { Tip } from '@/components/ui/tooltip'
-import { getSessionMessages, listAllProfileSessions } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { resolveBrandIcon } from '@/lib/brand-icon'
 import {
@@ -35,7 +35,7 @@ import { downloadGatewayMediaFile, isArtifactFilePath, isRemoteGateway } from '@
 import { normalize } from '@/lib/text'
 import { fmtDayTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
-import { notify, notifyError } from '@/store/notifications'
+import { notifyError } from '@/store/notifications'
 import { usePortalShell } from '@/store/shell-variant'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
@@ -44,13 +44,37 @@ import { openSessionFromPicker } from '../open-session'
 import { PageSearchShell } from '../page-search-shell'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
-import {
-  ARTIFACT_FILTERS,
-  type ArtifactFilter,
-  artifactImageSrc,
-  type ArtifactRecord,
-  loadArtifactsForSessions
-} from './artifact-utils'
+import { ARTIFACT_FILTERS, type ArtifactFilter, artifactImageSrc, type ArtifactRecord } from './artifact-utils'
+import { useArtifactIndex } from './artifacts-index'
+
+/** File rows a loading Library reserves under its pagination strip. */
+const SKELETON_ROWS = 6
+
+/** The redesign's first paint before any index is cached: the file table's frame (pagination strip,
+ *  header row and rows) in the page column, filled in place when the index lands. */
+function LibrarySkeleton({ label }: { label: string }) {
+  return (
+    <div
+      aria-busy="true"
+      aria-label={label}
+      className="page-search-column h-full max-w-(--page-content-max-width) overflow-hidden"
+      role="status"
+    >
+      <div className="flex flex-col px-(--page-content-inset)">
+        <div className="h-7" />
+        <div className="overflow-hidden rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background)">
+          <div className="h-7 border-b border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary)" />
+          {Array.from({ length: SKELETON_ROWS }, (_, index) => (
+            <div className="flex h-10 items-center gap-3 px-2.5" key={index}>
+              <Skeleton className="h-3.5 w-1/3" />
+              <Skeleton className="ml-auto h-3 w-24" />
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
 
 function formatArtifactTime(timestamp: number): string {
   return fmtDayTime.format(new Date(timestamp))
@@ -118,7 +142,6 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const a = t.artifacts
   const redesign = usePortalShell()
   const navigate = useNavigate()
-  const [artifacts, setArtifacts] = useState<ArtifactRecord[] | null>(null)
   const [query, setQuery] = useState('')
   const [kindFilter, setKindFilter] = useRouteEnumParam('tab', ARTIFACT_FILTERS, 'all')
 
@@ -126,67 +149,9 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const [imagePage, setImagePage] = useState(1)
   const [filePage, setFilePage] = useState(1)
 
-  const [refreshing, setRefreshing] = useState(false)
-  const refreshInFlightRef = useRef(false)
-
-  const refreshArtifacts = useCallback(async () => {
-    if (refreshInFlightRef.current) {
-      return
-    }
-
-    refreshInFlightRef.current = true
-    setRefreshing(true)
-
-    try {
-      const sessions = (await listAllProfileSessions(30, 1)).sessions
-
-      const { artifacts: nextArtifacts, failures } = await loadArtifactsForSessions(sessions, (session, page) =>
-        getSessionMessages(session.id, session.profile, {
-          ...page,
-          includeCompacted: true,
-          order: 'oldest'
-        })
-      )
-
-      if (failures.length > 0) {
-        const safeLimitFailures = failures.filter(({ error }) =>
-          String(error instanceof Error ? error.message : error).includes('safe-load limit')
-        ).length
-
-        const otherFailures = failures.length - safeLimitFailures
-
-        const detail = [
-          safeLimitFailures ? `${safeLimitFailures} exceeded the safe transcript load limit.` : '',
-          otherFailures ? `${otherFailures} could not be read.` : ''
-        ]
-          .filter(Boolean)
-          .join(' ')
-
-        notify({
-          id: 'artifacts-partial-load',
-          kind: 'warning',
-          title: a.failedLoad,
-          message: `Skipped ${failures.length} of ${sessions.length} recent sessions while indexing artifacts.`,
-          detail,
-          durationMs: 10_000
-        })
-      }
-
-      setArtifacts(nextArtifacts.sort((left, right) => right.timestamp - left.timestamp))
-    } catch (err) {
-      notifyError(err, a.failedLoad)
-      setArtifacts([])
-    } finally {
-      refreshInFlightRef.current = false
-      setRefreshing(false)
-    }
-  }, [a])
+  const { artifacts, refreshing, refresh: refreshArtifacts } = useArtifactIndex()
 
   useRefreshHotkey(refreshArtifacts)
-
-  useEffect(() => {
-    void refreshArtifacts()
-  }, [refreshArtifacts])
 
   useEffect(() => {
     setImagePage(1)
@@ -334,7 +299,10 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         <Tip label={refreshing ? a.refreshing : a.refresh}>
           <Button
             aria-label={refreshing ? a.refreshing : a.refresh}
-            className="text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
+            className={cn(
+              'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground',
+              redesign && 'page-header-chrome-button'
+            )}
             disabled={refreshing}
             onClick={() => void refreshArtifacts()}
             size="icon-titlebar"
@@ -352,7 +320,9 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         { id: 'link', label: a.tabLinks, meta: artifacts ? counts.link : null }
       ]}
     >
-      {!artifacts ? (
+      {!artifacts && redesign ? (
+        <LibrarySkeleton label={a.indexing} />
+      ) : !artifacts ? (
         <PageLoader label={a.indexing} />
       ) : visibleArtifacts.length === 0 && redesign ? (
         <div className="page-search-empty">
@@ -366,7 +336,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
           </div>
         </div>
       ) : (
-        <div className="mx-auto h-full w-full max-w-[var(--page-content-max-width,none)] overflow-y-auto [scrollbar-gutter:stable]">
+        <div className="page-search-column mx-auto h-full w-full max-w-[var(--page-content-max-width,none)] overflow-y-auto [scrollbar-gutter:stable]">
           <div className="flex flex-col gap-3 px-[var(--page-content-inset,0.75rem)] pb-2">
             {visibleImageArtifacts.length > 0 && (
               <section className="flex flex-col">

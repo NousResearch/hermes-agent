@@ -53,10 +53,11 @@ export function titlebarAppActionsClusterCounts(
   portal = false
 ): { left: number; right: number } {
   const shown = shownInMode(mode)
-  const sidebar = 1
+  // The redesign's band leads with Back and Forward on every screen (titlebar-controls.tsx).
+  const sidebar = portal ? 3 : 1
 
-  const appActions = APP_ACTION_IDS.filter(id =>
-    shown(TITLEBAR_FIXED_TOOLS[id]) && !(portal && (id === 'settings' || (id === 'layout' && mode === 'simple')))
+  const appActions = APP_ACTION_IDS.filter(
+    id => shown(TITLEBAR_FIXED_TOOLS[id]) && !(portal && (id === 'settings' || (id === 'layout' && mode === 'simple')))
   ).length
 
   const rightFixed = RIGHT_FIXED_IDS.filter(id => shown(TITLEBAR_FIXED_TOOLS[id])).length

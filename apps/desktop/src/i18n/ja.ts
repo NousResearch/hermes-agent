@@ -32,6 +32,7 @@ import { simplifiedAgentsCopy } from './simplified-agents'
 
 export const jaOverrides = {
   simplifiedAgents: simplifiedAgentsCopy['ja'],
+  keybinds: { actions: { 'agents.new': '新しいエージェント（エージェントページ）', 'nav.back': '戻る', 'nav.forward': '進む' } },
   gatewayGroupOpen: {
     opening: 'グループチャットを開いています…',
     lookupFailed: 'マシンでこのグループを検索できませんでした。もう一度お試しください。',
@@ -3009,7 +3010,13 @@ export const jaOverrides = {
       connection: label => `接続: ${label}`,
       recentActivity: '最近のアクティビティ',
       viewAllLogs: 'すべてのログを見る →',
-      messagingPlatforms: 'メッセージングプラットフォーム'
+      messagingPlatforms: 'メッセージングプラットフォーム',
+      machineStatus: (machine, status) => `${machine} の状態: ${status}`,
+      checkAgain: '再確認',
+      switchToMachine: 'このマシンに切り替える',
+      machineSettings: 'ゲートウェイとマシン',
+      restartTitle: 'ゲートウェイを再起動しますか？',
+      restartBody: 'このマシンで実行中の応答は停止します。数秒で復帰し、自動で再接続します。'
     },
     approvalMode: {
       title: '承認モード',

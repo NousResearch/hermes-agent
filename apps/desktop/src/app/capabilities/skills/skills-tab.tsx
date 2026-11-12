@@ -10,6 +10,7 @@ import { Lock } from '@/lib/icons'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { notify, notifyError } from '@/store/notifications'
+import { usePortalShell } from '@/store/shell-variant'
 import type { SkillInfo } from '@/types/hermes'
 
 import { DetailPane, ListStripMenu, type ListStripMenuToggle } from '../../master-detail'
@@ -53,6 +54,9 @@ function ScopedSkillsTab({
   agentLayout = false
 }: SkillsTabProps) {
   const { t } = useI18n()
+  // The redesign paints the catalog's frame at once; its add buttons wait for the installed list
+  // (disabled), so a spinner above the feed would only push the page down when it goes.
+  const redesign = usePortalShell()
   const mounted = useRef(true)
   const mutationBusy = useRef(false)
   const editorRequest = useRef(0)
@@ -229,7 +233,7 @@ function ScopedSkillsTab({
     <CatalogAlert onRetry={onRefresh} retryLabel={t.skills.refresh} title={t.skills.skillsLoadFailed}>
       {installedError instanceof Error ? installedError.message : null}
     </CatalogAlert>
-  ) : installedPending ? (
+  ) : installedPending && !redesign ? (
     <Loader className="mx-auto my-2 size-6 text-(--ui-text-tertiary)" label={t.skills.loading} type="rose-curve" />
   ) : null
 

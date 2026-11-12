@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import type { ProfileScope } from '@/api/client'
 import { ActionStatus } from '@/components/ui/action-status'
@@ -20,6 +20,7 @@ import { slug } from '@/lib/sanitize'
 import { migrateAgentSidebarPreferences } from '@/store/agent-sidebar-preferences'
 import { retireLocalProfileGateways } from '@/store/gateway'
 import { migrateTilesForProfile } from '@/store/session-states'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { isValidProfileName } from './create-profile-dialog'
 
@@ -30,6 +31,7 @@ const identity = (raw: string) => raw
 // reacts via onRenamed. Unchanged name is a no-op close.
 export function RenameProfileDialog({
   currentName,
+  displayName,
   isDefault = false,
   onClose,
   onRenamed,
@@ -37,6 +39,8 @@ export function RenameProfileDialog({
   scope
 }: {
   currentName: string
+  /** The name the app shows for this agent today (its display name, else its id). */
+  displayName?: string
   /** Default profile: sets a presentation-only display name (Unicode ok);
    *  the canonical id stays "default" and no backend teardown is needed. */
   isDefault?: boolean
@@ -49,7 +53,12 @@ export function RenameProfileDialog({
 }) {
   const { t } = useI18n()
   const p = t.profiles
-  const [name, setName] = useState(currentName)
+  const redesign = usePortalShell()
+  const input = useRef<HTMLInputElement>(null)
+  // The redesign edits the name in place: the field opens holding the name you see, selected, so
+  // typing replaces it. Classic starts the default agent's display name blank.
+  const initial = isDefault && !redesign ? '' : isDefault ? displayName || currentName : currentName
+  const [name, setName] = useState(initial)
   const [status, setStatus] = useState<'done' | 'idle' | 'saving'>('idle')
   const [error, setError] = useState<null | string>(null)
 
@@ -58,14 +67,19 @@ export function RenameProfileDialog({
       return
     }
 
-    // Display-name mode starts blank — "default" is the id, not a name.
-    setName(isDefault ? '' : currentName)
+    setName(initial)
     setError(null)
     setStatus('idle')
-  }, [currentName, isDefault, open])
+
+    if (redesign) {
+      const frame = requestAnimationFrame(() => input.current?.select())
+
+      return () => cancelAnimationFrame(frame)
+    }
+  }, [initial, open, redesign])
 
   const trimmed = name.trim()
-  const unchanged = !isDefault && trimmed === currentName
+  const unchanged = (!isDefault || redesign) && trimmed === initial
   const invalid = trimmed !== '' && !unchanged && !isDefault && !isValidProfileName(trimmed)
   const busy = status === 'saving' || status === 'done'
 
@@ -142,6 +156,7 @@ export function RenameProfileDialog({
               autoFocus
               id="rename-profile-name"
               onValueChange={setName}
+              ref={input}
               sanitize={isDefault ? identity : slug}
               value={name}
             />

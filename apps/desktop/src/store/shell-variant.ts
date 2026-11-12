@@ -5,6 +5,7 @@ import { persistentAtom } from '@/lib/persisted'
 import { writeKey } from '@/lib/storage'
 
 import { DESKTOP_BUTTON_ACTIONS, recordAction, recordFeatureToggle } from './desktop-metrics'
+import { providePortalPresentation } from './shell-presentation'
 import { isBrowserWindow, isHudWindow } from './windows'
 
 // The prototype's opt-in choice is deliberately not inherited; retire it.
@@ -28,6 +29,9 @@ export const rendersPortalShell = (choice: boolean | null): boolean =>
 /** Whether THIS window renders the redesigned (portal) shell — the one presentation read, mirrored
  *  to `<html data-shell="portal">` for CSS. */
 export const $portalShell = computed($shellChoice, rendersPortalShell)
+
+// The icon layer reads this through the dependency-free `shell-presentation` leaf.
+providePortalPresentation($portalShell)
 
 export function usePortalShell(): boolean {
   return useStore($portalShell)

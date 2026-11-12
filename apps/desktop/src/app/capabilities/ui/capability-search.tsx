@@ -7,7 +7,7 @@ import { SearchField } from '@/components/ui/search-field'
 import { usePortalShell } from '@/store/shell-variant'
 
 /** The one search field every Capabilities tab uses: the boxed SearchField
- *  with the tab's name as a scope badge and the tab's own actions (add, view
+ *  (classic: with the tab's name as a scope badge) and the tab's own actions (add, view
  *  toggle, …) at the end. Callers own the column it sits in and the query. */
 export function CapabilitySearch({
   actions,
@@ -35,10 +35,13 @@ export function CapabilitySearch({
     <SearchField
       containerClassName="h-10 w-full min-w-0 rounded-2xl bg-(--dt-card) py-0"
       hints={hints}
+      // The redesign's tab (or the page's H2) already names the scope; Figma's field has no chip.
       leadingContent={
-        <Badge size="xs" variant="muted">
-          {scope}
-        </Badge>
+        redesigned ? undefined : (
+          <Badge size="xs" variant="muted">
+            {scope}
+          </Badge>
+        )
       }
       onChange={onChange}
       placeholder={placeholder}

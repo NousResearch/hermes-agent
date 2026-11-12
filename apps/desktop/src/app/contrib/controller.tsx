@@ -137,6 +137,7 @@ import { BASIC_TREE, DEFAULT_TREE, registerLayoutPresets } from './layout-preset
 import { bindLayoutSides } from './layout-sides'
 import { FilesPane, LogsPane, ReviewPaneContent } from './panes'
 import { PluginPreviewConsentDialog } from './plugin-preview-consent-dialog'
+import { LayoutTreeCover } from './route-cover'
 import { ContribWiring, WiredPane } from './wiring'
 import { WorkspacePageHeaderHostContext } from './workspace-page-header'
 
@@ -225,7 +226,8 @@ const sessionsPane = {
     tabTitle: () => <LocalizedTabTitle select={t => t.sidebar.sessions} />,
     tabTitleText: () => translateNow('sidebar.sessions'),
     width: `var(--sessions-pane-width, ${SIDEBAR_DEFAULT_WIDTH}px)`,
-    minWidth: `${SIDEBAR_DEFAULT_WIDTH}px`,
+    // The redesign's rows and New-session split need more room (portal-sidebar.css).
+    minWidth: `var(--sessions-pane-min-width, ${SIDEBAR_DEFAULT_WIDTH}px)`,
     maxWidth: `${SIDEBAR_MAX_WIDTH}px`
   },
   render: () => <WiredPane part="sidebar" />
@@ -861,7 +863,9 @@ export function ContribController() {
         >
           <div className="flex min-h-0 flex-1">
             <WiredPane part="globalNav" />
-            <LayoutTreeRoot titlebar />
+            <LayoutTreeCover>
+              <LayoutTreeRoot titlebar />
+            </LayoutTreeCover>
             <DeveloperRail />
           </div>
 

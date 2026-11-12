@@ -575,6 +575,8 @@ export const en: Translations = {
       'nav.artifacts': 'Open artifacts',
       'nav.cron': 'Open schedules',
       'nav.agents': 'Open agents',
+      'nav.back': 'Go back',
+      'nav.forward': 'Go forward',
       'session.new': 'New session',
       'session.newTab': 'New session tab',
       'session.newWindow': 'New window',
@@ -661,6 +663,7 @@ export const en: Translations = {
       'profile.prev': 'Previous agent',
       'profile.toggleAll': 'Toggle all-agents view',
       'profile.create': 'Create agent',
+      'agents.new': 'New agent (Agents page)',
       'composer.send': 'Send message',
       'composer.newline': 'Insert newline',
       'composer.steer': 'Steer the running turn',
@@ -4143,7 +4146,13 @@ export const en: Translations = {
       connection: label => `Connection: ${label}`,
       recentActivity: 'Recent activity',
       viewAllLogs: 'View all logs →',
-      messagingPlatforms: 'Messaging platforms'
+      messagingPlatforms: 'Messaging platforms',
+      machineStatus: (machine, status) => `${machine} status: ${status}`,
+      checkAgain: 'Check again',
+      switchToMachine: 'Switch to this machine',
+      machineSettings: 'Gateways & Machines',
+      restartTitle: 'Restart the gateway?',
+      restartBody: 'Turns running on this machine stop. It comes back in a few seconds and reconnects on its own.'
     },
     approvalMode: {
       title: 'Approval mode',

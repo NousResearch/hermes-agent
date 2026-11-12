@@ -45,6 +45,7 @@ import { AgentConfigFields } from './agent-config-fields'
 import { type ConfigSettingsDraft, ConfigSettingsDraftContext } from './config-draft'
 import { ConfigField } from './config-field'
 import { configSubpageForField } from './config-subpages'
+import { ConfigTransferGroup } from './config-transfer'
 import { DELEGATION_ROUTE_COMPANION_KEY, DelegationRouteRow } from './delegation-route-row'
 import { DelegationRoutingSlot } from './delegation/routing-section'
 import { SubagentModelGate } from './delegation/subagent-model-gate'
@@ -669,7 +670,12 @@ function ConfigSettingsInner({
       {/* Device-local desktop prefs (not config.yaml) — they live here since
           keeping the machine awake and the global Quick Entry chord are both
           power-user, this-computer-only knobs. */}
-      {showDesktopSettings && <DesktopDeviceSettings />}
+      {showDesktopSettings && (
+        <>
+          <DesktopDeviceSettings />
+          <ConfigTransferGroup importInputRef={importInputRef} onConfigSaved={onConfigSaved} />
+        </>
+      )}
       {/* Device-local attach/preview byte cap (main-process IPC guard). Chat is
           where image-attachment behavior already lives, so this sits above the
           schema fields for that section. */}

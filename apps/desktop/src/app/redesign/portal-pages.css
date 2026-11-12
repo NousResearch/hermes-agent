@@ -18,6 +18,15 @@
   --portal-pages-offline-ink: #cc8a84;
   --page-content-inset: 1.5rem;
   --page-content-max-width: calc(61.25rem + 2 * var(--page-content-inset));
+  /* The space a page scroller keeps below its last row, under its bottom fade. */
+  --portal-page-end-space: 2rem;
+}
+
+/* List pages without a panel (Webhooks, Spawn tree) take the catalog column at the stage inset,
+   left-anchored like Capabilities and Library rather than centred in the stage. Agents and
+   Schedules lay out their own panel frame. */
+:root[data-shell='portal'] [data-page-surface] .management-panel:not(.agent-management, .cron-page) {
+  margin-inline: max(0px, calc(var(--page-stage-inset) - var(--page-content-inset))) 0;
 }
 
 /* ── Page heading (856:3405): H1, 6px to its description, 36px to the first section ── */
@@ -43,13 +52,13 @@
    The chat sidebar's panel on every page that has secondary navigation: the same translucent panel
    fill (the wing reads through), the same 9px outer top corner, a hairline to the stage, and a title
    row with the chat sidebar's 30px collapse button. */
-:root[data-shell='portal'] [data-page-surface] :is([data-tour='overlay-nav'], .agent-management-nav) {
+:root[data-shell='portal'] [data-page-surface] :is([data-tour='overlay-nav'], .page-sidebar-panel) {
   border-start-start-radius: var(--portal-panel-radius);
   background: var(--portal-page-panel-fill);
 }
 
 /* Both page navs end in the same light/5 hairline to the stage (895:17703 x 380). */
-:root[data-shell='portal'] [data-page-surface] :is([data-tour='overlay-nav'], .agent-management-nav) {
+:root[data-shell='portal'] [data-page-surface] :is([data-tour='overlay-nav'], .page-sidebar-panel) {
   border-inline-end: 1px solid var(--portal-panel-divider);
 }
 
@@ -90,6 +99,167 @@
 .page-sidebar-collapse svg {
   width: 1rem;
   height: 1rem;
+}
+
+/* ── List panel (Agents 895:8991, Schedules) ──
+   A list→detail destination's list rides the panel at the stage's leading edge; the page (its
+   management panel, full width and positioned) starts its stage past it. Below 800px the panel folds
+   away and the page shows its list. */
+
+.page-sidebar-panel {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  display: flex;
+  width: var(--page-nav-width);
+  flex-direction: column;
+  gap: 1.5rem;
+  /* The title lands on the Settings column's title (856:2741). */
+  padding: 1.4375rem 1.25rem 1.5rem;
+}
+
+/* With the column's 24px gap: Figma's title-to-New-agent spacing (895:8991). */
+.page-sidebar-panel .page-sidebar-head {
+  margin-bottom: 0.4375rem;
+}
+
+/* The start row (New agent 895:9447): a 40px secondary row, 13px label, leading plus. */
+.page-sidebar-panel > button {
+  min-height: 2.5rem;
+  justify-content: flex-start;
+  gap: 0.625rem;
+  padding-inline: 0.625rem;
+  font-size: 0.8125rem;
+  font-weight: 400;
+}
+
+/* The label grows so the row's shortcut keycaps sit at its end (895:9447: ⌘ N). */
+.page-sidebar-panel > .new-agent-row .new-agent-row-label {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-align: start;
+  text-overflow: ellipsis;
+}
+
+.new-agent-row .portal-kbd [data-slot='kbd'] {
+  min-width: 1.25rem;
+  height: 1.25rem;
+  padding-inline: 0.25rem;
+  border: 0.5px solid color-mix(in srgb, var(--ui-base) 5%, transparent);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--ui-base) 5%, transparent);
+  box-shadow: none;
+  color: var(--ui-text-secondary);
+  font-family: inherit;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+}
+
+.page-sidebar-scroll {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+}
+
+/* Group caption (895:9473): 10px uppercase, +0.6px tracking. */
+.page-sidebar-caption {
+  margin: 0 0.625rem 0.5rem;
+  color: var(--ui-text-tertiary);
+  font-size: 0.625rem;
+  line-height: 1.4;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.page-sidebar-list + .page-sidebar-list {
+  margin-top: 1.25rem;
+}
+
+.page-sidebar-row {
+  display: flex;
+  width: 100%;
+  min-height: 2.5rem;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  text-align: start;
+  font-size: 0.8125rem;
+  color: var(--ui-text-secondary);
+}
+
+.page-sidebar-row:hover {
+  background: color-mix(in srgb, var(--ui-base) 3%, transparent);
+  color: var(--ui-text-primary);
+}
+
+.page-sidebar-row:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-inset);
+}
+
+.page-sidebar-row[aria-current] {
+  border-color: transparent;
+  background: var(--portal-neutral-selection-background);
+  box-shadow: inset 0 0 0 0.5px var(--portal-neutral-selection-stroke);
+  color: var(--ui-text-primary);
+  font-weight: 500;
+}
+
+/* Rows with their own actions: the row keeps its full width and the end glyph sits over its end. */
+.page-sidebar-item {
+  position: relative;
+}
+
+.page-sidebar-item > .page-sidebar-row {
+  padding-inline-end: 2rem;
+}
+
+.page-sidebar-item-menu {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: 0.375rem;
+  display: flex;
+  align-items: center;
+}
+
+@media (hover: none) {
+  .page-sidebar-item-menu button {
+    opacity: 1;
+  }
+}
+
+/* The chat sidebar's 7px leading dot. */
+.page-sidebar-dot {
+  width: 0.4375rem;
+  height: 0.4375rem;
+  flex-shrink: 0;
+  border-radius: 999px;
+}
+
+/* Trailing meta (a blueprint's plugin): the caption ink. */
+.page-sidebar-meta {
+  flex-shrink: 0;
+  color: var(--ui-text-tertiary);
+  font-size: 0.6875rem;
+}
+
+/* 16px leading glyphs at .4 (856:2764). */
+.page-sidebar-glyph {
+  flex-shrink: 0;
+  opacity: 0.4;
+}
+
+.page-sidebar-search {
+  margin-bottom: 1.25rem;
+}
+
+@media (max-width: 800px) {
+  .page-sidebar-panel {
+    display: none;
+  }
 }
 
 /* ── Page navigation column (856:2764): 40px rows, 13px +1% labels, 16px icons at .4 ── */
@@ -140,15 +310,6 @@
    no per-row chevrons, so the separate caret toggle is dropped from the redesigned column. */
 :root[data-shell='portal'] [data-page-surface] [data-tour='overlay-nav'] [data-tour^='nav-toggle-'] {
   display: none;
-}
-
-/* Capabilities inventory owner bar: inside the page column instead of a full-bleed strip. */
-:root[data-shell='portal'] [data-page-surface] [data-slot='capability-scope'] {
-  width: 100%;
-  max-width: var(--page-content-max-width);
-  margin-inline: auto;
-  padding: 0 var(--page-content-inset) 1rem;
-  border-bottom: 0;
 }
 
 /* Top-level destinations read at full ink with icons at .4 (856:3186); nested sub-pages stay quieter. */

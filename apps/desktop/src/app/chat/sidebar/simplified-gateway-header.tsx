@@ -1,12 +1,15 @@
 import { useStore } from '@nanostores/react'
-import { useId } from 'react'
+import { type PointerEvent, type ReactNode, useEffect, useId, useRef, useState } from 'react'
 
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { RowButton } from '@/components/ui/row-button'
 import { useI18n } from '@/i18n'
 import { isBrowserHostedDesktop } from '@/lib/platform'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $fleetRoster } from '@/store/fleet-roster'
 import { $gatewayState } from '@/store/session'
+
+import { ActiveMachineStatusPanel, MachineStatusPanel } from '../../redesign/portal-gateway-menu-panel'
 
 type MachineState = 'open' | 'connecting' | 'idle' | 'closed' | 'error'
 
@@ -79,11 +82,101 @@ export function SimplifiedGatewayHeader({
       >
         <span className="portal-machine-name">{label}</span>
         {registered?.org && <span className="portal-machine-tag">{registered.org}</span>}
-        <span className="portal-machine-status" id={statusId}>
-          <span aria-hidden className="portal-status-dot" />
-          {status}
-        </span>
       </RowButton>
+      <MachineStatusPopover
+        label={t.shell.gatewayMenu.machineStatus(label, status)}
+        panel={close =>
+          selected ? (
+            <ActiveMachineStatusPanel name={label} onClose={close} />
+          ) : (
+            <MachineStatusPanel connectionId={connectionId} label={label} onClose={close} />
+          )
+        }
+      >
+        <span aria-hidden className="portal-status-dot" />
+        <span id={statusId}>{status}</span>
+      </MachineStatusPopover>
     </div>
+  )
+}
+
+/** How long a resting pointer takes to open the status popover, and how long it may travel between
+ *  the status and the popover before it closes. */
+const HOVER_OPEN_MS = 300
+const HOVER_CLOSE_MS = 200
+
+interface MachineStatusPopoverProps {
+  children: ReactNode
+  label: string
+  panel: (close: () => void) => ReactNode
+}
+
+/** The machine's status as its own button (IA quick win 619:1788): a click, Enter or Space opens the
+ *  machine's health popover with focus in it; a resting mouse opens it too, without taking focus,
+ *  and it stays while the pointer is over the status or the popover. */
+function MachineStatusPopover({ children, label, panel }: MachineStatusPopoverProps) {
+  // 'hover' = opened by a resting pointer, which must not move focus or keep it open on leave.
+  const [open, setOpen] = useState<'click' | 'hover' | null>(null)
+  const timer = useRef<number | undefined>(undefined)
+
+  const schedule = (next: 'hover' | null, delay: number) => {
+    window.clearTimeout(timer.current)
+    timer.current = window.setTimeout(() => setOpen(current => (current === 'click' ? current : next)), delay)
+  }
+
+  const cancel = () => window.clearTimeout(timer.current)
+
+  useEffect(() => cancel, [])
+
+  const close = () => {
+    cancel()
+    setOpen(null)
+  }
+
+  const hoverHandlers = {
+    onPointerEnter: (event: PointerEvent<HTMLElement>) => {
+      if (event.pointerType === 'mouse') {
+        schedule('hover', open ? 0 : HOVER_OPEN_MS)
+      }
+    },
+    onPointerLeave: (event: PointerEvent<HTMLElement>) => {
+      if (event.pointerType === 'mouse') {
+        schedule(null, HOVER_CLOSE_MS)
+      }
+    }
+  }
+
+  return (
+    <Popover onOpenChange={next => (next ? setOpen('click') : close())} open={open !== null}>
+      <PopoverTrigger asChild>
+        <button
+          aria-label={label}
+          className="portal-machine-status"
+          onClick={event => {
+            // A click on a popover the pointer already opened keeps it, now as a deliberate open.
+            if (open === 'hover') {
+              event.preventDefault()
+              cancel()
+              setOpen('click')
+            }
+          }}
+          type="button"
+          {...hoverHandlers}
+        >
+          {children}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="end"
+        aria-label={label}
+        className="portal-machine-popover w-[300px] max-w-[calc(100vw-1rem)] max-h-[calc(100dvh-2rem)] overflow-y-auto p-0"
+        onCloseAutoFocus={event => open === 'hover' && event.preventDefault()}
+        onOpenAutoFocus={event => open === 'hover' && event.preventDefault()}
+        side="bottom"
+        {...hoverHandlers}
+      >
+        {panel(close)}
+      </PopoverContent>
+    </Popover>
   )
 }

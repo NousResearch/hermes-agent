@@ -149,6 +149,47 @@ export async function getHistoryRunning(owner: AgentSettingsOwner): Promise<Set<
   )
 }
 
+const HOUR_S = 3_600
+const DAY_S = 86_400
+
+/** The table's "Last active": recent activity reads relative ("4 min. ago", "3 hr. ago",
+ *  "Yesterday"), older activity a short date ("Oct 30"); the caller shows `absolute` on hover. */
+export function historyLastActive(
+  seconds: number,
+  locale: string,
+  nowMs = Date.now()
+): { label: string; absolute: string } {
+  const date = new Date(seconds * 1000)
+  const absolute = date.toLocaleString(locale, { dateStyle: 'medium', timeStyle: 'short' })
+  const age = Math.max(0, nowMs / 1000 - seconds)
+  const relative = new Intl.RelativeTimeFormat(locale, { numeric: 'auto', style: 'short' })
+  const today = new Date(nowMs)
+  today.setHours(0, 0, 0, 0)
+  const days = Math.ceil((today.getTime() / 1000 - seconds) / DAY_S)
+
+  const label =
+    age < HOUR_S
+      ? relative.format(-Math.max(1, Math.round(age / 60)), 'minute')
+      : days <= 0
+        ? relative.format(-Math.round(age / HOUR_S), 'hour')
+        : days === 1
+          ? relative.format(-1, 'day')
+          : date.toLocaleDateString(locale, {
+              month: 'short',
+              day: 'numeric',
+              ...(date.getFullYear() === today.getFullYear() ? {} : { year: 'numeric' })
+            })
+
+  return { label: label.charAt(0).toLocaleUpperCase(locale) + label.slice(1), absolute }
+}
+
+/** A row's line under its title in confirmations: "Chat · Nov 1 · 0 messages". */
+export function historyRowDate(row: SessionInfo, locale: string): string {
+  const seconds = row.last_active || row.started_at
+
+  return seconds ? new Date(seconds * 1000).toLocaleDateString(locale, { month: 'short', day: 'numeric' }) : ''
+}
+
 export function historyRunning(row: SessionInfo, running: Set<string>): boolean {
   return (
     row.scheduler_owned === true ||

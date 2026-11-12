@@ -364,6 +364,8 @@ export const zhOverrides = {
       'nav.artifacts': '打开制品',
       'nav.cron': '打开计划',
       'nav.agents': '打开智能体',
+      'nav.back': '后退',
+      'nav.forward': '前进',
       'session.new': '新建会话',
       'session.newTab': '新建会话标签',
       'session.newWindow': '新建窗口',
@@ -434,6 +436,7 @@ export const zhOverrides = {
       'profile.prev': '上一个智能体',
       'profile.toggleAll': '切换全部智能体视图',
       'profile.create': '创建智能体',
+      'agents.new': '新建智能体（智能体页面）',
       'composer.send': '发送消息',
       'composer.newline': '插入换行',
       'composer.steer': '引导正在运行的回合',
@@ -3986,7 +3989,13 @@ export const zhOverrides = {
       connection: label => `连接：${label}`,
       recentActivity: '最近活动',
       viewAllLogs: '查看全部日志 →',
-      messagingPlatforms: '消息平台'
+      messagingPlatforms: '消息平台',
+      machineStatus: (machine, status) => `${machine} 状态：${status}`,
+      checkAgain: '重新检查',
+      switchToMachine: '切换到这台机器',
+      machineSettings: '网关与机器',
+      restartTitle: '重启网关？',
+      restartBody: '这台机器上正在运行的回复会停止。几秒后它会恢复并自动重新连接。'
     },
     approvalMode: {
       title: '审批模式',

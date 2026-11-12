@@ -141,7 +141,7 @@ it.each([false, true])('keeps the requested panel without overriding later navig
 
   if (!leave) {
     expect(screen.queryByRole('button', { name: 'Open agent' })).toBeNull()
-    expect(screen.getByRole('button', { name: 'Rename' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Rename: / })).toBeTruthy()
   }
 
   // A later ordinary new-chat request must not inherit settings preservation.
@@ -159,7 +159,7 @@ it.each(['stay', 'leave', 'refresh'] as const)(
     const renamed = deferred<{ name: string; ok: boolean; path: string }>()
     vi.mocked(renameProfile).mockReturnValueOnce(renamed.promise)
     mount()
-    fireEvent.click(screen.getByRole('button', { name: 'Rename' }))
+    fireEvent.click(screen.getByRole('button', { name: /^Rename: / }))
     fireEvent.change(screen.getByLabelText(/new name/i), { target: { value: 'renamed' } })
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Rename' }))
     await waitFor(() => expect(renameProfile).toHaveBeenCalled())
@@ -187,7 +187,7 @@ it.each(['stay', 'leave', 'refresh'] as const)(
       expect(selectConnection).not.toHaveBeenCalled()
     } else {
       expect($activeGatewayProfile.get()).toBe('renamed')
-      expect(screen.getByRole('button', { name: 'Rename' })).toBeTruthy()
+      expect(screen.getByRole('button', { name: /^Rename: / })).toBeTruthy()
     }
   }
 )

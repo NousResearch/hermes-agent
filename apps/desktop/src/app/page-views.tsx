@@ -21,8 +21,13 @@ const RAIL_PRELOADS: (() => Promise<unknown>)[] = [
   async () => (await import('./profiles')).preloadAgentDirectory(),
   SettingsView.preload,
   async () => (await import('./agent-settings/entry')).preloadAgentSettingsView(),
+  // The landing agent's Overview reads too, so its page paints with data, not placeholders.
+  async () => (await import('./agent-settings/overview-queries')).prefetchLandingAgentOverview(),
   CapabilitiesView.preload,
+  // Capabilities and Library read lists before they can lay out; warm those too.
+  async () => (await import('./capabilities/prefetch')).prefetchCapabilitiesInventory(),
   ArtifactsView.preload,
+  async () => (await import('./artifacts/artifacts-index')).prefetchArtifactIndex(),
   CronView.preload
 ]
 

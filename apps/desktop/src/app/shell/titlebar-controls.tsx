@@ -47,6 +47,15 @@ import {
   sessionRoute
 } from '../routes'
 
+import {
+  $historyPosition,
+  canGoBack,
+  canGoForward,
+  historyBack,
+  historyForward,
+  useMouseHistoryButtons,
+  useTrackHistoryPosition
+} from './history-position'
 import { PortalSessionTab } from './portal-session-tab'
 import {
   TITLEBAR_CHROME_CHANGED_EVENT,
@@ -204,21 +213,37 @@ function useBandSidebarToolHidden(portal: boolean, sidebarOpen: boolean): boolea
   return portal && !narrow && (sidebarOpen || workspacePage)
 }
 
-/** A redesigned workspace page (Capabilities, Library, …) is a rail destination like Settings and
- *  Agents, so its band leads with the same Back (Figma 856:2713) instead of an empty strip; Back
- *  returns to the chat the Chats destination would open. */
-function usePortalPageBack(portal: boolean): TitlebarTool {
+/** The redesigned band leads with Back and Forward on every screen (Figma 906:19467, 856:2713):
+ *  the window's own router history. A workspace page (Capabilities, Library, …) reached with nothing
+ *  behind it (a deep link, a fresh window) still has a way back: the chat the Chats destination
+ *  would open. */
+function usePortalHistoryTools(portal: boolean): TitlebarTool[] {
   const { t } = useI18n()
+  const navigate = useNavigate()
+  const position = useStore($historyPosition)
   const workspacePage = useStore($workspaceIsPage)
   const sessionId = useStore($focusedStoredSessionId)
+  const back = canGoBack(position)
+  const fallback = workspacePage && !back ? (sessionId ? sessionRoute(sessionId) : NEW_CHAT_ROUTE) : null
 
-  return {
-    hidden: !(portal && workspacePage),
-    icon: <TitlebarIcon name="arrow-left" />,
-    id: 'page-back',
-    label: t.common.back,
-    to: sessionId ? sessionRoute(sessionId) : NEW_CHAT_ROUTE
-  }
+  return [
+    {
+      disabled: !back && !fallback,
+      hidden: !portal,
+      icon: <TitlebarIcon name="arrow-left" />,
+      id: 'history-back',
+      label: t.common.back,
+      onSelect: () => (fallback ? navigate(fallback) : historyBack())
+    },
+    {
+      disabled: !canGoForward(position),
+      hidden: !portal,
+      icon: <TitlebarIcon name="arrow-right" />,
+      id: 'history-forward',
+      label: t.preview.web.goForward,
+      onSelect: historyForward
+    }
+  ]
 }
 
 /** The redesign centres its 30px chrome buttons in its 60px band; native controls are centred
@@ -273,7 +298,9 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const leftLabel = leftEdge.open ? t.titlebar.hideSidebar : t.titlebar.showSidebar
   const rightLabel = rightEdge.open ? t.titlebar.hideRightSidebar : t.titlebar.showRightSidebar
   const sidebarToolHidden = useBandSidebarToolHidden(portal, leftEdge.open)
-  const pageBackTool = usePortalPageBack(portal)
+  const historyTools = usePortalHistoryTools(portal)
+  useTrackHistoryPosition()
+  useMouseHistoryButtons(portal)
 
   const sidebarTool: TitlebarTool = {
     ...TITLEBAR_FIXED_TOOLS.sidebar,
@@ -423,8 +450,8 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
 
   const visibleLeftTools = (
     appActionsSide === 'left'
-      ? [pageBackTool, sidebarTool, ...systemTools, ...leftTools]
-      : [pageBackTool, sidebarTool, ...leftTools]
+      ? [...historyTools, sidebarTool, ...systemTools, ...leftTools]
+      : [...historyTools, sidebarTool, ...leftTools]
   ).filter(visibleTool)
 
   const visibleSystemTools = appActionsSide === 'right' ? systemTools.filter(visibleTool) : []

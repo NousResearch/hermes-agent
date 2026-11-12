@@ -1,6 +1,5 @@
 import './portal-sidebar.css'
 
-import { IconArrowBarToLeft } from '@tabler/icons-react'
 import { type ComponentProps, type KeyboardEvent, useEffect, useRef } from 'react'
 
 import wing from '@/assets/catalog-wing.svg'
@@ -9,6 +8,8 @@ import { SearchField } from '@/components/ui/search-field'
 import { Sidebar, SidebarContent } from '@/components/ui/sidebar'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
+import { ArrowBarToLeft as IconArrowBarToLeft } from '@/lib/icons'
+import { agentSidebarKey } from '@/store/agent-sidebar-preferences'
 import { recordIaAction } from '@/store/ia-metrics'
 import { SESSION_SEARCH_FOCUS_EVENT, toggleSidebarOpen } from '@/store/layout'
 import { $newChatProfile } from '@/store/profile'
@@ -22,6 +23,7 @@ import { SimplifiedPinnedSessions } from '../simplified-pinned-sessions'
 import { SimplifiedSessionList } from '../simplified-session-list'
 import { useAgentSidebar } from '../use-agent-sidebar'
 
+import { AGENT_CHAT_CAP, agentShowAllKey } from './agent-chat-cap'
 import { PortalGroupChats } from './portal-group-chats'
 import { PortalPinnedEmpty } from './portal-pinned-empty'
 
@@ -196,11 +198,27 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
             onResumeSession={shared.onResumeSession}
             onToggle={(id, open) => setExpanded(current => ({ ...current, [id]: !open }))}
             query={query}
-            renderSessions={sessions => (
-              <div className="portal-agent-sessions">
-                <SimplifiedSessionList {...shared} sessions={sessions} />
-              </div>
-            )}
+            renderSessions={(sessions, agent) => {
+              const showAllKey = agentShowAllKey(
+                agentSidebarKey({ connectionId: agent.connectionId, profile: agent.targetProfile || agent.profile })
+              )
+
+              const showAll = expanded[showAllKey] ?? false
+
+              return (
+                <div className="portal-agent-sessions">
+                  <SimplifiedSessionList
+                    {...shared}
+                    cap={{
+                      limit: AGENT_CHAT_CAP,
+                      showAll,
+                      onToggle: () => setExpanded(current => ({ ...current, [showAllKey]: !showAll }))
+                    }}
+                    sessions={sessions}
+                  />
+                </div>
+              )
+            }}
             revealSession={revealSession}
           />
         </div>

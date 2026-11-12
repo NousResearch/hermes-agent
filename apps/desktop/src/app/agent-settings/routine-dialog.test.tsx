@@ -90,37 +90,38 @@ it('keeps an in-flight save visible and restores editing after failure', async (
   expect(close).toHaveBeenCalledOnce()
 })
 
-it.each([
-  { skills: ['daily-review'] },
-  { skill: 'daily-review' },
-  { skills: [], skill: 'daily-review' }
-])('saves metadata for a skill-only routine without inventing a prompt (%j)', async skills => {
-  const request = vi.spyOn(client, 'hermesApi').mockResolvedValue({})
-  const saved = vi.fn()
-  render(
-    <RoutineDialog
-      job={{ id: 'skill-job', enabled: true, prompt: '', schedule: { expr: '0 9 * * *' }, ...skills }}
-      onClose={() => {}}
-      onSaved={saved}
-      owner={{ connectionId: 'beta', profile: 'research' }}
-    />
-  )
-  fireEvent.change(screen.getByLabelText(en.cron.nameLabel), { target: { value: 'Renamed review' } })
-  const prompt = screen.getByLabelText(en.cron.promptLabel) as HTMLTextAreaElement
+it.each([{ skills: ['daily-review'] }, { skill: 'daily-review' }, { skills: [], skill: 'daily-review' }])(
+  'saves metadata for a skill-only routine without inventing a prompt (%j)',
+  async skills => {
+    const request = vi.spyOn(client, 'hermesApi').mockResolvedValue({})
+    const saved = vi.fn()
+    render(
+      <RoutineDialog
+        job={{ id: 'skill-job', enabled: true, prompt: '', schedule: { expr: '0 9 * * *' }, ...skills }}
+        onClose={() => {}}
+        onSaved={saved}
+        owner={{ connectionId: 'beta', profile: 'research' }}
+      />
+    )
+    fireEvent.change(screen.getByLabelText(en.cron.nameLabel), { target: { value: 'Renamed review' } })
+    const prompt = screen.getByLabelText(en.cron.promptLabel) as HTMLTextAreaElement
 
-  expect(prompt.value).toBe('')
-  expect(prompt.validity.valueMissing).toBe(false)
-  expect(prompt.form?.checkValidity()).toBe(true)
-  fireEvent.click(screen.getByRole('button', { name: en.common.save }))
-  await waitFor(() => expect(saved).toHaveBeenCalledOnce())
-  expect(request).toHaveBeenCalledWith(expect.objectContaining({
-    connectionId: 'beta',
-    profile: 'research',
-    method: 'PUT',
-    path: '/api/cron/jobs/skill-job?profile=research',
-    body: { updates: { name: 'Renamed review', enabled: true, prompt: '' } }
-  }))
-})
+    expect(prompt.value).toBe('')
+    expect(prompt.validity.valueMissing).toBe(false)
+    expect(prompt.form?.checkValidity()).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: en.common.save }))
+    await waitFor(() => expect(saved).toHaveBeenCalledOnce())
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connectionId: 'beta',
+        profile: 'research',
+        method: 'PUT',
+        path: '/api/cron/jobs/skill-job?profile=research',
+        body: { updates: { name: 'Renamed review', enabled: true, prompt: '' } }
+      })
+    )
+  }
+)
 
 it.each([undefined, { skills: [] }, { skills: [' '], skill: ' ' }])(
   'requires a prompt when neither an existing skill nor a script supplies the task (%j)',

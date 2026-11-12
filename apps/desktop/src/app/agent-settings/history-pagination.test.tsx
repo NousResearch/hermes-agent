@@ -132,7 +132,7 @@ it('searches the remaining pages instead of calling a loaded-subset miss empty h
 it('applies source unions and archive boundaries to backfilled pins without exposing canonical chats', async () => {
   renderHistory()
   await screen.findByText('History entry 24')
-  fireEvent.click(screen.getByRole('button', { name: 'Filters' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Filter' }))
   fireEvent.click(screen.getByRole('checkbox', { name: 'Schedule' }))
   await screen.findByText('Scheduled run')
   expect(screen.queryByText('Discord thread')).toBeNull()
@@ -157,7 +157,7 @@ it('applies source unions and archive boundaries to backfilled pins without expo
 it('removes applied filter chips independently without resetting the other filters', async () => {
   renderHistory()
   await screen.findByText('History entry 24')
-  fireEvent.click(screen.getByRole('button', { name: 'Filters' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Filter' }))
   fireEvent.click(screen.getByRole('checkbox', { name: 'Schedule' }))
   fireEvent.click(screen.getByRole('radio', { name: 'Include' }))
   fireEvent.click(screen.getByRole('radio', { name: 'None' }))
@@ -170,7 +170,7 @@ it('removes applied filter chips independently without resetting the other filte
   expect(screen.queryByRole('button', { name: 'Archived: Include' })).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: 'Group by: None' }))
   expect(screen.queryByRole('button', { name: 'Group by: None' })).toBeNull()
-  expect(screen.getByRole('button', { name: 'Filters' })).toBeTruthy()
+  expect(screen.getByRole('button', { name: 'Filter' })).toBeTruthy()
 })
 
 it('shows partial selection and selects or clears the visible history together', async () => {
@@ -188,47 +188,81 @@ it('shows partial selection and selects or clears the visible history together',
   expect(row.getAttribute('aria-checked')).toBe('false')
 })
 
-it('requires a fresh cleanup preview after criteria changes and reports running skips after confirmation', async () => {
-  const candidate = makeSessionInfo({ id: 'old', title: 'Old conversation' })
+it('previews clean-up live as the options change and deletes only the preview of the current options', async () => {
+  const candidate = makeSessionInfo({ id: 'old', title: 'Old conversation', message_count: 3 })
+  const empty = makeSessionInfo({ id: 'empty', title: 'Empty conversation', message_count: 0 })
   const live = makeSessionInfo({ id: 'running', title: 'Running conversation' })
-  vi.mocked(previewHistoryCleanup).mockImplementation(async (_owner, criteria) => ({
-    candidates: [candidate],
-    running: [live],
-    criteria,
-    now: Date.now() / 1000
-  }))
-  vi.mocked(deleteHistorySelection).mockResolvedValue({ deleted: [], running: ['old'], changed: [], errors: [] })
+
+  let release: () => void = () => {}
+  vi.mocked(previewHistoryCleanup).mockImplementation(async (_owner, criteria) => {
+    if (criteria.messages === 'empty') {
+      await new Promise<void>(resolve => (release = resolve))
+    }
+
+    return {
+      candidates: criteria.messages === 'empty' ? [empty] : [candidate],
+      running: [live],
+      criteria,
+      now: Date.now() / 1000
+    }
+  })
+  vi.mocked(deleteHistorySelection).mockResolvedValue({ deleted: [], running: ['empty'], changed: [], errors: [] })
   const onDeleted = vi.fn()
   const onClose = vi.fn()
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  clients.push(client)
   render(
-    <HistoryCleanupDialog
-      current={() => true}
-      onClose={onClose}
-      onDeleted={onDeleted}
-      owner={{ connectionId: 'alpha', profile: 'research' }}
-    />
+    <QueryClientProvider client={client}>
+      <HistoryCleanupDialog
+        current={() => true}
+        onClose={onClose}
+        onDeleted={onDeleted}
+        owner={{ connectionId: 'alpha', profile: 'research' }}
+      />
+    </QueryClientProvider>
   )
-  fireEvent.click(screen.getByRole('button', { name: 'Preview cleanup' }))
+  // The dry run starts with the dialog: no separate preview step.
   await screen.findByText('Old conversation')
+  expect(screen.getByText('1 item will be deleted')).toBeTruthy()
   expect(screen.getByText('Running conversation')).toBeTruthy()
+  expect(screen.getByText('Running · skipped')).toBeTruthy()
   expect(deleteHistorySelection).not.toHaveBeenCalled()
-  fireEvent.click(screen.getByRole('button', { name: 'Empty' }))
+
+  fireEvent.click(screen.getByRole('button', { name: 'Empty only' }))
+  // While the new options are counted the old list stays, but it can no longer be confirmed.
+  await waitFor(() => expect(previewHistoryCleanup).toHaveBeenCalledTimes(2))
+  expect(screen.getByRole('button', { name: 'Delete 1 item' }).hasAttribute('disabled')).toBe(true)
+  release()
+  await screen.findByText('Empty conversation')
   expect(screen.queryByText('Old conversation')).toBeNull()
-  expect(screen.queryByRole('button', { name: 'Delete 1' })).toBeNull()
-  fireEvent.click(screen.getByRole('button', { name: 'Preview cleanup' }))
-  await screen.findByText('Old conversation')
-  fireEvent.click(screen.getByRole('button', { name: 'Delete 1' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Delete 1 item' }))
   await waitFor(() =>
-    expect(onDeleted).toHaveBeenCalledWith({ deleted: [], running: ['running', 'old'], changed: [], errors: [] })
+    expect(onDeleted).toHaveBeenCalledWith({ deleted: [], running: ['running', 'empty'], changed: [], errors: [] })
   )
   expect(deleteHistorySelection).toHaveBeenCalledWith(
     { connectionId: 'alpha', profile: 'research' },
-    [candidate],
+    [empty],
     expect.any(Function),
     expect.any(String),
     expect.objectContaining({ criteria: expect.objectContaining({ messages: 'empty' }) })
   )
   expect(onClose).toHaveBeenCalledOnce()
+})
+
+it('titles the delete confirmation by what will be deleted and names the running item it skips', async () => {
+  vi.mocked(deleteHistorySelection).mockResolvedValue({ deleted: ['history-1'], running: [], changed: [], errors: [] })
+  renderHistory()
+  await screen.findByText('History entry 24')
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Selected: History entry 0' }))
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Selected: History entry 1' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+  const confirmation = await screen.findByRole('dialog')
+  expect(within(confirmation).getByRole('heading', { name: 'Delete 2 items?' })).toBeTruthy()
+  expect(within(confirmation).getAllByText('Chat · 0 messages')).toHaveLength(2)
+  expect(within(confirmation).queryByText(/still running/)).toBeNull()
+  expect(within(confirmation).queryByRole('button', { name: 'Close' })).toBeNull()
+  fireEvent.click(within(confirmation).getByRole('button', { name: 'Delete 2 items' }))
+  await waitFor(() => expect(deleteHistorySelection).toHaveBeenCalledOnce())
 })
 
 it.each([

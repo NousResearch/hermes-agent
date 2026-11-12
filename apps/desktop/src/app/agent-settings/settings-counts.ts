@@ -6,7 +6,7 @@ import { enabledToolsetSummary } from '../capabilities/toolsets/toolsets-data'
 import type { AgentSettingsSection } from './settings-routes'
 
 /** What the agent page has already loaded about this agent, for the sub-nav counts (895:13886
- *  "Tools 13 · Skills 8 · Messaging 2 · Routines 2") and the capability page summaries. A section
+ *  "Tools 13 · Skills 8 · Connectors 4 · Plugins 8 · Messaging 2 · Routines 2") and the capability page summaries. A section
  *  whose data has not arrived has no count; nothing here fetches. */
 export interface AgentCapabilityCounts {
   nav: Partial<Record<AgentSettingsSection, number>>
@@ -19,13 +19,17 @@ interface AgentCapabilitySources {
   skills?: SkillInfo[]
   jobs?: CronJob[]
   messaging?: MessagingPlatformsResponse
+  connectors?: number
+  plugins?: number
 }
 
 export function agentCapabilityCounts({
   tools,
   skills,
   jobs,
-  messaging
+  messaging,
+  connectors,
+  plugins
 }: AgentCapabilitySources): AgentCapabilityCounts {
   const toolSummary = tools && enabledToolsetSummary(tools)
   const skillsOn = skills?.filter(skill => skill.enabled).length
@@ -34,6 +38,8 @@ export function agentCapabilityCounts({
     nav: {
       tools: toolSummary?.toolsets,
       skills: skillsOn,
+      connectors,
+      plugins,
       messaging: messaging?.platforms.filter(platform => platform.configured).length,
       schedules: jobs?.filter(job => job.enabled).length
     },

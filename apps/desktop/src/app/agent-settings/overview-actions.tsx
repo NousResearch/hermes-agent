@@ -12,6 +12,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
+import { PathText } from '@/components/ui/path-text'
 import { useI18n } from '@/i18n'
 import { writeClipboardText } from '@/lib/clipboard'
 import { $hiddenSidebarAgents, agentSidebarKey, setSidebarAgentHidden } from '@/store/agent-sidebar-preferences'
@@ -23,22 +24,28 @@ import type { ProfileInfo } from '@/types/hermes'
 
 import { useHiddenAgentCopy } from '../chat/sidebar/hidden-agent-copy'
 import { CreateProfileDialog } from '../profiles/create-profile-dialog'
+import { DeleteProfileDialog } from '../profiles/delete-profile-dialog'
 
 import { useAgentSettingsCopy } from './copy'
 import type { AgentSettingsOwner } from './data'
 import { useDefaultAgent } from './default-agent'
 import { useOverviewActionsCopy } from './overview-actions-copy'
+import { useAgentSettingsEditorCopy } from './settings-copy'
 
 interface AgentOverviewActionsProps {
   owner: AgentSettingsOwner
   profile?: ProfileInfo
+  /** The agent this page shows is gone; the page leaves it. */
+  onDeleted?: () => void
 }
 
-export function AgentOverviewActions({ owner, profile }: AgentOverviewActionsProps) {
+export function AgentOverviewActions({ owner, profile, onDeleted }: AgentOverviewActionsProps) {
   const { t } = useI18n()
   const c = useOverviewActionsCopy()
   const shared = useHiddenAgentCopy()
   const overview = useAgentSettingsCopy()
+  const general = useAgentSettingsEditorCopy().generalPage
+  const [deleting, setDeleting] = useState(false)
   const hiddenAgents = useStore($hiddenSidebarAgents)
   const roster = useStore($fleetRoster)
   const [duplicate, setDuplicate] = useState<{ owner: AgentSettingsOwner; profiles: ProfileInfo[] } | null>(null)
@@ -92,24 +99,38 @@ export function AgentOverviewActions({ owner, profile }: AgentOverviewActionsPro
             <Codicon name={isDefault ? 'check' : 'star-empty'} />
             <span>{isDefault ? t.profiles.defaultProfile : c.setDefault}</span>
           </DropdownMenuItem>
+          {/* A disabled item shows no tooltip, so the reason stays readable under it. */}
           {!canSetDefault && <p className="px-2 py-1 text-xs text-(--ui-text-tertiary)">{c.defaultUnavailable}</p>}
           <DropdownMenuItem onSelect={() => setSidebarAgentHidden(sidebarOwner, !hidden)}>
             <Codicon name="eye-closed" />
             <span>{hidden ? shared.showInChatList : shared.hide}</span>
           </DropdownMenuItem>
           <DropdownMenuSeparator />
-          <DropdownMenuItem className="items-start" disabled={!profile?.path} onSelect={() => void copyPath()}>
-            <Codicon className="mt-0.5" name="copy" />
-            <span className="min-w-0">
-              <span className="block">{c.copyPath}</span>
-              <span className="mt-1 block break-all font-mono text-xs text-(--ui-text-tertiary)">
-                {profile?.path || overview.unavailable}
-              </span>
-            </span>
+          <DropdownMenuItem disabled={!profile?.path} onSelect={() => void copyPath()}>
+            <Codicon name="copy" />
+            <span className="shrink-0">{c.copyPath}</span>
+            {profile?.path && (
+              <PathText className="ms-auto max-w-[45%] text-xs text-(--ui-text-tertiary)" path={profile.path} />
+            )}
           </DropdownMenuItem>
-          <p className="px-2 pb-1 pt-3 text-xs leading-relaxed text-(--ui-text-tertiary)">{c.deleteHint}</p>
+          {profile && !profile.is_default && owner.profile !== 'default' && (
+            <DropdownMenuItem onSelect={() => setDeleting(true)} variant="destructive">
+              <Codicon name="trash" />
+              <span>{general.deleteTitle}…</span>
+            </DropdownMenuItem>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
+      <DeleteProfileDialog
+        onClose={() => setDeleting(false)}
+        onDeleted={async () => {
+          await refreshFleetRoster({ force: true })
+          onDeleted?.()
+        }}
+        open={deleting}
+        profile={profile ?? null}
+        scope={owner}
+      />
       {duplicate && (
         <CreateProfileDialog
           initialCloneFrom={duplicate.owner.profile}

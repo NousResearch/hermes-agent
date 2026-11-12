@@ -240,6 +240,8 @@ export const ruOverrides = {
       'nav.artifacts': 'Открыть артефакты',
       'nav.cron': 'Открыть расписания',
       'nav.agents': 'Открыть агентов',
+      'nav.back': 'Назад',
+      'nav.forward': 'Вперёд',
       'session.new': 'Новый сеанс',
       'session.newTab': 'Новая вкладка сеанса',
       'session.newWindow': 'Новое окно',
@@ -316,6 +318,7 @@ export const ruOverrides = {
       'profile.prev': 'Предыдущий агент',
       'profile.toggleAll': 'Показать всех агентов',
       'profile.create': 'Создать агента',
+      'agents.new': 'Новый агент (страница «Агенты»)',
       'composer.send': 'Отправить сообщение',
       'composer.newline': 'Вставить перенос строки',
       'composer.steer': 'Направить текущий ход',
@@ -3259,7 +3262,13 @@ export const ruOverrides = {
       connection: label => `Соединение: ${label}`,
       recentActivity: 'Недавняя активность',
       viewAllLogs: 'Все журналы →',
-      messagingPlatforms: 'Платформы сообщений'
+      messagingPlatforms: 'Платформы сообщений',
+      machineStatus: (machine, status) => `Состояние ${machine}: ${status}`,
+      checkAgain: 'Проверить снова',
+      switchToMachine: 'Переключиться на эту машину',
+      machineSettings: 'Шлюзы и машины',
+      restartTitle: 'Перезапустить шлюз?',
+      restartBody: 'Выполняющиеся ответы на этой машине остановятся. Через несколько секунд он вернётся и переподключится сам.'
     },
     approvalMode: {
       title: 'Режим подтверждения',

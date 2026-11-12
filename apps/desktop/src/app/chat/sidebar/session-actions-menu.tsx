@@ -59,6 +59,7 @@ import { ambientRequestFor } from '@/store/session-gone-latch'
 import type { SessionOwnerRoute } from '@/store/session-request-router'
 import { $sessionStates, $sessionTiles, closeAllOpenSessionTiles, requestForOwnedSession } from '@/store/session-states'
 import { ackStoredSessionId } from '@/store/session-unread'
+import { usePortalShell } from '@/store/shell-variant'
 import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal } from '@/store/windows'
 
 import type { SessionTitleResponse } from '../../types'
@@ -717,6 +718,9 @@ interface SessionActionsMenuProps
   children: React.ReactNode
 }
 
+/** The redesign's longer rows ("Move to project") keep one line: the menu grows past 160px. */
+const SESSION_MENU_WIDTH = { classic: 'w-40', portal: 'w-max min-w-40' } as const
+
 export function SessionActionsMenu({
   children,
   align = 'end',
@@ -727,13 +731,14 @@ export function SessionActionsMenu({
 }: SessionActionsMenuProps) {
   const { t } = useI18n()
   const { deleteDialog, onCloseAutoFocus, renameDialog, renderItems } = useSessionActions(actions)
+  const menuWidth = SESSION_MENU_WIDTH[usePortalShell() ? 'portal' : 'classic']
 
   return (
     <>
       <ActionsMenu
         align={align}
         ariaLabel={t.sidebar.row.sessionActions}
-        contentClassName="w-40"
+        contentClassName={menuWidth}
         items={renderItems}
         onCloseAutoFocus={onCloseAutoFocus}
         onOpenChange={onOpenChange}
@@ -755,12 +760,13 @@ interface SessionContextMenuProps extends SessionActions {
 export function SessionContextMenu({ children, ...actions }: SessionContextMenuProps) {
   const { t } = useI18n()
   const { deleteDialog, onCloseAutoFocus, renameDialog, renderItems } = useSessionActions(actions)
+  const menuWidth = SESSION_MENU_WIDTH[usePortalShell() ? 'portal' : 'classic']
 
   return (
     <>
       <ActionsContextMenu
         ariaLabel={t.sidebar.row.sessionActions}
-        contentClassName="w-40"
+        contentClassName={menuWidth}
         items={renderItems}
         onCloseAutoFocus={onCloseAutoFocus}
       >

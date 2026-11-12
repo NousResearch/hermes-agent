@@ -13,7 +13,10 @@ import {
 
 const nested = vi.hoisted(() => ({
   directory: vi.fn(async () => undefined),
-  agentSettings: vi.fn(async () => undefined)
+  agentSettings: vi.fn(async () => undefined),
+  agentOverview: vi.fn(async () => undefined),
+  capabilities: vi.fn(async () => undefined),
+  artifacts: vi.fn(async () => undefined)
 }))
 
 const page = (name: string) => () => <h1>{name}</h1>
@@ -26,6 +29,10 @@ vi.mock('./agent-settings/entry', () => ({
   SettingsView: page('Settings'),
   preloadAgentSettingsView: nested.agentSettings
 }))
+
+vi.mock('./agent-settings/overview-queries', () => ({ prefetchLandingAgentOverview: nested.agentOverview }))
+vi.mock('./capabilities/prefetch', () => ({ prefetchCapabilitiesInventory: nested.capabilities }))
+vi.mock('./artifacts/artifacts-index', () => ({ prefetchArtifactIndex: nested.artifacts }))
 
 const idle = new Map<number, () => void>()
 let nextId = 0
@@ -77,6 +84,10 @@ describe('rail page preloading', () => {
     // The Agents page's nested chunks are warmed too, not just its entry.
     expect(nested.directory).toHaveBeenCalled()
     expect(nested.agentSettings).toHaveBeenCalled()
+    // And the data those pages lay out from, so they paint final rows instead of placeholders.
+    expect(nested.agentOverview).toHaveBeenCalled()
+    expect(nested.capabilities).toHaveBeenCalled()
+    expect(nested.artifacts).toHaveBeenCalled()
   })
 
   it('stops warming when the shell unmounts', async () => {

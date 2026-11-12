@@ -368,6 +368,8 @@ interface GeneralCopy {
   editKeys: string
   defaultAgent: string
   defaultAgentDescription: string
+  /** The default agent's own row: the switch is on and only another agent can take it over. */
+  isDefaultAgentDescription: string
 }
 
 const general = {
@@ -388,7 +390,9 @@ const general = {
     envKeysDescription: 'Variables and API keys in this agent’s .env file.',
     editKeys: 'Edit keys',
     defaultAgent: 'Default agent',
-    defaultAgentDescription: 'Used for new chats when you don’t pick an agent.'
+    defaultAgentDescription: 'Used for new chats when you don’t pick an agent.',
+    isDefaultAgentDescription:
+      'Used for new chats when you don’t pick an agent. To change it, make another agent the default.'
   },
   fr: {
     identity: 'Identité',
@@ -407,7 +411,9 @@ const general = {
     envKeysDescription: 'Variables et clés API du fichier .env de cet agent.',
     editKeys: 'Modifier les clés',
     defaultAgent: 'Agent par défaut',
-    defaultAgentDescription: 'Utilisé pour les nouvelles discussions quand vous ne choisissez pas d’agent.'
+    defaultAgentDescription: 'Utilisé pour les nouvelles discussions quand vous ne choisissez pas d’agent.',
+    isDefaultAgentDescription:
+      'Utilisé pour les nouvelles discussions quand vous ne choisissez pas d’agent. Pour le changer, définissez un autre agent par défaut.'
   },
   de: {
     identity: 'Identität',
@@ -426,7 +432,9 @@ const general = {
     envKeysDescription: 'Variablen und API-Schlüssel in der .env-Datei dieses Agenten.',
     editKeys: 'Schlüssel bearbeiten',
     defaultAgent: 'Standardagent',
-    defaultAgentDescription: 'Wird für neue Chats verwendet, wenn du keinen Agenten wählst.'
+    defaultAgentDescription: 'Wird für neue Chats verwendet, wenn du keinen Agenten wählst.',
+    isDefaultAgentDescription:
+      'Wird für neue Chats verwendet, wenn du keinen Agenten wählst. Um das zu ändern, mache einen anderen Agenten zum Standard.'
   },
   es: {
     identity: 'Identidad',
@@ -445,7 +453,9 @@ const general = {
     envKeysDescription: 'Variables y claves API del archivo .env de este agente.',
     editKeys: 'Editar claves',
     defaultAgent: 'Agente predeterminado',
-    defaultAgentDescription: 'Se usa en los chats nuevos cuando no eliges un agente.'
+    defaultAgentDescription: 'Se usa en los chats nuevos cuando no eliges un agente.',
+    isDefaultAgentDescription:
+      'Se usa en los chats nuevos cuando no eliges un agente. Para cambiarlo, haz que otro agente sea el predeterminado.'
   },
   ja: {
     identity: 'ID',
@@ -464,7 +474,9 @@ const general = {
     envKeysDescription: 'このエージェントの .env ファイルにある変数と API キーです。',
     editKeys: 'キーを編集',
     defaultAgent: '既定のエージェント',
-    defaultAgentDescription: 'エージェントを選ばずに始めた新しいチャットで使います。'
+    defaultAgentDescription: 'エージェントを選ばずに始めた新しいチャットで使います。',
+    isDefaultAgentDescription:
+      'エージェントを選ばずに始めた新しいチャットで使います。変更するには、別のエージェントをデフォルトにしてください。'
   },
   zh: {
     identity: '身份',
@@ -483,7 +495,8 @@ const general = {
     envKeysDescription: '此智能体 .env 文件中的变量和 API 密钥。',
     editKeys: '编辑密钥',
     defaultAgent: '默认智能体',
-    defaultAgentDescription: '新建聊天未选择智能体时使用。'
+    defaultAgentDescription: '新建聊天未选择智能体时使用。',
+    isDefaultAgentDescription: '新建聊天未选择智能体时使用。如需更改，请将其他智能体设为默认。'
   },
   'zh-hant': {
     identity: '身分',
@@ -502,7 +515,8 @@ const general = {
     envKeysDescription: '此智慧體 .env 檔案中的變數與 API 金鑰。',
     editKeys: '編輯金鑰',
     defaultAgent: '預設智慧體',
-    defaultAgentDescription: '新聊天未選擇智慧體時使用。'
+    defaultAgentDescription: '新聊天未選擇智慧體時使用。',
+    isDefaultAgentDescription: '新聊天未選擇智慧體時使用。如需變更，請將其他智慧體設為預設。'
   },
   ru: {
     identity: 'Идентификация',
@@ -521,7 +535,9 @@ const general = {
     envKeysDescription: 'Переменные и API-ключи в файле .env этого агента.',
     editKeys: 'Изменить ключи',
     defaultAgent: 'Агент по умолчанию',
-    defaultAgentDescription: 'Используется в новых чатах, если агент не выбран.'
+    defaultAgentDescription: 'Используется в новых чатах, если агент не выбран.',
+    isDefaultAgentDescription:
+      'Используется в новых чатах, если агент не выбран. Чтобы изменить, сделайте основным другого агента.'
   },
   ar: {
     identity: 'الهوية',
@@ -540,7 +556,9 @@ const general = {
     envKeysDescription: 'المتغيرات ومفاتيح API في ملف ‎.env لهذا الوكيل.',
     editKeys: 'تعديل المفاتيح',
     defaultAgent: 'الوكيل الافتراضي',
-    defaultAgentDescription: 'يُستخدم في المحادثات الجديدة عندما لا تختار وكيلًا.'
+    defaultAgentDescription: 'يُستخدم في المحادثات الجديدة عندما لا تختار وكيلًا.',
+    isDefaultAgentDescription:
+      'يُستخدم في المحادثات الجديدة عندما لا تختار وكيلًا. لتغييره، اجعل وكيلًا آخر هو الافتراضي.'
   }
 } satisfies Record<BundledLocale, GeneralCopy>
 

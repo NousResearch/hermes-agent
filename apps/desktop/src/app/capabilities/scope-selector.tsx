@@ -12,6 +12,9 @@ import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 
+/** The profile roster the scope selector lists (warmed by ./prefetch). */
+export const CAPABILITY_PROFILES_KEY = ['capabilities-profiles'] as const
+
 interface ScopeOption {
   key: string
   label: string
@@ -72,7 +75,7 @@ export function useCapabilityScope({
     scopeProfile && typeof scopeProfile === 'object' ? (scopeProfile.connectionId ?? '').trim() || 'local' : null
 
   const { data: profilesData } = useQuery({
-    queryKey: ['capabilities-profiles'],
+    queryKey: CAPABILITY_PROFILES_KEY,
     queryFn: () => getProfiles(),
     staleTime: 60_000,
     // Pinned scope never shows the selector, so don't fetch the roster for it.
@@ -184,10 +187,13 @@ export function useCapabilityScope({
  */
 export function CapabilityScopeSelector({
   compact = false,
+  quiet = false,
   scope
 }: {
   /** In Plugins, the selector belongs only to the Agent column. */
   compact?: boolean
+  /** In the redesigned header the trigger names the scope itself; its look is the header's. */
+  quiet?: boolean
   scope: CapabilityScope
 }) {
   const { t } = useI18n()
@@ -203,11 +209,14 @@ export function CapabilityScopeSelector({
         compact && 'flex-1'
       )}
     >
-      {!compact && (
+      {!compact && !quiet && (
         <span className="text-[0.7rem] font-medium text-(--ui-text-tertiary)">{t.skills.configuringProfile}</span>
       )}
       <Select onValueChange={scope.onChange} value={scope.value}>
-        <SelectTrigger className={cn('text-xs', compact ? 'h-6 min-w-0 w-full px-2 truncate' : 'h-7 w-56')}>
+        <SelectTrigger
+          aria-label={quiet ? t.skills.configuringProfile : undefined}
+          className={quiet ? undefined : cn('text-xs', compact ? 'h-6 min-w-0 w-full px-2 truncate' : 'h-7 w-56')}
+        >
           {compact ? (
             <span className="min-w-0 truncate" data-slot="compact-select-value">
               <SelectValue />

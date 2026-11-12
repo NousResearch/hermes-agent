@@ -1,6 +1,7 @@
 import { type ReactNode, useId } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
+import { Skeleton } from '@/components/ui/skeleton'
 
 // The per-agent capability pages (Figma 895:13886 Tools, 895:14967 Skills, 895:15892 Connectors &
 // MCP, 895:16810 Plugins) share one frame: a library banner, then titled sections whose rows sit
@@ -48,6 +49,32 @@ export function AgentCapabilitySection({ title, description, children, footer }:
       <div className="agent-capability-rows">
         {children}
         {footer}
+      </div>
+    </section>
+  )
+}
+
+/** Rows a loading section reserves: a section's usual preview. */
+const SKELETON_ROWS = 4
+
+/** A section while its list loads: the head's two lines and a card of 64px rows, so the rows land in
+ *  place instead of replacing a spinner. */
+export function AgentCapabilitySkeleton() {
+  return (
+    <section aria-busy="true" className="agent-capability-section" data-capability-skeleton>
+      <header>
+        <Skeleton className="agent-capability-skeleton-title" />
+        <Skeleton className="agent-capability-skeleton-note" />
+      </header>
+      <div className="agent-capability-rows">
+        {Array.from({ length: SKELETON_ROWS }, (_, index) => (
+          <div className="agent-capability-row" key={index}>
+            <div className="agent-capability-row-text">
+              <Skeleton className="agent-capability-skeleton-name" />
+              <Skeleton className="agent-capability-skeleton-note" />
+            </div>
+          </div>
+        ))}
       </div>
     </section>
   )

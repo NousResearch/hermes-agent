@@ -15,6 +15,32 @@
   font-size: 0.8125rem;
   line-height: 1.4;
 }
+/* Summary (877:5946): the counts, then the empty-chats clean-up link, 12px apart. */
+.agent-history-stats {
+  min-height: 1.4em;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 12px;
+  letter-spacing: 0.01em;
+}
+.agent-history-stats > button {
+  color: var(--ui-text-secondary);
+  font-weight: 500;
+  letter-spacing: normal;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.agent-history-stats > button:hover {
+  color: var(--ui-text-primary);
+}
+.agent-history-stats > button:focus-visible {
+  border-radius: 2px;
+  outline: 2px solid var(--portal-brand-ink);
+  outline-offset: 2px;
+}
 .agent-history-toolbar,
 .agent-history-selection,
 .agent-history-filter-popover > footer {
@@ -60,28 +86,48 @@
 .agent-history-scope,
 .agent-history-help,
 .agent-history-metadata dt,
-.agent-history-message time,
 .agent-history-message small,
 .agent-history-delete-list small {
   font-size: 0.75rem;
   color: var(--ui-text-tertiary);
 }
 .agent-history-scope {
+  min-height: 1lh;
   margin-block: 20px;
 }
+/* Selection bar (878:7772): a 10% brand wash with the brand FILL as its hairline (not the lighter
+   focus ink), quiet text actions and the one outlined destructive action. */
 .agent-history-selection {
-  padding: 4px 4px 4px 12px;
-  border: 0.5px solid var(--portal-brand-ink);
-  border-radius: 3px;
+  gap: 8px;
+  padding: 6px 8px 6px 16px;
+  border-radius: 4px;
   background: color-mix(in srgb, var(--portal-brand-fill) 10%, transparent);
+  /* A true half-pixel hairline (a 0.5px border paints a full device pixel at 1x). */
+  box-shadow: inset 0 0 0 0.5px var(--portal-brand-fill);
   justify-content: flex-start;
-  min-height: 36px;
   margin-bottom: 12px;
-  font-size: 12px;
   flex-wrap: wrap;
 }
 .agent-history-selection > span {
   margin-inline-end: auto;
+  color: var(--ui-text-primary);
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+.agent-history-selection > button {
+  min-height: 36px;
+  gap: 8px;
+  padding-inline: 8px;
+  font-size: 0.875rem;
+}
+.agent-history-selection > button[data-variant='destructiveOutline'] {
+  padding-inline: 12px 16px;
+}
+.agent-history-selection svg,
+.agent-history-selection .codicon {
+  width: 16px;
+  height: 16px;
+  font-size: 16px;
 }
 .agent-history-checkbox {
   display: flex;
@@ -152,6 +198,10 @@
 .agent-history-table th:nth-child(7) {
   width: 15%;
 }
+/* Messages, Cost and Last active read as figures: right-aligned like their labels (877:6062). */
+.agent-history-table :is(th, td):is(:nth-child(5), :nth-child(6), :nth-child(7)) {
+  text-align: end;
+}
 /* Group row (877:5991): 2% band, folder at .5, Medium name, quiet count. */
 .agent-history-group {
   background: var(--ui-bg-card);
@@ -195,6 +245,7 @@
   width: 100%;
   min-width: 0;
   align-items: center;
+  /* Pin → title 8 and title → chip 8 (877:6056). */
   gap: 8px;
   text-align: start;
   cursor: pointer;
@@ -215,9 +266,13 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.agent-history-row-title .codicon {
-  margin-inline-end: 6px;
-  color: var(--ui-text-tertiary);
+/* The pin (877:6057): the app's upright pushpin at 14px, 60% ink, never squeezed by a long title. */
+.agent-history-pin {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  stroke-width: 1.5;
+  color: var(--ui-text-secondary);
 }
 .agent-history-row-main small {
   flex-shrink: 0;
@@ -230,19 +285,31 @@
   line-height: 0.875rem;
   text-transform: uppercase;
 }
+/* RUNNING wears the DEFAULT chip's brand treatment (877:4260). */
+.agent-history-row-main small[data-tone='running'] {
+  background: color-mix(in srgb, var(--portal-brand-fill) 25%, transparent);
+  box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
+  color: var(--ui-text-primary);
+}
+:root:not(.dark) .agent-history-row-main small[data-tone='running'] {
+  background: color-mix(in srgb, var(--portal-brand-fill) 10%, transparent);
+}
 .agent-history-footer {
   display: flex;
   justify-content: center;
   padding: 12px;
 }
+/* An option (878:9906): 14 Medium label, 6px to its control. */
 .agent-history-field {
   display: grid;
-  gap: 8px;
-  font-size: 13px;
   min-width: 0;
 }
 .agent-history-field legend {
-  margin-bottom: 8px;
+  margin-bottom: 6px;
+  color: var(--ui-text-primary);
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.4;
 }
 .agent-history-field [data-slot='segmented-control'] {
   max-width: 100%;
@@ -311,28 +378,66 @@
   padding: 8px 12px;
   border-top: 1px solid var(--ui-stroke-tertiary);
 }
+/* Confirmations (878:8018, 878:9901): 24px inset, 16px between blocks, actions 8px further down.
+   The variables (not padding) so the shared sticky footer cancels exactly this inset. */
 .agent-history-dialog-body {
-  padding: 24px;
-  gap: 20px;
+  --dialog-body-padding: 24px;
+  --dialog-body-gap: 16px;
 }
-.agent-history-cleanup-fields [data-slot='segmented-control'] {
-  padding: 2px;
-  border-radius: 2px;
-  box-shadow: inset 0 0 0 0.5px var(--ui-stroke-secondary);
+/* The shared sticky dialog footer (portal-floating.css) is pushed up by the body's own padding when
+   it sticks, so it overlapped the last item and left 48px under the buttons. These confirmations
+   end at their actions: Figma's 8px above them (878:8037) and the 24px inset below. */
+:root[data-shell='portal']
+  .agent-history-dialog[data-slot='dialog-content']
+  > .agent-history-dialog-body
+  > [data-slot='dialog-footer'] {
+  position: static;
+  margin-bottom: 0;
+  padding-bottom: 0;
 }
-.agent-history-cleanup-fields [data-slot='segmented-control'] button {
-  min-height: 32px;
+/* The page segmented control (856:3444) in a body-portalled dialog: field fill + 1px field stroke,
+   r3, 3px inset; the selection is the same 25% brand wash with its 0.5px brand hairline. */
+:root[data-shell='portal'] .agent-history-cleanup-fields [data-slot='segmented-control'] {
+  min-height: 36px;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--portal-control-radius);
+  background-color: var(--portal-field-fill);
+  box-shadow: inset 0 0 0 1px var(--portal-field-stroke);
+}
+:root[data-shell='portal'] .agent-history-cleanup-fields [data-slot='segmented-control'] > button {
+  min-height: 28px;
   padding-inline: 12px;
-  font-size: 14px;
+  border-radius: 2px;
+  color: var(--ui-text-secondary);
+  font-size: 0.875rem;
+  font-weight: 500;
 }
-.agent-history-cleanup-fields [data-slot='segmented-control'] button[aria-pressed='true'] {
-  background: var(--portal-selection-background);
-  box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
+:root[data-shell='portal']
+  .agent-history-cleanup-fields
+  [data-slot='segmented-control']
+  > button:hover:not([aria-pressed='true']) {
+  background-color: var(--portal-control-fill);
+  color: var(--ui-text-primary);
+}
+:root[data-shell='portal'] .agent-history-cleanup-fields [data-slot='segmented-control'] > button[aria-pressed='true'] {
+  background-color: color-mix(in srgb, var(--portal-brand-fill) 25%, transparent);
+  box-shadow: inset 0 0 0 0.5px var(--portal-brand-fill);
+  color: var(--ui-text-primary);
+}
+:root[data-shell='portal']:not(.dark)
+  .agent-history-cleanup-fields
+  [data-slot='segmented-control']
+  > button[aria-pressed='true'] {
+  background-color: color-mix(in srgb, var(--portal-brand-fill) 12%, transparent);
+}
+:root[data-shell='portal'] .agent-history-cleanup-fields [data-slot='segmented-control'] > button:focus-visible {
+  outline: 2px solid var(--portal-brand-ink);
+  outline-offset: 1px;
 }
 .agent-history-cleanup-fields {
   display: grid;
-  gap: 18px;
-  margin-block: 16px;
+  gap: 14px;
 }
 .agent-history-cleanup-fields:disabled {
   opacity: 0.6;
@@ -342,12 +447,45 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-size: 13px;
+  color: var(--ui-text-primary);
+  font-size: 0.875rem;
+  font-weight: 500;
 }
+/* Live dry run (878:9944): hairline, "N items will be deleted" 15 Medium with the quiet note at
+   the end, then the item card. */
 .agent-history-cleanup-preview {
-  border-top: 1px solid var(--ui-stroke-tertiary);
+  display: grid;
+  gap: 16px;
   padding-top: 16px;
-  font-size: 13px;
+  border-top: 1px solid color-mix(in srgb, var(--ui-base) 5%, transparent);
+}
+.agent-history-cleanup-preview > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.agent-history-cleanup-preview h3 {
+  color: var(--ui-text-primary);
+  font-size: 0.9375rem;
+  font-weight: 500;
+  line-height: 1.1;
+}
+.agent-history-cleanup-preview > header > span {
+  color: var(--ui-text-tertiary);
+  font-size: 0.6875rem;
+  letter-spacing: 0.01em;
+}
+.agent-history-cleanup-preview[aria-busy='true'] .agent-history-delete-list {
+  opacity: 0.6;
+}
+.agent-history-cleanup-preview .agent-history-delete-list {
+  /* Four items (878:9949) before the card scrolls, so the dialog fits a 700px window. */
+  max-height: 233px;
+}
+/* Delete 480 wide (878:8018), clean-up 560 (878:9901). */
+.agent-history-dialog[data-slot='dialog-content'] {
+  max-width: 480px;
 }
 .agent-history-cleanup-dialog[data-slot='dialog-content'] {
   max-width: 560px;
@@ -364,6 +502,8 @@
   border-radius: 0;
   border-width: 0 0 0 1px;
 }
+/* Preview side panel (1038:7792): docked at the stage's trailing edge under the band. One column at
+   a 24px inset, 24px between blocks; the actions follow the messages and the whole panel scrolls. */
 .agent-history-preview-body {
   display: flex;
   flex-direction: column;
@@ -371,91 +511,203 @@
   height: 100%;
   padding: 24px;
 }
-.agent-history-metadata {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
+/* The scrim dims the stage only (1038:7791 starts at the stage's leading edge); the page's list
+   panel stays readable beside it. */
+:root[data-shell='portal'] .agent-history-preview-scrim {
+  inset-inline-start: var(--workspace-left, 0px);
+  top: var(--titlebar-band-height, 0px);
 }
-.agent-history-metadata > div {
-  padding: 12px;
-  background: color-mix(in srgb, var(--ui-text-primary) 2%, transparent);
-  border: 1px solid var(--ui-stroke-tertiary);
-  border-radius: 3px;
+.agent-history-preview-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
 }
-.agent-history-metadata dt {
+.agent-history-preview-header > [data-slot='dialog-header'] {
+  min-width: 0;
+  flex: 1;
+  gap: 6px;
+}
+/* Above portal-floating's dialog description size: this one is the panel's 10px eyebrow. */
+:root[data-shell='portal'] .agent-history-preview-header [data-slot='dialog-description'] {
+  order: -1;
+  color: var(--ui-text-tertiary);
   font-size: 0.625rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
+.agent-history-preview-meta {
+  overflow: hidden;
+  color: var(--ui-text-tertiary);
+  font-size: 0.8125rem;
+  letter-spacing: 0.01em;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-history-preview-header > button {
+  flex-shrink: 0;
+}
+/* Stats (878:7028): three equal cards, 10px uppercase label over a 15 Medium value. */
+.agent-history-metadata {
+  display: grid;
+  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-flow: column;
+  gap: 8px;
+}
+.agent-history-metadata > div {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--ui-base) 5%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--ui-base) 2%, transparent);
+}
+.agent-history-metadata dt {
+  font-size: 0.625rem;
+  letter-spacing: 0.06em;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
 .agent-history-metadata dd {
-  font-size: 13px;
-  margin: 4px 0 0;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  color: var(--ui-text-primary);
+  font-size: 0.9375rem;
+  font-weight: 500;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.agent-history-metadata .agent-history-latest {
-  grid-column: 1 / -1;
-  padding: 0;
-  background: none;
-  border: 0;
-}
+/* Latest messages (878:7038): the user's turns boxed, the agent's bare, 12px apart. */
 .agent-history-messages {
-  overflow: auto;
-  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+.agent-history-messages > h3 {
+  color: var(--ui-text-tertiary);
+  font-size: 0.625rem;
+  letter-spacing: 0.06em;
+  line-height: 1.4;
+  text-transform: uppercase;
 }
 .agent-history-message {
-  padding-block: 12px;
-  margin-bottom: 12px;
+  display: grid;
+  gap: 4px;
+  padding-block: 10px;
 }
 .agent-history-message-user {
-  padding-inline: 12px;
-  background: color-mix(in srgb, var(--ui-text-primary) 4%, transparent);
-  border: 1px solid var(--ui-stroke-tertiary);
+  padding-inline: 14px;
+  border: 1px solid color-mix(in srgb, var(--ui-base) 10%, transparent);
   border-radius: 4px;
+  background: color-mix(in srgb, var(--ui-base) 4%, transparent);
 }
 .agent-history-message p {
+  color: color-mix(in srgb, var(--ui-text-primary) 87%, transparent);
+  font-size: 0.8125rem;
+  line-height: 1.4;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font-size: 13px;
-  line-height: 1.6;
-}
-.agent-history-message time {
-  float: inline-end;
-  font-size: 0.6875rem;
 }
 .agent-history-message small {
-  display: inline-block;
-  margin-bottom: 5px;
+  font-size: 0.6875rem;
+  letter-spacing: 0.01em;
+  line-height: 1.4;
 }
+/* Actions (1038:7827): 44px buttons, 12 apart, Delete… pushed to the far end. */
 .agent-history-preview-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: auto;
-  padding-top: 16px;
+  gap: 12px;
+}
+.agent-history-preview-actions > button {
+  min-height: 44px;
+  font-size: 0.875rem;
+}
+.agent-history-preview-actions > button:not(:first-child) {
+  padding-inline: 12px 16px;
 }
 .agent-history-preview-actions > button:last-child {
   margin-inline-start: auto;
 }
+.agent-history-preview-actions .codicon {
+  font-size: 16px;
+}
+/* Item card (878:8022): the overview card fill/stroke, r4; 57px items, 1px 3% dividers. */
 .agent-history-delete-list {
   max-height: 35vh;
   overflow: auto;
-  margin-block: 16px;
-  border: 1px solid var(--ui-stroke-tertiary);
-  border-radius: 3px;
-  background: color-mix(in srgb, var(--ui-text-primary) 2%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ui-base) 5%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--ui-base) 2%, transparent);
 }
 .agent-history-delete-list li {
-  display: grid;
-  gap: 4px;
-  padding: 12px;
-  border-bottom: 1px solid var(--ui-stroke-tertiary);
-  overflow-wrap: anywhere;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  border-bottom: 1px solid color-mix(in srgb, var(--ui-base) 3%, transparent);
 }
 .agent-history-delete-list li:last-child {
   border-bottom: 0;
 }
+.agent-history-delete-list li > span {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 2px;
+  line-height: 1.4;
+}
+.agent-history-delete-list li > span > span {
+  overflow: hidden;
+  color: var(--ui-text-primary);
+  font-size: 0.875rem;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .agent-history-delete-list small {
+  overflow: hidden;
+  font-size: 0.6875rem;
+  letter-spacing: 0.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-history-delete-list li[data-skipped] > span > span {
   color: var(--ui-text-tertiary);
+}
+/* "Running · skipped" (878:9969): the pending orange at 14% under its own ink. */
+.agent-history-delete-list em {
+  flex-shrink: 0;
+  padding: 0 4px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--portal-status-pending) 14%, transparent);
+  color: var(--portal-status-pending);
+  font-size: 0.5625rem;
+  font-style: normal;
+  letter-spacing: 0.04em;
+  line-height: 0.875rem;
+  text-transform: uppercase;
+}
+/* Skipped callout (878:8032): pending orange 8% fill, 40% stroke, r4, warn glyph then 13 Medium. */
+.agent-history-skipped {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--portal-status-pending) 40%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--portal-status-pending) 8%, transparent);
+  color: var(--ui-text-primary);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.4;
+}
+.agent-history-skipped > svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: var(--portal-status-pending);
 }
 .agent-history-error,
 .agent-history-outcome {
@@ -498,4 +750,20 @@
   .agent-history-table {
     min-width: 440px;
   }
+}
+
+/* Row ⋯ menu (878:6044): 220 wide. */
+.agent-history-row-menu {
+  min-width: 220px;
+}
+
+/* Loading bars sit on the text's line box (9px tall, centred), so a placeholder row is exactly as
+   tall as the row that replaces it. */
+.agent-history-skeleton {
+  display: inline-block;
+  max-width: 100%;
+  height: 9px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--ui-base) 8%, transparent);
+  vertical-align: middle;
 }

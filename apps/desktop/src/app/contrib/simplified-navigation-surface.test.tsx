@@ -10,6 +10,7 @@ import {
   noteActiveTreeGroup,
   setTreePaneHidden
 } from '@/components/pane-shell/tree/store'
+import { $routeCollapsedPanes } from '@/components/pane-shell/tree/store-route-collapse'
 import { RootTooltipProvider } from '@/components/ui/tooltip'
 import { $sidebarOpen, setSidebarOpen } from '@/store/layout'
 import { $shellChoice } from '@/store/shell-variant'
@@ -44,6 +45,7 @@ beforeEach(() => {
   $shellChoice.set(true)
   $hiddenStripTabs.set(new Set())
   $hiddenTreePanes.set(new Set())
+  $routeCollapsedPanes.set(new Set())
   $layoutTree.set(null)
   noteActiveTreeGroup(null)
   setSidebarOpen(true)
@@ -54,6 +56,7 @@ afterEach(() => {
   $shellChoice.set(false)
   $hiddenStripTabs.set(new Set())
   $hiddenTreePanes.set(new Set())
+  $routeCollapsedPanes.set(new Set())
   $layoutTree.set(null)
   noteActiveTreeGroup(null)
   setSidebarOpen(true)
@@ -64,21 +67,23 @@ it('keeps global navigation while the sidebar is closed and preserves that choic
   act(() => setSidebarOpen(false))
   expect(screen.getByRole('navigation', { name: 'Hermes' })).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
-  expect($hiddenTreePanes.get().has('sessions')).toBe(true)
+  expect($routeCollapsedPanes.get().has('sessions')).toBe(true)
   expect($sidebarOpen.get()).toBe(false)
   fireEvent.click(screen.getByRole('button', { name: 'Chats' }))
-  expect($hiddenTreePanes.get().has('sessions')).toBe(false)
+  expect($routeCollapsedPanes.get().has('sessions')).toBe(false)
   expect($sidebarOpen.get()).toBe(false)
 })
 
-it('hides sessions on global pages, including after an attempted pane reveal, without saving a hidden tab', () => {
+it('collapses sessions on global pages without hiding them, so an attempted reveal cannot show them', () => {
   mount('/capabilities')
-  expect($hiddenTreePanes.get().has('sessions')).toBe(true)
+  expect($routeCollapsedPanes.get().has('sessions')).toBe(true)
+  // The pane is collapsed for the route, not hidden: it stays mounted (route-collapse.test.tsx).
+  expect($hiddenTreePanes.get().has('sessions')).toBe(false)
   act(() => setTreePaneHidden('sessions', false))
-  expect($hiddenTreePanes.get().has('sessions')).toBe(true)
+  expect($routeCollapsedPanes.get().has('sessions')).toBe(true)
   expect($hiddenStripTabs.get().has('sessions')).toBe(false)
   fireEvent.click(screen.getByRole('button', { name: 'Chats' }))
-  expect($hiddenTreePanes.get().has('sessions')).toBe(false)
+  expect($routeCollapsedPanes.get().has('sessions')).toBe(false)
   expect($sidebarOpen.get()).toBe(true)
 })
 
@@ -88,6 +93,7 @@ it('restores classic page visibility when v2 is disabled while preserving explic
   mount('/capabilities')
   act(() => $shellChoice.set(false))
   expect(screen.queryByRole('navigation')).toBeNull()
+  expect($routeCollapsedPanes.get().has('sessions')).toBe(false)
   expect($hiddenTreePanes.get().has('sessions')).toBe(false)
   act(() => $hiddenStripTabs.set(new Set(['sessions'])))
   act(() => $shellChoice.set(true))
@@ -107,9 +113,9 @@ it('shows sessions for a focused chat tile even with a global page in the worksp
   )
   noteActiveTreeGroup('workspace-group')
   mount('/capabilities')
-  expect($hiddenTreePanes.get().has('sessions')).toBe(true)
+  expect($routeCollapsedPanes.get().has('sessions')).toBe(true)
   act(() => noteActiveTreeGroup('chat-group'))
-  expect($hiddenTreePanes.get().has('sessions')).toBe(false)
+  expect($routeCollapsedPanes.get().has('sessions')).toBe(false)
   act(() => noteActiveTreeGroup('workspace-group'))
-  expect($hiddenTreePanes.get().has('sessions')).toBe(true)
+  expect($routeCollapsedPanes.get().has('sessions')).toBe(true)
 })

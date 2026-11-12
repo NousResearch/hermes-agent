@@ -8,7 +8,6 @@ const copy = {
     duplicate: 'Duplicate agent',
     setDefault: 'Set as default agent',
     copyPath: 'Copy profile path',
-    deleteHint: 'To delete this agent, go to Settings › General.',
     defaultUnavailable: 'Setting a default agent is unavailable for this machine in this app.'
   },
   fr: {
@@ -18,7 +17,6 @@ const copy = {
     duplicate: 'Dupliquer l’agent',
     setDefault: 'Définir comme agent par défaut',
     copyPath: 'Copier le chemin du profil',
-    deleteHint: 'Pour supprimer cet agent, allez dans Paramètres › Général.',
     defaultUnavailable: 'Définir un agent par défaut n’est pas disponible pour cette machine dans cette application.'
   },
   de: {
@@ -28,7 +26,6 @@ const copy = {
     duplicate: 'Agent duplizieren',
     setDefault: 'Als Standardagent festlegen',
     copyPath: 'Profilpfad kopieren',
-    deleteHint: 'Um diesen Agenten zu löschen, gehe zu Einstellungen › Allgemein.',
     defaultUnavailable: 'Für diese Maschine kann in dieser App kein Standardagent festgelegt werden.'
   },
   es: {
@@ -37,7 +34,6 @@ const copy = {
     duplicate: 'Duplicar agente',
     setDefault: 'Establecer como agente predeterminado',
     copyPath: 'Copiar ruta del perfil',
-    deleteHint: 'Para eliminar este agente, ve a Ajustes › General.',
     defaultUnavailable: 'No se puede establecer un agente predeterminado para esta máquina en esta aplicación.'
   },
   ja: {
@@ -46,7 +42,6 @@ const copy = {
     duplicate: 'エージェントを複製',
     setDefault: '既定のエージェントに設定',
     copyPath: 'プロファイルのパスをコピー',
-    deleteHint: 'このエージェントを削除するには、設定 › 一般に移動してください。',
     defaultUnavailable: 'このアプリでは、このマシンの既定のエージェントを設定できません。'
   },
   zh: {
@@ -55,7 +50,6 @@ const copy = {
     duplicate: '复制智能体',
     setDefault: '设为默认智能体',
     copyPath: '复制配置文件路径',
-    deleteHint: '要删除此智能体，请前往设置 › 常规。',
     defaultUnavailable: '此应用无法为此机器设置默认智能体。'
   },
   'zh-hant': {
@@ -64,7 +58,6 @@ const copy = {
     duplicate: '複製代理',
     setDefault: '設為預設代理',
     copyPath: '複製設定檔路徑',
-    deleteHint: '若要刪除此代理，請前往設定 › 一般。',
     defaultUnavailable: '此應用程式無法為此機器設定預設代理。'
   },
   ru: {
@@ -73,7 +66,6 @@ const copy = {
     duplicate: 'Дублировать агента',
     setDefault: 'Сделать агентом по умолчанию',
     copyPath: 'Копировать путь профиля',
-    deleteHint: 'Чтобы удалить агента, откройте Настройки › Общие.',
     defaultUnavailable: 'В этом приложении нельзя выбрать агента по умолчанию для этой машины.'
   },
   ar: {
@@ -82,7 +74,6 @@ const copy = {
     duplicate: 'تكرار الوكيل',
     setDefault: 'تعيين كوكيل افتراضي',
     copyPath: 'نسخ مسار الملف الشخصي',
-    deleteHint: 'لحذف هذا الوكيل، انتقل إلى الإعدادات › عام.',
     defaultUnavailable: 'تعيين وكيل افتراضي غير متاح لهذا الجهاز في هذا التطبيق.'
   }
 } satisfies Record<BundledLocale, Record<string, string>>

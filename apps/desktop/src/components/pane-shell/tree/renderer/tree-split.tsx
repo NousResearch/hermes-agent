@@ -30,6 +30,7 @@ import {
   setTreeGroupMinimized,
   setTreeSplitWeights
 } from '../store'
+import { $routeCollapsedPanes } from '../store-route-collapse'
 
 import {
   allFixedAbsorberIndex,
@@ -105,6 +106,7 @@ export function TreeSplit({
   const containerRef = useRef<HTMLDivElement>(null)
   const panes = useContributions('panes')
   const hiddenPanes = useStore($hiddenTreePanes)
+  const routeCollapsed = useStore($routeCollapsedPanes)
   const narrow = useStore($narrowViewport)
   // Scoped to THIS subtree's panes: a sash drag writes size overrides on every
   // pointermove, but only the splits whose subtree actually resized should
@@ -142,7 +144,9 @@ export function TreeSplit({
   // (unregistered) or narrow-collapsed panes stay gone. Restores itself on exit
   // (render-only).
   const paneGone = (id: string) =>
-    !paneFor(id) || (!revealsHidden && hiddenPanes.has(id)) || (narrow && Boolean(paneChrome(paneFor(id)).collapsible))
+    !paneFor(id) ||
+    (!revealsHidden && (hiddenPanes.has(id) || routeCollapsed.has(id))) ||
+    (narrow && Boolean(paneChrome(paneFor(id)).collapsible))
 
   const trackCtx: TrackContext = { paneFor, paneGone, overrides }
 

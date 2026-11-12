@@ -8,6 +8,7 @@ import { $apiRequestScope } from '@/api/client'
 import * as apiClient from '@/api/client'
 import * as sessionsApi from '@/api/sessions'
 import { useSessionListActions } from '@/app/session/hooks/use-session-list-actions'
+import { StableNavigateProvider } from '@/app/stable-navigate'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { RootTooltipProvider } from '@/components/ui/tooltip'
 import { $openBotChat, $pendingBotOpen } from '@/plugins/hermes-bots/bot-state'
@@ -84,7 +85,7 @@ describe('Portal sidebar', () => {
   function mount(overrides: Partial<ComponentProps<typeof PortalSidebar>> = {}) {
     return render(
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-        <MemoryRouter>
+        <MemoryRouter><StableNavigateProvider>
           <RootTooltipProvider>
             <SidebarProvider>
               <Sidebar
@@ -105,7 +106,7 @@ describe('Portal sidebar', () => {
               <Route />
             </SidebarProvider>
           </RootTooltipProvider>
-        </MemoryRouter>
+        </StableNavigateProvider></MemoryRouter>
       </QueryClientProvider>
     )
   }
@@ -746,7 +747,7 @@ describe('Portal sidebar', () => {
     }
   })
 
-  it('renders every pin and agent chat without count limits and preserves search', () => {
+  it('renders every pin, caps an agent at its recent chats behind Show all, and searches past the cap', () => {
     $sessions.set(
       Array.from({ length: 9 }, (_, index) =>
         makeSessionInfo({
@@ -765,7 +766,7 @@ describe('Portal sidebar', () => {
     const agent = within(screen.getByRole('group', { name: /^Research ·/ }))
 
     expect(pins.getAllByText(/^Saved /)).toHaveLength(9)
-    expect(agent.getAllByText(/^Saved /)).toHaveLength(9)
+    expect(agent.getAllByText(/^Saved /)).toHaveLength(3)
     expect(screen.queryByRole('button', { name: /^Show .* more/ })).toBeNull()
     fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), { target: { value: 'Saved 8' } })
     expect(pins.getAllByText(/^Saved /)).toHaveLength(1)
@@ -773,7 +774,11 @@ describe('Portal sidebar', () => {
     fireEvent.click(pins.getByText('Saved 8'))
     expect(resume).toHaveBeenCalledWith('saved-8', expect.objectContaining({ profile: 'research' }))
     fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), { target: { value: '' } })
+    expect(agent.getAllByText(/^Saved /)).toHaveLength(3)
+    fireEvent.click(agent.getByRole('button', { name: 'Show all (9)' }))
     expect(agent.getAllByText(/^Saved /)).toHaveLength(9)
+    fireEvent.click(agent.getByRole('button', { name: 'Show less' }))
+    expect(agent.getAllByText(/^Saved /)).toHaveLength(3)
   })
 
   it('marks pinned agent chats and sorts them first, restoring recency when unpinned', async () => {
@@ -789,6 +794,9 @@ describe('Portal sidebar', () => {
     const agent = within(screen.getByRole('group', { name: /^Research ·/ }))
 
     const titles = () => agent.getAllByText(/^(Newest|Pinned newer|Pinned older|Oldest)$/).map(row => row.textContent)
+    // Pinned chats lead, so the card's cap keeps them in view.
+    expect(titles()).toEqual(['Pinned newer', 'Pinned older', 'Newest'])
+    fireEvent.click(agent.getByRole('button', { name: 'Show all (4)' }))
     expect(titles()).toEqual(['Pinned newer', 'Pinned older', 'Newest', 'Oldest'])
     expect(agent.getAllByRole('img', { name: 'Pinned' })).toHaveLength(2)
     const pins = within(screen.getByRole('region', { name: 'Pinned' }))

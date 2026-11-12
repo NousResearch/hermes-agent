@@ -108,6 +108,14 @@
   background: color-mix(in srgb, var(--portal-window-background) var(--translucency-glass-keep, 100%), transparent);
 }
 
+/* A page's band is canvas like every other screen's: under Glass it shows the material (a route
+   overlay's covered chat is unpainted, contrib/route-cover.tsx), so the band never changes material
+   between Chats and a page. */
+:root[data-shell='portal'][data-hermes-glass]
+  :is([data-slot='page-toolbar'], [data-tree-group][data-zone-page] > [data-panel-header]) {
+  background-color: transparent;
+}
+
 /* Status inks, one set for the whole redesign (sidebar machines, dots, chips, page status text):
    online is the pages' spec green (877:4308), pending Figma's orange, offline and failed their
    greys and reds; each passes 4.5:1 on its mode's panels. */

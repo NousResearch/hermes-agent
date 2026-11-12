@@ -62,7 +62,12 @@
     var(--portal-spectrum-red) 84.135%,
     var(--portal-spectrum-yellow)
   );
-  transition: opacity 0.15s ease-out;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  :root[data-shell='portal'] .portal-composer-edge {
+    transition: opacity var(--portal-motion-fast) var(--portal-ease);
+  }
 }
 
 :root[data-shell='portal'] [data-slot='composer-root']:focus-within .portal-composer-edge {

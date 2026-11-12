@@ -3019,6 +3019,13 @@ def _coerce_config_set_value(key: str, value: str) -> Any:
     lower = stripped.lower()
     if lower in _SCALAR_WORDS:
         return _SCALAR_WORDS[lower]
+    # Boolean schema keys also accept shell-quoted YAML scalars. The quotes arrive
+    # as literal characters from e.g. `hermes config set gateway.strict '"true"'`.
+    if isinstance(_default_value_for_key(key), bool) and len(stripped) >= 2:
+        if stripped[0] == stripped[-1] and stripped[0] in ("'", '"'):
+            quoted = _SCALAR_WORDS.get(stripped[1:-1].strip().lower())
+            if isinstance(quoted, bool):
+                return quoted
     for coerce in (_coerce_int, _coerce_float):
         coerced = coerce(stripped)
         if coerced is not None:

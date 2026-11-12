@@ -175,3 +175,32 @@ def test_bridge_still_bridges_plain_bools(homes):
     media_policy.apply_media_policy_env(load_config())
     assert os.environ["HERMES_MEDIA_DELIVERY_STRICT"] == "1"
     assert os.environ["HERMES_MEDIA_TRUST_RECENT_FILES"] == "0"
+
+
+
+def test_cli_quoted_media_flags_enforce_strict_allowlist(homes, tmp_path, monkeypatch):
+    """A documented config-set quoted scalar must enforce media denial end to end.
+
+    With the public 600-second recency default, a just-created file outside the
+    configured allowlist must be rejected when strict is on and recency trust off.
+    """
+    launch, _ = homes
+    from hermes_cli.config import load_config, set_config_value
+    from gateway import media_policy
+    from gateway.platforms.base import validate_media_delivery_path
+
+    monkeypatch.delenv("HERMES_MEDIA_ALLOW_DIRS", raising=False)
+    _write_gateway(launch, {"strict": False, "trust_recent_files": True})
+    set_config_value("gateway.strict", '"true"')
+    set_config_value("gateway.trust_recent_files", '"false"')
+
+    cfg = load_config()
+    assert cfg["gateway"]["strict"] is True
+    assert cfg["gateway"]["trust_recent_files"] is False
+    media_policy.apply_media_policy_env(cfg)
+    assert media_policy.media_delivery_strict() is True
+    assert media_policy.media_delivery_trust_recent() is False
+
+    fresh = tmp_path / "fresh-report.pdf"
+    fresh.write_bytes(b"%PDF-1.4\n")
+    assert validate_media_delivery_path(str(fresh)) is None

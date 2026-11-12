@@ -1,0 +1,35 @@
+name: source-trail-supervisor
+title: Source Trail & Session Supervisor
+repo: https://github.com/misakamikotoghr-5205/hermes-hackathon-plugins
+sha: "d4a7f0938b975c36c0d7fc65c8d32313a52d6f1b"
+subdir: source-trail-supervisor
+version: "1.0.0"
+description: >-
+  Combines Source Trail, CaseDesk, and Codex Session Supervisor into a Hermes epistemic
+  and trajectory harness: verifies verbatim quotes against exact zero-based Unicode
+  code-point spans (`[start, end)`), withholds unilateral claims when valid sources carry
+  conflicting position labels on the same topic, and fingerprints tool/turn progress to
+  detect stuck loops and log recoverable decision nodes. Includes the
+  `epistemic-supervision` skill and `/trail-supervise` command.
+  Disclosure — observes tool call names, error status, and turn counts via
+  `on_session_start`, `post_tool_call`, and `post_llm_call` hooks; stores user-ingested
+  source packets, verified span anchors, and session node summaries in
+  `plugin-data/source-trail-supervisor/data.db`; no network calls, subprocesses, or
+  credential access.
+maintainer: misakamikotoghr-5205
+tier: community
+category: general
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/misakamikotoghr-5205/hermes-hackathon-plugins/blob/main/source-trail-supervisor/README.md
+platforms: []
+capabilities:
+  provides_tools:
+    - source_trail_ingest
+    - source_trail_verify
+    - session_supervisor_node
+  provides_hooks:
+    - on_session_start
+    - post_tool_call
+    - post_llm_call
+  provides_middleware: []
+  requires_env: []

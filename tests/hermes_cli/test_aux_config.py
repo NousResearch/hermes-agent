@@ -50,7 +50,8 @@ def test_embedding_route_has_capability_specific_default_and_picker(tmp_path, mo
     _isolate_home(tmp_path, monkeypatch)
     assert "embedding" in {task for task, _name, _description in _AUX_TASKS}
     default = DEFAULT_CONFIG["auxiliary"]["embedding"]
-    assert (default["provider"], default["model"], default["dimensions"]) == ("auto", "", None)
+    assert (default["provider"], default["model"], default["dimensions"],
+            default["input_type_handling"]) == ("auto", "", None, None)
 
     rows = [
         {"slug": "openai-api", "name": "OpenAI API", "models": ["gpt-4.1"]},
@@ -76,20 +77,40 @@ def test_embedding_route_has_capability_specific_default_and_picker(tmp_path, mo
 def test_embedding_route_save_and_reset_preserve_capability_defaults(tmp_path, monkeypatch):
     _isolate_home(tmp_path, monkeypatch)
     from hermes_cli.config_defaults import DEFAULT_CONFIG
+    import hermes_cli.main_provider_setup as setup
 
-    _save_aux_choice("embedding", provider="openrouter", model="openai/text-embedding-3-small")
+    answers = iter(("openai/text-embedding-3-small", "yes"))
+    monkeypatch.setattr(setup, "_ask", lambda *_args, **_kwargs: next(answers))
+    monkeypatch.setattr("hermes_cli.models_pricing.get_pricing_for_provider", lambda _provider: {})
+    setup._aux_flow_provider_model("embedding", "openrouter", [])
     cfg = load_config()
     assert cfg["auxiliary"]["embedding"]["provider"] == "openrouter"
     assert cfg["auxiliary"]["embedding"]["model"] == "openai/text-embedding-3-small"
     assert cfg["auxiliary"]["embedding"]["api_key"] == ""
+    assert cfg["auxiliary"]["embedding"]["input_type_handling"] == "shared"
     assert cfg["model"] == DEFAULT_CONFIG["model"]
+    assert "query/document shared" in setup._format_aux_current(cfg["auxiliary"]["embedding"])
 
     cfg["auxiliary"]["embedding"]["dimensions"] = 512
     from hermes_cli.config import save_config
     save_config(cfg)
     assert _reset_aux_to_auto() >= 1
     reset = load_config()["auxiliary"]["embedding"]
-    assert (reset["provider"], reset["model"], reset["dimensions"]) == ("auto", "", None)
+    assert (reset["provider"], reset["model"], reset["dimensions"],
+            reset["input_type_handling"]) == ("auto", "", None, None)
+
+
+def test_embedding_picker_does_not_save_without_shared_space_confirmation(tmp_path, monkeypatch):
+    _isolate_home(tmp_path, monkeypatch)
+    import hermes_cli.main_provider_setup as setup
+
+    answers = iter(("vendor/embedding-model", "no"))
+    monkeypatch.setattr(setup, "_ask", lambda *_args, **_kwargs: next(answers))
+    monkeypatch.setattr("hermes_cli.models_pricing.get_pricing_for_provider", lambda _provider: {})
+    setup._aux_flow_provider_model("embedding", "openrouter", [])
+
+    route = load_config()["auxiliary"]["embedding"]
+    assert (route["provider"], route["model"], route["input_type_handling"]) == ("auto", "", None)
 
 # ── _reset_aux_to_auto ──────────────────────────────────────────────────────
 

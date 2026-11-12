@@ -179,6 +179,7 @@ auxiliary:
     provider: auto
     model: ''
     dimensions: null
+    input_type_handling: null
     timeout: 60
 ```
 
@@ -194,8 +195,13 @@ credentials; do not copy API keys into the embedding block. Chat-only OAuth
 routes such as Codex are unsupported for embeddings and return a visible error.
 
 `dimensions` is an optional request hint. The actual returned vector width is
-validated and reported to plugins. Keep vectors from different provider/model,
-dimension, or normalization identities in separate indexes.
+validated and reported to plugins. `input_type_handling: shared` asserts that
+query and document inputs use one compatible vector space. The Embedding picker
+asks for this confirmation before saving an OpenRouter or custom provider/model;
+manually configured unknown routes must set it explicitly or Hermes rejects the
+route. Known OpenAI `text-embedding-*` models are recognized without the
+assertion. Keep vectors from different provider/model, dimension, or
+normalization identities in separate indexes.
 
 Optional task-specific fallback chains live under the same auxiliary task:
 

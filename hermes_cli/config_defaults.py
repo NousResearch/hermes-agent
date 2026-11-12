@@ -743,8 +743,12 @@ DEFAULT_CONFIG = {
         # none|minimal|low|medium|high|xhigh|max|ultra ("" = provider default); extra_body =
         # OpenAI-compatible request fields. Vision: download_timeout = image HTTP download (s).
         # Embeddings are a separate capability lane: "auto" selects a compatible authenticated
-        # embedding route, never the active chat model. dimensions is an optional provider hint.
-        "embedding": {"provider": "auto", "model": "", "dimensions": None, "timeout": 60},
+        # embedding route, never the active chat model. dimensions is an optional provider hint;
+        # input_type_handling is an explicit shared-space assertion for non-catalogued routes.
+        "embedding": {
+            "provider": "auto", "model": "", "dimensions": None,
+            "input_type_handling": None, "timeout": 60,
+        },
         "vision": _aux(120, download_timeout=30),
         # web_extract, session_search, skills_hub: no aux LLM any more, leftover blocks are ignored.
         # Compression: raise timeout for local models. no_progress_timeout: seconds a streamed call

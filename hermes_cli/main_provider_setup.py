@@ -98,6 +98,8 @@ def _format_aux_current(task_cfg: dict) -> str:
     model = str(task_cfg.get("model") or "").strip()
     effort = _aux_effort_word(task_cfg)
     suffix = (f" · {model}" if model else "") + (f" · {effort}" if effort else "")
+    if task_cfg.get("input_type_handling") == "shared":
+        suffix += " · query/document shared"
     if base_url:
         return f"custom ({_short_url(base_url)})" + suffix
     if provider == "auto":
@@ -154,7 +156,8 @@ def _aux_task_display_name(task: str) -> str:
 
 
 def _save_aux_choice(task: str, *, provider: str, model: str = "", base_url: str = "",
-                     api_key: str = "", reasoning_effort: Optional[str] = None) -> None:
+                     api_key: str = "", reasoning_effort: Optional[str] = None,
+                     input_type_handling: str | None = None) -> None:
     """Persist an aux task's four routing fields (timeout etc. untouched; main model config never
     modified). ``delegation`` writes the top-level section, with "auto" stored as an empty provider.
     ``reasoning_effort``: a level word or "" (provider default) to write; None leaves the key alone."""
@@ -169,6 +172,8 @@ def _save_aux_choice(task: str, *, provider: str, model: str = "", base_url: str
     entry["model"] = model or ""
     entry["base_url"] = base_url or ""
     entry["api_key"] = api_key or ""
+    if task == "embedding":
+        entry["input_type_handling"] = input_type_handling
     if reasoning_effort is not None and _aux_task_takes_reasoning(task):
         entry["reasoning_effort"] = reasoning_effort
     save_config(cfg)
@@ -213,11 +218,11 @@ def _reset_aux_to_auto() -> int:
             changed = True
         fields = ("model", "base_url", "api_key", "reasoning_effort")
         if task == "embedding":
-            fields += ("dimensions",)
+            fields += ("dimensions", "input_type_handling")
         for field in fields:
             # Reset = the shipped default: "" everywhere except a slot that ships one (voice_chat: none).
             default_cfg = defaults.get(task) if isinstance(defaults.get(task), dict) else {}
-            default = (default_cfg.get(field) if field == "dimensions"
+            default = (default_cfg.get(field) if field in {"dimensions", "input_type_handling"}
                        else str(default_cfg.get(field) or ""))
             if (entry.get(field) or entry.get(field) is False or default) and entry.get(field) != default:
                 entry[field] = default
@@ -317,7 +322,8 @@ def _aux_select_for_task(task: str) -> None:
     if slug == "__back__":
         return
     if slug == "__auto__":
-        _save_aux_choice(task, provider="auto", model="", base_url="", api_key="", reasoning_effort="")
+        _save_aux_choice(task, provider="auto", model="", base_url="", api_key="", reasoning_effort="",
+                         input_type_handling=None)
         print(f"{display_name}: reset to auto.")
     elif slug == "__custom__":
         _aux_flow_custom_endpoint(task, task_cfg)
@@ -369,6 +375,16 @@ def _format_embedding_picker_entries(rows: list[dict], *, current_provider: str)
     return entries
 
 
+def _confirm_shared_embedding_space(provider: str, model: str) -> bool:
+    """Require an operator assertion before using query and document text in one vector space."""
+    _say(
+        "This route sends query and document text to one shared embedding space.",
+        "Confirm that the selected model returns compatible vectors for both uses.",
+    )
+    answer = _ask(f"Confirm shared query/document space for {provider} · {model}? [y/N] ", cancel_msg="")
+    return str(answer or "").strip().lower() in {"y", "yes"}
+
+
 def _aux_flow_provider_model(task: str, provider_slug: str, curated_models: list,
                              current_model: str = "", current_effort: str = "") -> None:
     """Prompt for a model under an already-authenticated provider (then its reasoning effort),
@@ -396,9 +412,20 @@ def _aux_flow_provider_model(task: str, provider_slug: str, curated_models: list
             print("No change.")
             return
 
+    if task == "embedding":
+        if not selected and provider_slug == "openai-api":
+            selected = "text-embedding-3-small"
+        if not selected:
+            print("Embedding requires an explicit model ID for this provider.")
+            return
+        if not _confirm_shared_embedding_space(provider_slug, selected):
+            print("Embedding selection unchanged; shared query/document semantics were not confirmed.")
+            return
+
     effort = _prompt_aux_reasoning_effort(task, current_effort) if _aux_task_takes_reasoning(task) else None
     _save_aux_choice(task, provider=provider_slug, model=selected or "", base_url="", api_key="",
-                     reasoning_effort=effort)
+                     reasoning_effort=effort,
+                     input_type_handling="shared" if task == "embedding" else None)
     effort_note = f" · reasoning {effort}" if effort else ""
     if selected:
         print(f"{display_name}: {provider_slug} · {selected}{effort_note}")

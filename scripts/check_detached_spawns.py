@@ -41,18 +41,16 @@ from __future__ import annotations
 
 import argparse
 import ast
-import re
-import subprocess
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from scripts.ci.production_scan import in_scope, marked, tracked_files as _tracked_files
 
 ROOT = Path(__file__).resolve().parent.parent
 MARKER = "detached-spawn: ok"
 # The helper itself: the one place a detached spawn is the point.
 HELPER_FILES = {"hermes_cli/process_identity.py"}
-SCAN_TREES = ("agent", "cron", "gateway", "hermes_cli", "plugins", "tools", "tui_gateway", "acp_adapter", "pm")
-SCAN_ROOT_FILES = ("cli.py", "run_agent.py", "hermes_state.py", "utils.py", "hermes_constants.py")
-SKIP_PARTS = {"tests", "__pycache__", "evals", "node_modules"}
 _DETACH_OS_ATTRS = {"setsid", "setpgid", "setpgrp"}
 # Helpers that return detaching Popen kwargs (``start_new_session=True`` on POSIX).
 _DETACH_HELPERS = {"windows_detach_popen_kwargs"}
@@ -108,29 +106,12 @@ def detach_lines(text: str) -> list[int]:
     return sorted(lines)
 
 
-# The marker counts only with a reason: ``detached-spawn: ok — <why>`` (an em dash or hyphens).
-_MARKED = re.compile(re.escape(MARKER) + r"\s*(?:—|-+)\s*\S")
-
-
 def _marked(src_lines: list[str], lineno: int) -> bool:
-    here = src_lines[lineno - 1] if lineno - 1 < len(src_lines) else ""
-    above = src_lines[lineno - 2] if lineno >= 2 else ""
-    return bool(_MARKED.search(here) or _MARKED.search(above))
-
-
-def _tracked_files(root: Path) -> list[Path]:
-    try:
-        out = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--", *SCAN_TREES, *SCAN_ROOT_FILES],
-                             capture_output=True, text=True, check=True, stdin=subprocess.DEVNULL, timeout=60).stdout
-    except (OSError, subprocess.SubprocessError) as exc:
-        # Fail closed: scanning nothing would report "no detached spawns".
-        raise RuntimeError(f"cannot list the tracked files under {root}: {exc}") from exc
-    return [root / rel for rel in out.split("\0") if rel.endswith(".py")]
+    return marked(src_lines, lineno, MARKER)
 
 
 def _in_scope(rel: str) -> bool:
-    parts = Path(rel).parts
-    return not (SKIP_PARTS & set(parts)) and not Path(rel).name.startswith("test_") and rel not in HELPER_FILES
+    return in_scope(rel) and rel not in HELPER_FILES
 
 
 def scan(paths=None, root: Path | None = None) -> dict[str, list[tuple[int, str]]]:

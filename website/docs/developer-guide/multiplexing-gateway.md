@@ -363,11 +363,20 @@ Process-global state that is not yet profile-scoped:
 
 | Surface | State at time of writing |
 | --- | --- |
-| MCP discovery and tool registration | Process-global; the first profile to build an agent wins the discovery slot. Full per-profile MCP registries are tracked in `#67605`. |
 | Terminal / sandbox env (`TERMINAL_*`) | Global by allowlist; tools read it from the process environment. |
 | Built-in tool registry | Built-ins are process-global; plugin-registered tools are overlaid per profile via `hermes_home_key()`. |
 | Provider/capability registries | Same hybrid overlay pattern (browser, image-gen, TTS, transcription, video-gen, web-search, secret sources). |
 | HTTP listener, relay ingress, process lock | One per process, owned by the default/active profile. Per-profile `runtime_status.json` is still written. |
+
+MCP discovery and tool registration are **not** on this list any more. The
+discovery slot, its thread table and the wait/in-flight/join readers are keyed by
+`hermes_home_key()`, which follows the context-local `HERMES_HOME` override
+(`hermes_cli/mcp_startup.py`), and connection ledgers plus the toolset memo are
+keyed per owning scope, so two profiles in one process each run their own
+discovery and same-named servers with different credentials connect separately
+(`tools/mcp_tool_scope.py`, `tools/mcp_tool_registration.py`). `${VAR}`
+interpolation in `config.yaml` still resolves against the process environment;
+that is tracked separately from the MCP lane.
 
 ## Non-goals
 

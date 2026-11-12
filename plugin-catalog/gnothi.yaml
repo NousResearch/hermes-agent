@@ -1,7 +1,7 @@
 name: gnothi
 repo: https://github.com/vrindachaa/gnothi
 sha: 3b3748626ebf718a64147044080150aeea065a76
-description: Quantitative claim verification, statistical comparison, and evidence-qualified conclusions.
+description: "Quantitative claim verification, statistical comparison, and evidence-qualified conclusions. Disclosure — with the optional `automatic_check` and `jev_remote` settings both turned on, sends the checked claim and aggregate evidence counts to OpenRouter (openrouter.ai) with your OpenRouter key for an advisory score, which may incur charges; `automatic_check` alone holds response streaming and may append a note to the agent's final reply."
 maintainer: vrindachaa
 tier: community
 category: tools

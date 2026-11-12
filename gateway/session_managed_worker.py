@@ -77,7 +77,13 @@ def _bootstrap(authority, ref, row, policy, scope, text=None):
         **({'display_v1': row['payload']['display_v1']} if row['payload'].get('display_v1') else {})})
     from gateway.session_worker_construct import construct_inputs
     request['construct_v1'] = construct_inputs(authority, policy, live.source.chat_id)
-    config = _worker_config(authority, policy)
+    config, model = _worker_config(authority, policy, include_model=True)
+    # The child only sees this hydrated config, so carry whether the effective
+    # route has moved off the immutable CLI launch selection into its snapshot.
+    from gateway.session_worker_construct import cli_launch_route_pinned
+    if (cli_launch_route_pinned(policy, json.loads(policy.config_json), policy.model)
+            and not cli_launch_route_pinned(policy, config, model)):
+        config['_cli_launch_route_released'] = True
     hydrated = replace(policy, config_json=json.dumps(config), request_json=json.dumps(request),
                        terminal_json=json.dumps(terminal), credential_ref=None, config_secret_ref=None)
     return {'version': 1, 'home': authority.profile_id, 'scope': scope,
@@ -89,22 +95,21 @@ def _bootstrap(authority, ref, row, policy, scope, text=None):
             'safe_mode': policy.safe_mode, 'ignore_user_config': policy.ignore_user_config}
 
 
-def _worker_config(authority, policy):
+def _worker_config(authority, policy, *, include_model=False):
     """The frozen session config the child binds as its only config (``bind_worker_policy``).
     ``command_allowlist`` is approval state rather than launch policy: an ``always`` grant an
     earlier worker of an ordinary session persisted, or one the operator removed by hand, comes
     from the live profile file, as it did before the child's config was frozen. Bypass sessions
     never read the profile."""
-    config = policy.config(authority)
+    config, model = policy.effective(authority) if include_model else (policy.config(authority), None)
     home = Path(str(authority.profile_id))
-    if policy.ignore_user_config or not home.is_absolute():
-        return config
-    from gateway.run import _load_gateway_config
-    live = _load_gateway_config(home / 'config.yaml')
-    config.pop('command_allowlist', None)
-    if live.get('command_allowlist') is not None:
-        config['command_allowlist'] = live['command_allowlist']
-    return config
+    if not policy.ignore_user_config and home.is_absolute():
+        from gateway.run import _load_gateway_config
+        live = _load_gateway_config(home / 'config.yaml')
+        config.pop('command_allowlist', None)
+        if live.get('command_allowlist') is not None:
+            config['command_allowlist'] = live['command_allowlist']
+    return (config, model) if include_model else config
 
 
 def _session_yolo(authority, route, policy):

@@ -55,6 +55,20 @@ def test_switch_and_session_restore_re_resolve_effort_before_the_agent_exists():
         assert cli.reasoning_config == _HIGH
 
 
+def test_committed_switch_releases_startup_pin_but_one_turn_does_not():
+    import cli as cli_mod
+    from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
+    with patch.dict(cli_mod.CLI_CONFIG, _CFG):
+        shell = _cli("deepseek-v4-flash", _MEDIUM)
+        shell._explicit_model_override = True
+        shell._model_switch_one_turn = True
+        assert CLIModelSwitchMixin._stage_and_swap_model(shell, _result("glm-5.3-flash"), shell.model)
+        assert CLIAgentSetupMixin._has_explicit_cli_route(shell)
+        shell._model_switch_one_turn = False
+        assert CLIModelSwitchMixin._stage_and_swap_model(shell, _result("deepseek-v4-flash"), shell.model)
+        assert not CLIAgentSetupMixin._has_explicit_cli_route(shell)
+
+
 def test_failed_swap_and_new_session_keep_the_effort_with_the_route():
     import cli as cli_mod
     from hermes_cli.cli_session_mixin import CLISessionMixin

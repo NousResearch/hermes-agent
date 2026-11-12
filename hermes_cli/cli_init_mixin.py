@@ -41,9 +41,10 @@ def _adopt_gateway_toolsets(cli, store):
 def _gateway_launch(cli):
     """This run's explicit launch flags as gateway ``session.create`` policy (main handed them to AIAgent)."""
     explicit_model = getattr(cli, "_explicit_model_override", False)
+    explicit_provider = getattr(cli, "_explicit_provider_override", False)
     provider = getattr(cli, "_explicit_provider", None)
-    return {"model": cli.model if explicit_model else None,
-            "provider": provider if explicit_model and provider not in {None, "", "auto"} else None,
+    return {"model": cli.model if explicit_model or explicit_provider else None,
+            "provider": provider if (explicit_model or explicit_provider) and provider not in {None, "", "auto"} else None,
             "api_key": getattr(cli, "_explicit_api_key", None),
             "base_url": getattr(cli, "_explicit_base_url", None),
             # Only a typed -t; the gateway resolves the profile default and the coding posture (#138670).
@@ -210,7 +211,8 @@ class CLIInitMixin:
             _model_config.get("default") or _model_config.get("model") or ""
         )
         # resume must not clobber an explicit -m with the session's stored model.
-        self._explicit_model_override = bool(model)
+        self._explicit_model_override = bool((model or "").strip())
+        self._explicit_provider_override = bool((provider or "").strip() and provider.strip().lower() != "auto")
         self.model = model or _config_model or ""
         _cfg_provider = _model_config.get("provider") or os.getenv("HERMES_INFERENCE_PROVIDER")
         _startup_provider_override = _startup_base_url_override = _startup_api_key_override = ""

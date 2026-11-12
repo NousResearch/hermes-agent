@@ -22,7 +22,8 @@ def _minimax_frame(tmp_path, monkeypatch, api_key=None):
                        'api_mode': 'anthropic_messages'}
     config['custom_providers'] = [{'name': 'minimax', 'base_url': BASE_URL, 'key_env': KEY_ENV,
                                    'api_mode': 'anthropic_messages'}]
-    request = {k: v for k, v in json.loads(frame['policy']['request_json']).items() if k not in ('provider', 'base_url')}
+    # This fixture models an unpinned profile route, not an explicit CLI model pick.
+    request = {k: v for k, v in json.loads(frame['policy']['request_json']).items() if k not in ('model', 'provider', 'base_url')}
     policy = {**frame['policy'], 'model': 'MiniMax-M2.7', 'config_json': json.dumps(config),
               'request_json': json.dumps(request)}
     return {**frame, 'policy': policy, 'api_key': api_key}
@@ -272,6 +273,92 @@ def test_primary_auth_failure_reaches_the_turns_refreshed_fallback_chain(tmp_pat
     built = _execute(_with_turn_chain(_minimax_frame(tmp_path, monkeypatch), [FALLBACK]), monkeypatch)
     assert FALLBACK['provider'] in calls
     assert built['fallback_model'] == [FALLBACK] and built['api_key'] is None
+
+
+def test_pinned_worker_route_does_not_resolve_a_fallback(tmp_path, monkeypatch):
+    from hermes_cli.auth import AuthError
+    frame = _with_turn_chain(_minimax_frame(tmp_path, monkeypatch), [FALLBACK])
+    request = json.loads(frame['policy']['request_json'])
+    request['model'] = 'MiniMax-M2.7'
+    frame['policy']['request_json'] = json.dumps(request)
+    calls = []
+    def resolve(requested=None, **kwargs):
+        calls.append(requested)
+        raise AuthError('Bearer fake-secret-ABC123 https://user:pass@example.test/?api_key=fake-key',
+                        relogin_required=True)
+    monkeypatch.setattr('hermes_cli.runtime_provider_custom._resolve_named_custom_runtime', lambda **kw: None)
+    monkeypatch.setattr('hermes_cli.runtime_provider.resolve_runtime_provider', resolve)
+    with pytest.raises(AuthError) as caught:
+        _execute(frame, monkeypatch)
+    assert FALLBACK['provider'] not in calls
+    assert caught.value.relogin_required is True
+    assert caught.value.__context__ is None
+    assert 'fake-secret' not in repr(caught.value)
+    assert 'user:pass' not in str(caught.value)
+
+
+def test_pinned_worker_policy_failure_does_not_leak_context(tmp_path, monkeypatch):
+    from agent.managed_worker import _construct_agent
+    from gateway.session_policy import build_policy
+    config = {'model': {'provider': 'google', 'default': 'example'}}
+    policy = build_policy({'source': 'cli', 'cwd': str(tmp_path), 'model': 'example'}, config)
+    def fail(*args, **kwargs):
+        raise RuntimeError('private policy error')
+    monkeypatch.setattr(type(policy), 'effective', fail)
+    monkeypatch.setattr('gateway.session_kanban.record_start_failure', lambda *args: None)
+    with pytest.raises(RuntimeError) as caught:
+        _construct_agent({}, lambda **kwargs: None, policy)
+    assert 'private policy error' not in str(caught.value)
+    assert caught.value.__context__ is None
+
+
+def test_pinned_worker_keeps_safe_runtime_refusal(tmp_path, monkeypatch):
+    from hermes_state_runtime import RuntimeStoreError
+    frame = _with_turn_chain(_minimax_frame(tmp_path, monkeypatch), [FALLBACK])
+    request = json.loads(frame['policy']['request_json'])
+    request['model'] = 'MiniMax-M2.7'
+    frame['policy']['request_json'] = json.dumps(request)
+    def fail(**kwargs):
+        raise RuntimeStoreError('launch_credentials_unavailable', field='model.api_key',
+                                detail='changed in config.yaml since this session started')
+    monkeypatch.setattr('hermes_cli.runtime_provider_custom._resolve_named_custom_runtime', fail)
+    with pytest.raises(RuntimeStoreError) as caught:
+        _execute(frame, monkeypatch)
+    assert caught.value.reason == 'launch_credentials_unavailable'
+    assert caught.value.field == 'model.api_key'
+    assert caught.value.detail == 'changed in config.yaml since this session started'
+
+
+def test_pinned_worker_drops_untrusted_auth_metadata(tmp_path, monkeypatch):
+    from hermes_cli.auth import AuthError
+    frame = _with_turn_chain(_minimax_frame(tmp_path, monkeypatch), [FALLBACK])
+    request = json.loads(frame['policy']['request_json'])
+    request['model'] = 'MiniMax-M2.7'
+    frame['policy']['request_json'] = json.dumps(request)
+    def fail(**kwargs):
+        raise AuthError('private', code='invalid_provider', retry_after='private', retryable='private')
+    monkeypatch.setattr('hermes_cli.runtime_provider_custom._resolve_named_custom_runtime', fail)
+    with pytest.raises(AuthError) as caught:
+        _execute(frame, monkeypatch)
+    assert caught.value.code == 'invalid_provider'
+    assert caught.value.retry_after is None and caught.value.retryable is None
+    assert 'private' not in repr(vars(caught.value))
+
+
+def test_pinned_worker_preserves_local_runtime_error_type(tmp_path, monkeypatch):
+    from hermes_cli.runtime_provider_custom import LocalRuntimeUnavailableError
+    frame = _with_turn_chain(_minimax_frame(tmp_path, monkeypatch), [FALLBACK])
+    request = json.loads(frame['policy']['request_json'])
+    request['model'] = 'MiniMax-M2.7'
+    frame['policy']['request_json'] = json.dumps(request)
+    def fail(**kwargs):
+        raise LocalRuntimeUnavailableError('fake-secret', retryable=True)
+    monkeypatch.setattr('hermes_cli.runtime_provider_custom._resolve_named_custom_runtime', fail)
+    with pytest.raises(LocalRuntimeUnavailableError) as caught:
+        _execute(frame, monkeypatch)
+    assert caught.value.retryable is True
+    assert caught.value.__context__ is None
+    assert 'fake-secret' not in str(caught.value)
 
 
 def test_primary_auth_failure_with_an_unusable_turn_chain_keeps_the_kanban_start_exit(tmp_path, monkeypatch):

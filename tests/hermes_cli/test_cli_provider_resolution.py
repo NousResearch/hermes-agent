@@ -125,7 +125,7 @@ def _import_cli():
     return importlib.import_module("cli")
 
 
-def test_provider_flag_uses_named_custom_default_model(monkeypatch):
+def test_provider_flag_uses_named_custom_default_model(monkeypatch, tmp_path):
     """`--provider <custom>` without `-m` uses that entry's default_model (#86978)."""
     cli = _import_cli()
     monkeypatch.setitem(
@@ -151,6 +151,24 @@ def test_provider_flag_uses_named_custom_default_model(monkeypatch):
 
     assert shell.model == "/models/gemma.gguf"
     assert shell.requested_provider == "gmk-lan"
+    from gateway.session_policy import build_policy
+    from gateway.session_worker_construct import route_runtime
+    from hermes_cli.cli_init_mixin import _gateway_launch
+    from hermes_cli import runtime_provider_custom
+    launch = _gateway_launch(shell)
+    policy_config = {**config, 'providers': {'gmk-lan': {k: v for k, v in config['providers']['gmk-lan'].items()
+                                                         if k != 'api_key'}}}
+    policy = build_policy({'source': 'cli', 'cwd': str(tmp_path), **{k: v for k, v in launch.items() if v is not None}}, policy_config)
+    frozen, model = policy.effective()
+    seen = []
+    original = runtime_provider_custom._resolve_named_custom_runtime
+    def capture(**kwargs):
+        seen.append(kwargs['target_model'])
+        return original(**kwargs)
+    monkeypatch.setattr(runtime_provider_custom, '_resolve_named_custom_runtime', capture)
+    runtime, _ = route_runtime(policy, frozen, model, None)
+    assert runtime['provider'] == 'custom'
+    assert seen == ['/models/gemma.gguf']
 
 
 def test_explicit_model_wins_over_provider_default_model(monkeypatch):
@@ -322,6 +340,55 @@ def test_ensure_runtime_credentials_passes_cli_model_as_target_model(monkeypatch
     assert seen["target_model"] == "mimo-v2.5"
 
 
+
+
+@pytest.mark.parametrize("pin", [{"model": "gemini-3.6-flash", "provider": "google"}, {"provider": "google"}],
+                         ids=["model_and_provider", "provider_only"])
+def test_explicit_cli_route_does_not_fall_back_on_auth_failure(monkeypatch, capsys, pin):
+    """A route pinned with -m/--provider resolves as requested or fails; it never swaps to a
+    fallback_providers entry. The unpinned (config default) path keeps its startup fallback, see
+    test_startup_fallback_re_resolves_reasoning_for_the_fallback_model."""
+    cli = _import_cli()
+    monkeypatch.setitem(cli.CLI_CONFIG, "model", {"default": "primary-model", "provider": "openai-codex"})
+    monkeypatch.setitem(cli.CLI_CONFIG, "fallback_providers", [{"provider": "zai", "model": "glm-5.3-flash"}])
+    attempts = []
+
+    def _runtime_resolve(requested=None, **kwargs):
+        attempts.append(requested)
+        if requested == "google":
+            raise AuthError("Google credentials are not configured.", provider="google", code="missing_api_key")
+        return {"provider": "zai", "api_mode": "chat_completions",
+                "base_url": "https://api.z.ai/api/coding/paas/v4", "api_key": "fallback-key", "source": "env"}
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+    shell = cli.HermesCLI(compact=True, max_turns=1, **pin)
+    shell.tool_progress_mode = "off"
+    model_before = shell.model
+
+    assert shell._ensure_runtime_credentials() is False
+    assert attempts == ["google"]
+    from hermes_cli.cli_init_mixin import _gateway_launch
+    assert _gateway_launch(shell)["provider"] == "google"
+    assert (shell.requested_provider, shell.model) == ("google", model_before)
+    error = capsys.readouterr().err
+    assert "Provider credentials could not be resolved" in error
+
+
+def test_pinned_route_error_does_not_echo_untrusted_resolver_details(monkeypatch, capsys):
+    cli = _import_cli()
+    shell = cli.HermesCLI(compact=True, max_turns=1, model='test-model', provider='google')
+    shell.tool_progress_mode = 'off'
+    secrets = ['Bearer fake-bearer-ABC123', 'https://user:pass@host',
+               'fake-token-ABC123', 'X-Api-Key: fake-api-key', 'https://host/?api_key=fake-query-key']
+    shell.model, shell.requested_provider = secrets[1], secrets[2]
+    def fail(**kwargs):
+        raise AuthError(' '.join(secrets))
+    monkeypatch.setattr('hermes_cli.runtime_provider.resolve_runtime_provider', fail)
+    assert shell._ensure_runtime_credentials() is False
+    output = capsys.readouterr()
+    for value in secrets:
+        assert value not in output.out + output.err
 
 
 def test_fallback_runtime_resolves_the_fallback_entry_model(monkeypatch, tmp_path):

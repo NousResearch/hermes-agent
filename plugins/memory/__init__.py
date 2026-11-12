@@ -394,6 +394,34 @@ def _load_provider_from_dir(provider_dir: Path, *, register_skills: bool = True)
     return _instantiate_subclass(mod)
 
 
+class _ClaimGatedHandler:
+    """A registry tool handler a memory provider's ``register(ctx)`` registered, refused for a caller
+    whose profile is not the one the collected provider instance is bound to (#147659).
+
+    A callable object, not a closure: ``__wrapped__`` keeps the plugin's handler visible to the
+    registry's ownership lookup and signature-based kwarg narrowing, which a closure defined here
+    would attribute to this module."""
+
+    def __init__(self, collector, name, handler, is_async):
+        self._collector, self._name, self.__wrapped__, self._is_async = collector, name, handler, is_async
+
+    def __call__(self, *args, **kwargs):
+        from agent.memory_caller_scope import refused_tool_message, serves_caller
+
+        provider = self._collector.provider
+        if provider is None or serves_caller(provider, f"tool {self._name}"):
+            return self.__wrapped__(*args, **kwargs)
+        from tools.registry import tool_error
+
+        refusal = tool_error(refused_tool_message(self._name))
+        if not self._is_async:
+            return refusal
+
+        async def _refused():
+            return refusal
+        return _refused()
+
+
 class _ProviderCollector:
     """Plugin context for memory providers: captures ``register_memory_provider``
     (the one call the activation path owns) and delegates other ``register_*``
@@ -445,6 +473,15 @@ class _ProviderCollector:
 
     def register_memory_provider(self, provider):
         self.provider = provider
+
+    def register_tool(self, name, toolset, schema, handler, *args, **kwargs):
+        """Forward to the real ``PluginContext.register_tool`` with the handler gated on this
+        provider's instance claim: a provider refused for the calling profile (another profile's
+        manager bound this same instance) must not answer through its registry tools either, or a
+        process-wide singleton serves the refused profile the owner's store (#147659)."""
+        is_async = kwargs.get("is_async", args[3] if len(args) > 3 else False)
+        return self.__getattr__("register_tool")(
+            name, toolset, schema, _ClaimGatedHandler(self, name, handler, bool(is_async)), *args, **kwargs)
 
     def register_skill(self, *args, **kwargs):
         """Forward skills to the plugin registry, tracking qualified name + path so

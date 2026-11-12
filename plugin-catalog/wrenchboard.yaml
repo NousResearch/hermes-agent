@@ -2,13 +2,7 @@ name: wrenchboard
 title: WrenchBoard
 repo: https://github.com/Junkz3/hermes-wrenchboard
 sha: "da468ace9e5c5cdfa118fe302eeda00de81f67cb"
-description: >-
-  Turn Hermes into a circuit board repair bench: a live boardview beside the chat, opened from 14 boardview
-  formats, test plans with readings pinned on the pads, part cards drawn from the real copper, and your schematic
-  and datasheets read on your computer. Disclosure: needs a WrenchBoard account (free to read boards, with an
-  example board to try; repairs and test plans need Pro) and talks only to WrenchBoard's hosted connector, which
-  receives the boardview files you import, your repairs and your readings; schematic PDFs, documents and camera
-  pictures stay on your computer, and there is no telemetry.
+description: "Turn Hermes into a circuit board repair bench: a live boardview beside the chat, opened from 14 boardview formats, test plans with readings pinned on the pads, part cards drawn from the real copper, and your schematic and datasheets read on your computer. Disclosure — needs a WrenchBoard account (RepairMind LTD's hosted service at app.wrenchboard.cloud; free to read boards, Pro for repairs and test plans); boardview files you import, your repairs and readings go to WrenchBoard through Hermes' MCP client; the board view is a page served by WrenchBoard, in a sandboxed frame, that can send chat messages as you and record readings/steps on your WrenchBoard repair without a model turn; pressing Connect (pane, `hermes wrenchboard connect` or `/wb connect`) adds the `wrenchboard` MCP server and its `mcp_allowlist` grant to config.yaml; adds ~5,300 characters of system-prompt sections in Desktop/Webapp; schematics, documents and camera pictures stay on your computer."
 maintainer: Junkz3
 tier: community
 category: tools

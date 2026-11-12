@@ -922,6 +922,34 @@ Important behavior:
 - `--force` does **not** override a `dangerous` scan verdict.
 - Official optional skills (`official/...`) are treated as built-in trust and do not show the third-party warning panel.
 
+### Reviewing a blocked package locally
+
+A setup skill may need capabilities the scanner flags, such as invoking Docker or installing a
+per-user service. Keep the findings visible and review the complete package before accepting those
+capabilities. The scanner verdict alone does not establish whether a package is safe.
+
+From a local interactive terminal, request a review:
+
+```bash
+hermes skills install owner/repo/path/to/skill --review
+```
+
+Hermes downloads the package to quarantine and prints the full scan report, the review directory,
+and a SHA-256 hash covering every file. Read the scripts and references in that directory, then type
+`approve sha256:<full hash>` only if you accept that exact package. Enter, EOF, Ctrl-C, a different
+hash, a non-interactive terminal, or `--yes` cannot approve a blocked package. No setup script is
+executed during installation.
+
+The original scanner verdict remains in the install record, alongside the content-bound operator
+review; an approval event is recorded in the existing audit log. Files changed after the scan or
+during either confirmation prompt are refused. This is an explicit operator decision under
+`SECURITY.md` §2.4, not a change to scan rules or registry trust.
+
+Approval applies only to this installation and is never reused for updates. A changed package
+must be reviewed again. To replace an existing install with a newly reviewed package, use
+`hermes skills install owner/repo/path/to/skill --force --review`. Ordinary installs, updates,
+chat slash commands and unattended callers retain the existing scanner policy.
+
 ### Trust levels
 
 | Level | Source | Policy |
@@ -929,7 +957,7 @@ Important behavior:
 | `builtin` | Ships with Hermes | Always trusted |
 | `official` | `optional-skills/` in the repo | Built-in trust, no third-party warning |
 | `trusted` | Trusted registries/repos such as `openai/skills`, `anthropics/skills`, `huggingface/skills`, `NVIDIA/skills`, `wandb/skills`, `qdrant/skills`, `pinecone-io/skills`, `makenotion/skills`, `Airtable/skills`, `Shopify/Shopify-AI-Toolkit` | More permissive policy than community sources |
-| `community` | Everything else (`skills.sh`, well-known endpoints, custom GitHub repos, most marketplaces) | Non-dangerous findings can be overridden with `--force`; `dangerous` verdicts stay blocked |
+| `community` | Everything else (`skills.sh`, well-known endpoints, custom GitHub repos, most marketplaces) | Non-dangerous findings can be overridden with `--force`; `dangerous` verdicts stay blocked unless explicitly reviewed in a local terminal |
 
 ### Update lifecycle
 

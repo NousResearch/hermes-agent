@@ -791,7 +791,7 @@ def _record_skill_install(identifier: str, bundle, outcome: str, attempt: Option
 def do_install(identifier: str, category: str = "", force: bool = False,
                console: Optional[Console] = None, skip_confirm: bool = False,
                invalidate_cache: bool = True, name_override: str = "",
-               source_id: Optional[str] = None) -> Optional[bool]:
+               source_id: Optional[str] = None, review_blocked: bool = False) -> Optional[bool]:
     """Fetch, quarantine, scan, confirm, and install a skill. ``source_id`` pins resolution to one
     adapter; callers that know the provenance (``do_update``) must pass it so a bare identifier
     cannot resolve to a same-named skill elsewhere.
@@ -810,7 +810,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     try:
         bundle, outcome, installed = _install_skill(identifier, category, force, console or _console,
                                                     skip_confirm, invalidate_cache, name_override, source_id,
-                                                    attempt=attempt)
+                                                    attempt=attempt, review_blocked=review_blocked)
     except Exception as exc:
         if fresh:
             _record_skill_install(identifier, None, "failed", attempt, error=exc)
@@ -822,7 +822,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
 
 def _install_skill(identifier: str, category: str, force: bool, c: Console, skip_confirm: bool,
                    invalidate_cache: bool, name_override: str, source_id: Optional[str],
-                   attempt: Optional[dict] = None) -> tuple:
+                   attempt: Optional[dict] = None, review_blocked: bool = False) -> tuple:
     """``do_install``'s body: ``(bundle, outcome, installed)``. ``outcome`` is the extension-install
     event (None when this was no new install); ``installed`` is ``do_install``'s return value.
     ``attempt`` collects the metric's ``registry`` (adapter id) and, on a failed exit, its
@@ -831,7 +831,7 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
     attempt["registry"] = "none"
     from tools.skills_hub import HubLockFile, ensure_hub_dirs, skills_hub_http_session
     from tools.skills_hub_install import install_from_quarantine, quarantine_bundle
-    from tools.skills_guard import should_allow_install
+    from hermes_cli.skills_hub_review import scan_for_install, verify_review
     ensure_hub_dirs()
     from tools.skills_sync_bundled_ops import bundled_skill_for_install
     if not source_id and not name_override and (builtin := bundled_skill_for_install(identifier)):
@@ -894,11 +894,9 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
         return bundle, failed, False
     c.print(f"[dim]Quarantined to {q_path.relative_to(q_path.parent.parent.parent)}[/]")
 
-    result = _scan_quarantined(c, q_path, bundle, meta, identifier)
-    allowed, _reason = should_allow_install(result, force=force)
-    if not allowed:
-        _install_blocked(c, bundle, _scan_block_message(result, identifier), result.verdict,
-                         f"{len(result.findings)}_findings", q_path=q_path, lead="\n", label="Not installed:")
+    result = scan_for_install(c, q_path, bundle, meta, identifier, force=force,
+                              review=review_blocked, skip_confirm=skip_confirm)
+    if result is None:
         attempt["failure_class"] = "scan_blocked"
         return bundle, failed, False
     # Advisory second opinion — warn-and-continue by design (PII-class findings are
@@ -914,6 +912,7 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
         return bundle, None, None
 
     try:
+        verify_review(q_path, bundle, result)
         install_dir = install_from_quarantine(q_path, bundle.name, category, bundle, result)
     except ValueError as exc:
         _invalid_path(c, bundle, exc, q_path)
@@ -1545,7 +1544,8 @@ _CLI_ACTIONS = {
                                   as_json=getattr(a, "json", False)),
     "install": lambda a: do_install(a.identifier, category=a.category, force=a.force,
                                     skip_confirm=getattr(a, "yes", False),
-                                    name_override=getattr(a, "name", "") or ""),
+                                    name_override=getattr(a, "name", "") or "",
+                                    **({"review_blocked": True} if getattr(a, "review", False) else {})),
     "inspect": lambda a: do_inspect(a.identifier),
     "list": lambda a: do_list(source_filter=a.source,
                               enabled_only=getattr(a, "enabled_only", False)),

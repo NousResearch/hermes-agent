@@ -46,8 +46,8 @@ release without Termux leaves the Termux APT channel on its previous release.
 The `Hermes-Setup.dmg` bootstrap installer is built for Apple Silicon only, so
 on an Intel Mac it reports "not supported on this Mac". Intel Macs can install
 the [CLI](./installation.md#linux--macos--wsl2) and run `hermes desktop`.
-Linux desktop packaging is disabled in the release workflow, although local
-AppImage builds and native Linux PM bundle checks exist.
+Linux desktop AppImages are built on canary tags as diagnostic artifacts that no
+release offers yet; local AppImage builds and native Linux PM bundle checks exist.
 
 ## Unsupported
 

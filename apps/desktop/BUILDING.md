@@ -10,7 +10,7 @@ commands package the current desktop build; they do not stage a fresh runtime.
 | Windows x64 / ARM64, sideload | Signed per-architecture MSIX packages, combined into a universal `.msixbundle`; `.appinstaller` descriptor | Windows App Installer |
 | Windows x64 / ARM64, Store | Store-identity MSIX packages and a separate Store bundle | Microsoft Store |
 | macOS ARM64 / x64 | Signed, notarized `Hermes.app` in DMG and ZIP artifacts | `electron-updater` with Squirrel.Mac |
-| Linux x64 / ARM64 | Local builder can produce AppImage | External replacement; Linux desktop release legs are disabled |
+| Linux x64 / ARM64 | AppImage, built on canary tags as an unpublished diagnostic artifact and by the local builder | External replacement; no Linux feed yet |
 
 The current MSIX manifest requires Windows 11 22H2 (`10.0.22621.0`).
 The source-script Windows support range is separate from this package floor.
@@ -239,8 +239,8 @@ It rejects mixed tag, release-phase, channel-publication, and upgrade inputs.
 Builder jobs check out the admitted SHA. Their artifacts and completion receipts
 go to `releases/commit/FULL_SHA/`, separate from tag archives and update channels.
 The run summary lists Windows sideload packages and their universal bundle, macOS DMG/ZIP
-files, and the Termux package. Linux release legs remain disabled and are listed
-as not built. Only receipt-listed artifacts that exist in storage get download
+files, and the Termux package. Commit builds skip the Linux legs, which are listed
+as skipped. Only receipt-listed artifacts that exist in storage get download
 links. Missing receipts show the failed or incomplete leg.
 
 Each commit build also writes a downloads page to

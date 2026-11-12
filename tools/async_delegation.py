@@ -839,10 +839,13 @@ def _get_executor(max_workers: int) -> ThreadPoolExecutor:
         return _executor
 
 
-def active_count() -> int:
-    """Number of live async delegation UNITS (one per completion message: a task group or an ungrouped task)."""
+def active_count(*, home: Optional[Path] = None) -> int:
+    """Number of live async delegation UNITS (one per completion message: a task group or an ungrouped task);
+    *home*: only the ones that profile dispatched."""
+    key = hermes_home_key(home) if home is not None else None
     with _records_lock:
-        return sum(1 for r in _records.values() if r.get("status") in _LIVE_STATES)
+        return sum(1 for r in _records.values() if r.get("status") in _LIVE_STATES
+                   and (key is None or r.get("_home") == key))
 
 
 def active_task_count() -> int:
@@ -965,7 +968,8 @@ def _dispatch_admitted(
         # a forced finalization runs under the dispatcher's so it settles the same state.db.
         "_context": contextvars.copy_context(),
         # Stale-monitor bookkeeping (see _stale_monitor_loop).
-        "_progress_token": None, "_progress_ts": dispatched_at, "_interrupted_at": None}
+        "_progress_token": None, "_progress_ts": dispatched_at, "_interrupted_at": None,
+        "_home": hermes_home_key(get_hermes_home())}  # the profile that dispatched it (``active_count(home=...)``)
     with _records_lock:
         if any((field, record[field]) in _refused_by for field in _FENCED_FIELDS):
             return {"status": "rejected", "error": "This session was closed (exit or /new): no new background work."}

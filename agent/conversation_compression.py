@@ -2972,6 +2972,13 @@ def _fold_todo_snapshot(agent: Any, compressed: list) -> None:
                     # assistant rows, so use the normal replay repair to keep metadata consistent.
                     agent._repair_message_sequence(compressed)
             else:
+                # A consecutive-user merge recorded the pre-merge content for durable
+                # persistence. Strip this stale snapshot from its prefix as well;
+                # otherwise the current-turn override drops the earlier user turn.
+                from agent.message_metadata import MERGED_TURN_PREFIX
+                _merged_prefix = _todo_message.get(MERGED_TURN_PREFIX)
+                if isinstance(_merged_prefix, str):
+                    _todo_message[MERGED_TURN_PREFIX] = _strip_stale_todo_snapshot(_merged_prefix)
                 _replace_message_content(_todo_message, _todo_stripped)
                 # No longer todo-only scaffolding; other synthetic flags stay authoritative and
                 # _is_real_user_message() recomputes provenance from content + flags.

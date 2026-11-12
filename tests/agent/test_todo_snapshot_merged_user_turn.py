@@ -45,6 +45,24 @@ def test_issue_repro_merged_user_turn_survives_the_next_boundary():
     assert content.endswith(TODO_INJECTION_FOOTER)
 
 
+def test_merged_turn_persistence_keeps_prior_user_text_after_snapshot_refresh():
+    """An override of the current turn must not erase the earlier unanswered user turn."""
+    from agent.message_metadata import MERGED_TURN_PREFIX
+    from agent.session_persistence import durable_user_row_content
+
+    agent = _agent("ship the release")
+    rows = _boundary_then_merge(agent, [{"role": "user", "content": "first request"}],
+                                "SECOND MESSAGE: update the docs")
+    # The repair recorded the pre-merge row, including the old todo block.
+    assert TODO_INJECTION_HEADER in rows[-1][MERGED_TURN_PREFIX]
+
+    _fold_todo_snapshot(agent, rows)
+    agent._persist_user_message_override = "SECOND MESSAGE: update the docs"
+    persisted, _ = durable_user_row_content(agent, rows[-1], rows[-1]["content"], None)
+
+    assert persisted == "first request\n\nSECOND MESSAGE: update the docs"
+
+
 def test_prompt_merged_onto_a_standalone_snapshot_row_survives():
     """The snapshot comes first: a synthetic snapshot row absorbed the next prompt."""
     agent = _agent("task")

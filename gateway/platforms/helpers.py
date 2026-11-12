@@ -941,3 +941,40 @@ def scaled_upload_deadline(deadline: float, upload_seconds: float) -> float:
     if upload_seconds <= 0:
         return deadline
     return max(deadline, min(MEDIA_UPLOAD_DEADLINE_MAX, deadline + 1.5 * upload_seconds))
+
+
+def _chat_streams_drafts(adapter: Any, chat_id: Any) -> bool:
+    """Whether this CHAT can stream through native drafts (a legacy no-kwarg probe = unsupported)."""
+    probe = getattr(adapter, "supports_draft_streaming", None)
+    if not callable(probe):
+        return False
+    try:
+        return bool(probe(chat_id=chat_id))
+    except TypeError:  # a probe that predates the per-chat kwarg
+        return False
+    except Exception:
+        logger.debug("supports_draft_streaming probe raised", exc_info=True)
+        return False
+
+
+def message_editing_capabilities(adapter: Any, chat_id: Any) -> tuple[bool, bool]:
+    """``(can edit this chat, can stream it without editing)`` for one chat's delivery adapter.
+
+    ``SUPPORTS_MESSAGE_EDITING`` is a class-wide attribute, but a relay connector fronts several
+    platforms over one adapter and advertises editing per chat in its capability descriptor, so the
+    class answer is only the fallback (#154674: a connector sending ``supports_edit: false`` still
+    streamed, and the stream consumer's edit fallback re-sent every update it could not edit as a
+    NEW message — one long turn arrived as many separate texts on SMS). Adapters that answer per chat
+    expose ``supports_edit_for_chat(chat_id)``.
+
+    The second element is what keeps a non-editing chat's streaming lane: a native-streaming
+    transport (WeCom msgtype ``stream``) or native drafts, where the un-editable partial is a draft.
+    """
+    per_chat = getattr(adapter, "supports_edit_for_chat", None)
+    if callable(per_chat):
+        can_edit = bool(per_chat(chat_id))
+    else:
+        can_edit = bool(getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True))
+    if can_edit or bool(getattr(adapter, "SUPPORTS_NATIVE_STREAMING", False)):
+        return can_edit, True
+    return can_edit, _chat_streams_drafts(adapter, chat_id)

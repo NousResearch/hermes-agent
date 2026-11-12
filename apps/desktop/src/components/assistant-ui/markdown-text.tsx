@@ -34,6 +34,7 @@ import { useMediaPlaybackSrc } from '@/hooks/use-media-playback-src'
 import { detectArtifact } from '@/lib/artifact-detect'
 import { renderMediaTags } from '@/lib/chat-messages/parts'
 import { ExternalLink, normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
+import { ghRefFromMarkdownHref } from '@/lib/gh-refs'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
@@ -59,6 +60,7 @@ import { useForcedTextDirection } from '@/store/text-direction'
 import { ArtifactCard } from './artifact-card'
 import { SessionRefLink } from './directive-text'
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
+import { GhRefLink } from './gh-ref-link'
 import { ResizableMarkdownTable, ResizableMarkdownTh } from './markdown-table'
 import { ToolMediaSlot } from './tool-media-slot'
 import { paragraphPlainText, TranscriptDirectiveLeaf, useResolvedParagraph } from './transcript-directive'
@@ -303,6 +305,19 @@ function PreviewOnlyMarkdownLink({ children, className, href }: ComponentProps<'
   return <ExternalLink className={cn('wrap-anywhere', className)} href={target.href}>{children}</ExternalLink>
 }
 
+/** `#session/` and `#gh-ref/` hrefs written by `preprocessMarkdown`, or null. */
+function referenceLink(href: string | undefined, children: ReactNode) {
+  const sessionRef = sessionRefFromMarkdownHref(href)
+
+  if (sessionRef) {
+    return <SessionRefLink value={sessionRef} />
+  }
+
+  const ghRef = ghRefFromMarkdownHref(href)
+
+  return ghRef ? <GhRefLink label={childrenToText(children) || `#${ghRef.number}`} target={ghRef} /> : null
+}
+
 function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {
   const mediaPath = mediaPathFromMarkdownHref(href)
 
@@ -335,10 +350,10 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
     return <PreviewAttachment target={previewTarget} />
   }
 
-  const sessionRef = sessionRefFromMarkdownHref(href)
+  const refLink = referenceLink(href, children)
 
-  if (sessionRef) {
-    return <SessionRefLink value={sessionRef} />
+  if (refLink) {
+    return refLink
   }
 
   const target = href ? normalizeExternalUrl(href) : href

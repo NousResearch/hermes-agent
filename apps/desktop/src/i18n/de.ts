@@ -1165,7 +1165,8 @@ export const deOverrides = {
       desktop: {
         repoScanEnabled: 'Automatische Repository-Erkennung',
         repoScanRoots: 'Repository-Erkennungs-Wurzeln',
-        repoScanExcludePaths: 'Ausgeschlossene Repository-Pfade'
+        repoScanExcludePaths: 'Ausgeschlossene Repository-Pfade',
+        autolinkIssueRefs: 'GitHub-#Issue-Links'
       },
       agent: {
         maxTurns: 'Maximale Agent-Schritte',
@@ -1339,7 +1340,8 @@ export const deOverrides = {
       desktop: {
         repoScanEnabled: 'Lokale Ordner nach Git-Repositories durchsuchen, die in Projekten angezeigt werden.',
         repoScanRoots: 'Zu durchsuchende Ordner. Leer lassen, um Ihr Home-Verzeichnis zu durchsuchen.',
-        repoScanExcludePaths: 'Ordner und deren Unterordner, die bei der Repository-Erkennung übersprungen werden.'
+        repoScanExcludePaths: 'Ordner und deren Unterordner, die bei der Repository-Erkennung übersprungen werden.',
+        autolinkIssueRefs: 'Bloße #123-Verweise im Chat als github.com-Links zum Repository der aktuellen Sitzung darstellen. Erfordert ein origin-Remote auf github.com.'
       },
       timezone: 'IANA-Zeitzonenkennung. Leer verwendet die Systemzeitzone.',
       browser: {

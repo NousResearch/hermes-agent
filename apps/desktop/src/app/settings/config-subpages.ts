@@ -34,7 +34,7 @@ const CONFIG_SUBPAGE_DEFINITIONS: Record<string, ConfigSubpageDefinition[]> = {
     {
       id: 'projects',
       labelKey: 'workspaceProjects',
-      fields: ['terminal.cwd'],
+      fields: ['terminal.cwd', 'desktop.autolink_issue_refs'],
       prefixes: ['desktop.repo_scan_']
     },
     {

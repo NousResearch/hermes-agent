@@ -2615,6 +2615,21 @@ export interface ProjectsForCwdResult {
   cwd: string
   branch?: string
 }
+/** A live session's own cwd wins over ``cwd`` (the renderer's view of it). */
+export interface GitRepoRefsParams {
+  profile?: string | null
+  session_id?: string
+  cwd?: string
+}
+/** ``methods_git``: ``available`` is false outside a repo, without a github.com ``origin``, or with ``desktop.autolink_issue_refs: false``; the other keys are present only when it is true. */
+export interface GitRepoRefsResult {
+  available: boolean
+  host?: string | null
+  owner?: string | null
+  repo?: string | null
+  repo_root?: string | null
+  cwd?: string | null
+}
 /** ``scan`` asks the host to walk the policy roots itself (remote-gateway desktop). */
 export interface ProjectsDiscoverReposParams {
   profile?: string | null
@@ -6420,6 +6435,8 @@ export interface RpcMethods {
   'free_tier.status': { params: ProfileParams; result: FreeTierStatusResult }
   /** What THIS build enforces (a client withholds a feature unless advertised). */
   'gateway.capabilities': { params: PingParams; result: GatewayCapabilitiesResult }
+  /** GitHub owner/repo behind a live session's cwd, so the transcript can link bare #N refs. */
+  'git.repo_refs': { params: GitRepoRefsParams; result: GitRepoRefsResult }
   /** Resolve one exact pending approval raised by a local or peer room member. */
   'groups.approve': { params: GroupsApproveParams; result: GroupsApproveResult }
   /** Read one committed attachment for a live room viewer. */
@@ -6888,6 +6905,7 @@ export const RPC_METHODS = [
   'free_tier.provision',
   'free_tier.status',
   'gateway.capabilities',
+  'git.repo_refs',
   'groups.approve',
   'groups.attachment.download',
   'groups.attachment.upload',

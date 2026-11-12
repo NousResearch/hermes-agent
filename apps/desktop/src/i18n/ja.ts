@@ -674,7 +674,8 @@ export const jaOverrides = {
       desktop: {
         repoScanEnabled: 'リポジトリの自動検出',
         repoScanRoots: 'リポジトリの検索ルート',
-        repoScanExcludePaths: '除外するリポジトリパス'
+        repoScanExcludePaths: '除外するリポジトリパス',
+        autolinkIssueRefs: 'GitHub #Issue リンク'
       },
       agent: {
         maxTurns: '最大エージェントステップ',
@@ -839,7 +840,8 @@ export const jaOverrides = {
       desktop: {
         repoScanEnabled: 'ローカルフォルダを検索して Git リポジトリをプロジェクトに表示します。',
         repoScanRoots: '検索するフォルダです。空の場合はホームディレクトリを検索します。',
-        repoScanExcludePaths: 'リポジトリ検出時に除外するフォルダとその配下です。'
+        repoScanExcludePaths: 'リポジトリ検出時に除外するフォルダとその配下です。',
+        autolinkIssueRefs: 'チャット内の #123 形式の参照を、現在のセッションのリポジトリへの github.com リンクとして表示します。github.com の origin リモートが必要です。'
       },
       timezone:
         'Hermes がローカル時刻のコンテキストを必要とするときに使用します。空欄ならシステムのタイムゾーンを使います。',

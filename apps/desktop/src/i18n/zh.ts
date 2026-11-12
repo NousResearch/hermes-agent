@@ -883,7 +883,8 @@ export const zhOverrides = {
       desktop: {
         repoScanEnabled: '自动发现代码仓库',
         repoScanRoots: '代码仓库扫描根目录',
-        repoScanExcludePaths: '排除的代码仓库路径'
+        repoScanExcludePaths: '排除的代码仓库路径',
+        autolinkIssueRefs: 'GitHub #Issue 链接'
       },
       agent: {
         maxTurns: '最大智能体步数',
@@ -1059,7 +1060,8 @@ export const zhOverrides = {
       desktop: {
         repoScanEnabled: '扫描本地文件夹，并在“项目”中显示 Git 代码仓库。',
         repoScanRoots: '要扫描的文件夹。留空时扫描主目录。',
-        repoScanExcludePaths: '发现代码仓库时跳过这些文件夹及其子目录。'
+        repoScanExcludePaths: '发现代码仓库时跳过这些文件夹及其子目录。',
+        autolinkIssueRefs: '将聊天中的 #123 引用显示为指向当前会话仓库的 github.com 链接。需要 github.com 上的 origin 远程。'
       },
       timezone: '当 Hermes 需要本地时间上下文时使用。留空则使用系统时区。',
       agent: {

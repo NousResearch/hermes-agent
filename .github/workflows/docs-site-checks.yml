@@ -24,8 +24,8 @@ jobs:
         uses: ./.github/actions/setup-pm
         with:
           toolchain: all
-          node-package-manager: npm
-          node-cache-dependency-path: website/package-lock.json
+          node-package-manager: pnpm
+          node-cache-dependency-path: website/pnpm-lock.yaml
 
       - name: Install website dependencies
         uses: ./.github/actions/retry

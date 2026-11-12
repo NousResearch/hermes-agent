@@ -143,15 +143,15 @@ sandbox *args:
 icons:
     node scripts/generate-icons.mjs
 
-# Install the website's npm dependencies
+# Install the website's pnpm dependencies
 [group('docs')]
 docs-install:
-    npm ci --prefix website
+    pnpm install --dir website --frozen-lockfile
 
 # Build the English docs site
 [group('docs')]
 docs-build:
-    npm run build:fast --prefix website
+    pnpm --dir website run build:fast
 
 # Regenerate the skills dashboard data and the per-skill docs pages
 [group('docs')]

@@ -13,9 +13,5 @@
     "pino": "^9.0.0",
     "playwright-core": "1.64.0",
     "qrcode-terminal": "^0.12.0"
-  },
-  "overrides": {
-    "protobufjs": "^7.5.5",
-    "body-parser": "1.20.9"
   }
 }

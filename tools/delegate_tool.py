@@ -387,9 +387,10 @@ def _run_single_child(
       status      ∈ {completed, interrupted, failed} — a structured failure
                     (failed=True / non-empty error) or an invalid terminal state
                     is "failed" even when a summary exists.
-      exit_reason ∈ {completed, max_iterations, interrupted, error} —
+      exit_reason ∈ {completed, max_iterations, blocked, interrupted, error} —
                     "max_iterations" only for genuine budget exhaustion
-                    (completed=False with no failure fields), never for errors.
+                    (completed=False with no failure fields), never for errors;
+                    "blocked" when a pre_llm_call hook vetoed the child (#154234).
       truncated   == (exit_reason == "max_iterations").
 
     * ``"completed"``       — normal finish. See #97655.

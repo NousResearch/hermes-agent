@@ -14,6 +14,7 @@ from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import Any, Dict, List, Optional
 from agent.compression_marker import elide
 from agent.interrupt_compat import request_hard_interrupt
+from agent.turn_context import PRE_LLM_BLOCK_EXIT_REASON
 from dataclasses import dataclass, field
 from tools import file_state
 from tools.delegate_tool_progress import _quiet, _safe_progress
@@ -657,6 +658,12 @@ def _build_result_entry(
         # The loop returns the error text as final_response, which would otherwise read as "completed". Never report a
         # provider rejection as "max_iterations" — that is only truthful for real budget exhaustion.
         status, exit_reason = "failed", "error"
+    elif str(result.get("turn_exit_reason") or "") == PRE_LLM_BLOCK_EXIT_REASON:
+        # A pre_llm_call hook vetoed the child before any model call (#154234): completed is
+        # False without a failure, which the budget-exhaustion reading below would misreport.
+        # The block message is the deliverable; it is a policy stop, not a truncation.
+        exit_reason = "blocked"
+        status = "completed" if usable_summary else "failed"
     else:
         # exit_reason ("completed" vs "max_iterations") tells the parent HOW the task ended; completed=False with no
         # failure = budget exhaustion. A declared schema still violated after the bounded retry does NOT fail the

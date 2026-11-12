@@ -58,7 +58,8 @@ it('a completion that beats the resume reply is replayed after the snapshot, cov
   const history: unknown[][] = []
 
   function Harness() {
-    lifecycle = useSessionLifecycle({ colsRef: { current: 80 }, composerActions: { setComposerTokens: vi.fn() }, gw, rpc: vi.fn(),
+    lifecycle = useSessionLifecycle({ colsRef: { current: 80 }, composerActions: { setComposerTokens: vi.fn() }, gw,
+      rpc: vi.fn(async () => ({ provider_configured: true })),
       scrollRef: { current: null }, panel: vi.fn(), sys: vi.fn(), setHistoryItems: (items: unknown[]) => history.push(items),
       setLastUserMsg: vi.fn(), setSessionStartedAt: vi.fn(), setStickyPrompt: vi.fn(), setVoiceProcessing: vi.fn(), setVoiceRecording: vi.fn() } as any)
 

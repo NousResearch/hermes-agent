@@ -689,10 +689,10 @@ _REASONING_CARRIER_ROUTES: tuple = (
     # Vendors that document reasoning_details replay next to reasoning_content.
     (frozenset({RC, RD}), frozenset({"novita", "tencent-tokenhub", "minimax", "minimax-cn"}),
      ("novita.ai", "tokenhub.tencentmaas.com", "tokenhub-intl.tencentcloudmaas.com", "minimax.io", "minimaxi.com")),
-    # "custom" is deliberately absent: it names a user-supplied endpoint, not a local one. It falls
-    # through to the is_local_endpoint() fallback, so a custom localhost engine keeps both carriers
-    # while a custom remote gateway gets reasoning_content only -- strict serde gateways alias
-    # `reasoning` to `reasoning_content` and reject both keys as a duplicate field (#136486).
+    # "custom" is deliberately absent: it names a user-supplied endpoint, not a local one. A custom
+    # endpoint on a host no row above names falls through to the is_local_endpoint() fallback, so a
+    # localhost/LAN engine keeps both carriers while a remote gateway gets reasoning_content only --
+    # strict serde gateways alias `reasoning` to `reasoning_content` and reject both keys (#136486).
     (_LOCAL_CARRIERS, frozenset({"ollama-cloud", "lmstudio", "upstage"}), ("ollama.com", "upstage.ai")),
 )
 
@@ -1008,8 +1008,9 @@ _NAMED_FIELD_RES = {
 }
 # Alias collision: the schema reads ``reasoning`` as an alias of ``reasoning_content``, so a message
 # carrying both is rejected while either alone is accepted (#136486). serde names the duplicate
-# ("duplicate field `reasoning_content`" or "`reasoning`", with or without a ``messages[N]:`` path);
-# Recursive's rec engine names neither ("Use one reasoning field per message").
+# ("duplicate field `reasoning_content`" or "`reasoning`", with or without a ``messages[N]:`` path)
+# and only ``reasoning`` is the alias; Recursive's rec engine names nothing ("Use one reasoning field
+# per message") and rejects any second carrier, ``reasoning_details`` included.
 _DUPLICATE_FIELD_RE = re.compile(r"duplicate field[^a-z0-9_]{0,4}([a-z_][a-z0-9_]*)")
 _KEYLESS_COLLISION_PHRASES = ("use one reasoning field per message",)
 
@@ -1023,15 +1024,17 @@ def rejected_reasoning_fields(error_body: Any, sent_messages: Any) -> frozenset:
     rejected ``reasoning_content`` (the most widely accepted alias) takes all three. One retry.
 
     Alias collision is the opposite case: the schema READS ``reasoning_content``, so it is kept
-    and only the aliases that rode next to it in one message are dropped. A duplicate complaint
-    about a key that is not a carrier learns nothing.
+    and only the carriers that rode next to it in one message are dropped (``reasoning`` for a
+    named collision; any second carrier for the keyless one). A duplicate complaint about a key
+    that is not a carrier learns nothing.
     """
     body = str(error_body or "").lower()
     assistant = [m for m in (sent_messages if isinstance(sent_messages, list) else ())
                  if isinstance(m, dict) and m.get("role") == "assistant"]
-    if {m.group(1) for m in _DUPLICATE_FIELD_RE.finditer(body)} & {RC, R} or any(
-            phrase in body for phrase in _KEYLESS_COLLISION_PHRASES):
+    if any(phrase in body for phrase in _KEYLESS_COLLISION_PHRASES):
         return frozenset(key for msg in assistant if RC in msg for key in (R, RD) if key in msg)
+    if {m.group(1) for m in _DUPLICATE_FIELD_RE.finditer(body)} & {RC, R}:
+        return frozenset({R}) if any(RC in msg and R in msg for msg in assistant) else frozenset()
     if not any(phrase in body for phrase in _UNKNOWN_FIELD_PHRASES):
         return frozenset()
     sent = {key for msg in assistant for key in REASONING_CARRIERS if key in msg}

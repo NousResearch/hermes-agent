@@ -167,3 +167,28 @@ export function windowOpacityOptions(state: TranslucencyState, supported = true)
 
   return opacityNeedsSetting(opacity) ? { opacity } : {}
 }
+
+/** Opt-in for alpha-capable chat windows on Linux (`HERMES_DESKTOP_TRANSPARENT=1`). */
+export const LINUX_TRANSPARENT_ENV = 'HERMES_DESKTOP_TRANSPARENT'
+
+/**
+ * Linux has no native material, so the translucency setting stays off there.
+ * A compositor (Hyprland, KWin, picom, ...) can still blur whatever sits behind
+ * an alpha-capable window, which lets a theme's `customCSS` paint a
+ * translucent background. Electron only honours alpha when the window is
+ * CREATED `transparent`, so this is a launch-time opt-in rather than a live
+ * toggle. Every built-in theme still paints an opaque page, so opting in
+ * changes nothing until a theme asks for transparency; whole-window opacity
+ * is never used, so text and images stay solid.
+ */
+export function linuxTransparentWindows(platform: string, env: Record<string, string | undefined>): boolean {
+  return platform === 'linux' && env[LINUX_TRANSPARENT_ENV] === '1'
+}
+
+/** Constructor options for an opted-in Linux chat window: alpha-capable, clear backing, never faded. */
+export const LINUX_TRANSPARENT_SURFACE = { transparent: true, backgroundColor: '#00000000' } as const
+
+/** Runtime backing for a registered chat window: clear under glass or for an opted-in Linux window. */
+export function windowBackingColor(state: TranslucencyState, themedColor: string, linuxTransparent: boolean): string {
+  return linuxTransparent || glassActive(state) ? '#00000000' : themedColor
+}

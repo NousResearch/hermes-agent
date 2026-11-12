@@ -589,12 +589,15 @@ import {
   defaultTranslucencyState,
   glassActive,
   glassSupportedOn,
+  LINUX_TRANSPARENT_SURFACE,
+  linuxTransparentWindows,
   nativeOpacityFor,
   normalizeState as normalizeTranslucency,
   opacityNeedsSetting,
   translucencySupportedOn,
   vibrancyFor as vibrancyForTranslucency,
   windowBackgroundMaterialOptions,
+  windowBackingColor,
   windowBackingOptions,
   windowOpacityFor,
   windowOpacityOptions
@@ -777,6 +780,7 @@ const DEV_SERVER = process.env.HERMES_DESKTOP_DEV_SERVER
 const IS_PACKAGED = app.isPackaged || Boolean(process.env.HERMES_DESKTOP_IS_PACKAGED)
 const IS_MAC = process.platform === 'darwin'
 const IS_WINDOWS = process.platform === 'win32'
+const LINUX_TRANSPARENT_WINDOWS = linuxTransparentWindows(process.platform, process.env)
 const IS_WSL = isWslEnvironment()
 // Truthful macOS kernel major (Tahoe = 25). Product version lies (16 vs 26) per
 // build SDK, so gate Tahoe workarounds on Darwin instead.
@@ -1555,7 +1559,7 @@ function applyWindowTranslucency(win, changed = { backing: true, material: true,
         applyWindowsBackdrop(win, translucencyState, changed, getWindowBackgroundColor())
       } else {
         if (changed.backing && typeof win.setBackgroundColor === 'function') {
-          win.setBackgroundColor(glassActive(translucencyState) ? '#00000000' : getWindowBackgroundColor())
+          win.setBackgroundColor(windowBackingColor(translucencyState, getWindowBackgroundColor(), LINUX_TRANSPARENT_WINDOWS))
         }
 
         // Animate deliberate macOS frost changes, not unrelated tint updates.
@@ -1586,6 +1590,11 @@ function applyWindowTranslucency(win, changed = { backing: true, material: true,
 // are `transparent: true` windows that own their backgrounds and are
 // deliberately not chat windows.
 function chatWindowSurfaceOptions() {
+  // Opted-in Linux window: created transparent with a clear backing (see linuxTransparentWindows).
+  if (LINUX_TRANSPARENT_WINDOWS) {
+    return { ...LINUX_TRANSPARENT_SURFACE }
+  }
+
   return {
     vibrancy: IS_MAC ? vibrancyForTranslucency(translucencyState) : undefined,
     // Pin the material to its ACTIVE appearance: several NSVisualEffectView
@@ -16462,6 +16471,7 @@ const streamThrottle = createStreamThrottle(undefined, undefined, {
   // normal idle throttling contract.
   keepFullscreenPainting: process.platform === 'linux' && linuxOzoneBackend(process.env, process.argv) === 'wayland'
 })
+
 registerStreamWorkClock(ipcMain, sender => BrowserWindow.fromWebContents(sender))
 
 function isAnyTurnInFlight() {
@@ -16488,9 +16498,11 @@ ipcMain.on('hermes:active-work', (event, payload) => {
       event.sender.off('destroyed', forget)
       event.sender.off('render-process-gone', forget)
       activeWorkByWebContents.delete(id)
+
       if (owner) {
         streamThrottle.setVoiceActive(owner, false)
       }
+
       updateStreamThrottleFromActiveWork()
     }
 
@@ -16504,9 +16516,11 @@ ipcMain.on('hermes:active-work', (event, payload) => {
   const work = normalizeActiveWork(payload)
   activeWorkByWebContents.set(id, work)
   lastActiveWorkSeen = work
+
   if (owner?.webContents === event.sender && event.senderFrame === event.sender.mainFrame) {
     streamThrottle.setVoiceActive(owner, payload?.voiceActive === true)
   }
+
   updateStreamThrottleFromActiveWork()
 })
 

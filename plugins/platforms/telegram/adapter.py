@@ -209,7 +209,7 @@ from plugins.platforms.telegram.telegram_network import (
 from plugins.platforms.telegram.telegram_outbound import is_visually_empty, resolve_notifications_mode
 from plugins.platforms.telegram.telegram_send_path_recovery import TelegramSendPathRecoveryMixin, mark_send_path_recovered
 from plugins.platforms.telegram.telegram_send_errors import LOST, is_entity_parse_error, maybe_delivered_result as _maybe_delivered_result, send_error_kind, FLOOD, UNSENT, rich_failure_result
-from plugins.platforms.telegram.telegram_split import cap_split_chunks
+from plugins.platforms.telegram.telegram_split import cap_split_chunks, capped_raw
 from plugins.platforms.telegram.telegram_typing_gate import claim_ai_action, typing_may_fire
 from plugins.platforms.telegram.telegram_group_observe import apply_group_observe_attribution, observed_media_note, shared_sender_suffix
 from plugins.platforms.telegram.telegram_picker_labels import model_button_labels
@@ -3415,8 +3415,11 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                 return rich_result
             # Entities cut by a split are closed and reopened; the (N/M) markers come back MarkdownV2-escaped.
             chunks = cap_split_chunks(self, split_formatted_mdv2(
-                self.format_message(content), self.MAX_MESSAGE_LENGTH, self.truncate_message, utf16_len), formatted=True)
-            return await self._send_chunks(chat_id, chunks, delivered, reply_to, metadata, error_types)
+                self.format_message(content), self.MAX_MESSAGE_LENGTH, self.truncate_message, utf16_len), formatted=True,
+                metadata=metadata)
+            result = await self._send_chunks(chat_id, chunks, delivered, reply_to, metadata, error_types)
+            result.raw_response = capped_raw(chunks, result.raw_response) if result.success else result.raw_response
+            return result
         except Exception as e:
             classified = self._classify_send_exception(e, error_types)
             return self._with_partial_send(classified, chunks[len(delivered):], delivered, tail_certain=classified.retryable)
@@ -3729,9 +3732,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         raw_chunks, chunks = split_raw_carrying_emphasis(
             content, self.MAX_MESSAGE_LENGTH, self.truncate_message, utf16_len,
             formatted_len=(lambda chunk: utf16_len(self.format_message(chunk))) if finalize else None)
-        uncapped_count = len(chunks)
-        chunks = cap_split_chunks(self, chunks, formatted=False)
-        capped = len(chunks) < uncapped_count
+        chunks = cap_split_chunks(self, chunks, formatted=False, metadata=metadata)
         raw_chunks = raw_chunks[:len(chunks)]
         if len(chunks) <= 1:
             chunks = [content]  # defensive: a single chunk just edits normally
@@ -3784,7 +3785,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         # ``split_capped``: the tail past the cap was replaced by the notice on purpose, so this delivery can
         # never match the full final; the stream consumer must not let the gateway send it again.
         return SendResult(success=True, message_id=last_id, continuation_message_ids=tuple(continuation_ids),
-                          raw_response={"split_capped": True} if capped else None)
+                          raw_response=capped_raw(chunks, None))
 
     async def delete_message(self, chat_id: str, message_id: str) -> bool:
         """Delete a bot-posted message (Bot API allows it within 48h); failures are non-fatal (False).

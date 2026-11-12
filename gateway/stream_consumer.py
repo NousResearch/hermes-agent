@@ -37,6 +37,7 @@ from gateway.stream_consumer_fences import ensure_closed_code_fences
 from gateway.stream_consumer_transport import StreamTransportMixin
 from gateway.stream_consumer_fallback import StreamFallbackMixin
 from gateway.stream_consumer_think import StreamThinkFilterMixin
+from gateway.stream_consumer_ceiling import StreamCeilingMixin
 
 logger = logging.getLogger("gateway.stream_consumer")
 
@@ -99,7 +100,7 @@ class _Tick:
         return not self.got_done and not self.got_segment_break and self.commentary_text is None
 
 
-class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThinkFilterMixin):
+class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThinkFilterMixin, StreamCeilingMixin):
     """Async consumer that progressively edits a platform message with streamed tokens.
     Usage: ``agent.stream_delta_callback = consumer.on_delta``; ``create_task(consumer.run())``;
     after the agent finishes ``consumer.finish()`` then ``await task`` for the final edit."""
@@ -215,6 +216,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._tool_progress_lines: list[str] = []
         self._tool_progress_active: bool = False
         self._clear_turn_final_flags()
+        self._reset_ceiling()  # one reply = one segment: its message budget (MAX_SPLIT_MESSAGES)
 
     def _clear_turn_final_flags(self) -> None:
         """Reset every turn-final delivery flag to "nothing delivered yet".
@@ -279,7 +281,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             meta["expect_edits"] = True
         if final:
             meta["notify"] = True
-        return meta or None
+        return self._add_split_budget(meta) or None
 
     # Read-only views for the gateway (flag semantics: see _clear_turn_final_flags).
     already_sent = property(lambda self: self._already_sent)
@@ -306,7 +308,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         if self._tool_progress_lines:  # real text overwrites the overlay
             self._tool_progress_lines.clear()
             self._tool_progress_active = False
-        self._accumulated += text
+        if not self._ceiling_hit:  # a reply cut at its message ceiling shows nothing more
+            self._accumulated += text
         self._stream_ledger += text
 
     def _mark_skip_redundant_finalize(self) -> None:
@@ -622,7 +625,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                     # is split again below. A plain first send would let the adapter split it and
                     # adopt only the LAST chunk as the preview; the next seal then overwrites that
                     # chunk with the head of the whole remainder (duplicated + lost text, #25349).
-                    await self._seal_overflow_heads()
+                    await self._seal_overflow_heads(final=tick.got_done)
                     # Overflow split.  Native streaming bypasses this: the adapter
                     # truncates against the stream protocol's own limit.
                     if not self._use_native_streaming and self._first_send_overflows():
@@ -768,7 +771,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         ownership).  Split delivery: wholesale adoption would repeat sealed heads, refusing
         makes the gateway resend the ENTIRE body — so append only the suffix when the final
         strictly prefix-extends the ledger."""
-        if not (self._accumulated or self._message_id or self._last_sent_text):
+        if self._ceiling_adopt_final(final_raw) or not (self._accumulated or self._message_id or self._last_sent_text):
             return
         if self._adopt_recovered_reply(final_raw):
             return
@@ -841,6 +844,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         if len(chunks) <= 1:
             # Malformed/legacy adapter result must still be splittable.
             chunks = self._split_text_chunks(self._accumulated, self._safe_limit, self._len_fn)
+        if (capped := await self._ceiling_split_first_send(tick, chunks)) is not None:
+            return capped
         reply_to = self._initial_reply_to_id
         heads_delivered = len(chunks) > 1
         for index, chunk in enumerate(chunks[:-1]):
@@ -855,6 +860,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                 break
             # An ack-lost head has no id to thread against; it is still shown.
             reply_to = None if new_id == "__no_edit__" else new_id
+            self._split_inflight = "".join(chunks[:index + 1])  # a cancel never resends these
+        self._split_inflight = None
 
         if heads_delivered:
             # truncate_message suffixes multi-chunk output with " (n/n)"; the tail is the LIVE
@@ -892,13 +899,15 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     def _first_send_overflows(self) -> bool:
         return self._message_id is None and self._overflows()
 
-    async def _seal_overflow_heads(self) -> None:
+    async def _seal_overflow_heads(self, *, final: bool = False) -> None:
         """Existing message overflowing: seal it with the head, start a new message for the rest."""
         while self._overflows() and self._message_id is not None and self._edit_supported:
             cp_budget = _custom_unit_to_cp(self._accumulated, self._safe_limit, self._len_fn)
             split_at = self._accumulated.rfind("\n", 0, cp_budget)
             if split_at < cp_budget // 2:
                 split_at = cp_budget
+            if await self._ceiling_seal_cut(split_at, final=final):
+                break  # the reply reached its message ceiling: this head is its last text
             chunk = self._accumulated[:split_at]
             # finalize=True: the sealed chunk is never edited again, so it needs its
             # rich-text pass now.  is_turn_final=False: a split head is not the
@@ -938,6 +947,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
     async def _finalize_turn(self, tick: _Tick) -> None:
         """got_done: final edit without cursor, or one continuation send if edits failed."""
+        if await self._ceiling_finish():
+            return
         if self._accumulated or self._message_id is not None or self._already_sent:
             await self._notify_before_finalize()
         if self._reopen_seed_pending() and not self._accumulated:
@@ -1035,6 +1046,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         platforms apply formatting; is_turn_final=False because this handler owns the flags.
         Only a successful edit confirms delivery — a partial send may be just "Let me
         search…", not the answer."""
+        if await self._ceiling_cancelled():
+            return
         best_effort_ok = False
         if self._accumulated and self._message_id:
             with contextlib.suppress(Exception):

@@ -31,11 +31,13 @@ class StreamFallbackMixin:
         except Exception as e:
             logger.error("Stream send chunk error: %s", e, exc_info=True)
             if await self._uncertain_send_fully_shown(e):
+                self._ceiling_note_unknown()
                 self._already_sent = True
                 self._last_sent_text = text
                 return "__no_edit__"
             return reply_to_id
         if not result.success and await self._uncertain_send_fully_shown(result):
+            self._ceiling_note_unknown()
             # The head may be visible without a message id. Do not send it again
             # inside the whole answer; the split loop must send only its unseen tail.
             self._already_sent = True
@@ -170,7 +172,8 @@ class StreamFallbackMixin:
                 return
 
         _len_fn, raw_limit = self._fallback_len_budget()
-        chunks = self._split_text_chunks(continuation, max(500, raw_limit - 100), len_fn=_len_fn)
+        chunk_limit = max(500, self._ceiling_chunk_limit(raw_limit) - 100)
+        chunks = self._ceiling_cap_chunks(self._split_text_chunks(continuation, chunk_limit, len_fn=_len_fn))
 
         stale_message_id = self._message_id  # partial message to clean up
         last_message_id: Optional[str] = None
@@ -194,6 +197,7 @@ class StreamFallbackMixin:
             if shown:
                 # This chunk may be on screen: count it, so neither it nor the whole answer is
                 # sent again; later chunks still go out and must land on their own.
+                self._ceiling_note_unknown()
                 sent_any_chunk = True
                 last_successful_chunk = chunk
                 continue
@@ -213,10 +217,13 @@ class StreamFallbackMixin:
                     self._message_id = stale_message_id
                 self._fallback_prefix = ""
                 return
+            self._ceiling_observe(result)
             sent_any_chunk = True
             last_successful_chunk = chunk
             last_message_id = result.message_id or last_message_id
             self._notify_new_message()
+            if self._ceiling_spent(result):
+                break  # the reply's last message slot is used: the rest is in the session log
 
         # Best-effort delete of the frozen partial — ONLY when the FULL final was
         # re-sent.  If only the missing tail went out, the partial IS the head of
@@ -365,6 +372,7 @@ class StreamFallbackMixin:
             return "ambiguous" if await self._uncertain_send_fully_shown(result) else "failed"
 
         new_message_id = getattr(result, "message_id", None)
+        self._ceiling_observe(result)
         # Telegram reports delete failure by returning False; the flood window that
         # broke the finalize can reject this too — one bounded retry.
         await self._delete_previews(stale_ids, skip=new_message_id, label="Empty fallback",

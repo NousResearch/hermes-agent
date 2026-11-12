@@ -29,6 +29,7 @@ from hermes_cli.profiles import (
     DEFAULT_EXPORT_EXCLUDE_ROOT, profile_path_contains_private_store,
     profile_path_is_private,
 )
+from hermes_constants import clear_named_profile_deleted
 from utils import rmtree_readonly
 
 
@@ -626,6 +627,7 @@ def install_distribution(
 
         # Fresh install (or --force): config.yaml comes from the distribution. Roots the
         # payload does not ship are left alone either way, so --force keeps user skills.
+        clear_named_profile_deleted(plan.target_dir)
         _bootstrap_user_dirs(plan.target_dir)
         _copy_dist_payload(plan.staged_dir, plan.target_dir, plan.manifest, preserve_config=False)
         if create_alias and check_alias_collision(plan.manifest.name) is None:

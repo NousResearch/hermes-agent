@@ -103,10 +103,30 @@ class TestRestorePrimaryRuntime:
             assert agent._try_activate_fallback() is True
         assert verdict() == (True, False)
 
-        agent._codex_reasoning_replay_enabled, agent._codex_reasoning_replay_rejected = tripped
+        # The fallback never tripped; restoring the primary brings back the verdict it earned.
         with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
             assert agent._restore_primary_runtime() is True
-        assert verdict() == (True, False)
+        assert verdict() == tripped
+
+    def test_rejection_verdicts_stay_with_the_route_that_earned_them(self):
+        """A reasoning or stream_options rejection learned on one route must not shape the fallback
+        route's requests, and the primary gets its own verdicts back (not the fallback's) on restore."""
+        from agent.route_verdicts import ROUTE_REJECTION_FIELDS
+
+        agent = _make_agent(fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"})
+        primary = dict(zip(ROUTE_REJECTION_FIELDS, (True, False, True, False)))
+        for name, value in primary.items():
+            setattr(agent, name, value)
+
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(_mock_resolve(), None)):
+            assert agent._try_activate_fallback() is True
+        assert {name: getattr(agent, name) for name in ROUTE_REJECTION_FIELDS} == dict.fromkeys(ROUTE_REJECTION_FIELDS, False)
+
+        for name in ROUTE_REJECTION_FIELDS:
+            setattr(agent, name, not primary[name])
+        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+            assert agent._restore_primary_runtime() is True
+        assert {name: getattr(agent, name) for name in ROUTE_REJECTION_FIELDS} == primary
 
 
 

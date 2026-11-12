@@ -972,20 +972,78 @@ def _panel_box_width(title: str, content_lines: list[str], min_width: int = 46, 
     return inner + 2  # leading/trailing space inside the borders
 
 
-def _wrap_panel_text(text: str, width: int, subsequent_indent: str = "", *, keep_ws: bool = False) -> list[str]:
-    """Wrap panel text; ``keep_ws`` preserves whitespace (command/detail previews). Each source
-    line wraps on its own: a newline inside a row would break the panel's right border."""
-    kw = dict(replace_whitespace=False, drop_whitespace=False) if keep_ws else dict(break_long_words=False, break_on_hyphens=False)
-    wrapped = [row for part in (text.expandtabs(4).splitlines() if keep_ws else [text])
-               for row in (textwrap.wrap(part, width=max(8, width), subsequent_indent=subsequent_indent, **kw) or [""])]
-    return wrapped or [""]
+def _cells(text: str) -> int:
+    """Terminal cells ``text`` takes: a CJK or emoji character is two, a combining mark none."""
+    from prompt_toolkit.utils import get_cwidth
+    return get_cwidth(text)
+
+
+def _clip_cells(text: str, limit: int) -> str:
+    """``text`` cut to ``limit`` terminal cells, ending in ``…`` when cut."""
+    if _cells(text) <= limit:
+        return text
+    out, used = [], 0
+    for ch in text:
+        used += _cells(ch)
+        if used > max(0, limit - 1):
+            break
+        out.append(ch)
+    return "".join(out) + "…"
+
+
+def _wrap_cells(part: str, width: int, indent: str, keep_ws: bool) -> list[str]:
+    """Greedy wrap by terminal cells, for text holding wide characters: CJK text has no spaces to
+    break at, so a word wider than the row is split wherever the row ends, never between a base
+    character and the combining marks after it. One pass that reads each character's width once,
+    so a long prompt wraps in linear time."""
+    indent_cells = _cells(indent)
+    rows, row, used = [], "", 0
+    for token in re.findall(r"\s+|\S+", part):
+        sizes = [_cells(ch) for ch in token]
+        if used + sum(sizes) > width and row.strip():
+            rows.append(row if keep_ws else row.rstrip())
+            if not keep_ws:
+                kept = token.lstrip()
+                token, sizes = kept, sizes[len(sizes) - len(kept):]
+            row, used = indent, indent_cells
+        for ch, size in zip(token, sizes):
+            if size and row and used + size > width:
+                rows.append(row)
+                row, used = indent, indent_cells
+            row += ch
+            used += size
+    return [*rows, row] if row.strip() or not rows else rows
+
+
+def _wrap_panel_text(text: str, width: int, subsequent_indent: str = "", *, keep_ws: bool = False,
+                     break_long_words: bool = False) -> list[str]:
+    """Wrap panel text to ``width`` terminal cells; ``keep_ws`` preserves whitespace (command/detail
+    previews). Each source line wraps on its own: a newline inside a row would break the panel's
+    right border. ``break_long_words`` hard-splits a word wider than the row (a URL or hash), for
+    panels that never clip their rows."""
+    width = max(8, width)
+    kw = (dict(replace_whitespace=False, drop_whitespace=False) if keep_ws
+          else dict(break_long_words=break_long_words, break_on_hyphens=False))
+    rows = []
+    for part in (text.expandtabs(4).splitlines() if keep_ws else [text]):
+        # Wide characters, wide spaces (U+3000) included, take the cell path. Other whitespace never
+        # does: get_cwidth counts \n and \t as 0, which would send plain ASCII there and keep a raw
+        # newline inside the row.
+        if any(_cells(ch) > 1 if ch.isspace() else _cells(ch) != 1 for ch in part):
+            if not keep_ws:
+                part = " ".join(part.split())  # textwrap's whitespace collapse
+            rows.extend(_wrap_cells(part, width, subsequent_indent, keep_ws) or [""])
+        else:
+            rows.extend(textwrap.wrap(part, width=width, subsequent_indent=subsequent_indent, **kw) or [""])
+    return rows or [""]
 
 
 _wrap_panel_text_keep_ws = functools.partial(_wrap_panel_text, keep_ws=True)
 
 
 def _append_panel_line(lines, border_style: str, content_style: str, text: str, box_width: int) -> None:
-    lines.extend(((border_style, "│ "), (content_style, text.ljust(max(0, box_width - 2))), (border_style, " │\n")))
+    pad = " " * max(0, box_width - 2 - _cells(text))  # by cells: a CJK row would push the border out
+    lines.extend(((border_style, "│ "), (content_style, text + pad), (border_style, " │\n")))
 
 
 def _append_blank_panel_line(lines, border_style: str, box_width: int) -> None:

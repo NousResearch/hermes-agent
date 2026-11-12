@@ -1,0 +1,29 @@
+name: hermes-jobs
+repo: https://github.com/CrowBe/hermes-jobs
+sha: 34c0490fcc08d5e0b60cd56d32f3fa1f7317c317
+description: "Google Calendar is the one supported backend today (scope calendar.events, one bound calendar). Bidirectional sync between Hermes cron (system of record) and that job board. discover/status are read-only; sync plans both directions and is dry-run unless --confirm on the CLI. Read-only /jobs slash command shows the 7-day agenda and pending changes; each job's last run time and status (ok/error) is written to its event as a colour and one description line, never the title. Disclosure — syncs Hermes cron job names, next-run times and last-run status (never prompts; only a prompt sha256) to one Google Calendar you bind, over Hermes plugin OAuth (`hermes auth add hermes-jobs:google`, scope calendar.events, host www.googleapis.com). Reads `~/.hermes/cron/jobs.json` read-only, and the first 8 KB of each no-agent cron job's script under `~/.hermes/scripts/` only to recognise its own auto-sync job. Calendar edits change a cron job's schedule or name only when you run `hermes hermes-jobs sync --confirm`. The opt-in experimental skip writes `~/.hermes/scripts/hermes-jobs-skip-tick.py` and creates two one-shot no-agent cron jobs. The opt-in `mcp-serve` push mode polls Calendar every 60 s and POSTs signed event ids to your own gateway webhook URL."
+maintainer: "Benjamin Crow (CrowBe) / Hermes Plugin Builder"
+tier: community
+category: automation
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/CrowBe/hermes-jobs/blob/34c0490fcc08d5e0b60cd56d32f3fa1f7317c317/README.md
+version: "0.3.2"
+image: https://raw.githubusercontent.com/CrowBe/hermes-jobs/34c0490fcc08d5e0b60cd56d32f3fa1f7317c317/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/CrowBe/hermes-jobs/34c0490fcc08d5e0b60cd56d32f3fa1f7317c317/docs/screenshots/week.png
+  - https://raw.githubusercontent.com/CrowBe/hermes-jobs/34c0490fcc08d5e0b60cd56d32f3fa1f7317c317/docs/screenshots/drag-all-events.png
+  - https://raw.githubusercontent.com/CrowBe/hermes-jobs/34c0490fcc08d5e0b60cd56d32f3fa1f7317c317/docs/screenshots/confirm-reschedule.png
+  - https://raw.githubusercontent.com/CrowBe/hermes-jobs/34c0490fcc08d5e0b60cd56d32f3fa1f7317c317/docs/screenshots/run-outcome.png
+  - https://raw.githubusercontent.com/CrowBe/hermes-jobs/34c0490fcc08d5e0b60cd56d32f3fa1f7317c317/docs/screenshots/jobs-agenda.png
+platforms: []
+title: "hermes-jobs: Calendar sync for Hermes cron"
+capabilities:
+  provides_tools:
+    - hermes_jobs_discover
+  provides_hooks: []
+  provides_commands:
+    - jobs
+  provides_middleware: []
+  requires_env:
+    - HERMES_JOBS_GOOGLE_CLIENT_ID
+    - HERMES_JOBS_GOOGLE_CLIENT_SECRET

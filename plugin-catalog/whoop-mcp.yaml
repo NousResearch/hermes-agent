@@ -1,0 +1,19 @@
+name: whoop-mcp
+title: WHOOP
+repo: https://github.com/davidmosiah/whoop-mcp
+sha: "d15516fa2671e9749d43531fe0f1f447d5632686"
+subdir: agent-plugin
+description: "Read the user's WHOOP recovery, HRV, sleep and strain through the local whoop MCP server. Portable Agent Plugins v1 package (mcp.json + skills/). Disclosure — Unofficial connector, not affiliated with WHOOP. Runs the `whoop-mcp-unofficial@0.7.0` npm package locally over stdio through `npx` (Node.js 20+ required); the package and its dependencies are downloaded from npm on first start. Data source: the official WHOOP OAuth API (v2). The user creates their own WHOOP developer app; its client ID and secret and the OAuth tokens are created by the connector's own `setup`/`auth` commands in the user's terminal, stored under `~/.whoop-mcp/` and refreshed by the connector itself, and sent only to WHOOP's API; the plugin declares no environment variables and reads no Hermes credentials. It also keeps a wellness profile shared with the author's other connectors at `~/.delx-wellness/profile.json` (first run copies an existing `~/.hermes/profiles/delx-wellness/wellness-profile.json` there), and its connection-status tool reads `~/.hermes/config.yaml` to check for an MCP block. Tools that change state: whoop_profile_update (local profile only); whoop_exchange_code (stores OAuth tokens locally); whoop_revoke_access (revokes the WHOOP grant and deletes local tokens). The tool set comes from the pinned npm version, not from this repository's source tree."
+maintainer: davidmosiah
+tier: community
+category: tools
+version: "0.7.0"
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/davidmosiah/whoop-mcp/blob/d15516fa2671e9749d43531fe0f1f447d5632686/agent-plugin/README.md
+image: https://raw.githubusercontent.com/davidmosiah/whoop-mcp/d15516fa2671e9749d43531fe0f1f447d5632686/assets/banner.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

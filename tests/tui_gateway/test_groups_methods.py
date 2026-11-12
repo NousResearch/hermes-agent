@@ -415,6 +415,7 @@ def test_create_list_send_and_log_roundtrip(home):
     assert state["room"]["authority_gateway_id"] == _server_authority()
     assert state["room"]["authority_epoch"] == 1
     assert state["room"]["latest_seq"] == 0
+    assert state["change_events"] is True  # this process's watcher pushes groups.changed: the view backs off to 15 s
 
     sent = _result(
         srv._methods["groups.send"](

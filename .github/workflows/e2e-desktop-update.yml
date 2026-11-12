@@ -76,10 +76,10 @@ jobs:
           test-environment: 'true'
 
       # The Playwright runner and its Electron driver. The install under test
-      # runs its own npm install inside the sandbox.
+      # runs its own dependency install inside the sandbox.
       - uses: ./.github/actions/retry
         with:
-          command: npm ci
+          command: just js-install
 
       - name: Run the update suite under xvfb
         working-directory: apps/desktop
@@ -100,7 +100,7 @@ jobs:
               echo "::endgroup::"
             done ) &
           xvfb-run -a --server-args="-screen 0 1280x1024x24" \
-            npx playwright test -c e2e/update/playwright.config.ts ${{ matrix.specs }}
+            pnpm exec playwright test -c e2e/update/playwright.config.ts ${{ matrix.specs }}
         env:
           CI: 'true'
           HERMES_E2E_PYTHON: ${{ steps.pm.outputs.python-path }}

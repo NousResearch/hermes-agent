@@ -1,6 +1,6 @@
 """Web UI build resource caps (issue #63338).
 
-``npm run build`` in ``web/`` runs the TypeScript solution builder plus Vite 8's
+``pnpm run build`` in ``web/`` runs the TypeScript solution builder plus Vite 8's
 Rust-native bundler (Rolldown). On small hosts (2–4 vCPU VPS, ~4–10 GB RAM) that
 combination saturates every CPU (200%+ ``top`` readings) and can OOM the box or
 freeze SSH sessions for the ~20 s build window. Rolldown does not expose a JS-level

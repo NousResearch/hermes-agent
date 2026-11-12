@@ -113,7 +113,7 @@ def test_failed_commit_summary_publishes_downloads_or_run_links(tmp_path, r2_ser
         if 'Not built' in line:
             assert f'[View build run]({run_url})' in line and base not in line
         elif line.startswith('| Linux'):
-            assert 'Disabled' in line and '](' not in line
+            assert 'Skipped (tag builds only)' in line and '](' not in line
     assert all(key.startswith(f'releases/commit/{sha}/') for key in r2_server.store)
     # One failed arch must not cancel its siblings: the summary above only
     # has downloads to offer for the legs that were allowed to finish.

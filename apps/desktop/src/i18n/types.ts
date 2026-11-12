@@ -3054,6 +3054,8 @@ export interface Translations extends NoticeTranslations {
     running: string
     stop: string
     dismiss: string
+    /** Background process ended by a deliberate kill (not a crash). */
+    stopped: string
     exit: (code: number) => string
     control: {
       goalActiveTurns: (turn: number, maxTurns: number) => string

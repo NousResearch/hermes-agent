@@ -4015,6 +4015,7 @@ export const frOverrides = {
     running: 'En cours',
     stop: 'Arrêter',
     dismiss: 'Rejeter',
+    stopped: 'Arrêté',
     exit: code => `sortie ${code}`,
     control: {
       goalActiveTurns: (turn, maxTurns) => `Tour ${turn}/${maxTurns}`,

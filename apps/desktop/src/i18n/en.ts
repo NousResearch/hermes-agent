@@ -3564,6 +3564,7 @@ export const en: Translations = {
     running: 'Running',
     stop: 'Stop',
     dismiss: 'Dismiss',
+    stopped: 'Stopped',
     exit: code => `exit ${code}`,
     control: {
       goalActiveTurns: (turn, maxTurns) => `Turn ${turn}/${maxTurns}`,

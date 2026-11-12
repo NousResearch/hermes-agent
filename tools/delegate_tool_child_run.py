@@ -800,12 +800,11 @@ def _build_child_goal_message(goal: str, images: list[str], child) -> Any:
 
 def _checkpointing(inner: Any, checkpoint: Any) -> Any:
     """``inner`` plus a durable cwd checkpoint after each finished tool call, so a hard kill between heartbeats
-    still knows where the child was (a write only when the cwd moved). Keeps the ``_flush`` contract."""
-    if not callable(inner):
-        return inner
-
+    still knows where the child was (a write only when the cwd moved). Installed even without an ``inner`` (no
+    parent callback and no live transcript), so that child checkpoints too. Keeps the ``_flush`` contract."""
     def _cb(event_type, *args, **kwargs):
-        inner(event_type, *args, **kwargs)
+        if callable(inner):
+            inner(event_type, *args, **kwargs)
         if event_type == "tool.completed":
             with _quiet("Durable subagent checkpoint failed: %s"):
                 checkpoint()

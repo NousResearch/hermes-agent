@@ -185,6 +185,7 @@ def test_a_resumable_childs_isolation_worktree_survives_its_stop_and_continue_ru
                                         parent_agent=parent))
         _completion(cont["delegation_id"])
     assert os.path.realpath(model.turns[-2]["cwd"]) == os.path.realpath(tree)
+    assert not tree.exists()  # the continue completed: its finalize archives and removes the tree as before
 
 
 def test_crashed_childs_worktree_survives_the_sweep_until_its_record_expires(tmp_path):

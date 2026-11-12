@@ -7,7 +7,7 @@ sidebar_position: 3
 Hermes uses two kinds of model slots:
 
 - **Main model** — what the agent thinks with. Every user message, every tool-call loop, every streamed response goes through this model.
-- **Auxiliary models** — side-jobs the agent offloads, such as context compression, vision (image analysis), approval scoring, session-title generation, `/review` reviews and voice-chat replies. Each has its own slot and can be overridden independently; the slots the dashboard exposes are listed under [Setting auxiliary models](#setting-auxiliary-models).
+- **Auxiliary models** — side-jobs the agent offloads, such as context compression, vision (image analysis), approval scoring, session-title generation, `/review` reviews and voice-chat replies. Each has its own slot and can be overridden independently; the slots the dashboard exposes are listed under [Setting auxiliary models](#setting-auxiliary-models). Plugin embeddings use a separate capability-specific slot, `auxiliary.embedding`.
 
 This page covers configuring both from the dashboard. If you prefer config files or the CLI, jump to [Alternative methods](#alternative-methods) at the bottom. To run models on your own machine instead of a cloud provider, see [Local Models](./local-models.md).
 
@@ -170,7 +170,32 @@ auxiliary:
     # ... other fields unchanged
 ```
 
-`provider: auto` with `model: ''` tells Hermes to use the main model for that task, while still honoring fallback policy if the main route cannot serve the auxiliary call.
+For ordinary auxiliary tasks, `provider: auto` with `model: ''` tells Hermes to use the main model for that task, while still honoring fallback policy if the main route cannot serve the auxiliary call. Embeddings are the exception: their `auto` route never uses the main chat model.
+
+**Plugin embedding route (default):**
+```yaml
+auxiliary:
+  embedding:
+    provider: auto
+    model: ''
+    dimensions: null
+    timeout: 60
+```
+
+With `provider: auto`, Hermes selects `openai-api` / `text-embedding-3-small`
+when its API credentials are available; otherwise it reports that embedding
+inference is unconfigured. Set an explicit provider and model to pin another
+route, for example `openai-api` with `text-embedding-3-small`, or
+`openrouter` with the provider's embedding model ID. Configured OpenAI-compatible
+custom providers can also be selected in `hermes model` → **Configure auxiliary
+models** → **Embedding**. The picker asks for an embedding model ID instead of
+reusing the provider's chat model catalog. Hermes uses its normal provider
+credentials; do not copy API keys into the embedding block. Chat-only OAuth
+routes such as Codex are unsupported for embeddings and return a visible error.
+
+`dimensions` is an optional request hint. The actual returned vector width is
+validated and reported to plugins. Keep vectors from different provider/model,
+dimension, or normalization identities in separate indexes.
 
 Optional task-specific fallback chains live under the same auxiliary task:
 

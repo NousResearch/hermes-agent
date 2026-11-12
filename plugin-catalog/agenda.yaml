@@ -3,7 +3,7 @@ title: Agenda
 repo: https://github.com/zzzubair/hermes-agenda
 sha: "58890ceb7e262c70de7f0cd79a8730ef7f7ccfb3"
 version: "1.0.1"
-description: "Your agent's own todo list, brought up in conversation when items are due. Disclosure: adds due items to each turn (pre_llm_call, capped by max_tokens); stores items in plaintext under $HERMES_HOME/agenda/; runs the wake CLI or hermes cron only for deadline reminders; no network calls, telemetry or credentials."
+description: "Your agent's own todo list, brought up in conversation when items are due. Disclosure: adds due items to each turn (pre_llm_call, capped by max_tokens); stores items in plaintext under $HERMES_HOME/agenda/; runs `hermes wake` or `hermes cron` only for deadline reminders, and no cron jobs from inside a cron run unless cron.allow_agent_scheduling is on; no network calls, telemetry or credentials."
 maintainer: zzzubair
 tier: community
 category: automation

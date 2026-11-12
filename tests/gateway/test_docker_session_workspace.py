@@ -510,3 +510,23 @@ def test_workspace_merely_prefixed_like_a_container_path_is_mounted(home, tmp_pa
     finally:
         clear_session_vars(tokens)
     assert ':ws:' in key and mount == workspace
+
+
+def test_root_launched_backend_keeps_the_guards_for_a_mounted_workspace(home, tmp_path, monkeypatch):
+    """A launch dir under /root gives no config host_cwd, but the ``:ws:`` container still binds the
+    session's workspace: the dangerous-command guards must not take the empty-sandbox fast path."""
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tools import terminal_tool
+    from tui_gateway import server
+    ws = tmp_path / 'project'
+    ws.mkdir()
+    _desktop_shared_mode(monkeypatch, '/root')
+    tokens = set_session_vars(session_key='desktop-root', profile='')
+    try:
+        vars(server)['_register_session_cwd'](
+            {'session_key': 'desktop-root', 'cwd': str(ws), 'explicit_cwd': True, 'source': 'desktop'})
+        key, mount = _plan('desktop-root')
+    finally:
+        clear_session_vars(tokens)
+    assert ':ws:' in key and mount == str(ws)
+    assert terminal_tool._docker_has_host_access(terminal_tool._get_env_config()) is True

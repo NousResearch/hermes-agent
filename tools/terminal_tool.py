@@ -157,7 +157,9 @@ def _docker_has_host_access(config: dict[str, Any]) -> bool:
     """Return True when a Docker sandbox exposes host paths through bind mounts."""
     if config.get("env_type") != "docker":
         return False
-    if config.get("host_cwd") and config.get("docker_mount_cwd_to_workspace"):
+    # With the flag on, a session's own workspace is bound at /workspace even when the launch dir
+    # is not (a backend launched under /root has no config host_cwd): never assume an empty sandbox.
+    if config.get("docker_mount_cwd_to_workspace"):
         return True
     return any(_docker_volume_uses_host_path(vol) for vol in config.get("docker_volumes", []))
 

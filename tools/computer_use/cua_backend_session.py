@@ -11,6 +11,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import threading
 from typing import Any, Dict, List, Optional
 
@@ -402,9 +403,9 @@ class _CuaDriverSession:
                                                 "daemon transport error", "daemon proxy"))
 
     # ── Recovery ─────────────────────────────────────────────────────
-    def _redeclare_session(self, timeout: float, failure_msg: str) -> bool:
-        """start_session with the declared id; log *failure_msg* and return False on rejection."""
-        session_id = self._declared_session_id
+    def _redeclare_session(self, timeout: float, failure_msg: str, session_id: Optional[str] = None) -> bool:
+        """start_session with the requested or declared id; return False on rejection."""
+        session_id = session_id or self._declared_session_id
         result = self._bridge.run(self._call_tool_async("start_session", {"session": session_id}), timeout=timeout)
         if result.get("isError") is True:
             logger.warning(failure_msg, session_id, _logical_error_text(result))
@@ -509,12 +510,13 @@ class _CuaDriverSession:
         if name == "start_session" and ok and isinstance(declared_id, str) and declared_id:
             self._declared_session_id = declared_id
         if _is_ended_session_result(result):
-            # Revive the stable session and replay the rejected call once; a 2nd rejection surfaces as-is.
+            # Revive the session named by the driver and replay once; a 2nd rejection surfaces as-is.
             # Never re-runs lifecycle calls -> an end_session result is final.
-            session_id = self._declared_session_id
+            match = re.search(r"session ['\"]([^'\"]+)['\"] has ended", _logical_error_text(result), re.IGNORECASE)
+            session_id = match.group(1) if match else self._declared_session_id
             if session_id and name not in self._LIFECYCLE_CALLS:
                 logger.warning("cua-driver session %s ended during %s; reviving and retrying once", session_id, name)
-                if self._redeclare_session(timeout, "cua-driver session %s could not be revived: %s"):
+                if self._redeclare_session(timeout, "cua-driver session %s could not be revived: %s", session_id):
                     result = self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
         elif name == "end_session" and ok and declared_id == self._declared_session_id:
             self._declared_session_id = None

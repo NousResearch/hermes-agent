@@ -136,13 +136,18 @@ def test_incomplete_canary_redispatches_the_existing_receipt(canary_repo, monkey
 
 @pytest.fixture
 def github_bodies(canary_repo, monkeypatch):
-    """Draft bodies by tag. Like GitHub, the fixture refuses one over the limit."""
+    """Draft bodies by tag. Like GitHub, the fixture refuses one over the limit, its own generated notes included."""
     bodies = {}
     fixture_run = subprocess.run
+    busy_repository_generated_notes = "* a merged pull request\n" * GITHUB_BODY_LIMIT
 
     def run(argv, *args, **kwargs):
         if argv[:3] == ["gh", "release", "create"]:
-            body = Path(argv[argv.index("--notes-file") + 1]).read_text(encoding="utf-8")
+            if "--generate-notes" in argv:
+                body = busy_repository_generated_notes
+            else:
+                source = argv[argv.index("--notes-file") + 1]
+                body = kwargs["input"] if source == "-" else Path(source).read_text(encoding="utf-8")
             if len(body) > GITHUB_BODY_LIMIT:
                 return subprocess.CompletedProcess(
                     argv, 1, "",
@@ -207,6 +212,23 @@ def test_canary_draft_keeps_room_for_its_builds_table(canary_repo, github_bodies
     body = github_bodies[tag]
     assert len(builds_table.splice(body, _every_download(tag))) <= GITHUB_BODY_LIMIT
     assert f"**Full Changelog**: [{tag}]" in body
+    assert [call[1:3] for call in calls].count(["workflow", "run"]) == 1
+
+
+def test_canary_tag_pushed_without_a_draft_is_recovered_on_a_busy_repository(canary_repo, github_bodies):
+    git, _remote, calls = canary_repo
+    git("commit", "--allow-empty", "-qm", "stable")
+    git("tag", "v1.2.3")
+    git("commit", "--allow-empty", "-qm", "feat: next")
+    tag = "v1.2.3+canary.20260818T103000Z"
+    git("tag", "-a", tag, "-m", "Hermes Agent canary 20260818T103000Z")
+    git("push", "origin", f"refs/tags/{tag}")
+
+    release.cmd_canary(SimpleNamespace(date="20260819T103000Z", publish=True, no_changelog=False, remote="origin"))
+
+    body = github_bodies[tag]
+    assert builds_table.MARKER in body
+    assert len(builds_table.splice(body, _every_download(tag))) <= GITHUB_BODY_LIMIT
     assert [call[1:3] for call in calls].count(["workflow", "run"]) == 1
 
 

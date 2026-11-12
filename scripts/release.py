@@ -461,9 +461,11 @@ def _resume_canary(tag: str, remote: str, repository: str, *, notes_file: Path |
             "--verify-tag", "--draft", "--prerelease",
             "--title", f"Hermes Agent canary {tag}",
         ]
-        create.extend(["--notes-file", str(notes_file)] if notes_file else ["--generate-notes"])
+        # GitHub's generated notes cover every pull request since the last published release, unbounded.
+        notes = None if notes_file else generate_changelog([], tag, tag[1:], no_changelog=True)
+        create.extend(["--notes-file", str(notes_file) if notes_file else "-"])
         created = subprocess.run(
-            create, cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8",
+            create, input=notes, cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8",
             check=False,
         )
         if created.returncode != 0:

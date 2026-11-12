@@ -1177,7 +1177,12 @@ def _shape_context(c: _Ctx, verdict: Verdict, *, hooked: bool) -> dict[str, Any]
     # policy refusal, benches nothing.
     if (c.status_code in (None, 402, 403, 404, 429)
             and reason is not _R.upstream_rate_limit and reason not in POLICY_REFUSAL_REASONS
-            and any(p in c.msg for p in _QUOTA_WINDOW_PATTERNS)):
+            and any(p in c.msg for p in _QUOTA_WINDOW_PATTERNS)
+            # DashScope's per-minute TPM throttle says "Allocated quota
+            # exceeded" with help URL error-code#token-limit and names no
+            # daily/weekly window — keep it a same-key backoff, not a bench
+            # (mirrors the _status_429 carve-out; refs #151622).
+            and not (c.code == "insufficient_quota" and "token-limit" in c.msg)):
         extra["quota_exhausted"] = True
     if (c.status_code in (None, 400) and reason in (_R.format_error, _R.unknown)
             and any(p in c.msg for p in _ROUTE_MODEL_REJECTION_PATTERNS)
@@ -1243,6 +1248,16 @@ def _status_404(c: _Ctx) -> Verdict:
 
 
 def _status_429(c: _Ctx) -> Verdict:
+    # Alibaba Cloud Model Studio (DashScope) stamps the *billing* code name
+    # ``insufficient_quota`` on plain per-minute TPM throttling: the message
+    # reads "Allocated quota exceeded" and points at error-code#token-limit.
+    # On HTTP 429 that is a transient window that clears in seconds, not a
+    # hard billing cap — keeping the promotion below benches the provider and
+    # raises a false "quota exhausted" wall on a live account. Refs #151622.
+    if c.code == "insufficient_quota" and any(
+        p in c.msg for p in ("allocated quota exceeded", "token-limit")
+    ):
+        return _V_RATE_LIMIT
     # A structured billing code is decisive: LiteLLM stamps
     # ``terminal_quota_exhausted`` (a hard cap, not throttling) on 429s, and
     # this handler always returns, so _by_error_code never sees the code.

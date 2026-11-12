@@ -239,6 +239,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
     prependQ,
     removeQ,
     setQueueEdit,
+    steerQ,
     takeQ
   } = useQueue(gw)
 
@@ -967,6 +968,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       setInput,
       setInputBuf,
       setQueueEdit,
+      steerQueue: steerQ,
       takeQueue: takeQ,
       syncTokens,
       togglePaste
@@ -993,6 +995,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       setHistoryIdx,
       setInput,
       setQueueEdit,
+      steerQ,
       takeQ,
       setInputBuf,
       syncTokens,

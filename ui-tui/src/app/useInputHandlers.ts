@@ -910,6 +910,24 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return cActions.clearIn()
     }
 
+    // Steer the highlighted queued message into the running turn instead of waiting for its turn.
+    if (isCtrl(key, ch, 's') && cState.queueEditIdx !== null && live.busy) {
+      const index = cState.queueEditIdx
+      const preview = cActions.queueDraft(index)
+      const sid = live.sid
+
+      void cActions.steerQueue(index).then(steered => {
+        if (!steered || getUiState().sid !== sid) {
+          return
+        }
+
+        cActions.clearIn()
+        actions.sys(t('slashCmd.core.steer.queued', preview.length > 50 ? `${preview.slice(0, 50)}…` : preview))
+      })
+
+      return
+    }
+
     if (isCtrl(key, ch, 'x')) {
       return patchOverlayState({ sessions: true })
     }

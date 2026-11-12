@@ -56,7 +56,8 @@ def drop_carried_route_state(old: Any, new: Any, config: dict) -> None:
     if old_route == _route_of(new.get("provider"), new.get("base_url")):
         return
     base_url = _url(new.get("base_url"))
-    carried_url = bool(base_url) and base_url == old_route[1]
+    # Same URL identity as _route_of, or a re-spelt old URL escapes the carried check with its key.
+    carried_url = bool(base_url) and normalize_route_base_url(base_url) == old_route[1]
     if carried_url and _route_of(new.get("provider"), "")[0] != old_route[0]:
         from hermes_cli.route_identity import provider_owns_route
         if provider_owns_route(new.get("provider"), base_url, config) is not True:

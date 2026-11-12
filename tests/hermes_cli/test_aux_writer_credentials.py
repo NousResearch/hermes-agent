@@ -171,3 +171,13 @@ def test_dashboard_config_form_keeps_same_route_and_new_keys(home):
 
     _put_config({"auxiliary": {"vision": {"base_url": "https://b.example/v1", "api_key": "b-key"}}})
     assert _resolved_vision()[2:4] == ("https://b.example/v1", "b-key")
+
+
+def test_dashboard_config_form_carried_mixed_case_url_still_dropped(home):
+    """The carried-URL check must use the same URL identity as the route compare: a re-sent
+    mixed-case base_url under a new provider is still the old route's and must go with its key."""
+    _seed(home, {"provider": "custom", "model": "m", "base_url": "https://A.example/v1", "key_env": "OLD_ENDPOINT_KEY"})
+
+    _put_config({"auxiliary": {"vision": {"provider": "anthropic", "model": "m", "base_url": "https://A.example/v1"}}})
+
+    assert _resolved_vision() == ("anthropic", "m", None, None, None)

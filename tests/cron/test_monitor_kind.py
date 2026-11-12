@@ -366,6 +366,38 @@ def test_changed_output_injects_diff(hermes_env, monkeypatch):
     assert "state B" in prompt  # new output included verbatim
 
 
+def test_changed_output_honours_wake_gate_false(hermes_env, monkeypatch):
+    from cron.jobs import get_job
+    from cron.scheduler import SILENT_MARKER, run_job
+
+    job = _make_monitor_job(hermes_env, "echo 'state A'\n")
+    observed: dict = {}
+    _install_agent_stubs(monkeypatch, observed)
+    run_job(job)
+    assert observed["agent_runs"] == 1
+
+    # Changed output whose source declares nothing for the agent to do: no agent, no delivery,
+    # but the new hash is stored so the same output stays suppressed.
+    _write_script(hermes_env, "mon.sh", "echo 'state B'\necho '{\"wakeAgent\": false}'\n")
+    job = get_job(job["id"])
+    success, doc, final, error = run_job(job)
+    assert (success, final, error) == (True, SILENT_MARKER, None)
+    assert "wakeAgent=false" in doc
+    assert observed["agent_runs"] == 1
+
+    job = get_job(job["id"])
+    success, doc, final, error = run_job(job)
+    assert final == SILENT_MARKER and "no_change" in doc
+    assert observed["agent_runs"] == 1
+
+    # A later change without the gate wakes the agent and diffs against the gated output.
+    _write_script(hermes_env, "mon.sh", "echo 'state C'\n")
+    job = get_job(job["id"])
+    run_job(job)
+    assert observed["agent_runs"] == 2
+    assert "-state B" in observed["prompts"][1] and "+state C" in observed["prompts"][1]
+
+
 def test_hash_persists_across_scheduler_restart(hermes_env, monkeypatch):
     """Suppression state must survive a scheduler restart (module reload)."""
     import importlib

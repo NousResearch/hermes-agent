@@ -1,6 +1,6 @@
 name: fortograph
 repo: https://github.com/fortograph/fortograph-hermes-plugin
-sha: eadfb4c143c9729f47551138d2b9d38dbd40d515
+sha: 039e9b5f3c16939ac54424e56037db7ecd24a16f
 subdir: fortograph
 description: >-
   Reversible image redaction through the Fortograph selective-encryption API:
@@ -14,7 +14,7 @@ description: >-
 maintainer: fortograph
 tier: community
 category: tools
-version: "1.1.0"
+version: "1.1.1"
 platforms: []
 capabilities:
   provides_tools:

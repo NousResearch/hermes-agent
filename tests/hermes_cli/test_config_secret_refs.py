@@ -233,3 +233,67 @@ def test_webhook_env_secret_is_never_persisted_to_config_yaml(home, monkeypatch)
     set_config_value("display.skin", "default")
 
     assert SECRET not in _config_text(home)
+
+
+def test_dashboard_endpoint_ids_that_slug_alike_each_keep_their_own_key(home):
+    """Dashboard ids ``my-host`` and ``my_host`` are two endpoints; saving the second must neither
+    overwrite the first's variable nor leave either row resolving the other's key."""
+    from hermes_cli.config import get_env_value, load_config
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_cli.web_models import CustomEndpointUpdate
+    from hermes_cli.web_routers.config_env import upsert_custom_endpoint
+
+    for endpoint_id, host, key in (("my-host", "a.example", "KEY-DASH"), ("my_host", "b.example", "KEY-UNDER")):
+        upsert_custom_endpoint(CustomEndpointUpdate(
+            id=endpoint_id, name=endpoint_id, base_url=f"https://{host}/v1", model="m", api_key=key))
+
+    providers = load_config()["providers"]
+    assert providers["my-host"]["key_env"] != providers["my_host"]["key_env"]
+    assert get_env_value(providers["my-host"]["key_env"]) == "KEY-DASH"
+    assert resolve_runtime_provider(requested="my-host")["api_key"] == "KEY-DASH"
+    assert resolve_runtime_provider(requested="my_host")["api_key"] == "KEY-UNDER"
+
+
+def test_dashboard_save_keeps_a_legacy_variable_and_never_overwrites_it(home):
+    """A row an older release wrote keeps its ``HERMES_CUSTOM_<ID>_API_KEY``; a new ``my_host`` save
+    gets its own variable, and a save into a name another endpoint still reads is refused."""
+    from fastapi import HTTPException
+    from hermes_cli.config import get_env_value, load_config
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_cli.web_models import CustomEndpointUpdate
+    from hermes_cli.web_routers.config_env import upsert_custom_endpoint
+
+    legacy = "HERMES_CUSTOM_MY_HOST_API_KEY"
+    (home / ".env").write_text(f"{legacy}=KEY-OLD\n", encoding="utf-8")
+    row = "    base_url: https://{}/v1\n    model: m\n    key_env: " + legacy + "\n"
+    (home / "config.yaml").write_text("providers:\n  my-host:\n    name: my-host\n" + row.format("a.example"),
+                                      encoding="utf-8")
+    upsert_custom_endpoint(CustomEndpointUpdate(
+        id="my_host", name="my_host", base_url="https://b.example/v1", model="m", api_key="KEY-NEW"))
+    upsert_custom_endpoint(CustomEndpointUpdate(
+        id="my-host", name="my-host", base_url="https://a.example/v1", model="m", api_key="KEY-ROT"))
+    assert load_config()["providers"]["my-host"]["key_env"] == legacy
+    assert resolve_runtime_provider(requested="my-host")["api_key"] == "KEY-ROT"
+    assert resolve_runtime_provider(requested="my_host")["api_key"] == "KEY-NEW"
+
+    # Two legacy rows already sharing the name: rotating either would re-key the other host.
+    (home / "config.yaml").write_text(
+        "providers:\n  my-host:\n    name: my-host\n" + row.format("a.example")
+        + "  my_host:\n    name: my_host\n" + row.format("b.example"), encoding="utf-8")
+    with pytest.raises(HTTPException):
+        upsert_custom_endpoint(CustomEndpointUpdate(
+            id="my_host", name="my_host", base_url="https://b.example/v1", model="m", api_key="KEY-B"))
+    assert get_env_value(legacy) == "KEY-ROT"
+
+
+@pytest.mark.parametrize("block", [
+    "fallback_model:\n  provider: custom\n  base_url: https://a.example/v1\n  api_key: ${SHARED_KEY}\n",
+    "fallback_providers:\n- provider: custom\n  base_url: https://a.example/v1\n  key_env: SHARED_KEY\n",
+])
+def test_store_refuses_a_variable_a_fallback_block_reads(home, block):
+    from hermes_cli.config_secret_refs import store_secret
+
+    (home / ".env").write_text("SHARED_KEY=key-a\n", encoding="utf-8")
+    (home / "config.yaml").write_text(block, encoding="utf-8")
+    with pytest.raises(ValueError):
+        store_secret("SHARED_KEY", "key-b", "https://b.example/v1")

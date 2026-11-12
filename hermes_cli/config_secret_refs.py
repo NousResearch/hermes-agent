@@ -98,8 +98,9 @@ def _credential_blocks(cfg: dict) -> list[dict]:
     for section in ("auxiliary", "providers"):
         value = cfg.get(section)
         blocks.extend(value.values() if isinstance(value, dict) else [])
-    rows = cfg.get("custom_providers")
-    blocks.extend(rows if isinstance(rows, list) else [])
+    for section in ("custom_providers", "fallback_providers", "fallback_model"):
+        rows = cfg.get(section)
+        blocks.extend(rows if isinstance(rows, list) else [rows])
     return [b for b in blocks if isinstance(b, dict)]
 
 
@@ -125,16 +126,27 @@ def _block_base_url(block: dict) -> str:
     return str(block.get("base_url") or block.get("url") or block.get("api") or "").strip()
 
 
-def _refuse_cross_endpoint_overwrite(env_name: str, value: str, base_url: str) -> None:
+def other_endpoint_reads(env_name: str, base_url: str, own_provider: Any = None) -> bool:
+    """True when a RAW config block for an endpoint other than ``base_url`` reads ``env_name``.
+    ``own_provider`` is the ``providers.<key>`` being saved: its on-disk row is the caller itself,
+    even when this save changes its ``base_url``."""
+    from hermes_cli.config import read_raw_config
+    raw = read_raw_config()
+    providers = raw.get("providers")
+    own = providers.get(own_provider) if own_provider is not None and isinstance(providers, dict) else None
+    mine = _canonical_endpoint(base_url)
+    return any(b is not own and _block_base_url(b) and _canonical_endpoint(_block_base_url(b)) != mine
+               for b in env_reference_owners(raw, env_name))
+
+
+def _refuse_cross_endpoint_overwrite(env_name: str, value: str, base_url: str, own_provider: Any = None) -> None:
     """Refuse to change ``env_name`` when a config block for ANOTHER endpoint reads it: the new value
     is this endpoint's key, and overwriting would send it to that other host."""
-    from hermes_cli.config import load_env, read_raw_config
+    from hermes_cli.config import load_env
     current = load_env().get(env_name)
     if not current or current == value:
         return
-    mine = _canonical_endpoint(base_url)
-    if any(_block_base_url(b) and _canonical_endpoint(_block_base_url(b)) != mine
-           for b in env_reference_owners(read_raw_config(), env_name)):
+    if other_endpoint_reads(env_name, base_url, own_provider):
         raise ValueError(f"refusing to overwrite {env_name}: another endpoint in config.yaml reads it "
                          "and it holds a different key")
 
@@ -152,6 +164,17 @@ def known_endpoint_key_env(cfg: dict, base_url: str) -> str:
     return ""
 
 
+def dashboard_endpoint_key_env(entry: dict, endpoint_id: str) -> str:
+    """The ``.env`` name for a dashboard ``providers.<id>`` endpoint's key: the Hermes-written
+    ``key_env`` the row already has (an older release's ``HERMES_CUSTOM_<ID>_API_KEY`` keeps
+    working), else :func:`provider_name_key_env`, whose hash keeps ``my-host`` / ``my_host`` apart.
+    A user-chosen ``key_env`` (``OPENAI_API_KEY``) is never written over: it may serve elsewhere."""
+    current = str(entry.get("key_env") or "")
+    if current.startswith(("HERMES_CUSTOM_", "HERMES_PROVIDER_")):
+        return current
+    return provider_name_key_env(endpoint_id)
+
+
 def is_env_reference(value: Any) -> bool:
     return isinstance(value, str) and bool(_ENV_REF_ONLY_RE.match(value.strip()))
 
@@ -163,7 +186,7 @@ def refs_supported() -> bool:
     return supports_file_tooling()
 
 
-def store_secret(env_name: str, value: str, base_url: str = "") -> str:
+def store_secret(env_name: str, value: str, base_url: str = "", own_provider: Any = None) -> str:
     """Save ``value`` to ``.env`` as ``env_name`` and return the ``${env_name}`` reference.
     Raises ``ValueError`` when the ``.env`` write lock forbids the name, or when ``base_url`` (the
     endpoint the key is for) is given and another endpoint's block reads ``env_name``, so the caller
@@ -171,7 +194,7 @@ def store_secret(env_name: str, value: str, base_url: str = "") -> str:
     from hermes_cli.config import require_env_writable, save_env_value
     require_env_writable(env_name, "set")
     if base_url:
-        _refuse_cross_endpoint_overwrite(env_name, value, base_url)
+        _refuse_cross_endpoint_overwrite(env_name, value, base_url, own_provider)
     save_env_value(env_name, value)
     return f"${{{env_name}}}"
 

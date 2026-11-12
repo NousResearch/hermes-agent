@@ -69,7 +69,7 @@ hermes config set OPENROUTER_API_KEY sk-or-...  # 保存到 .env
 | `auxiliary.<task>.api_key` | `AUXILIARY_<TASK>_API_KEY` | `${AUXILIARY_<TASK>_API_KEY}` |
 | `delegation.api_key` | `HERMES_DELEGATION_API_KEY` | `${HERMES_DELEGATION_API_KEY}` |
 | 新增的 `custom_providers` 条目 | `HERMES_CUSTOM_<HOST>[_<PORT>][_<PATH>]_<HASH>_API_KEY` | `key_env: <该变量名>` |
-| `custom_providers.<N>.api_key` / `providers.<name>.api_key`（`hermes config set`） | `HERMES_PROVIDER_<NAME>_<HASH>_API_KEY` | `${...}` |
+| `custom_providers.<N>.api_key` / `providers.<name>.api_key`（`hermes config set`）、dashboard 自定义端点条目 | `HERMES_PROVIDER_<NAME>_<HASH>_API_KEY` | `${...}` |
 
 路径部分只在不是 `/v1` 时才加入变量名。`<HASH>` 是由完整端点 URL（或提供商名称）计算出的 8 位十六进制字符，因此名称相近的端点（如 `my-host.com` 与 `my.host.com`）不会共用同一个变量。若 `config.yaml` 中另一个端点已读取某个变量且其值不同，Hermes 会拒绝覆盖它。以引用形式输入的值（`hermes config set model.api_key '${MY_KEY}'`）按原样保存。这些变量总会从终端和子进程环境中移除，即使 `env_passthrough` 列出了它们或启用了 `inherit_credentials`。使用远程配置后端时（不同主机之间不共享 `.env`），值按原样保存。
 

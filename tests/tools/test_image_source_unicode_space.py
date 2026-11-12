@@ -11,7 +11,7 @@ import asyncio
 import pytest
 
 from tools.image_source import (
-    ResolveContext, SourceNotFound, local_source_spelling, resolve_image_source,
+    ResolveContext, SourceNotFound, resolve_image_source,
 )
 
 def _png() -> bytes:
@@ -29,14 +29,22 @@ def _resolve(path):
     return asyncio.run(resolve_image_source(str(path), ResolveContext()))
 
 
-def test_flattened_screenshot_name_resolves_and_generation_gets_the_real_path(tmp_path, monkeypatch):
+def test_flattened_screenshot_name_opens_in_vision_video_and_generation(tmp_path, monkeypatch):
+    from tools.image_generation_tool import _confine_source_images
+    from tools.vision_tools import _materialize_video
+
     monkeypatch.setenv("TERMINAL_ENV", "local")
     real = tmp_path / "Screenshot 2026-07-10 at 9.23.58\u202fAM.png"
     real.write_bytes(PNG)
-    typed = tmp_path / "Screenshot 2026-07-10 at 9.23.58 AM.png"
+    typed = str(tmp_path / "Screenshot 2026-07-10 at 9.23.58 AM.png")
+    clip = tmp_path / "Recording at 9.23\u202fAM.mp4"
+    clip.write_bytes(b"\x00\x00\x00\x18ftypmp42")
 
     assert _resolve(typed).data == PNG
-    assert local_source_spelling(str(typed)) == str(real)
+    assert _confine_source_images(typed, [typed, "https://x/y.png"], None) == (
+        str(real), [str(real), "https://x/y.png"], None)
+    assert asyncio.run(_materialize_video(
+        str(tmp_path / "Recording at 9.23 AM.mp4"), None, [])) == clip
 
 
 def test_twins_and_missing_files_are_never_guessed(tmp_path, monkeypatch):
@@ -48,4 +56,5 @@ def test_twins_and_missing_files_are_never_guessed(tmp_path, monkeypatch):
         _resolve(tmp_path / "a b.png")
     with pytest.raises(SourceNotFound):
         _resolve(tmp_path / "other.png")
+    from tools.image_source import local_source_spelling
     assert local_source_spelling(str(tmp_path / "a b.png")) == str(tmp_path / "a b.png")

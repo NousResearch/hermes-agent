@@ -793,7 +793,8 @@ def _confine_source_images(image_url, reference_image_urls, task_id, *, permitte
 
     Routes through ``tools.image_source`` (in-sandbox exec-read, media-cache host reads,
     credential guard) so generation obeys the same confinement as vision. URLs/data: pass
-    through; local backend is a no-op. Returns ``(image_url, reference_image_urls, error_json_or_None)``.
+    through; on the local backend only a path that misses by an invisible character is rewritten to
+    its on-disk spelling. Returns ``(image_url, reference_image_urls, error_json_or_None)``.
     """
     from tools.image_source import _is_local_terminal_backend, local_source_spelling
     if _is_local_terminal_backend():  # never in a hosted scope, whose sources are its sandbox's

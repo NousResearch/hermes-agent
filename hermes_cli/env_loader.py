@@ -170,6 +170,21 @@ def managed_dotenv_keys() -> frozenset[str]:
     return frozenset(_MANAGED_DOTENV_KEYS)
 
 
+def env_provenance() -> dict[str, list[str]]:
+    """Names only: which keys in ``os.environ`` this process's sources, dotenvs and managed ``.env`` put
+    there. A fresh interpreter handed this environ inherits the values but not where they came from, so
+    one that builds routed-child envs (the update's abort recovery) adopts this with ``adopt_env_provenance``."""
+    return {"source_supplied": list(source_supplied_names()), "dotenv_loaded": sorted(_LOADED_DOTENV_KEYS),
+            "managed": sorted(_MANAGED_DOTENV_KEYS)}
+
+
+def adopt_env_provenance(provenance: dict[str, list[str]]) -> None:
+    """Record the parent's ``env_provenance`` as this process's own (additive, like a load)."""
+    _SOURCE_SUPPLIED_NAMES.update(provenance.get("source_supplied", ()))
+    _LOADED_DOTENV_KEYS.update(provenance.get("dotenv_loaded", ()))
+    _MANAGED_DOTENV_KEYS.update(provenance.get("managed", ()))
+
+
 def get_secret_source_values(hermes_home: str | os.PathLike) -> dict[str, str]:
     """Return the external-secret value snapshot for ``hermes_home``."""
     return dict(_SECRET_SOURCE_VALUES_BY_HOME.get(str(Path(hermes_home).resolve()), {}))

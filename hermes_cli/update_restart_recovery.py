@@ -119,11 +119,13 @@ def _child_environment(profile: str | None = None) -> dict[str, str]:
     target = profile if profile is not None else launch
     if target == "default" and launch != "default":
         from tools.environments.local import host_gateway_child_env
+        _adopt_parent_provenance()
         env = host_gateway_child_env()
     else:
         env = None
         if profile is not None and profile != launch:
             from hermes_cli.gateway_restart_env import profile_gateway_restart_env
+            _adopt_parent_provenance()
             from hermes_cli.profiles import get_profile_dir
             env = profile_gateway_restart_env(str(get_profile_dir(profile)))
         env = os.environ.copy() if env is None else env
@@ -393,10 +395,34 @@ def restart_serve_units(
     }
 
 
+# The updater's env provenance (which names its secret sources and dotenvs supplied), from the payload.
+_parent_provenance: dict[str, list[str]] = {}
+
+
+def _read_env_provenance(raw) -> None:
+    """Keep the updater's env provenance: this interpreter inherited the values only, and a sibling's
+    env is stripped by provenance. An older updater sends none; a malformed block is refused."""
+    if raw is None:
+        return
+    if not isinstance(raw, dict) or any(
+        not isinstance(names, list) or any(not isinstance(name, str) for name in names) for names in raw.values()
+    ):
+        raise ValueError("recovery env_provenance block is invalid")
+    _parent_provenance.update(raw)
+
+
+def _adopt_parent_provenance() -> None:
+    """Record the updater's provenance as this process's own, right before a routed child env is built
+    (only then: a same-profile restart imports no Hermes code)."""
+    from hermes_cli.env_loader import adopt_env_provenance
+    adopt_env_provenance(_parent_provenance)
+
+
 def _parse_payload(stream) -> tuple[list[str], dict[str, str], bool, list[str]]:
     payload = json.load(stream)
     if not isinstance(payload, dict):
         payload = {}
+    _read_env_provenance(payload.get("env_provenance"))
     profiles = payload.get("profiles")
     if not isinstance(profiles, list):
         raise ValueError("recovery payload must contain a profiles list")

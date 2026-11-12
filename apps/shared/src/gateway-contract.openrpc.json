@@ -9469,6 +9469,18 @@
             "default": null,
             "title": "Description"
           },
+          "explanation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Explanation"
+          },
           "edit": {
             "anyOf": [
               {

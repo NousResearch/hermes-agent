@@ -1,6 +1,6 @@
 import { expect, test, vi } from 'vitest'
 
-import { CanonicalDesktopProtocol, slashMutation } from './canonical-protocol'
+import { CanonicalDesktopProtocol, canonicalPromptParams, slashMutation } from './canonical-protocol'
 
 test('sibling routes survive every rebuilt control and compression follow-up', async () => {
   const protocol = new CanonicalDesktopProtocol()
@@ -284,4 +284,20 @@ test('mints v4 create, submit and mutation ids where crypto.randomUUID is absent
   } finally {
     vi.unstubAllGlobals()
   }
+})
+
+// Live events and retained snapshots both normalize through this one function, so an approval
+// field dropped here is a field no card can render (`approvals.explain`).
+test('an approval prompt keeps its plain-English explanation through canonical normalization', () => {
+  const params = canonicalPromptParams('approval', 's', {
+    prompt_id: 'p-1',
+    command: 'rm -rf /tmp/x',
+    description: 'recursive delete',
+    explanation: 'Permanently deletes the folder and everything inside it.',
+    choices: ['once', 'session', 'always', 'deny']
+  })
+
+  expect(params.explanation).toBe('Permanently deletes the folder and everything inside it.')
+  expect(params.command).toBe('rm -rf /tmp/x')
+  expect(params.allow_permanent).toBe(true)
 })

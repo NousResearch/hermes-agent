@@ -113,6 +113,9 @@ class CanonicalPendingPrompt(Result):
     choices: list[str]
     command: str | None = None
     description: str | None = None
+    # Plain-English "what does this do" line (``approvals.explain``): display-only, and empty when
+    # the explainer is off or had nothing to say.
+    explanation: str | None = None
     edit: dict[str, JsonValue] | None = None
     question: str | None = None
     multi_select: bool | None = None

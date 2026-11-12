@@ -5209,6 +5209,7 @@ export interface CanonicalPendingPrompt {
   choices: string[]
   command?: string | null
   description?: string | null
+  explanation?: string | null
   edit?: Record<string, unknown> | null
   question?: string | null
   multi_select?: boolean | null

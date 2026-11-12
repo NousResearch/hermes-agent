@@ -118,8 +118,10 @@ Stage a native agent with both frontend products, without Electron packaging:
 python -m scripts.bundles.stage --out /work/agent-payload --ref HEAD
 ```
 
-This command prepares and builds TUI/web products if none are supplied. It
-also accepts `--tui` and `--web` together as prepared product roots. It rejects
+This command prepares and builds the TUI, dashboard and Webapp products if none
+are supplied; `pnpm run dist:bundled` stages its payload this way. It also
+accepts `--tui` and `--web` together as prepared product roots, which leaves the
+payload without a Webapp. It rejects
 a selection with only one of those arguments. The standalone products have
 explicit input/output contracts in the builder README.
 

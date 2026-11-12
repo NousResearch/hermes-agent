@@ -15,7 +15,7 @@ Usage:
 try:
     import hermes_bootstrap
 except ModuleNotFoundError as exc:
-    if exc.name != "hermes_bootstrap":
+    if exc.name != "hermes_bootstrap" and not "hermes_bootstrap".startswith(f"{exc.name}."):
         raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
 
 # A `hermes update` killed while git was writing the new tree leaves a mix of old and new files that
@@ -316,6 +316,7 @@ from hermes_cli.subcommands.checkpoints import build_checkpoints_parser
 from hermes_cli.subcommands.bundles import build_bundles_parser
 from hermes_cli.subcommands.curator import build_curator_parser
 from hermes_cli.subcommands.pets import build_pets_parser
+from hermes_cli.subcommands.clipboard import build_clipboard_parser
 from hermes_cli.subcommands.journey import build_journey_parser
 from hermes_cli.subcommands.computer_use import build_computer_use_parser
 from hermes_cli.subcommands.sessions import build_sessions_parser, cmd_sessions_lazy
@@ -2343,19 +2344,19 @@ def cmd_update(args):
 
 
 def _coalesce_session_name_args(argv: list) -> list:
-    """Join unquoted multi-word session names after -c/--continue and -r/--resume.
-
-    ``hermes -c Pokemon Agent Dev`` → ``['-c', 'Pokemon Agent Dev']``; tokens
-    are collected until the next flag (``-*``) or known top-level subcommand.
-    """
+    """Join unquoted multi-word session names after -c/--continue and -r/--resume: ``hermes -c Pokemon
+    Agent Dev`` → ``['-c', 'Pokemon Agent Dev']``, up to the next flag or known top-level subcommand."""
     _SUBCOMMANDS = {
         "chat", "model", "gateway", "setup", "whatsapp", "whatsapp-cloud", "login", "logout",
         "auth", "status", "cron", "doctor", "config", "pairing", "skills", "tools", "mcp",
         "sessions", "insights", "update", "uninstall", "profile", "dashboard", "serve", "webapp",
-        "desktop", "gui", "honcho", "claw", "plugins", "security", "acp", "webhook", "peer",
+        "desktop", "gui", "claw", "plugins", "security", "acp", "webhook", "peer",
         "memory", "dump", "debug", "backup", "import", "completion", "logs", "usage",
     }
     _SESSION_FLAGS = {"-c", "--continue", "-r", "--resume"}
+    if _SESSION_FLAGS.intersection(argv):  # the active memory provider registers ``hermes <name>``
+        from plugins.memory import active_memory_provider_commands
+        _SUBCOMMANDS |= active_memory_provider_commands()
 
     result = []
     i = 0
@@ -2364,7 +2365,6 @@ def _coalesce_session_name_args(argv: list) -> list:
         if token in _SESSION_FLAGS:
             result.append(token)
             i += 1
-            # Collect subsequent non-flag, non-subcommand tokens as one name
             parts: list = []
             while (
                 i < len(argv)
@@ -2647,16 +2647,13 @@ def cmd_console(args):
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
         "acp", "approvals", "auth", "backup", "bundles", "checkpoints", "codex-runtime", "completion",
-        "computer-use", "connectors",
+        "clipboard", "computer-use", "connectors",
         "config", "console", "cron", "curator", "dashboard", "serve", "debug", "doctor",
         "dump", "egress", "fallback", "gateway", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
         "model", "monitoring", "pairing", "pause", "peer", "pets", "plugins", "portal", "profile",
-        "project", "proxy",
-        "prompt-size",
-        "resume",
-        "send", "sessions", "setup",
+        "project", "proxy", "prompt-size", "resume", "send", "sessions", "setup",
         "skin", "skills", "slack", "status", "tools", "uninstall", "update",
         "usage", "vault",
         "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
@@ -2719,10 +2716,8 @@ def _resolve_deferred_platform_cli_command(command_name: str | None) -> None:
 
 
 _AGENT_COMMANDS = {None, "chat", "acp", "rl"}
-_AGENT_SUBCOMMANDS = {
-    "cron": ("cron_command", {"run", "tick"}),
-    "gateway": ("gateway_command", {"run"}),
-}
+_AGENT_SUBCOMMANDS = {"cron": ("cron_command", {"run", "tick"}), "gateway": ("gateway_command", {"run"}),
+                      "curator": ("curator_command", {"run"})}  # curator run fires post_curator_run
 
 
 def _is_tui_chat_launch(args) -> bool:
@@ -2744,7 +2739,7 @@ def _is_tui_chat_launch(args) -> bool:
 
 
 def _agent_subcommand_selected(args) -> bool:
-    """True for ``cron run/tick``, ``gateway run`` (see _AGENT_SUBCOMMANDS)."""
+    """True for ``cron run/tick``, ``gateway run``, ``curator run`` (see _AGENT_SUBCOMMANDS)."""
     _sub_attr, _sub_set = _AGENT_SUBCOMMANDS.get(args.command, (None, None))
     return bool(_sub_attr and getattr(args, _sub_attr, None) in _sub_set)
 
@@ -3262,6 +3257,7 @@ def _build_cli_parser():
 
     build_curator_parser(subparsers)
     build_pets_parser(subparsers)
+    build_clipboard_parser(subparsers)
     build_journey_parser(subparsers)
     build_memory_parser(subparsers, cmd_memory=cmd_memory)
     build_tools_parser(subparsers, cmd_tools=cmd_tools)

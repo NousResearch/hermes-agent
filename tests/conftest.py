@@ -38,6 +38,12 @@ PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from hermes_agent.compat.finder import Finder as _CompatFinder
+from hermes_agent.compat.moves import MOVES as _COMPAT_MOVES
+
+# In-repo code must use current module names; an old name fails here instead of being aliased.
+sys.meta_path.insert(0, _CompatFinder(_COMPAT_MOVES, strict=True))
+
 # Every test file runs in its own process, and in a checkout without an install stamp
 # get_version_info() shells out to git 7 times (~0.55 s per process in a large local
 # clone; a whole local suite run spent ~48 CPU-minutes there). Seed the shape a shallow
@@ -887,6 +893,16 @@ def _reset_tui_gateway_server_state():
 def tmp_dir(tmp_path):
     """Provide a temporary directory that is cleaned up automatically."""
     return tmp_path
+
+
+@pytest.fixture
+def authority_cwd_in_tmp(tmp_path, monkeypatch):
+    """Run in ``tmp_path`` for tests whose authority has a symbolic ``profile_id`` ('owned',
+    'fixture', ...). Production passes the profile's absolute home; a symbolic id is a RELATIVE
+    path, so the authority's profile-scoped work (an ``on_session_open`` delivery loading config)
+    created ``<cwd>/<id>/`` in the checkout. Opt-in (``usefixtures``), never autouse: most tests rely
+    on the checkout as cwd."""
+    monkeypatch.chdir(tmp_path)
 
 
 @pytest.fixture()

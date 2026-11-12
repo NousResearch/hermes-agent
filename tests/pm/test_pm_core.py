@@ -5,6 +5,7 @@ stores."""
 
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import stat
@@ -799,6 +800,49 @@ def test_python_stage_drops_unloadable_x64_vc_runtime_on_arm64(monkeypatch, tmp_
 
     assert not (staged / "vcruntime140_1.dll").exists()
     assert (staged / "vcruntime140.dll").is_file()
+
+
+def _stage_arm64_python_with_held_x64_helper(monkeypatch, tmp_path, times: float) -> tuple[Path, list[str]]:
+    """The x64 helper is deleted moments after the payload is extracted and hoisted, while a Windows
+    scanner can still hold it: the delete is refused for a moment ([WinError 32], EACCES)."""
+    from pm import filesystem
+    from pm.registry import get_package
+
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    (staged / "python.exe").write_bytes(b"launcher")
+    (staged / "vcruntime140_1.dll").write_bytes(b"x64")
+    (staged / "vcruntime140.dll").write_bytes(b"arm64")
+
+    monkeypatch.setattr(filesystem, "_HELD_RETRY_DELAYS", (0,) * len(filesystem._HELD_RETRY_DELAYS))
+    refusals: list[str] = []
+    real_unlink = os.unlink
+
+    def unlink(path, *args, **kwargs):
+        if os.path.basename(os.fspath(path)) == "vcruntime140_1.dll" and len(refusals) < times:
+            refusals.append(os.fspath(path))
+            raise PermissionError(errno.EACCES, "The process cannot access the file because it is being used "
+                                  "by another process", os.fspath(path))
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", unlink)
+    monkeypatch.setattr("hermes_cli.macos_signing.sign_managed_python", lambda p: False)
+    get_package("python").stage(None, staged, "3.14.7", "win32-arm64")
+    return staged, refusals
+
+
+def test_python_stage_waits_out_a_scanner_hold_on_the_x64_vc_runtime_on_arm64(monkeypatch, tmp_path):
+    staged, refusals = _stage_arm64_python_with_held_x64_helper(monkeypatch, tmp_path, times=2)
+
+    assert len(refusals) == 2
+    assert not (staged / "vcruntime140_1.dll").exists()
+    assert (staged / "vcruntime140.dll").is_file()
+    assert (staged / "python3.exe").read_bytes() == b"launcher"
+
+
+def test_python_stage_fails_when_the_x64_vc_runtime_hold_never_clears(monkeypatch, tmp_path):
+    with pytest.raises(PermissionError):
+        _stage_arm64_python_with_held_x64_helper(monkeypatch, tmp_path, times=float("inf"))
 
 
 def test_python_stage_keeps_vc_runtimes_on_other_targets(monkeypatch, tmp_path):

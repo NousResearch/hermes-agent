@@ -122,7 +122,7 @@ jobs:
       - name: Install locked chat driver dependencies
         id: dependencies
         shell: bash
-        run: pnpm install --frozen-lockfile --filter "{./tests-js}..." --prod --ignore-scripts
+        run: just js-install-tests
 
       - name: Fetch one exact downloadable artifact
         id: artifact

@@ -34,6 +34,7 @@ export function useCatalogFilters(kind: CatalogKind, onChange: () => void) {
     toggleCategory: toggle('categories'),
     toggleTag: toggle('tags'),
     toggleInstalled: () => update(current => ({ ...current, installedOnly: !current.installedOnly })),
+    toggleUpdates: () => update(current => ({ ...current, updatesOnly: !current.updatesOnly })),
     // Cards and "See all" drill into one category rather than toggling it.
     chooseCategory: (value: string) => update(current => ({ ...current, categories: [value], tags: [] })),
     clear: () => update(() => EMPTY_FACETS)

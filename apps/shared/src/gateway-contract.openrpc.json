@@ -4453,6 +4453,24 @@
       }
     },
     {
+      "name": "vault.preview.fill",
+      "summary": "Fill a saved login into the in-app browser tab the renderer pinned (never submits).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/VaultPreviewFillParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/VaultPreviewFillResult"
+        }
+      }
+    },
+    {
       "name": "vault.remove",
       "summary": "Remove a local vault item by id.",
       "params": [
@@ -8137,6 +8155,60 @@
         "title": "CanonicalBotDeliverResult",
         "type": "object"
       },
+      "CanonicalClientIdentity": {
+        "additionalProperties": false,
+        "description": "A client naming itself: ``name`` matches ``[a-z0-9][a-z0-9._-]{0,63}``, ``version`` is 1-64\nprintable ASCII without spaces. Attribution only (owners advertising ``session-client-v1``).",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Version"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "CanonicalClientIdentity",
+        "type": "object"
+      },
+      "CanonicalClientLabel": {
+        "additionalProperties": false,
+        "description": "The client a session's creator declared itself as (``session.create`` ``client``).",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Version"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "CanonicalClientLabel",
+        "type": "object"
+      },
       "CanonicalConfigGetResult": {
         "additionalProperties": false,
         "properties": {
@@ -8848,6 +8920,17 @@
             ],
             "default": null,
             "title": "Client Env"
+          },
+          "client": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CanonicalClientIdentity"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "title": "CanonicalCreateParams",
@@ -8968,6 +9051,139 @@
         "title": "CanonicalEventsResult",
         "type": "object"
       },
+      "CanonicalGroupsPeerInviteParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "home_install_id": {
+            "title": "Home Install Id",
+            "type": "string"
+          },
+          "authority_gateway_id": {
+            "title": "Authority Gateway Id",
+            "type": "string"
+          },
+          "authority_epoch": {
+            "title": "Authority Epoch",
+            "type": "integer"
+          },
+          "member_id": {
+            "title": "Member Id",
+            "type": "string"
+          },
+          "ttl_seconds": {
+            "default": 3600,
+            "title": "Ttl Seconds",
+            "type": "number"
+          },
+          "status_ttl_seconds": {
+            "title": "Status Ttl Seconds",
+            "type": "number"
+          }
+        },
+        "required": [
+          "room_id",
+          "home_install_id",
+          "authority_gateway_id",
+          "authority_epoch",
+          "member_id"
+        ],
+        "title": "CanonicalGroupsPeerInviteParams",
+        "type": "object"
+      },
+      "CanonicalGroupsPeerRegisterParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "member_id": {
+            "title": "Member Id",
+            "type": "string"
+          },
+          "target_url": {
+            "title": "Target Url",
+            "type": "string"
+          },
+          "target_profile": {
+            "title": "Target Profile",
+            "type": "string"
+          },
+          "grant": {
+            "title": "Grant",
+            "type": "string"
+          },
+          "catalog": {
+            "additionalProperties": true,
+            "title": "Catalog",
+            "type": "object"
+          }
+        },
+        "required": [
+          "room_id",
+          "member_id",
+          "target_url",
+          "target_profile",
+          "grant",
+          "catalog"
+        ],
+        "title": "CanonicalGroupsPeerRegisterParams",
+        "type": "object"
+      },
+      "CanonicalGroupsPeerRevokeParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "grant": {
+            "title": "Grant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "grant"
+        ],
+        "title": "CanonicalGroupsPeerRevokeParams",
+        "type": "object"
+      },
       "CanonicalListParams": {
         "additionalProperties": false,
         "properties": {
@@ -9012,6 +9228,23 @@
           "include_hidden": {
             "default": false,
             "title": "Include Hidden",
+            "type": "boolean"
+          },
+          "workspace": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Workspace"
+          },
+          "picker": {
+            "default": false,
+            "title": "Picker",
             "type": "boolean"
           }
         },
@@ -10238,6 +10471,17 @@
             "default": null,
             "title": "Launch Request"
           },
+          "client": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CanonicalClientLabel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "reasoning_effort": {
             "anyOf": [
               {
@@ -10297,6 +10541,18 @@
             ],
             "default": null,
             "title": "Title"
+          },
+          "archived": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Archived"
           },
           "started_at": {
             "anyOf": [
@@ -10487,6 +10743,90 @@
             ],
             "default": null,
             "title": "Root Title"
+          },
+          "preview": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Preview"
+          },
+          "last_reply": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Last Reply"
+          },
+          "cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cwd"
+          },
+          "git_branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Git Branch"
+          },
+          "workspace": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Workspace"
+          },
+          "last_active_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Last Active At"
+          },
+          "pinned": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pinned"
           }
         },
         "required": [
@@ -11037,6 +11377,17 @@
             "default": null,
             "title": "Launch Request"
           },
+          "client": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CanonicalClientLabel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "reasoning_effort": {
             "anyOf": [
               {
@@ -11096,6 +11447,18 @@
             ],
             "default": null,
             "title": "Title"
+          },
+          "archived": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Archived"
           },
           "started_at": {
             "anyOf": [
@@ -19353,6 +19716,41 @@
         "title": "GroupsCapabilitiesResult",
         "type": "object"
       },
+      "GroupsChangedPayload": {
+        "additionalProperties": true,
+        "description": "``change_watcher._groups_changed_payload``: the rooms whose log, tasks or live status moved; absent\nwhen something process-wide moved (every open room re-reads). ``broadcast_id`` names one broadcast: the\nsame frame reaches a window once per open socket, and a copy needs no second read.",
+        "properties": {
+          "room_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Room Ids"
+          },
+          "broadcast_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Broadcast Id"
+          }
+        },
+        "title": "GroupsChangedPayload",
+        "type": "object"
+      },
       "GroupsContextParams": {
         "additionalProperties": false,
         "properties": {
@@ -20009,6 +20407,18 @@
             ],
             "default": null,
             "title": "Ttl Seconds"
+          },
+          "status_ttl_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Status Ttl Seconds"
           }
         },
         "title": "GroupsPeerInviteParams",
@@ -20684,6 +21094,7 @@
       },
       "GroupsStateResult": {
         "additionalProperties": false,
+        "description": "``change_events``: this backend broadcasts ``groups.changed`` when the room moves, so a client's poll is\nonly a backstop (absent on older backends: keep polling at the old rate).",
         "properties": {
           "room": {
             "$ref": "#/components/schemas/Room"
@@ -20709,6 +21120,18 @@
               }
             ],
             "default": null
+          },
+          "change_events": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Change Events"
           }
         },
         "required": [
@@ -28085,6 +28508,26 @@
         "title": "PluginRestartTarget",
         "type": "string"
       },
+      "PluginRpcParams": {
+        "additionalProperties": true,
+        "description": "Open: the plugin's handler owns every other key. ``session_id`` names the session the call\nacts in and passes that session's authorization first.",
+        "properties": {
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          }
+        },
+        "title": "PluginRpcParams",
+        "type": "object"
+      },
       "PluginScanFinding": {
         "additionalProperties": false,
         "description": "One security-scan finding (``tools.plugin_guard``) on a plugin tree the scan blocked.",
@@ -29272,6 +29715,17 @@
             ],
             "default": null,
             "title": "Allow Shortcut"
+          },
+          "vault": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PreviewVaultOperation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -29399,6 +29853,50 @@
           "text"
         ],
         "title": "PreviewRestartProgressPayload",
+        "type": "object"
+      },
+      "PreviewVaultOperation": {
+        "additionalProperties": false,
+        "description": "Internal vault transport, never arguments exposed to the model.",
+        "properties": {
+          "operation": {
+            "enum": [
+              "open",
+              "evaluate",
+              "close"
+            ],
+            "title": "Operation",
+            "type": "string"
+          },
+          "target": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target"
+          },
+          "expression": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expression"
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "title": "PreviewVaultOperation",
         "type": "object"
       },
       "ProcessEntry": {
@@ -29919,9 +30417,152 @@
         "title": "ProfileCanonicalSession",
         "type": "object"
       },
+      "ProfileCreateReceipt": {
+        "additionalProperties": false,
+        "description": "What ``hermes profile create`` prints about a new profile, read on the machine (and in the\nprofile scope) that made it: built after a local create, or sent by the gateway that made it\n(``profiles.create`` with ``report``). The contract uses this type itself; a stdlib dataclass, so a\nlocal create never loads pydantic. A client treats a receipt missing a field, or with a wrong type,\nas an unknown outcome.",
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "display_path": {
+            "title": "Display Path",
+            "type": "string"
+          },
+          "launch_label": {
+            "title": "Launch Label",
+            "type": "string"
+          },
+          "source_label": {
+            "title": "Source Label",
+            "type": "string"
+          },
+          "skills_synced": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Skills Synced"
+          },
+          "skills_opted_out": {
+            "title": "Skills Opted Out",
+            "type": "boolean"
+          },
+          "alias_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alias Path"
+          },
+          "alias_collision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alias Collision"
+          },
+          "mirrored": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "const": "shared",
+                  "type": "string"
+                }
+              ]
+            },
+            "title": "Mirrored",
+            "type": "object"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          },
+          "cloned_plugins": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Cloned Plugins",
+            "type": "array"
+          },
+          "memory_provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory Provider"
+          },
+          "channels_left_behind": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Channels Left Behind",
+            "type": "array"
+          },
+          "shared_channels": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Shared Channels",
+            "type": "array"
+          },
+          "served_now": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Served Now"
+          }
+        },
+        "required": [
+          "path",
+          "display_path",
+          "launch_label",
+          "source_label",
+          "skills_synced",
+          "skills_opted_out",
+          "alias_path",
+          "alias_collision",
+          "mirrored",
+          "warnings",
+          "cloned_plugins",
+          "memory_provider",
+          "channels_left_behind",
+          "shared_channels",
+          "served_now"
+        ],
+        "title": "ProfileCreateReceipt",
+        "type": "object"
+      },
       "ProfileMirrored": {
         "additionalProperties": false,
-        "description": "What was copied from the launch profile; ``auth`` is ``\"shared\"`` under ``share_auth``.",
+        "description": "What was copied from the launch profile; ``auth`` is ``\"shared\"`` when the new profile has no\nauth.json of its own and reads the default root's.",
         "properties": {
           "env": {
             "default": false,
@@ -30590,7 +31231,7 @@
       },
       "ProfilesCreateParams": {
         "additionalProperties": false,
-        "description": "``clone_from`` omitted = fresh profile + bundled skills; ``mirror_credentials`` defaults on\nso a headless bot has a provider.",
+        "description": "``clone_from`` omitted = fresh profile + bundled skills (with ``clone_all``: a full copy of the\nactive profile, no bundled skills); ``mirror_credentials`` and\n``share_auth`` default on (the bot page's defaults) so a headless bot has a provider.",
         "properties": {
           "profile": {
             "anyOf": [
@@ -30757,6 +31398,51 @@
             ],
             "default": null,
             "title": "Mirror Credentials"
+          },
+          "clone_config": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Clone Config"
+          },
+          "sync_imports": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sync Imports"
+          },
+          "report": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Report"
           }
         },
         "required": [
@@ -30793,6 +31479,25 @@
           },
           "mirrored": {
             "$ref": "#/components/schemas/ProfileMirrored"
+          },
+          "warnings": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          },
+          "receipt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProfileCreateReceipt"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -43044,6 +43749,354 @@
         "title": "SteerStatus",
         "type": "string"
       },
+      "StoredTranscriptParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "subagent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Subagent Id"
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cursor"
+          },
+          "limit": {
+            "default": 100,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "order": {
+            "default": "oldest",
+            "enum": [
+              "oldest",
+              "latest"
+            ],
+            "title": "Order",
+            "type": "string"
+          },
+          "inline_images": {
+            "default": false,
+            "title": "Inline Images",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "StoredTranscriptParams",
+        "type": "object"
+      },
+      "StoredTranscriptResult": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/StoredTranscriptRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "reset": {
+            "title": "Reset",
+            "type": "boolean"
+          },
+          "subagent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Subagent Id"
+          },
+          "available": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Available"
+          },
+          "running": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Running"
+          },
+          "child_session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Child Session Id"
+          }
+        },
+        "required": [
+          "session_id",
+          "rows",
+          "next_cursor",
+          "reset"
+        ],
+        "title": "StoredTranscriptResult",
+        "type": "object"
+      },
+      "StoredTranscriptRow": {
+        "additionalProperties": true,
+        "description": "``row_kind: 'message'`` is a ``session.resume`` ``display_messages`` row. ``row_kind: 'compaction'``\nis a compaction handoff at its position: ``role: 'system'``, ``text`` the summary a reader sees (not\nthe parts written for the model), ``compacted_messages``, ``timestamp`` and the stored ``row_id``.",
+        "properties": {
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Text"
+          },
+          "content": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Content"
+          },
+          "tool_call_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tool Call Id"
+          },
+          "timestamp": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Timestamp"
+          },
+          "row_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Row Id"
+          },
+          "display_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display Kind"
+          },
+          "display_metadata": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display Metadata"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          },
+          "context": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Context"
+          },
+          "args": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Args"
+          },
+          "labels": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ToolLabel"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Labels"
+          },
+          "reasoning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reasoning"
+          },
+          "row_kind": {
+            "enum": [
+              "message",
+              "compaction"
+            ],
+            "title": "Row Kind",
+            "type": "string"
+          },
+          "compacted_messages": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Compacted Messages"
+          },
+          "truncated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Truncated"
+          }
+        },
+        "required": [
+          "role",
+          "row_kind"
+        ],
+        "title": "StoredTranscriptRow",
+        "type": "object"
+      },
       "StreamDeltaPayload": {
         "additionalProperties": false,
         "description": "``prompt_turn._invoke_agent._stream`` (message.delta: ``text`` + optional ``rendered``),\n``agent_callbacks._agent_cbs`` (reasoning.delta / thinking.delta), ``tool_progress._progress_reasoning``\n(reasoning.available). ``verbose`` rides only when the session's verbose reasoning mode is on.",
@@ -43632,6 +44685,18 @@
             ],
             "default": null,
             "title": "Accepting Steer"
+          },
+          "child_session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Child Session Id"
           }
         },
         "required": [
@@ -46763,6 +47828,21 @@
             "default": null,
             "title": "Has Otp"
           },
+          "allowed_origins": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Allowed Origins"
+          },
           "backend": {
             "title": "Backend",
             "type": "string"
@@ -46841,6 +47921,101 @@
           }
         },
         "title": "VaultLockResult",
+        "type": "object"
+      },
+      "VaultPreviewFillParams": {
+        "additionalProperties": false,
+        "description": "``target`` is the opaque binding the renderer minted for one in-app browser tab.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "handle": {
+            "title": "Handle",
+            "type": "string"
+          },
+          "target": {
+            "title": "Target",
+            "type": "string"
+          }
+        },
+        "required": [
+          "handle",
+          "target"
+        ],
+        "title": "VaultPreviewFillParams",
+        "type": "object"
+      },
+      "VaultPreviewFillResult": {
+        "additionalProperties": false,
+        "description": "Counts and the page origin only: never a secret.",
+        "properties": {
+          "success": {
+            "title": "Success",
+            "type": "boolean"
+          },
+          "filled_fields": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Filled Fields"
+          },
+          "origin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Origin"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          },
+          "error_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error Type"
+          }
+        },
+        "required": [
+          "success"
+        ],
+        "title": "VaultPreviewFillResult",
         "type": "object"
       },
       "VaultRemoveParams": {
@@ -49053,6 +50228,60 @@
       }
     },
     {
+      "name": "groups.peer.invite",
+      "summary": "Operator only: mint one room grant for a member of another gateway's room.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalGroupsPeerInviteParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsPeerInviteResult"
+        }
+      }
+    },
+    {
+      "name": "groups.peer.register",
+      "summary": "Bind a target grant to the room's pinned peer member after a live scoped probe.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalGroupsPeerRegisterParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsPeerRegisterResult"
+        }
+      }
+    },
+    {
+      "name": "groups.peer.revoke",
+      "summary": "Operator only: revoke one grant this gateway issued, by its exact room scope.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalGroupsPeerRevokeParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsPeerRevokeResult"
+        }
+      }
+    },
+    {
       "name": "groups.retry",
       "summary": "",
       "params": [
@@ -49521,6 +50750,24 @@
       }
     },
     {
+      "name": "session.transcript",
+      "summary": "One page of a stored conversation's display rows across its compression lineage (live rows and rows a compaction archived, each logical message once, and each compaction handoff as a `row_kind: 'compaction'` row at its position), from the oldest or the newest. Never attaches the caller. A page holds at most `limit` (1-500) rows, compaction rows included, plus up to 64 tool results of the call at its edge, and at most 2 MiB of JSON, cut between tool groups (a single larger row keeps only its role, kind, time, ids and the head of its text, and carries `truncated`). Oldest order: read on until a page is empty, then poll with the same `next_cursor` for the rows written since; `reset: true` means the rows the cursor covered changed shape, so the reply starts again from the first page. Latest order: read on until `next_cursor` is null; its cursor stays valid across later compactions and turns. A rotated lineage past `sessions.max_resume_messages` pages only its current segment (a cursor from before it crossed, or a latest-order cursor from before a compaction rotated that segment, answers `reset: true`). With `subagent_id`: a delegated child of the session (running: through the parent's roster; finished: through its stored row, when its ancestry reaches this conversation); a foreign or unknown child is `available: false`. Refusals: invalid_params (a cursor issued for another session, child or order, or not by this read), not_found, permission_denied, profile_mismatch.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/StoredTranscriptParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/StoredTranscriptResult"
+        }
+      }
+    },
+    {
       "name": "shell.exec",
       "summary": "Ink ``!cmd`` / ``{!cmd}`` on the shared owner: one safe command for a local session, in its frozen launch cwd (``gateway/session_shell.py``).",
       "params": [
@@ -49590,6 +50837,26 @@
         "schema": {
           "$ref": "#/components/schemas/WorkerExecution"
         }
+      }
+    }
+  ],
+  "x-canonical-namespaces": [
+    {
+      "name": "plugin.{plugin_id}.{name}",
+      "summary": "A method a loaded plugin registered with ctx.register_rpc; the result is its handler's JSON value. With plugin-rpc-v1 in runtime.describe, -32601 means that plugin method is not loaded; without plugin-rpc-v1, clients must not assume plugin RPC is supported.",
+      "x-prefix": "plugin.",
+      "x-capability": "plugin-rpc-v1",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/PluginRpcParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {}
       }
     }
   ],
@@ -50096,6 +51363,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/GatewayReadyPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "groups.changed",
+      "summary": "A Group Chat log, task or live status moved; an open room re-reads its log delta and groups.state.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsChangedPayload"
           }
         }
       ]

@@ -27,18 +27,18 @@ def sanitize_context(text: str) -> str:
     return text
 
 
-def scrub_memory_context_for_display(text: str) -> str:
-    """Whole-message display projection: the live stream's fence rules, applied once to stored text.
+def fence_recalled_context(text: str) -> str:
+    """Drop recalled-context spans from a completed reply with the streaming grammar.
 
-    ``sanitize_context`` needs both tags in one string, so a reply that opens a fence and never closes it
-    loses only the tag and keeps the payload — which is what a rehydrated row then paints (#149933).
-    Replaying the text through the streaming scrubber drops that tail exactly as it was hidden live, and
-    leaves an inline mention of the tag (prose, docs, code) untouched.
+    Unlike ``sanitize_context`` this keeps inline prose mentioning the tag (only block-shaped
+    spans are dropped), so it is safe on model output; an unterminated span drops its tail.
+    Unchanged text is returned as-is, changed text is stripped of the gap the span left.
     """
-    if "<" not in text:
+    if not isinstance(text, str) or not text:
         return text
     scrubber = StreamingContextScrubber()
-    return scrubber.feed(text) + scrubber.flush()
+    fenced = scrubber.feed(text) + scrubber.flush()
+    return text if fenced == text else fenced.strip()
 
 
 class StreamingContextScrubber:

@@ -137,6 +137,24 @@ describe('update child proxy env from the system proxy (#123387)', () => {
     }
   })
 
+  it("keeps the npm mirror of the profile's $HERMES_HOME/npmrc direct, as the update's pnpm reads it", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-update-hosts-'))
+
+    try {
+      fs.mkdirSync(path.join(root, '.git'))
+      fs.writeFileSync(path.join(root, '.git', 'config'), '[remote "origin"]\n\turl = https://github.com/x/y.git\n')
+      const hermesHome = path.join(root, 'home')
+      fs.mkdirSync(hermesHome)
+      fs.writeFileSync(path.join(hermesHome, 'npmrc'), 'registry=http://npm.lan.example:4873/\n')
+
+      const env = await updateProxyEnv({}, undefined, root, hermesHome)
+
+      expect(env.NO_PROXY?.split(',')).toContain('npm.lan.example')
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('injects nothing over a user NO_PROXY of *, which curl and urllib read as bypass-all only alone (S4)', async () => {
     const github = pac({ 'github.com': 'PROXY 10.0.0.7:7890' })
 

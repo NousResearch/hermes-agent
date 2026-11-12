@@ -129,6 +129,13 @@ it('a Stop that landed before a late cap notice still retires the pause', () => 
   expect(screen.queryByTestId('room-continue')).toBeNull()
 })
 
+it('a newer message in the thread that landed before a late cap notice retires the pause', () => {
+  const source = { ...userMsg(1), event_id: D }
+  renderHistory([source, memberMsg(2), memberMsg(3), userMsg(4), bounded(5)], { maxContinues: 5, onContinue: vi.fn(), onStop: vi.fn() })
+  expect(screen.getByTestId('room-paused')).toBeTruthy()
+  expect(screen.queryByTestId('room-continue')).toBeNull()
+})
+
 it('an unrelated thread\'s user message does not retire the pause', () => {
   renderHistory([...pausedLog, userMsg(6, 'thread-2')], { maxContinues: 5, onContinue: vi.fn(), onStop: vi.fn() })
   expect(screen.getByTestId('room-continue')).toBeTruthy()

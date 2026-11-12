@@ -1655,10 +1655,12 @@ export interface GroupsStateParams {
   room_id: string
   include_disbanded?: boolean | null
 }
+/** ``change_events``: this backend broadcasts ``groups.changed`` when the room moves, so a client's poll is only a backstop (absent on older backends: keep polling at the old rate). */
 export interface GroupsStateResult {
   room: Room
   driver_status?: RoomDriverStatus | null
   context?: RoomContext | null
+  change_events?: boolean | null
 }
 /** ``HostedRoomService.status(room_id)``; ``pending_actions`` rows are the exact attempt (``hosted_room_service.attempt_action``: ``kind`` + ``member_id``/``task_id``/``execution_generation``) or the driver's approval action (``kind: approval`` + run/session/approval context), or a stalled room preparation's Retry (``task_id`` ``prepare:<room_id>``, ``member_id`` the members not woken). ``member_activity`` lists live tasks in admission order (absent from older gateways). ``last_error`` is this room's last preparation failure, null once one succeeds. */
 export interface RoomDriverStatus {
@@ -1881,6 +1883,7 @@ export interface GroupsPeerInviteParams {
   member_id?: string | null
   grant_id?: string | null
   ttl_seconds?: number | null
+  status_ttl_seconds?: number | null
 }
 export interface GroupsPeerInviteResult {
   grant: string
@@ -2138,7 +2141,7 @@ export interface ProfileCanonicalSession {
   message_count?: number
   live_message_count?: number | null
 }
-/** ``clone_from`` omitted = fresh profile + bundled skills; ``mirror_credentials`` defaults on so a headless bot has a provider. */
+/** ``clone_from`` omitted = fresh profile + bundled skills (with ``clone_all``: a full copy of the active profile, no bundled skills); ``mirror_credentials`` and ``share_auth`` default on (the bot page's defaults) so a headless bot has a provider. */
 export interface ProfilesCreateParams {
   profile?: string | null
   name: string
@@ -2153,6 +2156,9 @@ export interface ProfilesCreateParams {
   provider?: string | null
   share_auth?: boolean | string | null
   mirror_credentials?: boolean | string | null
+  clone_config?: boolean | string | null
+  sync_imports?: boolean | string | null
+  report?: boolean | string | null
 }
 export interface ProfilesCreateResult {
   ok?: boolean
@@ -2161,13 +2167,33 @@ export interface ProfilesCreateResult {
   soul_written?: boolean
   model_set?: boolean
   mirrored: ProfileMirrored
+  warnings?: string[]
+  receipt?: ProfileCreateReceipt | null
 }
-/** What was copied from the launch profile; ``auth`` is ``"shared"`` under ``share_auth``. */
+/** What was copied from the launch profile; ``auth`` is ``"shared"`` when the new profile has no auth.json of its own and reads the default root's. */
 export interface ProfileMirrored {
   env?: boolean
   auth?: boolean | 'shared'
   model_inherited?: boolean
   voice?: boolean
+}
+/** What ``hermes profile create`` prints about a new profile, read on the machine (and in the profile scope) that made it: built after a local create, or sent by the gateway that made it (``profiles.create`` with ``report``). The contract uses this type itself; a stdlib dataclass, so a local create never loads pydantic. A client treats a receipt missing a field, or with a wrong type, as an unknown outcome. */
+export interface ProfileCreateReceipt {
+  path: string
+  display_path: string
+  launch_label: string
+  source_label: string
+  skills_synced: number | null
+  skills_opted_out: boolean
+  alias_path: string | null
+  alias_collision: string | null
+  mirrored: Record<string, boolean | 'shared'>
+  warnings: string[]
+  cloned_plugins: string[]
+  memory_provider: string | null
+  channels_left_behind: string[]
+  shared_channels: string[]
+  served_now: boolean | null
 }
 export interface ProfileNameParams {
   profile?: string | null
@@ -2320,6 +2346,7 @@ export interface VaultItem {
   identifier?: string | null
   identifier_type?: string | null
   has_otp?: boolean | null
+  allowed_origins?: string[] | null
   backend: string
 }
 export interface VaultSourcesResult {
@@ -2351,6 +2378,20 @@ export interface VaultUnlockParams {
 export interface VaultUnlockResult {
   name: string
   unlocked?: boolean
+}
+/** ``target`` is the opaque binding the renderer minted for one in-app browser tab. */
+export interface VaultPreviewFillParams {
+  profile?: string | null
+  handle: string
+  target: string
+}
+/** Counts and the page origin only: never a secret. */
+export interface VaultPreviewFillResult {
+  success: boolean
+  filled_fields?: number | null
+  origin?: string | null
+  error?: string | null
+  error_type?: string | null
 }
 export interface VaultLockParams {
   profile?: string | null
@@ -2441,6 +2482,7 @@ export interface SubagentSnapshot {
   tool_count?: number | null
   last_tool?: string | null
   accepting_steer?: boolean | null
+  child_session_id?: string | null
 }
 /** Lifecycle of one delegated child (``tools/delegate_tool_child_run.py``); ``failed`` / ``error`` / ``timeout`` / ``interrupted`` / ``completed`` are terminal. */
 export type SubagentStatus = 'queued' | 'running' | 'completed' | 'failed' | 'error' | 'timeout' | 'interrupted'
@@ -4828,11 +4870,13 @@ export interface CanonicalSessionInfo {
   cwd?: string | null
   edit_approval_policy?: 'ask' | 'workspace_session' | 'session' | null
   launch_request?: Record<string, unknown> | null
+  client?: CanonicalClientLabel | null
   reasoning_effort?: string | null
   reasoning_effort_wire?: string | null
   service_tier?: string | null
   fast?: boolean | null
   title?: string | null
+  archived?: boolean | null
   started_at?: number | null
   last_active_at?: number | null
   yolo?: boolean | null
@@ -4841,6 +4885,11 @@ export interface CanonicalSessionInfo {
   credential_hint?: string | null
   config_warning?: string | null
   [key: string]: unknown
+}
+/** The client a session's creator declared itself as (``session.create`` ``client``). */
+export interface CanonicalClientLabel {
+  name: string
+  version?: string | null
 }
 export interface SessionStatsParams {
   session_id: string
@@ -5059,6 +5108,29 @@ export interface WorkerPersistParams {
 }
 /** The operation's durable receipt (``message_id`` for an append, delegation results, …). */
 export type WorkerPersistResult = Record<string, unknown>
+export interface CanonicalGroupsPeerInviteParams {
+  profile?: string | null
+  room_id: string
+  home_install_id: string
+  authority_gateway_id: string
+  authority_epoch: number
+  member_id: string
+  ttl_seconds?: number
+  status_ttl_seconds?: number
+}
+export interface CanonicalGroupsPeerRevokeParams {
+  profile?: string | null
+  grant: string
+}
+export interface CanonicalGroupsPeerRegisterParams {
+  profile?: string | null
+  room_id: string
+  member_id: string
+  target_url: string
+  target_profile: string
+  grant: string
+  catalog: Record<string, unknown>
+}
 export interface CanonicalCreateParams {
   profile?: string | null
   request_id?: string | null
@@ -5089,6 +5161,12 @@ export interface CanonicalCreateParams {
   run_budget?: number | null
   verbose?: boolean
   client_env?: Record<string, string> | null
+  client?: CanonicalClientIdentity | null
+}
+/** A client naming itself: ``name`` matches ``[a-z0-9][a-z0-9._-]{0,63}``, ``version`` is 1-64 printable ASCII without spaces. Attribution only (owners advertising ``session-client-v1``). */
+export interface CanonicalClientIdentity {
+  name: string
+  version?: string | null
 }
 export interface CanonicalSnapshot {
   session_id: string
@@ -5163,11 +5241,13 @@ export interface CanonicalSnapshotInfo {
   cwd?: string | null
   edit_approval_policy?: 'ask' | 'workspace_session' | 'session' | null
   launch_request?: Record<string, unknown> | null
+  client?: CanonicalClientLabel | null
   reasoning_effort?: string | null
   reasoning_effort_wire?: string | null
   service_tier?: string | null
   fast?: boolean | null
   title?: string | null
+  archived?: boolean | null
   started_at?: number | null
   last_active_at?: number | null
   yolo?: boolean | null
@@ -5196,6 +5276,8 @@ export interface CanonicalListParams {
   limit?: number
   title?: string | null
   include_hidden?: boolean
+  workspace?: string | null
+  picker?: boolean
 }
 export interface CanonicalListResult {
   sessions: CanonicalSessionListRow[]
@@ -5212,6 +5294,13 @@ export interface CanonicalSessionListRow {
   model?: string | null
   resolved_id?: string | null
   root_title?: string | null
+  preview?: string | null
+  last_reply?: string | null
+  cwd?: string | null
+  git_branch?: string | null
+  workspace?: string | null
+  last_active_at?: number | null
+  pinned?: boolean | null
 }
 export interface CanonicalControlParams {
   profile?: string | null
@@ -5457,6 +5546,50 @@ export interface CanonicalBotCancelResult {
   status: 'cancelled' | 'stopping' | 'finished'
   receipt_status: string
 }
+export interface StoredTranscriptParams {
+  profile?: string | null
+  session_id: string
+  subagent_id?: string | null
+  cursor?: string | null
+  limit?: number
+  order?: 'oldest' | 'latest'
+  inline_images?: boolean
+}
+export interface StoredTranscriptResult {
+  session_id: string
+  rows: StoredTranscriptRow[]
+  next_cursor: string | null
+  reset: boolean
+  subagent_id?: string | null
+  available?: boolean | null
+  running?: boolean | null
+  child_session_id?: string | null
+}
+/** ``row_kind: 'message'`` is a ``session.resume`` ``display_messages`` row. ``row_kind: 'compaction'`` is a compaction handoff at its position: ``role: 'system'``, ``text`` the summary a reader sees (not the parts written for the model), ``compacted_messages``, ``timestamp`` and the stored ``row_id``. */
+export interface StoredTranscriptRow {
+  role: string
+  text?: string | null
+  content?: unknown | null
+  tool_call_id?: string | null
+  timestamp?: number | null
+  row_id?: number | null
+  display_kind?: string | null
+  display_metadata?: unknown | null
+  name?: string | null
+  context?: string | null
+  args?: Record<string, unknown> | null
+  labels?: ToolLabel[] | null
+  reasoning?: string | null
+  row_kind: 'message' | 'compaction'
+  compacted_messages?: number | null
+  truncated?: boolean | null
+  [key: string]: unknown
+}
+/** Open: the plugin's handler owns every other key. ``session_id`` names the session the call acts in and passes that session's authorization first. */
+export interface PluginRpcParams {
+  session_id?: string | null
+  [key: string]: unknown
+}
 /** ``answers`` rides only on a reconnect replay (locks the server already accepted; null = skipped). */
 export interface ClarifyRequestParams {
   session_id: string
@@ -5604,6 +5737,13 @@ export interface PreviewActRequestParams {
   amount?: number | null
   max?: number | null
   allow_shortcut?: boolean | null
+  vault?: PreviewVaultOperation | null
+}
+/** Internal vault transport, never arguments exposed to the model. */
+export interface PreviewVaultOperation {
+  operation: 'open' | 'evaluate' | 'close'
+  target?: string | null
+  expression?: string | null
 }
 /** ``tools/tour_tool.py`` field set. */
 export interface TourRequestParams {
@@ -6152,6 +6292,12 @@ export interface PetHatchProgressPayload {
 }
 /** ``change_watcher._CHANGE_WATCHES`` payload fn — ``{}`` for every watch except pet.changed. */
 export type ChangeSignalPayload = Record<string, unknown>
+/** ``change_watcher._groups_changed_payload``: the rooms whose log, tasks or live status moved; absent when something process-wide moved (every open room re-reads). ``broadcast_id`` names one broadcast: the same frame reaches a window once per open socket, and a copy needs no second read. */
+export interface GroupsChangedPayload {
+  room_ids?: string[] | null
+  broadcast_id?: string | null
+  [key: string]: unknown
+}
 export type ConnectorErrorReason = 'INVALID_PARAMS' | 'NOT_OWNER' | 'UNSUPPORTED_RUNTIME' | 'CONNECTOR_REQUEST_FAILED' | 'INVALID_CONNECTOR_RESPONSE' | 'UNKNOWN_TARGET' | 'LINK_STILL_VALID' | 'REISSUE_REFUSED' | 'UNKNOWN_OPERATION' | 'INVALID_ANSWER' | 'NEEDS_NOUS_AUTH' | 'CONNECTOR_NOT_FOUND' | 'TOOLS_UNAVAILABLE' | 'CONNECTORS_UNAVAILABLE' | 'CATALOG_UNAVAILABLE' | 'ACCOUNTS_UNAVAILABLE' | 'CONNECTION_NOT_FOUND' | 'POLICY_UNAVAILABLE' | 'POLICY_CONFLICT' | 'FORBIDDEN_SCOPE' | 'ORG_REQUIRED' | 'ORG_ACCESS_DENIED' | 'INVALID_POLICY' | 'ALIAS_TAKEN'
 
 // ── Client→server methods ──
@@ -6650,6 +6796,8 @@ export interface RpcMethods {
   'vault.list': { params: ProfileParams; result: VaultListResult }
   /** Forget a manager's session token (every manager when no name is given). */
   'vault.lock': { params: VaultLockParams; result: VaultLockResult }
+  /** Fill a saved login into the in-app browser tab the renderer pinned (never submits). */
+  'vault.preview.fill': { params: VaultPreviewFillParams; result: VaultPreviewFillResult }
   /** Remove a local vault item by id. */
   'vault.remove': { params: VaultRemoveParams; result: VaultRemoveResult }
   /** Enable or disable an external password manager (disabling also locks it). */
@@ -6928,6 +7076,7 @@ export const RPC_METHODS = [
   'vault.add',
   'vault.list',
   'vault.lock',
+  'vault.preview.fill',
   'vault.remove',
   'vault.source.set',
   'vault.sources',
@@ -6976,6 +7125,12 @@ export interface CanonicalRpcMethods {
   'groups.create': { params: CanonicalRoomCreateParams; result: GroupsCreateResult }
   /** Discard one indeterminate room task after explicit user confirmation. */
   'groups.discard': { params: GroupsDiscardParams; result: GroupsDiscardResult }
+  /** Operator only: mint one room grant for a member of another gateway's room. */
+  'groups.peer.invite': { params: CanonicalGroupsPeerInviteParams; result: GroupsPeerInviteResult }
+  /** Bind a target grant to the room's pinned peer member after a live scoped probe. */
+  'groups.peer.register': { params: CanonicalGroupsPeerRegisterParams; result: GroupsPeerRegisterResult }
+  /** Operator only: revoke one grant this gateway issued, by its exact room scope. */
+  'groups.peer.revoke': { params: CanonicalGroupsPeerRevokeParams; result: GroupsPeerRevokeResult }
   'groups.retry': { params: CanonicalRoomAttemptParams; result: GroupsRetryResult }
   'image.attach_bytes': { params: ImageAttachBytesParams; result: CanonicalAttachedImageResult }
   /** Native-owner only: admit the dispatcher's current claim on a kanban task. */
@@ -7017,6 +7172,8 @@ export interface CanonicalRpcMethods {
   /** The session.usage dict on demand: what main's classic CLI read off its agent. */
   'session.stats': { params: SessionStatsParams; result: SessionStats }
   'session.steer': { params: CanonicalCorrectionParams; result: CanonicalCorrectionResult }
+  /** One page of a stored conversation's display rows across its compression lineage (live rows and rows a compaction archived, each logical message once, and each compaction handoff as a `row_kind: 'compaction'` row at its position), from the oldest or the newest. Never attaches the caller. A page holds at most `limit` (1-500) rows, compaction rows included, plus up to 64 tool results of the call at its edge, and at most 2 MiB of JSON, cut between tool groups (a single larger row keeps only its role, kind, time, ids and the head of its text, and carries `truncated`). Oldest order: read on until a page is empty, then poll with the same `next_cursor` for the rows written since; `reset: true` means the rows the cursor covered changed shape, so the reply starts again from the first page. Latest order: read on until `next_cursor` is null; its cursor stays valid across later compactions and turns. A rotated lineage past `sessions.max_resume_messages` pages only its current segment (a cursor from before it crossed, or a latest-order cursor from before a compaction rotated that segment, answers `reset: true`). With `subagent_id`: a delegated child of the session (running: through the parent's roster; finished: through its stored row, when its ancestry reaches this conversation); a foreign or unknown child is `available: false`. Refusals: invalid_params (a cursor issued for another session, child or order, or not by this read), not_found, permission_denied, profile_mismatch. */
+  'session.transcript': { params: StoredTranscriptParams; result: StoredTranscriptResult }
   /** Ink ``!cmd`` / ``{!cmd}`` on the shared owner: one safe command for a local session, in its frozen launch cwd (``gateway/session_shell.py``). */
   'shell.exec': { params: CanonicalShellExecParams; result: ShellExecResult }
   /** Adopt a registered execution after verifying the live producer claim. */
@@ -7047,6 +7204,9 @@ export const CANONICAL_RPC_METHODS = [
   'groups.attachment.upload',
   'groups.create',
   'groups.discard',
+  'groups.peer.invite',
+  'groups.peer.register',
+  'groups.peer.revoke',
   'groups.retry',
   'image.attach_bytes',
   'kanban.run',
@@ -7073,11 +7233,19 @@ export const CANONICAL_RPC_METHODS = [
   'session.resume',
   'session.stats',
   'session.steer',
+  'session.transcript',
   'shell.exec',
   'worker.adopt',
   'worker.persist',
   'worker.register'
 ] as const satisfies readonly CanonicalRpcMethod[]
+
+// ── Canonical method namespaces: member names exist only at runtime (gate on `capability`) ──
+export interface CanonicalRpcNamespaces {
+  /** A method a loaded plugin registered with ctx.register_rpc; the result is its handler's JSON value. With plugin-rpc-v1 in runtime.describe, -32601 means that plugin method is not loaded; without plugin-rpc-v1, clients must not assume plugin RPC is supported. */
+  'plugin.{plugin_id}.{name}': { method: `plugin.${string}`; capability: 'plugin-rpc-v1'; params: PluginRpcParams; result: unknown }
+}
+export type CanonicalRpcNamespace = keyof CanonicalRpcNamespaces
 
 // ── Server→client requests ──
 export interface ServerRequestMap {
@@ -7172,6 +7340,8 @@ export interface BackendGatewayEventMap {
   'free_tier.challenge': FreeTierChallengePayload
   /** First frame of a connection: the resolved skin, the change-event capability and the replay epoch. */
   'gateway.ready': GatewayReadyPayload
+  /** A Group Chat log, task or live status moved; an open room re-reads its log delta and groups.state. */
+  'groups.changed': GroupsChangedPayload
   /** The turn ended: final text, usage and outcome. */
   'message.complete': MessageCompletePayload
   /** One streamed chunk of the assistant reply (null text: segment boundary). */
@@ -7313,6 +7483,7 @@ export const GATEWAY_EVENT_TYPES = [
   'error',
   'free_tier.challenge',
   'gateway.ready',
+  'groups.changed',
   'message.complete',
   'message.delta',
   'message.interim',

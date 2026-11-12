@@ -66,7 +66,12 @@ Rules worth knowing:
   removed or unavailable saved gateway falls back to Primary.
 - **Test** probes the connection's own HTTP *and* WebSocket legs, so a pass
   (the *"Reachable"* toast) means chat will actually work — not just that the
-  host pinged.
+  host pinged. In the Webapp, **Test** on an SSH row opens the same managed
+  tunnel the gateway uses to reach that host, which starts (or reuses)
+  `hermes serve` on the remote machine without cleaning it up afterwards. It
+  stops when you remove the connection or stop the gateway, or on its own after
+  the remote idle timeout (`dashboard.ssh_isolated_idle_grace_s`, 15 minutes by
+  default) while no client is connected and no work is running.
 - **Duplicates are rejected when you save**: there is only ever one **local**
   entry; **remote** and **cloud** entries are deduplicated on the normalized
   URL (trimmed, trailing slashes stripped, lowercased — and across both
@@ -329,21 +334,25 @@ the desktop app itself last. See
 
 ## Security notes
 
-- **Where tokens live.** Remote-gateway session tokens (and native sign-in
-  OAuth tokens, keyed by gateway base URL) are stored in the app's user-data
-  directory as owner-only (0600) files, in the Electron main process; the
-  renderer and plugins never see token bytes.
-- **Optional keychain encryption.** By default the tokens are **not** run
-  through the OS keychain — on macOS in particular, Electron's `safeStorage`
-  parks a per-app key in the login keychain, and a locked or broken keychain
-  turns that into a password prompt on every launch. If you want at-rest
-  encryption on top of the file permissions, turn on **Settings → Gateway →
-  "Encrypt saved secrets with the OS keychain"**; existing stored secrets are
-  re-encrypted in place (Keychain on macOS, DPAPI on Windows, the session
-  keyring backend on Linux). Turning it back off decrypts them again.
-- **The registry file** (`connections.json` under the app's user-data
-  directory) holds labels, URLs, and hosts — secrets only ever appear inside
-  encrypted envelopes.
+- **Where connections and tokens live.** The saved list is
+  `gateway-connections.json` in your Hermes home (beside `ui-preferences.json`):
+  labels, URLs, SSH hosts, and each connection's session token and extra
+  headers. Sign-in (OAuth) credentials, keyed by connection, are in
+  `gateway-connection-tokens.json` next to it. Both are owner-only (0600)
+  files, written by the Electron main process and by the Webapp's server,
+  which share them; the renderer and plugins never see token bytes.
+- **Secrets are plain text inside those files.** File permissions are the
+  protection: the Webapp's server has to read the credentials, so they are not
+  run through the OS keychain. A secret an older build encrypted with the
+  keychain is decrypted once when it is copied in; one that will not decrypt
+  is kept as it was and listed in the file's `importNotices`, never dropped.
+- **One-time import from the old files.** The first launch of a build with
+  the shared list copies `connections.json`, `connection.json` and
+  `native-oauth-tokens.json` from the app's user-data directory into the
+  shared files. The old files are left untouched (older builds keep working)
+  and are not read again, so removing a connection here or in the Webapp
+  sticks across restarts. Removing a connection also clears its sign-in
+  credentials and its cookie session.
 - The plugin SDK's `host.connections()` deliberately returns labels, kinds,
   and the primary id — never token material.
 

@@ -156,6 +156,19 @@ test('checkRootInstall ignores missing optionalDependencies', () => {
   }
 })
 
+// stage-native-deps degrades without get-windows (#90829) and prints the repair
+// hint; the guard ahead of it must not turn that into a failed source build.
+test('checkRootInstall lets a declared get-windows be missing', () => {
+  const { tempRoot, appDir } = makeTree({
+    manifest: { dependencies: { 'get-windows': '9.3.0' } }
+  })
+  try {
+    assert.deepEqual(checkRootInstall(appDir, tempRoot), { ok: true })
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
 test('checkRootInstall passes when every declared package is installed', () => {
   const { tempRoot, appDir } = makeTree({
     manifest: { dependencies: { '@scope/pkg': '1.0.0' }, devDependencies: { esbuild: '1.0.0' } },

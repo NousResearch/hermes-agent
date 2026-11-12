@@ -7,7 +7,7 @@
 # Schema version of this file. The installers copy it to seed config.yaml, and
 # `hermes update` uses it to know which one-time migrations the file already
 # has. Hermes manages it: do not copy it into another config.
-_config_version: 52
+_config_version: 53
 
 # =============================================================================
 # Database Configuration
@@ -1357,9 +1357,6 @@ agent:
   # Default 3.
   # max_verify_nudges: 3
 
-  # Enable verbose logging
-  verbose: false
-  
   # Reasoning effort level (OpenRouter and Nous Portal)
   # Controls how much "thinking" the model does before responding.
   # Options: "xhigh" (max), "high", "medium", "low", "minimal", "none" (disable)
@@ -1484,7 +1481,6 @@ platform_toolsets:
   slack: [hermes-slack]
   signal: [hermes-signal]
   qqbot: [hermes-qqbot]
-  yuanbao: [hermes-yuanbao]
   # Plugin platforms (teams, google_chat, ...) need no row: they default to hermes-<platform> once loaded.
 
 # =============================================================================
@@ -1501,7 +1497,8 @@ platform_toolsets:
 #     guest_mode: false
 #     # allowed_chats: ["-1001234567890"]
 #     extra:
-#       drop_pending_on_cold_boot: true # Drop Telegram's queued updates on a cold boot (default). Set false on hosts that power off, so messages sent while offline are delivered on the next start; watcher reconnects always preserve them
+#       drop_pending_on_cold_boot: false # Answer messages sent while the gateway was off (default; Telegram keeps them up to 24 h). Set true to drop that backlog on a cold boot; watcher reconnects always preserve it
+#       tls_classic_key_exchange: false  # Opt in to X25519 for TLS handshake EOFs on PQ-incompatible paths; keeps TLS 1.3 and certificate verification
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
 #       rich_messages: false          # Bot API 10.1 rich messages (tables/task lists/details/math); default false for copyable legacy MarkdownV2, set true to opt in
 #       rich_drafts: false            # Experimental rich draft previews during Telegram DM streaming; default false because Telegram Desktop/macOS can visually overlay draft frames
@@ -1938,20 +1935,6 @@ delegation:
   #     model: "deepseek/deepseek-chat"       # unpinned children inherit when unset. [] disables fallback (#65038).
 
 # =============================================================================
-# Honcho Integration (Cross-Session User Modeling)
-# =============================================================================
-# AI-native persistent memory via Honcho (https://honcho.dev/).
-# Builds a deeper understanding of the user across sessions and tools.
-# Runs alongside USER.md — additive, not a replacement.
-#
-# Requires: hermes plugins install honcho (Plastic Labs' plugin from the catalog)
-# Config: ~/.honcho/config.json (shared with Claude Code, Cursor, etc.)
-# API key: HONCHO_API_KEY in ~/.hermes/.env or ~/.honcho/config.json
-#
-# Hermes-specific overrides (optional — most config comes from ~/.honcho/config.json):
-# honcho: {}
-
-# =============================================================================
 # Display
 # =============================================================================
 display:
@@ -2276,10 +2259,12 @@ updates:
   # Disable passive CLI/banner update checks with `hermes config set updates.check false`.
   # Explicit `hermes update --check` and `hermes update` remain available.
   check: true
-  # Create a full HERMES_HOME zip before every `hermes update`.
-  # Backups land in ~/.hermes/backups/ and can be restored with `hermes import`.
-  # Off by default because large homes can add minutes to every update.
-  pre_update_backup: false
+  # Backup taken before every `hermes update`:
+  #   quick - snapshot of small critical state (pairing, cron jobs, config.yaml,
+  #           .env, auth.json, profile databases) in state-snapshots/ (default)
+  #   full  - quick plus a zip of HERMES_HOME in backups/; slow on large homes
+  #   off   - no backup
+  # pre_update_backup: quick
 
   # Number of pre-update backup zips to retain.
   backup_keep: 5

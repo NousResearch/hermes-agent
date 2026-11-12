@@ -5,18 +5,13 @@ stored verbatim for replay parity (``agent.session_persistence._db_flush_row``),
 ``_history_to_messages`` is the one projection every history read renders through (resume, branch,
 slash, compute host, registry). ``sanitize_context`` cannot repair the malformed shape on its own —
 its span regex needs both tags, so an open-only fence keeps the injected note and the recalled bullets
-behind it.
+behind it. The projection therefore reuses ``agent.memory_context.fence_recalled_context`` (the live
+delivery's streaming grammar, landed upstream for the non-streamed reply path) rather than a second
+helper: a reply is fenced before it is displayed, a persisted row is fenced on the way out.
 
-Shapes covered: the reported open-only fence, a well-formed fence that was persisted anyway, and a
-literal inline mention of the tag (documentation, not injection).
+Shapes covered: the reported open-only fence, a well-formed fence that was persisted anyway, a reply
+that was only the fence, and a user row that merely quotes the tag.
 """
-
-import pytest
-
-try:  # the helper this change adds; absent on the base commit a sabotage run restores
-    from agent.memory_context import scrub_memory_context_for_display as _scrub
-except ImportError:  # pragma: no cover - base-commit control run
-    _scrub = None
 
 NOTE = (
     "[System note: The following is recalled memory context, NOT new user input. "
@@ -24,14 +19,6 @@ NOTE = (
     "and should inform all responses.]"
 )
 UNTERMINATED = f"Normal assistant reply.\n\n<memory-context>\n{NOTE}\n\n- prefers draft PRs\n"
-
-
-def _scrub_or_skip(text: str) -> str:
-    helper = _scrub
-    if helper is None:
-        pytest.skip("scrub_memory_context_for_display is the helper this change adds")
-        return text
-    return helper(text)
 
 
 def _project(*rows: dict) -> list[dict]:
@@ -46,27 +33,10 @@ def _assistant(text: str) -> dict:
     return {"role": "assistant", "content": text}
 
 
-class TestDisplayScrub:
-    def test_unterminated_fence_is_hidden_through_end_of_text(self):
-        assert _scrub_or_skip(UNTERMINATED) == "Normal assistant reply.\n\n"
-
-    def test_complete_fence_is_hidden_and_surrounding_text_kept(self):
-        stored = f"Answer one.\n\n<memory-context>\n{NOTE}\n\n- secret bullet\n</memory-context>\n\nAnswer two.\n"
-        out = _scrub_or_skip(stored)
-        assert "Answer one." in out and "Answer two." in out
-        assert "secret bullet" not in out and "System note" not in out
-
-    def test_inline_mention_of_the_tag_survives(self):
-        """A documented tag name is not an injected block; truncating here would eat real prose."""
-        for text in ("The fence tag `<memory-context>` marks injected recall.\n",
-                     "Write <memory-context> around the block.\n"):
-            assert _scrub_or_skip(text) == text
-
-
 class TestHistoryProjection:
     def test_unterminated_suffix_is_not_painted(self):
         shown = _project(_assistant(UNTERMINATED))
-        assert shown[0]["text"] == "Normal assistant reply.\n\n"
+        assert shown[0]["text"] == "Normal assistant reply."
         assert "prefers draft PRs" not in shown[0]["text"]
         assert "System note" not in shown[0]["text"]
 

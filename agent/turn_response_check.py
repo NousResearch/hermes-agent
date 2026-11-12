@@ -148,6 +148,11 @@ def check_api_response(
             return _verdict(_iv.action, _iv.result)
 
     agent._turn_received_provider_response = True
+    # Every row this response becomes (truncation fragments and Codex incomplete interims are built
+    # before record_response_usage runs) is stamped with THIS response's reasoning count, never a
+    # previous response's.
+    from agent.turn_usage import note_response_reasoning_tokens
+    note_response_reasoning_tokens(agent, response)
     finish_reason = _derive_finish_reason(agent, response, messages)
     from hermes_cli.observability.shared_metrics_harness import record_reply_finish
     record_reply_finish(agent, response, finish_reason)
@@ -245,9 +250,8 @@ def retry_invalid_response(
     else jittered backoff that preserves a pending redirect."""
     from agent.conversation_loop import _arm_fallback_restart
     from agent.retry_utils import jittered_backoff
-    from agent.turn_recovery import (
-        classify_codex_soft_failure, describe_invalid_response, interruptible_backoff_sleep,
-    )
+    from agent.turn_recovery import describe_invalid_response, interruptible_backoff_sleep
+    from agent.turn_recovery_codex import classify_codex_soft_failure
 
     def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> InvalidResponseVerdict:
         return InvalidResponseVerdict(
@@ -286,6 +290,8 @@ def retry_invalid_response(
     if agent._fallback_index < len(agent._fallback_chain):
         agent._buffer_diagnostic_status("⚠️ Empty/malformed response — switching to fallback...")
     if agent._try_activate_fallback():
+        # The buffered status above is dropped once the fallback answers: log the trigger (#152101).
+        logger.warning("%sInvalid API response (%s) — switched to fallback", agent.log_prefix, ", ".join(error_details))
         active_system_prompt = _arm_fallback_restart(
             agent, api_messages, active_system_prompt, _retry)
         retry_count = 0

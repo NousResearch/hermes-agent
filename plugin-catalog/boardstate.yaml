@@ -1,18 +1,20 @@
 name: boardstate
 title: Boardstate
 repo: https://github.com/100yenadmin/boardstate-hermes-plugin
-sha: a52cb77f5f98efd0108e45e64751193cc9dd700a
-description: "A live board your agent builds for you: tabs of notes, tables, charts, KPI cards and live Hermes data, in the dashboard and Hermes Desktop. It appears as a Board tab in the dashboard and a page in Desktop, and the agent lays it out with 19 native boardstate_* tools, approval widgets included. Runs a local Node >= 20 sidecar on loopback with a per-spawn nonce; no network access unless you opt in to operator-gated connectors. Disclosure — spawns a local Node.js ≥20 sidecar (from PATH/HERMES_NODE_BIN, nothing downloaded) on 127.0.0.1 on first use; state under HERMES_HOME/boardstate-state/. Reads the dashboard's loopback session token from Hermes internals (web_server._SESSION_TOKEN) and passes it to the sidecar for live usage/sessions/cron widgets; mounts one token-gated static route for approved widget assets. No outbound network unless you author boardstate.connectors.json (stdio/HTTP MCP connectors); connector actions need operator approval. Ships one plugin skill, boardstate:boardstate-report-problem, which drafts a bug report and files it with the GitHub CLI only after the user approves the exact text."
+sha: d6c6fb1cc8ece90f0641746018cffc23f2f4efd6
+description: "From one ask, your agent builds a live board of KPIs, tables, charts and live Hermes data, then keeps it current as your plans change. It appears as a Board tab in the dashboard and a page in Hermes Desktop; the agent lays it out with 19 native boardstate_* tools, approval widgets included, and binds sessions, usage and cron widgets to live Hermes data. Runs a local Node >= 20 sidecar on loopback with a per-spawn nonce; no network access unless you opt in to operator-gated connectors. Disclosure — spawns a local Node.js ≥20 sidecar (from PATH/HERMES_NODE_BIN, nothing downloaded) on 127.0.0.1 on first use; state under HERMES_HOME/boardstate-state/. Reads the dashboard's loopback session token from Hermes internals (web_server._SESSION_TOKEN) and passes it to the sidecar for live usage/sessions/cron widgets; mounts one token-gated static route for approved widget assets. boardstate_workspace_get also returns the text users type into Notes cards (read-only). No outbound network unless you author boardstate.connectors.json (stdio/HTTP MCP connectors); connector actions need operator approval. Ships one plugin skill, boardstate:boardstate-report-problem, which drafts a bug report and files it with the GitHub CLI only after the user approves the exact text."
 maintainer: 100yenadmin
 tier: community
 category: desktop
 requires_hermes: '>=0.21.2'
-image: https://raw.githubusercontent.com/100yenadmin/boardstate-hermes-plugin/a52cb77f5f98efd0108e45e64751193cc9dd700a/docs/media/banner.png
+image: https://raw.githubusercontent.com/100yenadmin/boardstate-hermes-plugin/d6c6fb1cc8ece90f0641746018cffc23f2f4efd6/docs/media/banner.png
 docs_url: https://github.com/100yenadmin/boardstate-hermes-plugin#readme
-version: "1.5.2"
+version: "1.5.9"
 screenshots:
-  - https://raw.githubusercontent.com/100yenadmin/boardstate-hermes-plugin/a52cb77f5f98efd0108e45e64751193cc9dd700a/docs/screenshots/desktop-board.png
-  - https://raw.githubusercontent.com/100yenadmin/boardstate-hermes-plugin/a52cb77f5f98efd0108e45e64751193cc9dd700a/docs/screenshots/web-board.png
+  - https://raw.githubusercontent.com/100yenadmin/boardstate-hermes-plugin/d6c6fb1cc8ece90f0641746018cffc23f2f4efd6/docs/screenshots/launch-board.png
+  - https://raw.githubusercontent.com/100yenadmin/boardstate-hermes-plugin/d6c6fb1cc8ece90f0641746018cffc23f2f4efd6/docs/screenshots/launch-tasks.png
+  - https://raw.githubusercontent.com/100yenadmin/boardstate-hermes-plugin/d6c6fb1cc8ece90f0641746018cffc23f2f4efd6/docs/screenshots/desktop-board.png
+  - https://raw.githubusercontent.com/100yenadmin/boardstate-hermes-plugin/d6c6fb1cc8ece90f0641746018cffc23f2f4efd6/docs/screenshots/web-board.png
 platforms: []
 capabilities:
   provides_tools:

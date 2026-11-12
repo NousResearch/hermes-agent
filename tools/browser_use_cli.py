@@ -84,7 +84,8 @@ def _hermes_ensure_own_tab():
     except Exception:
         pass  # best-effort: worst case is pre-fix behavior
     try:
-        open(_marker, "w").close()
+        # Shared temp root + predictable name: never truncate through a planted symlink.
+        _os.close(_os.open(_marker, _os.O_WRONLY | _os.O_CREAT | getattr(_os, "O_NOFOLLOW", 0), 0o600))
     except OSError:
         pass
 _hermes_ensure_own_tab()
@@ -771,13 +772,22 @@ def _take_real_profile_note(route_key: str) -> dict:
     return {"real_profile_unavailable": _real_profile_fallback[route_key]}
 
 
+def _no_code_error(code: str) -> Optional[str]:
+    if not code or not code.strip():
+        return ("No code provided. Pass Python that uses the pre-imported helpers, e.g. "
+                "new_tab(\"https://example.com\") then print(page_info()).")
+    return None
+
+
 def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT_S,
                  task_id: Optional[str] = None, local: bool = False):
     """Run Python code through the browser-use CLI, and return its output"""
     from agent.redact import redact_sensitive_text
+    from tools.hosted_tool_policy import hosted_tool_refusal
     from tools.registry import tool_error, tool_result
-    if not code or not code.strip():
-        return tool_error("No code provided. Pass Python that uses the pre-imported helpers, e.g. new_tab(\"https://example.com\") then print(page_info()).")
+    # A direct (non-dispatch) entry meets the same allowlist, before any setup.
+    if refusal := hosted_tool_refusal("browser_exec") or _no_code_error(code):
+        return tool_error(refusal)
 
     # The verdict is carried into the route, never re-derived: the predicate resolves DNS, so a second
     # evaluation could relax the floor and still pick the cloud for a rebinding host.
@@ -897,7 +907,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
 
 _HEADER_BASE = (
     "Drive a real browser for JS pages, logins, forms and clicks (Browser Use CLI). `code` runs as full "
-    "Python (stdlib available) with pre-imported browser helpers; stdout comes back in the result. Start `code` with a one-line "
+    "Python (stdlib available); print(...) any data you need back. Start `code` with a one-line "
     "comment describing the step for the user in plain language, max 60 chars "
     "(e.g. `# Searching Amazon for paper towels`) — the UI shows it as the step label.\n\n"
     "STATE: the browser session and workspace persist across calls; Python variables do NOT (fresh "
@@ -906,8 +916,8 @@ _HEADER_BASE = (
     "('all N products / every entry'), append each batch to a JSON/CSV file in the workspace, then read it "
     "back and aggregate in code — dedupe/count/sort with Python, not in your head — and verify the "
     "collected count against what was asked before answering.\n\n"
-    "Batch each sub-procedure (navigate, wait, extract, act) into one call — do not spend a call per "
-    "action — but for long extractions prefer several medium calls that append to workspace files over "
+    "Batch each sub-procedure (navigate, wait, extract, act) into one call, but for long extractions "
+    "prefer several medium calls that append to workspace files over "
     "one giant call, so progress survives timeouts."
 )
 
@@ -994,10 +1004,10 @@ BROWSER_EXEC_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "code": {"type": "string", "description": "Python code to execute using the pre-imported browser helpers. Use print(...) for any data you need back."},
+            "code": {"type": "string", "description": "Python using the pre-imported browser helpers."},
             "session": {"type": "string", "description": "Named isolated browser session — its own daemon and (on cloud backends) own browser, so concurrent tasks don't share tabs. Reuse the same name on every related call; omit for the shared default session."},
             "timeout_s": {"type": "integer", "default": _DEFAULT_TIMEOUT_S,
-                          "description": f"Max seconds to wait for the code to finish (default {_DEFAULT_TIMEOUT_S}, max {_MAX_TIMEOUT_S})."},
+                          "description": f"Max seconds to wait for the code to finish (max {_MAX_TIMEOUT_S})."},
         },
         "required": ["code"],
     },
@@ -1040,4 +1050,5 @@ registry.register(
     check_fn=browser_exec_available,
     dynamic_schema_overrides=_dynamic_schema_overrides,
     emoji="🌐",
+    compat_args=("local",),  # advertised only when a local browser is on offer
 )

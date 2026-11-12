@@ -1,0 +1,34 @@
+name: hermes-cobrowse
+repo: https://github.com/sandman-sh/Hermes-CoBrowse
+sha: 6c0eca82424798f79549d29373a3ec25864ce3ad
+subdir: ""
+title: "Hermes CoBrowse"
+description: "Real-time multi-window spatial co-browsing canvas and interactive human-in-the-loop web automation for Hermes Agent via a localhost web studio with CDP screencasting, 8-way window resizing, Inspector telemetry, and 2FA handoff. Disclosure — launches headless Chromium with a minimal sanitized env and runs a token-authenticated localhost server on 127.0.0.1:9876+ with Host/Origin checks; blocks local files and private/link-local IPs by default across redirects, redacts password/OTP values in DOM state, executes agent-supplied JS via cobrowse_eval_js, reads no local credentials, and sends no external telemetry."
+maintainer: sandman-sh
+tier: community
+category: desktop
+requires_hermes: ">=0.22.0"
+version: "1.0.0"
+docs_url: https://github.com/sandman-sh/Hermes-CoBrowse#readme
+image: https://raw.githubusercontent.com/sandman-sh/Hermes-CoBrowse/6c0eca82424798f79549d29373a3ec25864ce3ad/assets/banner.jpg
+screenshots:
+  - https://raw.githubusercontent.com/sandman-sh/Hermes-CoBrowse/6c0eca82424798f79549d29373a3ec25864ce3ad/docs/screenshots/spatial-multiwindow.png
+  - https://raw.githubusercontent.com/sandman-sh/Hermes-CoBrowse/6c0eca82424798f79549d29373a3ec25864ce3ad/docs/screenshots/2fa-handoff.png
+  - https://raw.githubusercontent.com/sandman-sh/Hermes-CoBrowse/6c0eca82424798f79549d29373a3ec25864ce3ad/docs/screenshots/inspector-dom.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - cobrowse_open
+    - cobrowse_navigate
+    - cobrowse_get_state
+    - cobrowse_click
+    - cobrowse_type
+    - cobrowse_request_handoff
+    - cobrowse_scroll
+    - cobrowse_eval_js
+    - cobrowse_close
+  provides_hooks:
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []

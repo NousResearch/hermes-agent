@@ -73,7 +73,10 @@ electron-builder copies the payload with builder-util, whose `walk()` drops
 directories. The resource copy, the AppImage stage and the MSIX file map all
 use them, and tool digests cover those files. `run-electron-builder.mjs`
 therefore starts the builder with `scripts/patch-electron-builder-copy.mjs`,
-which removes both omissions in memory.
+which removes both omissions in memory. After relocation and signing,
+`afterPack` fails the pack unless the packaged payload has the prepared
+payload's entries and types; Linux must also keep every file size, and macOS
+may add codesign's `_CodeSignature` seals.
 
 ## Local test build
 

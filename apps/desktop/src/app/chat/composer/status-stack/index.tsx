@@ -236,9 +236,7 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
     sections.push({ key: 'free-tier', node: <FreeTierNoticeStrip /> })
   }
 
-  if (sharedMetricsOffer) {
-    sections.push({ key: 'shared-metrics', node: <SharedMetricsConsentStrip /> })
-  }
+  // shared-metrics consent strip removed — Unitalk does not collect usage statistics
 
   const hasControlContent = Boolean(
     controlEntry &&

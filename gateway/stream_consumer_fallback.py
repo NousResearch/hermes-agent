@@ -133,7 +133,10 @@ class StreamFallbackMixin:
             if attempt:
                 await asyncio.sleep(1.0)
             try:
-                if await self.adapter.delete_message(self.chat_id, message_id) is True:
+                # Replacement needs the fragment GONE: Telegram's ordinary delete returns True for a
+                # delete it queued behind a long flood window, which may still be refused later.
+                delete = getattr(self.adapter, "delete_message_confirmed", self.adapter.delete_message)
+                if await delete(self.chat_id, message_id) is True:
                     self._preview_message_ids.discard(message_id)
                     return True
             except Exception:  # an adapter delete can raise anything; the fragment then stays

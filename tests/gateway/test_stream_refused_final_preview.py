@@ -242,3 +242,41 @@ async def test_a_reset_during_the_fragment_delete_sends_nothing_for_the_dead_tur
     await asyncio.wait_for(task, 10)
 
     assert adapter.sends_after_reset == []
+
+
+
+class _TelegramFloodDeleteAdapter(_SlotAdapter):
+    """Telegram's real delete contract inside a 240 s flood window: the ordinary delete is handed to
+    a background task and reports True at once; the Bot API later refuses it."""
+
+    def __init__(self, refuse: str):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from gateway.config import PlatformConfig
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+        super().__init__(refuse)
+        self.telegram = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+        self.telegram._bot = MagicMock()
+        self.telegram._bot.delete_message = AsyncMock(side_effect=RuntimeError("message can't be deleted"))
+        self.telegram._record_send_flood_cooldown("-100123", 240.0)
+        self.delete_message = self.telegram.delete_message
+        if hasattr(self.telegram, "delete_message_confirmed"):
+            self.delete_message_confirmed = self.telegram.delete_message_confirmed
+
+
+@pytest.mark.asyncio
+async def test_a_fragment_whose_delete_is_only_queued_is_continued_not_repeated():
+    first_word = "<<" + "x" * 60 + ">>"
+    answer = f"{first_word} q000 q001 q002 <<end>>"
+    adapter = _TelegramFloodDeleteAdapter(refuse="<<end>>")
+
+    await _stream(adapter, _pieces(answer, 12))
+
+    shown = list(adapter.messages.values())
+    queued = [t for t in adapter.telegram._background_tasks if not t.done()]
+    await adapter.telegram.cancel_background_tasks()
+    # The fragment is still on screen, so only the tail may follow it, and no delete is left queued
+    # that would later remove the prefix the tail relies on.
+    joined = "".join(shown)
+    assert joined.count("<<x") == 1 and joined.count("<<end>>") == 1, shown
+    assert not queued

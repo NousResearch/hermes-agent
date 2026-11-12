@@ -1,0 +1,46 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: topped
+description: Make, approve, schedule and measure your Product's TikTok, Instagram and YouTube Posts.
+# Where to read about the server, not its code: the server's source is not public.
+source: https://github.com/topped-ai/topped-agent#hermes
+
+# Topped runs a remote MCP server over Streamable HTTP with native OAuth 2.1
+# ("Log in with Topped"): discovery, Dynamic Client Registration and PKCE
+# S256. Hermes's MCP client handles the browser sign-in, token exchange and
+# refresh; nothing to install locally.
+transport:
+  type: http
+  url: https://app.topped.ai/api/mcp
+
+auth:
+  type: oauth
+  # No `provider:`: this is native MCP OAuth, not a third-party provider.
+  # The browser opens on the first probe or first connect.
+
+# Tool selection at install time:
+# Topped lists 42 tools (the founder's Product, For You, Creator, Library,
+# Calendar, Scoreboard and Watchlist). `default_enabled` stays unset, so the
+# install-time checklist starts with every tool checked and users prune what
+# they don't want.
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - topped
+  hosts:
+    - app.topped.ai
+    - topped.ai
+
+post_install: |
+  On first connection, Hermes will open a browser at "Log in with Topped".
+  Click Allow, then restart your Hermes session so the Topped tools are loaded.
+
+  Making a Playground image or video spends Credits; Topped returns the
+  price first. Approving a Post spends one content save. Say yes only to
+  what you mean to spend.
+
+  You can re-run the tool checklist any time with:
+    hermes mcp configure topped

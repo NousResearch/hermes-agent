@@ -148,3 +148,22 @@ def test_tui_bootstrap_keeps_the_client_env_out_of_a_daemon_it_starts(monkeypatc
         bootstrap.bootstrap(True)
     assert len(started) == 1
     assert 'HERMES_TUI_CLIENT_ENV' not in started[0] and 'HERMES_INFERENCE_PROVIDER' not in started[0]
+
+
+def test_append_system_prompt_flags_reach_this_launchs_client_env(monkeypatch, tmp_path):
+    """Text then file, joined, exported for this launch's ``session.create`` (and stripped from any
+    gateway this launch auto-starts, so it never becomes every session's prompt)."""
+    from hermes_cli.gateway_chat import shell_client_env
+    from hermes_cli.gateway_runtime_start import DAEMON_STRIPPED_ENV
+    from hermes_cli.main_launch_env import _apply_append_system_prompt
+    monkeypatch.delenv('HERMES_APPEND_SYSTEM_PROMPT', raising=False)
+    monkeypatch.setenv('HERMES_SAFE_MODE', '1')  # shell_client_env: no profile read
+    extra = tmp_path / 'ci.md'
+    extra.write_text('Never push.\n', encoding='utf-8')
+    _apply_append_system_prompt(SimpleNamespace(append_system_prompt='Be terse.',
+                                                append_system_prompt_file=str(extra)))
+    assert shell_client_env()['HERMES_APPEND_SYSTEM_PROMPT'] == 'Be terse.\n\nNever push.'
+    assert 'HERMES_APPEND_SYSTEM_PROMPT' in DAEMON_STRIPPED_ENV
+    with pytest.raises(SystemExit):
+        _apply_append_system_prompt(SimpleNamespace(append_system_prompt=None,
+                                                    append_system_prompt_file=str(tmp_path / 'missing.md')))

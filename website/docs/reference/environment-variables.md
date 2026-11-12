@@ -849,6 +849,7 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | `HERMES_PLUGINS_DEBUG` | `1`/`true` to surface verbose plugin-discovery logs on stderr — directories scanned, manifests parsed, skip reasons, and full tracebacks on parse or `register()` failure. Aimed at plugin authors. |
 | `HERMES_BACKGROUND_NOTIFICATIONS` | Background process notification mode in gateway: `concise` (default), `all`, `result`, `error`, `off` |
 | `HERMES_EPHEMERAL_SYSTEM_PROMPT` | Ephemeral system prompt injected at API-call time (never persisted to sessions) |
+| `HERMES_APPEND_SYSTEM_PROMPT` | Set by `--append-system-prompt[-file]`: text added after the ephemeral prompt and `--skills` for the sessions this shell creates. |
 | `HERMES_PREFILL_MESSAGES_FILE` | Path to a JSON file of ephemeral prefill messages injected at API-call time. |
 | `HERMES_ALLOW_PRIVATE_URLS` | `true`/`false` — allow tools to fetch localhost/private-network URLs. Off by default in gateway mode. |
 | `HERMES_REDACT_SECRETS` | `true`/`false` — control secret redaction in tool output, logs, and chat responses (default: `true`). |

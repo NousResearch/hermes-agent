@@ -1299,8 +1299,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             apply_launch_yolo(ctx.session_key)
         platform_key = policy.platform if policy else ("cli" if ctx.source.platform == Platform.LOCAL else ctx.source.platform.value)
         combined_ephemeral = self._combined_ephemeral_prompt()
-        if policy and policy.skills_prompt:
-            combined_ephemeral = "\n\n".join(p for p in (combined_ephemeral, policy.skills_prompt) if p)
+        if policy:
+            from gateway.session_worker_construct import launch_append_prompt
+            combined_ephemeral = "\n\n".join(
+                p for p in (combined_ephemeral, policy.skills_prompt, launch_append_prompt(policy)) if p)
         if policy:
             # Rotated .env keys reach this turn's config reads (side tasks read config.yaml), as on the
             # messaging path, where _current_max_iterations() does the same reload; the turn budget

@@ -83,6 +83,29 @@ async def test_each_session_runs_its_own_clients_ephemeral_prompt(tmp_path, monk
 
 
 @pytest.mark.asyncio
+async def test_append_system_prompt_rides_its_session_and_comes_last(tmp_path, monkeypatch):
+    """``--append-system-prompt``: only the session whose client sent it gets it, after the profile
+    overlay and the ``-s`` skills, and a bypass session (which reads no profile) keeps it too."""
+    from dataclasses import replace
+    from gateway.session_worker_construct import _ephemeral_prompt
+    home = _home(tmp_path)
+    owner, connection = await _owner(home, monkeypatch)
+    try:
+        owner.runner._get_system_prompt_for_channel = lambda platform, chat_id: 'PROFILE'
+        _, appended = _create(owner, connection.actor, home, 'ap',
+                              client_env={'HERMES_APPEND_SYSTEM_PROMPT': 'Reply in French.'})
+        _, plain = _create(owner, connection.actor, home, 'pl', client_env={})
+        skilled = replace(appended, skills_prompt='SKILLS')
+        assert _ephemeral_prompt(owner, skilled, 'chat') == 'PROFILE\n\nSKILLS\n\nReply in French.'
+        assert _ephemeral_prompt(owner, plain, 'chat') == 'PROFILE'
+        bypass = replace(appended, ignore_user_config=True)
+        assert _ephemeral_prompt(owner, bypass, 'chat') == 'Reply in French.'
+    finally:
+        await connection.close()
+        owner.db.close()
+
+
+@pytest.mark.asyncio
 async def test_each_session_reads_its_own_clients_prefill_file(tmp_path, monkeypatch):
     from gateway.session_worker_construct import session_prefill
     home = _home(tmp_path)

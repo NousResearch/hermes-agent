@@ -22,8 +22,15 @@ PRE_ARGPARSE_INHERITED_FLAGS: list[tuple[str, bool]] = [("--profile", True), ("-
 _VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({
     "-z", "--oneshot", "-m", "--model", "--provider", "--reasoning", "-t", "--toolsets",
     "-r", "--resume", "-s", "--skills", "--usage-file", "--in", "--cpu-profile",
+    "--append-system-prompt", "--append-system-prompt-file",
 })
 _OPTIONAL_VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({"-c", "--continue"})
+
+_APPEND_HELP = ("Append TEXT to the system prompt of the session this launch creates (after any "
+                "personality / agent.system_prompt overlay and -s skills). Kept for that session's "
+                "whole life; never written to history. For scripts and CI: per-run instructions "
+                "without editing config.yaml.")
+_APPEND_FILE_HELP = "Like --append-system-prompt, read from PATH (both may be given; TEXT comes first)."
 
 
 def _cfg_path() -> str:
@@ -202,6 +209,8 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
               help="Bypass all dangerous command approval prompts (use at your own risk)")
     inherited(parser, "--pass-session-id", action="store_true", default=False,
               help="Include the session ID in the agent's system prompt")
+    inherited(parser, "--append-system-prompt", metavar="TEXT", default=None, help=_APPEND_HELP)
+    inherited(parser, "--append-system-prompt-file", metavar="PATH", default=None, help=_APPEND_FILE_HELP)
     inherited(parser, "--checkpoints", action="store_true", default=False,
               help="Enable filesystem checkpoints before destructive file operations (use /rollback to restore)")
     inherited(parser, "--ignore-user-config", action="store_true", default=False,
@@ -312,6 +321,8 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
               help="Bypass all dangerous command approval prompts (use at your own risk)")
     inherited(chat_parser, "--pass-session-id", action="store_true", default=SUPPRESS,
               help="Include the session ID in the agent's system prompt")
+    inherited(chat_parser, "--append-system-prompt", metavar="TEXT", default=SUPPRESS, help=_APPEND_HELP)
+    inherited(chat_parser, "--append-system-prompt-file", metavar="PATH", default=SUPPRESS, help=_APPEND_FILE_HELP)
     inherited(chat_parser, "--ignore-user-config", action="store_true", default=SUPPRESS,
               help=f"Ignore {_cfg_path()} and fall back to built-in defaults (credentials in .env are still loaded). Useful for isolated CI runs, reproduction, and third-party integrations.")
     inherited(chat_parser, "--ignore-rules", action="store_true", default=SUPPRESS,

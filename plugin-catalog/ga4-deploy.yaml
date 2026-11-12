@@ -1,0 +1,22 @@
+name: ga4-deploy
+repo: https://github.com/skeptical-agency/ga4-deploy
+sha: 65e75235f17df321d426b43bbad679b5f93e4fc7
+description: "Script the GA4 Admin API from Hermes: ga4_discover (accounts->properties->streams), ga4_channel_groupings (inspect the system Default Group, deploy readable DNF specs with automatic CNF distribution, eachScope* field mapping, inListFilter ban — it saves 200 but renders BLANK in the UI — converted to anchored FULL_REGEXP alternation, 2-custom-grouping cap enforced, PATCH-in-place replacement, read-back verification), ga4_audiences (deploy with skip-by-name idempotency, immutable-filterClauses archive+rebuild path, pagePath->pageLocation correction, orGroup-wrapper clause building), ga4_annotations (batch create with uppercase color enum, 150-char cap and title+date dedupe), ga4_enhanced_measurement (per-stream get/set with updateMask built and absent=false semantics documented). Distilled from live fleet deploys across a 27-account agency where the official docs were wrong about v1alpha vs v1beta endpoints, field names and enum values. Disclosure — auth is a declared oauth: google grant (analytics.edit + analytics.readonly) signed in with `hermes auth add ga4deploy:google` via the user's own Google Cloud client; Hermes holds the token and the plugin never sees it; all calls are plain REST to analyticsadmin.googleapis.com / www.googleapis.com through credentialed_provider_request; the plugin stores no state; write tools support dry_run and the bundled skill requires a dry-run plan before any fleet write."
+maintainer: skeptical-agency
+tier: community
+category: marketing
+docs_url: https://github.com/skeptical-agency/ga4-deploy/blob/65e75235f17df321d426b43bbad679b5f93e4fc7/README.md
+version: "0.1.0"
+capabilities:
+  provides_tools:
+    - ga4_status
+    - ga4_discover
+    - ga4_channel_groupings
+    - ga4_audiences
+    - ga4_annotations
+    - ga4_enhanced_measurement
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - GA4DEPLOY_GOOGLE_CLIENT_ID
+    - GA4DEPLOY_GOOGLE_CLIENT_SECRET

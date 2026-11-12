@@ -187,3 +187,35 @@ async def test_shared_bot_satellite_webhook_egress_is_route_scoped(profile_homes
             res = await deliver(extra)
             assert not res.success and "not routed" in res.error
         primary.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_shared_bot_satellite_cannot_escape_routed_chat_via_thread_id(profile_homes, tmp_path):
+    """Discord resolves ``thread_id`` as a global channel id, so a routed chat_id paired with a
+    payload-rendered foreign ``thread_id`` must not ride the shared bot; a thread the route pins does.
+    Telegram topic ids are chat-scoped, so a routed chat's topic still delivers (#147602)."""
+    from unittest.mock import patch
+
+    from gateway.profile_routing import parse_profile_routes
+
+    profile_homes.multiplex_profiles = True
+    profile_homes.profile_routes = parse_profile_routes([
+        {"name": "d", "platform": "discord", "profile": "sec", "chat_id": "111"},
+        {"name": "dt", "platform": "discord", "profile": "sec", "chat_id": "222", "thread_id": "333"},
+        {"name": "t", "platform": "telegram", "profile": "sec", "chat_id": "-100"},
+    ])
+    discord, telegram = _target(), _target()
+    webhook = _webhook(_Runner({Platform.DISCORD: discord, Platform.TELEGRAM: telegram}, {"sec": {}}, profile_homes))
+
+    async def deliver(platform, extra):
+        return await webhook._deliver_cross_platform(
+            platform, "hi", {"deliver": platform, "deliver_extra": extra, "profile": "sec"})
+
+    with patch("gateway.run._multiplex_profile_homes", return_value=[("sec", tmp_path / "sec")]):
+        for extra in ({"chat_id": "111", "thread_id": "999"}, {"chat_id": "111", "message_thread_id": "999"}):
+            res = await deliver("discord", extra)
+            assert not res.success and "not routed" in res.error
+        discord.send.assert_not_awaited()
+        assert (await deliver("discord", {"chat_id": "222", "thread_id": "333"})).success
+        assert discord.send.await_args.kwargs["metadata"] == {"thread_id": "333"}
+        assert (await deliver("telegram", {"chat_id": "-100", "message_thread_id": "42"})).success

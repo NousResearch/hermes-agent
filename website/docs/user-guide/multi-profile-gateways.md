@@ -464,7 +464,10 @@ using the default listener's existing credentials.
   is enabled only on a secondary profile. A shared-bot satellite (no bot of
   its own, reached through `profile_routes`) delivers through the shared bot
   only to a chat a route maps to it, the same rule as its cron jobs; any other
-  target, including an unrouted home channel, fails (502).
+  target, including an unrouted home channel, fails (502). On Discord and
+  Feishu, whose thread ids are not scoped to a chat, a `thread_id` target
+  needs a route that names that `thread_id`; a chat-only route does not cover
+  it.
 - `/p/coder/api/platforms/<platform>/events` callbacks are verified and
   dispatched by coder's adapter; when coder has none the callback is a 503.
 

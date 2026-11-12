@@ -207,6 +207,11 @@ def _delivery_platform_routed_from_primary_gateway(platform_name: str) -> bool:
     )
 
 
+# Platforms whose send scopes a thread/topic id to the target chat (Telegram topic, Slack thread_ts,
+# Matrix thread root, Mattermost root post): a chat-only route may authorize a thread in its chat.
+_CHAT_SCOPED_THREAD_PLATFORMS = frozenset({"telegram", "slack", "matrix", "mattermost"})
+
+
 class SharedRouteAdapters:
     """Read-only adapter map for a credentialless satellite profile. ``get(platform, target)``
     resolves the PRIMARY adapter iff the inbound route matcher (``ProfileRoute.matches``) accepts
@@ -242,11 +247,17 @@ class SharedRouteAdapters:
         # credentialless satellite fell to standalone "platform 'telegram' not configured/enabled"
         # (#146336). Other platforms' chat ids live in a separate id space than user ids, so their
         # ``user_id`` routes stay a miss — fail closed.
+        # A thread the route does not pin is target-exact only where thread ids live inside the
+        # chat; elsewhere (Discord, Feishu) the adapter sends to the thread id alone, so a routed
+        # chat_id plus a foreign thread_id would reach any thread the bot sees (#147602).
+        thread_escapes = bool(thread_id) and platform_key not in _CHAT_SCOPED_THREAD_PLATFORMS
         for route in self._routes:
             if str(route.platform).lower() != platform_key:
                 continue
             if not (route.chat_id or route.thread_id or route.user_id):
                 continue  # guild-only routes are not target-exact
+            if thread_escapes and route.thread_id != thread_id:
+                continue
             route_user_id = (
                 str(chat_id) if route.user_id and platform_key == "telegram" else None
             )

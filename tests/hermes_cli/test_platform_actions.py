@@ -330,6 +330,32 @@ class TestMultiplexProfileRouting:
         assert result["error"] == "adapter_not_registered"
         primary._set_reaction.assert_not_awaited()
 
+    def test_shared_bot_satellite_cannot_rename_foreign_discord_thread(self, tmp_path):
+        """Discord renames by global thread id: a routed chat_id must not unlock an arbitrary thread
+        for a bot-less satellite; only a thread its route pins is renamable (#147602)."""
+        from gateway.config import GatewayConfig
+        from gateway.profile_routing import parse_profile_routes
+
+        actions = PlatformActions("p")
+        primary = _discord_adapter()
+        cfg = GatewayConfig()
+        cfg.multiplex_profiles = True
+        cfg.profile_routes = parse_profile_routes([
+            {"name": "d", "platform": "discord", "profile": "sec", "chat_id": "111"},
+            {"name": "dt", "platform": "discord", "profile": "sec", "chat_id": "111", "thread_id": "333"},
+        ])
+        with (
+            _grant(True),
+            _multiplex_runner_with(default={Platform.DISCORD: primary}, profiles={"sec": {}}, config=cfg),
+            patch("hermes_cli.profiles.get_active_profile_name", return_value="sec"),
+            patch("gateway.run._multiplex_profile_homes", return_value=[("sec", tmp_path / "sec")]),
+        ):
+            result = asyncio.run(actions.set_thread_title("discord", "111", "999", "pwned"))
+            assert result["ok"] is not True
+            primary.rename_thread.assert_not_awaited()
+            assert asyncio.run(actions.set_thread_title("discord", "111", "333", "ok"))["ok"] is True
+        primary.rename_thread.assert_awaited_once_with("333", "ok")
+
 
 class TestPluginContextWiring:
     def test_ctx_platform_actions_bound_to_plugin_id(self):

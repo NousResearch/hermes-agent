@@ -1,6 +1,6 @@
 name: rung
 repo: https://github.com/CalQuity/rung
-sha: 970be4f506c496586a7fec8b818491ceab602e4b
+sha: 2e48cf027409d952dab1b249002a1edc50ab5162
 subdir: hermes-plugin
 description: >-
   A verification kit for agent-written code, enforced inside Hermes. Rung builds the kit for a repository
@@ -18,13 +18,13 @@ description: >-
   calls the model CLI chosen in rung.toml (claude, codex or an OpenAI-compatible endpoint), which reads
   the project's source. No network calls from the plugin itself; checks may make them (osv-scanner
   queries OSV, the deps check queries PyPI or npm). Nothing waits for a person. Rung writes verdicts
-  under .rung/ in the project. No credentials, no telemetry. Requires rung-cli 0.4.
+  under .rung/ in the project. No credentials, no telemetry. Requires rung-cli 0.5.
 maintainer: CalQuity
 tier: community
 category: tools
 requires_hermes: ">=0.20"
 docs_url: https://github.com/CalQuity/rung/tree/main/hermes-plugin#readme
-version: "0.4.0"
+version: "0.5.0"
 title: Rung
 platforms: [linux, macos]
 capabilities:

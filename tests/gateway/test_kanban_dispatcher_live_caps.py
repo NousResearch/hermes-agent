@@ -17,7 +17,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from gateway import kanban_watchers as kw
 from gateway import kanban_watchers_dispatcher as kwd
+from gateway.run import GatewayRunner
+from hermes_cli import kanban_db as kb
+from hermes_cli.config import load_config
 
 
 class _StubKbd:
@@ -181,3 +185,83 @@ def test_a_real_config_edit_is_obeyed_without_a_restart(tmp_path, monkeypatch):
     dispatcher.refresh_caps(load_config)
     assert dispatcher.settings.max_in_progress == 1
     assert dispatcher.settings.max_in_progress_per_profile is None
+
+
+def test_the_gateway_loop_refreshes_the_caps_on_every_tick(tmp_path, monkeypatch):
+    """The fix is a call site, so the test is the call site.
+
+    A method that exists and is never invoked would pass every unit test above.
+    This drives the real `_kanban_dispatcher_watcher` loop against a temp
+    HERMES_HOME with a recorder in place of the dispatcher, edits config.yaml
+    between ticks, and requires the running loop to pick the new caps up — with
+    no restart anywhere in the test.
+    """
+    import asyncio
+    import os
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    cfg_path = home / "config.yaml"
+    cfg_path.write_text("kanban:\n  max_in_progress: 3\n  max_in_progress_per_profile: 2\n")
+    kanban_cfg = load_config().get("kanban", {})
+
+    seen: dict = {"refresh_calls": 0}
+
+    class _RecordingDispatcher(kwd._KanbanDispatcher):
+        """The real dispatcher with the loop's own methods instrumented.
+
+        Subclassing rather than standing in: a fake that omits ``refresh_caps``
+        would let the loop's catch-all swallow the ``AttributeError`` and spin
+        forever — a hang instead of a signal. Here the caps refresh is the real
+        implementation, so the assertion is about the loop wiring.
+        """
+
+        def __init__(self, _kb, settings):
+            super().__init__(_kb, settings)
+            self.ticks = 0
+            seen["self"] = self
+
+        def refresh_caps(self, load_config):
+            seen["refresh_calls"] += 1
+            super().refresh_caps(load_config)
+
+        def auto_decompose_tick(self, auto_decompose_per_tick):
+            return 0
+
+        def ready_nonempty(self):
+            return False
+
+        def tick_once(self):
+            self.ticks += 1
+            if self.ticks == 1:
+                cfg_path.write_text("kanban:\n  max_in_progress: 9\n  max_in_progress_per_profile: 6\n")
+                st = os.stat(cfg_path)
+                os.utime(cfg_path, (st.st_atime, st.st_mtime + 5))
+            if self.ticks >= 2:
+                runner._running = False
+            return []
+
+    monkeypatch.setattr(kw, "_KanbanDispatcher", _RecordingDispatcher)
+    monkeypatch.setattr(kw, "_kanban_dispatch_allowed", lambda: True)
+    monkeypatch.setattr(kw, "_resolve_auto_decompose_settings", lambda _lc: (False, 3))
+    monkeypatch.setattr(kw, "_log_spawn_results", lambda _results: True)
+    # Skip the boot settle delay; the loop body is what is under test. Keep the
+    # real coroutine so the replacement cannot recurse into itself.
+    _real_sleep = asyncio.sleep
+    monkeypatch.setattr(kw.asyncio, "sleep", lambda _s: _real_sleep(0))
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_dispatcher_boot = lambda: (load_config, kb, kanban_cfg)
+    runner._release_kanban_dispatcher_lock = lambda: None
+    async def _no_wait(interval):
+        return None
+    runner._sleep_between_ticks = _no_wait
+
+    asyncio.run(runner._kanban_dispatcher_watcher())
+
+    assert seen["self"].ticks >= 2, "the loop did not reach a second tick"
+    assert seen["refresh_calls"] >= 2, "the loop never re-read the caps"
+    assert seen["self"].settings.max_in_progress == 9
+    assert seen["self"].settings.max_in_progress_per_profile == 6

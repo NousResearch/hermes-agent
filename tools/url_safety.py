@@ -654,10 +654,24 @@ async def ssrf_checked_aiohttp_get(session: Any, url: str, **kwargs: Any):
     # is a fresh request, so the whole chain shares one deadline or ``total`` multiplies per hop.
     total = getattr(kwargs.get("timeout") or getattr(session, "timeout", None), "total", None)
     async with asyncio.timeout(total if isinstance(total, (int, float)) else None):
+        source = urlsplit(url)
+        source_origin = (source.scheme.lower(), source.hostname,
+                         source.port or (443 if source.scheme.lower() == "https" else 80))
         current_url = url
         for _ in range(_AIOHTTP_MAX_REDIRECTS + 1):
             if not await async_is_safe_url(current_url):
                 raise ValueError("Blocked URL targeting a private or internal address")
+            target = urlsplit(current_url)
+            target_origin = (target.scheme.lower(), target.hostname,
+                             target.port or (443 if target.scheme.lower() == "https" else 80))
+            # aiohttp normally strips Authorization across origins. Manual session.get() calls
+            # re-apply session defaults, so do not forward credentials to a redirected host.
+            if target_origin != source_origin and (
+                    getattr(session, "_default_auth", None) is not None
+                    or kwargs.get("auth") is not None
+                    or any(str(h).lower() == "authorization" for h in getattr(session, "headers", {}))
+                    or any(str(h).lower() == "authorization" for h in (kwargs.get("headers") or {}))):
+                raise ValueError("Blocked credential-bearing cross-origin redirect")
             async with session.get(current_url, allow_redirects=False, **kwargs) as response:
                 location = response.headers.get("Location")
                 if response.status in _AIOHTTP_REDIRECT_STATUSES and location:

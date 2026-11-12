@@ -151,3 +151,45 @@ async def test_timeout_total_covers_the_whole_redirect_chain(monkeypatch):
                     await resp.read()
     finally:
         await runner.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_redirect_does_not_forward_session_authorization_to_another_public_host(monkeypatch):
+    """Manual redirect hops must not leak default auth that aiohttp normally strips cross-origin."""
+    seen = []
+
+    async def handler(request):
+        seen.append((request.host.split(":")[0], request.headers.get("Authorization")))
+        if request.host.startswith(f"{PUBLIC_HOST}:"):
+            raise web.HTTPFound(f"http://other-public.test:{port}/image.png")
+        return web.Response(body=b"public-image")
+
+    app = web.Application()
+    app.router.add_get("/{tail:.*}", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]
+
+    real_getaddrinfo = url_safety._getaddrinfo
+
+    def getaddrinfo(host, port=None):
+        if host in {PUBLIC_HOST, "other-public.test"}:
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port or 0))]
+        return real_getaddrinfo(host, port)
+    monkeypatch.setattr(url_safety, "_getaddrinfo", getaddrinfo)
+
+    try:
+        async with aiohttp.ClientSession(
+                headers={"Authorization": "Bearer origin-secret"},
+                connector=aiohttp.TCPConnector(resolver=_LoopbackResolver())) as session:
+            with pytest.raises(ValueError, match="credential-bearing cross-origin redirect"):
+                async with url_safety.ssrf_checked_aiohttp_get(
+                        session, f"http://{PUBLIC_HOST}:{port}/image.png") as response:
+                    await response.read()
+    finally:
+        await runner.cleanup()
+
+    # The first origin may authenticate; the second must not receive any HTTP request.
+    assert seen == [(PUBLIC_HOST, "Bearer origin-secret")]

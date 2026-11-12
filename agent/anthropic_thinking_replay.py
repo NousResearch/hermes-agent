@@ -163,19 +163,23 @@ def apply_rejected_thinking_suppression(agent: Any, messages: Any) -> int:
     return sum(strip_rejected_thinking(message, rejected) for message in messages)
 
 
-def remember_rejected_thinking(agent: Any, api_messages: Any) -> int:
-    """Fingerprint the rejected request and repair its retry copy without mutating history."""
-    if not isinstance(api_messages, list):
-        return 0
-
-    current = {
+def _signed_fingerprints(messages: list) -> set[str]:
+    return {
         fingerprint
-        for message in api_messages
+        for message in messages
         if isinstance(message, dict)
         for key in _CARRIERS
         for block in (message.get(key) if isinstance(message.get(key), list) else ())
         if (fingerprint := _fingerprint(block)) is not None
     }
+
+
+def remember_rejected_thinking(agent: Any, api_messages: Any) -> int:
+    """Fingerprint the rejected request and repair its retry copy without mutating history."""
+    if not isinstance(api_messages, list):
+        return 0
+
+    current = _signed_fingerprints(api_messages)
     # The provider-visible history changed while the canonical content fingerprint did
     # not, so a previous prompt-token anchor is no longer valid for this request shape.
     from agent.usage_anchor import set_usage_anchor
@@ -189,6 +193,26 @@ def remember_rejected_thinking(agent: Any, api_messages: Any) -> int:
     rejected.update(current)
     _persist(agent, rejected)
     return sum(strip_rejected_thinking(message, rejected) for message in api_messages)
+
+
+def retire_thinking_at_compaction(agent: Any, compacted: Any) -> int:
+    """Reject every signed block that survives a compaction, before the next request is sent.
+
+    A signature binds the system prompt, the tools and every message before the block. Compaction
+    summarizes the head and rebuilds the system prompt, so each block in the verbatim tail was signed
+    against a prefix the API will never see again; accounts under preserved-thinking enforcement
+    reject the first one with a 400. Retiring them here costs nothing extra (compaction already
+    rewrites the cached prefix) and saves the failed request plus the second full-prompt cache
+    write the signature recovery would pay. Blocks produced after the boundary still replay."""
+    if not isinstance(compacted, list) or not tracks_rejected_thinking(agent):
+        return 0
+    current = _signed_fingerprints(compacted)
+    if not current:
+        return 0
+    rejected = _rejected(agent)
+    rejected.update(current)
+    _persist(agent, rejected)
+    return len(current)
 
 
 def carry_rejected_thinking_to_session(agent: Any, old_session_id: str) -> None:

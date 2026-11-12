@@ -310,7 +310,7 @@ def test_rejected_thinking_never_returns_and_nothing_else_is_suppressed(
     replays exactly the never-rejected signed thinking, whatever lifetime boundary it crosses;
     the rejection drops the stale usage anchor. Routes Anthropic does not sign for keep their
     own replay contract."""
-    from agent.conversation_compression import _carry_session_state_to_child
+    from agent.conversation_compression_session_state import _carry_session_state_to_child
 
     db = _session_db(tmp_path, "s1", "s2")
     agent = (

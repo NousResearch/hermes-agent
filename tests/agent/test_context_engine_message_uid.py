@@ -269,6 +269,130 @@ def test_the_live_list_walk_binds_a_result_to_the_nearest_call_that_names_it():
     assert tool_call_uid_from_history([call("1" * UID_LEN), {"role": "user", "content": "q"}, result], 2, {}) is None
 
 
+def test_within_one_row_the_last_occurrence_of_an_id_owns_the_results_after_it():
+    """A folded row holds several occurrences of one id; like separate rows, the later occurrence shadows the
+    earlier one, and an occurrence persisted without a uid (``None`` slot) pairs its results with nothing."""
+    from agent.message_metadata import tool_call_uid_from_history
+
+    def folded(slots):
+        return {"role": "assistant", "content": "", "tool_calls": [_reused_call("")["tool_calls"][0]] * len(slots),
+                "_tool_call_uids": {"call_x": slots}}
+
+    result = {"role": "tool", "content": "r", "tool_call_id": "call_x"}
+    one, two = "1" * UID_LEN, "2" * UID_LEN
+    assert tool_call_uid_from_history([folded([one, None]), result], 1, {}) is None
+    assert tool_call_uid_from_history([folded([None, one]), result], 1, {}) == one
+    assert tool_call_uid_from_history([folded([one, two]), result], 1, {}) == two
+
+    # Responses-style composite ids: each occurrence keeps its own spelling, so the result that names the
+    # mapped occurrence's full id still pairs with it while the bare id follows the (unmapped) last one.
+    composite = {"role": "assistant", "content": "", "_tool_call_uids": {"call_x": [one, None]}, "tool_calls": [
+        {"id": f"call_x|fc_{n}", "type": "function", "function": {"name": "t", "arguments": "{}"}} for n in (1, 2)]}
+    for tool_call_id, expected in (("call_x|fc_1", one), ("call_x", None)):
+        named = {"role": "tool", "content": "r", "tool_call_id": tool_call_id}
+        assert tool_call_uid_from_history([composite, named], 1, {}) == expected
+
+
+@pytest.mark.parametrize("mapped_first", [True, False], ids=["mapped-then-legacy", "legacy-then-mapped"])
+def test_a_mixed_era_fold_keeps_one_slot_per_occurrence(mapped_first):
+    """Folding a turn this build wrote (uid map) with one an older build wrote (none) that reuse a provider
+    id: the survivor's map spells out every occurrence, ``None`` for the unmapped one, so a following result
+    pairs with its nearest occurrence's uid, or with nothing, never with the other occurrence's."""
+    from agent.agent_runtime_helpers import _merge_consecutive_assistants
+    from agent.message_metadata import tool_call_uid_from_history
+
+    uid = "1" * UID_LEN
+    turns = [_reused_call("", uid), _reused_call("")]
+    if not mapped_first:
+        turns.reverse()
+    merged, repairs = _merge_consecutive_assistants(turns)
+    survivor = merged[0]
+    assert repairs == 1 and [tc["id"] for tc in survivor["tool_calls"]] == ["call_x", "call_x"]
+    assert survivor["_tool_call_uids"] == {"call_x": [uid, None] if mapped_first else [None, uid]}
+    result = {"role": "tool", "content": "r", "tool_call_id": "call_x"}
+    assert tool_call_uid_from_history([survivor, result], 1, {}) == (None if mapped_first else uid)
+
+
+def test_a_stale_key_on_the_absorbed_turn_never_overwrites_the_real_occurrences_uid():
+    """Repair can prune a call and leave its ``_tool_call_uids`` key behind. When the absorbed turn carries a
+    stale key for an id only the survivor still calls, the fold keeps the survivor's uid for that id: the
+    stale key names no call, so it pairs nothing and is dropped."""
+    from agent.agent_runtime_helpers import _merge_assistant_into
+    from agent.message_metadata import tool_call_uid_from_history
+
+    def turn(call_id, uids):
+        return {"role": "assistant", "content": "",
+                "tool_calls": [{"id": call_id, "type": "function", "function": {"name": "t", "arguments": "{}"}}],
+                "_tool_call_uids": uids}
+
+    real, stale, other = "1" * UID_LEN, "2" * UID_LEN, "3" * UID_LEN
+    prev = turn("call_x", {"call_x": real})
+    _merge_assistant_into(prev, turn("call_y", {"call_x": stale, "call_y": other}))
+    assert prev["_tool_call_uids"] == {"call_x": real, "call_y": other}
+    result = {"role": "tool", "content": "r", "tool_call_id": "call_x"}
+    assert tool_call_uid_from_history([prev, result], 1, {}) == real
+
+
+def test_a_fold_that_maps_nothing_leaves_no_map():
+    from agent.agent_runtime_helpers import _merge_assistant_into
+
+    prev, new = _reused_call(""), _reused_call("")
+    prev["_tool_call_uids"] = {}
+    _merge_assistant_into(prev, new)
+    assert len(prev["tool_calls"]) == 2 and "_tool_call_uids" not in prev
+
+
+@pytest.mark.parametrize("mapped_first", [True, False], ids=["mapped-then-legacy", "legacy-then-mapped"])
+def test_a_mixed_era_store_flushes_the_pairing_restore_derives(db, mapped_first):
+    """A store spanning the upgrade: turn A written by this build (uid map) and turn B by an older build (no
+    map), adjacent and reusing one provider id, then a result the older build left unpaired. Restore folds
+    them; the next result for that id is flushed with the NEAREST occurrence's uid (none when that is B's),
+    and a fresh restore derives the same pairing for every result row."""
+    import json
+
+    sid = "20260929_120000_mixed"
+    db.create_session(sid, "cli", model="test/model")
+    calls = _reused_call("")["tool_calls"]
+    db.append_message(session_id=sid, role="user", content="q")
+
+    def older_build(role, **cols):
+        cols = {"session_id": sid, "role": role, "content": "", "timestamp": 1.0, **cols}
+        db._conn.execute(f"INSERT INTO messages ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+                         tuple(cols.values()))
+        db._conn.commit()
+
+    for mapped in ((True, False) if mapped_first else (False, True)):
+        if mapped:
+            db.append_message(session_id=sid, role="assistant", content="", tool_calls=calls)
+        else:
+            older_build("assistant", tool_calls=json.dumps(calls))
+    older_build("tool", content="r-old", tool_call_id="call_x", tool_name="t")
+    uid = json.loads(db._conn.execute(
+        "SELECT tool_call_uids FROM messages WHERE tool_call_uids IS NOT NULL").fetchone()[0])["call_x"]
+    assert db._conn.execute("SELECT COUNT(*) FROM messages WHERE tool_call_uid IS NOT NULL").fetchone()[0] == 0
+
+    agent = _make_agent(db, sid)
+    agent._session_db_created = True
+    live = db.get_messages_as_conversation(sid, repair_alternation=True, include_row_ids=True)
+    survivor = next(m for m in live if m.get("tool_calls"))
+    live.append({"role": "tool", "content": "r-new", "tool_call_id": "call_x", "tool_name": "t"})
+    agent._persist_session(live, conversation_history=None)  # the real _db_flush_collect + _db_flush_write
+
+    expected = None if mapped_first else uid
+    stored = dict(db._conn.execute(
+        "SELECT content, tool_call_uid FROM messages WHERE session_id = ? AND role = 'tool' AND active = 1",
+        (sid,)).fetchall())
+    assert stored == {"r-old": None, "r-new": expected}
+    # Every stored result row (unfolded, so none is dropped as a repeat) restores with the flushed pairing.
+    again = db.get_messages_as_conversation(sid, repair_alternation=False)
+    assert {m["content"]: m.get("_tool_call_uid") for m in again if m["role"] == "tool"} == {
+        "r-old": expected, "r-new": expected}
+    refolded = db.get_messages_as_conversation(sid, repair_alternation=True)
+    slots = [uid, None] if mapped_first else [None, uid]
+    assert survivor["_tool_call_uids"] == next(m for m in refolded if m.get("tool_calls"))["_tool_call_uids"] == {
+        "call_x": slots}
+
+
 def test_a_superseded_verification_candidate_is_not_a_witness_constituent():
     """Alternation repair DISCARDS a provisional verification candidate in favour of the final answer; its
     row is retired like an absorbed row, but its uid is not a constituent of anything."""
@@ -501,3 +625,59 @@ def test_an_assistant_merge_rewrite_persists_the_unioned_tool_call_uids(db):
     assert [tc["id"] for tc in stored["tool_calls"]] == ["call_2"]
     assert stored["_tool_call_uids"] == uids
     assert next(m for m in again if m["role"] == "tool")["_tool_call_uid"] == uids["call_2"]
+
+
+@pytest.mark.parametrize("mapped_first", [True, False])
+@pytest.mark.parametrize("result_id", ["fc_1", "fc_2", "call_x"])
+def test_pruned_fold_keeps_the_surviving_occurrence_uid(db, mapped_first, result_id):
+    from agent.message_metadata import tool_call_uid_from_history
+
+    db.create_session("prune", "cli", model="test/model")
+    turns = [_reused_call("", "1" * UID_LEN), _reused_call("")]
+    if not mapped_first:
+        turns.reverse()
+    for n, turn in enumerate(turns, 1):
+        turn["tool_calls"][0]["id"] = f"call_x|fc_{n}"
+    result = {"role": "tool", "content": "old", "tool_call_id": result_id}
+    db.append_messages_batch("prune", [{"role": "user", "content": "q"}, *turns, result])
+    legacy = turns[1 if mapped_first else 0]
+    db._conn.execute("UPDATE messages SET tool_call_uids = NULL WHERE message_uid = ?", (legacy["message_uid"],))
+    db._conn.execute("UPDATE messages SET tool_call_uid = NULL WHERE role = 'tool'")
+    db._conn.commit()
+    live = db.get_messages_as_conversation("prune", repair_alternation=True, include_row_ids=True)
+    survivor = next(m for m in live if m.get("tool_calls"))
+    kept = [f"call_x|{result_id}"] if result_id != "call_x" else ["call_x|fc_1", "call_x|fc_2"]
+    assert [tc["id"] for tc in survivor["tool_calls"]] == kept
+    mapped = result_id == ("fc_1" if mapped_first else "fc_2") or (result_id == "call_x" and not mapped_first)
+    expected = "1" * UID_LEN if mapped else None
+    assert tool_call_uid_from_history(live, len(live) - 1, {}) == expected
+    live.append({"role": "tool", "content": "new", "tool_call_id": result_id})
+    agent = _make_agent(db, "prune")
+    agent._session_db_created = True
+    agent._persist_session(live, conversation_history=None)
+    assert db._conn.execute("SELECT tool_call_uid FROM messages WHERE content = 'new'").fetchone()[0] == expected
+    restored = db.get_messages_as_conversation("prune", repair_alternation=False)
+    assert next(m for m in restored if m.get("content") == "new").get("_tool_call_uid") == expected
+
+
+@pytest.mark.parametrize("mapped_first", [True, False])
+@pytest.mark.parametrize("result_id", ["call_x|fc_1", "fc_1", "call_x|fc_2", "fc_2", "call_x"])
+def test_unmapped_composite_stays_unmapped_live_and_durable(db, mapped_first, result_id):
+    from agent.agent_runtime_helpers import _merge_consecutive_assistants
+    from agent.message_metadata import tool_call_uid_from_history
+
+    turns = [_reused_call("", "1" * UID_LEN), _reused_call("")]
+    if not mapped_first:
+        turns.reverse()
+    for n, turn in enumerate(turns, 1):
+        turn["tool_calls"][0]["id"] = f"call_x|fc_{n}"
+    folded, _ = _merge_consecutive_assistants(turns)
+    result = {"role": "tool", "content": "r", "tool_call_id": result_id}
+    first = result_id.endswith("fc_1")
+    expected = "1" * UID_LEN if first == mapped_first else None
+    assert tool_call_uid_from_history([*folded, result], 1, {}) == expected
+    db.create_session("alias", "cli")
+    db.append_messages_batch("alias", [{"role": "user", "content": "q"}, *folded, result])
+    assert db._conn.execute("SELECT tool_call_uid FROM messages WHERE role = 'tool'").fetchone()[0] == expected
+    restored = db.get_messages_as_conversation("alias", repair_alternation=False)
+    assert next(m for m in restored if m["role"] == "tool").get("_tool_call_uid") == expected

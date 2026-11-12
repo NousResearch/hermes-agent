@@ -198,13 +198,23 @@ What the host guarantees:
   one response share one uid (every result carries it, so no call looks
   unanswered). When a fold leaves one message holding calls from two turns
   that share an id, that id maps to a list of uids, one per occurrence in
-  `tool_calls` order. The provider-facing `id` inside
+  `tool_calls` order; a slot is `null` for an occurrence whose call was never
+  persisted with a uid (a turn an older build wrote), and within one message
+  the last occurrence of an id owns the results after it, exactly as a later
+  message's call would. The provider-facing `id` inside
   `tool_calls` is untouched. Both are minted at the assistant row's first
   insert, paired onto the result when it is flushed (same batch, or from the
   live list when the result lands in a later flush) and on restore (from the
   preceding assistant row), persisted (`messages.tool_call_uids`,
   `messages.tool_call_uid`), and kept across the same copy and rewrite paths
   as `message_uid`. A result whose call was never persisted with a uid has none.
+  Limit: a stored message that already holds a folded id under a single uid
+  (an earlier build kept one uid when only one of the folded turns carried a
+  map) is indistinguishable from one response that repeated the id, so every
+  occurrence keeps that one uid; and a folded list an earlier build stored
+  without a slot for an older turn's occurrence can be shorter than the calls,
+  so an occurrence past its end has no uid. Neither shape is repaired
+  retroactively.
 - **Never on the wire.** `message_uid`, `_absorbed_message_uids`,
   `_tool_call_uids` and `_tool_call_uid` are in
   `PERSISTENCE_ONLY_MESSAGE_FIELDS`: stripped from every outgoing provider

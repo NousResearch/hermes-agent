@@ -1824,6 +1824,11 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         logger.info("Stopping gateway%s...", " for restart" if self._restart_requested else "")
         ctx.started_at = time.monotonic()
         self._running = False
+        try:
+            from gateway.writepath_watchdog import stop_writepath_monitoring
+            stop_writepath_monitoring()
+        except Exception:
+            pass
         self._clear_plugin_message_injector()
         self._draining = True
         from gateway.run_runtime import drain_gateway_runtime

@@ -414,7 +414,9 @@ describe('AppContextMenu', () => {
 
   it('copies images via native bridge in Electron and via browser clipboard in Webapp', async () => {
     const contextMenuCopyImage = vi.fn().mockResolvedValue(undefined)
-    installBridge({ contextMenuCopyImage: contextMenuCopyImage as unknown as Window['hermesDesktop']['contextMenuCopyImage'] })
+    installBridge({
+      contextMenuCopyImage: contextMenuCopyImage as unknown as Window['hermesDesktop']['contextMenuCopyImage']
+    })
     mountMenu()
     const host = attach('<img src="https://example.com/pic.png" alt="pic">')
 

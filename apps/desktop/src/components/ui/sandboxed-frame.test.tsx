@@ -226,7 +226,11 @@ describe('SandboxedFrame in the Webapp', () => {
     rerender(view('hidden'))
     fireEvent.load(frame)
     expect(send).toHaveBeenCalledExactlyOnceWith(
-      { type: 'hermes-preview-document', html: '<script>parent.postMessage("ready", "*")</script>', sandbox: 'allow-scripts' },
+      {
+        type: 'hermes-preview-document',
+        html: '<script>parent.postMessage("ready", "*")</script>',
+        sandbox: 'allow-scripts'
+      },
       '*'
     )
     rerender(view('visible'))
@@ -247,7 +251,9 @@ describe('SandboxedFrame in the Webapp', () => {
     window.document.body.append(host)
     host.attachShadow({ mode: 'open' }).append(mount)
     // jsdom gives an iframe inside a shadow root no window.
-    const windows = vi.spyOn(HTMLIFrameElement.prototype, 'contentWindow', 'get').mockReturnValue(shell as unknown as Window)
+    const windows = vi
+      .spyOn(HTMLIFrameElement.prototype, 'contentWindow', 'get')
+      .mockReturnValue(shell as unknown as Window)
 
     try {
       const { unmount } = render(<SandboxedFrame onLoad={onLoad} src={guest} title="Widget" />, { container: mount })

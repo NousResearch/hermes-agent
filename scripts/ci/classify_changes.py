@@ -105,9 +105,14 @@ _WHATSAPP_BRIDGE = ("scripts/whatsapp-bridge/", "plugins/platforms/whatsapp/")
 # Shift every package's tree (pnpm-workspace.yaml carries the overrides).
 _ROOT_NPM = {"package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"}
 _DOCKER_META = ("docker/", ".hadolint.yaml", "Dockerfile", ".dockerignore") # docker setup
+# The docker_meta lint step runs it; it is not an image input, so it builds no image.
+_DOCKER_LINT = "scripts/ci/lint_docker.sh"
 _NIX_PATHS = ("nix/",) # nix files
 _NIX_FILES = {"flake.nix", "flake.lock"} # base nix files
 _SITE = ("website/", "skills/", "optional-skills/")  # docs site + skill pages
+# CI configuration outside .github/: workflows run their commands as just recipes
+# through this wrapper, so a change here can break any lane, as a workflow edit can.
+_CI_CONFIG_FILES = {"justfile", "scripts/hermes-python"}
 # Prose/frontend trees that can't touch Python. skills/ is excluded on purpose.
 _PY_SKIP = ("docs/", "website/") + _FRONTEND
 # Published artifacts that live under website/ but that Python asserts about.
@@ -298,6 +303,8 @@ _UPDATE_PIPELINE = (
     "hermes_cli/gateway_launchd.py",
     "hermes_cli/gateway_migrate",
     "hermes_cli/gateway_supervised_restart.py",
+    "hermes_cli/gateway_restart_env.py",  # the fleet restart watcher's env
+    "hermes_cli/gateway_runtime_start.py",  # supervisor-marker strip for the watcher and the pause replay
     "hermes_cli/git_pack_tidy.py",  # partial-clone pack tidy: every update's pre-fetch runs it
     "hermes_bootstrap.py",  # every launch's prepare_launch
     "hermes_constants.py",  # root home = update marker location
@@ -441,9 +448,11 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "hermes_state",
         # Messaging-gated gateway cases: only the e2e job installs the real
         # Discord/Telegram SDKs (tests.yml "Run messaging-gated gateway cases").
+        "tests/gateway/test_session_terminal_cwd_restart.py",
         "tests/gateway/test_native_role_reauthorization.py",
         "tests/gateway/test_native_telegram_startup_recovery.py",
         "tests/gateway/test_native_pause_notice.py",
+        "tests/gateway/test_reset_paused_queue_notice.py",
         "tests/gateway/test_native_reply_crash_recovery.py",
     ),
     "e2e_upgrade": (
@@ -653,7 +662,7 @@ def classify(files: list[str], run_e2e: bool = False) -> dict[str, bool]:
     )
     deps = any(f == "pyproject.toml" for f in files)
     npm_lock = any(f.split("/")[-1] in ("pnpm-lock.yaml", "package-lock.json") for f in files)
-    docker_meta = any(f.startswith(_DOCKER_META) for f in files)
+    docker_meta = any(f.startswith(_DOCKER_META) or f == _DOCKER_LINT for f in files)
     
     ret = {
         "python": python,
@@ -679,7 +688,7 @@ def classify(files: list[str], run_e2e: bool = False) -> dict[str, bool]:
         inherited = classify(consumers)
         for lane in _FIXTURE_CONSUMER_LANES:
             ret[lane] = ret[lane] or inherited[lane]
-    if not files or any(f.startswith(".github/") for f in files):
+    if not files or any(f.startswith(".github/") or f in _CI_CONFIG_FILES for f in files):
         ret["python"] = True
         ret["python_prod"] = True
         ret["docker_meta"] = True

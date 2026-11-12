@@ -278,5 +278,10 @@ class ModalEnvironment(BaseEnvironment):
         except Exception:
             pass
         finally:
-            self._worker.stop()
-            self._sandbox = self._app = None
+            # Drop the handle before stopping the worker: a racing loop shutdown inside stop()
+            # must not leave a terminated sandbox looking live (or raise out of cleanup).
+            worker, self._sandbox, self._app = self._worker, None, None
+            try:
+                worker.stop()
+            except Exception as e:
+                logger.debug("Modal: worker stop after terminate failed: %s", e, exc_info=True)

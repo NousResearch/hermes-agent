@@ -1,0 +1,24 @@
+name: spine
+title: Spine
+repo: https://github.com/salch-cred/spine
+sha: 1547e71781a0658762a969f0a48ab02d13621d9f
+description: >-
+  Does your model cave when you push back? Spine asks questions with one exact
+  answer, then tells the model, confidently, that a plausible wrong answer is
+  right, and checks whether it holds its ground. The result is a Spine score,
+  the share of correct answers it kept, under polite, firm or authority
+  pressure, with every exchange in a report. Graded by the answer line, so no
+  model judges another. Runs on your active model through ctx.llm, no setup.
+
+maintainer: salch-cred
+tier: community
+category: tools
+requires_hermes: ">=0.23"
+docs_url: https://github.com/salch-cred/spine
+version: "0.1.0"
+
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,0 +1,17 @@
+name: predictionmarketspicks
+repo: https://github.com/predictionmarketspicks/mcp
+sha: d1abeb5562f54f0f6950d117669dce290fe1a1b6
+title: Prediction Markets Quant
+description: "Live prediction-market prices and quant tools for Kalshi, Polymarket and other venues through the hosted PredictionMarketsPicks MCP server (Streamable HTTP at https://predictionmarketspicks.com/api/mcp/mcp, no key, no sign-in), with the prediction-markets skill bundled: best price across venues, cross-venue gaps, expected value, Kelly sizing, Bayesian updating, NFL/NBA/NHL boards, Fed decision odds, election races, daily-high temperature and 15-minute markets. Portable Agent Plugins v1 package (mcp.json + skills/), no Python or executables. Disclosure — read-only: cannot trade, sign or move money; HTTPS calls go to predictionmarketspicks.com only; no API key, OAuth or env vars (a few Pro tools return requires_pro with an upgrade link instead of data); no local file access, shell, background processes or self-updating code; the plugin marks its server untrusted; the server logs per call the tool name, timestamp, client type and version, result code, a via tag and a salted IP hash, never call arguments or results; the tool set is served by the remote MCP server at runtime and is not covered by the pinned sha. Not financial advice."
+maintainer: predictionmarketspicks
+tier: community
+category: tools
+docs_url: https://github.com/predictionmarketspicks/mcp#install-in-hermes-agent
+version: "1.0.0"
+requires_hermes: ">=0.21.6"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

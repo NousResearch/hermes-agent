@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 from typing import Optional
@@ -11,6 +12,34 @@ from gateway.run_common import _UNSET
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+
+def _dedupe_audio_paths(audio_paths: list[str]) -> list[str]:
+    """Order-preserving dedupe by path, then by content: one clip can reach a turn through two
+    routes (Telegram's current voice + ``reply_to_message.voice``) under two cache paths, and
+    each would be transcribed and billed. Only same-size files are hashed; an unreadable path
+    keeps path identity so a failed probe never drops a distinct clip."""
+    paths = list(dict.fromkeys(audio_paths))
+    by_size: dict[int, list[str]] = {}
+    for path in paths:
+        try:
+            by_size.setdefault(os.path.getsize(path), []).append(path)
+        except OSError:
+            pass
+    duplicates: set[str] = set()
+    for group in by_size.values():
+        seen: set[bytes] = set()
+        for path in group if len(group) > 1 else ():
+            try:
+                with open(path, "rb") as fh:
+                    digest = hashlib.file_digest(fh, "sha256").digest()
+            except OSError:
+                continue
+            if digest in seen:
+                logger.info("Skipping duplicate audio attachment before STT: %s", path)
+                duplicates.add(path)
+            seen.add(digest)
+    return [path for path in paths if path not in duplicates]
 
 
 class GatewayInboundTranscriptionMixin:
@@ -24,7 +53,7 @@ class GatewayInboundTranscriptionMixin:
         failed or STT is disabled) let callers echo them back before the agent loop. ``clip_memo``
         (path → ``_transcribe_one_clip`` result) skips clips an earlier pass already transcribed."""
         from gateway.run import _probe_audio_duration
-        audio_paths = list(dict.fromkeys(audio_paths))
+        audio_paths = await asyncio.to_thread(_dedupe_audio_paths, audio_paths)
         if not getattr(self.config, "stt_enabled", True):
             notes = []
             for path in audio_paths:
@@ -153,12 +182,15 @@ class GatewayInboundTranscriptionMixin:
         return prefix
 
     @staticmethod
-    def _untranscribed_audio_note(path: str) -> str:
+    def _agent_audio_path(path: str) -> str:
+        from tools.credential_files import to_agent_visible_cache_path
+        return to_agent_visible_cache_path(os.path.abspath(path))
+
+    @classmethod
+    def _untranscribed_audio_note(cls, path: str) -> str:
         """One minimal neutral marker for every STT failure. Never mention "no STT provider" or setup
         steps — persisted in history they make the model keep volunteering STT-setup advice."""
-        from tools.credential_files import to_agent_visible_cache_path
-        agent_path = to_agent_visible_cache_path(os.path.abspath(path))
-        return f"[voice message could not be transcribed automatically; the audio is available at: {agent_path}]"
+        return f"[voice message could not be transcribed automatically; the audio is available at: {cls._agent_audio_path(path)}]"
 
     async def _transcribe_one_clip(self, path: str, transcribe_audio, transcribe_audio_local_fallback) -> tuple[Optional[str], str]:
         """``(transcript_or_None, note)`` for one clip via configured STT with local fallback."""
@@ -183,5 +215,7 @@ class GatewayInboundTranscriptionMixin:
                 "to resend or type it out.]"
             )
         # Plain quoted line: a "The user sent a voice message..." wrapper read as a meta-instruction
-        # and made the LLM comment on voice mode instead.
-        return transcript, f'"{transcript}"'
+        # and made the LLM comment on voice mode instead. The path follows on its own line, as every
+        # failure branch keeps it: ``content`` is the only record of where the audio lives, in
+        # ``_build_media_placeholder``'s marker grammar so a consumer parsing media markers finds it.
+        return transcript, f'"{transcript}"\n[User sent audio: {self._agent_audio_path(path)}]'

@@ -121,7 +121,7 @@ def test_standalone_telegram_sender_proxy_fallback(monkeypatch, caplog, proxy, p
 
     import telegram
     import telegram.request
-    from tools import send_message_senders
+    from plugins.platforms.telegram import standalone as send_message_senders  # 150996 moved _telegram_bot here
 
     monkeypatch.setenv("TELEGRAM_PROXY", proxy)
     monkeypatch.setattr(sys.modules["telegram"], "Bot", lambda **kw: MagicMock())

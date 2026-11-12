@@ -214,6 +214,8 @@ pnpm run fmt       # prettier
 pnpm test          # vitest
 ```
 
+From the repository root, `just tui` runs the same watch mode.
+
 Python tests: `tests/tui_gateway/` via `scripts/run_tests.sh`. TS tests: vitest in `ui-tui`. A
 Python test that asserts about `package.json` / `.ts` sources will not run on a JS-only PR — keep
 JS-side assertions in vitest (root testing rules). Root TypeScript style rules apply.

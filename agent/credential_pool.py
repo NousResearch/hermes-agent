@@ -2120,7 +2120,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         if last is not None and (now - last) < NO_AVAILABLE_ENTRIES_LOG_THROTTLE_SECONDS:
             return
         self._last_no_entries_log_at = now
-        logger.info("credential pool: no available entries (all exhausted or empty)")
+        logger.info("credential pool %s: no available entries (all exhausted or empty)", self.provider)
 
     def _select_unlocked(
         self, *, refresh: bool = True, count: bool = True, model: Optional[str] = None,

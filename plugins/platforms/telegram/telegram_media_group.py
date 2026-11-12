@@ -15,6 +15,20 @@ from typing import Any, Iterator
 
 from gateway.platforms.event import MessageEvent
 
+# Private event attribute: an item's own notes (too large, …), which an album merge never dedupes away
+# (#151871). Not ``event.metadata``: native admission refuses any metadata key outside its allowlist.
+ITEM_NOTES_ATTR = "_telegram_item_notes"
+
+
+def add_item_note(event: Any, note: str) -> None:
+    """Append ``note`` to the event text (the caption survives) and record it as this item's own note."""
+    event.text = f"{event.text}\n\n{note}" if event.text else note
+    event.__dict__.setdefault(ITEM_NOTES_ATTR, []).append(note)
+
+
+def item_notes(event: Any) -> list[str]:
+    return list(getattr(event, ITEM_NOTES_ATTR, None) or [])
+
 # Upper bound on how long a due flush waits for in-flight siblings before sending what it has.
 MEDIA_GROUP_MAX_WAIT_SECONDS = 8.0
 _IN_FLIGHT_POLL_SECONDS = 0.05
@@ -61,10 +75,11 @@ def media_group_wait_seconds(adapter: Any) -> float:
 
 async def queue_media_group_event(adapter: Any, media_group_id: str, event: MessageEvent) -> None:
     """Merge an album item into its pending event and (re)arm the album's flush."""
+    adapter._note_arrival(event)
     if adapter._should_drop_delayed_delivery():
         adapter._hold_inbound_event(event, where="media-group-enqueue")
         return
-    adapter._merge_into_pending(adapter._media_group_events, media_group_id, event)
+    media_group_id = adapter._merge_into_pending(adapter._media_group_events, media_group_id, event)
     adapter._accept_update()
     prior_task = adapter._media_group_tasks.get(media_group_id)
     if prior_task:
@@ -80,7 +95,8 @@ async def flush_media_group_event(adapter: Any, media_group_id: str) -> None:
     await asyncio.sleep(media_group_wait_seconds(adapter))
     loop = asyncio.get_running_loop()
     deadline = loop.time() + MEDIA_GROUP_MAX_WAIT_SECONDS
-    while _in_flight(adapter).get(media_group_id, 0) > 0 and loop.time() < deadline:
+    group = media_group_id.split("|", 1)[0]  # a lane split off by resolved routing still waits for its album's siblings
+    while _in_flight(adapter).get(group, 0) > 0 and loop.time() < deadline:
         await asyncio.sleep(_IN_FLIGHT_POLL_SECONDS)
     await adapter._flush_buffered(
         adapter._media_group_events, adapter._media_group_tasks, media_group_id, 0, "media-group")

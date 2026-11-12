@@ -1,0 +1,67 @@
+# Catalog entry for Google Workspace for Hermes (plugin v0.3.0).
+name: google-workspace
+repo: https://github.com/francoleff/google-workspace-hermes
+sha: ae9a3e7847d7f0c02c4fccf2e6c04ed453f2e089
+description: "Gmail, Calendar, Drive, Docs, Sheets and Contacts in one Hermes workspace, with cross-app briefs and approval on every write. Disclosure — signs in with the user's own Google Cloud OAuth client through Hermes (`hermes auth add google-workspace:google`) and requests broad scopes (gmail.modify/send/compose, full Drive, Docs, Sheets, Calendar events, Contacts); tools and the Desktop page read and change mail, calendar, files, documents, sheets and contacts on that account, and sending, sharing, inviting, trashing and other writes ask for Hermes approval first; a Changes tab keeps a local list (title and link) of the writes Hermes made, pushed to every connected Desktop window."
+maintainer: francoleff
+tier: community
+category: desktop
+requires_hermes: ">=0.22.3"
+version: "0.3.0"
+title: Google Workspace for Hermes
+readme: true
+platforms: []
+known_issues:
+  - Sign-in is a terminal command (hermes auth add google-workspace:google), not an in-app flow.
+  - Sensitive and restricted Google scopes need Google's app verification before public sign-in.
+  - RSVP and the sidebar actions have not been run inside the running Hermes Desktop app.
+  - Invoice amounts come from text heuristics and must be checked.
+  - Not affiliated with or endorsed by Google. Google product marks are Google trademarks.
+capabilities:
+  provides_tools:
+    - google_calendar_agenda
+    - google_calendar_cancel_event
+    - google_calendar_check_availability
+    - google_calendar_create_event
+    - google_calendar_rsvp
+    - google_calendar_search
+    - google_calendar_update_event
+    - google_contacts_create
+    - google_contacts_delete
+    - google_contacts_search
+    - google_contacts_update
+    - google_docs_append
+    - google_docs_create
+    - google_docs_read
+    - google_docs_replace_text
+    - google_drive_create_folder
+    - google_drive_get
+    - google_drive_move
+    - google_drive_rename
+    - google_drive_search
+    - google_drive_share
+    - google_drive_trash
+    - google_email_to_event
+    - google_gmail_draft
+    - google_gmail_forward
+    - google_gmail_modify
+    - google_gmail_read
+    - google_gmail_search
+    - google_gmail_send
+    - google_gmail_update_draft
+    - google_invoices_to_sheet
+    - google_meeting_brief
+    - google_organize_drive
+    - google_search
+    - google_sheets_append
+    - google_sheets_create
+    - google_sheets_create_tab
+    - google_sheets_metadata
+    - google_sheets_read
+    - google_sheets_update_range
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env:
+    - GOOGLE_WORKSPACE_CLIENT_ID
+    - GOOGLE_WORKSPACE_CLIENT_SECRET

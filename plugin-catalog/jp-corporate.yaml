@@ -1,19 +1,20 @@
 name: jp-corporate
 repo: https://github.com/TakeshiTGAL/hermes-plugin-jp-corporate
-sha: fc0e16c2924d00774957c516f5eb14016228b91d
-description: "Japanese corporate lookup (法人照会): find or verify a company by name or corporate number and read its gBizINFO record (basic info, subsidies, government contracts, awards, certifications, financials, patents, workplace data). Disclosure — sends the company names, corporate numbers and prefectures you look up to api.info.gbiz.go.jp (METI gBizINFO) with your own GBIZINFO_API_TOKEN in a request header; no other host, nothing written to disk."
+sha: aa8b1cca93565dff2f082fba8c8a3f3754c5e522
+description: "Look up a Japanese company by name or 13-digit corporate number and read its gBizINFO record, from registration to subsidies, contracts, and financials. Disclosure — sends the company names, corporate numbers and prefectures you look up only to api.info.gbiz.go.jp (METI gBizINFO) with your own GBIZINFO_API_TOKEN, read on each call; no proxy, nothing written to disk; the tools are on for every surface, so anyone you allow on a gateway spends your token; the bundled japan-company skill adds one line to every skills index; on turns that look like company talk (a 13-digit number, 法人番号, 株式会社 and other legal forms, a few listed company names, or a jp_corp call last turn) a pre_llm_call hook adds a fixed paragraph, even where the tools are off, telling the model to find jp_corp_search via tool_search before web_search, copy next_step on token_missing, and not state data or write 取得しました/確認できます that the tool did not return."
 maintainer: TakeshiTGAL
 tier: community
 category: tools
 docs_url: https://github.com/TakeshiTGAL/hermes-plugin-jp-corporate#readme
-version: "0.1.1"
+version: 0.1.13
+image: https://raw.githubusercontent.com/TakeshiTGAL/hermes-plugin-jp-corporate/aa8b1cca93565dff2f082fba8c8a3f3754c5e522/assets/catalog-banner.png
 requires_hermes: ">=0.21.4"
 platforms: []
 capabilities:
   provides_tools:
   - jp_corp_search
   - jp_corp_profile
-  provides_hooks: []
-  provides_middleware: []
+  provides_hooks:
+  - pre_llm_call
   requires_env:
   - GBIZINFO_API_TOKEN

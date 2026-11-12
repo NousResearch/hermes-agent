@@ -255,9 +255,7 @@ except ImportError:
     Intents = Any
     commands = None
 
-import sys
 from pathlib import Path as _Path
-sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 
 def _is_discord_transport_error(exc: BaseException) -> bool:
@@ -301,6 +299,7 @@ except ImportError:
     from ffmpeg_utils import resolve_ffmpeg_executable
 
 from gateway.config import Platform, PlatformConfig, discord_channel_id_from_link
+from gateway.approval_actor import clarify_refusal, refusal_text, slash_confirm_refusal
 
 from gateway.platforms.helpers import (
     MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets, is_discord_channel_obfuscated,
@@ -1160,6 +1159,7 @@ from plugins.platforms.discord.adapter_config_readers import (
     _DISCORD_PROMPT_TIMEOUT_DEFAULT, _DISCORD_PROMPT_TIMEOUT_MIN, _read_discord_prompt_timeout, _read_dm_role_auth_guild,
     _resolve_exec_approval_admin_gate)
 from plugins.platforms.discord.adapter_exec_approval_view import build_exec_approval_view
+from plugins.platforms.discord.adapter_component_auth import opener_refusal
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -1175,10 +1175,11 @@ from plugins.platforms.discord.adapter_authorization import DiscordAuthorization
 from plugins.platforms.discord.adapter_slash_auth import DiscordSlashAuthMixin
 from plugins.platforms.discord.adapter_thread_titles import DiscordThreadTitlesMixin, SemanticThreadRenames
 from plugins.platforms.discord.adapter_voice_info import DiscordVoiceInfoMixin
+from plugins.platforms.discord.adapter_reactions import DiscordReactionsMixin
 
 
 class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin,
-                     DiscordSlashAuthMixin, BasePlatformAdapter):
+                     DiscordSlashAuthMixin, DiscordReactionsMixin, BasePlatformAdapter):
     """Discord bot adapter: guild/DM messages, threads, slash commands, button approvals, reactions."""
 
     MAX_MESSAGE_LENGTH = 2000
@@ -3114,53 +3115,6 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             summary["updated"] += 1
         summary["total"] = len(desired_payloads)
         return summary
-
-    async def _add_reaction(self, message: Any, emoji: str) -> bool:
-        """Add an emoji reaction to a Discord message."""
-        if not message or not hasattr(message, "add_reaction"):
-            return False
-        try:
-            await message.add_reaction(emoji)
-            return True
-        except Exception as e:
-            logger.debug("[%s] add_reaction failed (%s): %s", self.name, emoji, e)
-            return False
-
-    async def _remove_reaction(self, message: Any, emoji: str) -> bool:
-        """Remove the bot's own emoji reaction from a Discord message."""
-        if not message or not hasattr(message, "remove_reaction") or not self._client or not self._client.user:
-            return False
-        try:
-            await message.remove_reaction(emoji, self._client.user)
-            return True
-        except Exception as e:
-            logger.debug("[%s] remove_reaction failed (%s): %s", self.name, emoji, e)
-            return False
-
-    def _reactions_enabled(self) -> bool:
-        """Reactions enabled via ``extra.reactions`` (YAML, per profile) or ``DISCORD_REACTIONS``."""
-        return self._extra_or_env_flag("reactions", "DISCORD_REACTIONS", "true", truthy=False)
-
-    async def on_processing_start(self, event: MessageEvent) -> None:
-        """Add an in-progress reaction and record durable handling state."""
-        message = event.raw_message
-        acked = False
-        if self._reactions_enabled() and hasattr(message, "add_reaction"):
-            acked = await self._add_reaction(message, "👀")
-        await asyncio.to_thread(self._record_discord_processing_start, event, emoji_ack=acked)
-
-    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Swap the in-progress reaction for final reaction and durable state."""
-        await asyncio.to_thread(self._record_discord_processing_complete, event, outcome)
-        if not self._reactions_enabled():
-            return
-        message = event.raw_message
-        if hasattr(message, "add_reaction"):
-            await self._remove_reaction(message, "👀")
-            if outcome == ProcessingOutcome.SUCCESS:
-                await self._add_reaction(message, "✅")
-            elif outcome == ProcessingOutcome.FAILURE:
-                await self._add_reaction(message, "❌")
 
     @staticmethod
     def _message_reference_from_ids(message_id, channel) -> discord.MessageReference:
@@ -5609,7 +5563,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             channel = await self._resolve_channel(_prompt_target_id(chat_id, metadata))
             send_kwargs, view = build(channel)
             if view is not None:
-                view.live_auth = self._component_live_auth
+                view.live_auth, view.answer_extra = self._component_live_auth, getattr(self.config, "extra", None) or {}
             msg = await channel.send(**send_kwargs)
             if view is not None:
                 view._message = msg
@@ -5642,14 +5596,12 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
     # The reason shares the 2000-char content cap with the command; unbounded it would starve
     # the command preview to zero and push the content past the cap.
     _EA_REASON_BUDGET = 300
+    _EA_CARD_CAP = MAX_MESSAGE_LENGTH
 
     def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
         # Mentions ride in front of the content and count against the 2000-char message cap too.
-        fixed = (len(self._EA_HEADER) + len(self._EA_CODE_OPEN) + len(self._EA_CODE_CLOSE)
-                 + len(self._EA_REASON_LABEL) + len(description) + len("...") + len(self._ea_deadline_line())
-                 + (len(self._EA_SMART_DENY_LINE) if smart_denied else 0)
-                 + len(self._approval_mention_content() or "") + 1)
-        return max(0, self.MAX_MESSAGE_LENGTH - fixed)
+        mention = len(self._approval_mention_content() or "") + 1
+        return max(0, super()._exec_approval_cmd_budget(description, smart_denied) - mention)
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Send an approval with content as its canonical payload and an embed for state."""
@@ -5660,7 +5612,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             allowed_role_ids=self._allowed_role_ids, require_admin=require_admin,
             admin_user_ids=admin_user_ids, allow_permanent="always" in choices,
             allow_session="session" in choices, smart_denied=prompt.smart_denied,
-            request_id=prompt.request_id,
+            request_id=prompt.request_id, allow_once="once" in choices, approval_extra=getattr(self.config, "extra", None),
         )
         # Observe BEFORE sending, so a request that settles while the card is in flight still
         # reports its real reason; ``pending_retire`` holds it until the card exists.
@@ -6331,8 +6283,8 @@ def _define_discord_view_classes() -> None:
             super().__init__(timeout=timeout)
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
-            # The adapter's live allowlist check, bound in ``_send_prompt``.
-            self.live_auth = None
+            # The adapter's live allowlist check and platform extra, bound in ``_send_prompt``.
+            self.live_auth, self.answer_extra = None, {}
             self.resolved = False
             self._message = None
 
@@ -6341,13 +6293,20 @@ def _define_discord_view_classes() -> None:
             return _component_check_auth(
                 interaction, self.allowed_user_ids, self.allowed_role_ids, live_auth=self.live_auth)
 
-        async def _gate(self, interaction: discord.Interaction, *, resolved_msg: Optional[str], unauth_msg: str) -> bool:
-            """Reject (ephemerally) an already-resolved or unauthorized click; True when it may proceed."""
+        async def _gate(self, interaction: discord.Interaction, *, resolved_msg: Optional[str], unauth_msg: str, refusal=None) -> bool:
+            """Reject (ephemerally) an already-resolved or unauthorized click, or one ``refusal(user_id)``
+            (``gateway.approval_actor``) names another requester for; True when it may proceed."""
             if resolved_msg is not None and self.resolved:
                 await interaction.response.send_message(resolved_msg, ephemeral=True)
                 return False
             if not self._check_auth(interaction):
                 await interaction.response.send_message(unauth_msg, ephemeral=True)
+                return False
+            denial = opener_refusal(self, interaction)
+            if denial is None and refusal and (requester := refusal(getattr(interaction.user, "id", ""))):
+                denial = refusal_text(requester)
+            if denial is not None:  # someone else's card or prompt: it stays open for its owner
+                await interaction.response.send_message(denial, ephemeral=True)
                 return False
             return True
 
@@ -6428,10 +6387,8 @@ def _define_discord_view_classes() -> None:
                 cancel="platform.discord.slash_confirm.cancel")
 
         async def _resolve(self, interaction: discord.Interaction, choice: str, color: discord.Color, label_key: str):
-            if not await self._gate(
-                interaction, resolved_msg=t("platform.discord.slash_confirm.already_resolved"),
-                unauth_msg=_unauthorized(),
-            ):
+            if not await self._gate(interaction, resolved_msg=t("platform.discord.slash_confirm.already_resolved"), unauth_msg=_unauthorized(),
+                                    refusal=lambda uid: slash_confirm_refusal(self.session_key, self.confirm_id, uid, extra=self.answer_extra)):
                 return
             await self._finalize_embed(
                 interaction, color,
@@ -6465,6 +6422,8 @@ def _define_discord_view_classes() -> None:
     class UpdatePromptView(_HermesView):
         """Yes/No buttons for ``hermes update`` prompts; the answer is written to
         ``.update_response`` for the detached update process to pick up."""
+
+        is_update_prompt = True  # opener_refusal binds it to the /update sender
 
         def __init__(self, session_key: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None):
             super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
@@ -6717,8 +6676,7 @@ def _define_discord_view_classes() -> None:
             self.add_item(select)
 
         async def _on_select(self, interaction: discord.Interaction):
-            if not self._check_auth(interaction):
-                await interaction.response.send_message(_unauthorized(), ephemeral=True)
+            if not await self._gate(interaction, resolved_msg=None, unauth_msg=_unauthorized()):
                 return
             if self.resolved:
                 await interaction.response.defer()
@@ -6819,10 +6777,8 @@ def _define_discord_view_classes() -> None:
 
         async def _resolve_choice(self, interaction: discord.Interaction, index: int, choice: str) -> None:
             """Resolve the clarify with a chosen option."""
-            if not await self._gate(
-                interaction, resolved_msg=t("platform.discord.prompt.clarify_already_answered"),
-                unauth_msg=_unauthorized(),
-            ):
+            if not await self._gate(interaction, resolved_msg=t("platform.discord.prompt.clarify_already_answered"),
+                                    unauth_msg=_unauthorized(), refusal=lambda uid: clarify_refusal(self.clarify_id, uid, extra=self.answer_extra)):
                 return
             display_name = getattr(getattr(interaction, "user", None), "display_name", "user")
             await self._finish(
@@ -6852,10 +6808,8 @@ def _define_discord_view_classes() -> None:
 
         async def _on_other(self, interaction: discord.Interaction) -> None:
             """Flip the clarify entry into text-capture mode."""
-            if not await self._gate(
-                interaction, resolved_msg=t("platform.discord.prompt.clarify_already_answered"),
-                unauth_msg=_unauthorized(),
-            ):
+            if not await self._gate(interaction, resolved_msg=t("platform.discord.prompt.clarify_already_answered"),
+                                    unauth_msg=_unauthorized(), refusal=lambda uid: clarify_refusal(self.clarify_id, uid, extra=self.answer_extra)):
                 return
             # Don't pop: the gateway text-intercept needs the entry until the user types.
             try:

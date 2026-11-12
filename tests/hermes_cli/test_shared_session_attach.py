@@ -246,6 +246,12 @@ def test_the_request_never_discloses_the_lease_id(tmp_path):
         assert "lease_id" not in sent
         assert lease.lease_id not in requests[0]
         assert len(sent["client_proof"][0]) == 64  # hex MAC: proof without disclosure
+        # The documented request MAC, so the server side (#113486) can verify it.
+        assert sent["client_proof"][0] == hmac_mod.new(
+            lease.lease_id.encode(),
+            f"hermes-session-attach-request:quiet:{sent['nonce'][0]}".encode(),
+            hashlib.sha256,
+        ).hexdigest()
     finally:
         lease.release()
         server.shutdown()
@@ -327,11 +333,10 @@ def test_e2e_launch_tui_exits_cleanly_against_a_rogue_listener(tmp_path, monkeyp
         thread.join()
 
 
+@pytest.mark.platforms("posix")  # POSIX file modes
 def test_registry_entries_are_never_readable_by_other_users(tmp_path):
     """The registry carries the lease ids that key the attach MACs, so every
     write must leave the file and its directory closed to other users."""
-    if os.name != "posix":
-        pytest.skip("POSIX file modes only")
     from hermes_cli.active_sessions import _read_entries, _write_entries
 
     lease, error = try_acquire_active_session(
@@ -343,18 +348,18 @@ def test_registry_entries_are_never_readable_by_other_users(tmp_path):
         assert stat.S_IMODE(os.stat(registry).st_mode) & 0o007 == 0
         assert stat.S_IMODE(os.stat(registry.parent).st_mode) & 0o007 == 0
         # An already-loose registry is tightened again on the next write.
+        entries = _read_entries(registry, strict=True)  # reading strips the bits too
         os.chmod(registry, 0o644)
-        _write_entries(registry, _read_entries(registry, strict=True))
+        _write_entries(registry, entries)
         assert stat.S_IMODE(os.stat(registry).st_mode) & 0o007 == 0
     finally:
         lease.release()
 
 
+@pytest.mark.platforms("posix")  # POSIX file modes
 def test_a_loose_registry_is_closed_on_read_without_a_write(tmp_path):
     """Attach discovery only reads: a registry an older build left world-readable
     must not stay readable until some later acquire/release rewrites it."""
-    if os.name != "posix":
-        pytest.skip("POSIX file modes only")
     from hermes_cli.active_sessions import active_session_registry_snapshot
 
     lease, error = try_acquire_active_session(
@@ -372,13 +377,12 @@ def test_a_loose_registry_is_closed_on_read_without_a_write(tmp_path):
         lease.release()
 
 
+@pytest.mark.platforms("posix")  # POSIX file modes
 def test_shared_group_home_keeps_group_access_and_setgid(tmp_path):
     """The NixOS module runs Hermes with UMask 0007 under a setgid 2770 HERMES_HOME so
     hermes-group users share session fencing. Hardening against other users must only
     strip the 'other' bits: squashing to owner-only locks group members out of
     active_sessions.lock, and their CLI/gateway then run with no lease at all."""
-    if os.name != "posix":
-        pytest.skip("POSIX file modes only")
     home = tmp_path / "shared"
     home.mkdir()
     os.chmod(home, 0o2770)
@@ -461,14 +465,13 @@ def test_discovery_refuses_a_relay_that_swaps_the_websocket(tmp_path):
         thread.join()
 
 
+@pytest.mark.platforms("posix")  # POSIX file modes
 def test_discovery_refuses_a_listener_that_reads_the_registry_as_another_user(tmp_path):
     """The informed-listener case: a rogue that forges its proof by reading the
     registry is only as dangerous as the registry's file modes let it be. With
     the registry closed to other users, a listener confined to what other users can read
     (the kernel's rule for a non-owner, simulated here) cannot learn the lease
     id and its forged proof is refused."""
-    if os.name != "posix":
-        pytest.skip("POSIX file modes only")
     import hashlib
     import hmac as hmac_mod
     from urllib.parse import parse_qs, urlsplit

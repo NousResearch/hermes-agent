@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from acp_adapter.gateway_server import GatewayACPAgent
+from hermes_agent.acp_adapter.gateway_server import GatewayACPAgent
 
 ASK, DONT_ASK = {'edit_approval_policy': 'ask'}, {'edit_approval_policy': 'session'}
 
@@ -18,7 +18,7 @@ ASK, DONT_ASK = {'edit_approval_policy': 'ask'}, {'edit_approval_policy': 'sessi
 @pytest.mark.parametrize('attach', ['new', 'load'])
 @pytest.mark.parametrize('lookup', ['model_state', 'provenance_meta'])
 async def test_a_mode_change_while_the_attach_builds_its_reply_reaches_the_reply(attach, lookup, monkeypatch):
-    monkeypatch.setattr('acp_adapter.catalog.logical_session_id', lambda db, held: 's')
+    monkeypatch.setattr('hermes_agent.acp_adapter.catalog.logical_session_id', lambda db, held: 's')
     snapshot = {'session_id': 's', 'messages': [], 'prompts': [], 'pending': [], 'replay_epoch': 'e',
                 'last_sequence': 10, 'execution_generation': 1, 'revision': 1, 'info': dict(ASK)}
 
@@ -41,7 +41,7 @@ async def test_a_mode_change_while_the_attach_builds_its_reply_reaches_the_reply
     def paused_lookup(*args):  # the metadata lookup the attach is waiting on (off the loop)
         paused.set()
         release.wait(5)
-    monkeypatch.setattr(f'acp_adapter.gateway_session_meta.{lookup}', paused_lookup)
+    monkeypatch.setattr(f'hermes_agent.acp_adapter.gateway_session_meta.{lookup}', paused_lookup)
     pump = asyncio.create_task(agent._events())
     attaching = asyncio.create_task(agent.new_session(cwd='/') if attach == 'new'
                                     else agent.load_session(cwd='/', session_id='s'))

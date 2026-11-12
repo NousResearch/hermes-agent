@@ -10,19 +10,19 @@ ACP 适配器将 Hermes 的同步 `AIAgent` 封装为异步 JSON-RPC stdio 服�
 
 关键实现文件：
 
-- `acp_adapter/entry.py`
-- `acp_adapter/server.py`
-- `acp_adapter/session.py`
-- `acp_adapter/events.py`
-- `acp_adapter/permissions.py`
-- `acp_adapter/tools.py`
-- `acp_adapter/auth.py`
+- `hermes_agent/acp_adapter/entry.py`
+- `hermes_agent/acp_adapter/server.py`
+- `hermes_agent/acp_adapter/session.py`
+- `hermes_agent/acp_adapter/events.py`
+- `hermes_agent/acp_adapter/permissions.py`
+- `hermes_agent/acp_adapter/tools.py`
+- `hermes_agent/acp_adapter/auth.py`
 
 ## 启动流程
 
 ```text
-hermes acp / hermes-acp / python -m acp_adapter
-  -> acp_adapter.entry.main()
+hermes acp / hermes-acp / python -m hermes_agent.acp_adapter
+  -> hermes_agent.acp_adapter.entry.main()
   -> parse --version / --check / --setup before server startup
   -> load ~/.hermes/.env
   -> configure stderr logging
@@ -36,7 +36,7 @@ stdout 保留用于 ACP JSON-RPC 传输。人类可读的日志输出至 stderr�
 
 ### `HermesACPAgent`
 
-`acp_adapter/server.py` 实现 ACP agent 协议。
+`hermes_agent/acp_adapter/server.py` 实现 ACP agent 协议。
 
 职责：
 
@@ -48,7 +48,7 @@ stdout 保留用于 ACP JSON-RPC 传输。人类可读的日志输出至 stderr�
 
 ### `SessionManager`
 
-`acp_adapter/session.py` 跟踪活跃的 ACP 会话。
+`hermes_agent/acp_adapter/session.py` 跟踪活跃的 ACP 会话。
 
 每个会话存储：
 
@@ -71,7 +71,7 @@ stdout 保留用于 ACP JSON-RPC 传输。人类可读的日志输出至 stderr�
 
 ### 事件桥接
 
-`acp_adapter/events.py` 将 AIAgent 回调转换为 ACP `session_update` 事件。
+`hermes_agent/acp_adapter/events.py` 将 AIAgent 回调转换为 ACP `session_update` 事件。
 
 已桥接的回调：
 
@@ -87,7 +87,7 @@ asyncio.run_coroutine_threadsafe(...)
 
 ### 权限桥接
 
-`acp_adapter/permissions.py` 将危险终端审批 prompt 适配为 ACP 权限请求。
+`hermes_agent/acp_adapter/permissions.py` 将危险终端审批 prompt 适配为 ACP 权限请求。
 
 映射关系：
 
@@ -99,7 +99,7 @@ asyncio.run_coroutine_threadsafe(...)
 
 ### 工具渲染辅助
 
-`acp_adapter/tools.py` 将 Hermes 工具映射到 ACP 工具类型，并构建面向编辑器的内容。
+`hermes_agent/acp_adapter/tools.py` 将 Hermes 工具映射到 ACP 工具类型，并构建面向编辑器的内容。
 
 示例：
 
@@ -143,7 +143,7 @@ ACP 不实现自己的认证存储。
 
 而是复用 Hermes 的运行时解析器：
 
-- `acp_adapter/auth.py`
+- `hermes_agent/acp_adapter/auth.py`
 - `hermes_cli/runtime_provider.py`
 
 因此 ACP 通告并使用当前配置的 Hermes provider/凭据。它还始终通告一个终端 setup 认证方法（`hermes-setup`，参数 `--setup`），以便首次运行的 ACP 客户端在启动正常 ACP 会话前可以打开 Hermes 的交互式模型/provider 配置。

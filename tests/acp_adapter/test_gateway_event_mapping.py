@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 from acp.schema import AgentPlanUpdate, AllowedOutcome, DeniedOutcome
 
-from acp_adapter.gateway_server import GatewayACPAgent
+from hermes_agent.acp_adapter.gateway_server import GatewayACPAgent
 
 TODOS = [{'id': '1', 'content': 'write the test', 'status': 'completed'},
          {'id': '2', 'content': 'fix the bug', 'status': 'in_progress'},

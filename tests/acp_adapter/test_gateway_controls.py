@@ -1,7 +1,7 @@
 """ACP controls retain generation fences and reject unavailable mutations."""
 import pytest
 
-from acp_adapter.server import HermesACPAgent
+from hermes_agent.acp_adapter.server import HermesACPAgent
 from hermes_cli.gateway_client import GatewayClientError
 from hermes_state import SessionDB
 
@@ -59,7 +59,7 @@ async def test_gateway_acp_catalog_does_not_boot_a_runtime(tmp_path, monkeypatch
 @pytest.mark.asyncio
 async def test_gateway_acp_advertises_every_session_capability_it_implements(tmp_path, monkeypatch):
     """Editors gate fork/list/resume UI on initialize; the gateway projection implements all three."""
-    from acp_adapter.session import SessionManager
+    from hermes_agent.acp_adapter.session import SessionManager
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     gateway = HermesACPAgent()
     in_process = HermesACPAgent(session_manager=SessionManager(agent_factory=object))

@@ -105,7 +105,7 @@ def acp(tmp_path, monkeypatch):
     monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
     provider = _LoopbackProvider()
 
-    import acp_adapter.session as acp_session
+    import hermes_agent.acp_adapter.session as acp_session
     import hermes_cli.config as cli_config
     from hermes_cli import mcp_startup
     from hermes_cli import runtime_provider
@@ -121,8 +121,8 @@ def acp(tmp_path, monkeypatch):
     monkeypatch.setattr(mcp_startup, "ensure_mcp_discovery_before_agent_build", lambda **k: None)
     monkeypatch.setattr(acp_session, "_expand_acp_enabled_toolsets", lambda *a, **k: [])
 
-    from acp_adapter.server import HermesACPAgent, TextContentBlock
-    from acp_adapter.session import SessionManager
+    from hermes_agent.acp_adapter.server import HermesACPAgent, TextContentBlock
+    from hermes_agent.acp_adapter.session import SessionManager
     from hermes_state import SessionDB
 
     db_path = tmp_path / "state.db"
@@ -222,7 +222,7 @@ def test_acp_refusal_is_erased_durably_and_survives_a_reload(acp):
     assert _REFUSED not in {content for _role, content in conversation_rows()}
 
     # A fresh SessionManager (reopen / restart) loads the clean transcript, never the refused ask.
-    from acp_adapter.session import SessionManager
+    from hermes_agent.acp_adapter.session import SessionManager
 
     reloaded = SessionManager(db=db).get_session(sid)
     assert reloaded is not None
@@ -291,8 +291,8 @@ def test_acp_reload_replays_the_refused_ask_and_notice_to_the_editor(acp):
     DB rows — carries the refused ask plus the refusal notice, and still the prior clean exchange.
     """
     from agent.turn_failure_copy import CONTENT_REFUSED_NOTICE
-    from acp_adapter.server import HermesACPAgent
-    from acp_adapter.session import SessionManager
+    from hermes_agent.acp_adapter.server import HermesACPAgent
+    from hermes_agent.acp_adapter.session import SessionManager
 
     provider, prompt, _rows, db, sid, _conn, server = acp
 

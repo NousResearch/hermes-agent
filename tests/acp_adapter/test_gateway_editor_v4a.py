@@ -1,7 +1,7 @@
 """V4A edit cards resolve every referenced path in the session workspace."""
 import pytest
 
-from acp_adapter.edit_approval import build_edit_proposal
+from hermes_agent.acp_adapter.edit_approval import build_edit_proposal
 from gateway.session_policy import build_policy, policy_scope
 
 

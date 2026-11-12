@@ -5,7 +5,7 @@ reading a missing ``admission_id``."""
 import pytest
 from acp.schema import TextContentBlock
 
-from acp_adapter.gateway_server import GatewayACPAgent
+from hermes_agent.acp_adapter.gateway_server import GatewayACPAgent
 
 
 class _VoiceStoppedClient:

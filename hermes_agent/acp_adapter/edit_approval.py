@@ -221,7 +221,7 @@ def make_acp_edit_approval_requester(
 
     def _requester(proposal: EditProposal) -> bool:
         from acp.schema import PermissionOption
-        from acp_adapter.permissions import await_permission, resolve_permission_timeout
+        from hermes_agent.acp_adapter.permissions import await_permission, resolve_permission_timeout
 
         if auto_approve_getter is not None:
             try:

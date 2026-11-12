@@ -11,8 +11,8 @@ import pytest
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 
-import acp_adapter.gateway_server as server
-from acp_adapter.gateway_server import GatewayACPAgent
+import hermes_agent.acp_adapter.gateway_server as server
+from hermes_agent.acp_adapter.gateway_server import GatewayACPAgent
 from hermes_cli.gateway_client import GatewayClient
 
 

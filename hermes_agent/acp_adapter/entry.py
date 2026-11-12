@@ -5,7 +5,7 @@ JSON-RPC), and starts the ACP agent server.
 
 Usage::
 
-    python -m acp_adapter.entry   # or: hermes acp / hermes-acp
+    python -m hermes_agent.acp_adapter.entry   # or: hermes acp / hermes-acp
 """
 
 # IMPORTANT: hermes_bootstrap must be the very first import — UTF-8 stdio
@@ -112,7 +112,7 @@ def _print_version() -> None:
 
 def _run_check() -> None:
     import acp
-    from acp_adapter.server import HermesACPAgent
+    from hermes_agent.acp_adapter.server import HermesACPAgent
 
     print("Hermes ACP check OK")
 

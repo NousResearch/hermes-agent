@@ -14,8 +14,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from acp_adapter.server import HermesACPAgent
-from acp_adapter.session import SessionState
+from hermes_agent.acp_adapter.server import HermesACPAgent
+from hermes_agent.acp_adapter.session import SessionState
 
 
 class _BoomConn:

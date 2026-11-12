@@ -4,8 +4,8 @@ import asyncio
 import acp
 import pytest
 
-from acp_adapter import entry
-from acp_adapter.gateway_server import GatewayACPAgent
+from hermes_agent.acp_adapter import entry
+from hermes_agent.acp_adapter.gateway_server import GatewayACPAgent
 
 
 @pytest.mark.parametrize("crash", [False, True])
@@ -24,7 +24,7 @@ def test_entry_closes_transport_without_discovering_mcp(monkeypatch, crash):
 
     monkeypatch.setattr(entry, "_setup_logging", lambda: None)
     monkeypatch.setattr(entry, "_load_env", lambda: None)
-    monkeypatch.setattr("acp_adapter.server.HermesACPAgent", lambda: agent)
+    monkeypatch.setattr("hermes_agent.acp_adapter.server.HermesACPAgent", lambda: agent)
     monkeypatch.setattr(agent, "aclose", close)
     monkeypatch.setattr(acp, "run_agent", serve)
     monkeypatch.setattr("hermes_cli.mcp_startup.start_background_mcp_discovery",

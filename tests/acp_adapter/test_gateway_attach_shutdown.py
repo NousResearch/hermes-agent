@@ -4,12 +4,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from acp_adapter.gateway_server import GatewayACPAgent
+from hermes_agent.acp_adapter.gateway_server import GatewayACPAgent
 
 
 @pytest.mark.asyncio
 async def test_aclose_stops_a_paused_post_attach_notice_before_it_reconnects(monkeypatch):
-    import acp_adapter.gateway_session_meta as meta
+    import hermes_agent.acp_adapter.gateway_session_meta as meta
     monkeypatch.setattr(meta, 'model_state', lambda info: None)
     monkeypatch.setattr(meta, 'provenance_meta', lambda *args: None)
     connects = []
@@ -18,7 +18,7 @@ async def test_aclose_stops_a_paused_post_attach_notice_before_it_reconnects(mon
         connects.append('after shutdown')
         raise ConnectionRefusedError
 
-    monkeypatch.setattr('acp_adapter.gateway_server.connect_gateway', connect_gateway)
+    monkeypatch.setattr('hermes_agent.acp_adapter.gateway_server.connect_gateway', connect_gateway)
     agent = GatewayACPAgent()
     agent._conn = AsyncMock()
     paused, release = asyncio.Event(), asyncio.Event()

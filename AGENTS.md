@@ -159,7 +159,7 @@ Every former god file is a **facade** (public entry points + the names other pac
 | `tests/` | `tests/AGENTS.md` | runner, placement, OS markers, `wine2e`, banned test shapes |
 | `pm/`, `pyproject.toml` | `pm/AGENTS.md` | pinning policy, PM-owned environments, release-age rule |
 | `hermes_platform/` | `hermes_platform/AGENTS.md` | host facts, resolvers |
-| `acp_adapter/` | `website/docs/developer-guide/acp-internals.md` | ACP server for editors |
+| `hermes_agent/acp_adapter/` | `website/docs/developer-guide/acp-internals.md` | ACP server for editors |
 | `providers/` | `providers/README.md` | `ProviderProfile` registry and ABC |
 
 PR workflow: `CONTRIBUTING.md` (maintainers: the `hermes-agent-dev` skill, not shipped here).

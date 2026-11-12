@@ -186,7 +186,7 @@ authorization model, but the rules below apply uniformly.
 - **Network-exposed HTTP surfaces.** The API server adapter, the
   dashboard plugin, the kanban plugin's HTTP endpoints, and any
   other plugin that binds a listening socket.
-- **Editor / IDE adapters.** The ACP adapter (`acp_adapter/`) and
+- **Editor / IDE adapters.** The ACP adapter (`hermes_agent/acp_adapter/`) and
   equivalent integrations that accept requests from a local client
   process.
 - **The TUI gateway (`tui_gateway/`).** JSON-RPC backend for the

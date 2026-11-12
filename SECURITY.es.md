@@ -183,7 +183,7 @@ modelo de autorización, pero las reglas a continuación se aplican uniformement
 - **Superficies HTTP expuestas en red.** El adaptador del servidor API, el
   plugin del dashboard, los endpoints HTTP del plugin kanban, y cualquier
   otro plugin que vincule un socket de escucha.
-- **Adaptadores de Editor / IDE.** El adaptador ACP (`acp_adapter/`) e
+- **Adaptadores de Editor / IDE.** El adaptador ACP (`hermes_agent/acp_adapter/`) e
   integraciones equivalentes que aceptan solicitudes de un proceso cliente local.
 - **El gateway TUI (`tui_gateway/`).** Backend JSON-RPC para la
   UI de terminal Ink, alcanzado a través de IPC local.

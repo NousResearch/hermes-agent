@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, call
 import acp
 import pytest
 
-from acp_adapter.gateway_server import GatewayACPAgent
+from hermes_agent.acp_adapter.gateway_server import GatewayACPAgent
 from hermes_cli.gateway_client import GatewayClientError
 from tests.waiting import async_wait_until
 

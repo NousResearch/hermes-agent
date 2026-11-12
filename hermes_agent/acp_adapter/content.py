@@ -13,7 +13,7 @@ from acp.schema import (
     ResourceContentBlock, TextContentBlock, TextResourceContents,
 )
 
-logger = logging.getLogger("acp_adapter.server")
+logger = logging.getLogger("hermes_agent.acp_adapter.server")
 
 PromptBlock = (
     TextContentBlock | ImageContentBlock | AudioContentBlock | ResourceContentBlock | EmbeddedResourceContentBlock

@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 import acp
 import pytest
 
-from acp_adapter.gateway_server import GatewayACPAgent
+from hermes_agent.acp_adapter.gateway_server import GatewayACPAgent
 
 COMMENTARY, FINAL = "Let me check the file. ", "FINAL-ANSWER-OMEGA"
 SHAPES = {

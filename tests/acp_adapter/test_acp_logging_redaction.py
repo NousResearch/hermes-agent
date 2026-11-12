@@ -7,7 +7,7 @@ surface that logs request/response internals. See issue #77484.
 
 import logging
 
-from acp_adapter.entry import _setup_logging
+from hermes_agent.acp_adapter.entry import _setup_logging
 
 SECRET = "sk-proj-AbCdEf1234567890SecretValue999"
 

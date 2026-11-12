@@ -4,8 +4,8 @@ from unittest.mock import AsyncMock
 import pytest
 from acp.schema import ToolCallProgress, ToolCallStart
 
-from acp_adapter.gateway_server import GatewayACPAgent
-from acp_adapter.server import _history_replay_updates
+from hermes_agent.acp_adapter.gateway_server import GatewayACPAgent
+from hermes_agent.acp_adapter.server import _history_replay_updates
 
 
 def agent():

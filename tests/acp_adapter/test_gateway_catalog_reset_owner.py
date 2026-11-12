@@ -2,7 +2,7 @@
 from contextlib import closing
 from dataclasses import asdict
 
-from acp_adapter.catalog import catalog_sessions, logical_session_id
+from hermes_agent.acp_adapter.catalog import catalog_sessions, logical_session_id
 from hermes_state import SessionDB
 import hermes_state_runtime as rt
 

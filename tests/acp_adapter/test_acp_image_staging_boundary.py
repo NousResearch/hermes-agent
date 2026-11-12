@@ -31,9 +31,9 @@ def test_acp_image_mime_never_chooses_the_staged_extension(tmp_path, monkeypatch
     """The extension and admitted type come from the sniffed bytes (png/jpeg/gif/webp), never the
     client's declared text: PNG bytes declared as anything stage as ``.png`` / ``image/png``."""
     from acp.schema import ImageContentBlock
-    from acp_adapter.content import _content_blocks_to_openai_user_content
+    from hermes_agent.acp_adapter.content import _content_blocks_to_openai_user_content
     import asyncio
-    from acp_adapter.gateway_media import stage_user_content
+    from hermes_agent.acp_adapter.gateway_media import stage_user_content
     from gateway.platforms import base
     staging = tmp_path / "home" / "cache" / "images"
     staging.mkdir(parents=True)

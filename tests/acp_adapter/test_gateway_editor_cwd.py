@@ -1,7 +1,7 @@
 """Editor diff preparation must use the same cwd as the actual file tool."""
 import pytest
 
-from acp_adapter.edit_approval import (
+from hermes_agent.acp_adapter.edit_approval import (
     maybe_require_edit_approval, set_edit_approval_requester, reset_edit_approval_requester,
 )
 from gateway.session_policy import build_policy, policy_scope

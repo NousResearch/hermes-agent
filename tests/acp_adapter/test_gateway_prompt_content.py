@@ -4,7 +4,7 @@ import base64
 import pytest
 from acp.schema import ImageContentBlock, TextContentBlock
 
-from acp_adapter.gateway_server import GatewayACPAgent
+from hermes_agent.acp_adapter.gateway_server import GatewayACPAgent
 
 _ONE_PX_PNG = bytes.fromhex(
     "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"

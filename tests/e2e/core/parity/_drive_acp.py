@@ -6,7 +6,7 @@ every byte and the shutdown path: ``initialize`` -> ``session/new`` (ACP's
 documented cwd channel) -> ``session/prompt``, collecting
 ``agent_message_chunk`` text from ``session/update`` notifications, then stdin
 EOF — the way an editor host closes the server. ``hermes acp`` runs the turn in
-the profile's gateway daemon (``acp_adapter/gateway_server.py``), so the surface's
+the profile's gateway daemon (``hermes_agent/acp_adapter/gateway_server.py``), so the surface's
 shutdown ends with ``hermes gateway stop``.
 """
 
@@ -29,7 +29,7 @@ from tests.e2e.core.parity._helpers import (
 )
 from tests.fakes.fake_llm_provider import FakeLLMServer
 
-ACP_TOOLSET = "hermes-acp"  # acp_adapter/session.py::_expand_acp_enabled_toolsets default
+ACP_TOOLSET = "hermes-acp"  # hermes_agent/acp_adapter/session.py::_expand_acp_enabled_toolsets default
 EOF_EXIT_TIMEOUT = 30.0
 
 

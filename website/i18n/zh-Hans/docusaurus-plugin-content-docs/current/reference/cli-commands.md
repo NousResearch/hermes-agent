@@ -972,7 +972,7 @@ hermes acp
 
 ```bash
 hermes-acp
-python -m acp_adapter
+python -m hermes_agent.acp_adapter
 ```
 
 首先安装支持：

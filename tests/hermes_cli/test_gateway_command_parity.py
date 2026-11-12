@@ -32,9 +32,9 @@ def test_committed_parity_table_matches_every_client_verdict():
 
 
 def test_acp_column_is_the_table_acp_dispatch_reads(monkeypatch):
-    """ACP's routes have one source (``acp_adapter.gateway_commands.ROUTES``): a route it changes
+    """ACP's routes have one source (``hermes_agent.acp_adapter.gateway_commands.ROUTES``): a route it changes
     changes the documented cell, and a command it drops falls back to the owner's ``slash.exec``."""
-    from acp_adapter import gateway_commands
+    from hermes_agent.acp_adapter import gateway_commands
     gen = _generator()
     assert gen.acp_cell('undo', 'refused') == gateway_commands.ROUTES['undo'][0]
     monkeypatch.setitem(gateway_commands.ROUTES, 'undo', ('moved route', gateway_commands.ROUTES['undo'][1]))

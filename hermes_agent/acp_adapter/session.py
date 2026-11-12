@@ -244,7 +244,7 @@ class SessionManager:
         return results
 
     def _catalog_rows(self) -> dict[str, dict[str, Any]]:
-        from acp_adapter.catalog import read_catalog_rows
+        from hermes_agent.acp_adapter.catalog import read_catalog_rows
         from pathlib import Path
 
         path = Path(self._db_instance.db_path) if self._db_instance is not None else get_hermes_home() / "state.db"

@@ -1,6 +1,6 @@
 """Editor slash commands on the gateway path; each one is an existing gateway verb.
 
-Main served these in-process (``acp_adapter/commands.py``). The reports are the owner's own
+Main served these in-process (``hermes_agent/acp_adapter/commands.py``). The reports are the owner's own
 ``slash.exec`` reads, ``/model``, ``/compress`` and ``/reset`` the retained ``session.mutate``
 controls, ``/steer`` the owner's ``session.steer``; ``/queue`` and an idle ``/steer`` become the
 next prompt, which the session's FIFO runs after any turn in flight. ``/title <name>`` is the
@@ -35,7 +35,7 @@ async def _branch(agent, session_id, command, arg):
 
 
 async def _help(agent, session_id, command, arg):
-    from acp_adapter.gateway_session_meta import help_text
+    from hermes_agent.acp_adapter.gateway_session_meta import help_text
     return help_text(), None
 
 

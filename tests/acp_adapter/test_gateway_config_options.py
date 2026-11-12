@@ -2,12 +2,12 @@
 import pytest
 from acp.schema import ModelInfo, SessionModelState
 
-from acp_adapter.server import HermesACPAgent
+from hermes_agent.acp_adapter.server import HermesACPAgent
 
 
 @pytest.mark.asyncio
 async def test_effort_pick_applies_through_the_reasoning_mutation_and_returns_the_pickers(monkeypatch):
-    monkeypatch.setattr('acp_adapter.gateway_session_meta.model_state', lambda info: SessionModelState(
+    monkeypatch.setattr('hermes_agent.acp_adapter.gateway_session_meta.model_state', lambda info: SessionModelState(
         available_models=[ModelInfo(model_id='openrouter:fixture', name='fixture')], current_model_id='openrouter:fixture'))
     info = {'model': 'fixture', 'provider': 'openrouter', 'reasoning_effort': 'medium'}
     mutations = []
@@ -32,8 +32,8 @@ async def test_effort_pick_applies_through_the_reasoning_mutation_and_returns_th
 
 
 def test_the_effort_picker_offers_default_only_while_no_level_is_set():
-    from acp_adapter.gateway_session_meta import config_options
-    from acp_adapter.modes import DEFAULT_MODE
+    from hermes_agent.acp_adapter.gateway_session_meta import config_options
+    from hermes_agent.acp_adapter.modes import DEFAULT_MODE
 
     def effort(level):
         option = config_options(None, {'reasoning_effort': level}, DEFAULT_MODE)[-1]

@@ -171,6 +171,9 @@ def _model_flow_custom(config):
         if _parsed.port:
             _identity = f"{_identity}_{_parsed.port}"
         custom_key_env = custom_endpoint_key_env(_identity)
+    from hermes_cli.config_worker_save import refuse_ignored_whole_file_save
+    refuse_ignored_whole_file_save()
+    if custom_key_env:
         save_env_value(custom_key_env, effective_key)
         print(f"  API key saved to .env as {custom_key_env}")
 

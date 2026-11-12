@@ -379,6 +379,7 @@ def write_profile_mcp_servers(profile_dir: Path, servers: list) -> int:
     from hermes_cli.config import load_config, save_config
     from hermes_cli.mcp_config import _save_bearer_auth_token
     from hermes_cli.config_backend import CONFIG_MUTATION_LOCK
+    from hermes_cli.config_worker_save import refuse_ignored_whole_file_save
     from hermes_cli.web_server_mcp import normalize_mcp_server_create
     from tui_gateway.launch_profile_policy import profile_config_scope
     written = 0
@@ -395,6 +396,7 @@ def write_profile_mcp_servers(profile_dir: Path, servers: list) -> int:
                     "Profile-create: skipping MCP server '%s': %s", display_name, exc)
                 continue
             if bearer_token is not None:
+                refuse_ignored_whole_file_save()
                 entry["headers"] = _save_bearer_auth_token(name, bearer_token)
             mcp[name] = entry
             written += 1

@@ -298,6 +298,7 @@ def _update_memory_provider_config(provider: ProviderConfigSchema, values: dict[
     writer = _STORAGE_WRITERS.get(provider.storage)
     if writer is None:  # an unknown kind must not fall back to writing a stray flat file
         raise ValueError(f"Memory provider {provider.name} declares unsupported config storage {provider.storage!r}")
+    _submitted_natives(provider, values)
     from hermes_cli.config_worker_save import refuse_ignored_whole_file_save
     if _memory_section(load_config()).get("provider") != provider.name:
         refuse_ignored_whole_file_save()
@@ -464,7 +465,9 @@ def _save_memory_provider_native_config(name: str, provider: Any, values: dict[s
         save_config(cfg)
 
 
-def _write_memory_provider_config_values(name: str, provider: Any, values: dict[str, Any]) -> None:
+def _prepare_memory_provider_config_values(
+    name: str, provider: Any, values: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, str]]:
     existing = _read_memory_provider_existing_values(name)
     fields = _normalize_memory_provider_schema(name, provider)
     fields_by_key = {field["key"]: field for field in fields}
@@ -481,9 +484,19 @@ def _write_memory_provider_config_values(name: str, provider: Any, values: dict[
             continue
         raw = values[key] if key in values else existing.get(key, _field_default(field))
         config_values[key] = _coerce_schema_field(field, raw)
+    return config_values, secrets
+
+
+def _persist_memory_provider_config_values(
+    name: str, provider: Any, config_values: dict[str, Any], secrets: dict[str, str],
+) -> None:
     _save_memory_provider_native_config(name, provider, config_values)
     for env_key, secret in secrets.items():
         save_env_value(env_key, secret)
+
+
+def _write_memory_provider_config_values(name: str, provider: Any, values: dict[str, Any]) -> None:
+    _persist_memory_provider_config_values(name, provider, *_prepare_memory_provider_config_values(name, provider, values))
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -561,9 +574,10 @@ async def update_memory_provider_config(
         provider = _load_memory_provider(name)
         if provider is None:
             raise _unknown_provider(name)
+        prepared = _prepare_memory_provider_config_values(name, provider, values)
         from hermes_cli.config_worker_save import refuse_ignored_whole_file_save
         refuse_ignored_whole_file_save()
-        _write_memory_provider_config_values(name, provider, values)
+        _persist_memory_provider_config_values(name, provider, *prepared)
         _require_memory_provider_ready(name)
         with CONFIG_MUTATION_LOCK:  # RMW span vs. the dashboard's config autosave
             config = load_config()

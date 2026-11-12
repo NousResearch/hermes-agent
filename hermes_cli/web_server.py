@@ -710,8 +710,11 @@ def _spawn_gateway_restart(profile: Optional[str] = None, *, interrupt: bool = F
 
     # ``interrupt``: ``POST /api/gateway/restart`` is the user-commanded force path that supersedes a
     # drain (D6 of the safe-shutdown plan, 19b26244046); a config-save auto-restart is not, and its
-    # child refuses while sessions are live.
-    subcommand = _gateway_mod._gateway_subcommand(profile, "restart") + ["--interrupt"] * interrupt
+    # child refuses while sessions are live. ``--detach``: this child is a short-lived action client,
+    # so without an installed service it must hand off like Desktop's restart (local-gateway.ts) rather
+    # than become the gateway itself; on macOS that bypassed the launchd/osascript launch that keeps
+    # Local Network access (#154220). No older-CLI fallback: the child runs this same checkout.
+    subcommand = _gateway_mod._gateway_subcommand(profile, "restart") + ["--detach"] + ["--interrupt"] * interrupt
     existing = _gateway_mod._ACTION_PROCS.get("gateway-restart")
     if existing is not None and existing.poll() is None:
         existing_command = _gateway_mod._ACTION_COMMANDS.get("gateway-restart")

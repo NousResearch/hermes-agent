@@ -1302,7 +1302,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
 
         def fail_spawn_action(subcommand, name):
             # The default home is named explicitly: a bare child would re-read the sticky active_profile.
-            assert subcommand == ["-p", "default", "gateway", "restart"]
+            assert subcommand == ["-p", "default", "gateway", "restart", "--detach"]
             assert name == "gateway-restart"
             raise RuntimeError("supervisor unavailable")
 

@@ -606,7 +606,7 @@ class TestProfileScopedTelegramOnboarding:
         assert resp.status_code == 200
         assert resp.json()["restart_started"] is True
         assert calls == [
-            (["-p", "worker_beta", "gateway", "restart"], "gateway-restart")
+            (["-p", "worker_beta", "gateway", "restart", "--detach"], "gateway-restart")
         ]
 
         worker_env = (isolated_profiles["worker_beta"] / ".env").read_text()

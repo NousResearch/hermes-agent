@@ -424,7 +424,7 @@ class TestWebhookEndpoints:
             "restart_pid": 4242,
         }
         # The default home is named explicitly: a bare child would re-read the sticky active_profile.
-        assert restart_calls == [(["-p", "default", "gateway", "restart"], "gateway-restart")]
+        assert restart_calls == [(["-p", "default", "gateway", "restart", "--detach"], "gateway-restart")]
         assert load_config()["platforms"]["webhook"]["enabled"] is True
         assert self.client.get("/api/webhooks").json()["enabled"] is True
 

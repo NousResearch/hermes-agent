@@ -19,9 +19,10 @@ const GATEWAY_RESTART_ACTION = 'gateway-restart'
 export const $gatewayRestarting = atom(false)
 
 // Poll a backend action to completion (or a bounded window), throwing on a
-// non-zero exit so the caller can surface the failure. In no-service installs
-// the child becomes the foreground gateway and never exits, so "still running
-// when the window closes" counts as success.
+// non-zero exit so the caller can surface the failure. A no-service backend
+// older than the dashboard's `--detach` restart runs the child as the
+// foreground gateway, which never exits, so "still running when the window
+// closes" counts as success.
 //
 // `gateway-restart` is polled against the very backend the restart takes down:
 // while the old process exits and the new one binds, requests refuse/fail and

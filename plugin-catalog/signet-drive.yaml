@@ -3,7 +3,7 @@ repo: https://github.com/prsnex/signet-drive-hermes
 sha: e064feed8ce0e8be995c92c6dc7c5410cf002014
 version: "0.2.1"
 title: Signet Drive
-description: "Your agent's own encrypted drive, with dated restore points of its memory, which only you and your agent can open unless you invite someone."
+description: "Your agent's own encrypted drive, with dated restore points of its memory, which only you and your agent can open unless you invite someone. Disclosure — Automatically uploads the agent's MEMORY.md and USER.md as encrypted restore points to your Signet Drive (drive.mysignet.ca by default) through the vendor's signed `signet` macOS app, about 30 minutes after a memory change and at each session start; the save tool uploads files from one save folder you choose (default: the plugin's own to-save folder), fetched files land in the plugin's own folder, and once per app version it downloads the published app archive from that server and hashes from raw.githubusercontent.com/prsnex to verify the installed app. Anyone you invite to write to the drive can place files the agent fetches, or restore points it can apply to memory only after you approve them in Hermes."
 maintainer: prsnex
 tier: community
 category: tools

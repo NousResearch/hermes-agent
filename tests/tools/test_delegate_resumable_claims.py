@@ -29,6 +29,83 @@ def _set_row(parent, sid, **cols):
     conn.close()
 
 
+def test_a_resumable_outcome_without_a_durable_record_is_pruned_as_before(tmp_path, monkeypatch):
+    """No record (its write failed): nothing pins the tree, so the stop prunes it as main did."""
+    from hermes_constants import get_hermes_home
+    from tools.delegate_tool import delegate_task
+    from tools.terminal_tool import get_session_cwd, record_session_cwd
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git("init", "-q", "-b", "main", cwd=repo)
+    (repo / "a.txt").write_text("a")
+    _git("add", "a.txt", cwd=repo)
+    _git("commit", "-qm", "init", cwd=repo)
+    (get_hermes_home() / "config.yaml").write_text(json.dumps({"delegation": {"worktree_isolation": True}}))
+    monkeypatch.setattr("tools.delegate_tool_resumable.record_start", lambda run: None)
+    cwds = []
+    model = _FailingModel(resets_at=time.time() + 3600)
+
+    def build(**kw):
+        child = model(**kw)
+        ok = child.run_conversation.side_effect
+
+        def run_conversation(user_message, task_id=None, **rest):
+            cwds.append(get_session_cwd(task_id))
+            return ok(user_message, task_id=task_id, **rest)
+        child.run_conversation.side_effect = run_conversation
+        return child
+
+    parent = _parent()
+    parent._current_task_id = "parent-task"
+    record_session_cwd("parent-task", str(repo))
+    with patch("run_agent.AIAgent", side_effect=build):
+        out = json.loads(delegate_task(tasks=[{"goal": "write the parser"}], background=True, parent_agent=parent))
+        _completion(out["delegation_id"])
+    assert os.path.realpath(cwds[0]) != os.path.realpath(repo)  # isolation engaged
+    assert not os.path.exists(cwds[0])
+
+
+@pytest.mark.parametrize("progress", ["relayed", "none"])
+def test_a_finished_tool_call_checkpoints_the_running_childs_cwd(tmp_path, monkeypatch, progress):
+    """A hard kill between heartbeats still knows where the child was, also for a child with no progress
+    callback at all (no parent callback, live transcript unavailable)."""
+    from tools.delegate_tool import delegate_task
+    if progress == "none":
+        monkeypatch.setattr("tools.delegation_live_log.create_live_transcripts",
+                            lambda tasks, *a, **k: (None, [None] * len(tasks), [None] * len(tasks)))
+    from tools.delegate_tool_routes import child_profile_scope
+    from tools.terminal_tool import record_session_cwd
+
+    moved = tmp_path / "moved"
+    moved.mkdir()
+    model, mid_run = _ScriptedModel(), {}
+    parent = _parent()
+    if progress == "none":
+        parent._delegate_spinner = None  # no spinner and no parent callback: no relay is built
+
+    def build(**kw):
+        child = model(**kw)
+        child.tool_progress_callback = kw.get("tool_progress_callback")  # as AIAgent stores it (None: no relay)
+        ok = child.run_conversation.side_effect
+
+        def run_conversation(user_message, task_id=None, **rest):
+            if progress == "none":
+                assert child.tool_progress_callback is not None  # the checkpoint installed its own
+            with child_profile_scope(child):
+                record_session_cwd(task_id, str(moved))  # the child's terminal cd'd
+            child.tool_progress_callback("tool.completed", "terminal", None, None, duration=0.1)
+            mid_run.update({sid: (state, record.get("cwd")) for sid, (state, _p, record) in _db_rows(parent).items()})
+            return ok(user_message, task_id=task_id, **rest)
+        child.run_conversation.side_effect = run_conversation
+        return child
+
+    with patch("run_agent.AIAgent", side_effect=build):
+        out = json.loads(delegate_task(tasks=[{"goal": "cd"}], background=True, parent_agent=parent))
+        _completion(out["delegation_id"])
+    assert mid_run == {out["subagent_ids"][0]: ("running", os.path.realpath(moved))}
+
+
 @pytest.mark.parametrize("reason", ["billing", None])
 def test_a_resumable_isolated_child_keeps_its_worktree_and_continues_in_it(tmp_path, reason):
     """A usage limit (AUTO_AT) or a provider failure (ON_FIX) keeps the child's isolation tree for the continue."""

@@ -22,7 +22,12 @@ function repaintCommitted(
   model: string,
   provider: string
 ) {
-  deps.updateSessionState(sessionId!, state => ({ ...state, model, ...(provider ? { provider } : {}) }))
+  deps.updateSessionState(sessionId!, state => ({
+    ...state,
+    model,
+    ...(provider ? { provider } : {}),
+    ...(state.pendingModelSelection?.model === target ? { pendingModelSelection: undefined } : {})
+  }))
 
   if (deps.activeSessionIdRef.current === sessionId && $currentModel.get() === target) {
     setCurrentModelTransient(model)
@@ -45,7 +50,9 @@ export function handleDeferredPickEvent(ctx: GatewayEventContext): boolean {
   // Another profile's session can share this id (imports): its outcome is not this composer's.
   const ownSource = fromActiveSource()
   const profile = event.profile ?? deps.activeGatewayProfile
-  const invalidate = () => void deps.queryClient.invalidateQueries({ queryKey: modelOptionsQueryKey(profile, sessionId) })
+
+  const invalidate = () =>
+    void deps.queryClient.invalidateQueries({ queryKey: modelOptionsQueryKey(profile, sessionId) })
 
   if (update.status === 'refused') {
     const model = typeof update.model === 'string' ? update.model : ''
@@ -76,12 +83,21 @@ export function handleDeferredPickEvent(ctx: GatewayEventContext): boolean {
       // The whole selection the owner asked about (its reasoning level included) with the owner's
       // token: the same canonical model mutation the TUI resends.
       requestConfirmed: () =>
-        requestGatewayForAgent(connectionId, profile, 'session.model', { confirm: update.confirm, payload: pick, session_id: sessionId }),
+        requestGatewayForAgent(connectionId, profile, 'session.model', {
+          confirm: update.confirm,
+          payload: pick,
+          session_id: sessionId
+        }),
       finish: invalidate
     }).then(applied => {
       // Declined, or the confirmed resend failed: the committed model is still the session's.
       if (!applied && committed && ownSource) {
-        repaintCommitted(ctx, target, committed, typeof update.committed_provider === 'string' ? update.committed_provider : '')
+        repaintCommitted(
+          ctx,
+          target,
+          committed,
+          typeof update.committed_provider === 'string' ? update.committed_provider : ''
+        )
         invalidate()
       }
     })

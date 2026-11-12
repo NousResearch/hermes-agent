@@ -1,0 +1,5 @@
+interface:
+  display_name: "Improve Codebase Architecture"
+  short_description: "Find and grill architecture improvements"
+policy:
+  allow_implicit_invocation: false

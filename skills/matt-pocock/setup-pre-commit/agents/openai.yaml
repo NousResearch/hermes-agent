@@ -1,0 +1,3 @@
+interface:
+  display_name: "Setup Pre-Commit"
+  short_description: "Add pre-commit quality checks"

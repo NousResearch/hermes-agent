@@ -5,6 +5,7 @@ import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
+import { createBrowserDesktopPluginsBridge } from './browser-desktop-plugins'
 
 // The server half (hermes_cli/web_routers/desktop_plugins.py) is pinned in
 // tests/hermes_cli/test_webapp_desktop_plugins.py; this is the server's answer for one plugin.
@@ -80,5 +81,29 @@ describe('browser-hosted Desktop plugins', () => {
     expect($pluginRecords.get().notes).toMatchObject({ file: `${FOLDER}\\plugin.js`, kind: 'disk', status: 'loaded' })
     expect(register).toHaveBeenCalledTimes(1)
     expect(requested.filter(route => route.startsWith('/api/fs/'))).toEqual([])
+  })
+
+  it('names the desktop halves the server refused, so the install tab does not report them installed', async () => {
+    const api = vi.fn(async () => ({ refused: [{ name: 'radar', reason: 'links are not installed' }], touched: [] }))
+    const files = { readDir: vi.fn(), readFileText: vi.fn() }
+    const bridge = createBrowserDesktopPluginsBridge({ api: api as never, files: files as never })
+
+    await expect(bridge.reconcileDesktopPluginsReport?.()).resolves.toEqual({
+      published: [],
+      refused: [{ name: 'radar', reason: 'links are not installed' }]
+    })
+    expect(api).toHaveBeenCalledWith({ method: 'POST', path: '/api/desktop-plugins/reconcile' })
+  })
+
+  it('treats an older server that only sends touched paths as refusing nothing', async () => {
+    const api = vi.fn(async () => ({ touched: ['/plugins/radar'] }))
+    const files = { readDir: vi.fn(), readFileText: vi.fn() }
+    const bridge = createBrowserDesktopPluginsBridge({ api: api as never, files: files as never })
+
+    await expect(bridge.reconcileDesktopPlugins?.()).resolves.toEqual(['/plugins/radar'])
+    await expect(bridge.reconcileDesktopPluginsReport?.()).resolves.toEqual({
+      published: ['/plugins/radar'],
+      refused: []
+    })
   })
 })

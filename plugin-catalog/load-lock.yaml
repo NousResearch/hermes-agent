@@ -1,0 +1,51 @@
+name: load-lock
+repo: https://github.com/aron98/load-lock
+sha: d473315d5866f1740f633d8f46e82b2c23c19eec
+subdir: plugins/hermes
+title: Load Lock
+description: "A machine-wide load broker for coding agents: Hermes, Claude Code, OpenCode, Codex, Cursor and any MCP client share one heavy-work budget, so builds and test suites take turns instead of thrashing the machine. 19 load_lock_* tools (acquire, queue, offers, honest waits, background jobs that release their permit on exit, machine inspection), a policy brief at session start, a Load Lock dashboard tab, and a Desktop pane, status-bar chip and palette command. Disclosure — every tool shells out to the local load-lock CLI (Node >= 20, installed separately with npm), which auto-starts a per-user background daemon on a Unix socket with state in ~/.local/state/load-lock; load_lock_run_with_permit runs the command the agent passes on this host in its own process group, only when Hermes's terminal backend is local (it refuses under docker, ssh, modal and other sandboxes, resolving the backend via tools.terminal_scope and config), and a pre_tool_call hook sends any command Hermes's dangerous-command detector flags (imported from tools.approval_detection) to the same approval gate as the terminal tool; every child process (CLI, daemon, jobs) gets an allowlisted environment without provider API keys, plus any names the user lists in env_passthrough; machine inspection reads CPU, memory, load and cgroup limits; the optional auto_install setting (off by default) fetches the pinned npm package with npx, a network call to the npm registry; background work: the daemon, a heartbeat thread and job registry in the plugin process, and one idle `load-lock events --follow` tail in the process serving the dashboard; no telemetry, no credentials, no other network calls."
+maintainer: aron98
+tier: community
+category: tools
+version: "1.7.1"
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/aron98/load-lock/tree/main/plugins/hermes#readme
+image: https://raw.githubusercontent.com/aron98/load-lock/d473315d5866f1740f633d8f46e82b2c23c19eec/plugins/hermes/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/aron98/load-lock/d473315d5866f1740f633d8f46e82b2c23c19eec/plugins/hermes/docs/01-desktop-queued.png
+  - https://raw.githubusercontent.com/aron98/load-lock/d473315d5866f1740f633d8f46e82b2c23c19eec/plugins/hermes/docs/02-desktop-done.png
+  - https://raw.githubusercontent.com/aron98/load-lock/d473315d5866f1740f633d8f46e82b2c23c19eec/plugins/hermes/docs/03-pane.png
+  - https://raw.githubusercontent.com/aron98/load-lock/d473315d5866f1740f633d8f46e82b2c23c19eec/plugins/hermes/docs/04-dashboard-tab.png
+platforms: [linux, macos]
+known_issues:
+  - "Needs the load-lock CLI >= 1.7.1: `npm install -g @aron98/load-lock@1.7.1` (Node >= 20). Without it every tool returns a clear error; the auto_install setting (off by default) can fetch the pinned version with npx instead."
+  - "The Desktop pane and status chip ship disabled, like every Desktop half: turn them on once under Capabilities ▸ Plugins."
+  - "Windows has a named-pipe transport that is unit-tested but not yet verified on a Windows machine."
+capabilities:
+  provides_tools:
+  - load_lock_acquire
+  - load_lock_claim
+  - load_lock_release
+  - load_lock_cancel
+  - load_lock_decline
+  - load_lock_rejoin
+  - load_lock_wait_for_turn
+  - load_lock_pending
+  - load_lock_status
+  - load_lock_inspect_machine
+  - load_lock_get_config
+  - load_lock_configure
+  - load_lock_attach_pid
+  - load_lock_mark_started
+  - load_lock_run_with_permit
+  - load_lock_job_status
+  - load_lock_job_stop
+  - load_lock_wait_for_completion
+  - load_lock_agent_guide
+  provides_hooks:
+  - pre_llm_call
+  - post_compaction
+  - on_session_end
+  - pre_tool_call
+  provides_middleware: []
+  requires_env: []

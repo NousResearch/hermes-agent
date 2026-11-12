@@ -9,10 +9,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Optional
 
-from pm.filesystem import long_root, native
+from pm.filesystem import long_root, native, remove_tree, retry_held
 from pm.package import (
     DebPackage,
     InstallError,
@@ -264,7 +265,7 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
         # recorded over the shipped bytes, so a post-publish deletion (as the
         # old bundle-time drop did) makes doctor's re-hash mismatch.
         if target == "win32-arm64":
-            (staged / "vcruntime140_1.dll").unlink(missing_ok=True)
+            retry_held(lambda: (staged / "vcruntime140_1.dll").unlink(missing_ok=True))
         # python-build-standalone's Windows build ships python.exe only, so `python3` (npm and
         # vitest helpers, POSIX-minded scripts) resolves past the activated PATH to the Microsoft
         # Store's App Execution Alias stub, which installs nothing and fails. python.exe is a
@@ -329,6 +330,19 @@ def _uv_lock_digest(path: Path) -> bytes:
 _uv_lock_digest_cache: dict[Path, tuple] = {}
 
 
+def _layout_digest(root: Path) -> bytes:
+    """sha256 of the packaging files, which decide how the core project installs beyond its lock
+    (uv's default ``cache-keys``). A change that moves packages (a new ``packages.find`` ``where``)
+    and leaves uv.lock alone still gets a new environment."""
+    import hashlib
+
+    h = hashlib.sha256()
+    for name in ("pyproject.toml", "setup.py", "setup.cfg"):
+        path = root / name
+        h.update(name.encode() + b"\0" + (path.read_bytes() if path.is_file() else b"") + b"\0")
+    return h.digest()
+
+
 def _copy_seed_file(src: str | os.PathLike, dst: str | os.PathLike) -> str | os.PathLike:
     """Copy one payload cache file unless an earlier seed already copied it whole.
 
@@ -352,6 +366,51 @@ def _copy_seed_file(src: str | os.PathLike, dst: str | os.PathLike) -> str | os.
     return dst
 
 
+def _copy_seed_link(src: str | os.PathLike, dst: str | os.PathLike) -> None:
+    """Recreate one payload cache symlink, healing a directory left by an older seed.
+
+    uv caches a wheel as a symlink into ``archive-v0/``; following it (the
+    ``copytree`` default) leaves a directory where uv later renames its own
+    entry into place, which fails with EISDIR. The payload's targets are
+    relative, so the target is copied verbatim, never resolved.
+    """
+    linkto = os.readlink(src)
+    dst = Path(dst)
+    staging = dst.parent / f".seed-link-{uuid.uuid4().hex}"
+    os.symlink(linkto, staging)
+    try:
+        if dst.is_dir() and not dst.is_symlink():
+            # A pre-fix seed copied the link target's contents here; uv cannot replace it.
+            shutil.rmtree(dst)
+        os.replace(staging, dst)  # atomic: replaces a file or an existing symlink
+    finally:
+        staging.unlink(missing_ok=True)
+
+
+def _seed_tree(src: Path, dst: Path) -> None:
+    """Merge one payload bucket, preserving uv's link entries.
+
+    ``is_symlink()`` must be tested before ``is_dir()``: ``is_dir()`` follows
+    links, and following them is exactly the bug this walker replaced.
+    """
+    dst.mkdir(parents=True, exist_ok=True)
+    for child in src.iterdir():
+        target = dst / child.name
+        if child.is_symlink():
+            _copy_seed_link(child, target)
+        elif child.is_dir():
+            _seed_tree(child, target)
+        else:
+            _copy_seed_file(child, target)
+
+
+def uv_cache_path() -> Path:
+    """Where the hermes-owned uv cache lives; unlike uv_cache_dir(), never seeds or writes."""
+    from hermes_constants import get_default_hermes_root
+
+    return get_default_hermes_root() / "cache" / "uv"
+
+
 def uv_cache_dir() -> Path:
     """The hermes-owned uv cache: machine-scoped and shared (keyed by
     content — two profiles reuse one cache), anchored to the DEFAULT
@@ -362,11 +421,9 @@ def uv_cache_dir() -> Path:
     from it is near-free (probed: 0.4s vs 1.2s cold) — the blow-away-
     on-update contract depends on it. uv's default cache location is
     per-user/platform-opinionated and never used by pm."""
-    from hermes_constants import get_default_hermes_root
-
     from pm.paths import repo_root, store_root
 
-    machine_cache = get_default_hermes_root() / "cache" / "uv"
+    machine_cache = uv_cache_path()
     marker = machine_cache / ".seeded"
     # The marker names the lock whose payload was merged. An update ships a new payload cache for
     # a new lock; a bare "done" marker skipped it forever, so plugin rebuilds fetched the new pins
@@ -378,7 +435,10 @@ def uv_cache_dir() -> Path:
     # seed. Do not drop the suffix: the lock alone cannot tell those two images apart.
     payload_cache = long_root(store_root().parent / "uv-cache")
     if payload_cache.is_dir():
-        seed += "+payload"
+        # The suffix names the seed's copy semantics, not just "a payload exists": it moved to
+        # ``payload2`` when the seed stopped following links, so an existing volume re-runs the
+        # merge once and the directory-shaped entries the old copy left are healed in place.
+        seed += "+payload2"
     try:
         current = marker.read_text(encoding="utf-8-sig").strip() == seed
     except OSError:
@@ -394,14 +454,18 @@ def uv_cache_dir() -> Path:
             if payload_cache.is_dir():
                 seeded = long_root(machine_cache)
                 seeded.mkdir(parents=True, exist_ok=True)
-                for entry in payload_cache.iterdir():
+                # archive-v0 first: a wheel link published before its bucket points at nothing,
+                # for another profile's uv and, if the seed dies there, until the retry.
+                for entry in sorted(payload_cache.iterdir(), key=lambda entry: entry.name != "archive-v0"):
                     if entry.name == ".seeded":
                         continue
                     dest = seeded / entry.name
                     # Merge into whatever an earlier failed or killed seed left: skipping
                     # an existing directory would record that partial copy as complete.
-                    if entry.is_dir():
-                        shutil.copytree(entry, dest, dirs_exist_ok=True, copy_function=_copy_seed_file)
+                    if entry.is_symlink():
+                        _copy_seed_link(entry, dest)
+                    elif entry.is_dir():
+                        _seed_tree(entry, dest)
                     else:
                         _copy_seed_file(entry, dest)
         except OSError as exc:
@@ -417,7 +481,7 @@ def uv_cache_dir() -> Path:
 
 @register
 class Venv(StatePackage):
-    """The project venv: pyproject.toml + uv.lock + enabled extras.
+    """The project venv: pyproject.toml + setup.py + uv.lock + enabled extras.
     Made true by `uv sync --frozen`; uv is its internal dependency."""
 
     name = "venv"
@@ -449,13 +513,14 @@ class Venv(StatePackage):
                   [artifact["sha256"] for artifact in lock.artifacts("python", target)])
         h = hashlib.sha256()
         h.update(_uv_lock_digest(self.project_root() / "uv.lock"))
+        h.update(_layout_digest(self.project_root()))
         h.update(",".join(sorted(extras)).encode())
         h.update(json.dumps(python).encode())
         # Plugin members union into the venv — a changed member set must
         # re-sync even when extras and core lock are unchanged.
-        from pm.workspace import enabled_member_dirs, members_stamp
+        from pm.workspace import build_member_dirs, members_stamp
 
-        h.update(members_stamp(enabled_member_dirs() if plugin_dirs is None else plugin_dirs).encode())
+        h.update(members_stamp(build_member_dirs(extras) if plugin_dirs is None else plugin_dirs).encode())
         return h.hexdigest()
 
     def apply(self, extras: list[str], *, plugin_dirs=None, repair: bool = False, explicit: bool = False,
@@ -467,10 +532,10 @@ class Venv(StatePackage):
         """
         import uuid
         from pm.environments import install_state_dir, runtime_facts_path
-        from pm.environment import managed_environment
+        from pm.environment import managed_environment  # noqa: TID251
         from pm.lock import Facts
         from pm.native_build import source_build_environment
-        from pm.workspace import enabled_member_dirs, lock_and_sync
+        from pm.workspace import build_member_dirs, lock_and_sync
 
         project = self.project_root()
         generation = install_state_dir(project) / "environments" / uuid.uuid4().hex
@@ -483,7 +548,8 @@ class Venv(StatePackage):
             # An update does evict them, loudly: it must not fail on another profile's config.
             from pm.plugins_state import enabled_plugins_ordered
             enabled_plugins_ordered(skip_invalid_secondary=skip_invalid_secondary)
-        members = [] if repair else (enabled_member_dirs() if plugin_dirs is None else plugin_dirs)
+        members = [] if repair else (build_member_dirs(extras, environment.python) if plugin_dirs is None
+                                     else plugin_dirs)
         try:
             generation.mkdir(parents=True)
             (generation / ".lease-managed").touch()
@@ -615,6 +681,23 @@ def npm_env(cache_dir: Path, base_env: Optional[dict] = None) -> dict[str, str]:
     return env
 
 
+def pnpm_env(base_env: Optional[dict] = None) -> dict[str, str]:
+    """pnpm's store, metadata cache and state default to the user's XDG dirs. Keep them
+    Hermes-owned beside the uv cache: shared by every profile, gone with the Hermes root."""
+    from hermes_constants import get_default_hermes_root
+
+    env = dict(os.environ if base_env is None else base_env)
+    root = get_default_hermes_root() / "cache" / "pnpm"
+    for name in ("store", "cache", "state"):
+        key = f"pnpm_config_{name}_dir"
+        # Windows env names are case-insensitive and Python upper-cases inherited ones:
+        # a surviving PNPM_CONFIG_* twin would leave the child's pick between the two undefined.
+        for twin in [k for k in env if k.upper() == key.upper() and k != key]:
+            del env[twin]
+        env[key] = str(root / name)
+    return env
+
+
 @register
 class Npm(BinaryPackage):
     name = "npm"
@@ -701,6 +784,48 @@ class Npm(BinaryPackage):
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
         latest = npm_dist_tags("npm").get("latest")
+        return [latest] if latest else []
+
+
+@register
+class Pnpm(BinaryPackage):
+    """pnpm installs the repo's JS workspaces. pnpm 12 is a native executable
+    (@pnpm/exe.<target>); the `pnpm` package of the same version is only the
+    launcher that downloads it, so pm pins both and keeps the launcher's dist/:
+    the bundled node-gyp the executable looks for beside itself to build
+    dependencies that ship a binding.gyp. Without it a host node-gyp on PATH
+    (or none) would build them."""
+
+    name = "pnpm"
+    # Lifecycle scripts and node-gyp run on the node pm installs.
+    deps = ("node",)
+    binary_rel = {"win32": "pnpm.exe", "posix": "pnpm"}
+    flatten = False
+    # pnpm names its Termux build after the OS, not the libc: a bionic-linked executable.
+    exe_platforms = {"linux-arm64-bionic": "android-arm64"}
+
+    def fetch_urls(self, version: str, target: str) -> list[str]:
+        exe = self.exe_platforms.get(target, target)
+        return [
+            f"https://registry.npmjs.org/@pnpm/exe.{exe}/-/exe.{exe}-{version}.tgz",
+            f"https://registry.npmjs.org/pnpm/-/pnpm-{version}.tgz",
+        ]
+
+    def unpack(self, archive: Path, staged: Path, target: str) -> None:
+        from pm.store import extract
+
+        extract(archive, staged)
+        package = staged / "package"
+        dist = package / "dist"
+        if dist.is_dir():
+            retry_held(lambda: dist.rename(staged / "dist"))
+        else:
+            for item in package.iterdir():
+                retry_held(lambda: item.rename(staged / item.name))
+        retry_held(lambda: remove_tree(package))
+
+    def latest_versions(self, target: str, locked=None) -> list[str]:
+        latest = npm_dist_tags("pnpm").get("latest")
         return [latest] if latest else []
 
 
@@ -936,6 +1061,33 @@ class Ripgrep(BinaryPackage):
 
 
 @register
+class Just(BinaryPackage):
+    """The developer command runner. Activation installs it; user installs and desktop bundles never do."""
+
+    name = "just"
+    optional = True
+    binary_rel = {"win32": "just.exe", "posix": "just"}
+
+    def verify(self, entry: Path, target: str) -> str:
+        if target == "linux-arm64-bionic":
+            return Package.verify(self, entry, target)
+        return super().verify(entry, target)
+
+    def fetch_url(self, version: str, target: str) -> str:
+        if target == "linux-arm64-bionic":
+            target = "linux-arm64"  # This upstream artifact is a static musl executable.
+        triple = _RUST_TRIPLE[target].replace("-unknown-linux-gnu", "-unknown-linux-musl")
+        ext = "zip" if target.startswith("win32") else "tar.gz"
+        return f"https://github.com/casey/just/releases/download/{version}/just-{version}-{triple}.{ext}"
+
+    def known_sha256(self, version: str, url: str) -> Optional[str]:
+        return _github_release_digests("casey/just", version).get(url.rsplit("/", 1)[-1])
+
+    def latest_versions(self, target: str, locked=None) -> list[str]:
+        return github_release_tags("casey/just")
+
+
+@register
 class CuaDriver(BinaryPackage):
     name = "cua-driver"
     optional = True
@@ -1074,12 +1226,49 @@ class Chromium(Package):
         return {"PLAYWRIGHT_BROWSERS_PATH": str(entry.parent)}
 
 
+# A fresh Windows has no MSVCP140.dll; it must be at least the newest MSVC toolset of the binaries it serves.
+_VC_RUNTIME = {
+    "win32-x64": "https://download.visualstudio.microsoft.com/download/pr/3984a6ef-2ffc-4c07-962e-bf9e9b862819/"
+                 "24a1c8dba0376d9b008ac2ba430d13c06664fc6f163511fd7866485030e289af/"
+                 "Microsoft.VC.14.51.CRT.Redist.X64.base.vsix",
+    "win32-arm64": "https://download.visualstudio.microsoft.com/download/pr/3984a6ef-2ffc-4c07-962e-bf9e9b862819/"
+                   "4090d939c83e50ba36a3023bd46c7ea622082fadd88a42bd0a9bba445ff710c8/"
+                   "Microsoft.VC.14.51.CRT.Redist.ARM64.base.vsix",
+}
+
+
+def _unpack_vc_runtime(name: str, archive: Path, staged: Path, target: str) -> None:
+    """The target's redistributable CRT DLLs, flat. The payload also carries debug builds that
+    may not be redistributed, and its ARM64 CRT folder an x64 vcruntime140_1.dll."""
+    import re
+    import zipfile
+
+    from pm.package import machine_matches_binary
+
+    shutil.rmtree(staged, ignore_errors=True)
+    staged.mkdir(parents=True, exist_ok=True)
+    arch = re.escape(target.split("-")[1])
+    member = re.compile(rf"Contents/VC/Redist/MSVC/[^/]+/{arch}/Microsoft\.VC\d+\.CRT/([^/\\]+\.dll)", re.IGNORECASE)
+    with zipfile.ZipFile(archive) as zf:
+        for info in zf.infolist():
+            match = member.fullmatch(info.filename)
+            if match is None:
+                continue
+            dll = staged / match[1].lower()
+            dll.write_bytes(zf.read(info))
+            if machine_matches_binary(dll, target) is False:
+                retry_held(dll.unlink)
+    if not (staged / "msvcp140.dll").is_file():
+        raise InstallError(name, f"{archive.name} carries no {target} msvcp140.dll")
+
+
 class LlamaCpp(BinaryPackage):
     """One llama.cpp backend build. Backends are dlopen'd plugins, so a
     usable engine is one archive per (target, backend) — plus, for CUDA, the
-    cudart archive (end users have no CUDA toolkit), and on Linux the libgomp
-    .deb. Every library lands beside llama-server: Windows resolves DLLs from
-    the executable's directory, and the Linux builds' RUNPATH is $ORIGIN.
+    cudart archive (end users have no CUDA toolkit), on Linux the libgomp
+    .deb, and on Windows Microsoft's VC++ runtime. Every library lands beside
+    llama-server: Windows resolves DLLs from the executable's directory, and
+    the Linux builds' RUNPATH is $ORIGIN.
 
     Backend is a HARDWARE choice, not a target, so each backend is its own
     optional package and the runtime asks for the one this machine can
@@ -1124,10 +1313,11 @@ class LlamaCpp(BinaryPackage):
         return [f"llama-b{version}-bin-{self.assets[target]}.{ext}"]
 
     def fetch_urls(self, version: str, target: str) -> list[str]:
+        runtime = [libs[target] for libs in (self._LIBGOMP, _VC_RUNTIME) if target in libs]
         return [
             f"https://github.com/ggml-org/llama.cpp/releases/download/b{version}/{asset}"
             for asset in self._asset_names(version, target)
-        ] + ([self._LIBGOMP[target]] if target in self._LIBGOMP else [])
+        ] + runtime
 
     def fetch_url(self, version: str, target: str) -> str:
         return self.fetch_urls(version, target)[0]
@@ -1155,6 +1345,8 @@ class LlamaCpp(BinaryPackage):
     def unpack(self, archive: Path, staged: Path, target: str) -> None:
         if archive.name.endswith(".deb"):
             unpack_deb(self.name, archive, staged)
+        elif archive.name.endswith(".vsix"):
+            _unpack_vc_runtime(self.name, archive, staged, target)
         else:
             super().unpack(archive, staged, target)
 
@@ -1297,3 +1489,14 @@ class WhisperCppCpu(BinaryPackage):
     binary_rel = {"win32-arm64": "whisper-cli.exe"}
     probe_args = ["--help"]
     url = "https://github.com/ggml-org/whisper.cpp/releases/download/{version}/whisper-bin-win-cpu-arm64.zip"
+
+    def fetch_urls(self, version: str, target: str) -> list[str]:
+        return [self.fetch_url(version, target), _VC_RUNTIME[target]]
+
+    def unpack(self, archive: Path, staged: Path, target: str) -> None:
+        if archive.name.endswith(".vsix"):
+            _unpack_vc_runtime(self.name, archive, staged, target)
+            return
+        super().unpack(archive, staged, target)
+        # Before the runtime merges in beside Release/, which would leave stage() nothing to hoist.
+        flatten_single_dir(staged)

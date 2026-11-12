@@ -11,7 +11,7 @@ Hermes Agent 具备三层弹性机制，在提供商出现问题时保持会话�
 
 1. **[凭据池](./credential-pools.md)** — 在*同一*提供商的多个 API 密钥之间轮换（优先尝试）
 2. **主模型备用** — 当主模型失败时，自动切换到*不同*的提供商:模型
-3. **辅助任务备用** — 针对视觉、压缩、网页提取等附属任务的独立提供商解析
+3. **辅助任务备用** — 针对视觉、压缩等附属任务的独立提供商解析
 
 凭据池处理同一提供商内的轮换（例如多个 OpenRouter 密钥）。本页介绍跨提供商的备用机制。两者均为可选，且相互独立。
 
@@ -27,7 +27,7 @@ Hermes Agent 具备三层弹性机制，在提供商出现问题时保持会话�
 hermes fallback
 ```
 
-`hermes fallback` 复用 `hermes model` 的提供商选择器——相同的提供商列表、相同的凭据提示、相同的验证流程。使用子命令 `add`、`list`（别名 `ls`）、`remove`（别名 `rm`）和 `clear` 来管理备用链。更改会持久化到 `config.yaml` 顶层的 `fallback_providers:` 列表中。
+`hermes fallback` 复用 `hermes model` 的提供商选择器——相同的提供商列表、相同的凭据提示、相同的验证流程。使用子命令 `add`、`list`（别名 `ls`）、`remove`（别名 `rm`）和 `clear` 来管理备用链，并用 `check` 检查备用链是否可用（`hermes fallback check [--live] [--json]`：逐项按备用切换的同一解析方式检查配置和凭据，`--live` 对每个条目只发送一次最小请求，并在提供商如实报告时核对实际应答的模型；任一条目不可用时退出码为 1，不创建 agent 会话）。更改会持久化到 `config.yaml` 顶层的 `fallback_providers:` 列表中。
 
 如果你更倾向于直接编辑 YAML，可在 `~/.hermes/config.yaml` 中添加 `fallback_model` 部分：
 
@@ -185,7 +185,6 @@ Hermes 为附属任务使用独立的轻量级模型。每个任务都有自己�
 |------|-------------|-----------|
 | 视觉 | 图像分析、浏览器截图 | `auxiliary.vision` |
 | 压缩 | 上下文压缩摘要 | `auxiliary.compression` |
-| Skills Hub | 技能搜索与发现 | `auxiliary.skills_hub` |
 | MCP | MCP 辅助操作 | `auxiliary.mcp` |
 | 审批 | 智能命令审批分类 | `auxiliary.approval` |
 | 标题生成 | 会话标题摘要 | `auxiliary.title_generation` |
@@ -225,10 +224,6 @@ auxiliary:
     api_key: ""                   # base_url 的 API 密钥
 
   compression:
-    provider: "auto"
-    model: ""
-
-  skills_hub:
     provider: "auto"
     model: ""
 
@@ -398,7 +393,6 @@ cronjob(
 | 辅助任务（任意）— 显式提供商 | `fallback_chain`（若已设置）→ 主 Agent 模型 → 警告 + 抛出，仅在容量错误时触发 | `auxiliary.<task>.fallback_chain` |
 | 视觉 | 分层（见上文）+ 内部 OpenRouter 重试 | `auxiliary.vision` |
 | 上下文压缩 | 分层（见上文）；所有层不可用时降级为无摘要 | `auxiliary.compression` |
-| Skills Hub | 分层（见上文） | `auxiliary.skills_hub` |
 | MCP 辅助 | 分层（见上文） | `auxiliary.mcp` |
 | 审批分类 | 分层（见上文） | `auxiliary.approval` |
 | 标题生成 | 分层（见上文） | `auxiliary.title_generation` |

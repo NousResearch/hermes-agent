@@ -1,0 +1,19 @@
+name: mood
+repo: https://github.com/huy-sec/hermes-mood
+sha: 11313ab0a961a1353aa2c7e4fba3c1123f494226
+version: "1.1.0"
+title: Mood
+description: "A tiny evolving mood for Hermes, built for slow local models. Tracks mood, rapport and three slow-moving traits (warmth, playfulness, directness) that change with keyword rules on what the user writes and drift back to neutral over hours, then appends one ~30-token line to each user message through pre_llm_call, so the system prompt and its cache are never touched. Adds a /mood command (show, reset, on, off). Disclosure — makes no model calls, no network I/O, runs no shell commands and holds no credentials; reads the text of each user message and reads/writes only its own plugin-data state file (state.json, per profile)."
+maintainer: huy-sec
+tier: community
+category: general
+docs_url: https://github.com/huy-sec/hermes-mood#readme
+readme: true
+platforms: []
+requires_hermes: ">=0.22.7"
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

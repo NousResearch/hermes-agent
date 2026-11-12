@@ -1,0 +1,19 @@
+name: gsc-magic
+title: GSC Magic
+repo: https://github.com/lumizone/gsc-magic-agent-plugin
+sha: fd566d89589dc5550c1df8204089819b490a0e2e
+version: "1.0.0"
+image: https://raw.githubusercontent.com/lumizone/gsc-magic-agent-plugin/fd566d89589dc5550c1df8204089819b490a0e2e/assets/banner.png
+description: "Google Search Console, Bing Webmaster Tools, Google Analytics 4, IndexNow and Core Web Vitals through GSC Magic's hosted MCP server (Streamable HTTP at https://mcp.gscmagic.com/mcp, OAuth sign-in, no keys in config): search analytics, URL inspection, sitemaps, GA4 reports, CrUX and PageSpeed, plus finished SEO reports (quick wins, traffic drops, content decay, cannibalization, CTR outliers, brand split, index health, Google vs Bing) with optional PNG charts. Bundles the gsc-magic workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: every tool call goes to GSC Magic's hosted server (mcp.gscmagic.com) and reads the user's own connected Google, Bing and GA4 accounts; calls count toward the user's GSC Magic plan and are logged (tool, site, status, time) for 30 days in the user's dashboard; the tool set is served by that server at runtime and is not covered by the pinned sha. Write tools (sitemaps, site management, Bing URL submission, IndexNow) work only on paid plans with write mode turned on, and the package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only and refuses them in unattended runs. Sign-in runs the pinned mcp-remote@0.15.2 through npx (Node.js 20.18.1+ and npm required), which opens a browser and a local callback port on first use and stores OAuth tokens under ~/.mcp-auth; without a stored token, an unattended run fails at Hermes's connect timeout instead of hanging. Users who need longer to sign in, or a headless setup, can replace the server with hermes mcp add gsc-magic --url https://mcp.gscmagic.com/mcp --auth oauth (or a token header) and keep the skill."
+maintainer: GSC Magic
+tier: community
+category: tools
+docs_url: https://github.com/lumizone/gsc-magic-agent-plugin#readme
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

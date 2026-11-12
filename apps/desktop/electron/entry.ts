@@ -75,7 +75,7 @@ const args = wslgLaunchArgs(
 )
 
 if (args) {
-  // Keep the launcher alive until the child exits: npm's concurrently must not
+  // Keep the launcher alive until the child exits: the dev script's concurrently must not
   // tear down Vite during this handoff. No backend, windows or single-instance
   // lock are created in this parent. The child has an explicit platform flag,
   // so it goes straight into main on its first pass.

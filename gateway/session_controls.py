@@ -9,7 +9,7 @@ import sqlite3
 import uuid
 
 from gateway.config import Platform
-from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL, Principal, SessionRef, Submission
+from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL, SessionActor, SessionRef, Submission
 from gateway.session_llm_oneshot import DeferredReply
 from hermes_constants import profile_name_for_home
 from hermes_state_runtime import RuntimeStoreError
@@ -31,7 +31,9 @@ def _refusal_data(exc: RuntimeStoreError) -> dict:
         if isinstance(getattr(exc, key, None), int):
             data[key] = getattr(exc, key)
     if getattr(exc, 'admitted', None) is False:
-        data['admitted'] = False  # nothing admitted yet: the sender may finalize with ``bot_relay.settle``
+        # Nothing of this request was admitted: bot_relay.deliver's sender may finalize with
+        # ``bot_relay.settle``; groups.send's words may come back for editing.
+        data['admitted'] = False
     return data
 
 
@@ -100,13 +102,14 @@ _PROFILE_IMPLICIT = frozenset({'session.create', 'session.list', 'session.info',
                                'approval.respond', 'clarify.respond'})
 
 
-def display_projection(history, profile_home):
+def display_projection(history, profile_home, image_urls=True):
     """Main's TUI display rows for a snapshot's stored rows: the sidecar's own
     ``_history_to_messages`` (compaction handoffs stripped, ``/steer`` unwrapped, tool rows
-    labelled from the paired assistant ``tool_calls``), never a re-implementation."""
+    labelled from the paired assistant ``tool_calls``), never a re-implementation. ``image_urls=False``:
+    image parts read ``[image]``."""
     from tui_gateway import server
     rows = [{**row, '_row_id': row['row_id']} if 'row_id' in row else row for row in history]
-    return server._history_to_messages(rows, profile_home=profile_home)
+    return server._history_to_messages(rows, profile_home=profile_home, image_urls=image_urls)
 
 
 def model_only(row):
@@ -151,7 +154,7 @@ class AuthorityConnection:
                 or identity.get('instance_id', authority.instance_id) != authority.instance_id):
             capabilities = frozenset()
         from gateway.owner_identity import principal_subject
-        self.actor = Principal(principal_subject(identity),
+        self.actor = SessionActor(principal_subject(identity),
                                identity.get('profile_id', authority.profile_id),
                                capabilities, uuid.uuid4().hex)
         from gateway.session_local_migration import bind_native_transport
@@ -160,6 +163,9 @@ class AuthorityConnection:
         self.subscriptions = {}
         # session_id -> (epoch, sequence) the last reconnect replay answered; spent by the next resume.
         self.replay_cursors = {}
+        # Sessions this connection asked to catch up on (``session.events.since``): a reconnect, so its
+        # next ``session.resume`` re-attaches a view the client already had, even when replay needed a snapshot.
+        self.reconnects = set()
         self.handed_back = set()  # sessions this live client detached without closing (the TUI's switcher)
         self._identity, self._operator, self._siblings = identity, operator, {}
         authority.events[self.actor.transport_id] = transport
@@ -221,7 +227,7 @@ class AuthorityConnection:
                     'slash.exec': self.slash_exec, 'command.dispatch': self.command_dispatch,
                     'session.list': self.list_sessions, 'session.info': self.info,
                     'session.mutate': self.mutate, 'bot_relay.deliver': self.bot_deliver,
-                    'bot_relay.settle': self.bot_settle,
+                    'bot_relay.settle': self.bot_settle, 'bot_relay.cancel': self.bot_cancel,
                     'bot_relay.roster.sync': self.bot_roster, 'bot_relay.outbox.drain': self.bot_outbox,
                     'bot_relay.reply': self.bot_reply, 'a2a.forward': self.a2a_forward,
                     'kanban.run': self.kanban_run,
@@ -277,6 +283,8 @@ class AuthorityConnection:
         handlers['session.control'] = partial(control, self)
         from gateway.session_onboarding import handlers as onboarding_handlers
         handlers.update(onboarding_handlers(self))
+        from gateway.session_stored_reads import handlers as stored_read_handlers
+        handlers.update(stored_read_handlers(self))
         return handlers
 
     async def dispatch(self, request):
@@ -344,11 +352,14 @@ class AuthorityConnection:
             # ``_load_gateway_config`` / ``build_policy(get_hermes_home())`` never snapshot the
             # launch profile's config into a served secondary's session. Under a single profile
             # the scope is that profile's own home, so behaviour is unchanged.
-            from gateway.session_authorities import owner_scope
+            from gateway.session_authorities import async_owner_scope
             from gateway.session_connections import METHODS as CONNECTION_METHODS, session_owned
-            with owner_scope(self.authority):
+            from gateway.session_plugin_rpc import call_plugin_rpc, resolve_plugin_rpc
+            async with async_owner_scope(self.authority):
                 if method in GROUP_METHODS or method == 'profiles.list':
                     result = await dispatch_group_control(self, method, params)
+                elif method not in handlers and (plugin := await resolve_plugin_rpc(self, method)) is not None:
+                    return {'jsonrpc': '2.0', 'id': rid, 'result': await call_plugin_rpc(self, ref, method, plugin, params)}
                 elif method not in handlers or (method in CONNECTION_METHODS and not session_owned(params)):
                     # JSON-RPC's own verdict: clients key compat fallbacks on -32601, and a
                     # 4001 'invalid_params' would read as a bad argument on a method that exists.
@@ -419,6 +430,10 @@ class AuthorityConnection:
     async def bot_settle(self, ref, params):
         from gateway.session_bot import settle
         return await settle(self, params)
+
+    async def bot_cancel(self, ref, params):
+        from gateway.session_bot_cancel import cancel
+        return await cancel(self, params)
 
     async def worker_register(self, ref, params):
         from gateway.session_worker import worker_request
@@ -545,7 +560,7 @@ class AuthorityConnection:
         return {'instance_id': self.authority.instance_id, 'profile_id': self.authority.profile_id,
                 'authority_epoch': self.authority.epoch,
                 'capabilities': ['durable-admission-v1', 'event-replay-v1', 'local-cli-create-v1', 'acp-editor-policy-v1',
-                                 'acp-session-mcp-v1', 'clarify-batch-v1'],
+                                 'acp-session-mcp-v1', 'clarify-batch-v1', 'plugin-rpc-v1', 'session-client-v1', 'session-transcript-v1', 'session-list-picker-v1'],
                 'session_create': {'sources': sorted(SURFACES),
                                    'parameters': sorted(CREATE_FIELDS | {'title'})},
                 # Main's ``gateway.ready.skin``: the canonical client's own ready carries it.
@@ -561,19 +576,24 @@ class AuthorityConnection:
     async def list_sessions(self, ref, params):
         if 'session:read' not in self.actor.capabilities:
             raise RuntimeStoreError('permission_denied')
-        limit = params.get('limit', 200)
-        if set(params) - {'limit', 'title', 'include_hidden', 'scope'} or type(limit) is not int or not 1 <= limit <= 200:
+        limit, workspace, picker = params.get('limit', 200), params.get('workspace'), params.get('picker', False)
+        if (set(params) - {'limit', 'title', 'include_hidden', 'scope', 'workspace', 'picker'} or type(limit) is not int
+                or not 1 <= limit <= 200 or (workspace is not None and not (isinstance(workspace, str) and workspace))
+                or type(picker) is not bool):
             raise RuntimeStoreError('invalid_params')
-        if params.get('scope', 'live') not in {'live', 'stored'} or ('title' in params and 'scope' in params):
+        if (params.get('scope', 'live') not in {'live', 'stored'}
+                or ('title' in params and ('scope' in params or workspace is not None or picker))):
             raise RuntimeStoreError('invalid_params')
         if params.get('scope') == 'stored':
             from gateway.session_listing import stored_picker_sessions
             return await asyncio.to_thread(stored_picker_sessions, self.authority, self.actor,
-                limit=limit, include_hidden=params.get('include_hidden', False))
+                limit=limit, include_hidden=params.get('include_hidden', False), workspace=workspace, picker=picker)
         if 'title' in params:
             # Title-as-identity lookup (the Bots roster's forever-chat registry): the same
             # resolver `session.resume title=` uses, so a hidden canonical chat answers here
             # instead of being re-minted. Never confirms another principal's titles.
+            # Deliberately archived rows are skipped inside get_session_by_title /
+            # resolve_session_by_title (#139779); recoverable auto-archives still resolve.
             from gateway.session_local_title import resolve_titled_session
             found = resolve_titled_session(self.authority, self.actor, params['title'], missing_ok=True)
             if found is None:
@@ -604,11 +624,15 @@ class AuthorityConnection:
                              'message_count': row.get('message_count', 0), 'model': row.get('model'),
                              'running': entry.handle.execution_state == 'running'})
         sessions.sort(key=lambda row: row['started_at'] or 0, reverse=True)
-        return {'sessions': sessions[:limit], 'scope': 'live'}
+        from gateway.session_picker_fields import live_picker_page
+        return {'sessions': await asyncio.to_thread(live_picker_page, self.authority, sessions, limit, workspace, picker),
+                'scope': 'live'}
 
     async def resume(self, ref, params):
         from gateway.session_local_inventory import snapshot_info
         replay_from = self.replay_cursors.pop(ref.session_id, None)
+        reconnect = ref.session_id in self.reconnects
+        self.reconnects.discard(ref.session_id)
         requested = ref.session_id
         if 'latest' in params:
             # Bare `-c` / `--resume latest`: the most recent session of that surface family the
@@ -627,7 +651,7 @@ class AuthorityConnection:
                 resolved_id = self.authority.db.resolve_session_id(ref.session_id)
                 if resolved_id is not None:
                     ref = SessionRef(ref.profile_id, resolved_id)
-            from gateway.session_local_migration import resolve_local_target
+            from gateway.session_local_migration import adopts_client_history, resolve_local_target
             from gateway.session_policy_refresh import refresh_settled
             from hermes_state_local_migration import LEGACY_LOCAL_SOURCES
             # Another viewer's refresh mid-cleanup has committed a policy it has not published yet.
@@ -636,7 +660,8 @@ class AuthorityConnection:
             # Canonical LOCAL compression/reset segments keep the receipt on their logical
             # owner, not on the physical transcript ID the history picker / Desktop supplies
             # after list_sessions projects the tip (#139306).
-            if row and row['source'] in LEGACY_LOCAL_SOURCES | {Platform.LOCAL.value}:
+            if row and (row['source'] in LEGACY_LOCAL_SOURCES | {Platform.LOCAL.value}
+                        or adopts_client_history(self.authority, self.actor, row)):
                 ref = resolve_local_target(self.authority, self.actor,
                     self.authority.db.get_compression_tip(ref.session_id) or ref.session_id)
             elif row:
@@ -668,19 +693,32 @@ class AuthorityConnection:
         # ``omit_messages``: the client pages the transcript itself (Desktop over REST), so the attach reads no
         # compression lineage (a whole-lineage read here made every open of a long chat cost seconds).
         omit = params.get('omit_messages') is True
-        snapshot = await self.authority.attach(
-            self.actor, ref, history=not omit, replay_from=replay_from if ref.session_id == requested else None)
-        self.subscriptions[ref.session_id] = snapshot.subscription_id
-        self.handed_back.discard(ref.session_id)
-        self._spawn_notice(ref)
-        # Only local routes have a frozen local launch policy to project; with it, main's banner and
-        # status-bar inventory (tools, skills, MCP, version, branch) for that policy.
-        info = {'desktop_protocol': CANONICAL_GATEWAY_PROTOCOL}
-        source = self.authority.sessions[snapshot.handle.ref.session_id].source
-        if source is not None and source.platform == Platform.LOCAL:
-            from gateway.session_policy import policy_for_source, refresh_profile_hooks
-            await asyncio.to_thread(refresh_profile_hooks, policy_for_source(self.authority.runner, source))
-            info = await snapshot_info(self.authority, snapshot.handle.ref)
+        replay_from = replay_from if ref.session_id == requested else None
+        # A client opening the session (not a poll on its attachment, not a reconnect): the open is queued
+        # before the attach yields, so no turn another viewer submits meanwhile runs ahead of it.
+        opening = None
+        if ref.session_id not in self.subscriptions and not (reconnect and ref.session_id == requested):
+            from gateway.session_open import open_local
+            opening = open_local(self.authority, ref)
+        try:
+            snapshot = await self.authority.attach(self.actor, ref, history=not omit, replay_from=replay_from)
+            self.subscriptions[ref.session_id] = snapshot.subscription_id
+            self.handed_back.discard(ref.session_id)
+            self._spawn_notice(ref)
+            # Only local routes have a frozen local launch policy to project; with it, main's banner and
+            # status-bar inventory (tools, skills, MCP, version, branch) for that policy.
+            info = {'desktop_protocol': CANONICAL_GATEWAY_PROTOCOL}
+            live = self.authority.sessions[snapshot.handle.ref.session_id]
+            if live.source is not None and live.source.platform == Platform.LOCAL:
+                from gateway.session_policy import policy_for_source, refresh_profile_hooks
+                policy = policy_for_source(self.authority.runner, live.source)
+                await asyncio.to_thread(refresh_profile_hooks, policy)
+                if opening is not None:
+                    opening.fire(policy, live.route)
+                info = await snapshot_info(self.authority, snapshot.handle.ref)
+        finally:
+            if opening is not None:  # not fired (a refusal, a messaging lane, a history mount): nothing waits
+                opening.release()
         from gateway.session_connections import pending_connection
         from gateway.session_server_requests import open_requests
         history, display = list(snapshot.history), {}
@@ -732,6 +770,7 @@ class AuthorityConnection:
         if self.subscriptions.get(session_id) == subscription_id:
             del self.subscriptions[session_id]
         (self.handed_back.discard if end_reason else self.handed_back.add)(session_id)
+        self.reconnects.discard(session_id)
         result['detached'] = True
         return result
 
@@ -744,6 +783,11 @@ class AuthorityConnection:
         from gateway.session_server_requests import open_requests
         stream = self.authority.sessions[ref.session_id].event_stream
         replay = stream.since(epoch, sequence)
+        # A read by a viewer holding the session (clarify recovery), or one this connection itself
+        # detached (a backgrounded tab's probe), is no reconnect: its next resume is a real open. A
+        # read from a connection that never held it cannot be told from a reconnect's, and counts as one.
+        if ref.session_id not in self.subscriptions and ref.session_id not in self.handed_back:
+            self.reconnects.add(ref.session_id)
         if not replay['snapshot_required']:
             self.replay_cursors[ref.session_id] = (
                 replay['replay_epoch'], max((frame['seq'] for frame in replay['events']), default=sequence))

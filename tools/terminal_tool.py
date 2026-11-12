@@ -47,7 +47,8 @@ from tools.terminal_tool_lifecycle import (
 from tools.terminal_tool_config import (
     _is_container_backend, _is_host_cwd, _is_mounted_host_cwd, _is_unusable_container_cwd,
     _is_windows_drive_path, _parse_env_var, _plugin_env_flag, _quiet, _safe_getcwd, _tenv, _tenv_bool,
-    _in_sandbox_home, coerce_ssh_remote_cwd, translate_mounted_host_path,
+    _in_sandbox_home, coerce_ssh_remote_cwd, home_profile_name, profile_container_key,
+    translate_mounted_host_path,
 )
 from tools.terminal_tool_backends import (
     _REQUIREMENT_CHECKERS, _VERCEL_SANDBOX_DEFAULT_CWD, _check_plugin_requirements,
@@ -122,8 +123,9 @@ def _container_profile() -> str:
     """Profile whose persistent container a session-bound command uses: the bound home's profile when it is not
     the session's own (a profile-routed subagent runs in its target's home while the session, and the delivery
     identity HERMES_SESSION_PROFILE carries, stay the parent's; that target may be the launch profile, reached
-    from a routed profile's chat), else the session's. A session with no profile name is the launch profile's,
-    so the launch home's own work keeps the session's key whatever the launch profile is named."""
+    from a routed profile's chat), else the session's. A session with no profile name (a gateway launched as a
+    named profile stamps none on its own chats) is the launch profile's, so it keys that profile by name, like
+    the profile's Desktop sessions and its session-less work (:func:`_sessionless_container_key`)."""
     from hermes_constants import get_hermes_home_override, profile_name_for_home
     from tools.environments.local import _is_routed_home
 
@@ -132,7 +134,7 @@ def _container_profile() -> str:
     bound = profile_name_for_home(override) if override else None
     if bound and (bound != session if session else _is_routed_home(override)):
         return bound
-    return session or "default"
+    return session or home_profile_name()
 
 
 from tools.approval import (
@@ -176,8 +178,7 @@ TERMINAL_TOOL_DESCRIPTION = """Run shell commands on the OS/shell/backend named 
 
 Use read_file, search_files, patch and write_file instead of cat/head/tail, grep/find/ls, sed/awk and echo/heredoc. Output is auto-truncated with the full text saved to a file; never pipe through head/tail to shorten it.
 
-Foreground (default) returns as soon as the command finishes. To wait a fixed time, run the wait in the foreground; never background a sleep or polling loop. Background is only for commands that must keep running after this call returns; health-check a server in a separate call and manage jobs with process_manage. When a command changes directory, trust the result's "cwd" instead of prefixing later commands with cd.
-"""
+Foreground (default) returns as soon as the command finishes. To wait a fixed time, run the wait in the foreground; never background a sleep or polling loop. Health-check a background server in a separate call and manage jobs with process_manage. When a command changes directory, trust the result's "cwd" instead of prefixing later commands with cd."""
 
 # Environment lifecycle state.
 _active_environments: dict[str, Any] = {}
@@ -336,6 +337,10 @@ def register_task_env_overrides(task_id: str, overrides: dict[str, Any]):
     (host workspaces are tracked there on purpose); only the live-env write is
     sanitized, since a host cwd can never be a container workdir.
 
+    ``host_workspace`` is host-side only: a Desktop session's own folder when its ``cwd`` is left
+    empty because an unmounted Docker sandbox cannot see it (project tools read it; the terminal
+    never does).
+
     Keyed like ``_session_cwd`` — routed-profile qualified (:func:`_qualify_task_key`) — so two
     profiles registering the same task id never read each other's image/cwd (#123989).
     """
@@ -470,11 +475,28 @@ def _routed_home_task_key(profile_scoped: bool) -> Optional[str]:
         return None
     profile = profile_name_for_home(override) if profile_scoped else None
     if profile:
-        return "default" if profile == "default" else f"profile:{profile}"
+        return profile_container_key(profile)
     try:
         return f"home:{os.path.realpath(override)}"
     except OSError:
         return f"home:{override}"
+
+
+def _sessionless_container_key(profile_scoped: bool) -> str:
+    """Container key when no session is bound (CLI, cron, kanban dispatcher workers).
+
+    A routed home override keeps its existing key. Persistent Docker whose
+    process home is a named profile reuses ``profile:<name>`` — the same key
+    session-bound work of that profile uses. Dispatcher workers set
+    ``HERMES_HOME`` and clear session vars, so they are not a routed override;
+    without this they collapsed onto ``default`` and missed the profile sandbox.
+    The default profile, non-persistent backends, and a home outside the Hermes
+    root stay ``default`` (:func:`~tools.terminal_tool_config.home_profile_name` names the profile).
+    """
+    routed = _routed_home_task_key(profile_scoped)
+    if routed:
+        return routed
+    return profile_container_key(home_profile_name()) if profile_scoped else "default"
 
 
 def _qualify_task_key(key: str) -> str:
@@ -502,15 +524,17 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
        ITS mounts); delegate_task children follow the alias registry to the parent.
        Routed profiles qualify the key (:func:`_qualify_task_key`, #123989).
     3. Session key present (WebUI per-session, gateway per-message): persistent
-       Docker is PROFILE-scoped — ``shared:<key>`` opt-in, else ``profile:<name>``,
-       with the default profile staying literally ``"default"`` so CLI and
+       Docker is PROFILE-scoped — ``shared:<key>`` opt-in, else ``profile:<name>``
+       (a session naming no profile takes the process home's), with the default
+       profile staying literally ``"default"`` so CLI and
        default-profile gateway sessions share ONE container; other backends key
        ``session:<key>`` so switching profiles can't reuse another profile's
        SSHEnvironment on the wrong host.
-    4. No session key (CLI, cron): ``shared:<key>`` when opted in (else a CLI run of a
-       keyed profile would split from its gateway sessions); a routed multiplexed profile
-       keys its own home (``profile:<name>`` under persistent Docker, matching branch 3);
-       else ``"default"``, which subagent ids collapse onto to share the parent's container.
+    4. No session key (CLI, cron, kanban workers): ``shared:<key>`` when opted in
+       (else a CLI run of a keyed profile would split from its gateway sessions); a
+       routed multiplexed profile keys its own home; persistent Docker on a
+       named-profile process reuses ``profile:<name>`` (same sandbox as that
+       profile's session-bound work); else ``"default"``.
     """
     if task_id and _has_isolation_overrides(task_id):
         return _qualify_task_key(task_id)
@@ -521,8 +545,9 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     # the gateway per-message via contextvars), scope the container to it so switching profiles can't reuse
     # a previous profile's SSHEnvironment and silently run commands on the wrong remote host. Subagents
     # inherit the same session key, so they still collapse onto the parent's container (the #16177
-    # shared-container intent). CLI mode has no session key and falls through to "default", behaviour
-    # unchanged. See commit e00f940a9. This runs *after* the isolation-override and
+    # shared-container intent). CLI mode has no session key. A named-profile process
+    # under persistent Docker reuses ``profile:<name>`` (:func:`_sessionless_container_key`);
+    # the default profile still falls through to "default". See commit e00f940a9. This runs *after* the isolation-override and
     # docker/container_persistent branches above: those paths already key containers per task_id, so they
     # stay authoritative where they apply and this only covers the cases that would otherwise collapse to
     # the shared "default" key (notably SSH).
@@ -533,12 +558,10 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
         # ONE container/cache slot (and sandbox dir) regardless of profile name (#84671).
         return f"shared:{shared}"
     if not session_key:
-        return _routed_home_task_key(scope.docker_profile_scoped) or "default"
+        return _sessionless_container_key(scope.docker_profile_scoped)
     if not scope.docker_profile_scoped:
         return _qualify_task_key(f"session:{session_key}")
-    profile = _container_profile()
-    base = "default" if profile == "default" else f"profile:{profile}"
-    return _workspace_container_key(base, task_id)
+    return _workspace_container_key(profile_container_key(_container_profile()), task_id)
 
 
 def workspace_key_for(cwd: str) -> str:
@@ -557,7 +580,9 @@ def _workspace_container_key(base: str, task_id: Optional[str]) -> str:
     A gateway-owned CLI/Desktop session registers its client cwd as a ``cwd_source: "session"``
     override (``gateway.session_policy.bind_turn_workspace``). Keyed by profile alone, every
     concurrent session shared the container bound to whichever workspace created it first; sessions
-    in the same folder still share one. Sessions with no registered workspace keep the profile key.
+    in the same folder still share one. Sessions with no registered workspace keep the profile key,
+    and so does every session while ``docker_mount_cwd_to_workspace`` is off: nothing is bound into
+    the container then, so a workspace must not split the profile's sandbox from its CLI files.
 
     Idempotent: an already-resolved ``<base>:ws:<digest>`` key maps to itself (``ensure_task_env``
     hands the resolved key to ``get_active_env``, which resolves again). A ``delegate_task`` child has
@@ -569,6 +594,10 @@ def _workspace_container_key(base: str, task_id: Optional[str]) -> str:
         return base
     if task_id.startswith(f"{base}:ws:"):
         return task_id
+    # Without the cwd mount nothing is bound into the container: a registered workspace (a
+    # Desktop session's folder) must not split the profile's sandbox from its CLI files.
+    if not _tenv_bool("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false"):
+        return base
     for key in dict.fromkeys((task_id, _resolve_container_alias(task_id))):
         overrides = _task_env_overrides.get(_qualify_task_key(key))
         if not overrides or overrides.get("cwd_source") != "session":
@@ -921,7 +950,7 @@ def _command_requires_pipe_stdin(command: str) -> bool:
 
 from tools.terminal_tool_guards import (
     _foreground_background_guidance, _safe_command_preview, _validate_workdir,
-    gateway_lifecycle_block, self_repo_block, trailing_amp_background_command,
+    gateway_lifecycle_block, locked_skill_block, self_repo_block, trailing_amp_background_command,
 )
 from tools.terminal_tool_background import _YIELDED_NOTE, spawn_background_process, yield_to_background_handler
 from tools.terminal_tool_result import finalize_foreground_result
@@ -1114,6 +1143,9 @@ def _run_approval_guards(command: str, env_type: str, config: dict[str, Any], *,
         )
     if approval.get("smart_approved"):
         return _ApprovalVerdict(note=f"Command was flagged ({desc}) and auto-approved by smart approval.")
+    if approval.get("pre_approved"):
+        from tools.approval_provenance import preapproval_note
+        return _ApprovalVerdict(note=preapproval_note(approval["pre_approved"]))
     return _ApprovalVerdict()
 
 
@@ -1139,7 +1171,7 @@ _PROMOTED_NOTE = (
     "Requested foreground timeout {requested}s exceeds the {cap}s cap, so this command was started as a "
     "tracked background process with notify_on_complete=true instead of being refused. Do NOT re-run it. "
     "Its completion (exit code + output tail) arrives as a notification; poll with "
-    "process(action=\"poll\", session_id=...) if you need it sooner."
+    "process_manage(action=\"poll\", session_id=...) if you need it sooner."
 )
 
 
@@ -1237,7 +1269,7 @@ def _plan_execution(
 _PROMOTED_NOTE_POLL_ONLY = (
     "Requested foreground timeout {requested}s exceeds the {cap}s cap, so this command was started as a "
     "tracked background process instead of being refused. Do NOT re-run it. This session cannot receive "
-    "completion notifications, so poll it with process(action=\"poll\", session_id=...) until it exits."
+    "completion notifications, so poll it with process_manage(action=\"poll\", session_id=...) until it exits."
 )
 
 
@@ -1406,7 +1438,8 @@ def _pre_exec_block(
                            workdir[:200], _safe_command_preview(command))
             raise _Rejected(_error_json(workdir_error, status="blocked"))
     if env_type == "local":
-        blocked = self_repo_block(command=command, cwd=cwd, workdir=workdir, session_key=session_key)
+        blocked = (self_repo_block(command=command, cwd=cwd, workdir=workdir, session_key=session_key)
+                   or locked_skill_block(command=command, cwd=cwd, workdir=workdir, session_key=session_key))
         if blocked:
             raise _Rejected(blocked)
 
@@ -1414,7 +1447,7 @@ def _pre_exec_block(
 _PTY_DISABLED_REASON = (
     "PTY disabled for this command because it expects piped stdin/EOF "
     "(for example gh auth login --with-token). For local background "
-    "processes, call process(action='close') after writing so it receives "
+    "processes, call process_manage(action='close') after writing so it receives "
     "EOF."
 )
 
@@ -1591,13 +1624,10 @@ TERMINAL_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "command": {
-                "type": "string",
-                "description": "The shell command to execute"
-            },
+            "command": {"type": "string"},
             "background": {
                 "type": "boolean",
-                "description": "Keep running after this call returns; returns a session_id.",
+                "description": "Only for commands that must keep running after this call returns; returns a session_id.",
                 "default": False
             },
             "timeout": {
@@ -1679,7 +1709,7 @@ def _handle_terminal(args, **kw):
         if args.get("pty", False):
             return tool_error(
                 "pty requires background=true (a PTY session is interacted "
-                "with via process(action='write'/'submit'), which needs a "
+                "with via process_manage(action='write'/'submit'), which needs a "
                 "tracked background process). Retry as terminal(command=..., "
                 "background=true, pty=true)."
             )
@@ -1726,4 +1756,6 @@ registry.register(
     check_fn=check_terminal_requirements,
     emoji="💻",
     max_result_size_chars=100_000,
+    # ``code`` is the wrong-tool guard (points at execute_code); the other two are the legacy notify interface.
+    compat_args=("code", "notify_on_complete", "watch_patterns"),
 )

@@ -12,6 +12,7 @@ We shim the imports at module load so collection doesn't fail.
 """
 
 import asyncio
+import html
 import json
 import os
 import sys
@@ -819,6 +820,20 @@ class TestSend:
         assert {"key": "choice", "value": "Simple"} in buttons[0]["onClick"]["action"]["parameters"]
         assert buttons[-1]["text"] == t("platform.google_chat.clarify.other_button")
         assert adapter._clarify_state["clarify123"] == "session-key"
+
+        long_choice = "Wrap the output in <b>bold</b> tags & a <br> after every paragraph"
+        await adapter.send_clarify("spaces/S", "Format?", [long_choice, "Plain"], "clarify124", "sk")
+        widgets = adapter._create_message.await_args.args[1]["cardsV2"][0]["card"]["sections"][0]["widgets"]
+        text = widgets[0]["textParagraph"]["text"]
+        assert "1. Wrap the output in &lt;b&gt;bold&lt;/b&gt; tags &amp; a &lt;br&gt; after" in text
+        assert [b["text"] for b in widgets[1]["buttonList"]["buttons"]][:2] == ["1", "2"]
+        # The card's Markdown pass must not fold a literal ``**bold**`` option into ``*bold*``.
+        pair = [f"Write the markdown token {tok} literally in the output file" for tok in ("**bold**", "*bold*")]
+        await adapter.send_clarify("spaces/S", "Format?", pair, "clarify125", "sk")
+        text = adapter._create_message.await_args.args[1]["cardsV2"][0]["card"]["sections"][0]["widgets"][0][
+            "textParagraph"]["text"]
+        listed = [html.unescape(ln.split(". ", 1)[1]) for ln in text.splitlines() if ln[:2] in ("1.", "2.")]
+        assert listed == pair
 
 
 # ===========================================================================

@@ -115,3 +115,32 @@ async def test_card_body_failure_still_sends_the_notice():
     ctx = SimpleNamespace(_status_adapter=_Adapter(), _status_chat_id="c", _status_thread_metadata=None)
     await settle_mod._post_timeout_notice(ctx, "ls", "card-9", 300)
     assert calls == [("send", settle_mod.format_approval_timed_out_notice(300))]
+
+
+@pytest.mark.asyncio
+async def test_timed_out_card_keeps_the_command_and_reason(monkeypatch):
+    """The timeout edit replaces the card, so it must carry the request: command AND why it was flagged."""
+    hooks, edits = _capture_settle(monkeypatch), []
+
+    class _Adapter:
+        def max_message_length_for_chat(self, chat_id):
+            return 4096
+
+        def message_len_fn_for_chat(self, chat_id):
+            return len
+
+        async def edit_message(self, chat_id, message_id, content):
+            edits.append(content)
+            return SimpleNamespace(success=True)
+
+    runner = _Runner(current=True)
+    runner._ctx = SimpleNamespace(session_key="telegram:1", _run_still_current=lambda: True, _status_adapter=_Adapter(),
+                                  _status_chat_id="c", _status_thread_metadata=None)
+    pending = []
+    runner._schedule = lambda coro, label: pending.append(coro)
+    settle_mod.register_timeout_notice(
+        runner, {"request_id": "r4", "description": "delete in root path"}, command="rm -rf /x", card_message_id="9")
+    hooks["r4"]("timeout")
+    await pending[0]
+    (content,) = edits
+    assert "rm -rf /x" in content and "delete in root path" in content

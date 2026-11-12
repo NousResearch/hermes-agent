@@ -76,6 +76,9 @@ def on_tool_execution(**kwargs):
     return result
 ```
 
+As with hooks, a callback without `**kwargs` receives only the fields its
+signature names, so a field added to the payload later does not break it.
+
 If multiple plugins register the same execution middleware kind, Hermes runs
 them as a nested chain in registration order. Middleware failures are fail-open:
 Hermes logs a warning and continues with the next middleware or the base

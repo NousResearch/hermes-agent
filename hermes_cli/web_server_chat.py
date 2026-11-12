@@ -227,8 +227,9 @@ def _ws_auth_reason(ws: WebSocket, *, allow_internal: bool = False,
     user session access token (verified against the dashboard auth session
     providers — the same ``verify_session`` seam the native bearer REST leg
     uses — e.g. a token-mode Remote desktop connection; on the gateway's Webapp
-    only a token that listener gave a native app's sign-in, as for the bearer
-    header, ``webapp_sign_in.token_works_alone``). The legacy in-process
+    only a token that listener gave a native app's sign-in or the deployment
+    session token, as for the bearer header,
+    ``webapp_sign_in.access_token_works_alone``). The legacy in-process
     ``_SESSION_TOKEN`` is rejected in gated mode: a leaked ``_SESSION_TOKEN``
     must not grant access.
 
@@ -324,7 +325,7 @@ def _ws_auth_reason(ws: WebSocket, *, allow_internal: bool = False,
                 # On the gateway's Webapp a browser login's tokens work only as its cookies, which
                 # sign-out ends; only a token this listener gave a native app's sign-in works alone.
                 session = (_verify_access_token(view, access_token=token, audit=False)
-                           if webapp_sign_in.token_works_alone(view, token) else None)
+                           if webapp_sign_in.access_token_works_alone(view, token) else None)
             except ProviderError as exc:
                 # All providers unreachable (IDP outage) — reject without
                 # crashing the upgrade; the REST bearer leg answers 503, and

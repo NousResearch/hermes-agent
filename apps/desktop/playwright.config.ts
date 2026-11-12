@@ -14,7 +14,7 @@ import { defineConfig, type ReporterDescription } from '@playwright/test'
  * artifacts for human review.
  *
  * To update baselines after an intentional UI change:
- *   npx playwright test --update-snapshots
+ *   pnpm exec playwright test --update-snapshots
  */
 const reporters: ReporterDescription[] = [
   ['list'],

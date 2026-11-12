@@ -195,8 +195,10 @@ def main() -> int:
 
     for tui_dir in TUI_CONTEXT_DIRS:
         dirpath = repo_root / tui_dir
-        if not dirpath.exists():
-            continue
+        if not dirpath.is_dir():
+            print(f"{tui_dir} does not exist: update TUI_CONTEXT_DIRS, or this check scans nothing there",
+                  file=sys.stderr)
+            return 2
 
         for py_file in dirpath.rglob("*.py"):
             rel = str(py_file.relative_to(repo_root))

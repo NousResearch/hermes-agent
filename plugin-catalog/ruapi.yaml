@@ -1,7 +1,7 @@
 name: ruapi
 title: RuAPI
 repo: https://github.com/RuAPI-ai/hermes-provider-ruapi
-sha: fbefc615d447729ccf85aec05e0ea27ecc6f3bd9
+sha: 51e7b46ba602ff4ed64a8f5c0a16a967eebca056
 subdir: ruapi
 description: >-
   RuAPI as Hermes model providers on one key: `ruapi` serves Claude models over RuAPI's native

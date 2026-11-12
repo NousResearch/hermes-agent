@@ -491,12 +491,20 @@ def normalize_plist_path_for_comparison(text: str) -> str:
     left the installed plist "current" forever (#144735).
     """
     import re
+    from html import unescape
+
     keep = len(service_path_prefix_entries())
+    managed_node_prefix = str(_gw().get_hermes_home() / "tools" / "node-")
 
     def _mask(match: re.Match[str]) -> str:
         entries = [part for part in match.group(2).split(":") if part]
-        tail = f":{_PLIST_PATH_TAIL}" if len(entries) > keep else ""
-        return f"{match.group(1)}{':'.join(entries[:keep])}{tail}{match.group(3)}"
+        # When facts.json loses its Node entry, the current prefix gets shorter.
+        # Do not relabel a previously managed Node path as disposable shell PATH.
+        protected = keep
+        while protected < len(entries) and unescape(entries[protected]).startswith(managed_node_prefix):
+            protected += 1
+        tail = f":{_PLIST_PATH_TAIL}" if len(entries) > protected else ""
+        return f"{match.group(1)}{':'.join(entries[:protected])}{tail}{match.group(3)}"
 
     normalized = _gw()._normalize_service_definition(text)
     return re.sub(_PLIST_PATH_PATTERN, _mask, normalized, flags=re.DOTALL)

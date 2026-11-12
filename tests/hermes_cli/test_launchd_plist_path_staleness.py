@@ -92,3 +92,21 @@ def test_an_installed_plist_without_the_managed_node_dir_is_stale(monkeypatch, t
     plist_path.write_text(installed.replace(f"{node_dir}:", "", 1), encoding="utf-8")
 
     assert gateway_cli.launchd_plist_is_current() is False
+
+
+def test_removing_managed_node_makes_installed_plist_stale(monkeypatch, tmp_path):
+    """Removing the pm Node record must not hide a still-installed old Node in the PATH tail."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    old_dir = _seed_managed_node(home, "26.7.0")
+    _, installed = _install_plist(monkeypatch, tmp_path, home)
+    assert old_dir in installed
+    assert gateway_cli.launchd_plist_is_current() is True
+
+    # PM forgets Node, while the old download remains on disk: a shorter prefix.
+    (home / "tools" / "facts.json").write_text(
+        json.dumps({"schema": 1, "packages": {}}), encoding="utf-8"
+    )
+    assert old_dir not in gateway_cli.generate_launchd_plist()
+    assert gateway_cli.launchd_plist_is_current() is False

@@ -46,9 +46,10 @@ import { $activeConnectionId } from './connections'
 import { $fleetRoster } from './fleet-roster'
 import { $profiles, normalizeProfileKey } from './profile'
 import { $cronSessions, $messagingSessions, $sessions, sessionMatchesStoredId, sessionPinId } from './session'
-import { $sessionDotStateById } from './session-dot-state'
+import { $sessionDotStateById, sessionDotStateFor } from './session-dot-state'
 import { $sessionStates, runtimeSessionOwner } from './session-states'
 import { $unreadFinishedMarkers } from './session-unread'
+import { $sessionUnreadMutes, isSessionUnreadMuted } from './session-unread-mute'
 
 /** The summary one profile square paints: its loudest state plus the counts
  *  behind it. Priority matches the session-level rank: a profile that needs
@@ -118,7 +119,8 @@ export const $profileDotStateByScope = computed(
     $unreadFinishedMarkers,
     $profiles,
     $fleetRoster,
-    $activeConnectionId
+    $activeConnectionId,
+    $sessionUnreadMutes
   ],
   (dots, states, sessions, messaging, cron, markers, profiles, roster, activeConnectionId) => {
     const tallies = new Map<string, Tally>()
@@ -156,7 +158,7 @@ export const $profileDotStateByScope = computed(
         continue
       }
 
-      const dot = dots[row.id]
+      const dot = sessionDotStateFor(row, dots)
 
       if (dot === 'needs-input' || dot === 'working' || dot === 'unread') {
         claimRow(rowScopeOf(row), dot)
@@ -249,7 +251,9 @@ export const $profileDotStateByScope = computed(
 
       const [connectionId] = connections
 
-      tallyFor(profileDotScopeKey(connectionId, profile)).unread += unmatched.length
+      tallyFor(profileDotScopeKey(connectionId, profile)).unread += unmatched.filter(
+        id => !isSessionUnreadMuted({ id, profile, connection_id: connectionId ?? undefined })
+      ).length
     }
 
     const next: Record<string, ProfileDotSummary> = {}

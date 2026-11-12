@@ -3,6 +3,7 @@ import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { refreshProjectTree } from '@/store/projects'
+import { $sessionUnreadMutes, isSessionUnreadMuted } from '@/store/session-unread-mute'
 
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 
@@ -57,6 +58,8 @@ vi.mock('@/i18n', () => ({
           export: 'Export',
           hideTabBar: 'Hide tab bar',
           markRead: 'Mark as read',
+          muteUnread: 'Mute unread indicators',
+          unmuteUnread: 'Unmute unread indicators',
           pin: 'Pin',
           rename: 'Rename',
           renameDesc: 'Leave empty to clear.',
@@ -95,7 +98,7 @@ vi.mock('@/store/session', () => ({
   $unreadFinishedSessionIds: atom<string[]>([]),
   markSessionRead: vi.fn(),
   sessionMatchesStoredId: vi.fn(() => false),
-  sessionPinId: vi.fn((s: { id: string }) => s.id),
+  sessionPinId: vi.fn((s: { id: string; _lineage_root_id?: string }) => s._lineage_root_id || s.id),
   setSessions: vi.fn()
 }))
 vi.mock('@/store/session-color', () => ({
@@ -128,6 +131,36 @@ function renderMenu() {
 }
 
 describe('SessionActionsMenu', () => {
+  it('toggles unread muting through the real menu without marking read or stopping work', async () => {
+    $sessionUnreadMutes.set({})
+    const target = { id: 'helper-tip', _lineage_root_id: 'helper-root', profile: 'background', connection_id: 'server' }
+    render(
+      <SessionActionsMenu profile="background" sessionId="helper-tip" title="Helper" unreadMuteTarget={target}>
+        <button aria-label="Session actions" type="button">
+          ⋮
+        </button>
+      </SessionActionsMenu>
+    )
+
+    const open = () => {
+      const trigger = screen.getByRole('button', { name: 'Session actions' })
+      fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+      fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+      fireEvent.click(trigger)
+    }
+
+    const { markSessionRead } = await import('@/store/session')
+    vi.mocked(markSessionRead).mockClear()
+    open()
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Mute unread indicators' }))
+    expect(isSessionUnreadMuted(target)).toBe(true)
+    expect(markSessionRead).not.toHaveBeenCalled()
+    open()
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Unmute unread indicators' }))
+    expect(isSessionUnreadMuted(target)).toBe(false)
+    $sessionUnreadMutes.set({})
+  })
+
   it('opens the dropdown on click', async () => {
     renderMenu()
 

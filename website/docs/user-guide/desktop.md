@@ -312,6 +312,22 @@ If Desktop closes before an image message is acknowledged, reopen its original c
 
 The **Artifacts** view collects what your sessions generate — **images, files, and links** — into one searchable, browsable gallery. Open it from the sidebar, the command palette (**Artifacts — Browse generated outputs**), or a `nav.artifacts` shortcut you bind yourself. It indexes recent session outputs automatically; every artifact shows which session produced it with a jump back to that chat, and images and files open in a preview with download / open-in-browser / copy actions.
 
+### Muting a session's unread indicators
+
+For a background or helper session you want to keep running without accumulating
+unread indicators, open its **⋯** menu or right-click the session and choose
+**Mute unread indicators**. This hides its green unread dot and excludes it from
+unread badges and the profile's unread rollup. Running status and prompts that
+need your input (including approvals) remain visible; the session keeps working.
+
+Choose **Unmute unread indicators** in the same menu to restore the indicators.
+Muting does **not** mark messages as read: unmuting can reveal unread activity
+accumulated while muted. The preference persists in this client's local storage,
+scoped to the connection, profile and conversation lineage, including after
+context compression. It is shared by the Webapp/Desktop frontend, but is not
+synced between separate browsers or installations. It does not mute sounds,
+OS notifications or other clients' notifications.
+
 ### Windows, tabs & panes
 
 The app is built for working on several things at once:

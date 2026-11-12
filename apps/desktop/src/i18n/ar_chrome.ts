@@ -304,6 +304,8 @@ export const arChrome = {
       unpin: 'إلغاء التثبيت',
       markUnread: 'وضع علامة كغير مقروء',
       markRead: 'وضع علامة كمقروء',
+      muteUnread: 'إخفاء مؤشرات غير المقروء',
+      unmuteUnread: 'إظهار مؤشرات غير المقروء',
       unreadFailed: 'تعذر تحديث حالة القراءة',
       copyId: 'نسخ المعرف',
       export: 'تصدير',

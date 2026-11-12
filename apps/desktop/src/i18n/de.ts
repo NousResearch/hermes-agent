@@ -3705,6 +3705,8 @@ export const deOverrides = {
       unpin: 'Lösen',
       markUnread: 'Als ungelesen markieren',
       markRead: 'Als gelesen markieren',
+      muteUnread: 'Ungelesen-Anzeigen ausblenden',
+      unmuteUnread: 'Ungelesen-Anzeigen einblenden',
       unreadFailed: 'Ungelesen-Status konnte nicht aktualisiert werden',
       copyId: 'ID kopieren',
       export: 'Exportieren',

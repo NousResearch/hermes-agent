@@ -3693,6 +3693,8 @@ export const esOverrides = {
       unpin: 'Desfijar',
       markUnread: 'Marcar como no leído',
       markRead: 'Marcar como leído',
+      muteUnread: 'Ocultar indicadores de no leído',
+      unmuteUnread: 'Mostrar indicadores de no leído',
       unreadFailed: 'No se pudo actualizar el estado de no leído',
       copyId: 'Copiar ID',
       export: 'Exportar',

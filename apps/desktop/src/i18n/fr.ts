@@ -3712,6 +3712,8 @@ export const frOverrides = {
       unpin: 'Désépingler',
       markUnread: 'Marquer comme non lue',
       markRead: 'Marquer comme lue',
+      muteUnread: 'Masquer les indicateurs de non-lu',
+      unmuteUnread: 'Afficher les indicateurs de non-lu',
       unreadFailed: "Impossible de mettre à jour l'état de lecture",
       copyId: "Copier l'ID",
       export: 'Exporter',

@@ -31,7 +31,7 @@ import { normalizeProfileKey } from '@/store/profile'
 import { $projects } from '@/store/projects'
 import { $pullRequestsByBranch, sessionPrKey } from '@/store/pull-requests'
 import { sessionPinId } from '@/store/session'
-import { $sessionDotStateById, hasLiveTurn, showsRunningArc } from '@/store/session-dot-state'
+import { $sessionDotStateById, hasLiveTurn, sessionDotStateFor, showsRunningArc } from '@/store/session-dot-state'
 import { $sessionListDensity } from '@/store/session-list-density'
 import { $openStoredSessionIds } from '@/store/session-states'
 import { sessionCostUsd } from '@/store/sidebar-archive'
@@ -259,7 +259,7 @@ function SidebarSessionRowImpl({
   // The same resolved state the row's dot paints, so the arc and the dot cannot
   // contradict each other. A selector, not a plain useStore: the map is rebuilt
   // whenever any session's status changes, but a row only repaints on its own.
-  const dotState = useStoreSelector($sessionDotStateById, states => states[session.id] ?? 'idle')
+  const dotState = useStoreSelector($sessionDotStateById, states => sessionDotStateFor(session, states))
   const liveTurn = hasLiveTurn(dotState)
 
   // Card header line: the workspace this belongs to — the project when it
@@ -299,6 +299,21 @@ function SidebarSessionRowImpl({
   // against it. In the card it renders INSIDE the header row instead — the
   // shell column would span the card's full height and shave every line,
   // when only the header shares its line with the age and kebab.
+  const menuActions = {
+    archived: Boolean(session.archived),
+    onArchive,
+    onBranch,
+    onDelete,
+    onPin,
+    onToggleUnread,
+    pinned: isPinned,
+    profile: session.profile,
+    sessionId: session.id,
+    title,
+    unread,
+    unreadMuteTarget: session
+  }
+
   const actionsNode = (
     <div
       className="relative z-2 flex shrink-0 items-center justify-end gap-1"
@@ -325,19 +340,7 @@ function SidebarSessionRowImpl({
           {node}
         </span>
       ))}
-      <SessionActionsMenu
-        archived={Boolean(session.archived)}
-        onArchive={onArchive}
-        onBranch={onBranch}
-        onDelete={onDelete}
-        onPin={onPin}
-        onToggleUnread={onToggleUnread}
-        pinned={isPinned}
-        profile={session.profile}
-        sessionId={session.id}
-        title={title}
-        unread={unread}
-      >
+      <SessionActionsMenu {...menuActions}>
         <Button
           aria-label={r.sessionActions}
           className={cn(
@@ -356,19 +359,7 @@ function SidebarSessionRowImpl({
   )
 
   return (
-    <SessionContextMenu
-      archived={Boolean(session.archived)}
-      onArchive={onArchive}
-      onBranch={onBranch}
-      onDelete={onDelete}
-      onPin={onPin}
-      onToggleUnread={onToggleUnread}
-      pinned={isPinned}
-      profile={session.profile}
-      sessionId={session.id}
-      title={title}
-      unread={unread}
-    >
+    <SessionContextMenu {...menuActions}>
       <SidebarRowShell
         actions={card ? undefined : actionsNode}
         className={cn(

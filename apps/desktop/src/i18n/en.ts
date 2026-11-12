@@ -3261,6 +3261,8 @@ export const en: Translations = {
       unpin: 'Unpin',
       markUnread: 'Mark as unread',
       markRead: 'Mark as read',
+      muteUnread: 'Mute unread indicators',
+      unmuteUnread: 'Unmute unread indicators',
       unreadFailed: 'Could not update unread state',
       copyId: 'Copy ID',
       export: 'Export',

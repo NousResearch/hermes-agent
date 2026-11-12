@@ -40,7 +40,6 @@ import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
 import type { SessionInfo } from '@/types/hermes'
 
-import { dropStatusDrawersForProfile, migrateStatusDrawersForProfile } from './composer-status-drawer'
 import { registryConnectionKind } from './connection-registry-state'
 import { recordDislike } from './desktop-metrics'
 import { dialedGatewayModeFor } from './gateway'
@@ -52,8 +51,8 @@ import {
   setPreviewScope
 } from './preview'
 import { forgetPendingRuntimeTabs } from './preview-ownership'
-import { dropPreviewArtifactsForProfile, migratePreviewArtifactsForProfile } from './preview-status'
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
+import { dropProfilePresentation, migrateProfilePresentation } from './profile-presentation'
 import { $projectTree } from './project-tree'
 import { clearAllProviderWaits, clearSessionProviderWait } from './provider-wait'
 import {
@@ -2710,8 +2709,7 @@ export function dropTilesForProfile(
   }
 
   const name = normalizeProfileKey(profile)
-  dropPreviewArtifactsForProfile(name, route)
-  dropStatusDrawersForProfile(name, route)
+  dropProfilePresentation(name, route, tileConnectionId || LOCAL_CONNECTION_ID)
   // Route fields go through the SAME canonicalization as `name` below — a
   // source-scoped delete must not be defeated by stray whitespace around a
   // profile name that a non-route delete trims away.
@@ -2857,8 +2855,7 @@ export function migrateTilesForProfile(oldProfile: string, newProfile: string): 
   migrateTranscriptTailsForProfile(from, to)
   migrateRememberedNavigationForProfile(from, to)
   migrateSessionOwnerHintsForProfile(from, to)
-  migratePreviewArtifactsForProfile(from, to)
-  migrateStatusDrawersForProfile(from, to)
+  migrateProfilePresentation(from, to)
   // Sibling family: the rail's profile-keyed buckets move with the rename, or
   // the renamed profile opens with an empty rail and the old name keeps them.
   migratePreviewTabsForProfile(from, to)

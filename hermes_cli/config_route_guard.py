@@ -15,6 +15,12 @@ from hermes_cli.colors import Colors, color
 _AUX_KEY_FIELDS = ("api_key", "key_env", "api_key_env")
 
 
+def _safe(value: Any) -> str:
+    """A route value fit for the terminal: userinfo and credential query params masked."""
+    from agent.redact import redact_sensitive_text
+    return redact_sensitive_text(str(value), force=True, redact_url_credentials=True)
+
+
 def stale_route_notice(user_config: dict, dotted_key: str, value: Any) -> str:
     """Drop the route keys a previous provider left in the block *dotted_key* re-points, and
     return the notice line describing what happened ('' when there is nothing to say).
@@ -38,14 +44,18 @@ def stale_route_notice(user_config: dict, dotted_key: str, value: Any) -> str:
             block = candidate if isinstance(candidate, dict) else None
     if not isinstance(block, dict):
         return ""
-    old_provider = str(block.get("provider") or "").strip() or "the previous provider"
-    if old_provider.lower() == str(value).strip().lower():
+    raw_old = str(block.get("provider") or "").strip()
+    old_provider = raw_old or "the previous provider"
+    if raw_old.lower() == str(value).strip().lower():
         return ""
     from hermes_cli.route_identity import drop_stale_model_route
     popped, unverified = drop_stale_model_route(block, value, user_config)
     prefix = ".".join(parts[:-1])
     dropped_keys: list[str] = []
-    if parts[0].lower() == "auxiliary" and not unverified and not block.get("base_url"):
+    # From an unset/auto provider with no route to drop, there is no old endpoint: a key the
+    # user just set (``config set ….api_key K`` then ``….provider P``) belongs to P.
+    no_old_endpoint = not popped and raw_old.lower() in ("", "auto")
+    if parts[0].lower() == "auxiliary" and not unverified and not no_old_endpoint and not block.get("base_url"):
         # The aux resolver hands a block's api_key/key_env to whatever provider it names, so with
         # the old route gone the old endpoint's key would go to the new provider. Names only:
         # the values are secrets.
@@ -53,13 +63,13 @@ def stale_route_notice(user_config: dict, dotted_key: str, value: Any) -> str:
         for k in dropped_keys:
             block.pop(k)
     if popped or dropped_keys:
-        cleared = [f"{prefix}.{k} ({v})" for k, v in popped.items()] + [f"{prefix}.{k}" for k in dropped_keys]
+        cleared = [f"{prefix}.{k} ({_safe(v)})" for k, v in popped.items()] + [f"{prefix}.{k}" for k in dropped_keys]
         return ("  Cleared " + ", ".join(cleared)
                 + f" — that route belonged to {old_provider}, not {value}. {value}'s endpoint resolves "
                 f"automatically; set {prefix}.base_url again if you meant a custom endpoint.")
     if unverified:
         return color(
-            f"⚠ {prefix}.base_url ({block.get('base_url')}) was set under {old_provider} and "
+            f"⚠ {prefix}.base_url ({_safe(block.get('base_url'))}) was set under {old_provider} and "
             f"still applies to {value} — requests go there. If it is not {value}'s endpoint: "
             f"`hermes config unset {prefix}.base_url` (and {prefix}.api_mode).", Colors.YELLOW)
     return ""

@@ -164,6 +164,12 @@ def _save_aux_choice(task: str, *, provider: str, model: str = "", base_url: str
         provider = "" if provider == "auto" else provider
     else:
         entry = _ensure_dict_section(_ensure_dict_section(cfg, "auxiliary"), task)
+    prev_route = (str(entry.get("provider") or "").strip().lower(), str(entry.get("base_url") or "").strip())
+    if prev_route != (provider.strip().lower(), (base_url or "").strip()):
+        # A new route must not inherit the old one's key_env/api_key_env/api_mode: the aux
+        # resolver hands them to whatever provider/base_url the block now names (#141832).
+        from hermes_cli.config import clear_model_endpoint_credentials
+        clear_model_endpoint_credentials(entry)
     entry["provider"] = provider
     entry["model"] = model or ""
     entry["base_url"] = base_url or ""

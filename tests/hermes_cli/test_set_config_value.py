@@ -1184,3 +1184,20 @@ class TestAuxiliaryProviderSwitchClearsStaleRoute:
         vision = yaml.safe_load(_read_config(_isolated_hermes_home))["auxiliary"]["vision"]
         assert vision == {"provider": "anthropic"}
         assert "auxiliary.vision.api_key" in capsys.readouterr().out
+
+    def test_key_set_before_first_provider_is_kept(self, _isolated_hermes_home):
+        # No previous provider and no route: the key just set belongs to the provider set next.
+        # The key itself lives in .env; config.yaml keeps its reference (#77471).
+        self._seed(_isolated_hermes_home, {"vision": {"provider": "auto"}})
+        set_config_value("auxiliary.vision.api_key", "sk-new")
+        set_config_value("auxiliary.vision.provider", "anthropic")
+        vision = yaml.safe_load(_read_config(_isolated_hermes_home))["auxiliary"]["vision"]
+        assert vision == {"provider": "anthropic", "api_key": "${AUXILIARY_VISION_API_KEY}"}
+        assert "AUXILIARY_VISION_API_KEY=sk-new" in _read_env(_isolated_hermes_home)
+
+    def test_notice_masks_url_credentials(self, _isolated_hermes_home, capsys):
+        self._seed(_isolated_hermes_home, {"vision": {
+            "provider": "custom", "base_url": "https://bob:hunter2secret@llm.example.com/v1"}})
+        set_config_value("auxiliary.vision.provider", "anthropic")
+        out = capsys.readouterr().out
+        assert "auxiliary.vision.base_url" in out and "hunter2secret" not in out

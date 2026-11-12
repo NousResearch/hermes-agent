@@ -130,9 +130,9 @@ def _open_anchors(text: str, end: int) -> set[int]:
     sep = max(text.rfind("=", token_start, token_start + body_end), text.rfind(":", token_start, end))
     if sep >= 0:
         anchors.add(sep)
-    quote = max(text.rfind('"', line_start, end), text.rfind("'", line_start, end))
-    if quote >= 0:
-        anchors.add(quote)
+    for quote in (text.rfind('"', line_start, end), text.rfind("'", line_start, end)):
+        if quote >= 0:  # each kind: a later apostrophe must not hide the value's opening quote
+            anchors.add(quote)
     if (opener := _last_line_opener(text, line_start, end)) >= 0:
         anchors.add(opener)
     return anchors

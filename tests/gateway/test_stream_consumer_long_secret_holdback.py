@@ -115,3 +115,18 @@ async def test_long_session_token_is_never_shown_raw_by_the_consumer():
     await task
     assert frames
     assert not _raw_runs(frames, value)
+
+
+def test_long_double_quoted_value_holding_an_apostrophe_never_settles_raw():
+    # The last quote on the line is the apostrophe, 600 chars past the label: the value's own
+    # opening quote must still anchor the label search.
+    value = _value(600, seed=5) + "'" + "bravo charlie delta"
+    text = 'Config:\n{"pass' + 'word": "' + value + '", "user": "bob"}\nDone.'
+    assert not _raw_runs([redact_for_egress(text)], value)
+    acc = prefix = ""
+    frames = []
+    for delta in _deltas(text, seed=5):
+        acc, settled = redact_settled(acc + delta, prefix, done=False)
+        prefix = acc[:settled]
+        frames.append(prefix)
+    assert not _raw_runs(frames, value)

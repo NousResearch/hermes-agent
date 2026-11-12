@@ -6932,8 +6932,7 @@ async def _standalone_response_json_or_error(resp: Any, error_prefix: str):
     with the (size-capped) body text appended to ``error_prefix``."""
     if resp.status not in {200, 201}:
         body = await _standalone_read_text_limited(resp, _DISCORD_STANDALONE_ERROR_BODY_LIMIT_BYTES)
-        # A 4xx (429 included) is Discord refusing the request: nothing was posted. Every caller that
-        # returns this error does so before any message of the send landed. A 5xx stays unmarked.
+        # A 4xx (429 too) is a refusal: nothing posted, and no caller has landed a message yet. 5xx stays unmarked.
         return None, send_error(f"{error_prefix} ({resp.status}): {body}", nothing_sent=400 <= resp.status < 500)
     return await _standalone_read_json_limited(resp, _DISCORD_STANDALONE_JSON_BODY_LIMIT_BYTES), None
 
@@ -6985,8 +6984,7 @@ async def _standalone_send(
     if not token:
         return send_error("Discord standalone send: DISCORD_BOT_TOKEN is not set", nothing_sent=True)
     from gateway.platforms.base import describe_proxy_error, resolve_proxy_url, proxy_kwargs_for_aiohttp
-    _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
-    last_data = None
+    _proxy, last_data = resolve_proxy_url(platform_env_var="DISCORD_PROXY"), None
     try:
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
         auth_headers = {"Authorization": f"Bot {token}"}
@@ -7108,8 +7106,7 @@ async def _standalone_send(
         # Include the exception type: str(TimeoutError()) is empty. The text may echo the proxy URL.
         shown = describe_proxy_error(e, _proxy)
         logger.error("Discord standalone send failed%s", f": {shown}" if shown else "", exc_info=not shown)
-        return send_error(f"Discord send failed: {shown or f'{type(e).__name__}: {e}'}",
-                          nothing_sent=last_data is None and request_never_left(e))
+        return send_error(f"Discord send failed: {shown or f'{type(e).__name__}: {e}'}", nothing_sent=last_data is None and request_never_left(e))
 
 
 # ── Plugin entry point ────────────────────────────────────────────────────────

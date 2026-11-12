@@ -1943,9 +1943,9 @@ class GatewayStartupMixin:
         (``handoff_head``), so its whole chain moves onto the lane together with the local receipt
         that guards it, and a viewer still holding it open (the Desktop that ran /handoff) follows
         it (#143286)."""
-        from gateway.session_route_recovery import conversation_head, follow_hand_off
+        from gateway.session_route_recovery import conversation_head, follow_hand_off, settled_handoff_db
         authority, local_owner, target = await conversation_head(self, cli_session_id)
-        # Ensure a session_store entry exists for this key; switch_session then re-points it.
+        await settled_handoff_db(self, authority, cli_session_id)  # unresolved work keeps the route
         await self.async_session_store.get_or_create_session(dest.source)
         switched = await self.async_session_store.switch_session(session_key, target, preserve_prompt_pin=False)
         if switched is None:

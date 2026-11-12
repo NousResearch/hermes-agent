@@ -102,3 +102,30 @@ async def test_handoff_to_a_relay_fronted_platform_is_queued(tmp_path, monkeypat
     refused = await _call(owner, 'handoff.request', session_id=ref.session_id, platform='discord')
     assert refused['error']['data']['reason'] == 'invalid_params', refused
     authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_handoff_waits_for_durable_work_the_owner_has_no_task_for(tmp_path, monkeypatch):
+    """A turn recovered ``unknown`` after an owner restart has no resident drain task, yet still owns
+    the conversation: the request is refused, and so is the watcher's repoint of a row queued before
+    the turn was admitted, so the route never moves while its outcome is unresolved."""
+    import hermes_state_runtime as rt
+    from tests.gateway.test_authority_cold_route_recovery import _source
+    from tests.gateway.test_handoff_local_receipt import _handoff
+    _telegram_home(tmp_path, monkeypatch)
+    _store, authority, owner = _owner(tmp_path, monkeypatch, handle=None)
+    ref = _local(authority, owner, tmp_path)
+    assert (await _call(owner, 'handoff.request', session_id=ref.session_id, platform='telegram'))['result']['queued']
+    rt.admit_session_input(authority.db, epoch=authority.epoch, principal_id=owner.actor.subject,
+                           session_id=ref.session_id, request_id='lost', payload={'text': 'pending work'})
+    rt.claim_session_input(authority.db, epoch=authority.epoch, session_id=ref.session_id)
+    authority.epoch = rt.begin_runtime_epoch(authority.db, instance_id='restarted')
+    rt.recover_session_inputs(authority.db, epoch=authority.epoch)
+    with pytest.raises(RuntimeError, match='/discard'):
+        await _handoff(authority.runner, authority, ref.session_id, _source())
+    assert authority.db.get_session(ref.session_id)['source'] != 'telegram'
+    authority.db.fail_handoff(ref.session_id, 'refused')
+    refused = await _call(owner, 'handoff.request', session_id=ref.session_id, platform='telegram')
+    assert refused['error']['data']['reason'] == 'unknown_execution', refused
+    assert authority.db.get_handoff_state(ref.session_id)['state'] == 'failed'
+    authority.db.close()

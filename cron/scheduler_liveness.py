@@ -37,7 +37,10 @@ def _inactivity_watchdog_loop(
     Driven by ``threading.Event.wait`` (a kernel timeout), not asyncio, so a blocked event-loop /
     ``run_job`` thread cannot disable this watchdog the way ``asyncio.sleep`` / ``wait_for`` would (family A
     of #94285 — the 4118s-idle-on-a-600s-limit cron hang). Returns True when *limit_s* of inactivity was
-    observed.
+    observed. The firing sample itself is latched whole by the caller
+    (``_idle_seconds`` keeps the last activity summary it returned) so the raise path
+    can report the sample that crossed the limit instead of re-sampling
+    after post-latch activity (#127775).
     """
     # A sleeping host freezes the job with it, so time asleep never counts as inactivity.
     if meter is None:

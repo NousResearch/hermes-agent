@@ -66,6 +66,7 @@ def _connectable_adapter(host, tmp_path, monkeypatch):
     adapter._bridge_log_fh = adapter._bridge_log = adapter._bridge_process = None
     adapter._running = False
     adapter._foreign_bridge_session, adapter._bridge_probe_timed_out = None, False
+    adapter._bridge_holder_unproven = False
     adapter._acquire_platform_lock = MagicMock(return_value=True)
     adapter._release_platform_lock = MagicMock()
     adapter._ensure_bridge_deps = MagicMock(return_value=True)
@@ -124,6 +125,30 @@ def test_dashboard_pairing_tightens_an_existing_world_readable_session(host, tmp
     assert "pairing-payload" in proc.communicate(timeout=30)[0]
 
     _assert_private(session)
+
+
+def test_cli_pairing_writes_the_session_owner_only(host, tmp_path, monkeypatch):
+    """`hermes whatsapp` runs the pairing child itself, so its creds need the store's umask too."""
+    from types import SimpleNamespace
+
+    import hermes_constants
+    from gateway.platforms import whatsapp_common
+    from hermes_cli import main_platform_setup as setup
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("WHATSAPP_MODE", "bot")
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15550001111")
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "n")
+    monkeypatch.setattr("hermes_cli.main._require_tty", lambda *_a, **_kw: None)
+    monkeypatch.setattr(whatsapp_common, "resolve_whatsapp_bridge_dir", lambda: host.parent)
+    monkeypatch.setattr(setup, "_whatsapp_install_bridge", lambda path: True)
+    monkeypatch.setattr(hermes_constants, "find_node_executable", lambda name: sys.executable)
+
+    setup.cmd_whatsapp(SimpleNamespace())
+
+    _assert_private(home / "whatsapp" / "session")
 
 
 def test_managed_install_keeps_its_group_share_modes(host, tmp_path, monkeypatch):

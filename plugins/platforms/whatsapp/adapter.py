@@ -258,7 +258,9 @@ def _spawn_bridge_process(argv: list, log_fh, env: dict, umask: int = -1) -> sub
 
 
 def _owner_only_opener(path, flags):
-    """``open(opener=)`` creating 0600 and tightening a log an older version left at the umask default."""
+    """``open(opener=)`` creating 0600. The fchmod covers the inode actually handed to the bridge:
+    connect()'s path-based tighten runs before the reaps and port wait, and a pre-update gateway past a
+    failed (non-fatal) session lock can recreate bridge.log at the umask default in that window."""
     fd = os.open(path, flags, 0o600)
     if hasattr(os, "fchmod"):
         with suppress(OSError):

@@ -35,10 +35,12 @@ const HASH_PREFIX_HEX_RE = /\b(?:sha(?:-?256|-?512|-?1|3)?|blake2[ab]?|md5|crc32
 const HEX_RUN_RE = /[0-9a-fA-F]{7,64}/
 const IDENTIFIER_TOKEN_RE = /[A-Za-z0-9_./~@-]+/g
 const DATE_TOKEN_RE = /^\d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?$/
+// A sentence-final period is part of the token, but not a file extension.
+const FRACTION_TOKEN_RE = /^-?\d+(?:\.\d+)?\/-?\d+(?:\.\d+)?\.?$/
 
 function isDenseIdentifier(token: string): boolean {
-  if (token.includes('@') || DATE_TOKEN_RE.test(token)) {
-    return false // email addresses, dates ("2026-09-28", "2026/06/02")
+  if (token.includes('@') || DATE_TOKEN_RE.test(token) || FRACTION_TOKEN_RE.test(token)) {
+    return false // email addresses, dates, and numeric fractions ("3/4")
   }
 
   if (/^(?:~\/|\.\.?\/|\/)/.test(token)) {

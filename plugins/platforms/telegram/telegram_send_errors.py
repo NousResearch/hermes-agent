@@ -71,6 +71,16 @@ def maybe_delivered_result(error: Exception, safe_error: str, **fields):
     return SendResult(success=False, error=safe_error, retryable=True, **fields)
 
 
+def rich_failure_result(error: Exception, safe_error: str, **fields):
+    """``maybe_delivered_result`` for a failed ``sendRichMessage``, plus ``raw_response["never_sent"]``
+    when the request never left or was a flood refusal: the standalone sender reads that proof as
+    "nothing sent", so cron may queue a replay."""
+    result = maybe_delivered_result(error, safe_error, **fields)
+    if send_error_kind(error) in (UNSENT, FLOOD):
+        result.raw_response = {**(result.raw_response or {}), "never_sent": True}
+    return result
+
+
 def is_entity_parse_error(error: Exception, markers: tuple = ("parse", "markdown", "html", "entit")) -> bool:
     """A failure a plain-text resend fixes: Telegram refused the formatting (a ``BadRequest`` such
     as ``can't parse entities``), or a local error naming it that never reached Telegram. Never a

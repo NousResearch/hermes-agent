@@ -1,6 +1,6 @@
 name: kanban-stream
 repo: https://github.com/mbgulden/hermes-kanban-stream
-sha: d6c3e802eefb6ec1e09ad002a1bf7d45b13104a8
+sha: 874d513ccde3191029b0692888635d739d93da70
 subdir: ""
 title: Kanban Stream
 description: "Live-stream Hermes kanban worker activity to a Telegram ops channel: one edit-in-place message per task with rolling tool-call history, elapsed timer, tokens/sec, thinking indicator, and a pinned final state (done/blocked). Mid-task steering via task comments — /steer from Telegram through the bundled companion daemon, or straight from the board. Ships disabled by default; needs a dedicated ops bot (KANBAN_STREAM_BOT_TOKEN + KANBAN_STREAM_ALLOWED_USERS). Outbound calls go only to api.telegram.org; reads the kanban DB read-only; no telemetry, no self-update. Disclosure — sends kanban task titles, summaries and tool names with command/path snippets to the Telegram chat you configure via your own bot; the optional steer daemon posts allowlisted Telegram users' /steer text as task comments that reach the running worker."
@@ -8,7 +8,7 @@ maintainer: mbgulden
 tier: community
 category: automation
 requires_hermes: ">=0.20.5"
-version: "1.0.2"
+version: "1.0.3"
 docs_url: https://github.com/mbgulden/hermes-kanban-stream/blob/d6c3e802eefb6ec1e09ad002a1bf7d45b13104a8/README.md
 platforms: []
 capabilities:

@@ -1,0 +1,20 @@
+name: "draftroom"
+title: "Draftroom"
+repo: "https://github.com/Techdox/hermes-draftroom"
+sha: "612bfb46747721276a01b6997566849e68ffc7e3"
+description: "A Markdown draft beside Hermes chat, with selected-text rewrites and explicit Accept/Reject review. Disclosure — stores drafts, pending suggestions and every prior revision as plain files in this profile's plugin-data folder (revisions are kept until the user deletes them); the agent tool can list and read every draft in the profile, not only the current conversation's; draft text reaches the model through the normal conversation; the Desktop pane polls its own local backend every 2-10 s while open; the Rewrite, /blog and \"Commit to repo\" buttons put a prompt into the focused chat's composer, and a commit request asks the agent to write the draft to a path the user typed and commit (push only when ticked) using the agent's own file/Git tools and approval prompts. The plugin itself runs no Git or shell commands, makes no network requests, reads no credentials and has no telemetry or self-update."
+maintainer: "Techdox"
+tier: "community"
+category: "desktop"
+requires_hermes: ">=0.23.0"
+version: "0.1.2"
+docs_url: "https://github.com/Techdox/hermes-draftroom#readme"
+platforms: ["linux", "macos"]
+known_issues:
+  - "Requires both Agent and local Desktop components; Linux/macOS backend with a recent Desktop SDK."
+  - "Unsaved buffers are memory-only and do not survive plugin/window reload or quitting."
+capabilities:
+  provides_tools: ["blog_draft"]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -71,10 +71,11 @@ def test_wizard_save_with_new_url_routes_to_and_saves_the_new_endpoint(isolated_
 def test_bare_custom_without_url_still_recovers_the_named_provider(isolated_home):
     """Control: legacy configs whose stored provider is a bare ``custom`` keep self-healing onto
     the first named custom provider when no endpoint is submitted."""
-    from hermes_cli.web_server_config import _normalize_main_model_assignment, _prepare_main_assignment
+    from hermes_cli.model_assignment import normalize_main_model_assignment
+    from hermes_cli.web_server_config import _prepare_main_assignment
 
     _write(isolated_home, "custom_providers_list")
-    assert _normalize_main_model_assignment("custom", "model-a")[0] == "custom:provider-a"
+    assert normalize_main_model_assignment("custom", "model-a")[0] == "custom:provider-a"
     from hermes_cli.config import load_config
 
     _base_url, result = _prepare_main_assignment(load_config(), "custom", "model-a", "", "")

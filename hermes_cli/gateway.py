@@ -70,6 +70,9 @@ from hermes_cli.setup import (
 )
 from hermes_cli.colors import Colors, color
 from hermes_cli.gateway_profile_lifecycle import owned_gateway_pid as _owned_gateway_pid
+# Module level on purpose: the update's restart watcher runs after the checkout moved, when a lazy
+# import would load the REPLACEMENT tree (tests/hermes_cli/test_update_post_swap_imports.py).
+from hermes_cli.gateway_restart_env import restart_watcher_env
 logger = logging.getLogger(__name__)
 
 # Shared ``subprocess.run`` kwargs for text-mode probes (stdout/stderr captured, decode-tolerant).
@@ -1051,14 +1054,6 @@ def _restart_argv_is_host_gateway(argv: list[str]) -> bool:
         return False
 
 
-def _host_gateway_watcher_env() -> dict[str, str]:
-    """Scrubbed default-profile env for a detached host-gateway respawn watcher."""
-    from tools.environments.local import host_gateway_child_env
-    env = host_gateway_child_env()
-    env.pop("_HERMES_GATEWAY", None)
-    return env
-
-
 def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: bool | None = None, home: str | None = None) -> bool:
     """Spawn the detached watcher that respawns ``run_argv`` once ``old_pid`` exits. Watcher and respawn
     both need platform-appropriate detach: POSIX setsid; on Windows ``start_new_session`` does NOT detach
@@ -1169,12 +1164,10 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
 
     watcher_argv = [sys.executable, "-c", watcher, str(old_pid), *run_argv]
     devnull = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
-    # Host respawn must not inherit a named launcher's dotenv. The watcher copies os.environ
-    # into the gateway child, so the scrub has to be the watcher's own environ.
-    watcher_env = _host_gateway_watcher_env() if (
-        _restart_argv_is_host_gateway(run_argv) if host is None else host
-    ) else None
-    popen_env = {"env": watcher_env} if watcher_env is not None else {}
+    # The watcher copies os.environ into the gateway child, so the child's env is the watcher's: a
+    # host respawn gets the default root's secrets, a sibling profile's its own (never the launcher's).
+    popen_env = {"env": restart_watcher_env(
+        run_argv, host=_restart_argv_is_host_gateway(run_argv) if host is None else host, home=home)}
     # Same detach for the watcher itself, so closing the terminal doesn't kill it.
     try:
         subprocess.Popen(watcher_argv, **devnull, **popen_env, **windows_detach_popen_kwargs())  # detached-spawn: ok — restart watcher, must outlive the process that asked for the restart

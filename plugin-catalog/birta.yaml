@@ -1,17 +1,17 @@
 name: birta
 title: Birta
 repo: https://github.com/birtadev/plugins
-sha: fd2485de51401db9dd9b25f0bc495bd36e9752c8
+sha: c94100ac13d1dcdfac9ad82f282f7034119296fb
 subdir: hermes
-description: "Publish and share websites, HTML pages, landing pages, portfolios, reports, docs and slide decks at a link, collect feedback on the page, and have the agent apply it. Disclosure — hosted-only: every tool call goes to birta.dev and acts on your Birta projects; publishing makes a version visible at the project address."
+description: "Artifacts for Hermes. Birta is a shared workspace where people and agents turn drafts into finished work: Hermes publishes a website, HTML page, landing page, portfolio, report, docs or slide deck at a link you can share, and people leave feedback right on the page. With mention events on, @mention Hermes in a comment and it picks the request up on its own: makes the change, replies in the thread and publishes the next version. Disclosure — hosted-only: every tool call goes to birta.dev and acts on your Birta projects; publishing makes a version visible at the project address; optional mention events (off unless you set `events: true` and run the webhook gateway, and approved per subscription) let anyone who @mentions Hermes in your Birta review threads start an unattended agent run."
 maintainer: birtadev
 tier: community
 category: tools
-version: "1.0.0"
+version: "1.1.2"
 # Skills are named birta:<skill> from Hermes 0.22.6; older releases hash the namespace.
 requires_hermes: ">=0.22.6"
 docs_url: https://github.com/birtadev/plugins/tree/main/hermes
-image: https://raw.githubusercontent.com/birtadev/plugins/fd2485de51401db9dd9b25f0bc495bd36e9752c8/hermes/assets/banner.png
+image: https://raw.githubusercontent.com/birtadev/plugins/c94100ac13d1dcdfac9ad82f282f7034119296fb/hermes/assets/banner.png
 platforms: [linux, macos, windows]
 capabilities:
   provides_tools: []

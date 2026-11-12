@@ -1196,6 +1196,22 @@ class LocalEnvironment(BaseEnvironment):
                 proc._hermes_owned_pgid = None
                 release_process_groups([owned_pgid])
 
+    def _spawn_long_lived(self, argv: list[str], child_env: dict | None) -> subprocess.Popen:
+        """A long-lived process on this host: the same run environment as a command, owned so it and
+        its group die with Hermes however Hermes dies (``spawn_owned``), stdin/stdout as byte pipes.
+        ``_stop_long_lived`` kills the group and releases it."""
+        from hermes_cli.process_identity import spawn_owned
+        proc = spawn_owned(  # windows-footgun: ok — argv list, no shell; group kill gated on _IS_WINDOWS
+            list(argv), purpose="long-lived environment process",
+            env=_make_run_env({**self.env, **(child_env or {})}), cwd=self.cwd,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
+        if not _IS_WINDOWS:
+            with contextlib.suppress(ProcessLookupError):
+                proc._hermes_pgid = os.getpgid(proc.pid)
+            proc._hermes_owned_pgid = proc.pid
+        return proc
+
     def _kill_process(self, proc):
         """Kill the entire process group (all children)."""
         try:
@@ -1238,7 +1254,9 @@ class LocalEnvironment(BaseEnvironment):
 
     def cleanup(self):
         """Clean up temp files, including orphaned atomic-write snapshots
-        (``snap.tmp.<bashpid>``) a failed/interrupted mv could leave behind."""
+        (``snap.tmp.<bashpid>``) a failed/interrupted mv could leave behind, after stopping every
+        long-lived process this environment started."""
+        self.stop_all_processes()
         # See #38249.
         import glob
         try:

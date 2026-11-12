@@ -308,11 +308,6 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/plugins_cmd.py",
-    "symbol": "_resolve_git_executable",
-    "kind": "bare_which"
-  },
-  {
     "path": "hermes_cli/profiles.py",
     "symbol": "create_wrapper_script",
     "kind": "bare_which"

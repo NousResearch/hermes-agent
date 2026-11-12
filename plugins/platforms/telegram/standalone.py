@@ -353,6 +353,15 @@ def _record_media_failure(error, media_path, warnings, last_msg):
     return last_msg
 
 
+def _rich_send_result(rich, chat_id, outcome) -> dict:
+    """Envelope for a finished rich send. ``retryable`` (nothing sent) only on the adapter's
+    ``never_sent`` proof: a lost answer or a server error may already be in the chat."""
+    if rich.success:
+        return _success(chat_id, message_id=rich.message_id)
+    never_sent = isinstance(rich.raw_response, dict) and rich.raw_response.get("never_sent") is True
+    return outcome.failure(_error(f"Telegram send failed: {rich.error}"), never_sent=never_sent)
+
+
 async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False,
                          force_document=False, extra=None, notify=None):
     """One-shot Telegram Bot API send over the platform's ``extra`` (base_url, proxy, fallback IPs,
@@ -391,12 +400,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             rich = await send_rich_standalone(bot, {**(extra or {}), "disable_link_previews": disable_link_previews},
                                               chat_id, message, thread_id=thread_id, notify=notify)
             if rich is not None:
-                if rich.success:
-                    return _success(chat_id, message_id=rich.message_id)
-                # ``retryable`` (nothing sent) only on the adapter's ``never_sent`` proof: a lost
-                # answer or a server error may already be in the chat.
-                never_sent = isinstance(rich.raw_response, dict) and rich.raw_response.get("never_sent") is True
-                return outcome.failure(_error(f"Telegram send failed: {rich.error}"), never_sent=never_sent)
+                return _rich_send_result(rich, chat_id, outcome)
         # MEDIA caption rides on the bubble as its *formatted* caption; formatting can inflate a
         # raw <1024 string past Telegram's cap, so re-check in UTF-16 units.
         _cap, _ = _media_caption_split(message, media_files)

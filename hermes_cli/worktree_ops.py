@@ -1106,6 +1106,10 @@ def _reap_prune_verdicts(repo_root: str, verdicts: list, stale_work_cutoff: floa
         if blocked:
             preserved_stale.append(f"{entry.name} ({blocked[1]})")
             continue
+        from hermes_cli.worktree_sweep import pinned_now
+        if pinned := pinned_now(str(entry)):  # a continue pinned it after the plan was made
+            logger.info("Keeping worktree %s: %s", entry.name, pinned)
+            continue
 
         if lock_state == "dead":
             _git_quiet(["worktree", "unlock", str(entry)], repo_root,

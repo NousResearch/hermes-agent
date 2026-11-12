@@ -2189,11 +2189,14 @@ def _apply_default_assignee(
         return True
     try:
         with _kb.write_txn(conn):
-            conn.execute(
+            updated = conn.execute(
                 "UPDATE tasks SET assignee = ? WHERE id = ? "
                 "AND (assignee IS NULL OR assignee = '')",
                 (assignee, task_id),
             )
+            if updated.rowcount != 1:
+                # The card was assigned after the tick's read; do not log a phantom assignment.
+                return False
             _kb._append_event(
                 conn, task_id, "assigned",
                 {"assignee": assignee, "source": "kanban.default_assignee"},
@@ -2431,10 +2434,18 @@ def _dispatch_once_locked(
         if not row_assignee:
             # Honour kanban.default_assignee so an unassigned task doesn't
             # park in 'ready' forever.
-            if not default_assignee or not _apply_default_assignee(
+            if not default_assignee:
+                result.skipped_unassigned.append(row["id"])
+                continue
+            if not _apply_default_assignee(
                 conn, row["id"], default_assignee, dry_run=dry_run,
             ):
-                result.skipped_unassigned.append(row["id"])
+                # A concurrent assign may have won: defer its gates to the next tick.
+                current = conn.execute(
+                    "SELECT assignee FROM tasks WHERE id = ?", (row["id"],),
+                ).fetchone()
+                if current is None or not current["assignee"]:
+                    result.skipped_unassigned.append(row["id"])
                 continue
             row_assignee = default_assignee
             result.auto_assigned_default.append(row["id"])

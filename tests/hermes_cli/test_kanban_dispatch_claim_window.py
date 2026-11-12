@@ -7,6 +7,7 @@ never-vetted profile: the claim loses and the next tick gates the new assignee.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -63,3 +64,41 @@ def test_reassign_inside_claim_window_does_not_spawn_unvetted_profile(
     # The next tick gates the card against its real assignee: not on the allowlist.
     assert nxt.spawned == []
     assert nxt.skipped_nonspawnable == [tid]
+
+
+def test_reassign_before_default_fill_does_not_log_phantom_assignment(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    """A stale unassigned snapshot must not overwrite a real reassignment in the audit log."""
+    spawned_as: list[str] = []
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="unassigned", assignee=None)
+        real_apply = kbd._apply_default_assignee
+
+        def assign_before_default(c, task_id, assignee, *, dry_run):
+            # The operator assigns the card after the tick read it as unassigned.
+            with kbc.connect() as other:
+                kb.assign_task(other, task_id, "worker-b")
+            return real_apply(c, task_id, assignee, dry_run=dry_run)
+
+        monkeypatch.setattr(kbd, "_apply_default_assignee", assign_before_default)
+        res = kbd.dispatch_once(
+            conn, default_assignee="worker-a",
+            spawn_fn=lambda task, _ws: spawned_as.append(task.assignee) or 4242,
+        )
+        task = kb.get_task(conn, tid)
+        assigned_payloads = [
+            json.loads(r["payload"])
+            for r in conn.execute(
+                "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'assigned' ORDER BY id",
+                (tid,),
+            ).fetchall()
+        ]
+
+    assert task is not None
+    assert (task.status, task.assignee, task.claim_lock) == ("ready", "worker-b", None)
+    assert spawned_as == []
+    assert res.spawned == []
+    assert res.auto_assigned_default == []
+    assert res.skipped_unassigned == []
+    assert assigned_payloads == [{"assignee": "worker-b", "from": None}]

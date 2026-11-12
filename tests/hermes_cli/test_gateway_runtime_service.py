@@ -227,7 +227,7 @@ def test_launchd_verifies_the_osascript_wrapped_command_the_installer_writes(cas
             verify()
 
 
-def _installed_vbs(home, configured):
+def _installed_vbs(home, configured, *, wait_on_return=False):
     """The current installed launcher grammar; no script is executed."""
     script = home / 'gateway.vbs'
     script.write_text("\n".join([
@@ -240,7 +240,7 @@ def _installed_vbs(home, configured):
         '  env.Item("PYTHONPATH") = "C:\\Hermes;" & existing_pp', 'Else',
         '  env.Item("PYTHONPATH") = "C:\\Hermes"', 'End If',
         f'sh.CurrentDirectory = "{home}"',
-        f'sh.Run "{sys.executable} -m hermes_cli.main gateway run", 0, False',
+        f'sh.Run "{sys.executable} -m hermes_cli.main gateway run", 0, {wait_on_return}',
     ]) + "\n", encoding='utf-8')
     return script
 
@@ -250,6 +250,7 @@ def _as_schtasks_exports(xml):
     return xml.replace('<RunLevel>LeastPrivilege</RunLevel>', '').replace('<Enabled>true</Enabled>\n    <Hidden>', '<Hidden>')
 
 
+@pytest.mark.parametrize("wait_on_return", [False, True])
 @pytest.mark.parametrize("case,reason", [
     ("bound", None), ("utf16", None), ("wrong_home", "profile_mismatch"),
     ("wrong_user", "service_account_mismatch"), ("missing_user", "service_identity_unverified"),
@@ -257,13 +258,24 @@ def _as_schtasks_exports(xml):
     ("unknown_script", "service_identity_unverified"), ("malformed_xml", "service_identity_unverified"),
     ("schtasks_export", None), ("elevated", "service_identity_unverified"),
     ("empty_run_level", "service_identity_unverified"), ("empty_enabled", "service_disabled"),
+    ("wait_expression", "service_identity_unverified"), ("visible_window", "service_identity_unverified"),
+    ("extra_statement", "service_identity_unverified"),
 ])
-def test_task_xml_binds_actual_action_and_principal(case, reason, tmp_path):
+def test_task_xml_binds_actual_action_and_principal(case, reason, wait_on_return, tmp_path):
     from hermes_cli.gateway_runtime_service_identity import verify_windows_task
     from hermes_cli.gateway_windows import _build_scheduled_task_xml
     home = tmp_path / 'requested'
     home.mkdir()
-    script = _installed_vbs(home, str(home if case != 'wrong_home' else tmp_path / 'other'))
+    script = _installed_vbs(home, str(home if case != 'wrong_home' else tmp_path / 'other'),
+                            wait_on_return=wait_on_return)
+    run_args = f', 0, {wait_on_return}'
+    launcher_edits = {
+        'wait_expression': ', 0, Not False',
+        'visible_window': f', 1, {wait_on_return}',
+        'extra_statement': run_args + ': WScript.Echo "extra"',
+    }
+    if case in launcher_edits:
+        script.write_text(script.read_text(encoding='utf-8').replace(run_args, launcher_edits[case]), encoding='utf-8')
     user = 'DOMAIN\\owner'
     xml = _build_scheduled_task_xml('Hermes_Gateway', script, user)
     if case == 'schtasks_export':
@@ -399,8 +411,9 @@ def test_native_launchd_checks_loaded_job_before_disk(case, reason, tmp_path, mo
 
 
 @pytest.mark.platforms("windows")
+@pytest.mark.parametrize("wait_on_return", [False, True])
 @pytest.mark.parametrize("wrong", [False, True])
-def test_native_task_query_uses_installed_xml_and_vendor_launcher(wrong, tmp_path, monkeypatch):
+def test_native_task_query_uses_installed_xml_and_vendor_launcher(wrong, wait_on_return, tmp_path, monkeypatch):
     from hermes_cli import gateway_runtime_service as service
     from hermes_cli.gateway_windows import _build_gateway_vbs_script, _build_scheduled_task_xml
     home = tmp_path / 'profile'
@@ -409,7 +422,9 @@ def test_native_task_query_uses_installed_xml_and_vendor_launcher(wrong, tmp_pat
     script = home / 'gateway.vbs'
     # newline='' mirrors the installer's _atomic_write: the template is already CRLF and
     # Windows text mode would otherwise double it to \r\r\n, which is not the vendor template.
-    script.write_text(_build_gateway_vbs_script(sys.executable, str(home), str(home), ''), encoding='utf-8', newline='')
+    contents = _build_gateway_vbs_script(sys.executable, str(home), str(home), '')
+    contents = contents.replace(', 0, False', f', 0, {wait_on_return}')
+    script.write_text(contents, encoding='utf-8', newline='')
     original = script.read_bytes()
     # whoami is read-only native account evidence; no task-manager mutation.
     identity = subprocess.run(['whoami.exe', '/USER', '/FO', 'CSV', '/NH'], stdin=subprocess.DEVNULL, capture_output=True, timeout=5, check=False)

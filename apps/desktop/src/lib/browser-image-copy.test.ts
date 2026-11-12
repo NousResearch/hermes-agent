@@ -207,6 +207,7 @@ describe('copyImageFromUrl', () => {
 
     expect(ok).toBe(false)
     expect(notifySpy).toHaveBeenCalledTimes(1)
+    expect(notifySpy).toHaveBeenCalledWith(expect.any(Error), 'Copy failed')
   })
 
   it('reports an error when fetching the image fails', async () => {
@@ -224,6 +225,7 @@ describe('copyImageFromUrl', () => {
 
     expect(ok).toBe(false)
     expect(notifySpy).toHaveBeenCalledTimes(1)
+    expect(notifySpy).toHaveBeenCalledWith(expect.any(Error), 'Copy failed')
   })
 
   it('does not leave an unhandled rejection if clipboard.write rejects before fetch settles', async () => {

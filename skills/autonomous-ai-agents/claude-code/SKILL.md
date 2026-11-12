@@ -1,7 +1,7 @@
 ---
 name: claude-code
 description: "Delegate coding to Claude Code CLI (features, PRs)."
-version: 2.2.1
+version: 2.3.0
 author: Hermes Agent + Teknium
 license: MIT
 platforms: [linux, macos, windows]
@@ -78,6 +78,32 @@ terminal(command="tmux send-keys -t claude-work '/exit' Enter")
 - Exploratory coding sessions
 - When you need to use Claude's slash commands (`/compact`, `/review`, `/model`)
 
+### Alternative: Background Sessions (`--bg`) for Long Tasks
+
+For a long task you want to start, leave, and check on later, a background session avoids the tmux keystroke plumbing. Claude keeps running after the command returns; you steer it with subcommands.
+
+```
+# Start; prints the short id that the other commands take
+terminal(command="claude --bg 'Refactor the auth module and run the tests'", workdir="/path/to/project", timeout=30)
+
+# Check progress without attaching
+terminal(command="claude logs <id>", timeout=30)
+
+# List sessions (add --json for scripting; --all includes completed ones)
+terminal(command="claude agents --json", timeout=30)
+
+# Stop (conversation kept), or delete the session and its worktree
+terminal(command="claude stop <id>", timeout=30)
+terminal(command="claude rm <id>", timeout=30)
+```
+
+- `claude attach <id|name>` opens the session in a terminal (needs a PTY, so run it inside tmux). `←` returns to agent view, `Ctrl+Z` drops back to the shell; the session keeps running either way. A stopped session can be reopened with `attach` or `claude --resume`.
+- `--bg --resume <session-id>` continues an existing session in the background under the same ID.
+- `claude respawn <id>` (or `--all`) restarts sessions after a Claude Code update.
+- `claude rm` reports unpushed commits or uncommitted work in the session's worktree rather than silently discarding it; read what it reports before passing `--discard-unpushed`.
+
+Use `--bg` for fire-and-check tasks where `logs` is enough. Stay with tmux when you need to send follow-up keystrokes, answer permission prompts live, or watch the TUI.
+
 ## PTY Dialog Handling (CRITICAL for Interactive Mode)
 
 Claude Code presents up to two confirmation dialogs on first launch. You MUST handle these via tmux send-keys:
@@ -140,10 +166,20 @@ To accept: `tmux send-keys -t <session> Down && sleep 0.3 && tmux send-keys -t <
 | `claude mcp add <name> -- <cmd>` | Add an MCP server |
 | `claude mcp list` | List configured MCP servers |
 | `claude mcp remove <name>` | Remove an MCP server |
-| `claude agents` | List configured agents |
+| `claude --bg "query"` | Start a session in the background and return its id (see Background Sessions) |
+| `claude agents` | Manage background agents (interactive agent view; `--json` prints active sessions for scripting) |
+| `claude attach <id\|name>` | Open a background session in this terminal |
+| `claude logs <id\|name>` | Print a background session's recent terminal output |
+| `claude stop <id>` / `claude kill <id>` | Stop a background session (conversation is kept) |
+| `claude rm <id>` | Delete a background session and its worktree when that is safe |
+| `claude respawn <id>` / `--all` | Restart background sessions so they run the current Claude Code version |
+| `claude purge [path]` | Delete a project's Claude Code data (transcripts, tasks, file history) from this computer; `--dry-run` lists first |
+| `claude ultrareview [target]` | Cloud-hosted multi-agent code review of the current branch (or a PR number / base branch); prints findings, `--post` comments them on the PR |
+| `claude import [source]` | Import config from another AI coding agent (`codex`, `gemini`, `cursor`); `--dry-run` previews |
+| `claude gateway --config <path>` | Run the enterprise auth/telemetry gateway |
 | `claude doctor` | Run health checks on installation and auto-updater |
 | `claude update` / `claude upgrade` | Update Claude Code to latest version |
-| `claude remote-control` | Start server to control Claude from claude.ai or mobile app |
+| `claude remote-control` | Control local sessions from claude.ai/code or the Claude mobile app |
 | `claude install [target]` | Install native build (stable, latest, or specific version) |
 | `claude setup-token` | Set up long-lived auth token (requires subscription) |
 | `claude plugin` / `claude plugins` | Manage Claude Code plugins |
@@ -153,7 +189,7 @@ To accept: `tmux send-keys -t <session> Down && sleep 0.3 && tmux send-keys -t <
 
 ### Structured JSON Output
 ```
-terminal(command="claude -p 'Analyze auth.py for security issues' --output-format json --max-turns 5", workdir="/project", timeout=120)
+terminal(command="claude -p 'Analyze auth.py for security issues' --output-format json --model haiku --max-turns 5", workdir="/project", timeout=120)
 ```
 
 Returns a JSON object with:
@@ -169,11 +205,11 @@ Returns a JSON object with:
   "stop_reason": "end_turn",
   "terminal_reason": "completed",
   "usage": { "input_tokens": 5, "output_tokens": 603, ... },
-  "modelUsage": { "claude-sonnet-4-6": { "costUSD": 0.078, "contextWindow": 200000 } }
+  "modelUsage": { "claude-haiku-5-5": { "costUSD": 0.078, "contextWindow": 200000 } }
 }
 ```
 
-**Key fields:** `session_id` for resumption, `num_turns` for agentic loop count, `total_cost_usd` for spend tracking, `subtype` for success/error detection (`success`, `error_max_turns`, `error_budget`).
+**Key fields:** `session_id` for resumption, `num_turns` for agentic loop count, `total_cost_usd` for spend tracking, `subtype` for success/error detection (`success`, `error_max_turns`, `error_budget`). `modelUsage` is keyed by the full model id the alias resolved to (here `--model haiku` → `claude-haiku-5-5`).
 
 ### Streaming JSON Output
 For real-time token streaming, use `stream-json` with `--verbose`:
@@ -273,9 +309,9 @@ Automatically falls back to the specified model when the default is overloaded (
 ### Model & Performance
 | Flag | Effect |
 |------|--------|
-| `--model <alias>` | Model selection: `sonnet`, `opus`, `haiku`, or full name like `claude-sonnet-4-6` |
+| `--model <alias>` | Model selection: `sonnet`, `opus`, `haiku`. Aliases resolve to the current model of that family, so prefer them over hardcoded full ids |
 | `--effort <level>` | Reasoning depth: `low`, `medium`, `high`, `xhigh`, `max` |
-| `--max-turns <n>` | Limit agentic loops (print mode only; prevents runaway) |
+| `--max-turns <n>` | Limit agentic loops (print mode only; prevents runaway). Not listed in `--help`, see note below |
 | `--max-budget-usd <n>` | Cap API spend in dollars (print mode only) |
 | `--fallback-model <model>` | Auto-fallback when default model is overloaded (print mode only) |
 | `--betas <betas...>` | Beta headers to include in API requests (API key users only) |
@@ -285,7 +321,8 @@ Automatically falls back to the specified model when the default is overloaded (
 |------|--------|
 | `--dangerously-skip-permissions` | Opt-in only: disables ALL permission prompts (file writes, bash, network). Throwaway worktree / isolated container only — see "Opt-in" above |
 | `--allow-dangerously-skip-permissions` | Enable bypass as an *option* without enabling it by default |
-| `--permission-mode <mode>` | `default`, `acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions` |
+| `--permission-mode <mode>` | `manual` (normal prompting mode), `acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions`. `default` is no longer listed in `--help` but is still accepted |
+| `--permission-prompts <target>` | Print mode only: who answers permission prompts. `host` (default) = the SDK host or `--permission-prompt-tool`; `none` = nobody, anything that would prompt is denied automatically (the permission mode still decides everything else) |
 | `--allowedTools <tools...>` | Whitelist specific tools (comma or space-separated) |
 | `--disallowedTools <tools...>` | Blacklist specific tools |
 | `--tools <tools...>` | Override built-in tool set (`""` = none, `"default"` = all, or tool names) |
@@ -315,6 +352,8 @@ Automatically falls back to the specified model when the default is overloaded (
 | `--setting-sources <sources>` | Comma-separated sources to load: `user`, `project`, `local` |
 | `--plugin-dir <paths...>` | Load plugins from directories for this session only |
 | `--disable-slash-commands` | Disable all skills/slash commands |
+
+**Undocumented flags:** `--max-turns`, `--append-system-prompt-file`, `--system-prompt-file` and `--teammate-mode` are no longer listed in `claude --help` (as of 2.1.311) but are still accepted and work. They could be removed in a future release, so re-check with a throwaway run if a command starts erroring. For runaway protection pair `--max-turns` with `--max-budget-usd` and the `terminal` tool's `timeout`, so the run is still bounded if `--max-turns` disappears.
 
 ### Debugging
 | Flag | Effect |
@@ -727,10 +766,10 @@ Use `/context` in interactive mode to see a colored grid of context usage. Key t
 
 ## Pitfalls & Gotchas
 
-1. **Interactive mode REQUIRES tmux** — Claude Code is a full TUI app. Using `pty=true` alone in Hermes terminal works but tmux gives you `capture-pane` for monitoring and `send-keys` for input, which is essential for orchestration.
+1. **Interactive mode REQUIRES tmux** — Claude Code is a full TUI app. Using `pty=true` alone in Hermes terminal works but tmux gives you `capture-pane` for monitoring and `send-keys` for input, which is essential for orchestration. For fire-and-check long tasks, `--bg` with `claude logs` is a lighter alternative.
 2. **The `--dangerously-skip-permissions` warning dialog defaults to "No, exit"** — that default is the safe answer; only send Down then Enter when you deliberately opted into the bypass in an isolated environment. Print mode (`-p`) skips the dialog entirely.
 3. **`--max-budget-usd` minimum is ~$0.05** — system prompt cache creation alone costs this much. Setting lower will error immediately.
-4. **`--max-turns` is print-mode only** — ignored in interactive sessions.
+4. **`--max-turns` is print-mode only** — ignored in interactive sessions, and undocumented in `--help` (see "Undocumented flags").
 5. **Claude may use `python` instead of `python`** — on systems without a `python` symlink, Claude's bash commands will fail on first try but it self-corrects.
 6. **Session resumption requires same directory** — `--continue` finds the most recent session for the current working directory.
 7. **`--json-schema` needs enough `--max-turns`** — Claude must read files before producing structured output, which takes multiple turns.

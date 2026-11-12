@@ -469,10 +469,13 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
           sessionId,
           storedIdRef.current,
           liveId =>
-            requestSessionGateway<{ status?: string }>(mode === 'steer' ? 'session.steer' : 'session.redirect', {
-              session_id: liveId,
-              text
-            }),
+            requestSessionGateway<{ delivered?: boolean; status?: string }>(
+              mode === 'steer' ? 'session.steer' : 'session.redirect',
+              {
+                session_id: liveId,
+                text
+              }
+            ),
           {
             requestGateway: requestSessionGateway,
             onRecovered: bindRecoveredRuntime
@@ -493,6 +496,25 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         if (result?.status === 'queued') {
           // A redirect queued in the build window is the next turn; an
           // accepted steer joins this one after its running tool.
+          if (mode === 'steer') {
+            flushStreamDeltas(sessionId)
+            mutate(state => sealAcceptedCorrection(state, messageId, { keepRunningTools: true }))
+          } else {
+            moveOptimisticMessageToEnd()
+          }
+
+          triggerHaptic('submit')
+
+          return true
+        }
+
+        // A live agent's `rejected` can follow delivery: the gateway sets
+        // `delivered: false` only when nothing live could take the text
+        // (session_busy_controls.py — the agent-is-None branch). So any other
+        // `rejected` means the correction WAS absorbed, and returning false here
+        // hands the words back to the composer, which then shows a message already
+        // on screen — the duplicate in #154277.
+        if (result?.status === 'rejected' && result.delivered !== false) {
           if (mode === 'steer') {
             flushStreamDeltas(sessionId)
             mutate(state => sealAcceptedCorrection(state, messageId, { keepRunningTools: true }))

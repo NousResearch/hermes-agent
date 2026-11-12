@@ -160,14 +160,20 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
     expect($sessionTiles.get()[0]?.runtimeId).toBe(RECOVERED_SESSION_ID)
   })
 
-  it.each(['interrupt', 'steer'] as const)('rejects tile %s RPC failure without converting it to a queue signal', async mode => {
-    requestGatewayMock.mockRejectedValue(new Error('correction unsupported'))
-    const { result } = renderTileActions()
-    await act(async () => {
-      await expect(result.current.steerPrompt('keep correction', mode)).rejects.toThrow('correction unsupported')
-    })
-    expect(requestGatewayMock).toHaveBeenCalledExactlyOnceWith(mode === 'steer' ? 'session.steer' : 'session.redirect', { session_id: RUNTIME_SESSION_ID, text: 'keep correction' })
-  })
+  it.each(['interrupt', 'steer'] as const)(
+    'rejects tile %s RPC failure without converting it to a queue signal',
+    async mode => {
+      requestGatewayMock.mockRejectedValue(new Error('correction unsupported'))
+      const { result } = renderTileActions()
+      await act(async () => {
+        await expect(result.current.steerPrompt('keep correction', mode)).rejects.toThrow('correction unsupported')
+      })
+      expect(requestGatewayMock).toHaveBeenCalledExactlyOnceWith(
+        mode === 'steer' ? 'session.steer' : 'session.redirect',
+        { session_id: RUNTIME_SESSION_ID, text: 'keep correction' }
+      )
+    }
+  )
 
   // #141644: a correction the owner refused before any agent saw it hands the words back (false)
   // so the composer re-queues them, instead of throwing a "prompt failed" that drops them.
@@ -179,6 +185,26 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
     const ok = await act(async () => result.current.steerPrompt('keep correction'))
     expect(ok).toBe(false)
     expect(requestGatewayMock).toHaveBeenCalledTimes(1)
+  })
+
+  // The gateway's `rejected` can follow delivery: only the no-live-agent branch sets
+  // `delivered: false`. Treating that `rejected` as "not accepted" made the composer hand
+  // the words back, so a delivered correction also sat in the input box.
+  it('does not hand back a tile correction the live agent absorbed', async () => {
+    requestGatewayMock.mockResolvedValue({ status: 'rejected' })
+    const { result } = renderTileActions()
+    // `true` is the contract the composer keys on: anything false sends the words back into
+    // the input box (use-composer-submit steerDraft -> keep()), which duplicated a message
+    // that was already on screen.
+    const ok = await act(async () => result.current.steerPrompt('drill monthly not weekly', 'steer'))
+    expect(ok).toBe(true)
+  })
+
+  it('still hands back a tile correction the gateway reports as undelivered', async () => {
+    requestGatewayMock.mockResolvedValue({ status: 'rejected', delivered: false })
+    const { result } = renderTileActions()
+    const ok = await act(async () => result.current.steerPrompt('keep correction', 'steer'))
+    expect(ok).toBe(false)
   })
 
   it('resumes the stored session and retries once when session.redirect (steer) reports "session not found"', async () => {

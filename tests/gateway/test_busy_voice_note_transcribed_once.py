@@ -152,6 +152,37 @@ async def test_same_clip_forwarded_to_another_chat_still_echoes_there(tmp_path, 
         authority.db.close()
 
 
+
+@pytest.mark.asyncio
+async def test_a_forwarded_copy_never_takes_the_busy_messages_transcript(tmp_path, monkeypatch):
+    """The busy message owns the transcript it paid for, not the clip bytes: the same clip arriving
+    idle in another chat first is transcribed for that chat, and the busy message's turn runs on the
+    words it was interrupted and echoed with (a second STT pass could hear different words)."""
+    calls = []
+
+    def transcribe(path, model=None, source=None):
+        calls.append(path)
+        return {'success': True, 'transcript': 'paid words' if len(calls) == 1 else 'different words', 'provider': 'f'}
+    monkeypatch.setattr('tools.transcription_tools.transcribe_audio', transcribe)
+    runner, authority, source, agent, sent = await _busy_rig(tmp_path, monkeypatch)
+    clip = tmp_path / 'note.ogg'
+    clip.write_bytes(b'OggS forwarded busy clip')
+    other = runner.adapters[Platform.WHATSAPP].build_source(
+        chat_id='15557654321@s.whatsapp.net', user_id=CHAT, chat_type='dm')
+    try:
+        restored = await _admit_busy_voice(runner, authority, source, clip)
+        forwarded = MessageEvent(text='', message_type=MessageType.VOICE, source=other, message_id='f1',
+                                 media_urls=[str(clip)], media_types=['audio/ogg'])
+        await runner._prepare_inbound_message_text(event=forwarded, source=other, history=[])
+        text = await runner._prepare_inbound_message_text(event=restored, source=restored.source, history=[])
+    finally:
+        authority.db.close()
+    assert agent.interrupts == [('"paid words"',)]
+    assert '"paid words"' in text and 'different words' not in text
+    assert len(calls) == 2  # the busy pass and the forwarded copy; the restored turn pays nothing
+    assert [m for m in sent if m.startswith('🎙️')] == ['🎙️ "paid words"', '🎙️ "different words"']
+
+
 @pytest.mark.asyncio
 async def test_a_clip_listed_twice_in_one_message_echoes_once(tmp_path, monkeypatch):
     calls = []

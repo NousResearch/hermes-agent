@@ -17,7 +17,7 @@ from fastapi import APIRouter
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_gateway import _display_system_platform
 from starlette.concurrency import run_in_threadpool
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Request, Response
 from gateway.status import (
     derive_gateway_busy, derive_gateway_drainable, normalize_updated_at, parse_active_agents,
     profile_platforms_from_multiplexer, resolve_gateway_liveness,
@@ -545,9 +545,26 @@ async def _webapp_caller_signed_out(request: Request) -> bool:
     return False
 
 
+#: Response header naming this machine's Fly private (6PN) address. The agent router's wake poke
+#: reads it: a just-resumed machine accepts on that address in well under a second, while its
+#: ``<app>.internal`` name keeps failing to resolve for ~9 s.
+PRIVATE_IP_HEADER = "X-Hermes-Private-Ip"
+
+
+def _stamp_private_ip(response: Optional[Response]) -> None:
+    """Name this machine's 6PN address on the response, when Fly gave it one. A 6PN address is
+    routable only inside the org's private network, where ``<app>.internal`` already resolves to
+    it. It does tell any caller the org's network id and this machine's host id: accepted, since
+    the router's wake request is unauthenticated and nothing outside the network can use them."""
+    private_ip = os.environ.get("FLY_PRIVATE_IP", "").strip()
+    if response is not None and private_ip.lower().startswith("fdaa:"):
+        response.headers[PRIVATE_IP_HEADER] = private_ip
+
+
 @router.get("/api/status")
 async def get_status(profile: Optional[str] = None,
-                     request: Request = None):  # type: ignore[assignment]  # None when awaited in-process
+                     request: Request = None,  # type: ignore[assignment]  # None when awaited in-process
+                     response: Response = None):  # type: ignore[assignment]  # None when awaited in-process
     """Public machine-level liveness probe (``PUBLIC_API_PATHS``): version, gateway state,
     active session count and the auth-gate shape — no bodies, no session content, no secrets.
 
@@ -556,6 +573,7 @@ async def get_status(profile: Optional[str] = None,
     process-global skills-module attributes a concurrent request would cross-restore.
     """
     from hermes_cli.web_server import _GATEWAY_HEALTH_URL
+    _stamp_private_ip(response)
     signed_out = await _webapp_caller_signed_out(request)
     status_scope = None
     # A signed-out caller's ``?profile=`` is ignored: an unknown name's 404 would tell it which exist.

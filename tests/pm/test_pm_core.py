@@ -5,6 +5,7 @@ stores."""
 
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import stat
@@ -45,6 +46,11 @@ class TopTool(FakeTool):
     deps = ("deptool",)
 
 
+class SideTool(FakeTool):
+    name = "sidetool"
+    deps = ("deptool",)
+
+
 class MultiTool(BinaryPackage):
     """A runtime split across two archives that must land in one entry."""
     name = "multitool"
@@ -79,7 +85,7 @@ def pm_env(tmp_path, served, monkeypatch):
     # restore and deletes the built-in entry from the live registry.
     saved = dict(registry._packages)
     registry._packages.clear()
-    for cls in (FakeTool, DepTool, TopTool, MultiTool, Venv):
+    for cls in (FakeTool, DepTool, TopTool, SideTool, MultiTool, Venv):
         registry._packages[cls.name] = cls()
     FakeTool.base_url = base_url
     MultiTool.base_url = base_url
@@ -186,6 +192,22 @@ def test_deps_compose_dependents_win(pm_env):
     assert runner.env["DEPTOOL_SEEN"] == "1"
     path = runner.env["PATH"]
     assert path.index("toptool-1.0") < path.index("deptool-1.0")
+
+
+def test_env_for_keeps_every_dependent_ahead_of_a_shared_dependency(pm_env):
+    """npm and pnpm both depend on node, whose bin dir carries its own bundled npm:
+    composing them must not let the shared dependency overtake the first dependent."""
+    from pm.install import ensure, env_for
+
+    lockfile_path, _, docroot, _ = pm_env
+    for name in ("deptool", "toptool", "sidetool"):
+        _name, digest = make_tar(docroot, f"{name}-1.0.tar.gz", {"bin/faketool": name})
+        _pin(lockfile_path, name, "1.0", digest)
+        ensure(name, explicit=True)
+
+    path = env_for("toptool", "sidetool", base_env={})["PATH"]
+    assert path.index("toptool-1.0") < path.index("deptool-1.0")
+    assert path.index("sidetool-1.0") < path.index("deptool-1.0")
 
 def test_cli_env_reports_only_package_exports(pm_env, monkeypatch, capsys):
     import json
@@ -778,6 +800,49 @@ def test_python_stage_drops_unloadable_x64_vc_runtime_on_arm64(monkeypatch, tmp_
 
     assert not (staged / "vcruntime140_1.dll").exists()
     assert (staged / "vcruntime140.dll").is_file()
+
+
+def _stage_arm64_python_with_held_x64_helper(monkeypatch, tmp_path, times: float) -> tuple[Path, list[str]]:
+    """The x64 helper is deleted moments after the payload is extracted and hoisted, while a Windows
+    scanner can still hold it: the delete is refused for a moment ([WinError 32], EACCES)."""
+    from pm import filesystem
+    from pm.registry import get_package
+
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    (staged / "python.exe").write_bytes(b"launcher")
+    (staged / "vcruntime140_1.dll").write_bytes(b"x64")
+    (staged / "vcruntime140.dll").write_bytes(b"arm64")
+
+    monkeypatch.setattr(filesystem, "_HELD_RETRY_DELAYS", (0,) * len(filesystem._HELD_RETRY_DELAYS))
+    refusals: list[str] = []
+    real_unlink = os.unlink
+
+    def unlink(path, *args, **kwargs):
+        if os.path.basename(os.fspath(path)) == "vcruntime140_1.dll" and len(refusals) < times:
+            refusals.append(os.fspath(path))
+            raise PermissionError(errno.EACCES, "The process cannot access the file because it is being used "
+                                  "by another process", os.fspath(path))
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", unlink)
+    monkeypatch.setattr("hermes_cli.macos_signing.sign_managed_python", lambda p: False)
+    get_package("python").stage(None, staged, "3.14.7", "win32-arm64")
+    return staged, refusals
+
+
+def test_python_stage_waits_out_a_scanner_hold_on_the_x64_vc_runtime_on_arm64(monkeypatch, tmp_path):
+    staged, refusals = _stage_arm64_python_with_held_x64_helper(monkeypatch, tmp_path, times=2)
+
+    assert len(refusals) == 2
+    assert not (staged / "vcruntime140_1.dll").exists()
+    assert (staged / "vcruntime140.dll").is_file()
+    assert (staged / "python3.exe").read_bytes() == b"launcher"
+
+
+def test_python_stage_fails_when_the_x64_vc_runtime_hold_never_clears(monkeypatch, tmp_path):
+    with pytest.raises(PermissionError):
+        _stage_arm64_python_with_held_x64_helper(monkeypatch, tmp_path, times=float("inf"))
 
 
 def test_python_stage_keeps_vc_runtimes_on_other_targets(monkeypatch, tmp_path):

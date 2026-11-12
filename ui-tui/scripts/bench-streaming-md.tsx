@@ -15,8 +15,8 @@
 // can't distort another's numbers. Each run also gets a unique text salt and
 // a fresh theme object (its own WeakMap cache bucket).
 //
-// Run:          npx tsx scripts/bench-streaming-md.tsx
-// Single case:  npx tsx scripts/bench-streaming-md.tsx <naive|monolithic|per-block> <blocks>
+// Run:          pnpm exec tsx scripts/bench-streaming-md.tsx
+// Single case:  pnpm exec tsx scripts/bench-streaming-md.tsx <naive|monolithic|per-block> <blocks>
 
 import { execFileSync } from 'child_process'
 import { PassThrough } from 'stream'
@@ -246,7 +246,7 @@ const [strategyArg, sizeArg] = process.argv.slice(2)
 
 if (strategyArg === 'series') {
   // Series mode: per-append render times for one strategy/size, as JSON.
-  // Usage: npx tsx scripts/bench-streaming-md.tsx series <strategy> <blocks>
+  // Usage: pnpm exec tsx scripts/bench-streaming-md.tsx series <strategy> <blocks>
   const [, seriesStrategy, seriesSize] = process.argv.slice(2)
   const size = Number(seriesSize)
   const updates = makeUpdates(makeBlocks(size, `${seriesStrategy}${size}`))
@@ -270,7 +270,7 @@ if (strategyArg === 'series') {
   const sizes = [32, 128, 512]
 
   const run = (strategy: string, size: number): { appends: number; elapsed: number } => {
-    const out = execFileSync('npx', ['tsx', 'scripts/bench-streaming-md.tsx', strategy, String(size)], {
+    const out = execFileSync('pnpm', ['exec', 'tsx', 'scripts/bench-streaming-md.tsx', strategy, String(size)], {
       encoding: 'utf8',
       env: { ...process.env, NODE_OPTIONS: '--max-old-space-size=8192' },
       timeout: 3_600_000

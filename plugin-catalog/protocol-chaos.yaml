@@ -1,0 +1,22 @@
+name: protocol-chaos
+repo: https://github.com/chaos-xxl/protocol-chaos
+sha: cb3f13a51b3d81e224eeadde68e1f55d6b2770d2
+subdir: integrations/hermes/protocol-chaos
+description: "Long-lived matters shared by all your assistants, kept on your own Protocol Chaos server (draft 0.2): Hermes sees an overview of your open matters and the details of the ones a message names, records your words after it answers and folds them into that matter's goal, limits, plan, progress and state, and a bundled skill organizes what every assistant recorded once a day. Runs beside your memory provider, not instead of it. Disclosure — each new session's system prompt (not a scheduled job's; subagent sessions included) gets an overview of open matters, up to 3,900 characters. Before each turn the plugin fetches the server's directory (cached 30 seconds) and reads, by id, up to three matters whose titles share words with the message; the message itself is never sent to the server. After each answer, a background call to the auxiliary model Hermes routes for protocol_chaos_capture (the compression model by default) receives the user's message, up to 600 characters of the previous reply, the matters' titles and states and today's date; when it decides to record, the user's words, copied verbatim, are sent to the server at PROTOCOL_CHAOS_URL with PROTOCOL_CHAOS_TOKEN, and a second call receives that matter's fields, up to six earlier words, the titles of its larger matters and parts, and the last few messages with the reply (about 6,000 characters), and the fields it returns are written to the server. Nothing else is contacted and there is no telemetry; logs hold ids, counts, times and token counts. Like any plugin's added context, the matters added to a turn are saved with it in Hermes's session history and resent on later turns. Cron and subagent turns get no per-turn context and record nothing. The bundled organizer skill runs only as a scheduled job the user creates, uses the server's MCP tools, and keeps a checkpoint at ~/.hermes/protocol-chaos/organizer-checkpoint."
+maintainer: chaos-xxl
+tier: community
+category: general
+requires_hermes: ">=0.21.1"
+version: "0.3.0"
+title: Protocol Chaos
+docs_url: https://github.com/chaos-xxl/protocol-chaos/blob/main/integrations/hermes/protocol-chaos/README.md
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks:
+  - pre_llm_call
+  - post_llm_call
+  provides_middleware: []
+  requires_env:
+  - PROTOCOL_CHAOS_URL
+  - PROTOCOL_CHAOS_TOKEN

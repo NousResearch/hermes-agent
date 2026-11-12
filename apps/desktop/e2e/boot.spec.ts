@@ -7,9 +7,9 @@
  *
  *   electron → hermes serve (python) → mock provider → renderer
  *
- * Prerequisite: `npm run build` must have been run so dist/ exists.
+ * Prerequisite: `pnpm run build` must have been run so dist/ exists.
  * Run from the nix devshell:
- *   npm exec playwright test e2e/boot.spec.ts --reporter=list
+ *   pnpm exec playwright test e2e/boot.spec.ts --reporter=list
  */
 import { expect, test } from './test'
 

@@ -793,11 +793,16 @@ def _confine_source_images(image_url, reference_image_urls, task_id, *, permitte
 
     Routes through ``tools.image_source`` (in-sandbox exec-read, media-cache host reads,
     credential guard) so generation obeys the same confinement as vision. URLs/data: pass
-    through; local backend is a no-op. Returns ``(image_url, reference_image_urls, error_json_or_None)``.
+    through; on the local backend only a path that misses by an invisible character is rewritten to
+    its on-disk spelling. Returns ``(image_url, reference_image_urls, error_json_or_None)``.
     """
-    from tools.terminal_scope import terminal_env
-    if (terminal_env("TERMINAL_ENV") or "local").strip().lower() in ("", "local"):
-        return image_url, reference_image_urls, None
+    from tools.image_source import _is_local_terminal_backend, local_source_spelling
+    if _is_local_terminal_backend():  # never in a hosted scope, whose sources are its sandbox's
+        # Providers open local paths themselves: hand them the on-disk spelling of a name the
+        # model retyped with a plain space (macOS screenshot names carry U+202F before AM/PM).
+        if isinstance(reference_image_urls, (list, tuple)):
+            reference_image_urls = [local_source_spelling(r) for r in reference_image_urls]
+        return local_source_spelling(image_url), reference_image_urls, None
     from model_tools import _run_async
     from tools.image_source import ImageResolutionError, resolve_local_source_to_data_url
 
@@ -1051,4 +1056,6 @@ registry.register(
     handler=_handle_image_generate, check_fn=check_image_generation_requirements, requires_env=[],
     is_async=False,   # sync fal_client API to avoid "Event loop is closed" in gateway
     emoji="🎨", dynamic_schema_overrides=_build_dynamic_image_schema,
+    # Advertised only for providers that support them, but always read by the handler.
+    compat_args=("image_url", "reference_image_urls", "upscale", *_CREATIVE_CONTROL_PARAMS),
 )

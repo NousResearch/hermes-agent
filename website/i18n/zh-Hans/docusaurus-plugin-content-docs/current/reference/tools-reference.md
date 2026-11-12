@@ -8,7 +8,7 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 
 本页记录 Hermes 的内置工具，按工具集分组。可用性因平台、凭据和已启用的工具集而异。
 
-**当前注册表快速统计：** 约 63 个工具 —— 4 个浏览器工具（`browser_exec`、`browser_cdp`、`browser_dialog`、`browser_vault`）、4 个文件工具、2 个终端工具、2 个 Web 工具、5 个 Feishu 工具、5 个 Yuanbao 工具、9 个 kanban 工具（在 kanban 调度器生成 agent 时注册）、2 个 Discord 工具，以及若干独立工具（`memory`、`clarify`、`delegate_task`、`execute_code`、`cronjob`、`session_search`、`skill_view`/`skill_manage`/`skills_list`、`text_to_speech`、`image_generate`、`video_generate`、`vision_analyze`、`video_analyze`、`send_message`、`todo`、`computer_use`、`process`）。
+**当前注册表快速统计：** 约 63 个工具 —— 4 个浏览器工具（`browser_exec`、`browser_cdp`、`browser_dialog`、`browser_vault`）、4 个文件工具、2 个终端工具、2 个 Web 工具、5 个 Feishu 工具、9 个 kanban 工具（在 kanban 调度器生成 agent 时注册）、2 个 Discord 工具，以及若干独立工具（`memory`、`clarify`、`delegate_task`、`execute_code`、`cronjob`、`session_search`、`skill_view`/`skill_manage`/`skills_list`、`text_to_speech`、`image_generate`、`video_generate`、`vision_analyze`、`video_analyze`、`send_message`、`todo`、`computer_use`、`process`）。
 
 :::tip MCP 工具
 除内置工具外，Hermes 还可从 MCP 服务器动态加载工具。MCP 工具以 `mcp_<server>_` 为前缀（例如，`github` MCP 服务器的 `mcp_github_create_issue`）。配置方法见 [MCP 集成](../user-guide/features/mcp.md)。
@@ -216,14 +216,4 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 |------|------|----------|
 | `discord_admin` | 通过 REST API 管理 Discord 服务器：列出 guild/频道/角色，创建/编辑/删除频道，管理角色授予、禁言、踢出和封禁。 | `DISCORD_BOT_TOKEN` + bot 权限 |
 
-## `hermes-yuanbao` 工具集
-
-仅在 `hermes-yuanbao` 平台工具集上注册。元宝是腾讯的聊天应用；这些工具驱动其私信/群组/表情包 API。
-
-| 工具 | 描述 | 所需环境 |
-|------|------|----------|
-| `yb_query_group_info` | 查询群组（应用内称为"派/Pai"）的基本信息：名称、群主、成员数。 | 元宝凭据 |
-| `yb_query_group_members` | 查询群组成员（用于 `@` 提及、按名称查找用户、列出机器人）。 | 元宝凭据 |
-| `yb_send_dm` | 向群组中的用户发送私信，支持可选的媒体文件。 | 元宝凭据 |
-| `yb_search_sticker` | 按关键词搜索元宝内置表情（TIM 表情）目录。 | 元宝凭据 |
-| `yb_send_sticker` | 向当前元宝聊天发送内置表情。 | 元宝凭据 |
+**元宝工具**（`yb_*`，工具集 `yuanbao`）已不再内置，改由 `yuanbao` Hermes Labs 插件提供（`hermes plugins install yuanbao`）。参见 [Yuanbao](../user-guide/messaging/yuanbao.md)。

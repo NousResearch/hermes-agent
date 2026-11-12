@@ -442,13 +442,13 @@ class GatewayStatusCommandsMixin:
         from tools.process_registry import format_uptime_short, process_registry
         now = time.time()
         current_session_key = self._session_key_for_source(event.source)
-        running_started: dict = getattr(self, "_running_agents_ts", {}) or {}
         agent_rows: list[dict] = []
         for session_key, agent in (getattr(self, "_running_agents", {}) or {}).items():
             pending = agent is _AGENT_PENDING_SENTINEL
+            _started_state = self._peek_session_state(session_key)
             agent_rows.append({
                 "session_key": session_key,
-                "elapsed": max(0, int(now - float(running_started.get(session_key, now)))),
+                "elapsed": max(0, int(now - float((_started_state.turn.started_ts if _started_state else 0.0) or now))),
                 "state": t("gateway.agents.state_starting") if pending else t("gateway.agents.state_running"),
                 "session_id": "" if pending else str(getattr(agent, "session_id", "") or ""),
                 "model": "" if pending else str(getattr(agent, "model", "") or ""),

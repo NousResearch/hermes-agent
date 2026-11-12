@@ -42,9 +42,11 @@ class _HeaderModel(Model):
 
 
 @contextmanager
-def _gateway(tmp_path, named=False):
+def _gateway(tmp_path, named=False, plugin_task=None, extra_auxiliary=None):
     """A real gateway on a loopback model whose ``BLOCK_STARTED`` requests wait for ``release``;
-    ``named`` serves the model as a named custom provider that requires its ``extra_headers``."""
+    ``named`` serves the model as a named custom provider that requires its ``extra_headers``;
+    ``plugin_task`` installs a plugin registering that auxiliary task, pinned to ``plugin-model``;
+    ``extra_auxiliary`` adds ``auxiliary`` blocks (their ``base_url`` is the loopback model)."""
     root = Path(__file__).resolve().parents[2]
     home, user, work = tmp_path / 'state', tmp_path / 'user', tmp_path / 'work'
     home.mkdir(mode=0o700)
@@ -59,13 +61,24 @@ def _gateway(tmp_path, named=False):
     model = {'provider': 'custom', 'default': 'chat-model', 'base_url': url}
     if named:
         model = {'provider': 'custom:edge', 'default': 'chat-model'}
+    # The task's default ``auto`` route: the borrowed session runtime, else the profile's model.
+    auxiliary = {'title_generation': {'enabled': False}}
+    if plugin_task:
+        plugin = home / 'plugins' / 'probe'
+        plugin.mkdir(parents=True)
+        (plugin / 'plugin.yaml').write_text('name: probe\nversion: 0.1.0\ndescription: probe\n', encoding='utf-8')
+        (plugin / '__init__.py').write_text(
+            f'def register(ctx):\n    ctx.register_auxiliary_task({plugin_task!r}, display_name="P", description="p")\n',
+            encoding='utf-8')
+        auxiliary[plugin_task] = {'provider': 'custom', 'base_url': url, 'model': 'plugin-model'}
+    auxiliary.update({task: {**block, 'base_url': url} for task, block in (extra_auxiliary or {}).items()})
     (home / 'config.yaml').write_text(json.dumps({
         'gateway': {'multiplex_profiles': False},
         'model': model,
+        'plugins': {'enabled': ['probe'] if plugin_task else []},
         'custom_providers': [{'name': 'edge', 'base_url': url, 'api_key': 'loopback-only',
                               'extra_headers': {'X-Route-Token': 'edge-token'}}] if named else [],
-        # The task's default ``auto`` route: the borrowed session runtime, else the profile's model.
-        'auxiliary': {'title_generation': {'enabled': False}}}))
+        'auxiliary': auxiliary}))
     env = child_env()
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
                OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=url, PYTHONUNBUFFERED='1')
@@ -203,3 +216,25 @@ def test_a_burst_of_slow_oneshots_never_starves_the_rest_of_the_gateway(tmp_path
     # Every call is answered: generated, or refused by name once the one-shot pool is full.
     assert set(answers) <= {'RECOVERY_ACK_BLOCK_STARTED', 'oneshot_busy'}, answers
     assert 'RECOVERY_ACK_BLOCK_STARTED' in answers, answers
+
+
+@pytest.mark.platforms("linux")
+def test_a_oneshot_task_routes_like_the_released_gateway(tmp_path):
+    """``task`` names an ``auxiliary.<task>`` block, as in the last release: a plugin-registered task
+    runs on its block, so does one only configured in config.yaml, and an unknown key runs on the
+    default ``auto`` route (the profile's model) instead of being refused."""
+    out = {}
+
+    async def probe(home, work, peer, desc):
+        async with websocket(home, desc) as ws:
+            for key, task in (('typo', 'probe_chart'), ('configured', 'my_digest'), ('plugin', 'probe_charts')):
+                out[key] = await rpc(ws, 'llm.oneshot', task=task, input=f'ONESHOT_{key}')
+            out['models'] = {key: next(r['model'] for r in peer.requests
+                                       if any(m.get('content') == f'ONESHOT_{key}' for m in r['messages']))
+                             for key in ('typo', 'configured', 'plugin') if 'result' in out[key]}
+    with _gateway(tmp_path, plugin_task='probe_charts',
+                  extra_auxiliary={'my_digest': {'provider': 'custom', 'model': 'digest-model'}}) as served:
+        asyncio.run(probe(*served))
+    assert {key: out[key].get('result') for key in ('typo', 'configured', 'plugin')} == {
+        key: {'text': f'RECOVERY_ACK_ONESHOT_{key}'} for key in ('typo', 'configured', 'plugin')}, out
+    assert out['models'] == {'typo': 'chat-model', 'configured': 'digest-model', 'plugin': 'plugin-model'}, out

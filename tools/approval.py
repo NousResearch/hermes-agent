@@ -17,7 +17,7 @@ import importlib
 import logging
 import os
 import threading
-from typing import Optional
+from typing import Any, Iterable, Optional
 
 from utils import env_var_enabled, is_truthy_value
 from agent.i18n import t
@@ -50,7 +50,7 @@ _YOLO_MODE_FROZEN: bool = is_truthy_value(os.getenv("HERMES_YOLO_MODE", ""))
 
 # --- Per-session approval state (thread-safe) -----------------------------------------------------------------------
 
-_lock = threading.Lock()
+_lock = threading.RLock()  # re-entrant: a card settle checks and resolves under one hold
 _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
 _session_yolo: set[str] = set()
@@ -133,12 +133,18 @@ def register_gateway_notify(session_key: str, cb) -> None:
 
 
 def unregister_gateway_notify(session_key: str) -> None:
-    """Unregister the callback and wake ALL blocked threads for this session so
-    they don't hang forever (agent run finished or interrupted)."""
+    """Withdraw foreground waits when the turn ends. Dispatch-owned background
+    waits survive until their worker ends or the session is cleared."""
     with _lock:
         _gateway_notify_cbs.pop(session_key, None)
-        for entry in _gateway_queues.pop(session_key, []):
-            entry.event.set()
+        queue = _gateway_queues.get(session_key, [])
+        for entry in list(queue):
+            # A background child's wait stays answerable when its lease can still deliver prompts.
+            if entry.owner is None or entry.owner.callback is None:
+                queue.remove(entry)
+                entry.event.set()
+        if not queue:
+            _gateway_queues.pop(session_key, None)
 
 
 def resolve_gateway_approval(session_key: str, choice: str,
@@ -178,15 +184,49 @@ def resolve_gateway_approval(session_key: str, choice: str,
     return len(targets)
 
 
-def resolve_gateway_approval_card(session_key: str, choice: str, request_id: Optional[str]) -> int:
+def _card_target(session_key: str, request_id: Optional[str]):
+    """The entry a card tap resolves: its own request, never another. Caller holds ``_lock``."""
+    if not request_id:
+        return None
+    return next((e for e in _gateway_queues.get(session_key) or [] if e.data.get("request_id") == request_id), None)
+
+
+def restrict_gateway_approval_card_to_deny(session_key: str, request_id: Optional[str], restricted: bool = True) -> None:
+    """Mark a pending request whose card could not show the whole command: a card tap may only deny it.
+    Every request starts marked; ``restricted=False`` lifts the mark once its card shows the whole command."""
+    with _lock:
+        entry = _card_target(session_key, request_id)
+        if entry is not None:
+            entry.card_deny_only = restricted
+
+
+def resolve_gateway_approval_card(session_key: str, choice: str, request_id: Optional[str], *,
+                                  actor_id: Any = None, admin_ids: Any = (), extra: Any = None) -> int:
     """Resolve the approval a native button card was rendered for.
 
-    With the card's request id only that request can resolve: a card whose request already
-    settled (timed out, answered by ``/approve``) resolves nothing instead of the next queued
-    approval in the same session. A card sent without an id keeps the FIFO behaviour."""
-    if request_id:
+    Only the card's own request can resolve: a card whose request already settled (timed out, answered
+    by ``/approve``) resolves nothing instead of the next queued approval in the same session. A tap
+    without a request id (a card from an older build) cannot say which request it was rendered for, so
+    it resolves nothing; typed ``/approve`` stays the way to answer one. A request stays Deny-only from
+    its creation until its card shows the whole command, so a forged or early approve tap resolves
+    nothing.
+
+    With *actor_id* the clicker's authority (``gateway.approval_actor.may_answer``, with the platform
+    *extra* / *admin_ids*, and the chat's slash policy for the answer's own ``/approve`` or ``/deny``)
+    is checked against that same entry. The Deny-only check, the authority check
+    and the settle are one critical section."""
+    if not request_id:
+        return 0
+    with _lock:  # re-entrant: the settle below takes it again
+        target = _card_target(session_key, request_id)
+        if target is not None and choice != "deny" and target.card_deny_only:
+            return 0
+        if target is not None and actor_id is not None:
+            from gateway.approval_actor import may_answer
+            from gateway.approval_actor import approval_commands
+            if not may_answer(target.authority, actor_id, admin_ids, extra, approval_commands(choice)):
+                return 0
         return resolve_gateway_approval(session_key, choice, request_id=request_id)
-    return resolve_gateway_approval(session_key, choice)
 
 
 def withdraw_gateway_approval(session_key: str, request_id: str, cause: str) -> bool:
@@ -210,6 +250,12 @@ def list_gateway_approvals(session_key: str) -> list[dict]:
     """Return replay-safe snapshots of unresolved approvals for one session."""
     with _lock:
         return [dict(entry.data) for entry in _gateway_queues.get(session_key, [])]
+
+
+def list_gateway_approval_authority(session_key: str) -> list[dict]:
+    """Per unresolved approval: its ``request_id`` and who may answer it (requester, approvers)."""
+    with _lock:
+        return [{"request_id": e.data.get("request_id"), **e.authority} for e in _gateway_queues.get(session_key, [])]
 
 
 def register_gateway_settle(session_key: str, request_id: str, settle) -> bool:
@@ -318,6 +364,8 @@ def clear_session(session_key: str) -> None:
         _session_yolo.discard(session_key)
         _launch_yolo_applied.discard(session_key)
         _pending.pop(session_key, None)
+        from tools.approval_notify_lease import revoke_session_locked
+        revoke_session_locked(session_key)
         for entry in _gateway_queues.pop(session_key, []):
             # Cancel blocked waits now so the old run unwinds instead of idling until timeout;
             # the prompt was withdrawn, nobody denied it.
@@ -595,16 +643,24 @@ def _user_approved(session_key: str, description: str) -> dict:
 
 
 def _gateway_notify_cb(session_key: str):
+    from tools.approval_notify_lease import current
+    lease = current(session_key)
+    if lease is not None:
+        return lease.notify if lease.deliverable() else None
     with _lock:
         return _gateway_notify_cbs.get(session_key)
 
 
 def _pending_result(spec, session_key: str, *, command: str, description: str,
                     pattern_key: str, pattern_keys: list[str], body: str | None,
-                    smart_denied: bool) -> dict:
+                    smart_denied: bool, gateway: bool = False) -> dict:
     """Queue an approval nobody can answer right now (no gateway notifier, no CLI panel) for
     ``/approve`` / ``/deny`` review. Command/code gates return the backward-compatible
-    ``pending_approval`` shape (``pattern_keys`` + STOP text); the action gate ``approval_required``."""
+    ``pending_approval`` shape (``pattern_keys`` + STOP text); the action gate ``approval_required``.
+    A gateway background child that no chat can show a prompt to fails closed instead (#133514)."""
+    from tools.approval_notify_lease import stranded_denial
+    if (denied := stranded_denial(session_key, gateway, spec.noun, pattern_key, description)) is not None:
+        return denied
     pending = {"command": command, "pattern_key": pattern_key}
     if spec.pending_keys:
         pending["pattern_keys"] = pattern_keys
@@ -980,7 +1036,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                 display_command, display_description = command, description
             return _pending_result(
                 spec, session_key, command=display_command, description=display_description, pattern_key=pattern_key,
-                pattern_keys=pattern_keys, body=pending_body, smart_denied=smart_denied,
+                pattern_keys=pattern_keys, body=pending_body, smart_denied=smart_denied, gateway=is_gateway,
             )
 
     # CLI interactive: single combined prompt, wrapped in the pre/post plugin hooks.

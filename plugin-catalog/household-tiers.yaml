@@ -1,0 +1,32 @@
+name: household-tiers
+repo: https://github.com/chevlume/household-tiers
+# Pin of the plugin tree this entry describes. A later commit that only
+# updates this line is not included; set sha to the commit you submit.
+sha: "1896b63f63c8f1615d974e30c3c731e895fb8d70"
+description: "Per-person tool tiers for one shared Hermes bot, with a family preset for curfew, a parent alert, and a homework note: built-in owner memory (MEMORY.md/USER.md) withheld from non-owner prompts; an external provider block joined after those boxes is removed; a provider block with no built-in box, and compaction's auxiliary summary, are not filtered. Disclosure — gateway access policy: blocks tool calls per sender tier through pre_tool_call (fail-closed: an unreadable household-tiers.json blocks every tool call and withholds memory from every request, owner included), rewrites non-owner model requests through llm_request middleware to remove the owner's MEMORY.md/USER.md and filter tools (external memory-provider blocks with no built-in box and compaction's auxiliary summary are not filtered), resolves non-owner URL hostnames with the system resolver to refuse local targets, sends a curfew alert through the gateway's own adapter to the chat you set in `notify`, and writes household-tiers.json and a per-person audit log under the active Hermes home; /family tier and /family forget change those files and are owner-only."
+maintainer: chevlume
+category: platform
+requires_hermes: ">=0.22.7"
+version: "0.1.1"
+known_issues:
+  - "pytest (108 passed, 0 failed, 0 skipped), plugins validate, and plugins doctor were run on Hermes commit ed1afb082eb3e46cf2edae9d8f68fb67b09ee4df with uv CPython 3.11.18, 3.12.16, 3.13.18, and 3.14.10. uv sync --locked refuses interpreters before 3.14 (lock environment python_full_version >= 3.14); those runs installed that lock's wheels into each interpreter. Tag v0.22.7 (b200f5bc60e31588ba2cb60e288029c4a54ba5fa) was not re-run. requires_hermes stays >=0.22.7. CPython 3.13.18 and 3.14.10 also printed 44 DeprecationWarnings from Hermes plugins_manifest.py."
+  - "hermes plugins validate still warns on tools.memory_tool_store.ENTRY_DELIMITER in __init__.py (three sites). That constant is not on a public plugin surface. Memory files are get_hermes_home() / memories, the same path as get_memory_dir(). The plugin does not call MemoryStore._parse_entries. Measurement imports live under tests/ and are not part of plugin load."
+  - "With plugins.isolation set to host the plugin host does not forward the per-turn sender, so household-tiers fails closed (everyone is a guest) and the parent alert is skipped. Use isolation in_process for per-person tiers."
+  - "Shared sessions (a thread with thread_sessions_per_user false, or a group with group_sessions_per_user false) carry replies to other people. Non-owner tiers are refused there by default (shared_threads refuse) and asked to use a direct message."
+  - "If household-tiers.json is unreadable, tool calls are blocked and memory blocks are withheld from every request, including the owner's, and every gateway turn gets a short error reply until the file is fixed."
+  - "HTTP redirects onto the local network, and DNS names that change address between check and connect, are not re-validated. A non-owner web tool resolves the hostname once with the system resolver and does not fetch the URL. See the README known issues."
+  - "Memory stripping and tool filtering were executed on chat_completions, anthropic_messages, codex_responses, and bedrock_converse payloads from Hermes commit ed1afb08, including multi-paragraph entries joined with §. The strip stops at the memory block; the date line and runtime block stay. A kid message that quotes an entry does not refuse the turn. Gemini conversion was not executed. Relative paths use ctx.session_cwd() and os.path.realpath. Case-folding was tested with a monkeypatched normcase on Linux, not on macOS."
+  - "Desktop and TUI turns resolve to guest once the process has served a messaging turn. A turn with no sender is then guest, not the local owner."
+  - "The default user tier has no read_file or search_files. A non-owner tier that adds them may only read file_roots (default empty, so no path is allowed). The active profile home, credential directories, and browser profiles are always refused, including a search root that contains them. The named path is realpath'd. search_files also walks the directory and refuses a symlink that leaves file_roots or touches a blocked path. The walk stops and refuses past 20000 entries. A search_files path that contains a comma is checked part by part; with no comma, two or more whitespace-separated pieces are checked as well as the raw string. target is the search mode, not a path, and a missing or blank path is checked as `.`. file_roots does not apply to other tools, such as terminal."
+  - "Context compaction's auxiliary summary request does not pass through llm_request, so the summary model still sees owner memory and MEMORY PROVIDER CONTEXT. post_compaction is observer-only. On a later main request, a message recognized as a compaction handoff has built-in entry text of 8 or more characters, and memory-provider-context tags, redacted in that span. A paraphrase is not detected. That auxiliary call was not executed."
+  - "An external provider system_prompt_block() joined after the built-in MEMORY.md/USER.md boxes is removed with those boxes. A provider block with no built-in box in the prompt is not located. Pieces of 8 or more characters from MEMORY.md or USER.md are redacted anywhere in an injected system section, including SOUL, AGENTS.md, and skills text when they match."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - subagent_start
+    - pre_gateway_dispatch
+    - post_gateway_admission
+  provides_middleware:
+    - llm_request
+  requires_env: []

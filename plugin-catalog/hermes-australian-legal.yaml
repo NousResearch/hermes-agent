@@ -1,0 +1,41 @@
+# Experimental prototype for synthetic evaluation; behavioural/legal review pending.
+name: hermes-australian-legal
+title: Australian Deal Preparation
+repo: https://github.com/drfinlaymccall/hermes-australian-legal
+sha: 83214470996980ecbab3b9ab5972d2dce31e0a6b
+version: "0.1.0"
+description: >-
+  Experimental public prototype for synthetic evaluation. The behavioural benchmark
+  and qualified legal review have not been completed.
+  Prepare Australian deal questions for counsel using dated regulatory sources.
+  Reads selected Commonwealth instruments from a separately cloned local Git corpus,
+  retains compilation commits and caveats, refuses dates outside recorded coverage,
+  checks review prerequisites, calculates explicit hypothetical earn-out scenarios,
+  and checks literal quotations. Preparation for counsel, not legal or tax advice.
+  Disclosure — bounded local Git subprocesses, no shell; reads committed objects
+  and metadata in the operator-selected corpus. No plugin network calls, credentials,
+  telemetry, automatic updates, persistent matter writes or background jobs.
+  The host model can receive supplied clause text and returned source excerpts.
+  Approval fields are user attestations, not authenticated counsel approval or a
+  host-wide permission gate. Quote matching does not verify source authenticity
+  or legal support. The inspected corpus records selected Commonwealth instruments
+  only and ends on 2026-09-01; it does not establish current law, Acts, case law,
+  State law, tax or transaction-specific applicability.
+maintainer: drfinlaymccall
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/drfinlaymccall/hermes-australian-legal#readme
+platforms: [linux]
+capabilities:
+  provides_tools:
+    - au_legal_status
+    - au_legal_provision
+    - au_legal_review_gate
+    - au_legal_earnout
+    - au_legal_check_finding
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "Synthetic evaluation only; paired model benchmark and qualified legal review pending."

@@ -7,6 +7,8 @@ export interface GatewayHostTranslations {
   unavailableDesc: string
   webappHostTitle: string
   webappHostDesc: string
+  /** Finishing a saved gateway's sign-in from the address a browser on another machine landed on. */
+  webappOauthPaste: { title: string; description: string; placeholder: string; finish: string; failed: string }
   webAccess: WebAccessTranslations
 }
 

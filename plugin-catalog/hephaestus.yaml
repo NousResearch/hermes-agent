@@ -1,0 +1,27 @@
+name: hephaestus
+repo: https://github.com/madebylegion/hermes-plugin-hephaestus
+sha: 9805692032681b1376496ce89a404c1ab1edce07
+title: Hephaestus
+description: "Ask for a plugin and your own agent writes it, checked by the official validator and doctor; you approve each check, because it runs the draft's code. It installs disabled; only you enable it. Disclosure — forge_check imports each draft's Python and calls its register() on this machine, outside the sandbox, after you approve that exact draft (no prompt if approvals are off or YOLO is on); runs the hermes CLI (fixed argument list, no shell, minimal environment) to validate, doctor, enable, disable and remove plugins; writes forged plugins under HERMES_HOME/plugins and drafts and snapshots in its data folder; a pre_tool_call guard blocks the agent from enabling plugins. No network, no telemetry, no LLM calls."
+maintainer: madebylegion
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/madebylegion/hermes-plugin-hephaestus#readme
+version: "0.1.0"
+image: https://raw.githubusercontent.com/madebylegion/hermes-plugin-hephaestus/9805692032681b1376496ce89a404c1ab1edce07/docs/social-preview.png
+screenshots:
+  - https://raw.githubusercontent.com/madebylegion/hermes-plugin-hephaestus/9805692032681b1376496ce89a404c1ab1edce07/docs/screenshots/consent-card.png
+  - https://raw.githubusercontent.com/madebylegion/hermes-plugin-hephaestus/9805692032681b1376496ce89a404c1ab1edce07/docs/screenshots/blocked.png
+  - https://raw.githubusercontent.com/madebylegion/hermes-plugin-hephaestus/9805692032681b1376496ce89a404c1ab1edce07/docs/screenshots/upgrade-adds.png
+platforms: []
+capabilities:
+  provides_tools:
+    - forge_new
+    - forge_check
+    - forge_install
+  provides_hooks:
+    - pre_tool_call
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

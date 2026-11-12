@@ -286,9 +286,18 @@ def test_delegated_child_never_leases_the_builtin_account(tmp_path, monkeypatch)
 
 @pytest.mark.parametrize("name,builtin_env", SHADOWED_BUILTINS)
 def test_explicit_builtin_pick_keeps_its_env_key(tmp_path, monkeypatch, name, builtin_env):
-    _home(tmp_path, monkeypatch, name, builtin_env)
+    """A bare built-in pick whose same-named entry is tuning only (no endpoint) stays on the built-in
+    with its env key. With an endpoint the entry is what the name means (#151775 ruling, option A),
+    and it sends its own key there."""
+    home = _home(tmp_path, monkeypatch, name, builtin_env)
     from hermes_cli import runtime_provider as rp
 
+    resolved = rp.resolve_runtime_provider(requested=name)
+    assert (resolved["base_url"], resolved["api_key"]) == (ENDPOINT, ENTRY_KEY)
+
+    cfg = yaml.safe_load((home / "config.yaml").read_text())
+    cfg["providers"][name] = {"request_timeout_seconds": 30}
+    (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
     resolved = rp.resolve_runtime_provider(requested=name)
     assert resolved["api_key"] == BUILTIN_KEY
     assert resolved["base_url"] != ENDPOINT

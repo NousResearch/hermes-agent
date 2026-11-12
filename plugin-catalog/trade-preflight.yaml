@@ -1,0 +1,25 @@
+name: trade-preflight
+title: TradePreflight
+repo: https://github.com/Mohamedhazeem/TradePreflight
+sha: d5e7a1e404d9abf4f0194fead06f7953eaab47bc
+version: "0.1.0"
+description: "Deterministic, fail-closed execution firewall for AI-initiated equity orders. A pre_tool_call hook normalizes broker-specific trade calls into one canonical order, evaluates it against an operator-owned policy (gross buy notional cap, max quantity, symbol / order-type / side allowlists) and blocks anything it cannot prove compliant; every decision and execution outcome is recorded in SQLite. Ships two paper-trading execution tools with deliberately different broker schemas (symbol/side/quantity/limit_price vs ticker/direction/qty/price), a read-only dry-run tool, a policy inspector and an audit reader. Disclosure - no network calls, telemetry, shell commands, background processes or stored credentials; no requires_env; reads only its own shipped policies/default.json (copied once into the plugin data directory to seed the operator policy) and writes only inside plugin_data_dir('trade-preflight') (the policy file and the SQLite audit/ledger database); execution is simulated locally in SQLite and never reaches a broker or a real trading venue, so the plugin adds no real trading capability; the policy file is operator-owned and an agent with unrestricted shell access as the same OS user could modify it, which is a documented limitation rather than a guarantee."
+maintainer: Mohamedhazeem
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/Mohamedhazeem/TradePreflight#readme
+readme: true
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools:
+    - paper_place_order_a
+    - paper_place_order_b
+    - trade_check
+    - trade_policy_get
+    - trade_audit
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []

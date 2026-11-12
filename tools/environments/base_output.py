@@ -184,6 +184,9 @@ def _new_output_collector(proc, bounded_capture: bool) -> _BoundedOutputCollecto
     except Exception:
         capture_limit = 50_000
     spill_path = None
+    from tools.hosted_tool_policy import host_feature_enabled
+    if not host_feature_enabled("tool_host_artifacts"):  # a hosted agent's output is never teed here
+        return _BoundedOutputCollector(capture_limit)
     try:
         spill_dir = get_hermes_home() / "cache" / "terminal-output"
         spill_path = spill_dir / f"out-{int(time.time())}-{os.getpid()}-{id(proc) & 0xffff:x}.log"

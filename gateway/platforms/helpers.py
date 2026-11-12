@@ -4,13 +4,17 @@ compilation, and fence-aware markdown chunking."""
 
 import asyncio
 import contextlib
+import itertools
 import json
 import logging
+import os
 import re
+import secrets
 import threading
 import time
+import unicodedata
 from pathlib import Path
-from typing import Any, MutableMapping, Optional
+from typing import Any, Iterator, MutableMapping, Optional
 from gateway.platforms.event import MessageEvent
 from utils import atomic_json_write
 
@@ -109,6 +113,124 @@ async def cancel_task(task: Optional[asyncio.Task]) -> None:
             await task
 
 
+def display_width(text: str) -> int:
+    """Terminal-style display columns: East-Asian wide/full-width characters count as two.
+    Chat clients clip button labels by rendered width, not by codepoints, so a 25-character
+    Korean label is as wide as 50 Latin ones."""
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
+
+
+def numbered_clarify_choices(choices, *, max_label_cols: int, escape=None,
+                             max_chars: Optional[int] = None, len_fn=len) -> Optional[str]:
+    """``"1. <choice>\n2. <choice>"`` when any choice is wider than ``max_label_cols`` display
+    columns, else ``None``. Button-capable adapters put this in the message body and switch to
+    positional (``1``, ``2``, …) button labels: a clipped label with no tooltip is unanswerable
+    (#78115), and the body is the only place a long option renders in full. Over ``max_chars``
+    every line stays (a button whose line was cut is unanswerable): the long options lose their
+    middle (start and end kept, so options sharing a long opening still differ) before escaping,
+    so a cut never splits an escape. An option whose first difference from its nearest sibling
+    falls in that cut middle keeps a window around it too, so options sharing both a long
+    opening and a long ending still read differently."""
+    texts = [str(c).strip() for c in choices]
+    if all(display_width(t) <= max_label_cols for t in texts):
+        return None
+    esc = escape or (lambda s: s)
+
+    def _render(items) -> str:
+        return "\n".join(f"{i}. {esc(t)}" for i, t in enumerate(items, start=1))
+    out, each = _render(texts), max(map(len, texts))
+    prefix = [[len(os.path.commonprefix([a, b])) for b in texts] for a in texts]
+    while max_chars is not None and len_fn(out) > max_chars and each > 1:
+        each = min(each - 1, each * 4 // 5) or 1
+        out = _render(_distinct_shortenings(texts, each, prefix))
+    return out
+
+
+def _distinct_shortenings(texts: list, each: int, prefix: list) -> list:
+    """Every text shortened to about *each* characters, distinct options kept distinct where the
+    room allows: each first keeps a window around where it differs from its nearest sibling, and
+    options whose windows still read the same (repeated wording shifts them) are re-cut with one
+    shared window around the group's earliest difference until they part."""
+    out = [_shorten_choice(t, each, max((p for j, p in enumerate(prefix[i]) if j != i), default=0))
+           for i, t in enumerate(texts)]
+    for _ in texts:
+        groups: dict = {}
+        for i, line in enumerate(out):
+            groups.setdefault(line, []).append(i)
+        clashes = [g for g in groups.values() if len(g) > 1 and len({texts[i] for i in g}) > 1]
+        if not clashes:
+            break
+        for group in clashes:
+            shared = min(prefix[a][b] for a in group for b in group if texts[a] != texts[b])
+            for i in group:
+                out[i] = _shorten_choice(texts[i], each, shared)
+    return out
+
+
+def _shorten_choice(text: str, each: int, anchor: int) -> str:
+    """*text* in about *each* characters: start and end kept around a ``…``, or, when *anchor*
+    (where it first differs from its nearest sibling) would fall in the cut, start, a window
+    around *anchor* and end."""
+    if len(text) <= each:
+        return text
+    head, tail = (each + 1) // 2, each // 2
+    if anchor < head or anchor >= len(text) - tail:
+        return f"{text[:head].rstrip()}…{text[len(text) - tail:].lstrip()}"
+    head = tail = each // 4
+    width = each - head - tail
+    start = min(max(anchor - width // 2, head + 1), len(text) - tail - width - 1)
+    if start <= head:
+        return f"{text[:(each + 1) // 2].rstrip()}…{text[len(text) - each // 2:].lstrip()}"
+    return (f"{text[:head].rstrip()}…{text[start:start + width].strip()}…"
+            f"{text[len(text) - tail:].lstrip()}")
+
+
+def _clip_text(text: str, limit: int, len_fn=len) -> str:
+    """*text* within *limit* units of *len_fn*, a cut marked with ``…``."""
+    if len_fn(text) <= limit:
+        return text
+    cut = text[: max(0, limit - 1)]
+    while cut and len_fn(cut) > limit - 1:
+        cut = cut[:-1]
+    return cut + "…"
+
+
+def clarify_text_with_choices(head: str, choices, *, limit: int, max_label_cols: int, escape=None,
+                              len_fn=len) -> tuple[str, bool]:
+    """``(text, numbered)`` for a button clarify within *limit*: *head* alone when every option fits
+    its button, else *head* plus the numbered list (see :func:`numbered_clarify_choices`). The list
+    is reserved first (at least half of *limit*) and the head is cut to what is left, so every
+    positional button keeps its line however long the question is."""
+    if numbered_clarify_choices(choices, max_label_cols=max_label_cols) is None:
+        return _clip_text(head, limit, len_fn), False
+    room = max(limit - 2 - len_fn(head), limit // 2)
+    listed = numbered_clarify_choices(choices, max_label_cols=0, escape=escape, max_chars=room, len_fn=len_fn)
+    return f"{_clip_text(head, max(0, limit - 2 - len_fn(listed)), len_fn)}\n\n{listed}", True
+
+
+def prompt_id_counter() -> Iterator[int]:
+    """Ids for buttons a chat keeps after a restart (approval cards, confirmations, pickers).
+
+    Starts at a random point instead of 1: an old card still visible after a restart would
+    otherwise carry the same id as the first new card and answer it."""
+    return itertools.count(secrets.randbelow(10**12) + 1)
+
+def caption_is_command(caption: Optional[str]) -> bool:
+    """A file's caption that is a slash command (``/goal summarize this``). Adapters skip inlining
+    such a file's text: prepended, it hides the command; appended, it becomes the command's
+    arguments. The agent still gets the cached path with a note to read it. Parsed by
+    :meth:`MessageEvent.get_command`, so attachment-ref prefixes and paths follow the one rule."""
+    return MessageEvent(text=caption or "").get_command() is not None
+
+
+def inline_document_text(caption: str, injection: Optional[str], inlined: list) -> tuple[str, list]:
+    """Prepend a document's inlined text to its caption: ``(text, inlined flags)``. Under a command
+    caption the text is left out and the flags cleared, so the agent is told to read the file."""
+    if not injection or caption_is_command(caption):
+        return caption, [False] * len(inlined)
+    return (f"{injection}\n\n{caption}" if caption else injection), inlined
+
+
 def bounded_put(store: MutableMapping[str, Any], key: str, value: Any, cap: int) -> None:
     """Insert into an insertion-ordered mapping with a hard size bound, evicting the oldest keys. A
     re-put moves the key to the newest position so live entries outlast stale ones."""
@@ -128,6 +250,13 @@ def typing_metadata_for_turn(adapter: Any, chat_id: Any, anchor: Any, metadata: 
     if anchor is None or not callable(hook):
         return metadata
     return hook(adapter, str(chat_id), str(anchor), metadata)
+
+
+def typing_pause_key(chat_id: Any, metadata: Optional[dict]) -> tuple:
+    """``_typing_paused`` entry that pauses ONE turn's keep-alive: the chat plus the thread its
+    typing metadata (``typing_metadata_for_turn``) targets. A bare ``chat_id`` entry still pauses
+    every loop in the chat (approval waits); this one leaves a concurrent topic's typing alone."""
+    return chat_id, (metadata or {}).get("thread_id")
 
 
 # Inline markdown-stripping rules, applied in order: bold, italic, bold/italic
@@ -411,7 +540,8 @@ def compile_mention_patterns(raw, *, log_prefix: str, platform_label: str | None
 
 # ─── Fence-Aware Markdown Chunking ───────────────────────────────────────────
 # Shared core for gateway/stream_consumer.py (``prefer_paragraphs=False, balance_fences=True``),
-# yuanbao (``prefer_paragraphs=True, balance_fences=False``) and weixin (``greedy_pack_blocks``).
+# paragraph mode (``prefer_paragraphs=True, balance_fences=False``, derived from the Yuanbao adapter,
+# now a plugin) and weixin (``greedy_pack_blocks``).
 
 
 def text_has_unclosed_fence(text: str) -> bool:
@@ -545,6 +675,68 @@ def balance_fences_across_chunks(chunks: list[str]) -> list[str]:
         carry_lang = lang if in_code else None
         out.append(body + "\n```" if in_code else body)
     return out
+
+
+def _table_header_above(lines: list[str], i: int) -> int:
+    """Index of the header row of the pipe table containing ``lines[i]``, else -1. Same rules as
+    :func:`convert_table_to_bullets`: a header with a ``|`` over a separator row, then rows with a
+    ``|`` (outer pipes optional)."""
+    while i >= 1 and is_table_row(lines[i]):
+        if TABLE_SEPARATOR_RE.match(lines[i]) and is_table_row(lines[i - 1]):
+            return i - 1
+        i -= 1
+    return -1
+
+
+def _split_inside_table(head: str, tail: str) -> bool:
+    return (is_table_row(head.rstrip('\n').rsplit('\n', 1)[-1])
+            and is_table_row(tail.lstrip().split('\n', 1)[0]))
+
+
+def table_row_start(text: str, split_at: int) -> int:
+    """The newline before the table row a mid-line *split_at* falls in, so a row that fits a fresh
+    chunk is never cut inside a cell; *split_at* unchanged when the line is not a table row (or is
+    the first line, which only an oversized row reaches)."""
+    newline = text.rfind('\n', 0, split_at)
+    if newline < 1 or text[split_at:split_at + 1] in ('\n', ''):
+        return split_at
+    line_end = text.find('\n', split_at)
+    lines = text[:line_end if line_end >= 0 else len(text)].split('\n')
+    return newline if _table_header_above(lines, len(lines) - 1) >= 0 else split_at
+
+
+def table_rollback_point(text: str, split_at: int, fits) -> int:
+    """When ``text[:split_at]`` ends inside a pipe table that *fits* whole in a fresh chunk,
+    return the offset of its header line so the table moves intact; else *split_at*."""
+    if not _split_inside_table(text[:split_at], text[split_at:]):
+        return split_at
+    head_lines = text[:split_at].split('\n')
+    lines = head_lines + [text[split_at:].lstrip().split('\n', 1)[0]]  # sees a separator just past the cut
+    header = _table_header_above(lines, len(lines) - 1)
+    if header <= 0:
+        return split_at
+    start = len('\n'.join(lines[:header])) + 1
+    if header >= len(head_lines) - 2:  # header (+ separator) with no rows never ends a chunk
+        return start
+    end = start
+    for line in text[start:].split('\n'):
+        if not is_table_row(line):
+            break
+        end += len(line) + 1
+    return start if fits(text[start:end].rstrip('\n')) else split_at
+
+
+def table_header_to_repeat(chunk: str, rest: str, max_units: int, len_fn=len):
+    """Header + separator lines to prepend to *rest* when *chunk* ended mid-table, else None
+    (also None when the header alone exceeds *max_units*, so a huge header can't stall)."""
+    if not _split_inside_table(chunk, rest):
+        return None
+    lines = chunk.rstrip('\n').split('\n')
+    header = _table_header_above(lines, len(lines) - 1)
+    if header < 0:
+        return None
+    block = f"{lines[header]}\n{lines[header + 1]}"
+    return block if len_fn(block) <= max_units else None
 
 
 def fence_state_after(text: str, in_code: bool = False, lang: str = "") -> tuple[bool, str]:
@@ -717,3 +909,35 @@ def platform_http_client(**kwargs: Any) -> Any:
     elif kwargs["limits"] is None:
         del kwargs["limits"]
     return create_ssrf_safe_async_client(event_hooks=hooks, **kwargs)
+
+
+# The slowest uplink a media upload's budgets still cover, and the wall-clock ceiling they grow to.
+MIN_MEDIA_UPLOAD_RATE = 128 * 1024  # B/s
+MEDIA_UPLOAD_DEADLINE_MAX = 3600.0
+
+
+def _on_disk_size(value: Any) -> int:
+    if isinstance(value, (str, os.PathLike)):
+        try:
+            return os.stat(value).st_size
+        except (OSError, ValueError):
+            return 0  # a URL or platform file id
+    try:  # an open file handle
+        return os.fstat(value.fileno()).st_size
+    except (AttributeError, OSError, ValueError):
+        return 0
+
+
+def media_upload_seconds(sources: Any) -> float:
+    """Seconds the on-disk payloads in ``sources`` (paths, open files; URLs and ids count 0) take
+    at ``MIN_MEDIA_UPLOAD_RATE``."""
+    return sum(_on_disk_size(source) for source in sources) / MIN_MEDIA_UPLOAD_RATE
+
+
+def scaled_upload_deadline(deadline: float, upload_seconds: float) -> float:
+    """A media send's wall-clock cap widened by 1.5x its upload time (at most
+    ``MEDIA_UPLOAD_DEADLINE_MAX``, never below ``deadline``): a platform answers an upload only once
+    the file has arrived, so a fixed cap reports a slow-but-delivered file as failed (#133093)."""
+    if upload_seconds <= 0:
+        return deadline
+    return max(deadline, min(MEDIA_UPLOAD_DEADLINE_MAX, deadline + 1.5 * upload_seconds))

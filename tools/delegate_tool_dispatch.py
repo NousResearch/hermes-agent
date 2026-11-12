@@ -122,6 +122,8 @@ def _record_finished_child(batch: _Batch, entry: Any, honor_parent_interrupt: bo
 
 def _release_unstarted_child(batch: _Batch, child: Any) -> None:
     """Teardown for a child whose run never started (``_run_single_child``'s finally never runs for it)."""
+    from tools.delegate_tool_resumable import release_unstarted
+    release_unstarted(child)
     _detach_child(batch.parent_agent, child)
     _close_child(child, "Failed to close a subagent that never started")
 
@@ -221,6 +223,11 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     else:
         _run_children_parallel(batch, results, honor_parent_interrupt=honor_parent_interrupt)
 
+    children_by_index = {i: child for i, _, child in batch.children}
+    for entry in results:
+        sid = getattr(children_by_index.get(entry.get("task_index")), "_subagent_id", None)
+        if isinstance(sid, str) and sid:
+            entry["subagent_id"] = sid
     _finalize_child_results(results, batch.task_list, batch.children, batch.parent_agent)
     total_duration = round(time.monotonic() - batch.overall_start, 2)
     for entry in results:
@@ -237,6 +244,10 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     finish_delegation_unit(batch.task_list, results, background=not honor_parent_interrupt)
 
     combined: dict[str, Any] = {"results": results, "total_duration_seconds": total_duration}
+    # The desktop delegate card joins live subagent state by this id; without it
+    # a repeated goal string lets an older card claim this call's children (#136532).
+    if batch.live_deleg_id:
+        combined["delegation_id"] = batch.live_deleg_id
     # Runtime truth about children's background processes, as prose the parent can't miss inside the JSON.
     from tools.process_registry_notifications import _process_accounting_lines
     process_notes = [line for entry in results for line in _process_accounting_lines(entry)]
@@ -483,6 +494,8 @@ def _dispatch_background(batch: _Batch) -> str:
         # cache/delegation/live/<id>/; several units suffix it (-1, -2, ...) and the call keeps the bare id.
         unit_id = batch.live_deleg_id if len(units) == 1 else (f"{batch.live_deleg_id}-{k + 1}" if batch.live_deleg_id else None)
         unit.unit_id = unit_id = unit_id or _new_delegation_id()  # fixed before the runner can start
+        for _, _, child in unit.children:
+            child._delegation_unit_id = unit_id  # its durable record names the ledger row recovery reports on
         # The worker can start before admission returns. Detach only this unit:
         # unsubmitted units must still receive parent stops while a fallback runs.
         for _, _, child in unit.children:

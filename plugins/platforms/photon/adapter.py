@@ -1619,15 +1619,15 @@ def _standalone_error(resp: Any) -> dict[str, Any]:
         data = resp.json() or {}
     data = data if isinstance(data, dict) else {}
     error_class = str(data.get("error_class") or "sidecar_error")
-    retryable = bool(data.get("retryable"))
     if error_class == "target_not_allowed":
         error = _TARGET_NOT_ALLOWED_MESSAGE
-        retryable = False
     elif resp.status_code != 200:
         error = f"sidecar returned {resp.status_code}: {resp.text[:200]}"
     else:
         error = str(data.get("error") or "sidecar reported failure")
-    return {**send_error(error), "error_class": error_class, "retryable": retryable}
+    # A standalone result's ``retryable`` means "nothing reached the chat" (cron replays only
+    # those). The sidecar's own flag also covers timeouts that may have delivered, so never pass it on.
+    return {**send_error(error), "error_class": error_class, "retryable": False}
 
 
 def _standalone_token_from_record(port: int) -> tuple[Optional[str], int, str]:

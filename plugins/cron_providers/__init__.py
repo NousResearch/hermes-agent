@@ -14,7 +14,8 @@ from plugins import plugin_loader as _loader
 logger = logging.getLogger(__name__)
 
 _CRON_PLUGINS_DIR = Path(__file__).parent
-# Synthetic parent package for user-installed providers (keeps them out of the bundled namespace).
+# Synthetic parent package for user-installed providers (keeps them out of the bundled namespace);
+# each user provider dir gets its own subpackage, so profiles' same-named providers never share a module.
 _USER_NAMESPACE = "_hermes_user_cron"
 
 
@@ -77,7 +78,8 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional[CronScheduler]:
     from cron.scheduler_provider import CronScheduler
     name = provider_dir.name
     is_bundled = _CRON_PLUGINS_DIR in provider_dir.parents or provider_dir.parent == _CRON_PLUGINS_DIR
-    module_name = f"plugins.cron_providers.{name}" if is_bundled else f"{_USER_NAMESPACE}.{name}"
+    namespace = None if is_bundled else _loader.user_namespace(_USER_NAMESPACE, provider_dir)
+    module_name = f"plugins.cron_providers.{name}" if namespace is None else f"{namespace}.{name}"
     from hermes_cli.plugin_isolation import user_plugin_host
     host = None if is_bundled else user_plugin_host()
     if host is not None:
@@ -85,7 +87,7 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional[CronScheduler]:
                                   base_ref="cron.scheduler_provider:CronScheduler")
     mod = _loader.load_plugin_module(
         module_name, provider_dir, parents=("plugins", "plugins.cron_providers"), logger=logger,
-        synthetic_namespace=None if is_bundled else _USER_NAMESPACE)
+        synthetic_namespace=namespace)
     return mod and _loader.instance_from_module(
         mod, collector=_ProviderCollector(), collected_attr="provider",
         base_cls=CronScheduler, name=name, logger=logger)

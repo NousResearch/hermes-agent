@@ -15,7 +15,8 @@ from plugins import plugin_loader as _loader
 logger = logging.getLogger(__name__)
 
 _CONTEXT_ENGINE_PLUGINS_DIR = Path(__file__).parent
-# Synthetic parent package for user-installed engines (keeps them out of the bundled namespace).
+# Synthetic parent package for user-installed engines (keeps them out of the bundled namespace);
+# each user engine dir gets its own subpackage, so profiles' same-named engines never share a module.
 _USER_NAMESPACE = "_hermes_user_context_engine"
 
 
@@ -73,7 +74,8 @@ def _load_engine_from_dir(engine_dir: Path) -> Optional[ContextEngine]:
     from agent.context_engine import ContextEngine
     name = engine_dir.name
     is_bundled = engine_dir.parent == _CONTEXT_ENGINE_PLUGINS_DIR
-    module_name = f"plugins.context_engine.{name}" if is_bundled else f"{_USER_NAMESPACE}.{name}"
+    namespace = None if is_bundled else _loader.user_namespace(_USER_NAMESPACE, engine_dir)
+    module_name = f"plugins.context_engine.{name}" if namespace is None else f"{namespace}.{name}"
     from hermes_cli.plugin_isolation import user_plugin_host
     host = None if is_bundled else user_plugin_host()
     if host is not None:
@@ -81,7 +83,7 @@ def _load_engine_from_dir(engine_dir: Path) -> Optional[ContextEngine]:
                                   base_ref="agent.context_engine:ContextEngine")
     mod = _loader.load_plugin_module(
         module_name, engine_dir, parents=("plugins", "plugins.context_engine"), logger=logger,
-        synthetic_namespace=None if is_bundled else _USER_NAMESPACE)
+        synthetic_namespace=namespace)
     return mod and _loader.instance_from_module(
         mod, collector=_EngineCollector(engine_name=name), collected_attr="engine",
         base_cls=ContextEngine, name=name, logger=logger)

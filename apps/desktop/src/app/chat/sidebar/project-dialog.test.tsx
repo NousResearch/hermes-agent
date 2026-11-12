@@ -39,22 +39,33 @@ vi.mock('@/i18n', () => ({
 // interactions under test.
 // vi.mock factories are hoisted above the rest of the file, so the atom must
 // be created inside vi.hoisted to exist by the time the factory runs.
-const { $newProjectDropPlacement, $projectDialog, addProjectFolders, createProject, enterProject, pickProjectFolders } =
-  vi.hoisted(() => {
-    const { atom } = require('nanostores') as typeof Nanostores
+const {
+  $newProjectDropPlacement,
+  $projectDialog,
+  addProjectFolders,
+  createProject,
+  enterProject,
+  moveSessionToProject,
+  pickProjectFolders
+} = vi.hoisted(() => {
+  const { atom } = require('nanostores') as typeof Nanostores
 
-    return {
-      // Where a "New project" DRAG armed its drop (null = plain click).
-      $newProjectDropPlacement: atom<{ anchor: string; before?: null | string; dir: string } | null>(null),
-      $projectDialog: atom<{ mode: 'create' | 'rename' | 'add-folder'; name?: string; projectId?: string } | null>({
-        mode: 'create'
-      }),
-      addProjectFolders: vi.fn(),
-      createProject: vi.fn(),
-      enterProject: vi.fn(),
-      pickProjectFolders: vi.fn()
-    }
-  })
+  return {
+    // Where a "New project" DRAG armed its drop (null = plain click).
+    $newProjectDropPlacement: atom<{ anchor: string; before?: null | string; dir: string } | null>(null),
+    $projectDialog: atom<{
+      mode: 'create' | 'rename' | 'add-folder'
+      moveSession?: { profile?: null | string; sessionId: string }
+      name?: string
+      projectId?: string
+    } | null>({ mode: 'create' }),
+    addProjectFolders: vi.fn(),
+    createProject: vi.fn(),
+    enterProject: vi.fn(),
+    moveSessionToProject: vi.fn(),
+    pickProjectFolders: vi.fn()
+  }
+})
 
 vi.mock('@/store/projects', () => ({
   $newProjectDropPlacement,
@@ -65,6 +76,7 @@ vi.mock('@/store/projects', () => ({
   createProject,
   enterProject,
   generateProjectIdea: vi.fn(),
+  moveSessionToProject,
   pickProjectFolders,
   renameProject: vi.fn()
 }))
@@ -73,10 +85,12 @@ beforeEach(() => {
   vi.clearAllMocks()
   createProject.mockResolvedValue({ id: 'p_created' })
   addProjectFolders.mockResolvedValue(undefined)
+  moveSessionToProject.mockResolvedValue(undefined)
   pickProjectFolders.mockResolvedValue(['/Users/test/my-folder'])
 })
 
 vi.mock('@/store/notifications', () => ({
+  notify: vi.fn(),
   notifyError: vi.fn()
 }))
 
@@ -181,6 +195,36 @@ describe('ProjectDialog', () => {
     await waitFor(() => expect(createProject).toHaveBeenCalledOnce())
 
     expect(createProject.mock.calls[0]?.[0]).toMatchObject({ dropPlacement: undefined })
+  })
+
+  // The session row's "Move to project" submenu opens this dialog with the
+  // session attached: creating the project IS the move, so the session lands
+  // in it and the user is not dumped into the new project instead.
+  it('re-homes the session into the project it just created when the dialog was opened from the move submenu', async () => {
+    createProject.mockResolvedValue({ id: 'p_new', name: 'Skunkworks' })
+    $projectDialog.set({ mode: 'create', moveSession: { profile: 'default', sessionId: 'sess-1' } })
+
+    render(<ProjectDialog />)
+    await fillCreateForm()
+
+    await waitFor(() => expect(moveSessionToProject).toHaveBeenCalledWith('sess-1', 'p_new', 'default'))
+    expect(enterProject).not.toHaveBeenCalled()
+  })
+
+  it('still moves the session when the create succeeds but the move fails', async () => {
+    const { notifyError } = vi.mocked(await import('@/store/notifications'))
+
+    createProject.mockResolvedValue({ id: 'p_new', name: 'Skunkworks' })
+    moveSessionToProject.mockRejectedValueOnce(new Error('no folder'))
+    $projectDialog.set({ mode: 'create', moveSession: { sessionId: 'sess-1' } })
+
+    render(<ProjectDialog />)
+    await fillCreateForm()
+
+    // The project exists — the failure is reported as a failed MOVE, and the
+    // dialog still closes rather than inviting a second create.
+    await waitFor(() => expect(notifyError).toHaveBeenCalled())
+    expect(createProject).toHaveBeenCalledOnce()
   })
 })
 

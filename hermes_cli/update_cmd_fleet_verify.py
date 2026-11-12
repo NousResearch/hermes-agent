@@ -478,11 +478,16 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
         # Credited units changed the restart result; save it with the final verdict so it agrees with
         # the follow-up above.
         restart.record_receipt()
+    update_id = None
     with _best_effort('Update receipt finalize failed: %s'):
-        from hermes_cli.update_receipt import finalize_update_receipt
+        from hermes_cli import update_receipt
+
+        active_receipt = update_receipt._current.get()
+        if active_receipt is not None:
+            update_id = active_receipt.data.get("update_id")
         # A False ``update_complete`` (unsafe SQLite runtime, owed tail work) never fails the
         # run: maintenance already reported it as a follow-up. It only vetoes migration below.
-        _receipt_path = finalize_update_receipt("success", fleet=_fleet_snapshot)
+        _receipt_path = update_receipt.finalize_update_receipt("success", fleet=_fleet_snapshot)
         if _receipt_path is not None:
             logger.info("Update receipt written: %s", _receipt_path)
 
@@ -493,11 +498,18 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
         # Fleet caught up, but the selected runtime's SQLite is unsafe or the tail is still owed
         # (both reported by the completion): leave the topology alone until they are repaired.
         return
-    # Fleet is healthy on the new code: fold per-profile gateways into one multiplexer when nothing
-    # blocks it (deterministic; never prompts), else print the blockers and the one-liner to run later.
+    _migrate_gateways_after_update(update_id)
+
+
+def _migrate_gateways_after_update(update_id: str | None) -> None:
+    """Fold the verified fleet or keep its migration warning on the completed update receipt."""
     try:
         from hermes_cli.gateway_migrate import maybe_auto_migrate_after_update
-        maybe_auto_migrate_after_update()
+        from hermes_cli.update_receipt import amend_terminal_followup
+
+        warning = maybe_auto_migrate_after_update()
+        if warning and update_id:
+            amend_terminal_followup(update_id, "gateway_migration", warning)
     except (Exception, SystemExit) as exc:  # health: allow BLE001 -- a SystemExit here must not fail a committed update
         logger.warning('Multiplex auto-migration after update failed: %s', exc)
         print(f"  ⚠ Gateway multiplex migration did not finish: {exc} (run `hermes gateway migrate` later)")

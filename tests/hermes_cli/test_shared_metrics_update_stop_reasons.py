@@ -213,15 +213,11 @@ def test_a_checkout_move_names_a_held_index_lock_apart_from_a_permission_error(r
     (repo / ".git/index.lock").write_text("")
     held = move()
     (repo / ".git/index.lock").unlink()
-    index_dir = tmp_path / "readonly-index"
-    index_dir.mkdir()
-    (index_dir / "index").write_bytes((repo / ".git/index").read_bytes())
-    monkeypatch.setenv("GIT_INDEX_FILE", str(index_dir / "index"))
-    index_dir.chmod(0o555)
+    (repo / ".git").chmod(0o555)  # run_git drops an inherited GIT_INDEX_FILE, so deny the lock in .git
     try:
         denied = move()
     finally:
-        index_dir.chmod(0o755)
+        (repo / ".git").chmod(0o755)
     assert (held, denied) == ("git_index_locked", "permission_denied")
     assert git("rev-parse", "HEAD") == old
 

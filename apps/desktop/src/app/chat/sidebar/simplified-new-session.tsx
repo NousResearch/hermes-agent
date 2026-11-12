@@ -70,22 +70,15 @@ export function SimplifiedNewSession({ sessions, onFallback }: { sessions: Sessi
 
   useResizeObserver(measure, splitButton)
   const picked = useRef(false)
-  const context = JSON.stringify([owner, profile, focusedSessionId])
-  const [choice, setChoice] = useState<{ context: string; id: string } | null>(null)
   const ranked = rankNewSessionAgents(agents, sessions, viewedConnection, viewedProfile)
   const defaultProfile = profiles.find(item => item.is_default)?.name ?? 'default'
 
-  // A picker choice belongs to the chat being viewed, never a different gateway or session.
-  const choiceId = choice?.context === context ? choice.id : null
-  const blank = choiceId === 'blank'
-
+  // The button's own target: the agent of the chat being viewed (so, after a pick, the agent just
+  // used), else the most recently used one.
   const selected =
-    agents.find(agent => agent.id === choiceId) ??
-    agents.find(agent => agent.connectionId === viewedConnection && agent.profile === viewedProfile) ??
-    ranked[0]
+    agents.find(agent => agent.connectionId === viewedConnection && agent.profile === viewedProfile) ?? ranked[0]
 
-  const value = blank ? 'blank' : selected?.id
-  const targetLabel = blank ? c.blank : selected ? `${selected.label} · ${selected.gateway}` : c.newSessionIn
+  const targetLabel = selected ? `${selected.label} · ${selected.gateway}` : c.newSessionIn
 
   function changeOpen(next: boolean) {
     if (next && !open) {
@@ -109,14 +102,26 @@ export function SimplifiedNewSession({ sessions, onFallback }: { sessions: Sessi
     picked.current = true
     changeOpen(false)
 
-    if (blank) {
-      recordIaAction('ia.new_session.default')
-      startSimplifiedAgentSession({ connectionId: owner, profile: defaultProfile })
-    } else if (selected) {
+    if (selected) {
       recordIaAction('ia.new_session.specific')
       startSimplifiedAgentSession(selected)
     } else {
       onFallback()
+    }
+  }
+
+  // A pick IS the action: it opens a new chat with that agent (or a blank one) at once, and never
+  // re-targets the button behind the user's back.
+  function pick(id: string) {
+    picked.current = true
+    const agent = agents.find(item => item.id === id)
+
+    if (agent) {
+      recordIaAction('ia.new_session.specific')
+      startSimplifiedAgentSession(agent)
+    } else {
+      recordIaAction('ia.new_session.default')
+      startSimplifiedAgentSession({ connectionId: owner, profile: defaultProfile })
     }
   }
 
@@ -146,12 +151,10 @@ export function SimplifiedNewSession({ sessions, onFallback }: { sessions: Sessi
       {agents.length > 1 && (
         <Select
           onOpenChange={changeOpen}
-          onValueChange={id => {
-            picked.current = true
-            setChoice({ context, id })
-          }}
+          onValueChange={pick}
           open={open}
-          value={value}
+          // Never a held selection: picking the button's current agent must fire too.
+          value=""
         >
           <Tip className={open ? 'hidden' : undefined} label={`${c.newSessionIn}: ${targetLabel}`}>
             <SelectPrimitive.Trigger asChild>
@@ -160,7 +163,7 @@ export function SimplifiedNewSession({ sessions, onFallback }: { sessions: Sessi
                 className="portal-new-session-picker"
                 variant="ghost"
               >
-                {blank ? <Codicon name="circle-outline" /> : selected && <AgentTag label={selected.label} />}
+                {selected && <AgentTag label={selected.label} />}
                 <ChevronDown aria-hidden className="portal-section-chevron" />
               </Button>
             </SelectPrimitive.Trigger>

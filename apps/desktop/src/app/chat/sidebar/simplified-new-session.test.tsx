@@ -54,7 +54,7 @@ it('starts directly with the sole agent, without a picker', () => {
   expect(profile.newSessionInAgent).toHaveBeenCalledWith({ connectionId: 'alpha', profile: 'research' })
 })
 
-it('cancels without creating anything and keeps identically named agents on different gateways distinct', () => {
+it('cancels without creating anything, and a pick opens a chat with exactly that gateway’s agent', () => {
   $fleetRoster.set({
     primaryConnectionId: 'alpha',
     sources: [],
@@ -75,19 +75,14 @@ it('cancels without creating anything and keeps identically named agents on diff
   expect(profile.newSessionInAgent).not.toHaveBeenCalled()
   openPicker()
   fireEvent.click(screen.getByRole('option', { name: /research · Beta/ }))
-  expect(profile.newSessionInAgent).not.toHaveBeenCalled()
-  expect(screen.getByRole('combobox').getAttribute('aria-label')).toContain('research · Beta')
-  fireEvent.click(screen.getByRole('button', { name: 'New session' }))
-  expect(profile.newSessionInAgent).toHaveBeenCalledWith({ connectionId: 'beta', profile: 'research' })
+  expect(profile.newSessionInAgent).toHaveBeenCalledExactlyOnceWith({ connectionId: 'beta', profile: 'research' })
 })
 
 it('starts blank with this gateway’s default agent and makes no automatic routing promise', () => {
   render(<SimplifiedNewSession onFallback={vi.fn()} sessions={[]} />)
   openPicker()
   fireEvent.click(screen.getByRole('option', { name: /Start blank chat/ }))
-  expect(profile.newSessionInAgent).not.toHaveBeenCalled()
-  fireEvent.click(screen.getByRole('button', { name: 'New session' }))
-  expect(profile.newSessionInAgent).toHaveBeenCalledWith({ connectionId: 'alpha', profile: 'default' })
+  expect(profile.newSessionInAgent).toHaveBeenCalledExactlyOnceWith({ connectionId: 'alpha', profile: 'default' })
 })
 
 it('claims the shortcut only while the toggle is on and the picker is mounted', () => {
@@ -160,26 +155,25 @@ it('starts in the current agent with multiple agents without opening the picker'
   expect(profile.newSessionInAgent).toHaveBeenCalledWith({ connectionId: 'alpha', profile: 'research' })
 })
 
-it('uses the selected agent for the shortcut and forgets that choice after changing gateway', () => {
+it('opens a chat with the picked agent at once and leaves the button on its own agent', () => {
   render(<SimplifiedNewSession onFallback={vi.fn()} sessions={[]} />)
   openPicker()
   fireEvent.click(screen.getByRole('option', { name: /^default ·/ }))
+  expect(profile.newSessionInAgent).toHaveBeenCalledExactlyOnceWith({ connectionId: 'alpha', profile: 'default' })
+  expect(screen.queryByRole('listbox')).toBeNull()
+  // The pick did not re-target the button or the shortcut: both still use the viewed chat's agent.
+  expect(screen.getByRole('combobox').getAttribute('aria-label')).toContain('research')
   act(() => {
     requestSimplifiedNewSession()
   })
-  expect(profile.newSessionInAgent).toHaveBeenLastCalledWith({ connectionId: 'alpha', profile: 'default' })
-  act(() => $apiRequestScope.set({ connectionId: 'beta', profile: 'research' }))
-  fireEvent.click(screen.getByRole('button', { name: 'New session' }))
-  expect(profile.newSessionInAgent).toHaveBeenLastCalledWith({ connectionId: 'beta', profile: 'research' })
+  expect(profile.newSessionInAgent).toHaveBeenLastCalledWith({ connectionId: 'alpha', profile: 'research' })
 })
 
-it('falls back to the current agent if the selected agent disappears', () => {
+it('opens a chat when the picked agent is the one the button already targets', () => {
   render(<SimplifiedNewSession onFallback={vi.fn()} sessions={[]} />)
   openPicker()
-  fireEvent.click(screen.getByRole('option', { name: /^default ·/ }))
-  act(() => profile.$profiles.set([{ name: 'research', is_default: false }] as typeof profile.$profiles.value))
-  fireEvent.click(screen.getByRole('button', { name: 'New session' }))
-  expect(profile.newSessionInAgent).toHaveBeenLastCalledWith({ connectionId: 'alpha', profile: 'research' })
+  fireEvent.click(screen.getByRole('option', { name: /^research ·/ }))
+  expect(profile.newSessionInAgent).toHaveBeenCalledExactlyOnceWith({ connectionId: 'alpha', profile: 'research' })
 })
 
 it('starts in the viewed session’s agent without moving the ambient profile', () => {
@@ -228,7 +222,6 @@ it('uses a hidden chat’s exact tile owner and preserves its remote profile map
   })
   openPicker()
   fireEvent.click(screen.getByRole('option', { name: /^default ·/ }))
-  fireEvent.click(screen.getByRole('button', { name: 'New session' }))
   expect(profile.newSessionInAgent).toHaveBeenLastCalledWith({ connectionId: 'alpha', profile: 'default' })
 })
 

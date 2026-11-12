@@ -357,7 +357,8 @@ def _resume(record: dict[str, Any], unit: dict[str, Any], start: Callable[..., O
         _settle_refusal(sid, attempts, error)
         logger.info("automatic resume of subagent %s refused: %s", sid, error)
         return None
-    logger.info("Automatically resumed subagent %s (attempt %d/%d)", sid, attempts + 1, MAX_AUTO_ATTEMPTS)
+    # Dispatched: the run-start write may still find the parent cancelled it (the child then never runs).
+    logger.info("Started automatic resume of subagent %s (attempt %d/%d)", sid, attempts + 1, MAX_AUTO_ATTEMPTS)
     return "resumed"
 
 

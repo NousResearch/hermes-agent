@@ -317,6 +317,12 @@ def record_start(run: Any) -> None:
     outcome = _write(path, _do)
     if isinstance(outcome, str):  # cancelled by the parent before it ran: no run record, the child does not start
         child._delegate_auto_cancelled = outcome
+        child._delegate_claim = None  # the row is the parent's now: cleanup must not hand any claim back
+        return
+    if origin == "auto" and not outcome:
+        # Fail closed: without its run record the parent's last word could not be checked, and a later retry would
+        # check it while the child already runs. It does not start; cleanup hands the claim back to ``resumable``.
+        child._delegate_auto_cancelled = "Not continued: its run record could not be written"
         return
     durable["pending"] = None if outcome else _do
     child._delegate_durable = durable

@@ -138,3 +138,53 @@ def test_a_promise_belongs_to_one_stop(tmp_path):
         _completion(dispatched[-1])
     state, _pinned, running = seen[0]
     assert state == 'running' and not running.get('auto_promised')
+
+
+def test_an_automatic_run_whose_record_cannot_be_written_does_not_start(tmp_path):
+    """Its run-start write (where the parent's last word is checked) failed: it fails closed instead of running
+    with that check deferred into a retry, and the record goes back to waiting."""
+    import tools.delegate_tool_resumable as dr
+    from tools.delegate_tool_auto_resume import tick
+    _enable()
+    parent, dispatched = _parent(), []
+    sid, _first = _limited_child(tmp_path, parent)
+    real_write, failed = dr._write, []
+
+    def busy_once(path, fn):
+        if fn.__qualname__ == 'record_start.<locals>._do' and not failed:
+            failed.append(1)
+            return None  # what _write returns when the busy timeout expires
+        return real_write(path, fn)
+
+    model = _ScriptedModel()
+    with patch.object(dr, '_write', busy_once), patch('run_agent.AIAgent', side_effect=model):
+        tick(_scheduler(parent, dispatched), capacity=3)
+        if dispatched:
+            _completion(dispatched[-1])
+    assert failed and len(model.turns) == 0
+    assert _db_rows(parent)[sid][0] == 'resumable'
+
+
+def test_a_cancelled_automatic_run_never_hands_back_the_parents_own_continue(tmp_path):
+    """The parent dismissed the claimed child and then continued it by hand before the automatic run recorded
+    itself: the automatic run stands down without touching the parent's claim."""
+    import tools.delegate_tool_auto_resume as ar
+    from tools.delegate_tool import delegate_task
+    from tools.delegate_tool_resumable import claim
+    _enable()
+    parent, dispatched = _parent(), []
+    sid, _first = _limited_child(tmp_path, parent)
+    real = ar.confirm_start
+
+    def confirm_then_parent_takes_it(path, s):
+        out = real(path, s)
+        assert json.loads(delegate_task(action='stop', subagent_id=s, parent_agent=parent))['status'] == 'dismissed'
+        assert claim(parent, s)[0] is not None  # the parent's own continue holds the row now
+        return out
+
+    model = _ScriptedModel()
+    with patch.object(ar, 'confirm_start', confirm_then_parent_takes_it), patch('run_agent.AIAgent', side_effect=model):
+        ar.tick(_scheduler(parent, dispatched), capacity=3)
+        if dispatched:
+            _completion(dispatched[-1])
+    assert len(model.turns) == 0 and _db_rows(parent)[sid][0] == 'claimed'

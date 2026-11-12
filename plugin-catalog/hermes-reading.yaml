@@ -1,0 +1,28 @@
+name: hermes-reading
+repo: https://github.com/forgoneops/hermes-reading
+sha: f198041a115ae15bb48da79c6c46cdabcc771ddf
+description: "Discover public feeds and GitHub projects; read articles, PDFs and YouTube transcripts. On request, source text is sent to the configured Hermes model for summaries and Q&A."
+maintainer: forgoneops
+tier: community
+category: desktop
+requires_hermes: ">=0.23.1"
+version: "0.1.0"
+title: "Hermes Reading"
+readme: true
+platforms: []
+onboarding: false
+capabilities:
+  provides_tools:
+    - reading_search
+    - reading_open
+    - reading_summarize
+    - reading_ask
+    - reading_save
+    - reading_note
+    - reading_delete
+    - reading_list
+    - reading_sources
+    - reading_projects
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

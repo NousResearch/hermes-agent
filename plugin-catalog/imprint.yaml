@@ -2,7 +2,7 @@ name: imprint
 repo: https://github.com/Frazzlesprite/hermes-imprint
 sha: "f9b4bf9235cf729e29d1e28184c1aa41fd8008a3"
 subdir: ""
-description: Compile a week of Hermes activity into a cited, typeset book with an executive summary.
+description: "Compile a week of Hermes activity into a cited, typeset book with an executive summary. Disclosure — records redacted one-line summaries (max 280 chars) of every tool call, model API call (model, tokens, cost), approval prompt and decision, and subagent goal/result into its own SQLite ledger under the profile's plugin-data; imprint_import reads up to 90 days of message content from the active profile's state.db read-only and stores redacted summaries; compiling sends ledger summaries to the user's configured model via ctx.llm and runs the user's own `typst` binary when it is on PATH; `/imprint burn`, `hermes imprint burn` and the dashboard Burn button permanently delete a week's ledger and compiled books."
 maintainer: Frazzlesprite
 tier: community
 category: general

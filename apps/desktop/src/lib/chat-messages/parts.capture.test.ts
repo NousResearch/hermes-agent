@@ -15,6 +15,19 @@ describe('MEDIA tag capture validity', () => {
     expect(mediaTagValues('open MEDIA:/tmp/a.pdf.')).toEqual(['/tmp/a.pdf'])
   })
 
+  it('does not absorb trailing bold markers from a bare capture', () => {
+    // A file inside emphasis with an unknown extension (.vsix) falls to the
+    // bare branch, which must shed the `**` closer like prose punctuation.
+    expect(renderMediaTags('**MEDIA:D:\\src\\app\\vscode-codebot-26.10.1067.vsix**')).toBe(
+      `**${card('D:\\src\\app\\vscode-codebot-26.10.1067.vsix')}**`
+    )
+    expect(mediaTagValues('**MEDIA:D:\\src\\app\\vscode-codebot-26.10.1067.vsix**')).toEqual([
+      'D:\\src\\app\\vscode-codebot-26.10.1067.vsix'
+    ])
+    expect(renderMediaTags('MEDIA:installer.vsix**')).toBe(`${card('installer.vsix')}**`)
+    expect(renderMediaTags('**MEDIA:/tmp/report.pdf**')).toBe(`**${card('/tmp/report.pdf')}**`)
+  })
+
   it('keeps punctuation that is INSIDE a quoted capture', () => {
     // mediaTagValues returns raw values quotes-intact; renderMediaTags strips.
     expect(mediaTagValues("MEDIA:'/tmp/stop!.md'")).toEqual(["'/tmp/stop!.md'"])

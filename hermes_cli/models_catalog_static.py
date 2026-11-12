@@ -234,8 +234,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = _CuratedCatalog({
     "openai-codex": _codex_curated_models(),
     "xai-oauth": _xai_finalize_catalog(list(_XAI_STATIC_FALLBACK)),
     "gemini": [
-        # Argon second: [0] is the silent default when no model is configured, and a flagship never is.
-        "gemini-3.8-flash", "gemini-4-argon", "gemini-3.7-flash",
+        # Gemini 4 after it: [0] is the silent default when no model is configured, and a flagship never is.
+        "gemini-3.8-flash", "gemini-4-hydrogen", "gemini-4-carbon", "gemini-4-argon", "gemini-3.7-flash",
         "gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3.6-flash", "gemini-3.1-flash-lite-preview",
     ],
     "zai": [

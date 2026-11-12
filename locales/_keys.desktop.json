@@ -3768,6 +3768,7 @@
     "settings.localModels.upToDateTitle",
     "settings.localModels.updateAction",
     "settings.localModels.updateDetail",
+    "settings.localModels.updateSameBuildDetail",
     "settings.localModels.updateTitle",
     "settings.localModels.updating",
     "settings.localModels.useAction",

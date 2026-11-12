@@ -274,6 +274,10 @@ class FileBackend:
 
 
 _FILE_BACKEND = FileBackend()
+# Held across a config.yaml load -> mutate -> save span by writers on worker threads. ``config._CONFIG_LOCK``
+# covers each call only, and every on-loop reader takes it, so holding THAT across a span would stall
+# the event loop. Re-entrant because nested writers take it again.
+CONFIG_MUTATION_LOCK = threading.RLock()
 # Reentrant: publishing the deployment can import modules whose import-time config read selects
 # the backend again on the SAME thread (``_BOOTSTRAP_OWNER``); every other thread waits for it.
 _BOOTSTRAP_LOCK = threading.RLock()

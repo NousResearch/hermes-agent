@@ -1,0 +1,17 @@
+name: model-forge-providers
+title: Model Forge Providers
+repo: https://github.com/mr-pewpy/model-forge
+sha: c0bbe666f95966762025a0c00bea0e9a9d32e599
+subdir: model-forge-providers
+description: "Local engine model-provider profiles for Model Forge (Strata, Project Maya) — run Hermes chat on local MoE engines and make their models selectable in /model. Companion package for the Model Forge plugin. Disclosure — sends prompts and requests to the local engine endpoints the user configures; no third-party network calls, no shell commands, no stored credentials, no telemetry."
+maintainer: mr-pewpy
+tier: community
+category: models
+version: "0.1.0"
+readme: false
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

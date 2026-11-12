@@ -224,6 +224,9 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     frontend = tmp_path / "web-product"
     frontend.mkdir()
     (frontend / "index.html").write_text("built web", encoding="utf-8")
+    webapp = tmp_path / "webapp-product"
+    webapp.mkdir()
+    (webapp / "index.html").write_text("built webapp", encoding="utf-8")
     with monkeypatch.context() as strict:
         def forbidden(*args, **kwargs):
             pytest.fail("strict finish entered dependency acquisition or a child process")
@@ -232,14 +235,16 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
         strict.setattr(pm, "prepare_tools", forbidden)
         strict.setattr(pm, "stage_tools", forbidden)
         strict.setattr(subprocess, "run", forbidden)
-        assert native.finish_native(prepared, {"web": frontend}) == 0
+        assert native.finish_native(prepared, {"web": frontend, "webapp": webapp}) == 0
         (output / "hermes-agent/install-stamp.json").write_text('{"variant":"bundled"}', encoding="utf-8")
         (output / "manifest.json").write_text('{"variant":"bundled"}', encoding="utf-8")
         launcher = output / ("bin/probe.exe" if os.name == "nt" else "bin/probe")
         launcher.rename(launcher.with_name("renamed-launcher"))
         (frontend / "index.html").write_text("store web", encoding="utf-8")
-        assert native.finish_native(prepared, {"web": frontend}) == 0
+        (webapp / "index.html").write_text("store webapp", encoding="utf-8")
+        assert native.finish_native(prepared, {"web": frontend, "webapp": webapp}) == 0
     assert (output / "hermes-agent/hermes_cli/web_dist/index.html").read_text() == "store web"
+    assert (output / "hermes-agent/apps/desktop/dist-webapp/index.html").read_text() == "store webapp"
     assert calls[0]["all_extras"] is True
     assert calls[0]["cache"] == tmp_path / "cache"
     assert (output / "hermes-agent/pyproject.toml").is_file()

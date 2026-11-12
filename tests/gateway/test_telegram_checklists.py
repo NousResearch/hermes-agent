@@ -162,7 +162,7 @@ _FILTERS = SimpleNamespace(
     LOCATION=_has("location"), VENUE=_has("venue"), CONTACT=_has("contact"), PHOTO=_has("photo"), VIDEO=_has("video"),
     VIDEO_NOTE=_has("video_note"), AUDIO=_has("audio"), VOICE=_has("voice"),
     Document=SimpleNamespace(ALL=_has("document")), Sticker=SimpleNamespace(ALL=_has("sticker")),
-    CHECKLIST=_has("checklist"),
+    Dice=SimpleNamespace(ALL=_has("dice")), CHECKLIST=_has("checklist"),
     UpdateType=SimpleNamespace(EDITED=_Filter(lambda update: update.edited_message is not None)),
     StatusUpdate=SimpleNamespace(FORUM_TOPIC_CREATED=_has("forum_topic_created"),
                                  CHECKLIST_TASKS_DONE=_has("checklist_tasks_done"),

@@ -15,6 +15,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from gateway.platforms.event import MessageType
+from plugins.platforms.telegram.telegram_live_location import is_redundant_live_refresh
 
 if TYPE_CHECKING:
     from telegram import Update
@@ -156,15 +157,15 @@ class TelegramStructuredInboundMixin:
         if not self._is_user_authorized_from_message(msg):
             self._log_blocked_user(msg)
             return
-        if not self._gate_or_observe(msg, update, MessageType.LOCATION):
-            return
         venue = getattr(msg, "venue", None)
         location = getattr(venue, "location", None) if venue else getattr(msg, "location", None)
         if not location:
             return
-        lat = getattr(location, "latitude", None)
-        lon = getattr(location, "longitude", None)
-        if lat is None or lon is None:
+        lat, lon = getattr(location, "latitude", None), getattr(location, "longitude", None)
+        # Before the gate: a GPS tick in place is not new input, observed or not (#151333).
+        if lat is None or lon is None or is_redundant_live_refresh(self, msg, location, lat, lon):
+            return
+        if not self._gate_or_observe(msg, update, MessageType.LOCATION):
             return
         parts = ["[The user shared a location pin.]"]
         if venue:

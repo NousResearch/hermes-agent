@@ -300,6 +300,14 @@ def resolve_whatsapp_bridge_dir() -> Path:
     except OSError:
         pass
     if hermes_home_bridge.exists():
+        # Refresh the source on every resolve: a mirror frozen at its first copy would keep spawning a pre-update
+        # bridge (one without /auth-proof can never pass the adapter's token proof). node_modules is the mirror's
+        # own install (re-run by the adapter when package.json changes), so it is left alone.
+        try:
+            shutil.copytree(install_bridge, hermes_home_bridge, dirs_exist_ok=True,
+                            ignore=shutil.ignore_patterns("node_modules"))
+        except (OSError, shutil.Error):
+            pass  # unreadable install tree: the mirror as it stands is still the best runnable copy
         return hermes_home_bridge
     try:
         hermes_home_bridge.parent.mkdir(parents=True, exist_ok=True)

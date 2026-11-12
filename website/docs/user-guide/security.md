@@ -310,6 +310,20 @@ When anyone else clicks a button, adds a reaction, or sends `/approve`, `/deny` 
 
 The same rule covers the other prompts a member can answer for someone else: a slash-command confirmation (`/reload-mcp`'s Approve Once / Always / Cancel) and the agent's clarify question (a choice button, "Other", or a typed answer). Another member's tap gets the same note and the prompt stays pending; another member's typed message is handled as their own message, never as the answer.
 
+**With slash admin gating (`allow_admin_from` / `group_allow_admin_from`) set for the chat's scope**, the default `approvers: ["*"]` no longer means "any admitted member": answering an approval is `/approve` or `/deny`, and answering a slash-command confirmation runs that command, so only someone allowed to run that command in the chat can answer, on every path (button, reaction, typed `/approve`, bare `yes` / `always`, typed confirm reply). That is the scope's admins, plus members whose `user_allowed_commands` lists `approve` (who may then also deny) or `deny` (deny only), or the confirmed command. Anyone else, the member whose message raised the approval included, can answer neither way: they get *⛔ /approve is admin-only here* and the prompt stays pending for an admin, or is denied when it times out.
+
+When both are set, a narrowed `approvers` takes precedence: it is the explicit answer to "who approves", so the requester, the listed ids and the scope's admins answer with a button, reaction or bare "yes", as described above, whatever `user_allowed_commands` says. Typing `/approve` or `/deny` is itself a slash command, so it still needs that command's permission.
+
+| Config for the chat's scope | Who can answer |
+|---|---|
+| neither | any admitted member |
+| `allow_admin_from` only | admins, plus members with `approve` (approve or deny) / `deny` (deny only) or the confirmed command in `user_allowed_commands` |
+| `approvers` narrowed (with or without `allow_admin_from`) | the requester, the listed ids, the scope's admins |
+
+A DM with the bot's owner keeps working when the owner is on the DM admin list. Clarify questions are not commands and only follow `approvers`.
+
+Picker cards (`/model`, `/reasoning`, `/fast` and the usage-limit switch offer) and the `/update` Yes/No prompt always belong to the member who opened them, whatever `approvers` says: only that member and the chat scope's admins can tap them or, for `/update`, answer by typing. Anyone else gets the same private note and the card stays open; their typed text is an ordinary message. A member refused an admin-only command therefore cannot apply an admin's open card instead.
+
 The setting is read when the approval is raised, so with multiplexed profiles each profile's own `config.yaml` decides. Host surfaces (CLI, TUI, Desktop, the API server) answer as the host and are not affected. Matrix keeps its own stricter `MATRIX_APPROVAL_REQUIRE_SENDER` (default on). QQBot already accepts clicks only from the session's own user.
 
 ### Permanent Allowlist
@@ -818,7 +832,7 @@ security:
   allow_private_urls: true   # default: false
 ```
 
-When on, web tools, the browser, vision URL fetches, and gateway media downloads no longer reject RFC 1918 / loopback / link-local / CGNAT destinations. Cloud-metadata endpoints (`169.254.169.254`, `metadata.google.internal`, and the like) stay blocked even with this on. **This is a deliberate trust boundary** — only enable it on machines where the agent running arbitrary prompt-injected URLs against the local network is an acceptable risk. Public-facing gateways should leave it off.
+When on, web tools, the browser, vision URL fetches, gateway media downloads, and cron `monitor_url` fetches no longer reject RFC 1918 / loopback / link-local / CGNAT destinations. Cloud-metadata endpoints (`169.254.169.254`, `metadata.google.internal`, and the like) stay blocked even with this on. **This is a deliberate trust boundary** — only enable it on machines where the agent running arbitrary prompt-injected URLs against the local network is an acceptable risk. Public-facing gateways should leave it off.
 
 The host-substring guard (which blocks lookalike Unicode domain tricks even when the underlying IP is public) stays on regardless of this setting.
 

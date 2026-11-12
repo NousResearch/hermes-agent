@@ -139,6 +139,31 @@ def test_unreadable_edit_keeps_the_last_good_lists(_home):
     assert _allowed(adapter, guild, member) is True
 
 
+def test_transient_read_failure_retries_the_same_allowlist_edit(_home, monkeypatch):
+    """A recovered read error must not leave a removed Discord role authorized indefinitely."""
+    from gateway import config_loader
+
+    _write(_home, {"allowed_roles": ["2"]})
+    adapter, guild, member = _connected_discord()
+    assert _allowed(adapter, guild, member) is True
+    _write(_home, {"allowed_roles": ["9"]})
+
+    real_read = config_loader.read_yaml_layers
+    attempts = 0
+
+    def read_with_one_transient_error(home):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("config.yaml was temporarily unavailable")
+        return real_read(home)
+
+    monkeypatch.setattr(config_loader, "read_yaml_layers", read_with_one_transient_error)
+    assert _allowed(adapter, guild, member) is True  # last known-good policy on failed read
+    assert _allowed(adapter, guild, member) is False  # same edit, no second write
+    assert attempts >= 2
+
+
 def test_telegram_allow_from_edit_applies_to_the_next_message(_home):
     from gateway.platforms._shared import mark_live_gate_baseline
     from plugins.platforms.telegram.adapter import TelegramAdapter

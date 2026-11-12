@@ -346,7 +346,6 @@ def refresh_live_gate_extra(adapter: Any, keys: Iterable[str]) -> bool:
     with _LIVE_GATE_LOCK:
         if version == adapter._live_gate_version:
             return False
-        adapter._live_gate_version = version
         from gateway.config import PlatformConfig, load_gateway_config
         from gateway.config_loader import read_yaml_layers
         from hermes_constants import get_hermes_home
@@ -363,6 +362,8 @@ def refresh_live_gate_extra(adapter: Any, keys: Iterable[str]) -> bool:
                 extra[key] = current.extra[key]
             else:
                 extra.pop(key, None)
+        # Retry this same edit after a transient read failure, without requiring a second write.
+        adapter._live_gate_version = version
     return True
 
 

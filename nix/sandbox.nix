@@ -1,7 +1,7 @@
 {
   # Electron needs its native runtime libraries on LD_LIBRARY_PATH when the
-  # sandboxed command launches the desktop app (`sandbox hermes desktop`,
-  # `sandbox npm run dev`); nothing else in the sandbox is nix-specific.
+  # sandboxed command launches the desktop app (`sandbox hermes-checkout desktop`,
+  # `sandbox pnpm run dev`); nothing else in the sandbox is nix-specific.
   alsa-lib,
   at-spi2-atk,
   atk,

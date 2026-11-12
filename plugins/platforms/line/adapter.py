@@ -40,7 +40,7 @@ from gateway.platforms._shared import (
     get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
 )
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter, SendResult,
+    gateway_trust_env, BasePlatformAdapter, SendResult, describe_proxy_error, env_proxy_for_redaction,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
     cache_video_from_bytes_async,
 )
@@ -160,6 +160,7 @@ class State(enum.Enum):
 @dataclass
 class _CacheEntry:
     state: State
+    chat_id: str
     payload: Any = None
 
 
@@ -174,7 +175,7 @@ class RequestCache:
 
     def register_pending(self, chat_id: str) -> str:
         rid = str(uuid.uuid4())
-        self._entries[rid] = _CacheEntry(state=State.PENDING)
+        self._entries[rid] = _CacheEntry(state=State.PENDING, chat_id=chat_id)
         return rid
 
     def get(self, request_id: str) -> Optional[_CacheEntry]:
@@ -585,6 +586,10 @@ class LineAdapter(BasePlatformAdapter):
             return
         request_id = parsed.get("request_id", "") if parsed.get("action") == "show_response" else ""
         entry = self._cache.get(request_id) if request_id else None
+        if entry is not None and entry.chat_id != chat_id:
+            # A request id is a routing handle, not a capability: another chat
+            # holding it gets the same answer as for an unknown id (SECURITY.md §2.6).
+            entry = None
         if not self._client or not reply_token:
             return
         if entry is None:
@@ -885,11 +890,10 @@ class LineAdapter(BasePlatformAdapter):
             try:
                 await self._client.push(chat_id, batches[i])
             except Exception as exc:
-                if i > 0:
-                    logger.warning("LINE: push for follow-up batch failed: %s", exc)
-                elif text:
-                    logger.error("LINE: push send failed: %s", exc)
-                return SendResult(success=False, error=str(exc))
+                shown = describe_proxy_error(exc, env_proxy_for_redaction(LINE_PUSH_URL, trust_env=gateway_trust_env())) or str(exc)  # the text may echo the proxy URL
+                if i > 0 or text:
+                    logger.log(logging.WARNING if i > 0 else logging.ERROR, "LINE: push %s failed: %s", "for follow-up batch" if i > 0 else "send", shown)
+                return SendResult(success=False, error=shown)
         return SendResult(success=True, message_id=None)
 
 
@@ -947,8 +951,8 @@ async def _standalone_send(
     try:
         await _LineClient(token).push(chat_id, messages)
         return {"success": True, "message_id": None}
-    except Exception as exc:
-        return send_error(str(exc))
+    except Exception as exc:  # the text may echo the proxy URL: it reaches the model
+        return send_error(describe_proxy_error(exc, env_proxy_for_redaction(LINE_PUSH_URL, trust_env=gateway_trust_env())) or str(exc))
 
 
 _SETUP_PROMPTS = (  # (env var, prompt, masked)

@@ -1,6 +1,5 @@
-import type { ElectronApplication, Page } from '@playwright/test'
-
 import type { BackendProcess } from '../../../tests-js/scripts/desktop-smoke-process.ts'
+import type { ElectronApplication, Page } from '../../../tests-js/scripts/e2e-driver-deps.ts'
 
 export interface UpdateWindowIdentity {
   hermesRoot: string

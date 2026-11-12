@@ -5,6 +5,7 @@ import { AlternateScreen, Box, NoSelect, ScrollBox, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { Fragment, memo, type MutableRefObject, useEffect, useMemo, useRef } from 'react'
 
+import { cancelBacktrackPrime } from '../app/backtrackStore.js'
 import { useGateway } from '../app/gatewayContext.js'
 import { $inputSelection } from '../app/inputSelectionStore.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
@@ -42,7 +43,7 @@ import { LoopBar } from './loopBar.js'
 import { MessageLine } from './messageLine.js'
 import { PasteHint } from './pasteSections.js'
 import { QueuedMessages } from './queuedMessages.js'
-import { RewindFocusScroller, useRewindFocusIndex } from './rewindFocus.js'
+import { RewindFocusScroller, useBacktrackHint, useRewindFocusIndex } from './rewindFocus.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
 import { type InputCursorSnapshot, TextInput, type TextInputMouseApi } from './textInput.js'
 
@@ -158,7 +159,6 @@ const TranscriptPane = memo(function TranscriptPane({
   transcript
 }: Pick<AppLayoutProps, 'actions' | 'composer' | 'progress' | 'transcript'> & { nativeMode: boolean }) {
   const ui = useStore($uiState)
-  const T = useT()
   const petBox = useStore($petBox)
   const railCols = useAmbientRailWidth('left') + useAmbientRailWidth('right')
 
@@ -198,6 +198,8 @@ const TranscriptPane = memo(function TranscriptPane({
   const rewindFocusIdx = useRewindFocusIndex(transcript.historyItems)
 
   const clearBlankSelection = (e: { cellIsBlank?: boolean }) => {
+    cancelBacktrackPrime()
+
     if (e.cellIsBlank) {
       actions.clearSelection()
     }
@@ -214,8 +216,6 @@ const TranscriptPane = memo(function TranscriptPane({
               <Text color={ui.theme.color.border}>───</Text>
             </Box>
           )}
-
-          {row.index === rewindFocusIdx && <Text color={ui.theme.color.accent}>{T.prompt.rewind.marker}</Text>}
 
           {row.msg.kind === 'intro' ? (
             nativeMode ? null : (
@@ -247,6 +247,7 @@ const TranscriptPane = memo(function TranscriptPane({
                 sections: ui.sections
               })}
               sections={ui.sections}
+              selected={!nativeMode && row.index === rewindFocusIdx}
               t={ui.theme}
               timestamps={ui.timestamps}
             />
@@ -317,6 +318,40 @@ const TranscriptPane = memo(function TranscriptPane({
     </>
   )
 })
+
+/** The row above the composer: the backtrack hint (primed Esc / armed edit), else the sticky prompt,
+ *  else a blank spacer that still starts an input drag. */
+function ComposerHintRow({
+  onMouseDown,
+  onMouseDrag,
+  onMouseUp,
+  status
+}: Pick<AppLayoutProps, 'status'> & {
+  onMouseDown: (e: GutterMouseEvent) => void
+  onMouseDrag: (e: GutterMouseEvent) => void
+  onMouseUp: () => void
+}) {
+  const ui = useStore($uiState)
+  const backtrackHint = useBacktrackHint()
+
+  if (backtrackHint) {
+    return (
+      <Text color={ui.theme.color.muted} wrap="truncate-end">
+        {backtrackHint}
+      </Text>
+    )
+  }
+
+  return status.showStickyPrompt ? (
+    <Text color={ui.theme.color.muted} wrap="truncate-end">
+      <Text color={ui.theme.color.label}>↳ </Text>
+
+      {status.stickyPrompt}
+    </Text>
+  ) : (
+    <Box height={1} onMouseDown={onMouseDown} onMouseDrag={onMouseDrag} onMouseUp={onMouseUp} />
+  )
+}
 
 const ComposerPane = memo(function ComposerPane({
   actions,
@@ -410,6 +445,8 @@ const ComposerPane = memo(function ComposerPane({
       flexShrink={0}
       fromLeftEdge
       onClick={(e: { cellIsBlank?: boolean }) => {
+        cancelBacktrackPrime()
+
         if (e.cellIsBlank) {
           actions.clearSelection()
         }
@@ -429,15 +466,12 @@ const ComposerPane = memo(function ComposerPane({
         </Text>
       )}
 
-      {status.showStickyPrompt ? (
-        <Text color={ui.theme.color.muted} wrap="truncate-end">
-          <Text color={ui.theme.color.label}>↳ </Text>
-
-          {status.stickyPrompt}
-        </Text>
-      ) : (
-        <Box height={1} onMouseDown={captureInputDrag} onMouseDrag={dragFromSpacer} onMouseUp={endInputDrag} />
-      )}
+      <ComposerHintRow
+        onMouseDown={captureInputDrag}
+        onMouseDrag={dragFromSpacer}
+        onMouseUp={endInputDrag}
+        status={status}
+      />
 
       <GoalBar cols={Math.max(1, composer.cols - 2)} />
       <LoopBar cols={Math.max(1, composer.cols - 2)} />

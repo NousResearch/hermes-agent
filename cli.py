@@ -5,7 +5,7 @@
 try:
     import hermes_bootstrap
 except ModuleNotFoundError as exc:
-    if exc.name != "hermes_bootstrap":
+    if exc.name != "hermes_bootstrap" and not "hermes_bootstrap".startswith(f"{exc.name}."):
         raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
 
 import logging
@@ -1042,13 +1042,13 @@ class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessN
     def show_config(self):
         """Display current configuration with kawaii ASCII art."""
         from hermes_cli.config_backend import config_exists
+        from hermes_cli.config import DEFAULT_CONFIG, cfg_get
+        from hermes_cli.config_turn_limit import turn_limit_label
         terminal_env = os.getenv("TERMINAL_ENV", "local")
         terminal_cwd = os.getenv("TERMINAL_CWD", os.getcwd())
-        terminal_timeout = os.getenv("TERMINAL_TIMEOUT", "60")
+        terminal_timeout = os.getenv("TERMINAL_TIMEOUT") or cfg_get(DEFAULT_CONFIG, "terminal", "timeout")
 
         config_path = _hermes_home / 'config.yaml'
-        if not config_exists(config_path):
-            config_path = Path(__file__).parent / 'cli-config.yaml'
         config_status = _t("cli.config.loaded") if config_exists(config_path) else _t("cli.config.not_found")
         from hermes_cli.config_backend import get_config_backend
         if not get_config_backend().supports_file_tooling():  # no local file: name where config comes from
@@ -1092,7 +1092,7 @@ class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessN
                 ("cli.config.label_timeout", f"{terminal_timeout}s"),
             )),
             ("cli.config.section_agent", (
-                ("cli.config.label_max_turns", self.max_turns),
+                ("cli.config.label_max_turns", turn_limit_label(self.max_turns)),
                 ("cli.config.label_toolsets", ", ".join(self.enabled_toolsets) if self.enabled_toolsets else "all"),
                 ("cli.config.label_verbose", self.verbose),
             )),

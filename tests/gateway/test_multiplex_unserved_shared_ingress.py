@@ -85,20 +85,28 @@ async def test_secondary_relay_without_primary_is_reported_unserved(monkeypatch,
     assert served.served_profile_unserved_platforms("other") == {}
 
 
+@pytest.mark.parametrize("default_state", ["live", "queued_for_reconnect"])
 @pytest.mark.asyncio
-async def test_secondary_relay_served_by_default_is_not_warned(monkeypatch, caplog):
-    """The default owns Relay: the secondary IS served through the shared adapter — no WARNING,
-    the INFO line still explains where the channel lives."""
+async def test_secondary_relay_served_by_default_is_not_reported(monkeypatch, caplog, default_state):
+    """The default owns Relay (live, or retrying with its own status entry): the secondary IS served
+    through the shared adapter. No WARNING, and no ``<profile>:relay`` entry, which every health
+    reader (dashboard, Cloud availability check) would count as a broken platform."""
     runner = _runner()
-    runner.adapters[Platform.RELAY] = object()
-    _install_secondary(monkeypatch, runner, [])
+    if default_state == "live":
+        runner.adapters[Platform.RELAY] = object()
+    else:
+        runner._failed_platforms[Platform.RELAY] = {"attempts": 1}
+    stamps = []
+    _install_secondary(monkeypatch, runner, stamps)
 
     with caplog.at_level(logging.INFO, logger="gateway.run"):
         await runner._start_one_profile_adapters("work", Path("/profiles/work"), {})
         await runner._start_secondary_profiles(1, [])
 
     assert not [r for r in caplog.records if r.levelno == logging.WARNING and "not being served" in r.getMessage()]
-    assert [r for r in caplog.records if r.levelno == logging.INFO and "not served" in r.getMessage()]
+    assert not [s for s in stamps if s[0] == "work:relay"], stamps
+    assert [r for r in caplog.records if r.levelno == logging.INFO
+            and "'work'" in r.getMessage() and "served through the default" in r.getMessage()]
 
 
 @pytest.mark.asyncio

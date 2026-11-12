@@ -55,7 +55,6 @@ def _make_runner():
     )
     runner.session_store = _FakeSessionStore()
     runner.adapters = {}
-    runner._queued_events = {}
     return runner
 
 

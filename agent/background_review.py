@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from agent.i18n import t
-from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
+from agent.prompt_cache_scope import conversation_id, resolve_prompt_cache_scope_safe
 from agent.thread_scoped_output import thread_scoped_silence
 
 logger = logging.getLogger(__name__)
@@ -1017,6 +1017,8 @@ def build_cache_parity_fork(
     review_agent._end_session_on_close = False
     review_agent._session_db = None
     review_agent.session_id = agent.session_id
+    # No DB, so the fork can't walk to the root itself: plugin tool hooks get the parent's conversation.
+    review_agent._inherited_conversation_id = conversation_id(agent)
     # Same model only: share the warm cached system prompt (~26% cost cut; a rebuilt prompt misses
     # the byte-exact prefix key) and pin session_start so any re-render (compression, plugin
     # hooks) stays byte-identical.
@@ -1067,6 +1069,18 @@ def _bg_review_auto_deny(command, description, **kwargs):
     which would deadlock against the parent's TUI."""
     logger.warning("Background review auto-denied dangerous command: %s (%s)", command, description)
     return "deny"
+
+
+def _bg_review_skip_secret(var_name, prompt, metadata=None):
+    """Non-interactive secret capture: a skill the review opens never asks the user for a key.
+
+    The review thread inherits the turn's ContextVars, including the session owner's turn-scoped
+    secret prompt, so without this a ``skill_view`` of a skill with a missing required env var would
+    pop the masked "enter value" panel on the user's screen after the turn already finished.
+    """
+    logger.info("Background review skipped the secret prompt for %s", var_name)
+    return {"success": True, "reason": "background_review", "stored_as": var_name, "validated": False,
+            "skipped": True, "message": "Secret setup was skipped."}
 
 
 def _set_thread_approval_callback(callback: Any) -> None:
@@ -1281,7 +1295,8 @@ def _run_review_in_thread(
         # driving a Telegram long-poll — for the full duration of the review (tens of seconds), swallowing
         # their console output (#55769 / #55925). ``thread_scoped_silence`` routes only this thread's writes
         # to devnull and leaves all other threads on the real streams.
-        with thread_scoped_silence():
+        from tools.skills_tool import bind_turn_secret_capture
+        with thread_scoped_silence(), bind_turn_secret_capture(_bg_review_skip_secret):
             _run_review_fork(agent, messages_snapshot, prompt, task_cfg, review_run, st, review_memory, explicit)
         # A buggy/legacy tool response shape must NOT take down the whole review (the outer
         # except would discard every action the fork DID complete), so coerce to an empty list.

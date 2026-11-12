@@ -954,3 +954,72 @@ def test_blocking_route_work_never_runs_on_the_event_loop(forced_files_client, m
     response = _OFF_LOOP_ROUTES[route](client, seeded, spy)
     assert response.status_code == 200, response.text
     assert seen and not any(seen), seen
+
+
+
+def _refused_writes(client, target):
+    """Status codes of upload and upload-stream overwriting *target*."""
+    upload = client.post("/api/files/upload", json={
+        "path": str(target), "data_url": "data:text/plain;base64,RVZJTD0x", "overwrite": True,
+    })
+    stream = client.post(
+        "/api/files/upload-stream",
+        files={"file": ("x", b"EVIL=1", "text/plain")},
+        data={"path": str(target), "overwrite": "true"},
+    )
+    return upload.status_code, stream.status_code
+
+
+def test_managed_writes_refuse_sensitive_paths(forced_files_client):
+    """#85387: upload, upload-stream, mkdir and delete refuse the same credential
+    files the read side hides, so an operator who points the managed root at
+    HERMES_HOME cannot have .env / config.yaml overwritten or removed through it."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    env_file = root / ".env"
+    env_file.write_text("SECRET=1")
+    config = root / "config.yaml"
+    config.write_text("model: safe\n")
+
+    for target in (env_file, config, root / "mcp-tokens" / "github.json"):
+        assert _refused_writes(client, target) == (403, 403), target
+    assert client.post("/api/files/mkdir", json={"path": str(root / "pairing")}).status_code == 403
+    deleted = client.request("DELETE", "/api/files", json={"path": str(env_file), "recursive": False})
+    assert deleted.status_code == 403
+
+    assert env_file.read_text() == "SECRET=1"
+    assert config.read_text() == "model: safe\n"
+    assert sorted(p.name for p in root.iterdir()) == [".env", "config.yaml"]
+
+    plain = _seed_file(client, root, "plain.txt")
+    assert client.request("DELETE", "/api/files", json={"path": str(plain)}).status_code == 200
+
+
+@pytest.mark.require_symlinks
+def test_managed_writes_refuse_sensitive_paths_through_symlinks(forced_files_client):
+    """A link in either direction is refused: an ordinary name pointing at a credential file,
+    and a credential name that is itself a link to an ordinary-looking backing file."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    secret = root / "auth.json"
+    secret.write_text("SECRET=1")
+    alias = root / "notes.txt"
+    alias.symlink_to(secret)
+    store = root / "settings-store"
+    store.write_text("model: safe\n")
+    config = root / "config.yaml"
+    config.symlink_to(store)
+
+    for target in (alias, config, "config.yaml", "config.yaml ", f"{config} "):
+        assert _refused_writes(client, target) == (403, 403), repr(target)
+        deleted = client.request("DELETE", "/api/files", json={"path": str(target), "recursive": False})
+        assert deleted.status_code == 403, repr(target)
+
+    dangling = root / "draft.txt"
+    dangling.symlink_to(root / ".env")  # .env is missing: the resolver keeps the link as target
+    assert _refused_writes(client, dangling) == (403, 403)
+    assert not (root / ".env").exists()
+
+    assert secret.read_text() == "SECRET=1"
+    assert store.read_text() == "model: safe\n"
+    assert alias.is_symlink() and config.is_symlink()

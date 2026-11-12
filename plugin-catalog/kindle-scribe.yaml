@@ -1,0 +1,19 @@
+name: kindle-scribe
+title: Kindle Scribe
+repo: https://github.com/lEWFkRAD/hermes-agents-guide-to-the-galaxy
+subdir: kindle-plugin
+sha: dfe76f39b6c2094d6b42d3b952c39bea55368498
+version: "0.2.0"
+description: "Kindle Scribe gateway platform for Hermes (Hermes Agents Guide to the Galaxy): handwritten notebook pages reach the full agent, its tools and its memory, and replies return to the page. Disclosure: while the gateway runs, the adapter keeps a token-authenticated HTTP listener on 127.0.0.1:8793 (/health, /ingest) and refuses non-loopback bind addresses; it runs in the gateway process like every platform adapter; no outbound network calls, no shell commands, no telemetry; KINDLE_INGEST_TOKEN is read through Hermes's profile secret scope. Needs the companion diary bridge from the same repository, which is what the Kindle talks to over the LAN."
+maintainer: lEWFkRAD
+tier: community
+category: platform
+requires_hermes: ">=0.23.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - KINDLE_INGEST_TOKEN

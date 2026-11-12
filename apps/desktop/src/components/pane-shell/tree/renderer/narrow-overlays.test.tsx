@@ -345,6 +345,22 @@ describe('narrow overlay in the redesign', () => {
     expect(globalThis.document.querySelector('[data-narrow-overlay]')).toBeNull()
   })
 
+  it('keeps a plugin pane’s declared width in its sheet, within the room a sheet may take', () => {
+    registerPane('plugin:notes', 'Notes', { collapsible: true, placement: 'left', width: '420px' }, 'notes')
+    $layoutTree.set(split('row', [group(['sessions']), group(['plugin:notes']), group(['workspace'])]))
+    render(<NarrowOverlays />)
+
+    revealPane('plugin:notes')
+    expect(globalThis.document.querySelector<HTMLElement>('[data-narrow-overlay="plugin:notes"]')?.style.width).toBe(
+      'min(420px, var(--portal-sheet-panel-max-width))'
+    )
+
+    revealPane('sessions')
+    expect(globalThis.document.querySelector<HTMLElement>('[data-narrow-overlay="sessions"]')?.style.width).toBe(
+      'var(--portal-sheet-panel-width)'
+    )
+  })
+
   it('closes on Escape and on an explicit close', () => {
     render(<NarrowOverlays />)
     revealPane('sessions')

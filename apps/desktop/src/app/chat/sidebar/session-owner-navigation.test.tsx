@@ -109,10 +109,10 @@ it('highlights the focused background-owner tile, not its same-ID foreground twi
     activeSessionId={remote.id} ambiguousIds={new Set([remote.id])} onArchiveSession={noop} onBranchSession={noop}
     onDeleteSession={noop} onResumeSession={noop} onUpdate={noop} pinnedIds={new Set()} sessions={[local, remote]}
   /></RootTooltipProvider></StableNavigateProvider></MemoryRouter>)
-  expect(screen.getByText(remote.title!).closest('button')?.getAttribute('aria-current')).toBe('page')
-  expect(screen.getByText('Local twin').closest('button')?.hasAttribute('aria-current')).toBe(false)
+  expect(screen.getByText(remote.title!).closest('.portal-session-row')?.getAttribute('aria-current')).toBe('page')
+  expect(screen.getByText('Local twin').closest('.portal-session-row')?.hasAttribute('aria-current')).toBe(false)
   act(() => $apiRequestScope.set({ connectionId: 'another-gateway', profile: 'other' }))
-  expect(screen.getByText(remote.title!).closest('button')?.getAttribute('aria-current')).toBe('page')
+  expect(screen.getByText(remote.title!).closest('.portal-session-row')?.getAttribute('aria-current')).toBe('page')
 })
 
 it('never merges a same-ID remote page into a retained local conversation', () => {

@@ -42,6 +42,7 @@ import { $titlebarAppActionsSide, TITLEBAR_FIXED_TOOLS } from '@/store/titlebar-
 
 import {
   $workspaceIsPage,
+  type AppView,
   appViewForPath,
   hidesFixedTitlebarClusters,
   isOverlayView,
@@ -482,7 +483,15 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   // Overlays own the window. These clusters are `fixed` at a higher z-index
   // than the overlay card, so they'd otherwise bleed over it — hide them (and
   // the nested titleBar slots) and let the overlay's own chrome take over.
-  if (isOverlayView(view)) {
+  // Classic unmounts them there, as it always has. In the redesign Agents,
+  // Schedules and Settings are primary destinations, so the clusters are
+  // parked instead (hidden, same tree): `titleBar.*` slots are permanent mount
+  // points, and a plugin's setup/cleanup must not run on every visit.
+  const posture = bandPosture(view, portal, pageOwnsTitlebar)
+  const parked = posture === 'parked'
+  const parkedProps = parked ? PARKED_CLUSTER : {}
+
+  if (posture === 'gone') {
     return null
   }
 
@@ -497,7 +506,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   // the app's controls; an empty claim would leave a bare strip on every plugin
   // route. Contributed `titleBar.tools` items keep rendering here too, so a
   // chrome-owning page never silently drops a registered item.
-  if (hidesFixedTitlebarClusters(view) && pageOwnsTitlebar) {
+  if (posture === 'page') {
     const pageTools = [...leftTools, ...tools].filter(visibleTool)
 
     // Both markers are required even when a page contributes to only one side.
@@ -536,6 +545,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
         aria-label={t.shell.windowControls}
         className={leftClusterClass}
         data-titlebar-cluster="left"
+        {...parkedProps}
         style={leftClusterStyle}
       >
         {visibleLeftTools.map(tool => (
@@ -545,36 +555,21 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
         <Slot area="titleBar.center" />
       </div>
 
-      {portal && <ShellSheetScrim />}
-      <FloatingSidebarReveal leftSideOpen={leftEdge.open} portal={portal} />
-      {portal && (
-        <div
-          className={cn(titlebarToolClusterClass, 'portal-session-tab-cluster top-(--titlebar-controls-top)')}
-          style={clusterStyle}
-        >
-          <PortalSessionTab />
-        </div>
-      )}
-
-      {visiblePaneTools.length > 0 && (
-        <div
-          aria-label={t.shell.appControls}
-          className={cn(
-            titlebarToolClusterClass,
-            'top-[calc(var(--titlebar-controls-top)+var(--right-rail-top-inset,0px))] right-[calc(var(--titlebar-tools-right)+var(--shell-preview-toolbar-gap,0))]'
-          )}
-          style={clusterStyle}
-        >
-          {visiblePaneTools.map(tool => (
-            <TitlebarToolButton key={tool.id} navigate={navigate} portal={portal} tool={tool} />
-          ))}
-        </div>
+      {!parked && (
+        <BandOverlays
+          clusterStyle={clusterStyle}
+          leftSideOpen={leftEdge.open}
+          navigate={navigate}
+          paneTools={visiblePaneTools}
+          portal={portal}
+        />
       )}
 
       <div
         aria-label={t.shell.appControls}
         className={cn(titlebarToolClusterClass, 'right-(--titlebar-tools-right) top-(--titlebar-controls-top)')}
         data-titlebar-cluster="right"
+        {...parkedProps}
         style={clusterStyle}
       >
         {visibleSystemTools.map(tool => (
@@ -585,6 +580,63 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
         ))}
         <Slot area="titleBar.right" />
       </div>
+    </>
+  )
+}
+
+/** What the band shows for a view: nothing (a classic overlay), its clusters parked (a redesign
+ *  overlay destination), only a contributed page's own chrome, or the full band. */
+function bandPosture(view: AppView, portal: boolean, pageOwnsTitlebar: boolean): 'full' | 'gone' | 'page' | 'parked' {
+  if (isOverlayView(view)) {
+    return portal ? 'parked' : 'gone'
+  }
+
+  return hidesFixedTitlebarClusters(view) && pageOwnsTitlebar ? 'page' : 'full'
+}
+
+/** A parked cluster: out of sight and out of the tab order, still mounted. */
+const PARKED_CLUSTER = { hidden: true, inert: true } as const
+
+interface BandOverlaysProps {
+  clusterStyle: CSSProperties | undefined
+  leftSideOpen: boolean
+  navigate: ReturnType<typeof useNavigate>
+  paneTools: TitlebarTool[]
+  portal: boolean
+}
+
+/** The band's chrome besides its two clusters: the redesign's sheet scrim and session tab, the
+ *  floating sidebar reveal, and the pane tools. None of it holds a plugin mount, so a parked band
+ *  drops it outright. */
+function BandOverlays({ clusterStyle, leftSideOpen, navigate, paneTools, portal }: BandOverlaysProps) {
+  const { t } = useI18n()
+
+  return (
+    <>
+      {portal && <ShellSheetScrim />}
+      <FloatingSidebarReveal leftSideOpen={leftSideOpen} portal={portal} />
+      {portal && (
+        <div
+          className={cn(titlebarToolClusterClass, 'portal-session-tab-cluster top-(--titlebar-controls-top)')}
+          style={clusterStyle}
+        >
+          <PortalSessionTab />
+        </div>
+      )}
+      {paneTools.length > 0 && (
+        <div
+          aria-label={t.shell.appControls}
+          className={cn(
+            titlebarToolClusterClass,
+            'top-[calc(var(--titlebar-controls-top)+var(--right-rail-top-inset,0px))] right-[calc(var(--titlebar-tools-right)+var(--shell-preview-toolbar-gap,0))]'
+          )}
+          style={clusterStyle}
+        >
+          {paneTools.map(tool => (
+            <TitlebarToolButton key={tool.id} navigate={navigate} portal={portal} tool={tool} />
+          ))}
+        </div>
+      )}
     </>
   )
 }

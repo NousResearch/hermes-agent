@@ -53,6 +53,8 @@ export function narrowOverlayWidth(ctx: TrackContext, tree: LayoutNode | null, r
 }
 
 interface OverlayStyleInput {
+  /** The revealed zone is the chat sidebar's (it holds the core `sessions` pane). */
+  chatSidebar: boolean
   overlayWidth: string | null
   portal: boolean
   side: 'left' | 'right'
@@ -64,8 +66,11 @@ interface OverlayStyleInput {
  *  20rem — capped for tiny screens. The top inset keeps the tab strip below the band on the browser
  *  host and in the redesign, else below the native window controls (macOS traffic lights); the
  *  spacer the overlay draws keeps that band draggable, mirroring TreeGroup's reservation. The
- *  redesign's left overlay is a sheet sized by its token (portal-shell.css places it past the rail). */
+ *  redesign's left overlay is a sheet (portal-shell.css places it past the rail): the chat sidebar
+ *  takes the sheet token; any other pane (a plugin's) keeps the width it declared, within the room
+ *  a sheet may take. */
 export function overlayStyle({
+  chatSidebar,
   overlayWidth,
   portal,
   side,
@@ -76,7 +81,12 @@ export function overlayStyle({
   const paddingTop = underBand ? titlebarHeight : wcOverlap ? wcOverlap.y + wcOverlap.height : undefined
 
   if (portal && side === 'left') {
-    return { paddingTop, width: 'var(--portal-sheet-panel-width)' }
+    return {
+      paddingTop,
+      width: chatSidebar
+        ? 'var(--portal-sheet-panel-width)'
+        : `min(${overlayWidth ?? '18rem'}, var(--portal-sheet-panel-max-width))`
+    }
   }
 
   // Global/developer rails take space outside this overlay's layout root.
@@ -356,6 +366,7 @@ export function NarrowOverlays() {
           onMouseLeave={onMouseLeave}
           ref={overlayRef}
           style={overlayStyle({
+            chatSidebar: zonePanes.some(pane => pane.id === 'sessions'),
             overlayWidth,
             portal,
             side: sideOf(revealed),

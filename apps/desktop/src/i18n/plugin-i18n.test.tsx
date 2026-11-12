@@ -1,6 +1,8 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { $shellChoice } from '@/store/shell-variant'
+
 import { I18nProvider, useI18n } from './context'
 import { createPluginI18n, registerPluginLocales, translatePlugin, usePluginI18n } from './plugin-i18n'
 import { setRuntimeI18nLocale } from './runtime'
@@ -10,6 +12,7 @@ const noopTrack = (dispose: () => void) => dispose
 afterEach(() => {
   cleanup()
   setRuntimeI18nLocale('en')
+  $shellChoice.set(null)
 })
 
 describe('plugin locale registry', () => {
@@ -53,6 +56,39 @@ describe('plugin locale registry', () => {
     two()
 
     expect(translatePlugin('merge', 'en', 'a', [])).toBe('a')
+  })
+
+  it('reads a redesign wording layer only in the redesigned shell, per locale, before English', () => {
+    const dispose = registerPluginLocales(
+      'roster',
+      {
+        en: { title: 'Bots', count: (n: number) => `${n} bots`, search: 'Search' },
+        ja: { title: 'ボット', search: '検索' }
+      },
+      { redesign: { en: { title: 'Agents', count: (n: number) => `${n} agents` }, ja: { title: 'エージェント' } } }
+    )
+
+    expect(translatePlugin('roster', 'en', 'title', [], 'classic')).toBe('Bots')
+    expect(translatePlugin('roster', 'en', 'title', [], 'redesign')).toBe('Agents')
+    expect(translatePlugin('roster', 'ja', 'title', [], 'classic')).toBe('ボット')
+    expect(translatePlugin('roster', 'ja', 'title', [], 'redesign')).toBe('エージェント')
+    // A key the layer leaves out reads the same in both shells.
+    expect(translatePlugin('roster', 'ja', 'search', [], 'redesign')).toBe('検索')
+    // Missing in the locale → the English bundle in the SAME shell's wording.
+    expect(translatePlugin('roster', 'ja', 'count', [2], 'classic')).toBe('2 bots')
+    expect(translatePlugin('roster', 'ja', 'count', [2], 'redesign')).toBe('2 agents')
+
+    dispose()
+    expect(translatePlugin('roster', 'en', 'title', [], 'redesign')).toBe('title')
+  })
+
+  it('reads a plugin without a wording layer the same in both shells', () => {
+    const dispose = registerPluginLocales('plain', { en: { title: 'Board' } })
+
+    expect(translatePlugin('plain', 'en', 'title', [], 'classic')).toBe('Board')
+    expect(translatePlugin('plain', 'en', 'title', [], 'redesign')).toBe('Board')
+
+    dispose()
   })
 
   it('locale listeners ignore no-op changes and unsubscribe both explicitly and on unload', () => {
@@ -146,6 +182,27 @@ describe('usePluginI18n', () => {
     })
 
     expect(screen.getByTestId('copy').textContent).toBe('landed')
+
+    dispose()
+  })
+
+  it('re-renders on a shell flip with the redesign layer', () => {
+    const dispose = registerPluginLocales('flip', { en: { greet: 'Bots' } }, { redesign: { en: { greet: 'Agents' } } })
+    $shellChoice.set(false)
+
+    render(
+      <I18nProvider configClient={null}>
+        <Probe pluginId="flip" />
+      </I18nProvider>
+    )
+
+    expect(screen.getByTestId('copy').textContent).toBe('Bots')
+
+    act(() => $shellChoice.set(true))
+    expect(screen.getByTestId('copy').textContent).toBe('Agents')
+
+    act(() => $shellChoice.set(false))
+    expect(screen.getByTestId('copy').textContent).toBe('Bots')
 
     dispose()
   })

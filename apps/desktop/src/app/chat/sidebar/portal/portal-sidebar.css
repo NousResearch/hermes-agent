@@ -476,7 +476,7 @@ button.portal-section-title:hover {
   box-shadow: inset calc(-1 * var(--portal-sidebar-row-rule-width)) 0 0 var(--row-rule, transparent);
 }
 
-.portal-session-row:is(:hover, :focus-visible),
+.portal-session-row:is(:hover, :focus-visible, :has(.portal-session-open:focus-visible)),
 .portal-session-item:where([data-state='open'], :has(.portal-row-action[data-state='open'])) > .portal-session-row {
   --row-ramp-start: var(--portal-sidebar-row-hover-start);
   --row-ramp-mid: var(--portal-sidebar-row-hover-mid);
@@ -493,6 +493,26 @@ button.portal-section-title:hover {
 
 [data-slot='gateway-heading']:has(> :is(.portal-machine-row, .portal-machine-status):active) {
   background: var(--portal-sidebar-press);
+}
+
+/* A chat row's title is its button (the row resolves the click); the row wears the focus ring. */
+.portal-session-open {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  color: inherit;
+  text-align: start;
+}
+
+.portal-sidebar .portal-session-open:focus-visible {
+  outline: none;
+}
+
+.portal-sidebar .portal-session-row:has(.portal-session-open:focus-visible) {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+  box-shadow: none;
 }
 
 .portal-session-title,
@@ -880,6 +900,16 @@ button.portal-section-title:hover {
   .portal-sidebar :is(.portal-agent-collapse, .portal-agent-menu-trigger) {
     opacity: 1;
   }
+}
+
+/* Plugin chrome for one agent (`sidebar.profileGroup.header`): under the agent's heading, on the
+   chats' inset, so it reads as the first thing in the card. Nothing renders without a contribution. */
+.portal-agent-header-slot {
+  display: flex;
+  flex-direction: column;
+  gap: var(--portal-sidebar-row-gap);
+  padding-block: 0.25rem;
+  padding-inline: calc(1.25rem + 1.375rem) 0.625rem;
 }
 
 /* Nested chats (143:6287, 1089:7972): a 1px guide down the tile's centre, 12px titles on a 34px pitch,

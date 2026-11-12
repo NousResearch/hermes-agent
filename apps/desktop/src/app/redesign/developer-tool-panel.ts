@@ -1,8 +1,10 @@
 import { findGroupOfPane } from '@/components/pane-shell/tree/model'
 import type { PaneSizing } from '@/components/pane-shell/tree/renderer/track-model'
 import {
+  $hiddenTreePanes,
   $layoutTree,
   $narrowViewport,
+  activateTreePane,
   moveTreePane,
   moveTreePanes,
   setTreePaneHidden
@@ -103,7 +105,9 @@ export function prepareDeveloperToolPanel(paneId: string): void {
   moveTreePanes(panes, { groupId: main.id, pos: 'right' }, paneId)
 }
 
-/** Hide the panel, not a shell or a tab that would expose a sibling tool. */
+/** Hide the panel's tools, not a shell or a tab that would expose a sibling tool. Only the built-in
+ *  tools hide: a plugin pane someone stacked into the panel has no tool tile to bring it back, so
+ *  it stays, fronted, and keeps the panel on screen until it leaves. */
 export function hideDeveloperToolPanel(paneId: string): boolean {
   if (!$portalShell.get() || $narrowViewport.get()) {
     return false
@@ -116,8 +120,14 @@ export function hideDeveloperToolPanel(paneId: string): boolean {
     return false
   }
 
-  for (const id of panel.panes) {
+  for (const id of panel.panes.filter(isTool)) {
     setTreePaneHidden(id, true)
+  }
+
+  const staying = panel.panes.find(id => !isTool(id) && !$hiddenTreePanes.get().has(id))
+
+  if (staying && isTool(panel.active ?? '')) {
+    activateTreePane(panel.id, staying)
   }
 
   return true

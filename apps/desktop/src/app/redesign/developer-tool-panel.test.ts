@@ -9,6 +9,7 @@ import {
   $narrowViewport,
   $userPlacedPanes,
   isPaneVisible,
+  moveTreePane,
   revealTreePane
 } from '@/components/pane-shell/tree/store'
 import { $paneStates, setPaneWidthOverride } from '@/store/panes'
@@ -70,6 +71,28 @@ it('joins a browser to the existing panel without moving conversation tabs', () 
   revealTreePane('terminal')
   expect(isPaneVisible('terminal')).toBe(true)
   expect(isPaneVisible('preview-tile:browser')).toBe(false)
+})
+
+it('hides only the built-in tools: a plugin pane stacked into the panel stays shown, with its panel', () => {
+  $shellChoice.set(true)
+  $layoutTree.set(DEFAULT_TREE)
+  prepareDeveloperToolPanel('terminal')
+  const panel = findGroupOfPane($layoutTree.get()!, 'terminal')!
+  moveTreePane('plugin:notes', { groupId: panel.id, pos: 'center' })
+  revealTreePane('terminal')
+
+  expect(hideDeveloperToolPanel('terminal')).toBe(true)
+
+  for (const tool of ['files', 'review', 'terminal']) {
+    expect(isPaneVisible(tool)).toBe(false)
+  }
+
+  expect($hiddenTreePanes.get().has('plugin:notes')).toBe(false)
+  expect(isPaneVisible('plugin:notes')).toBe(true)
+  // A tool tile still brings its tool back beside the plugin pane.
+  revealTreePane('files')
+  expect(isPaneVisible('files')).toBe(true)
+  expect(findGroupOfPane($layoutTree.get()!, 'plugin:notes')?.id).toBe(panel.id)
 })
 
 it.each(['classic', 'narrow'])('keeps the %s layout unchanged', mode => {

@@ -1274,7 +1274,9 @@ export function revealTreePane(paneId: string) {
  * Narrow viewport: panes whose contribution declares `collapsible: true` leave the grid and become
  * edge overlays (see NarrowOverlays in renderer.tsx). Classic collapses them below its sidebar dock
  * point; the redesign keeps them docked only on a wide window (app/redesign/breakpoints.ts), so a
- * medium window gets a full-width stage with the sidebar as a sheet.
+ * medium window gets a full-width stage with the sidebar as a sheet. This is the pane tree's layout
+ * posture, not the plugin contract: `host.state.viewport.narrow` (sdk/viewport.ts) stays the dock
+ * point in both shells.
  */
 export function narrowViewportFor(portal: boolean, width: WidthClass): boolean {
   return portal ? width !== 'wide' : width === 'compact'

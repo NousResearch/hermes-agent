@@ -952,17 +952,21 @@ async function reconcileBotMeta(rows: RosterRow[], fetchedAt: number): Promise<v
   )
 }
 
-export function useRoster() {
-  const activeConnectionId = useValue(host.state.connectionId)
-
-  return useQuery({
+/** The live roster query for one connection: the Bots pane's `useRoster` and the headless
+ *  publisher (`roster-publisher.ts`) observe the same cache entry with the same polling. */
+export function rosterQueryOptions(activeConnectionId: null | string | undefined) {
+  return {
     queryKey: [...ROSTER_KEY, activeConnectionId],
     queryFn: () => fetchRosterSnapshot(activeConnectionId),
     refetchInterval: 5000,
     staleTime: 5000,
     retry: ROSTER_QUERY_RETRY,
-    retryDelay: attempt => Math.min(15000, 1000 * 2 ** attempt)
-  })
+    retryDelay: (attempt: number) => Math.min(15000, 1000 * 2 ** attempt)
+  }
+}
+
+export function useRoster() {
+  return useQuery(rosterQueryOptions(useValue(host.state.connectionId)))
 }
 
 /** Fill the live connection's roster cache entry without mounting the Bots
@@ -1393,7 +1397,7 @@ export function newBotChat(bot: RosterRow) {
     host.notify?.({
       kind: 'error',
       message:
-        getPluginCtx()?.i18n?.t('bot.openAnotherChatUnsupported') ?? 'Update Hermes Desktop to open another agent chat.'
+        getPluginCtx()?.i18n?.t('bot.openAnotherChatUnsupported') ?? 'Update Hermes Desktop to open another bot chat.'
     })
 
     return
@@ -1405,7 +1409,7 @@ export function newBotChat(bot: RosterRow) {
     host.notify?.({
       kind: 'error',
       message:
-        getPluginCtx()?.i18n?.t('bot.openAnotherChatUnsupported') ?? 'Update Hermes Desktop to open another agent chat.'
+        getPluginCtx()?.i18n?.t('bot.openAnotherChatUnsupported') ?? 'Update Hermes Desktop to open another bot chat.'
     })
 
     return

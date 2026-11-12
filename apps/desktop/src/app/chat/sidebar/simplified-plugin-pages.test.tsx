@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, expect, it, vi } from 'vitest'
 
@@ -155,6 +155,84 @@ it('does not offer a broken settings shortcut for a plugin without a settings pa
     expect(screen.queryByRole('menu')).toBeNull()
   } finally {
     cleanup()
+    dispose()
+  }
+})
+
+const railLabels = () =>
+  within(screen.getByRole('navigation'))
+    .getAllByRole('button')
+    .map(button => button.getAttribute('aria-label'))
+
+it('applies nav preferences to the rail’s core destinations as classic does to its nav rows', () => {
+  const dispose = registry.registerMany([
+    { area: SIDEBAR_NAV_AREA, id: 'mgr:board', source: 'plugin:mgr', data: { label: 'Board', path: '/board' } },
+    {
+      area: SIDEBAR_NAV_PREFS_AREA,
+      id: 'mgr:prefs',
+      source: 'plugin:mgr',
+      // `chat`, `profiles` and `settings` name no movable row: inert, like ids classic has no row for.
+      data: { hide: ['cron', 'capabilities', 'chat', 'profiles', 'settings'], order: ['mgr:board', 'artifacts'] }
+    }
+  ])
+
+  try {
+    render(
+      <MemoryRouter>
+        <RootTooltipProvider>
+          <SimplifiedGlobalNav onNavigate={vi.fn()} />
+        </RootTooltipProvider>
+      </MemoryRouter>
+    )
+
+    expect(railLabels()).toEqual([
+      en.simplifiedAgents.chats,
+      en.profiles.title,
+      'Board',
+      en.simplifiedAgents.library,
+      // Capabilities hosts the Plugins tab, the way back to a plugin's off switch: never hidden.
+      en.sidebar.nav.capabilities,
+      en.commandCenter.settings
+    ])
+    act(dispose)
+    expect(railLabels()).toEqual([
+      en.simplifiedAgents.chats,
+      en.profiles.title,
+      en.sidebar.nav.capabilities,
+      en.simplifiedAgents.library,
+      en.cron.title,
+      en.commandCenter.settings
+    ])
+  } finally {
+    cleanup()
+    dispose()
+  }
+})
+
+it('marks a plugin destination open on its nested routes, not on a sibling prefix', () => {
+  const dispose = registry.register({
+    area: SIDEBAR_NAV_AREA,
+    id: 'nested:board',
+    source: 'plugin:nested',
+    data: { label: 'Board', path: '/board' }
+  })
+
+  try {
+    for (const [path, open] of [
+      ['/board/cards/42', true],
+      ['/boardroom', false]
+    ] as const) {
+      render(
+        <MemoryRouter initialEntries={[path]}>
+          <RootTooltipProvider>
+            <SimplifiedGlobalNav onNavigate={vi.fn()} />
+          </RootTooltipProvider>
+        </MemoryRouter>
+      )
+      expect(screen.getByRole('button', { name: 'Board' }).getAttribute('aria-current')).toBe(open ? 'page' : null)
+      cleanup()
+    }
+  } finally {
     dispose()
   }
 })

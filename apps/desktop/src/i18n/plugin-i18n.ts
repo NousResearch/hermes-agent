@@ -5,6 +5,13 @@
  * own `en` bundle → the key itself. The active locale is always the app's
  * (`display.language`) — plugins follow the user's choice, they don't own it.
  *
+ * Shell wording mirrors the app catalog too (`registry.ts` `resolveTranslations`):
+ * a plugin may register a `redesign` layer holding ONLY the strings whose words
+ * differ in the redesigned shell. While this window renders that shell the
+ * layer is merged over the plugin's bundles, per locale, before the English
+ * fallback; classic reads the bundles verbatim. Without a layer a plugin reads
+ * the same in both shells.
+ *
  * Two consumers, same shape as core (`useI18n` / `translateNow`):
  *  - `usePluginI18n(id)` — reactive translator for React UI (re-renders on a
  *    locale switch or a late bundle registration);
@@ -15,8 +22,16 @@ import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
 import { useCallback } from 'react'
 
+import { usePortalPresentation } from '@/store/shell-presentation'
+
 import { useI18n } from './context'
-import { type AppLocaleRegistration, registerAppLocale } from './registry'
+import {
+  type AppLocaleRegistration,
+  currentShellWording,
+  registerAppLocale,
+  type ShellWording,
+  shellWordingFor
+} from './registry'
 import { getRuntimeI18nLocale, subscribeRuntimeI18nLocale, translateFrom } from './runtime'
 import type { BundledLocale, Locale } from './types'
 
@@ -40,10 +55,18 @@ export type PluginLocaleBundles = Partial<Record<BundledLocale, PluginMessages>>
  *  the raw key. */
 export type PluginTranslate = (key: string, ...args: unknown[]) => string
 
+/** Per-shell wording layers over a plugin's bundles: each holds only the keys
+ *  whose words differ in that shell, per locale. `redesign` is the redesigned
+ *  shell's vocabulary (Agents, Machines, Schedules, Chats, Library). */
+export interface PluginShellWording {
+  redesign?: PluginLocaleBundles
+}
+
 export interface PluginI18n {
-  /** Merge locale bundles for this plugin (call once at `register`). Returns a
-   *  disposer that drops the plugin's bundles on unload/reload. */
-  register: (bundles: PluginLocaleBundles) => () => void
+  /** Merge locale bundles for this plugin (call once at `register`), plus an
+   *  optional wording layer per shell. Returns a disposer that drops the
+   *  plugin's bundles on unload/reload. */
+  register: (bundles: PluginLocaleBundles, wording?: PluginShellWording) => () => void
   /** Module-level translator against the app's active locale (mirrors
    *  `translateNow`). Non-reactive — in React prefer `usePluginI18n`. */
   t: PluginTranslate
@@ -60,11 +83,24 @@ export interface PluginI18n {
   registerAppLocale: (id: string, registration: AppLocaleRegistration) => () => void
 }
 
-const registry = new Map<string, Map<Locale, PluginMessages>>()
+interface PluginBundles {
+  base: Map<Locale, PluginMessages>
+  redesign: Map<Locale, PluginMessages>
+}
+
+const registry = new Map<string, PluginBundles>()
 
 /** Bumps whenever a plugin's bundles change, so React translators re-render on
  *  a registration that lands after first paint. */
 const $version = atom(0)
+
+/** Redesign layers merged over their bundles, per plugin and locale; cleared on every change. */
+const mergedLayers = new Map<string, PluginMessages>()
+
+const bump = () => {
+  mergedLayers.clear()
+  $version.set($version.get() + 1)
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -81,46 +117,82 @@ function mergeMessages(base: PluginMessages, overrides: PluginMessages): PluginM
   return result
 }
 
-export function registerPluginLocales(pluginId: string, bundles: PluginLocaleBundles): () => void {
-  const byLocale = registry.get(pluginId) ?? new Map<Locale, PluginMessages>()
-  registry.set(pluginId, byLocale)
-
-  for (const [locale, messages] of Object.entries(bundles) as [Locale, PluginMessages | undefined][]) {
-    if (!messages) {
-      continue
+function mergeBundles(byLocale: Map<Locale, PluginMessages>, bundles: PluginLocaleBundles | undefined) {
+  for (const [locale, messages] of Object.entries(bundles ?? {}) as [Locale, PluginMessages | undefined][]) {
+    if (messages) {
+      const prev = byLocale.get(locale)
+      byLocale.set(locale, prev ? mergeMessages(prev, messages) : messages)
     }
-
-    const prev = byLocale.get(locale)
-    byLocale.set(locale, prev ? mergeMessages(prev, messages) : messages)
-  }
-
-  $version.set($version.get() + 1)
-
-  return () => {
-    registry.delete(pluginId)
-    $version.set($version.get() + 1)
   }
 }
 
-export function translatePlugin(pluginId: string, locale: Locale, key: string, args: unknown[]): string {
-  return translateFrom(l => registry.get(pluginId)?.get(l), locale, key, args)
+export function registerPluginLocales(
+  pluginId: string,
+  bundles: PluginLocaleBundles,
+  wording: PluginShellWording = {}
+): () => void {
+  const entry = registry.get(pluginId) ?? { base: new Map(), redesign: new Map() }
+  registry.set(pluginId, entry)
+  mergeBundles(entry.base, bundles)
+  mergeBundles(entry.redesign, wording.redesign)
+  bump()
+
+  return () => {
+    registry.delete(pluginId)
+    bump()
+  }
+}
+
+/** One locale's messages in `shell`'s wording: the bundle, with the shell's layer over it. */
+function shellMessages(pluginId: string, locale: Locale, shell: ShellWording): PluginMessages | undefined {
+  const entry = registry.get(pluginId)
+  const base = entry?.base.get(locale)
+  const layer = shell === 'redesign' ? entry?.redesign.get(locale) : undefined
+
+  if (!layer) {
+    return base
+  }
+
+  const cacheKey = `${pluginId}\u0000${locale}`
+  const cached = mergedLayers.get(cacheKey)
+
+  if (cached) {
+    return cached
+  }
+
+  const merged = base ? mergeMessages(base, layer) : layer
+  mergedLayers.set(cacheKey, merged)
+
+  return merged
+}
+
+export function translatePlugin(
+  pluginId: string,
+  locale: Locale,
+  key: string,
+  args: unknown[],
+  shell: ShellWording = currentShellWording()
+): string {
+  return translateFrom(l => shellMessages(pluginId, l, shell), locale, key, args)
 }
 
 /** Build the `ctx.i18n` door for a plugin. `track` records the disposer so the
  *  loader tears bundles down on unload (same lifecycle as `register`/`socket`). */
 export function createPluginI18n(pluginId: string, track: (dispose: () => void) => () => void): PluginI18n {
   return {
-    register: bundles => track(registerPluginLocales(pluginId, bundles)),
+    register: (bundles, wording) => track(registerPluginLocales(pluginId, bundles, wording)),
     onLocaleChange: listener => track(subscribeRuntimeI18nLocale(listener)),
     registerAppLocale: (id, registration) => track(registerAppLocale(id, registration, `plugin:${pluginId}`)),
     t: (key, ...args) => translatePlugin(pluginId, getRuntimeI18nLocale(), key, args)
   }
 }
 
-/** Reactive scoped translator for React UI. Re-renders on a locale switch or a
- *  late bundle registration. Pass your plugin id (your default export's `id`). */
+/** Reactive scoped translator for React UI. Re-renders on a locale switch, a
+ *  shell flip or a late bundle registration. Pass your plugin id (your default
+ *  export's `id`). */
 export function usePluginI18n(pluginId: string): PluginTranslate {
   const { locale } = useI18n()
+  const shell = shellWordingFor(usePortalPresentation())
   const version = useStore($version)
 
   // `version` is the registry's change token and must key the translator's
@@ -128,8 +200,8 @@ export function usePluginI18n(pluginId: string): PluginTranslate {
   // render slices on `t` itself, so a stable `t` over a mutated registry
   // serves stale strings after a late bundle registration.
   return useCallback(
-    (key: string, ...args: unknown[]) => translatePlugin(pluginId, locale, key, args),
+    (key: string, ...args: unknown[]) => translatePlugin(pluginId, locale, key, args, shell),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [pluginId, locale, version]
+    [pluginId, locale, shell, version]
   )
 }

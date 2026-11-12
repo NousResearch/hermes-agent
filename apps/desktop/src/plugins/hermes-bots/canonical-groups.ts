@@ -58,7 +58,7 @@ export interface CanonicalPendingAction {
 
 function requireRoute(route: CanonicalGroupRoute): void {
   if (!route.connectionId?.trim() || !route.profile?.trim()) {
-    throw new Error('Opening this group chat requires its connection and agent')
+    throw new Error('Opening this group chat requires its connection and profile')
   }
 }
 
@@ -70,7 +70,7 @@ export async function canonicalGroupRequest<T>(
   requireRoute(route)
 
   if (params.profile !== undefined && params.profile !== route.profile) {
-    throw new Error('This group chat belongs to a different agent')
+    throw new Error('This group chat belongs to a different profile')
   }
 
   // The descriptor overload never falls back to the foreground gateway.
@@ -374,7 +374,7 @@ export async function createCanonicalGroup(
   const checked = canonicalGroupRoster(route, members)
 
   if ('problem' in checked) {
-    throw Object.assign(new Error('A group chat hosted on this gateway needs two to six different agents on this connection'),
+    throw Object.assign(new Error('A group chat hosted on this gateway needs two to six different bots on this connection'),
       { canonicalGroupProblem: checked.problem })
   }
 

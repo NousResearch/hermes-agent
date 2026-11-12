@@ -231,7 +231,8 @@ describe('titlebar reservation lifecycle', () => {
 
     fireEvent.click(screen.getByText('Settings'))
     act(layout)
-    expect(globalThis.document.querySelector('[data-titlebar-cluster]')).toBeNull()
+    // The redesign parks the clusters (hidden, still mounted) on an overlay destination.
+    expect(globalThis.document.querySelector('[data-titlebar-cluster]:not([hidden])')).toBeNull()
     expect(reservation('left')).toBe('310px')
 
     chipWidth = 90

@@ -179,7 +179,7 @@ function discardDraftProfile(draft: string, target: string) {
 
   void Promise.resolve(discard)
     .then(() => host.notify({ kind: 'success', message: `Draft agent "${draft}" discarded` }))
-    .catch(err => host.notifyError(err, `Could not clean up draft agent "${draft}"`))
+    .catch(err => host.notifyError(err, `Could not clean up draft profile "${draft}"`))
 }
 
 /** The live Capabilities surface needs a real profile. Materialize it whenever
@@ -1328,6 +1328,49 @@ function groupPlanProblem(reason: string | undefined, where: string, local: bool
   return words[reason ?? ''] ?? peerSetupText(reason ?? '', place, b.canonical)
 }
 
+/** The picker with nothing to offer: no bots at all, no match for the search, or bots the group
+ *  chat cannot seat — each of those named with the capability reason that keeps it out (not seated
+ *  by this connection's gateway, or a computer that isn't connected). */
+function GroupPickerEmpty({
+  allMeta,
+  connectionId,
+  query,
+  roster,
+  selectable
+}: {
+  allMeta: Record<string, BotMeta>
+  connectionId: null | string
+  query: string
+  roster: RosterRow[]
+  selectable: RosterRow[]
+}) {
+  const b = useBots()
+  const unseated = roster.filter(bot => !bot?.ghost && !selectable.includes(bot))
+
+  if (query || !unseated.length) {
+    return (
+      <div className="px-1.5 py-3 text-center text-xs text-(--ui-text-tertiary)">
+        {query ? b.group.noBotsMatch(query) : b.group.createBotFirst}
+      </div>
+    )
+  }
+
+  return (
+    <div className="grid gap-1 px-1.5 py-3 text-xs text-(--ui-text-tertiary)" data-testid="group-picker-unseated">
+      <p>{b.group.noSeatableBots}</p>
+      <ul className="grid gap-0.5">
+        {unseated.map(bot => (
+          <li key={botRosterKey(bot)}>
+            <span className="text-(--ui-text-secondary)">{displayName(bot, botRosterMeta(bot, allMeta))}</span>
+            {' — '}
+            {botOnConnection(bot, connectionId) ? b.group.unseatableHere : b.crossGateway.peerRouteMissing}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
 /** Discord-style group chat creation: pick 2+ routable bots via checkboxes
  *  (with search), name the group, create. Every group chat is created on and run
  *  by this connection's gateway, which keeps it running with Desktop closed; bots
@@ -1556,9 +1599,13 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated, seed }
                 )
               })
             ) : (
-              <div className="px-1.5 py-3 text-center text-xs text-(--ui-text-tertiary)">
-                {query.trim() ? b.group.noBotsMatch(query.trim()) : b.group.createBotFirst}
-              </div>
+              <GroupPickerEmpty
+                allMeta={allMeta}
+                connectionId={connectionId}
+                query={query.trim()}
+                roster={roster}
+                selectable={selectableRoster}
+              />
             )}
           </div>
         </div>

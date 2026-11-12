@@ -86,6 +86,42 @@ toggle and contributes nothing while disabled. Reference demos live in the compa
 [`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins)
 repo.
 
+## Two shells — classic and the redesign {#two-shells}
+
+The app renders one of two shells. The **redesign** is the default; **Settings →
+Appearance → Redesigned interface** switches a window back to **classic**, which
+reads exactly as it did before the redesign. Each also has a **Simple** and an
+**Advanced** interface mode. A plugin never branches on any of this: every
+contribution area below renders in both shells, and core decides where. What
+moves is the place it lands:
+
+| Area | Classic | Redesign |
+|---|---|---|
+| `panes` | The pane tree: a pane stacks with its `placement` role's zone (left beside Sessions, right in the right column, bottom under the chat) or docks where `dock` says. | The same pane tree and placement rules. |
+| `panes` with `collapsible: true` | Leave the grid below 640px and reveal as an edge overlay. | Leave the grid below 1024px and open as a sheet past the rail; a plugin pane's sheet keeps the `width` it declared (up to the room a sheet may take). |
+| `routes` | A full page in the workspace pane. | A page painted over the kept chat (the chat stays mounted underneath). |
+| Page sizing | The page gets a block box with a definite height. | The same. Size your root with `h-full`; a `flex-1 min-h-0` root collapses to its content in both shells. |
+| `sidebar.nav` | A nav row in the sidebar. | A button on the 60px global rail: your `codicon`, your `label` as its tooltip, lit on your route and its sub-routes; right-click opens your Settings ▸ Plugins page. |
+| `sidebarNav.prefs` | Hide/order the nav rows. | The same ids on the rail (`capabilities`, `artifacts`, `cron`, plugin pages). Chats and Agents lead and Settings stays at the foot; `new-session` and `messaging` have no rail button. |
+| `sessionRow.leading` / `.trailing` | After the row's status dot / before its actions. | Inside the row's one button: before the title / before the age. [Keep them decorations](#session-rows--decorations--the-session-list-api). |
+| `sidebar.profileGroup.header` | Top of an expanded profile group (Sessions grouped by profile). | Under each expanded agent's heading in the Agents section; `route.connectionId` is that agent's machine. |
+| `titleBar.left` / `.center` / `.right`, `titleBar.tools.*` | The titlebar's clusters; unmounted while an overlay page (Settings, Agents, …) is open. | The band's clusters; kept mounted (hidden) while Agents, Routines or Settings is open, since those are everyday destinations. |
+| `workspace.pageHeader` | The workspace page header. | The same. |
+| `statusBar.left` / `.right` | The status bar (Advanced; Simple shows the bar only when it carries something that must stay reachable). | **Currently limited**: no status bar. Items are listed in the rail's **System** popover, under its collapsed System disclosure, in Advanced mode only. |
+| `themes` | Listed and painted. | Listed; the redesign paints its own layout tokens over a theme, and **theme CSS written against classic markup is currently limited** there. |
+| Composer areas, `modelMenu.row`, `palette`, `keybinds`, `chat.empty`, `transcript.*`, `kanban.card.badges`, `appearance.extra`, Settings ▸ Plugins pages, `layouts`, `host.openWorkspace` | Their surface. | The same surface in the redesign's frame. |
+
+Contracts that do not change with the shell:
+
+- `host.state.viewport.narrow` is true below 640px in both.
+- `ctx.runAction` runs the same handlers; an action with nothing to act on in this
+  shell (the status-bar toggle in the redesign) answers `{ ok: false, reason: 'unavailable' }`.
+- **Capabilities → Plugins**: one switch turns a package on or off whole — its
+  desktop half and its agent half for the selected agent (and Kanban's agent
+  tools with its panel) — in both shells. In the redesign an agent's own
+  settings page can switch the agent half for that agent alone.
+- Your plugin's own strings can carry a [redesign wording layer](#plugin-strings).
+
 ## Quick start — your first plugin
 
 Create `$HERMES_HOME/desktop-plugins/hello/plugin.js` (that's `~/.hermes/...`
@@ -679,6 +715,15 @@ ctx.register({
   } satisfies SessionRowSlotContribution
 })
 ```
+
+Both shells render the slots. Classic puts `leading` right after the row's status
+dot and `trailing` before its hover actions. The redesigned sidebar's row is one
+button: `leading` sits before the title (after the pinned row's dot), `trailing`
+after the title and before the age, both inside that button and on its hover and
+selected ramp. Keep a decoration a decoration there: a nested control is not a
+separate tab stop, so anything clickable must `stopPropagation()` (or the click
+opens the chat) and should have another way in. A slot that renders `null` takes
+no room — rows a plugin declines keep their exact geometry.
 
 Pair it with the session list API, which writes the same stores the app's own
 controls write (so a plugin action and a hand click can never disagree):
@@ -1376,6 +1421,13 @@ ctx.storage.set('navPrefs', next); apply(next)
 
 Session sections (Pinned, Recents, Cron jobs) are not covered — nav rows only.
 
+**In the redesign** the same preferences apply to the global rail, by the same ids:
+`capabilities`, `artifacts` (Library) and `cron` (Routines) are its movable core
+destinations, beside plugin pages. Chats and Agents always lead the rail and
+Settings stays at its foot — the redesign's homes for what classic keeps outside
+its nav rows — so a preference never moves or hides them; `new-session` and
+`messaging` have no rail button there and are inert, like any unknown id.
+
 ## Host API
 
 Everything on `host` is reachable from anywhere in a plugin. State atoms are
@@ -1397,6 +1449,11 @@ host.state.model            // ReadableAtom<string>
 host.state.profile          // ReadableAtom<string>
 host.state.viewport         // ReadableAtom<{ width, height, narrow }>
 ```
+
+`viewport.narrow` is true below the 640px sidebar dock point, in both shells. The redesign
+turns its own sidebar and page panels into sheets below 1024px; that is shell chrome, not
+this contract, so a plugin that adapts its layout to `narrow` sees the same breakpoint
+whichever shell hosts it.
 
 `gatewayActivationEpoch` is a named SDK export: `import { gatewayActivationEpoch } from '@hermes/plugin-sdk'`.
 It reads the canonical activation counter, which changes on every active route
@@ -1804,8 +1861,10 @@ action that is not on the list (archive, pin, profile / model / reasoning
 switches, terminals, new window, open folder, HUD, close tab, …),
 `reason: 'unknown'` for an id that does not exist. Either way nothing runs and a
 `[plugin:<id>] runAction: …` warning is logged. `reason: 'unavailable'` means the
-app shell that owns the handlers is not mounted yet (very early startup); retry
-from a user action. Destructive and privileged operations (deleting sessions,
+app shell that owns the handlers is not mounted yet (very early startup; retry
+from a user action), or that the action does nothing in this window's interface:
+`view.toggleStatusbar` in the redesigned shell, which has no status bar, answers
+`unavailable` instead of reporting a toggle that changed nothing. Destructive and privileged operations (deleting sessions,
 signing out, approvals, model/provider changes, updates, quitting) are not app
 actions a plugin can run.
 
@@ -2010,6 +2069,30 @@ JSON.parse(localStorage.getItem(                           host.pluginDecisions.
 localStorage.setItem('hermes.desktop.pluginDecisions.v2')  // declined — host.navigate('/capabilities?tab=plugins')
 row.querySelector('[data-slot="switch"]').click()          // same: the app's Plugins tab owns the toggle
 ```
+
+### Your plugin's strings — `ctx.i18n.register` {#plugin-strings}
+
+A plugin ships its own locale bundles and reads them with `usePluginI18n(id)` in
+React or `ctx.i18n.t` elsewhere; resolution is the active locale, then your `en`
+bundle, then the key. The two shells word some things differently (classic says
+Bots, Profiles, Gateways, Cron jobs, Sessions; the redesign says Agents,
+Machines, Routines, Chats — see the desktop `DESIGN.md` terminology table). If
+your copy uses those nouns, register a `redesign` layer with ONLY the strings
+whose words differ; the redesigned shell merges it over your bundles per locale,
+classic reads your bundles verbatim, and a locale missing a key falls back to
+English in the same shell's wording. Without a layer, a plugin reads the same in
+both shells.
+
+```ts
+ctx.i18n.register(
+  { en: { title: 'Bots', count: n => `${n} bots` }, ja: { title: 'ボット' } },
+  { redesign: { en: { title: 'Agents', count: n => `${n} agents` }, ja: { title: 'エージェント' } } }
+)
+```
+
+`usePluginI18n` re-renders on a shell flip as it does on a locale switch;
+`ctx.i18n.t` reads the shell at call time. Bot Mode (`src/plugins/hermes-bots`,
+`redesign-wording.ts`) is the reference consumer.
 
 ### Language packs — `host.i18n.registerAppLocale` / `ctx.i18n.registerAppLocale`
 

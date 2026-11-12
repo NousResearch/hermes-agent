@@ -72,6 +72,7 @@ import { groupWorkspaceOwnerKey } from './group-membership'
 import { annotateOrphanedGroupChatMembers } from './hygiene'
 import { BOTS_LOCALES, botsText } from './i18n'
 import { displayName } from './labels'
+import { BOTS_REDESIGN_WORDING } from './redesign-wording'
 import { startBotRelay, stopBotRelay } from './relay'
 import { $activityToasts } from './roster-actions'
 import {
@@ -81,6 +82,7 @@ import {
   selectedRosterBot,
   sessionOwnsWorkspace
 } from './roster-pane'
+import { startRosterPublisher } from './roster-publisher'
 import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
 import { startScreenAutoRaise } from './screen-autoraise'
 import { ProfileGroupScreenPortal, profileScreenCommand } from './screen-portal'
@@ -112,15 +114,15 @@ interface ComposerDraftPayload {
 
 export default {
   id: ID,
-  name: translateNow('profiles.title'),
+  name: translateNow('common.bots'),
   description:
-    'Agents — a one-chat-per-agent roster with avatars, schedules, group chats, and agent-to-agent messaging. Ships with the app; disable here if unwanted.',
+    'Bot Mode — a one-chat-per-agent roster with avatars, routines, group chats, and bot-to-bot messaging. Ships with the app; disable here if unwanted.',
   register(ctx: PluginContext) {
     setPluginCtx(ctx)
     // The user's own roster sections. Read once at register; every mutation
     // writes through.
     loadBotSections()
-    const disposeLocales = ctx.i18n.register(BOTS_LOCALES)
+    const disposeLocales = ctx.i18n.register(BOTS_LOCALES, { redesign: BOTS_REDESIGN_WORDING })
     setGroupChatSyncDisposed(false)
     startFaceClock()
     // The cross-connection relay rides every gateway socket this Desktop
@@ -436,13 +438,17 @@ export default {
     // the meta/room storage hydrates above have landed; idempotent after that.
     // (Feature-guarded: bare vm test harnesses have no setTimeout global.)
     startHideSweepScheduler(ctx)
-    // Classic sidebar access stays in profile groups; redesigned conversations
-    // leave Screen in the tool palette instead.
-    ctx.register({
-      id: 'screen-portal',
-      area: SIDEBAR_PROFILE_GROUP_HEADER_AREA,
-      data: { render: (route: ProfileGroupRoute) => <ProfileGroupScreenPortal route={route} /> }
-    })
+
+    // Sessions sidebar: where the shell hosts the Bots pane (classic), each gateway/profile group
+    // gets the profile's Screen portal above its sessions. The redesign's agent cards render the
+    // same area, but its Agents page owns Bots and Screen stays in the tool palette, so the portal
+    // follows the pane (registered with it below).
+    const registerScreenPortal = () =>
+      ctx.register({
+        id: 'screen-portal',
+        area: SIDEBAR_PROFILE_GROUP_HEADER_AREA,
+        data: { render: (route: ProfileGroupRoute) => <ProfileGroupScreenPortal route={route} /> }
+      })
 
     let disposeScreenCommand: (() => void) | undefined
 
@@ -477,7 +483,7 @@ export default {
         area: 'panes',
         // `title` is sampled at register (module import, before the locale has
         // loaded) — the tab renders `tabTitle` below so BOTS follows the locale.
-        title: translateNow('profiles.title'),
+        title: translateNow('common.bots'),
         // dock: explicit adoption gesture — CENTER-STACK into the sessions zone
         // so the sidebar grows a SESSIONS | BOTS tab strip instead of splitting
         // two cramped panes down the column. Center is safe now: insertAtGroup
@@ -505,8 +511,8 @@ export default {
           width: '260px',
           collapsible: true,
           hideOnly: true,
-          tabTitle: () => <LocalizedTabTitle select={t => t.profiles.title} />,
-          tabTitleText: () => translateNow('profiles.title'),
+          tabTitle: () => <LocalizedTabTitle select={t => t.common.bots} />,
+          tabTitleText: () => translateNow('common.bots'),
           dock: {
             pane: 'sessions',
             pos: 'center',
@@ -517,19 +523,31 @@ export default {
       })
 
     let disposeBotsPane: (() => void) | undefined
+    let disposeScreenPortal: (() => void) | undefined
+    // Where the shell hosts no pane, the roster still has to be published: the pane is its
+    // publisher otherwise, and every reader of the shared roster would see none.
+    let stopRosterPublisher: (() => void) | undefined
 
     const stopPaneHost = $botsPaneHosted.subscribe(hosted => {
       if (!hosted) {
         disposeBotsPane?.()
         disposeBotsPane = undefined
-      } else if (!disposeBotsPane) {
-        disposeBotsPane = registerBotsPane()
+        disposeScreenPortal?.()
+        disposeScreenPortal = undefined
+        stopRosterPublisher ??= startRosterPublisher()
+      } else {
+        stopRosterPublisher?.()
+        stopRosterPublisher = undefined
+        disposeBotsPane ??= registerBotsPane()
+        disposeScreenPortal ??= registerScreenPortal()
       }
     })
 
     ctx.onDispose?.(() => {
       stopPaneHost()
       disposeBotsPane?.()
+      disposeScreenPortal?.()
+      stopRosterPublisher?.()
     })
 
     // Routines — its OWN tiling pane splitting the workspace's right edge
@@ -786,7 +804,7 @@ export default {
       area: PALETTE_AREA,
       data: {
         id: `${ID}.new-agent`,
-        label: botsText().bot.newTitle,
+        label: 'New bot…',
         keywords: ['bot', 'agent', 'profile', 'teammate', 'create'],
         run: () => {
           host.notify({
@@ -838,8 +856,8 @@ export default {
                 kind: 'info',
                 title: 'This chat never resets',
                 message:
-                  'Agent chats are one continuous conversation — compacting instead. ' +
-                  'For a throwaway session with this agent, use Sessions mode.'
+                  'Bot chats are one continuous conversation — compacting instead. ' +
+                  'For a throwaway session with this bot, use Sessions mode.'
               })
 
               return {

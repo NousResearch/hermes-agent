@@ -88,10 +88,55 @@ describe('TitlebarControls fixed clusters', () => {
   })
 
   it('hides the app clusters on an overlay', () => {
+    $shellChoice.set(false)
     renderControls('/settings')
 
     expect(windowControls()).toBeNull()
     expect(appControls()).toBeNull()
+    $shellChoice.set(null)
+  })
+
+  it('parks the redesign’s clusters on its overlay destinations, keeping titleBar slots mounted', () => {
+    const life = { cleanups: 0, mounts: 0 }
+
+    function PluginRight() {
+      useEffect(() => {
+        life.mounts += 1
+
+        return () => {
+          life.cleanups += 1
+        }
+      }, [])
+
+      return <span>plugin-right</span>
+    }
+
+    $shellChoice.set(true)
+
+    const disposeRight = registry.register({
+      area: 'titleBar.right',
+      id: 'test-plugin-right',
+      render: () => <PluginRight />
+    })
+
+    try {
+      renderControls('/')
+      expect(life).toEqual({ cleanups: 0, mounts: 1 })
+
+      for (const page of ['/settings', '/profiles', '/cron']) {
+        act(() => navigateTo(page))
+        // Out of sight and out of reach while the destination owns the band, but never torn down.
+        expect(windowControls()?.hidden).toBe(true)
+        expect(screen.getByText('plugin-right').closest('[data-titlebar-cluster]')?.hasAttribute('hidden')).toBe(true)
+      }
+
+      act(() => navigateTo('/'))
+      expect(windowControls()?.hidden).toBe(false)
+      expect(life).toEqual({ cleanups: 0, mounts: 1 })
+    } finally {
+      act(disposeRight)
+      $shellChoice.set(null)
+    }
   })
 
   it('a titleBar.tools item alone does not claim the band', () => {
@@ -172,10 +217,16 @@ describe('TitlebarControls fixed clusters', () => {
       expect(pluginTool()).not.toBeNull()
     })
 
-    it('hides plugin titlebar contributions on an overlay', () => {
+    it('hides plugin titlebar contributions on an overlay: unmounted in classic, parked in the redesign', () => {
+      $shellChoice.set(false)
       renderControls('/settings')
-
       expect(pluginChrome()).toBeNull()
+      cleanup()
+
+      $shellChoice.set(true)
+      renderControls('/settings')
+      expect(pluginChrome()?.closest('[data-titlebar-cluster]')?.hasAttribute('hidden')).toBe(true)
+      $shellChoice.set(null)
     })
 
     it('keeps measurable titlebar clusters on a chrome-owning contributed page', () => {

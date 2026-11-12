@@ -10,7 +10,7 @@ import { Plus } from '@/lib/icons'
 import { bindGatewayGroupRoom, useGatewayGroupRooms } from '@/plugins/hermes-bots/canonical-group-registry'
 import { CanonicalGroupRow } from '@/plugins/hermes-bots/canonical-group-row'
 import { CreateGroupChatDialog } from '@/plugins/hermes-bots/create-dialog'
-import { $botMeta, $lastRoster, useRoster } from '@/plugins/hermes-bots/data'
+import { $botMeta, $lastRoster } from '@/plugins/hermes-bots/data'
 import { $groupChats, $groupChatWorkspace } from '@/plugins/hermes-bots/group-chat'
 import { openGroupChat } from '@/plugins/hermes-bots/group-chat-view'
 import { groupChatMemberBots, groupChatNames } from '@/plugins/hermes-bots/group-membership'
@@ -18,14 +18,11 @@ import { useBots } from '@/plugins/hermes-bots/i18n'
 
 import { PortalSectionHeader } from './portal-section-header'
 
-/** Group rooms sit outside gateway buckets: Desktop-driven rooms may span gateways. */
+/** Group rooms sit outside gateway buckets: Desktop-driven rooms may span gateways. Bot Mode owns
+ *  them, so the sidebar mounts this only while that plugin is loaded. */
 export function PortalGroupChats({ query }: { query: string }) {
   const b = useBots()
-  // The redesign never mounts the Bots pane, the only publisher of $lastRoster, so the section
-  // reads the live roster itself; the published one covers a failed refresh.
-  const { data } = useRoster()
-  const published = useStore($lastRoster)
-  const roster = data?.profiles?.filter(row => !row?.ghost) ?? published
+  const roster = useStore($lastRoster)
   const meta = useStore($botMeta)
   const rooms = useStore($groupChats)
   const active = useStore($groupChatWorkspace)

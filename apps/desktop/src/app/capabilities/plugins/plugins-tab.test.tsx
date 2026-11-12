@@ -456,30 +456,69 @@ describe('PluginsTab', () => {
     }
   )
 
-  it('global package switches change only the app half, never the selected agent', async () => {
+  it.each([false, true])(
+    'the inventory’s one package switch turns both halves on and off (redesigned=%s)',
+    async redesigned => {
+      $shellChoice.set(redesigned)
+      publishPlugin(
+        { id: 'meter-ui', name: 'Meter', kind: 'disk', status: 'disabled', packageName: 'meter' },
+        { activate: () => patchPlugin('meter-ui', { status: 'loaded' }), deactivate: () => undefined }
+      )
+      $agentPlugins.set([
+        { description: '', key: 'meter', name: 'meter', source: 'git', status: 'not enabled', version: '1' }
+      ])
+      requestGateway.mockImplementation((async (_method: string, params?: { action?: string }) =>
+        params?.action === 'toggle'
+          ? { ok: true, plugin: { key: 'meter', name: 'meter', status: 'enabled' } }
+          : { plugins: [] }) as never)
+
+      // The redesign's Capabilities inventory renders without agent controls; classic with them.
+      renderPlugins({ agentControls: !redesigned, profile: 'workbot' })
+
+      const card = screen.getByRole('switch', { name: 'Meter' })
+      expect(card.getAttribute('aria-checked')).toBe('false')
+
+      card.click()
+
+      await waitFor(() =>
+        expect(requestGateway).toHaveBeenCalledWith(
+          'plugins.manage',
+          expect.objectContaining({ action: 'toggle', key: 'meter', enable: true })
+        )
+      )
+      expect($pluginDecisions.get()['meter-ui']).toBe(true)
+      requestGateway.mockImplementation(async () => ({ plugins: [] }))
+      $pluginDecisions.set({})
+    }
+  )
+
+  it('an agent’s own Plugins column switches only that agent’s half, over the inventory', async () => {
+    $shellChoice.set(true)
     publishPlugin(
-      { id: 'meter-ui', name: 'Meter', kind: 'disk', status: 'disabled', packageName: 'meter' },
-      { activate: () => patchPlugin('meter-ui', { status: 'loaded' }), deactivate: () => undefined }
+      { id: 'meter-ui', name: 'Meter', kind: 'disk', status: 'loaded', packageName: 'meter' },
+      { activate: () => undefined, deactivate: () => patchPlugin('meter-ui', { status: 'disabled' }) }
     )
     $agentPlugins.set([
       { description: '', key: 'meter', name: 'meter', source: 'git', status: 'enabled', version: '1' }
     ])
     requestGateway.mockImplementation((async (_method: string, params?: { action?: string }) =>
       params?.action === 'toggle'
-        ? { ok: true, plugin: { key: 'meter', name: 'meter', status: 'enabled' } }
+        ? { ok: true, plugin: { key: 'meter', name: 'meter', status: 'not enabled' } }
         : { plugins: [] }) as never)
 
-    renderPlugins({ agentControls: false, profile: 'workbot' })
+    renderPlugins({ agentControls: true, profile: 'workbot' })
 
     const card = screen.getByRole('switch', { name: 'Meter' })
-    expect(card.getAttribute('aria-checked')).toBe('false')
-
+    expect(card.getAttribute('aria-checked')).toBe('true')
     card.click()
 
-    await waitFor(() => expect(card.getAttribute('aria-checked')).toBe('true'))
-    expect(requestGateway).not.toHaveBeenCalledWith('plugins.manage', expect.objectContaining({ action: 'toggle' }))
-    expect(screen.queryByRole('switch', { name: 'Agent: Meter' })).toBeNull()
-    expect($pluginDecisions.get()['meter-ui']).toBe(true)
+    await waitFor(() =>
+      expect(requestGateway).toHaveBeenCalledWith(
+        'plugins.manage',
+        expect.objectContaining({ action: 'toggle', key: 'meter', enable: false })
+      )
+    )
+    expect($pluginDecisions.get()['meter-ui']).toBeUndefined()
     requestGateway.mockImplementation(async () => ({ plugins: [] }))
     $pluginDecisions.set({})
   })
@@ -558,7 +597,7 @@ describe('PluginsTab', () => {
   })
 
   it.each([false, true])(
-    'only classic couples the Desktop Kanban panel to agent tools (redesigned=%s)',
+    'the Desktop Kanban switch turns the agent’s kanban tools on with the panel (redesigned=%s)',
     async redesigned => {
       $shellChoice.set(redesigned)
       const status = 'disabled'
@@ -572,13 +611,7 @@ describe('PluginsTab', () => {
         renderPlugins({ agentControls: false, profile: 'workbot', scopeLabel: 'workbot' })
         fireEvent.click(screen.getByRole('switch', { name: 'Desktop: Kanban' }))
         await waitFor(() => expect($pluginDecisions.get().kanban).toBe(status === 'disabled'))
-
-        if (redesigned) {
-          expect(setToolsetEnabled).not.toHaveBeenCalled()
-        } else {
-          expect(setToolsetEnabled).toHaveBeenCalledWith('kanban', true, 'workbot')
-        }
-
+        expect(setToolsetEnabled).toHaveBeenCalledWith('kanban', true, 'workbot')
         expect(getToolsets).not.toHaveBeenCalled()
       } finally {
         dropPlugin('kanban')

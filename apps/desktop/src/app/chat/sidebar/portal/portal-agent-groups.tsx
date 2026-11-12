@@ -17,6 +17,7 @@ import { $sessionTiles } from '@/store/session-states'
 
 import { AgentRoutinesChip, type AgentRoutineSummary, useAgentRoutineSummaries } from '../../../routines/agent-routines-chip'
 import { tileOwnerRoute } from '../../session-tile-owner'
+import { ProfileGroupHeaderSlot } from '../gateway-groups'
 import { SimplifiedBotChatRow } from '../simplified-bot-chat-row'
 import { SimplifiedGatewayHeader } from '../simplified-gateway-header'
 import { useAgentSidebarAttention } from '../use-agent-sidebar-attention'
@@ -97,6 +98,13 @@ function AgentCard({
         </Tip>
         <PortalAgentMenu agent={agent} hidden={hidden} onOpen={() => onOpenAgent(agent)} pending={pending !== null} />
       </div>
+      {open && (
+        <ProfileGroupHeaderSlot
+          className="portal-agent-header-slot"
+          connectionId={agent.connectionId}
+          profile={agent.profile}
+        />
+      )}
       {open && children}
       {open && <AgentRoutinesChip agentLabel={agent.label} summary={routines} />}
     </div>

@@ -426,7 +426,7 @@ export function BotsPane() {
   const staleNotice =
     error && !live && (roster.length || gatewayRooms.length)
       ? 'Roster refresh failed — showing the last good list.' +
-        (gatewayUp ? '' : ' Waiting for the machine to reconnect…')
+        (gatewayUp ? '' : ' Waiting for the gateway to reconnect…')
       : null
 
   const groupChatMembers = groupChatName ? groupChatMemberBots(groupChatName, roster, allMeta) : []

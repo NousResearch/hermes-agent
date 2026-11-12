@@ -119,7 +119,7 @@ export function displayRequest<T>(bot: RosterRow, method: string, params: Record
   const route = botScreenRoute(bot)
 
   if (route === null) {
-    return Promise.reject(new Error(`Agent ${bot.name} has no connection owner`))
+    return Promise.reject(new Error(`Bot ${bot.name} has no connection owner`))
   }
 
   // display.* handlers are @_profile_scoped: without an explicit `profile` the
@@ -156,7 +156,7 @@ export async function resolveScreenWsUrl(bot: RosterRow, ticket: string): Promis
   const resolved = resolveBotConnectionRoute(bot)
 
   if (resolved.status === 'owner_removed') {
-    throw new Error(`Agent ${bot.name} has no connection owner`)
+    throw new Error(`Bot ${bot.name} has no connection owner`)
   }
 
   const route = resolved.route

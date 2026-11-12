@@ -6,7 +6,9 @@ import { type ComponentProps, type KeyboardEvent, useEffect, useRef } from 'reac
 import { KbdCombo } from '@/components/ui/kbd'
 import { SearchField } from '@/components/ui/search-field'
 import { Sidebar, SidebarContent } from '@/components/ui/sidebar'
+import { $pluginRecords } from '@/contrib/plugins-store'
 import { useI18n } from '@/i18n'
+import { ID as BOT_MODE_ID } from '@/plugins/hermes-bots/shared'
 import { agentSidebarKey } from '@/store/agent-sidebar-preferences'
 import { recordIaAction } from '@/store/ia-metrics'
 import { $bindings, bindingsFor } from '@/store/keybinds'
@@ -111,6 +113,8 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
 
   const searchInputRef = useRef<HTMLInputElement>(null)
   const bindings = useStore($bindings)
+  // Group chats are Bot Mode's: a disabled or failed plugin leaves no section behind.
+  const botModeLoaded = useStore($pluginRecords)[BOT_MODE_ID]?.status === 'loaded'
   // The keycaps name the shortcut while the field rests; typing hands the end of the row to Clear.
   const searchShortcut = query ? undefined : bindingsFor('session.focusSearch', bindings)[0]
   const searching = Boolean(query.trim())
@@ -177,7 +181,7 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
               sessions={pinned}
             />
           )}
-          <PortalGroupChats query={query} />
+          {botModeLoaded && <PortalGroupChats query={query} />}
           <SimplifiedAgentList
             agents={agents}
             allSessions={all}

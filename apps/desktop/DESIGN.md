@@ -335,7 +335,9 @@ its title in full ink and its leading dot in that ink; a row under the pointer o
 wears the same ramp and rule in grayscale with its title still muted; ages stay muted, and the ramp
 clears before the age, status mark and actions. Under an agent the rule stands on the guide. Light
 keeps the ramp's shape at lighter strengths (`tokens/sidebar.css` `--portal-sidebar-row-*`). Machine
-rows keep a 4% hover fill (2% on agents). Row and
+rows keep a 4% hover fill (2% on agents). A chat row resolves the click and its title is the one focusable button, as in classic, so
+plugin row decorations (`sessionRow.leading` before the title, `.trailing` before the age) and an
+agent card's `sidebar.profileGroup.header` contributions sit beside that button, never in it. Row and
 agent actions (ellipsis, caret, kebab) are bare glyphs that appear on hover, keyboard
 focus or an open menu; touch keeps them visible. Arrow keys, Home and End walk the
 visible rows; right-click opens the row menu. Captions and meta keep the AA ladder
@@ -707,6 +709,7 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-breakpoint-wide` | `1024px` | ″ |  |
 | `--portal-sheet-width` | `min(20rem, 100vw - 3.5rem)` | ″ | Below wide the chat sidebar and page panels are sheets over the stage: the panel's width, leaving a 56px strip of scrim to tap. |
 | `--portal-sheet-panel-width` | `calc(var(--portal-sheet-width) - var(--portal-rail-width) + var(--portal-rail-reserve))` | ″ | The sheet's panel past the rail: the whole sheet on medium (the rail stays in the layout), the sheet less the rail on compact (the rail rides the sheet). |
+| `--portal-sheet-panel-max-width` | `calc(100vw - 3.5rem - var(--portal-rail-width))` | ″ | The widest a sheet's panel may be: from the rail's edge to the scrim strip. A plugin pane's sheet keeps the width the pane declares, up to this. |
 | `--portal-touch-target` | `2.75rem` | ″ | The smallest hit area on a coarse pointer (WCAG 2.5.5); a control's visual may stay smaller. |
 | `--portal-space-compact` | `0.75rem` | ″ | A phone's tighter rhythm (compact and short windows): the composer's padding and gaps, its dock's floor, and on touch its control rows, whose 44px targets overlap the padding. |
 | `--portal-space-tight` | `0.5rem` | ″ |  |

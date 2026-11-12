@@ -359,7 +359,6 @@ function PackageRow({
   agentControls: boolean
 }) {
   const { t } = useI18n()
-  const redesigned = useStore($capabilitiesManagedPerAgent)
   const owner = useSettingsOwner()
   const [desktopBusy, setDesktopBusy] = useState(false)
   const p = t.skills.plugins
@@ -383,10 +382,18 @@ function PackageRow({
   // package installed on a remote backend can never materialize here (#114079).
   const remoteBackend = useStore($connection)?.mode === 'remote'
 
-  // Classic couples these built-in panels to their agent toolsets. The
-  // redesigned surface gives app installation and agent enablement separate homes.
+  // #96969: when the feature's agent-side tools live in a toolset (the
+  // built-in Kanban board has no agent-plugin half), the Desktop switch flips
+  // that per-profile opt-in with the panel, through the same
+  // PUT /api/tools/toolsets/{name} the Toolsets tab uses. The backend write
+  // goes first and the panel follows what the backend actually holds, so a
+  // failed write can't leave the two halves disagreeing. A rejected PUT may
+  // still have committed (a timeout leaves it unknown), so re-read instead of
+  // assuming a rollback; if even that fails the panel stays put and the
+  // switch is live again for a retry. Both shells: an agent's own Tools page
+  // still overrides the toolset per agent.
   const toggleDesktop = async (id: string, on: boolean) => {
-    const toolset = redesigned ? undefined : DESKTOP_PLUGIN_TOOLSETS[id]
+    const toolset = DESKTOP_PLUGIN_TOOLSETS[id]
 
     if (!toolset) {
       return setPluginEnabled(id, on)
@@ -823,27 +830,32 @@ export const PluginsTab = memo(function PluginsTab({
     [p, requestGateway, scope]
   )
 
-  // App plugins and agent plugins have independent ownership and controls.
+  // One switch turns a package on or off whole — its agent half for the selected profile and its
+  // desktop half — in classic and on the redesign's Capabilities inventory alike. An agent's own
+  // Plugins column (the redesign's agent settings) switches only that agent's half: the per-agent
+  // override on top of what the inventory set.
+  const perAgent = redesigned && agentControls
+
   const packageSwitch = (pkg: PluginPackage) => {
     const { agent, desktop } = pkg
 
     const setEnabled = (enable: boolean) => {
-      if ((!redesigned || agentControls) && agent?.key) {
+      if (agent?.key) {
         void toggleAgentPlugin(requestGateway, agent.key, enable, p.toggleFailed(agent.name), scope)
       }
 
-      if ((!redesigned || !agentControls) && desktop) {
+      if (!perAgent && desktop) {
         void setPluginEnabled(desktop.id, enable)
       }
     }
 
-    const on = redesigned
-      ? agentControls
-        ? agent?.status === 'enabled'
-        : desktop?.status !== 'disabled'
+    // On only when every half it actuates is on: a package whose desktop half
+    // is off (pane missing) must not read On just because its agent half is.
+    const on = perAgent
+      ? agent?.status === 'enabled'
       : (!agent || agent.status === 'enabled') && (!desktop || desktop.status !== 'disabled')
 
-    if (redesigned && (agentControls ? !agent : !desktop)) {
+    if (perAgent && !agent) {
       return null
     }
 
@@ -851,7 +863,7 @@ export const PluginsTab = memo(function PluginsTab({
       <CatalogSwitch
         aria-label={pkg.name}
         checked={on}
-        disabled={(!redesigned || agentControls) && agent ? !agent.key || agentBusy(agent) : false}
+        disabled={agent ? !agent.key || agentBusy(agent) : false}
         onCheckedChange={setEnabled}
         size="xs"
       />
@@ -910,7 +922,7 @@ export const PluginsTab = memo(function PluginsTab({
               void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope).then(ok => {
                 const half = pkg.desktop?.packageName
 
-                if (!redesigned && ok && enable && half) {
+                if (!perAgent && ok && enable && half) {
                   void enablePackageDesktopHalf(half, { keepUserChoice: true })
                 }
               })

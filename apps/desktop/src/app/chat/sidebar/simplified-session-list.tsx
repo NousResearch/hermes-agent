@@ -12,11 +12,12 @@ import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { MoreHorizontal } from '@/lib/icons'
+import { SESSION_ROW_AREAS } from '@/lib/session-row-slots'
 import { coarseElapsed } from '@/lib/time'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { recordIaAction } from '@/store/ia-metrics'
 import { $activeGatewayProfile } from '@/store/profile'
-import { $activeSessionId, knownSessionOwner, ownerLookupSessionRows } from '@/store/session'
+import { $activeSessionId, knownSessionOwner, ownerLookupSessionRows, sessionPinId } from '@/store/session'
 import { $sessionDotStateById } from '@/store/session-dot-state'
 import { $focusedSessionIsTile } from '@/store/session-focus'
 import { sessionOwnerRouteFromRow } from '@/store/session-request-router'
@@ -26,6 +27,7 @@ import { SessionStatusDot } from '../session-status-dot'
 
 import { capAgentChats } from './portal/agent-chat-cap'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
+import { SessionRowSlot } from './session-row-slots'
 import { sessionRowKey } from './simplified-session-identity'
 
 /** An agent card's cap: its most recent chats, then a row that shows the rest or folds them back. */
@@ -135,8 +137,11 @@ function SessionRow({ row, selected, surface, meta, ...props }: SessionRowProps)
     unread: row.unread === true
   }
 
+  // The row is the click target (a modified click opens a tab or window), its title the one
+  // focusable button, as in the classic sidebar: plugin decorations (`sessionRow.*`) sit in the row
+  // beside that button, never inside it, so an interactive one stays a control of its own.
   const button = (
-    <RowButton
+    <div
       aria-current={selected ? 'page' : undefined}
       className="portal-session-row"
       onClick={event => {
@@ -157,17 +162,26 @@ function SessionRow({ row, selected, surface, meta, ...props }: SessionRowProps)
       }}
     >
       {surface === 'pinned' && <SessionRowMark always row={row} />}
-      <OverflowTip label={title}>
-        <span className="portal-session-title" data-slot="session-title">
-          {title}
-        </span>
-      </OverflowTip>
+      {/* Wrappers with no box: a row no plugin decorates (or one it declines) keeps its geometry. */}
+      <span className="contents" data-slot="session-row-leading">
+        <SessionRowSlot area={SESSION_ROW_AREAS.leading} sessionId={sessionPinId(row)} />
+      </span>
+      <RowButton className="portal-session-open">
+        <OverflowTip label={title}>
+          <span className="portal-session-title" data-slot="session-title">
+            {title}
+          </span>
+        </OverflowTip>
+      </RowButton>
+      <span className="contents" data-slot="session-row-trailing">
+        <SessionRowSlot area={SESSION_ROW_AREAS.trailing} sessionId={sessionPinId(row)} />
+      </span>
       {/* An agent's chat carries its mark after its age, on the age's own line (147:7470). */}
       <span className="portal-session-meta" data-slot="session-meta">
         {meta}
         {surface !== 'pinned' && <SessionRowMark always={false} row={row} />}
       </span>
-    </RowButton>
+    </div>
   )
 
   const item = (

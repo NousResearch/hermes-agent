@@ -334,6 +334,38 @@ it('canonical creation offers only the bots the authority says this caller can s
   expect(screen.getAllByRole('checkbox')).toHaveLength(2)
 })
 
+it('names the bots the authority will not seat instead of claiming there are none', async () => {
+  const offline: RosterRow = {
+    name: 'faraway',
+    connectionId: 'other-box',
+    connectionLabel: 'Other box',
+    remoteSource: true,
+    sourceReachable: false
+  }
+
+  answer({ driver: true, persistent_process: true, seatable_profiles: ['default'] })
+  render(<CreateGroupChatDialog onClose={vi.fn()} open roster={[...roster, offline]} />)
+
+  const b = botsText()
+  // Settles once the authority's seatable roster is in.
+  await waitFor(() =>
+    expect(screen.getByTestId('group-picker-unseated').textContent).toContain(`Alpha — ${b.group.unseatableHere}`)
+  )
+  const note = screen.getByTestId('group-picker-unseated')
+  expect(note.textContent).toContain(b.group.noSeatableBots)
+  expect(note.textContent).toContain(`Beta — ${b.group.unseatableHere}`)
+  expect(note.textContent).toContain(`Faraway — ${b.crossGateway.peerRouteMissing}`)
+  expect(screen.queryByText(b.group.createBotFirst)).toBeNull()
+})
+
+it('still says there are no bots yet when the roster is empty', async () => {
+  answer({ driver: true, persistent_process: true, seatable_profiles: ['default'] })
+  render(<CreateGroupChatDialog onClose={vi.fn()} open roster={[]} />)
+
+  expect(await screen.findByText(botsText().group.createBotFirst)).toBeTruthy()
+  expect(screen.queryByTestId('group-picker-unseated')).toBeNull()
+})
+
 it('never offers Create for a mixed selection on a legacy gateway, and finds a gateway that can run it on Retry', async () => {
   let capabilityReads = 0
   request.mockImplementation(async (_route, method) => {

@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
+import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $cronJobs } from '@/store/cron'
@@ -15,6 +16,7 @@ import { recordIaAction } from '@/store/ia-metrics'
 import type { IaAction } from '@/store/ia-metrics-contract'
 import { $sidebarOpen, setSidebarOpen, toggleSidebarOpen } from '@/store/layout'
 import { $focusedSessionIsTile, $focusedStoredSessionId } from '@/store/session-focus'
+import { applySidebarNavPrefs, SIDEBAR_NAV_PREFS_AREA } from '@/store/sidebar-nav'
 
 import { $pageHasSidebar, togglePageSidebar } from '../../overlays/page-sidebar'
 import { preloadRailPage } from '../../page-views'
@@ -170,11 +172,16 @@ export function SimplifiedGlobalNav({ onNavigate, footer }: SimplifiedGlobalNavP
 
   const view = focusedSessionIsTile ? 'chat' : routeView
   const pluginPages = useSimplifiedPluginPages()
+  const navPrefs = useContributions(SIDEBAR_NAV_PREFS_AREA)
   const routinesAlert = useRoutinesAlert()
   useIaNavigationMetrics(view)
 
-  const destinations = [
+  // Chats and Agents lead the rail: the redesign's homes for what classic keeps outside its nav rows
+  // (the session list, the profile switcher), so a nav preference never moves or hides them, just as
+  // Settings stays at the foot. The rest are classic's nav rows by the same ids, and plugin pages.
+  const anchored = [
     {
+      id: 'chat',
       label: t.simplifiedAgents.chats,
       icon: 'comment-discussion',
       area: 'chat',
@@ -182,13 +189,18 @@ export function SimplifiedGlobalNav({ onNavigate, footer }: SimplifiedGlobalNavP
       active: view === 'chat'
     },
     {
+      id: 'profiles',
       label: t.profiles.title,
       icon: 'robot',
       area: 'profiles',
       route: PROFILES_ROUTE,
       active: view === 'profiles'
-    },
+    }
+  ] as const
+
+  const movable = [
     {
+      id: 'capabilities',
       label: t.sidebar.nav.capabilities,
       icon: 'symbol-misc',
       area: 'capabilities',
@@ -196,36 +208,45 @@ export function SimplifiedGlobalNav({ onNavigate, footer }: SimplifiedGlobalNavP
       active: view === 'capabilities'
     },
     {
+      id: 'artifacts',
       label: t.simplifiedAgents.library,
       icon: 'files',
       area: 'artifacts',
       route: ARTIFACTS_ROUTE,
       active: view === 'artifacts'
     },
-    { label: t.cron.title, icon: 'watch', area: 'cron', route: CRON_ROUTE, active: view === 'cron' }
+    { id: 'cron', label: t.cron.title, icon: 'watch', area: 'cron', route: CRON_ROUTE, active: view === 'cron' }
   ] as const
 
+  const coreItem = ({ icon, ...item }: (typeof anchored)[number] | (typeof movable)[number]) => ({
+    ...item,
+    // Figma's robot is the one glyph drawn larger than its column (906:19430).
+    icon: (props: { className?: string }) =>
+      icon === 'robot' ? (
+        <span
+          aria-hidden
+          className={cn('portal-rail-robot bg-current', props.className)}
+          style={{ mask: `url("${figmaRobot}") center / contain no-repeat` }}
+        />
+      ) : (
+        <Codicon name={icon} {...props} />
+      )
+  })
+
   const items = [
-    ...destinations.map(({ icon, ...item }) => ({
-      ...item,
-      id: icon,
-      // Figma's robot is the one glyph drawn larger than its column (906:19430).
-      icon: (props: { className?: string }) =>
-        icon === 'robot' ? (
-          <span
-            aria-hidden
-            className={cn('portal-rail-robot bg-current', props.className)}
-            style={{ mask: `url("${figmaRobot}") center / contain no-repeat` }}
-          />
-        ) : (
-          <Codicon name={icon} {...props} />
-        )
-    })),
-    ...pluginPages.map(page => ({
-      ...page,
-      area: 'plugin' as const,
-      active: !focusedSessionIsTile && pathname === page.route
-    }))
+    ...anchored.map(coreItem),
+    ...applySidebarNavPrefs(
+      [
+        ...movable.map(coreItem),
+        ...pluginPages.map(page => ({
+          ...page,
+          area: 'plugin' as const,
+          // A plugin page owns its route's subtree (`/board/settings` is still the board).
+          active: !focusedSessionIsTile && (pathname === page.route || pathname.startsWith(`${page.route}/`))
+        }))
+      ],
+      navPrefs
+    )
   ]
 
   const settingsItem: SidebarNavItem = {

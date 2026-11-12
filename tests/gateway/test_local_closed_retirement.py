@@ -28,8 +28,8 @@ async def _owner(tmp_path, monkeypatch):
 
 
 def _viewer():
-    from gateway.session_contract import Principal
-    return Principal("test-owner", "default", frozenset(
+    from gateway.session_contract import SessionActor
+    return SessionActor("test-owner", "default", frozenset(
         {"session:create", "session:submit", "session:read", "session:control"}), "viewer")
 
 

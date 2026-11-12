@@ -52,7 +52,7 @@ connected. An enabled platform can correctly show **Messaging gateway stopped**.
 | BlueBubbles | — | ✅ | ✅ | — | ✅ | ✅ | — |
 | Photon (iMessage) | ✅ | ✅ | ✅ | — | ✅ | ✅ | — |
 | QQ | ✅ | ✅ | ✅ | — | — | ✅ | — |
-| Yuanbao | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
+| Yuanbao (Labs plugin) | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 | Microsoft Teams | — | ✅ | — | ✅ | — | ✅ | — |
 | LINE | — | ✅ | ✅ | — | — | ✅ | — |
 | ntfy | — | — | — | — | — | — | — |
@@ -91,7 +91,7 @@ flowchart TB
     wx[Weixin]
     bb[BlueBubbles]
     qq[QQ]
-    yb[Yuanbao]
+    yb["Yuanbao (plugin)"]
     ms[Microsoft Teams]
     api["API Server<br/>(OpenAI-compatible)"]
     wh[Webhooks]
@@ -231,6 +231,12 @@ only while its event loop is making timely progress; systemd restarts the
 process when they stop. The default `0` keeps the existing `Type=simple`
 behavior. This setting is Linux/systemd-only and does not treat an ordinary
 platform network disconnect as an event-loop failure.
+
+Under `Type=notify` the gateway reports ready only after every served profile's
+adapters connect, one profile at a time. Before each secondary profile's
+connect it sends systemd `EXTEND_TIMEOUT_USEC` for that connect's budget plus
+a margin. A large multi-profile boot can therefore run past systemd's default
+90 s start timeout, while a boot that stops making progress is still killed.
 
 ## Chat Commands (Inside Messaging)
 
@@ -423,6 +429,17 @@ hermes pairing revoke telegram 123456789  # Remove access
 
 Pairing codes expire after 1 hour, are rate-limited, and use cryptographic randomness.
 
+### Other bots in a chat
+
+Hermes treats a sender as a bot when the platform says so (Discord, Slack, Telegram, Feishu, QQ guild, Mattermost bot accounts). On a platform whose events carry no bot flag (Matrix, Signal, IRC, Mattermost personal-access-token bots, …), list the peer's user ids under that platform's `bot_users` in `config.yaml`:
+
+```yaml
+mattermost:
+  bot_users: ["peer_bot_user_id"]
+```
+
+A bot sender is admitted only through that platform's `*_ALLOW_BOTS` setting. Hermes never sends it runtime notices (busy and interrupt acknowledgements, progress, the "not processed" and retry hints, model-fallback and inactivity warnings, failed-delegation notices), only the model's reply, and a bot it is addressed by may still be answered with silence. `gateway.bot_loop_guard` ends the exchange: `max_hops` (default 4) bot messages after your last message, a repeated message counted once, and no answer to a bot answering a reply Hermes delivered to it unless `bot_replies_expect_reply: true`; `enabled: false` turns the rules off.
+
 ### Admins vs Regular Users
 
 Allowlists answer "can this person reach the bot at all?" The **admin / user split** answers "now that they're in, what are they allowed to do?"
@@ -455,6 +472,8 @@ gateway:
 
 **Backward compat:** if `allow_admin_from` is not set for a scope, the tier split is disabled for that scope and every allowed user has full access. Existing installs keep working with no changes — opt in when you want the distinction.
 
+**Answering prompts counts as running the command.** Answering a dangerous-command approval is `/approve` or `/deny`, and answering a slash-command confirmation (`/reset`, `/reload-mcp`, …) runs that command. So in a gated scope a non-admin cannot answer them any other way either: typing a bare `yes` / `always`, a typed confirm reply, or tapping a native button (Telegram, Discord, Slack, Matrix, Feishu, Teams, WhatsApp Cloud, QQ Bot, relay) gets the same *⛔ /approve is admin-only here* note and the prompt stays pending for an admin. Adding `approve` (or `deny`, or the confirmed command) to `user_allowed_commands` lets members answer, exactly as it lets them type it. Clarify questions are not commands and are unaffected. A narrowed [`approvals.approvers`](../security.md#who-can-answer-an-approval-in-a-shared-chat-approvalsapprovers) takes precedence over this: then the requester, the listed ids and the admins answer.
+
 #### Inspecting your access
 
 Use `/whoami` from any platform to see the active scope, your tier (admin / user / unrestricted), and which slash commands you can run. When an admin list is configured, `/help` and `/commands` show a non-admin only the commands they can actually run (`/help`, `/whoami`, plus `user_allowed_commands`); admins see the full catalog. See the [Telegram](./telegram.md#slash-command-access-control) and [Discord](./discord.md#slash-command-access-control) pages for platform-specific examples.
@@ -474,6 +493,8 @@ By default, messaging a busy agent redirects its active turn (a running foregrou
 
 - `queue` — follow-up messages wait and run as the next turn after the current task finishes. Each follow-up (text, voice note, video, document) gets its own turn in arrival order; only a rapid photo burst is merged into one album turn.
 - `steer` — follow-up messages are injected into the current run via `/steer`, arriving at the agent after the next tool call. No interrupt, no new turn. Falls back to `queue` behavior if the agent hasn't started yet.
+
+A steer carries text only, so a message with an attachment (a photo, file or video, including one captioned `/steer ...`) is queued with its attachment as the next turn instead. With no agent running, `/queue` or `/steer` as an attachment's caption (bare, or with text) sends the attachment as a normal message.
 
 Gateway steers (including explicit `/steer`) and active-turn redirects carry the requesting event's available platform, chat, thread, sender, message, profile, and scope identifiers as per-message JSON context. With `privacy.redact_pii: true`, identifiers in this model-visible context are hashed on supported platforms, including alternate and parent identifiers; the original event identifiers remain internal for routing. Otherwise identifiers are preserved exactly. Neither mode changes the session's system prompt or chooses a fallback reply destination. The context is routing data, not authorization or a guarantee of automatic delivery.
 
@@ -514,6 +535,10 @@ display:
   # Only applies where tool_progress is already enabled.
   tool_progress_grouping: accumulate   # accumulate | separate
 ```
+
+An unrecognised `tool_progress` value — a typo, or a mode copied from another tool — is not read as a
+request for more output: the gateway logs it once and keeps the platform's own default, so a Telegram
+chat whose tier is `off` stays quiet.
 
 ### `log` mode — audit file instead of chat messages
 
@@ -781,7 +806,7 @@ Each platform has its own toolset:
 | Weixin | `hermes-weixin` | Full tools including terminal |
 | BlueBubbles | `hermes-bluebubbles` | Full tools including terminal |
 | QQBot | `hermes-qqbot` | Full tools including terminal |
-| Yuanbao | `hermes-yuanbao` | Full tools including terminal |
+| Yuanbao (Labs plugin) | `hermes-yuanbao` | Full tools + the `yb_*` group/DM/sticker tools from the `yuanbao` Hermes Labs plugin |
 | Microsoft Teams | `hermes-teams` | Full tools including terminal |
 | API Server | `hermes-api-server` | Full tools (drops `clarify`, `text_to_speech` — programmatic access doesn't have an interactive user) |
 | Webhooks | `hermes-webhook` | Full tools including terminal |
@@ -873,14 +898,20 @@ Once upstream is healthy, `/platform resume <name>` clears the breaker and re-ar
 
 When the gateway restarts (or is shut down with in-flight sessions), it can send a one-shot "the agent is back" / "the agent was interrupted" message to each platform's home channel. This is controlled per-platform by the `gateway_restart_notification` flag in `config.yaml`, which defaults to `true`:
 
+Configure the destination with a `home_channel` object containing both `platform` and `chat_id`:
+
 ```yaml
 gateway:
   platforms:
     telegram:
-      home_chat_id: "123456789"
+      home_channel:
+        platform: telegram
+        chat_id: "123456789"
       gateway_restart_notification: false   # opt out for this platform
     discord:
-      home_chat_id: "987654321"
+      home_channel:
+        platform: discord
+        chat_id: "987654321"
       # gateway_restart_notification omitted → defaults to true
 ```
 
@@ -1024,7 +1055,7 @@ Defaults to `false`. Only platforms whose adapter implements `delete_message` ho
 - [BlueBubbles Setup (iMessage)](bluebubbles.md)
 - [Photon Setup (iMessage)](photon.md)
 - [QQBot Setup](qqbot.md)
-- [Yuanbao Setup](yuanbao.md)
+- [Yuanbao](yuanbao.md) (Hermes Labs plugin)
 - [Microsoft Teams Setup](teams.md)
 - [Teams Meetings Pipeline](teams-meetings.md)
 - [Microsoft Graph Webhook Listener](msgraph-webhook.md)

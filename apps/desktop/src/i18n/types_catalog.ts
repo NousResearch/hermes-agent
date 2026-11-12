@@ -8,6 +8,9 @@ export interface CatalogTranslations {
   mostStarred: string
   newest: string
   recentlyUpdated: string
+  mostUsed: string
+  updateAvailable: string
+  updatesAvailable: (count: number) => string
   alphabetical: string
   sortBy: string
   seeAll: string

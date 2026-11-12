@@ -7,22 +7,25 @@ import {
   revokeAttachmentPreviewUrls,
   revokeDiscardedAttachmentPreviews
 } from './composer'
+import { connectionWire } from './connection-wire'
 import { $connection } from './session'
 import { knownOwnerForSession } from './session-states'
 
-/** Local owner routes use canonical admission; remote legacy queues stay local. */
+/** The owner's connection admits queued input, attachments and rewinds when it negotiated the
+ *  canonical session wire, local or remote; a legacy peer's queue stays in the renderer. */
 export function serverOwnsComposerQueue(sessionId: string | null | undefined): boolean {
   const owner = knownOwnerForSession(sessionId)
-
-  if (owner && typeof owner === 'object' && owner.mode) {
-    return owner.mode === 'local'
-  }
-
+  const route = owner && typeof owner === 'object' ? owner : null
   const connection = $connection.get()
+  const wire = connectionWire(route ?? connection)
 
-  if (owner && typeof owner === 'object' && owner.connectionId !== connection?.connectionId) {
-    return false
-  }
+  if (wire) { return wire === 'canonical' }
+
+  // Before the owner's socket is ready: a local owner is a native dial, and so is a window whose
+  // own socket carries the native-dial marker.
+  if (route?.mode === 'local') { return true }
+
+  if (route && route.connectionId !== connection?.connectionId) { return false }
 
   return Boolean(connection?.wsUrl && new URL(connection.wsUrl).searchParams.has('native_dial'))
 }

@@ -105,6 +105,27 @@ def test_emits_for_named_profile_with_own_handle(tmp_path):
     assert "`@coder`" not in roster_block
 
 
+def test_received_teammate_message_returns_one_current_turn_reply(tmp_path):
+    """The delivery runner captures stdout; recipients must not bounce a DM."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+
+    section = bot_mode_probe.get_bot_mode_protocol_section(home)
+    inbound_contract = section.split("When YOU receive", 1)[1].split("You are `@", 1)[0]
+
+    assert (
+        "return your concise, substantive reply as this turn's final response"
+        in inbound_contract
+    )
+    assert "transport already captures your final response" in inbound_contract
+    assert "Use message_agent only to initiate a separate message" in inbound_contract
+    # The FYI exit must ride the transport's silence tokens, not a prose ack.
+    assert "intentional silence token" in inbound_contract
+    assert "reply concisely via message_agent" not in inbound_contract
+    assert "staying silent is fine" not in inbound_contract
+
+
 def test_roster_lines_carry_roles(tmp_path):
     """Bots must know WHO to message: the roster carries title/description."""
     import textwrap as _tw
@@ -171,6 +192,21 @@ def test_never_raises_on_garbage(tmp_path, monkeypatch):
 # ── capability epoch ─────────────────────────────────────────────────────────
 
 
+
+
+def test_fingerprint_changes_when_protocol_version_changes(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+    before = bot_mode_probe.capability_fingerprint(home)
+
+    monkeypatch.setattr(
+        bot_mode_probe,
+        "_BOT_MODE_PROTOCOL_VERSION",
+        bot_mode_probe._BOT_MODE_PROTOCOL_VERSION + 1,
+    )
+
+    assert bot_mode_probe.capability_fingerprint(home) != before
 
 
 def test_fingerprint_changes_on_each_capability_axis(tmp_path):

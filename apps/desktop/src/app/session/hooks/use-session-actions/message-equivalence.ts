@@ -36,10 +36,16 @@ const COMPARED_FIELDS = [
   // Structured failure layer — drives the error card's title and action row,
   // so a change (e.g. resume replay attaching the descriptor) must repaint.
   'errorSurface',
+  // Safety-refused display block — drives the greyed notice, so attaching or
+  // changing it (resume replay) must repaint, like errorSurface.
+  'contentRefused',
   'hidden',
   'branchGroupId',
   'interim',
   'interrupted',
+  // Not painted, but the view's copy can seed session state again (resume
+  // reads $messages), so a started queued turn must reach it.
+  'queuedTurnStarted',
   'reactions',
   'timestamp',
   'completedAt',
@@ -152,6 +158,28 @@ export function chatReactionsEquivalent(a: ChatMessage['reactions'], b: ChatMess
   )
 }
 
+// Optional flags, unset meaning false. `interim` gates the action footer, so
+// flipping it must repaint (e.g. a previewed final settling onto a sealed
+// interim bubble restores the bar); `queuedTurnStarted` must reach the view's
+// copy because resume seeds session state from it.
+const FLAG_FIELDS = ['interim', 'queuedTurnStarted'] as const
+
+const flagsDiffer = (a: ChatMessage, b: ChatMessage) =>
+  FLAG_FIELDS.some(field => (a[field] ?? false) !== (b[field] ?? false))
+
+// Structured display descriptors — the error card (errorSurface) and the
+// safety-refused notice (contentRefused) each arrive as a fresh object per
+// resume/replay, so identity comparison would repaint forever; both need a
+// structural compare of their rendered fields. Kept out of the host comparator
+// so its branch count stays within the ratchet.
+const displayDescriptorsDiffer = (a: ChatMessage, b: ChatMessage) =>
+  (a.errorSurface?.layer ?? null) !== (b.errorSurface?.layer ?? null) ||
+  (a.errorSurface?.code ?? null) !== (b.errorSurface?.code ?? null) ||
+  (a.errorSurface?.retryable ?? null) !== (b.errorSurface?.retryable ?? null) ||
+  // Safety-refused block: compare presence and notice.
+  Boolean(a.contentRefused) !== Boolean(b.contentRefused) ||
+  (a.contentRefused?.notice ?? null) !== (b.contentRefused?.notice ?? null)
+
 export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean {
   if (
     a.id !== b.id ||
@@ -162,18 +190,12 @@ export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean 
     a.recovered !== b.recovered ||
     a.pending !== b.pending ||
     a.error !== b.error ||
-    // Structural compare — the descriptor arrives as a fresh object per
-    // resume/replay, so identity comparison would repaint forever.
-    (a.errorSurface?.layer ?? null) !== (b.errorSurface?.layer ?? null) ||
-    (a.errorSurface?.code ?? null) !== (b.errorSurface?.code ?? null) ||
-    (a.errorSurface?.retryable ?? null) !== (b.errorSurface?.retryable ?? null) ||
+    displayDescriptorsDiffer(a, b) ||
     a.hidden !== b.hidden ||
     a.branchGroupId !== b.branchGroupId ||
     a.timestamp !== b.timestamp ||
     a.completedAt !== b.completedAt ||
-    // Interim gates the action footer, so flipping it must repaint (e.g. a
-    // previewed final settling onto a sealed interim bubble restores the bar).
-    (a.interim ?? false) !== (b.interim ?? false) ||
+    flagsDiffer(a, b) ||
     !chatReactionsEquivalent(a.reactions, b.reactions)
   ) {
     return false

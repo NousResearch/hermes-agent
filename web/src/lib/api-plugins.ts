@@ -25,3 +25,64 @@ export interface AgentPluginUpdateResponse {
   scan_verdict?: string;
   scan_findings?: AgentPluginScanFinding[];
 }
+
+/** ``POST /api/dashboard/agent-plugins/update-all`` (``update_all_unattended``). ``needs_review``:
+ *  nothing changed; the plugin's own Update action walks the consent or scan review. */
+export interface AgentPluginsUpdateAllResponse {
+  results: { name: string; status: "updated" | "current" | "failed" | "needs_review"; detail: string }[];
+  skipped: { name: string; reason: string }[];
+  current: number;
+}
+
+/** ``GET``/``PUT /api/dashboard/plugins/auto-update``: ``plugins.auto_apply`` and the gateway check cadence. */
+export interface PluginAutoUpdateState {
+  auto_apply: boolean;
+  check_hours: number;
+}
+
+// ── Plugin catalog types ───────────────────────────────────────────────
+
+export interface CatalogCapabilities {
+  provides_tools: string[];
+  provides_hooks: string[];
+  provides_middleware: string[];
+  requires_env: string[];
+}
+
+export interface CatalogEntry {
+  name: string;
+  description: string;
+  repo: string;
+  sha: string;
+  sha_short: string;
+  tier: "official" | "verified" | "community";
+  maintainer: string;
+  requires_hermes: string;
+  platforms: string[];
+  capabilities: CatalogCapabilities;
+  docs_url: string;
+  capability_summary: string;
+  /** Installed-state merge (computed server-side). */
+  installed: boolean;
+  installed_sha: string | null;
+  update_available: boolean;
+  runtime_status: "disabled" | "enabled" | "inactive" | null;
+}
+
+export interface CatalogRemovedEntry {
+  name: string;
+  repo: string;
+  reason: string;
+  date: string;
+}
+
+export interface CatalogResponse {
+  entries: CatalogEntry[];
+  removed: CatalogRemovedEntry[];
+  generated_at: string;
+}
+
+export interface PluginProvidersPutRequest {
+  memory_provider?: string;
+  context_engine?: string;
+}

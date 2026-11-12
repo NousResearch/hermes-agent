@@ -1,0 +1,26 @@
+name: precedent-log
+repo: https://github.com/quotumorg/precedent-log
+sha: 8741e9f121aad297c2383f51a30ac444f08438b8
+description: "Saves a human's answer to a blocked Kanban question as a ruling for later workers. Shows rulings and vetoes in Desktop with confirmed retirement. Disclosure — Saves human rulings under HERMES_HOME/precedent-log/ and injects matching rulings into Kanban worker prompts; in the default enforce mode it vetoes a worker's kanban_block up to twice per task when an active ruling matches, which can leave a no-edit worker's card running (set precedent_log.veto: advisory to only annotate). In calls carrying a Kanban task marker on boards with active rulings it blocks execute_code and process stdin writes (precedent_log.guard: strict extends this to every marked worker and delegated subagent), and blocks worker commands that name its store. Reads four private Hermes board/delegation helpers (read-only, no core overrides) that may break on a core update. Desktop reads and retires rulings through host-routed gateway slash RPC, possibly to a remote gateway. No network calls, shell, credentials or telemetry in the plugin runtime; the bundled demo/ harness is opt-in and spawns subprocesses and provider calls when run."
+maintainer: quotumorg
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+version: "0.4.2"
+docs_url: https://github.com/quotumorg/precedent-log/blob/8741e9f121aad297c2383f51a30ac444f08438b8/README.md
+image: https://raw.githubusercontent.com/quotumorg/precedent-log/8741e9f121aad297c2383f51a30ac444f08438b8/docs/catalog-1200x600.png
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - "Four private board/execution-identity helpers require catalog rule 9 review; catalog/CORE-ISSUE.md is an unsubmitted request. No core overrides."
+  - "In-process mode only; the host does not supply the tested execution context or CLI path."
+  - "Default enforce mode can leave a no-edit worker's card running after veto (B2). Core recovery/retry settings apply; no deadline. Advisory avoids this veto path."
+  - "Tested only on Hermes v0.23.0 at 2bd378ed1b8d6bf2192cb26e0a55ff3091e6bd19; the floor does not establish later compatibility."
+  - "Desktop catalog description, navigation, no-session guidance, status, page badges and confirmed retirement live-run verified with v0.4.1 in an isolated home with a fake model on Hermes source 2bd378ed, Desktop built from source; v0.4.0 also verified status click-through. Packaged Desktop app untested. Requires host UI/React, route/nav, focusedSessionOwner, profileRoutes, requestProfile and status-bar APIs."
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_tool_call, kanban_task_blocked, pre_verify, post_tool_call, on_session_end]
+  provides_middleware: []
+  requires_env: []
+# No catalog keys for commands/sections: slash ruling, rulings; CLI precedent;
+# prompt section precedent-log.board (after_memory, max_chars=4000).

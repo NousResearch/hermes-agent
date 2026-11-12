@@ -1,0 +1,19 @@
+name: follow-through
+repo: https://github.com/Agenziamaia/follow-through
+sha: 9e4ddc528b62254c944ed25542902b6f99d652a4
+description: "An agent never ends a turn on a promise. A final reply that says work has started or will happen, while nothing is running, is held and turned into a nudge: do it now, or actually launch it. Zero model calls, fail-open, max 2 nudges per turn. Disclosure — registers one llm_execution middleware that reads each final model reply and, when it promises work while nothing is running, rewrites it into a call to its own follow_through tool (at most 2 per user turn; FOLLOW_THROUGH_OFF=1 disables); no network, no subprocesses, no files read or written, no model calls, no telemetry."
+maintainer: Agenziamaia
+tier: community
+category: automation
+requires_hermes: ">=0.21.6"
+version: "1.0.0"
+screenshots:
+  - https://raw.githubusercontent.com/Agenziamaia/follow-through/e9bc1c1c8dcf575541c7c02f94a7f1302274411f/docs/demo.png
+readme: true
+capabilities:
+  provides_tools:
+    - follow_through
+  provides_hooks: []
+  provides_middleware:
+    - llm_execution
+  requires_env: []

@@ -318,8 +318,9 @@ class GatewayTurnHygieneMixin:
 
     async def _hmwa_hygiene_notify(self, source, meta, message, what):
         """Best-effort user notice on the hygiene thread; failure is logged, never raised."""
+        from gateway.bot_peer_notices import automatic_notices_allowed
         try:
-            _adapter = self._delivery_adapter_for(source)
+            _adapter = self._delivery_adapter_for(source) if automatic_notices_allowed(source) else None
             if _adapter and source.chat_id:
                 await _adapter.emit_warning(source.chat_id, message, metadata=meta,
                                             logical_platform=source.platform)

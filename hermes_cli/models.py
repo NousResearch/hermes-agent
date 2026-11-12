@@ -1881,17 +1881,9 @@ def _credential_fingerprint(provider: str) -> str:
     except Exception:
         pass
 
-    # External-process providers discover models through the launched program, so the command /
-    # argv env overrides identify the catalog the way an API key identifies an HTTP catalog.
-    try:
-        from providers import get_provider_profile
-        profile = get_provider_profile(provider)
-        if profile is not None and profile.auth_type == "external_process":
-            for ev in (*profile.process_command_env_vars, profile.process_args_env_var):
-                if ev:
-                    parts.append(f"{ev}={os.environ.get(ev, '')}")
-    except Exception:
-        pass
+    from hermes_cli.models_process_fingerprint import process_catalog_identity
+    process_profile, process_parts = process_catalog_identity(provider)
+    parts += process_parts
 
     # config.yaml's model.base_url changes the endpoint discovery probes (data-residency hosts)
     # without touching any env var, so it must change the fingerprint too.
@@ -1941,6 +1933,11 @@ def _credential_fingerprint(provider: str) -> str:
     if provider == "openai-codex":
         from hermes_cli.codex_models import codex_catalog_credential_identity
         parts.append(f"codex_identity={codex_catalog_credential_identity()}")
+    elif process_profile is not None:
+        # Only the profile's own files: the vendor CLI rewrites its token file on every refresh (#129094).
+        for rel in process_profile.catalog_credential_files:
+            path = os.path.expanduser(rel)
+            _mtime_part(path, path)
     else:
         try:
             from hermes_constants import get_hermes_home

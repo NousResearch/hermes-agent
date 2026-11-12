@@ -7,6 +7,8 @@ import { canonicalGroupRequest, MAX_ROOM_NOTES_BYTES, roomNotesBytes } from './c
 import type { CanonicalGroupBinding, CanonicalRoomContext, CanonicalRoomMember } from './canonical-groups'
 
 export interface CanonicalGroupRoomSettingsProps {
+  /** Offer "pick who answers automatically" (the runtime's `driver_status.routing_modes` has `auto`). */
+  autoRouting?: boolean
   binding: CanonicalGroupBinding
   /** `groups.state.context`; null/undefined while loading or on a runtime without room settings. */
   context?: CanonicalRoomContext | null
@@ -22,7 +24,7 @@ export const roomDeliveryTarget = (binding: CanonicalGroupBinding) =>
 
 /** Self-contained room purpose + shared notes: a captioned purpose, a settings button and its dialog,
  *  stacked for the Group details panel; it owns its own `groups.context` save. */
-export function CanonicalGroupRoomSettings({ binding, context, disabled = false, members = [], onSaved }: CanonicalGroupRoomSettingsProps) {
+export function CanonicalGroupRoomSettings({ autoRouting = false, binding, context, disabled = false, members = [], onSaved }: CanonicalGroupRoomSettingsProps) {
   const labels = useCanonicalGroupLabels()
   const [draft, setDraft] = useState<CanonicalRoomContext | null>(null)
   // The draft is frozen while a save is in flight, so closing on success can never drop newer typing.
@@ -67,7 +69,7 @@ export function CanonicalGroupRoomSettings({ binding, context, disabled = false,
             <Textarea className="min-h-24" disabled={saving} onChange={event => setDraft({ ...draft, notes: event.target.value })} placeholder={labels.notesPlaceholder} value={draft.notes} />
             <span className={notesOver ? 'text-(--ui-accent)' : 'text-(--ui-text-tertiary)'} data-testid="room-notes-bytes">{notesBytes} / {MAX_ROOM_NOTES_BYTES}</span>
           </label>
-          {draft.routing && <CanonicalGroupLeadSetting disabled={saving} draft={draft} members={members} onChange={setDraft} />}
+          {draft.routing && <CanonicalGroupLeadSetting autoRouting={autoRouting} disabled={saving} draft={draft} members={members} onChange={setDraft} />}
           <p className="text-xs text-(--ui-text-secondary)">{labels.deliveryTarget} <code data-selectable-text="true">{roomDeliveryTarget(binding)}</code></p>
           {error && <p className="text-xs text-(--ui-accent)" role="alert">{error}</p>}
         </form>

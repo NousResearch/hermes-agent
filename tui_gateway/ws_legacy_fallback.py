@@ -81,7 +81,10 @@ def _foreign_profile_home(server: Any, profile_id: Any) -> str | None:
 
 
 def _unavailable(req: dict) -> dict:
-    return {"jsonrpc": "2.0", "id": req.get("id"), "error": {"code": 4064, "message": "profile unavailable"}}
+    # ``data.reason``: the bounded code a client keeps (``rpc_error`` drops the spaced message), so it can
+    # tell this refusal (before any handler ran) from the dispatcher's 4064 for a mid-handler outage.
+    return {"jsonrpc": "2.0", "id": req.get("id"),
+            "error": {"code": 4064, "message": "profile unavailable", "data": {"reason": "profile_unavailable"}}}
 
 
 def _explicit_profile_request(server: Any, req: dict) -> tuple[dict, str | None] | None:

@@ -106,6 +106,9 @@ GITHUB_TAP_LABELS = {
     "wandb/skills": "Weights & Biases",
     "qdrant/skills": "Qdrant",
     "pinecone-io/skills": "Pinecone",
+    "makenotion/skills": "Notion",
+    "Airtable/skills": "Airtable",
+    "Shopify/Shopify-AI-Toolkit": "Shopify",
 }
 
 # Legacy filename -> label mapping for the deprecated skills/index-cache/

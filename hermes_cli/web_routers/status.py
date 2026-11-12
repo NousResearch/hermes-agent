@@ -149,11 +149,23 @@ async def get_host_identity(request: Request):
             "servesSpa": bool(getattr(app.state, "serves_spa", False))}
 
 
+# The idle proof and retirement fence cover a standalone ``hermes serve`` child's ledgers only. On
+# the gateway's listener the agent work lives on the runner, which retires through its own idle exit
+# (``gateway/run_idle_exit.py``); there this route never proves idle nor takes the fence.
+_GATEWAY_OWNS_LIFECYCLE = "gateway_owns_lifecycle"
+
+
+def _mounted_on_gateway(request: Request) -> bool:
+    return getattr(request.app.state, "gateway_runner", None) is not None
+
+
 @router.get("/api/health/idle")
 async def get_health_idle(request: Request):
     """Token-gated diagnostic snapshot; never a retirement permit. None means cannot prove idle."""
     from hermes_cli.web_server_idle_proof import idle_proof
     _require_token(request)
+    if _mounted_on_gateway(request):
+        return {"ok": True, "idle": False, "reason": _GATEWAY_OWNS_LIFECYCLE}
     return {"ok": True, **idle_proof()}
 
 
@@ -162,6 +174,8 @@ async def post_health_retirement(request: Request):
     from hermes_cli.backend_retirement import retirement
 
     _require_token(request)
+    if _mounted_on_gateway(request):
+        return {"ok": False, "idle": False, "reason": _GATEWAY_OWNS_LIFECYCLE}
     try:
         body = await request.json()
     except ValueError:
@@ -387,15 +401,19 @@ def _auth_gate_status() -> dict[str, Any]:
     always available in gated mode; "native_pkce" when at least one interactive session
     provider is registered (token-only credentials such as drain, and provisioned-credential
     session providers such as session-token, don't count). Missing
-    "native_pkce" ⇒ older gateway ⇒ desktop falls back automatically."""
+    "native_pkce" ⇒ older gateway ⇒ desktop falls back automatically. ``peer_access`` is the
+    peer-pass contract this agent takes on ``/api/peer`` (0: none), which the pass issuer reads."""
     auth_required = bool(getattr(app.state, "auth_required", False))
     auth_providers: list[str] = []
     auth_flows: list[str] = []
+    peer_access = 0
     try:
         from hermes_cli.dashboard_auth import (
             list_interactive_providers as _list_interactive_providers,
             list_providers as _list_providers)
+        from hermes_cli.dashboard_auth.peer_pass import peer_access_contract
         auth_providers = [p.name for p in _list_providers()]
+        peer_access = peer_access_contract()
         if auth_required:
             auth_flows.append("cookie")
             if _list_interactive_providers():
@@ -404,7 +422,7 @@ def _auth_gate_status() -> dict[str, Any]:
         # Module not importable yet (early startup) — leave as [].
         pass
     return {"auth_required": auth_required, "auth_providers": auth_providers,
-            "auth_flows": auth_flows}
+            "auth_flows": auth_flows, "peer_access": peer_access}
 
 
 def _nous_session_validity() -> str:

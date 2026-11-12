@@ -1,6 +1,6 @@
 """Pre-venv entry point for PM's dependency transaction.
 
-Stdlib-only at import: installers call this before dependencies exist.
+Stdlib-only at import: launch (``hermes_bootstrap``) imports it before dependencies exist.
 All checkout roots use PM's selected generation and facts; sealed payloads
 remain build-owned. ``--check`` is passive and never provisions tools.
 """
@@ -119,7 +119,10 @@ def sync(project_root: Path | None = None, *, check: bool = False) -> dict:
             return {"state": "would-sync", "ok": True}
         publish_stage("Updating Python dependencies")
         refuse_foreign_owned_venv(root)
-        pm.sync_venv(explicit=True, project_root=root, evict_incompatible_plugins=True)
+        from pm.extras import first_generation_selection
+
+        pm.sync_venv(first_generation_selection(root), explicit=True, project_root=root,
+                     evict_incompatible_plugins=True)
         collect_superseded_generations(root)
         publish_launchers(root)
         return {"state": "synced", "ok": True}
@@ -200,7 +203,7 @@ def _completion_attempts_path(project_root: Path) -> Path:
 #: What a launch-time dependency sync consumes. A failed sync is recorded against
 #: these inputs (#139952): relaunching over the same inputs repeats the same doomed
 #: repair and backs off, while a corrected source update is a fresh repair.
-_SYNC_INPUTS = ("pyproject.toml", "uv.lock", "pm/lock.json")
+_SYNC_INPUTS = ("pyproject.toml", "setup.py", "uv.lock", "pm/lock.json")
 
 
 def _sync_inputs_digest(root: Path) -> str:
@@ -651,8 +654,7 @@ def _sync_source_dependencies(root: Path, *, arm: bool, borrowed_from: Path | No
     import sys
     import pm
     from pm.client import ensure_tools_for_sync
-    from pm.environments import runtime_facts_path
-    from pm.extras import legacy_selection
+    from pm.extras import first_generation_selection
 
     if borrowed_from is not None:
         print(f"hermes: preparing dependencies for this data root (the checkout's updates belong to "
@@ -666,14 +668,11 @@ def _sync_source_dependencies(root: Path, *, arm: bool, borrowed_from: Path | No
         arm_completion(root)
     # Main-era installs have no PM ledger; carry what their venv held.
     # Established PM installs retain their recorded extras and plugin union instead.
-    extras = legacy_selection(root) if not runtime_facts_path(root).is_file() else None
+    extras = first_generation_selection(root)
     # Same order as `hermes update`: an interrupted update or a hand-run
     # `git pull` leaves this tree's lockfile ahead of the installed tools.
     ensure_tools_for_sync()
-    # The old venv's extras are carried, not asked for: none of them undoes a `--without`, and
-    # one beyond [all] that no longer builds is left out.
-    carried = {"carried": extras[1:]} if extras and len(extras) > 1 else {}
-    pm.sync_venv(extras, explicit=True, project_root=root, evict_incompatible_plugins=True, **carried)
+    pm.sync_venv(extras, explicit=True, project_root=root, evict_incompatible_plugins=True)
     collect_superseded_generations(root)
     if borrowed_from is not None:
         return  # The checkout's markers describe the owner's environment, not this one.

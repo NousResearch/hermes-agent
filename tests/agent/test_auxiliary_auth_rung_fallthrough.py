@@ -3,7 +3,7 @@
 Both auth-refresh rungs in ``agent/auxiliary_client.py`` perform their retry with a
 bare ``yield`` inside a ``return`` statement:
 
-    if _is_auth_error(first_err) and client_is_nous:
+    if aux_errors.auth_refresh(failure.verdict) and client_is_nous:
         step = _refreshed_nous_step(...)
         if step is not None:
             return (yield step), None          # nous rung
@@ -13,8 +13,7 @@ bare ``yield`` inside a ``return`` statement:
 
 ``_rung()`` exists to convert a retry failure into ``(None, exc)`` -- but only when the
 rung's accept predicate claims the error -- so the caller can fall through to the next
-rung. An unclaimed failure (a 500, a malformed response) re-raises on purpose, since
-``_ladder_provider_fallback`` only acts on the reasons in ``_FALLBACK_REASONS``.
+rung. A failure no later rung acts on (``aux_errors.ladder_accepts``) re-raises on purpose.
 Used this way no exception is caught: when the
 refreshed client also fails (e.g. an out-of-credit 404 on a stale Nous runtime token),
 the error escapes ``_aux_recovery_ladder`` and ``_ladder_provider_fallback`` never
@@ -99,9 +98,9 @@ def hermetic(monkeypatch):
     """Keep the ladder off the network and record the provider-fallback rung."""
     chain_calls = []
 
-    def _fake_provider_fallback(first_err, route):
+    def _fake_provider_fallback(failure, route, **_kw):
         """Stands in for the last rung: a generator that performs no steps."""
-        chain_calls.append(first_err)
+        chain_calls.append(failure.error)
         yield from ()
         return "chain-response"
 
@@ -389,8 +388,8 @@ def test_exhausted_ladder_raises_the_narrowed_error(monkeypatch, hermetic):
     monkeypatch.setattr(aux, "_refresh_nous_auxiliary_client",
                         lambda **kwargs: (_FakeClient(), AUX_MODEL))
 
-    def _no_chain(first_err, route):
-        hermetic.append(first_err)
+    def _no_chain(failure, route, **_kw):
+        hermetic.append(failure.error)
         yield from ()
 
     monkeypatch.setattr(aux, "_ladder_provider_fallback", _no_chain)

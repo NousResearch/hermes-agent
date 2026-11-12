@@ -96,6 +96,7 @@ class PluginCatalogEntry:
     onboarding: bool = False     # curated: offered on the desktop onboarding card
     capabilities: CatalogCapabilities = field(default_factory=CatalogCapabilities)
     known_issues: list[str] = field(default_factory=list)  # #124058: informational; drivers come from plugin-catalog/*.yaml
+    i18n: dict[str, dict[str, str]] = field(default_factory=dict)  # locale → {title?, description?}
 
     @property
     def install_identifier(self) -> str:
@@ -116,6 +117,7 @@ class PluginCatalogEntry:
                 "provides_middleware": list(caps.provides_middleware), "requires_env": list(caps.requires_env),
             },
             "known_issues": list(self.known_issues),
+            "i18n": {loc: dict(fields) for loc, fields in self.i18n.items()},
         }
 
 
@@ -128,6 +130,96 @@ def get_catalog_dir() -> Path:
 
 def _str_list(raw: Any) -> list[str]:
     return [str(x) for x in raw if isinstance(x, (str, int, float))] if isinstance(raw, list) else []
+
+
+def _normalize_locale_id(value: str) -> str:
+    """Trim, lowercase, ``_`` → ``-`` — the same identity desktop ``normalizeLocaleId`` uses."""
+    return value.strip().lower().replace("_", "-")
+
+
+# BCP-47 region aliases from desktop ``LOCALE_ALIASES`` (languages.ts). Identity keys
+# (``en`` → ``en``) and picker word-aliases (``french``) are omitted: lookup runs after
+# ``_normalize_locale_id``, and unknown ids such as ``id`` stay themselves — unlike
+# ``normalizeLocale``, which would collapse them to English. Region-only tags the
+# desktop table does not list (``en-gb``, ``zh-sg``) fall through to the subtag rule.
+_CATALOG_LOCALE_ALIASES = {
+    "en-us": "en",
+    "zh-cn": "zh", "zh-hans": "zh", "zh-hans-cn": "zh",
+    "zh-tw": "zh-hant", "zh-hk": "zh-hant", "zh-mo": "zh-hant",
+    "zh-hant-tw": "zh-hant", "zh-hant-hk": "zh-hant",
+    "ja-jp": "ja",
+    "ar-sa": "ar", "ar-ae": "ar", "ar-eg": "ar",
+    "ru-ru": "ru", "ru-by": "ru", "ru-kz": "ru",
+    "fr-fr": "fr", "fr-be": "fr", "fr-ca": "fr", "fr-ch": "fr",
+    "de-de": "de", "de-at": "de", "de-ch": "de",
+    "es-es": "es", "es-mx": "es", "es-ar": "es", "es-419": "es",
+}
+
+
+def _is_region_subtag(extra: str) -> bool:
+    """ISO 3166-1 alpha-2 (2 letters) or UN M.49 (3 digits). Not a 4-letter script (``hant``)."""
+    return (len(extra) == 2 and extra.isalpha()) or (len(extra) == 3 and extra.isdigit())
+
+
+def catalog_locale_candidates(locale: str) -> list[str]:
+    """Lookup keys for a catalog ``i18n`` map: exact (after alias), then primary subtag when safe.
+
+    ``id-ID`` → ``id``; ``zh-hant`` does not fall back to ``zh`` (4-letter script subtag).
+    """
+    raw = _normalize_locale_id(locale) if locale else ""
+    if not raw:
+        return []
+    exact = _CATALOG_LOCALE_ALIASES.get(raw, raw)
+    keys = [exact]
+    parts = exact.split("-")
+    if len(parts) >= 2:
+        extra = parts[1]
+        if _is_region_subtag(extra) and parts[0] not in keys:
+            keys.append(parts[0])
+    return keys
+
+
+def parse_catalog_i18n(raw: Any) -> dict[str, dict[str, str]]:
+    """Locale → {title?, description?}. Invalid / empty values are dropped; unknown locales kept."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, dict[str, str]] = {}
+    for loc, fields in raw.items():
+        if not isinstance(loc, str):
+            continue
+        key = _normalize_locale_id(str(loc))
+        if not key or not isinstance(fields, dict):
+            continue
+        entry: dict[str, str] = {}
+        for field in ("title", "description"):
+            val = fields.get(field)
+            if isinstance(val, str) and val.strip():
+                entry[field] = val.strip()
+        if entry:
+            out[key] = entry
+    return out
+
+
+def resolve_catalog_copy(entry: PluginCatalogEntry, locale: str) -> tuple[str, str]:
+    """Localized ``(title, description)`` for cards. Never changes ``entry.name``.
+
+    Exact locale, then primary subtag when safe, then English ``title``/``description``, then ``name``.
+    """
+    english_title = (entry.title or "").strip() or entry.name
+    english_desc = (entry.description or "").strip() or entry.name
+    title, desc = english_title, english_desc
+    have_title = have_desc = False
+    for key in catalog_locale_candidates(locale):
+        loc = entry.i18n.get(key) or {}
+        if not have_title and loc.get("title"):
+            title = loc["title"]
+            have_title = True
+        if not have_desc and loc.get("description"):
+            desc = loc["description"]
+            have_desc = True
+        if have_title and have_desc:
+            break
+    return title, desc
 
 
 def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
@@ -174,6 +266,7 @@ def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
         platforms=_str_list(data.get("platforms")),
         title=str(data.get("title") or "").strip(), onboarding=data.get("onboarding") is True,
         known_issues=_str_list(data.get("known_issues")),
+        i18n=parse_catalog_i18n(data.get("i18n")),
         capabilities=CatalogCapabilities(
             provides_tools=_str_list(caps.get("provides_tools")), provides_hooks=_str_list(caps.get("provides_hooks")),
             provides_middleware=_str_list(caps.get("provides_middleware")),
@@ -493,7 +586,7 @@ def load_catalog_live() -> list[PluginCatalogEntry]:
 # Curated display fields a published doc older than the field does not carry. ``generated_at`` is the
 # docs build time, not the content time, so a rebuild of an older catalog outranks a checkout that added
 # the field; a doc that has the key (even ``false``) decides.
-_CURATED_FIELDS = ("onboarding", "title")
+_CURATED_FIELDS = ("onboarding", "title", "i18n")
 
 
 def _with_curated_fields(live: PluginCatalogEntry, tree: Optional[PluginCatalogEntry], raw: dict[str, Any]

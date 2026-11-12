@@ -13,6 +13,7 @@ import { cn } from '@/lib/utils'
 
 import { catalogIcon, CatalogImage } from './catalog-card'
 import { type CatalogEntry, type CatalogKind, catalogLabel } from './catalog-data'
+import { resolveCatalogCopy } from './catalog-i18n'
 import { CatalogDates, CatalogHeaderMeta, CatalogMetadata } from './catalog-metadata'
 
 interface CatalogDetailProps {
@@ -31,16 +32,17 @@ interface CatalogDetailProps {
 
 /** Title, author line and outbound links at the top of the inspector. */
 function CatalogDetailHeader({ entry, action, dialog }: { entry: CatalogEntry; action: ReactNode; dialog?: boolean }) {
-  const { t } = useI18n()
+  const { locale, t } = useI18n()
   const c = t.catalog
   const Title = dialog ? DialogTitle : 'h3'
+  const heading = resolveCatalogCopy(entry, locale).title
 
   return (
         <header className="space-y-3">
           <div className="flex min-w-0 items-start gap-3">
             <div className="min-w-0 flex-1">
               <div className={cn('flex min-w-0 items-center gap-2', dialog && !entry.imageUrl && 'pr-7')}>
-                <Title className="min-w-0 flex-1 break-words text-lg font-semibold tracking-tight">{entry.name}</Title>
+                <Title className="min-w-0 flex-1 break-words text-lg font-semibold tracking-tight">{heading}</Title>
                 {action && <span className="shrink-0">{action}</span>}
               </div>
               <div className="mt-1 flex min-w-0 items-center gap-2 text-xs text-(--ui-text-tertiary)">
@@ -73,8 +75,9 @@ export function CatalogDetail({
   onRelated,
   dialog
 }: CatalogDetailProps) {
-  const { t } = useI18n()
+  const { locale, t } = useI18n()
   const c = t.catalog
+  const copy = resolveCatalogCopy(entry, locale)
   const root = useRef<HTMLDivElement>(null)
 
   // In the modal the body (this root's parent) is the scroller; a new entry starts at its top.
@@ -105,9 +108,9 @@ export function CatalogDetail({
       <CatalogDetailHeader action={action} dialog={dialog} entry={entry} />
 
       <p className="whitespace-pre-wrap break-words text-[length:var(--conversation-caption-font-size)] leading-relaxed text-(--ui-text-secondary)">
-        {entry.description}
+        {copy.description}
       </p>
-      {entry.overview && entry.overview !== entry.description && (
+      {entry.overview && entry.overview !== entry.description && entry.overview !== copy.description && (
         <p className="whitespace-pre-wrap break-words text-[length:var(--conversation-caption-font-size)] leading-relaxed text-(--ui-text-tertiary)">
           {entry.overview}
         </p>

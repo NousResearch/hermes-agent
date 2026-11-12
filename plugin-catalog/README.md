@@ -206,6 +206,11 @@ screenshots: []             # optional, up to 6 https images on a GitHub host; g
 readme: true                # optional, default true; the README at the PINNED SHA renders on /docs/plugins/<name>
 platforms: []               # optional, e.g. [linux, macos]; empty = all
 title: ""                   # optional human name on cards ("NVIDIA App"); default = name
+i18n: {}                    # optional; language id → {title, description} for catalog cards
+                            # (id, ru, zh-hant — not region tags like id-ID). name is never
+                            # localized. Missing locale falls back to English title/description,
+                            # then name. Unknown locale keys are allowed; title and description
+                            # are optional per locale.
 onboarding: false           # optional; offered on the Desktop onboarding card (official or verified entries only)
 known_issues: []            # optional strings shown at the install prompt; informational, never blocks
 capabilities:

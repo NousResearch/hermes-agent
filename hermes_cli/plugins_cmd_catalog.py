@@ -20,8 +20,8 @@ from typing import Any, Dict, List, NamedTuple, Optional
 
 from hermes_cli.plugin_catalog import (
     CATALOG_TIERS, PluginCatalogEntry, RemovedEntry, cached_removed_entries, entry_capability_summary, filter_entries,
-    find_removed, get_live_catalog_entry, load_catalog_live, match_removed, resolved_removed_entries,
-    _NAME_RE, _normalize_repo,
+    find_removed, get_live_catalog_entry, load_catalog_live, match_removed, resolve_catalog_copy,
+    resolved_removed_entries, _NAME_RE, _normalize_repo,
 )
 from pm.filesystem import is_junction
 
@@ -804,6 +804,13 @@ def pin_label(entry: PluginCatalogEntry) -> str:
     return f"{entry.version} @ {entry.sha[:8]}" if entry.version else entry.sha[:8]
 
 
+def _localized_description(entry: PluginCatalogEntry) -> str:
+    """Card text for the active CLI language; ``name`` stays the install key."""
+    from agent.i18n import get_language
+    _, desc = resolve_catalog_copy(entry, get_language())
+    return desc
+
+
 def _render_entries(entries: list[PluginCatalogEntry], console) -> None:
     from hermes_cli.plugins_cmd import _table
     table = _table(((("Name", "bold")), ("Category", None), ("Tier", None), ("Description", None),
@@ -812,7 +819,8 @@ def _render_entries(entries: list[PluginCatalogEntry], console) -> None:
     style = {"official": "cyan", "verified": "green", "community": "magenta"}
     for e in sorted(entries, key=lambda e: (e.category, rank.get(e.tier, len(rank)), e.name)):
         tier = f"[{style.get(e.tier, 'magenta')}]{e.tier}[/{style.get(e.tier, 'magenta')}]"
-        desc = e.description if len(e.description) <= 60 else e.description[:57] + "..."
+        desc = _localized_description(e)
+        desc = desc if len(desc) <= 60 else desc[:57] + "..."
         name = e.name + (f"\n[yellow]needs Hermes {e.requires_hermes}[/yellow]" if catalog_hermes_error(e) else "")
         table.add_row(name, e.category, tier, desc, pin_label(e), _capability_counts(e))
     console.print()
@@ -848,8 +856,9 @@ def cmd_info(name: str) -> None:
     caps = entry.capabilities
     console.print()
     console.print(f"[bold]{entry.name}[/bold] [cyan]\\[{entry.tier}][/cyan]")
-    if entry.description:
-        console.print(entry.description)
+    desc = _localized_description(entry)
+    if desc:
+        console.print(desc)
     console.print()
     rows = [("Repo", entry.repo), ("Subdir", entry.subdir), ("Version", entry.version), ("Pinned SHA", entry.sha),
             ("Image", entry.image),

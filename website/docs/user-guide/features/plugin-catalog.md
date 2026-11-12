@@ -56,6 +56,7 @@ directory of the hermes-agent repository, declaring:
 | `requires_hermes` | Minimum Hermes version, e.g. `>=0.19` (optional). Enforced: installing on an older Hermes is refused with the version it needs, and `hermes plugins update` keeps the installed version until you update Hermes. `search` and `info` still list the entry, marked as needing a newer Hermes |
 | `platforms` | OS restrictions, empty = all (optional) |
 | `title` | Human name shown on cards, e.g. `NVIDIA App` (optional; defaults to `name`) |
+| `i18n` | Optional map of language id (`id`, `ru`, `zh-hant` — not region tags like `id-ID`) to `{title, description}` shown on catalog cards. `name` is never localized. A missing locale falls back to English `title`/`description`, then `name`. Unknown locale keys are allowed; `title` and `description` are optional per locale |
 | `onboarding` | `true` offers the plugin on the desktop onboarding card, beside the hosted connectors, on the platforms it lists. Curated: official or verified entries only (optional, default `false`) |
 | `docs_url` | External documentation link (optional) |
 | `known_issues` | Short notes shown at the install prompt, e.g. an unsupported install mode. Informational; they never block the install (optional) |

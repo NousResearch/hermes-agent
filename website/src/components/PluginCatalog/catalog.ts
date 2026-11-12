@@ -25,6 +25,10 @@ export interface CatalogPlugin {
   platforms?: string[];
   capabilities?: PluginCapabilities;
   docsUrl?: string;
+  /** Optional English human name on cards; defaults to ``name``. */
+  title?: string;
+  /** Locale id → {title, description} for catalog cards. ``name`` is never localized. */
+  i18n?: Record<string, { title?: string; description?: string }>;
   /** Human label for the pin ("1.4.0"); cosmetic, shown beside the sha. */
   version?: string;
   /** Card banner image (GitHub-hosted https URL enforced by the extractor). */

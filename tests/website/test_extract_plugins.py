@@ -92,6 +92,55 @@ def test_valid_entry_is_extracted_with_install_command(mod, tmp_path):
     assert e["capabilities"]["providesHooks"] == ["on_start"]
     assert e["capabilities"]["requiresEnv"] == ["EXAMPLE_TOKEN"]
     assert e["installCommand"] == "hermes plugins install example-plugin"
+    assert e["title"] == ""
+    assert "i18n" not in e
+
+
+def test_i18n_locale_keys_are_normalized_like_the_loader(mod, tmp_path):
+    """Same identity as parse_catalog_i18n / parseCatalogI18n: trim, lowercase, ``_`` → ``-``.
+
+    Does not collapse ``id-ID`` → ``id`` or ``zh-hant`` → ``zh`` (resolver does that at lookup).
+    """
+    catalog = tmp_path / "plugin-catalog"
+    catalog.mkdir()
+    _write_entry(catalog, "caps", i18n={"ID": {"title": "From ID"}})
+    _write_entry(catalog, "underscore", i18n={"id_ID": {"description": "From underscore"}})
+    _write_entry(catalog, "hyphen", i18n={"id-ID": {"description": "From hyphen"}})
+    _write_entry(catalog, "script", i18n={"zh-hant": {"title": "Hant"}})
+
+    entries = {e["name"]: e for e in mod.load_catalog_entries(catalog)}
+    assert entries["caps"]["i18n"] == {"id": {"title": "From ID"}}
+    assert entries["underscore"]["i18n"] == {"id-id": {"description": "From underscore"}}
+    assert entries["hyphen"]["i18n"] == {"id-id": {"description": "From hyphen"}}
+    assert entries["script"]["i18n"] == {"zh-hant": {"title": "Hant"}}
+
+    assert mod._i18n_map({"ID": {"title": "A"}, "id_ID": {"description": "B"}, "zh-hant": {"title": "C"}}) == {
+        "id": {"title": "A"},
+        "id-id": {"description": "B"},
+        "zh-hant": {"title": "C"},
+    }
+
+
+def test_title_and_i18n_are_emitted_on_plugins_json_and_raw_catalog(mod, tmp_path):
+    catalog = tmp_path / "plugin-catalog"
+    catalog.mkdir()
+    i18n = {"id": {"title": "Stage", "description": "Teks Indonesia"}}
+    _write_entry(catalog, "stage", title="Stage", description="English description.", i18n=i18n)
+    _write_entry(catalog, "plain")
+
+    entries = {e["name"]: e for e in mod.load_catalog_entries(catalog)}
+    assert entries["stage"]["title"] == "Stage"
+    assert entries["stage"]["i18n"] == i18n
+    assert entries["plain"]["title"] == ""
+    assert "i18n" not in entries["plain"]
+
+    out_dir = tmp_path / "api"
+    assert mod.main(catalog_dir=catalog, output_dir=out_dir) == 0
+    plugins = {p["name"]: p for p in json.loads((out_dir / "plugins.json").read_text(encoding="utf-8"))}
+    live = json.loads((out_dir / "plugin-catalog.json").read_text(encoding="utf-8"))
+    assert plugins["stage"]["i18n"] == i18n and plugins["stage"]["title"] == "Stage"
+    raw = next(e for e in live["entries"] if e["name"] == "stage")
+    assert raw["i18n"] == i18n
 
 
 def test_entries_missing_required_fields_are_skipped(mod, tmp_path, capsys):

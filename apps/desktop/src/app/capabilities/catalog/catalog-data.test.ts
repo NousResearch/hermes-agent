@@ -142,4 +142,22 @@ describe('public catalog data', () => {
   it('rejects a non-catalog response instead of treating an error payload as an empty catalog', () => {
     expect(() => parseCatalog('skills', { error: 'Service unavailable' })).toThrow('Invalid catalog response')
   })
+
+  it('keeps catalog name as the install key and passes title plus i18n through for card copy', () => {
+    const [entry] = parseCatalog('plugins', [
+      {
+        name: 'stage',
+        title: 'Stage',
+        description: 'English description',
+        tier: 'community',
+        i18n: { id: { title: 'Stage', description: 'Teks Indonesia' } }
+      }
+    ])
+
+    expect(entry.name).toBe('stage')
+    expect(entry.title).toBe('Stage')
+    expect(entry.description).toBe('English description')
+    expect(entry.i18n).toEqual({ id: { title: 'Stage', description: 'Teks Indonesia' } })
+    expect(entry.search).toContain('teks indonesia')
+  })
 })

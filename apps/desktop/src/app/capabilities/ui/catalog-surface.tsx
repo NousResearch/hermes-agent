@@ -32,7 +32,9 @@ const VARIANT: Record<CatalogSurfaceSection['layout'], CatalogCardVariant> = { f
 const entryFor = (item: CatalogSurfaceItem, category: string): CatalogEntry => ({
   id: item.id,
   name: item.name,
+  title: '',
   description: item.description,
+  i18n: {},
   overview: item.description,
   category,
   categoryLabel: category,

@@ -5,6 +5,7 @@ import { Lock } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 import { type CatalogEntry, type CatalogKind, catalogLabel } from './catalog-data'
+import { resolveCatalogCopy } from './catalog-i18n'
 import { CatalogHeaderMeta, CatalogMetadata } from './catalog-metadata'
 
 interface CatalogListRowProps {
@@ -28,7 +29,9 @@ export function CatalogListRow({
   onTag,
   onSearch
 }: CatalogListRowProps) {
-  const { t } = useI18n()
+  const { locale, t } = useI18n()
+  const copy = resolveCatalogCopy(entry, locale)
+  const heading = copy.title !== entry.name ? copy.title : entry.name
 
   return (
     <div
@@ -51,7 +54,7 @@ export function CatalogListRow({
       />
       <span className="pointer-events-none min-w-0 flex-1">
         <span className="flex items-center gap-2">
-          <span className="truncate text-[0.78rem] font-medium">{entry.name}</span>
+          <span className="truncate text-[0.78rem] font-medium">{heading}</span>
           {installed && <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="check" />}
           {entry.locked && (
             <span
@@ -66,7 +69,7 @@ export function CatalogListRow({
           )}
         </span>
         <span className="mt-1 line-clamp-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-          {entry.description}
+          {copy.description}
         </span>
         <span className="pointer-events-auto relative mt-2 block">
           <CatalogMetadata entry={entry} limit={2} onCategory={onCategory} onSearch={onSearch} onTag={onTag} />

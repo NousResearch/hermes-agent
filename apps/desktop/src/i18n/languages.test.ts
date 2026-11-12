@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { TRANSLATIONS } from './catalog'
-import { DEFAULT_LOCALE, isLocale, isSupportedLocaleValue, LOCALE_OPTIONS, normalizeLocale } from './languages'
+import { DEFAULT_LOCALE, isLocale, isSupportedLocaleValue, LOCALE_OPTIONS, localeAlias, normalizeLocale } from './languages'
 
 describe('desktop i18n languages', () => {
   it('normalizes supported locale aliases', () => {
@@ -41,6 +41,13 @@ describe('desktop i18n languages', () => {
     expect(normalizeLocale(null)).toBe(DEFAULT_LOCALE)
     expect(normalizeLocale('')).toBe(DEFAULT_LOCALE)
     expect(normalizeLocale('it')).toBe(DEFAULT_LOCALE)
+  })
+
+  it('looks up aliases without collapsing unknown tags such as id to English', () => {
+    expect(localeAlias('zh-TW')).toBe('zh-hant')
+    expect(localeAlias('id')).toBeUndefined()
+    expect(localeAlias('id-ID')).toBeUndefined()
+    expect(normalizeLocale('id')).toBe(DEFAULT_LOCALE)
   })
 
   it('distinguishes exact locale ids from supported config aliases', () => {

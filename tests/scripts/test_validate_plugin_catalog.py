@@ -235,6 +235,35 @@ def test_unknown_key_warns_but_passes(tmp_path):
     assert "warning" in combined.lower()
 
 
+def test_i18n_unknown_locale_is_not_an_unknown_key(tmp_path):
+    path = write_entry(tmp_path, {**VALID_ENTRY, "i18n": {"id": {"title": "Stage", "description": "Teks"}}})
+    result = run_validator(str(path))
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined
+    assert "unknown top-level key" not in combined
+
+
+def test_i18n_absent_still_passes(tmp_path):
+    path = write_entry(tmp_path, VALID_ENTRY)
+    result = run_validator(str(path))
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_i18n_bad_shape_warns_but_passes(tmp_path):
+    path = write_entry(tmp_path, {**VALID_ENTRY, "i18n": "nope"})
+    result = run_validator(str(path))
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined
+    assert "i18n" in combined
+    assert "warning" in combined.lower()
+
+
+def test_shipped_stage_yaml_is_valid():
+    path = REPO_ROOT / "plugin-catalog" / "stage.yaml"
+    result = run_validator(str(path))
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 # ── removed.yaml shape ─────────────────────────────────────────────────
 
 

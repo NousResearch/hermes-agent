@@ -5,13 +5,18 @@ import { CATALOG_ORIGIN } from '@/lib/plugin-catalog'
 import { queryClient } from '@/lib/query-client'
 
 import { curatedFeaturedRank, curationOwnsArtwork, officialCatalogArtwork } from './catalog-curation'
+import { type CatalogI18nMap, parseCatalogI18n } from './catalog-i18n'
 
 export type CatalogKind = 'skills' | 'plugins'
 
 export interface CatalogEntry {
   id: string
   name: string
+  /** English human card name; empty = fall back to ``name``. */
+  title: string
   description: string
+  /** Locale → {title?, description?} from the published catalog snapshot. */
+  i18n: CatalogI18nMap
   overview: string
   category: string
   categoryLabel: string
@@ -142,11 +147,15 @@ function catalogEntry(kind: CatalogKind, row: any): CatalogEntry {
   const requirements = strings(kind === 'plugins' ? caps.requiresEnv : row.envVars)
   const author = text(row.maintainer ?? row.author)
   const description = text(row.description)
+  const title = text(row.title)
+  const i18n = parseCatalogI18n(row.i18n)
 
   return {
     id: `${source}:${identifier}`,
     name,
+    title,
     description,
+    i18n,
     overview: text(row.overview),
     category,
     categoryLabel,
@@ -170,7 +179,9 @@ function catalogEntry(kind: CatalogKind, row: any): CatalogEntry {
     ...catalogSignals(kind, row),
     search: [
       name,
+      title,
       description,
+      ...Object.values(i18n).flatMap(fields => [fields.title, fields.description]),
       text(row.overview),
       author,
       category,

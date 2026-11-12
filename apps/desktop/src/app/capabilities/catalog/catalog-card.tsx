@@ -3,9 +3,11 @@ import './catalog.css'
 import { type CSSProperties, type ReactNode, useState } from 'react'
 
 import { RowButton } from '@/components/ui/row-button'
+import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
 import { type CatalogEntry, catalogLabel } from './catalog-data'
+import { resolveCatalogCopy } from './catalog-i18n'
 import { CatalogDates, CatalogHeaderMeta, CatalogMetadata, CatalogRating } from './catalog-metadata'
 
 export function catalogIcon(category: string) {
@@ -92,6 +94,10 @@ function CatalogCardFooter({ entry, action, hero }: { entry: CatalogEntry; actio
 }
 
 export function CatalogCard({ entry, action, accentIndex, onOpen, onCategory, onTag, onSearch, variant = 'default', style }: CatalogCardProps) {
+  const { locale } = useI18n()
+  const copy = resolveCatalogCopy(entry, locale)
+  const heading = copy.title !== entry.name ? copy.title : variant === 'default' ? entry.name : catalogLabel(entry.name)
+
   return (
     <article
       className={cn(
@@ -121,7 +127,7 @@ export function CatalogCard({ entry, action, accentIndex, onOpen, onCategory, on
             className="min-w-0 flex-1 text-left font-semibold leading-snug after:absolute after:inset-0 after:rounded-[inherit] focus-visible:outline-none focus-visible:after:outline-2 focus-visible:after:outline-primary focus-visible:after:-outline-offset-2"
             onClick={() => onOpen(entry)}
           >
-            <span className="catalog-card-title line-clamp-2 min-w-0 break-words text-lg">{variant === 'default' ? entry.name : catalogLabel(entry.name)}</span>
+            <span className="catalog-card-title line-clamp-2 min-w-0 break-words text-lg">{heading}</span>
           </RowButton>
           {variant === 'default' && action && (
             <span className="relative shrink-0 opacity-[.66] transition-opacity group-hover:opacity-100 group-hover:transition-none group-focus-within:opacity-100 group-focus-within:transition-none">
@@ -137,7 +143,7 @@ export function CatalogCard({ entry, action, accentIndex, onOpen, onCategory, on
             <CatalogRating entry={entry} />
           </span>}
           <span className="catalog-card-description line-clamp-4 min-h-0 text-[length:var(--conversation-caption-font-size)] leading-relaxed text-(--ui-text-secondary)">
-            {entry.description}
+            {copy.description}
           </span>
         </div>
       </div>

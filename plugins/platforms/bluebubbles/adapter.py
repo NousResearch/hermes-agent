@@ -540,8 +540,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 continue
             mime = (att.get("mimeType") or "").lower()
             media_urls.append(cached)
-            media_types.append(mime)
             is_voice = _is_voice_attachment(att)
+            if is_voice and not mime.startswith("audio/"):  # a CAF memo sent as octet-stream is still audio
+                mime = "audio/x-caf"
+            media_types.append(mime)
             if is_voice:
                 voice_paths.append(cached)
             msg_type = (MessageType.PHOTO if mime.startswith("image/") else MessageType.VOICE if is_voice

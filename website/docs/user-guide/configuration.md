@@ -1164,8 +1164,9 @@ auxiliary:
   compression:
     model: glm-4.7
     base_url: https://api.z.ai/api/coding/paas/v4
+    api_key: ${GLM_API_KEY}
 ```
-Points at a custom OpenAI-compatible endpoint. Uses `OPENAI_API_KEY` for auth.
+Points at a custom OpenAI-compatible endpoint, authenticated with `api_key`. Without one, Hermes reuses the main model's key only on the main endpoint's exact origin, and `OPENAI_API_KEY` only on OpenAI hosts or the exact `OPENAI_BASE_URL` it is paired with.
 
 ### How the three knobs interact
 

@@ -1255,6 +1255,37 @@ def open_skill(name):
 Plugin-registered skills (`ctx.register_skill`) are not on disk under these roots; `find_all_skills()`
 returns the on-disk catalog only.
 
+### Check file paths and read YAML with Hermes's own helpers
+
+A plugin that reads or writes a path the model chose (an attachment, an export target, a file to
+summarise) should refuse the same paths Hermes's own file tools refuse: credential stores, the
+skills-hub cache, project `.env` files and anything outside `HERMES_WRITE_SAFE_ROOT`. Call these
+instead of keeping your own denylist:
+
+| Import | What it gives you |
+|---|---|
+| `agent.file_safety.get_read_block_error(path)` | An error string if Hermes's file tools would refuse to read `path`, else `None`. Pass an absolute path. |
+| `agent.file_safety.raise_if_read_blocked(path)` | The same check, raising `ValueError` on a block. |
+| `agent.file_safety.get_write_denied_error(path)` | An error string if Hermes's file tools would refuse to write `path`, else `None`. |
+| `agent.file_safety.is_write_denied(path)` | `True` when that write would be refused. |
+| `hermes_yaml.safe_load(text)` / `hermes_yaml.safe_dump(data)` | The YAML reader and writer Hermes uses for its own config. Hermes does not ship PyYAML, so `import yaml` fails unless your plugin declares it. |
+
+```python
+from agent.file_safety import get_read_block_error
+from hermes_yaml import safe_load
+
+def load_recipe(path):
+    if err := get_read_block_error(path):
+        return err
+    with open(path, encoding="utf-8") as fh:
+        return safe_load(fh)
+```
+
+Import the names themselves (`from hermes_yaml import safe_load`), as above: `hermes plugins
+validate` accepts those spellings and reports a bare `import agent.file_safety` as a private import.
+To read Hermes's own settings, use `load_config_readonly()` from `hermes_cli.config` rather than
+parsing `config.yaml` yourself.
+
 ### Ship a language pack
 
 A plugin can add a UI language or override the wording of an existing one for every surface at once —

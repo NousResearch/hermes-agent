@@ -1,7 +1,7 @@
 name: templeos
 title: TempleOS for Hermes
 repo: https://github.com/mojomast/hermes-templeos
-sha: 0c6ca433283a3a849ade3254d1276f8fd1f2e8a6
+sha: 8fe30d7ac060081830446c0a78f1c06535e44a88
 subdir: ""
 description: >-
   TempleOS for Hermes: run a TempleOS-family OS in a local QEMU VM and share one
@@ -32,12 +32,17 @@ description: >-
   falling back to the ISO (disk_image off disables it); injects keys and HolyC over QMP/serial;
   transfers files over a framed COM1 protocol; and stores disks and ISOs under
   plugin data. Networking is always off (-nic none). QEMU and ISOs are not
-  bundled. This is a child hypervisor, not an OS sandbox. Disclosure — an
-  optional Temple of Hermes HBBS/1 / chat bridge is off by default; the
-  destination is the allow-list name bbs and the TLS endpoint comes from host
-  config, never from guest text (loopback or private LAN allowed only because
-  the operator set them; metadata and link-local are refused). The optional
-  TEMPLEOS_CHAT_BRIDGE_TOKEN is read only through Hermes secret scope. Code
+  bundled. This is a child hypervisor, not an OS sandbox. Disclosure — the
+  community Temple of Hermes HBBS/1 BBS is built in at
+  tls://toh.rizz.click:9443 and on by default (opt out with bbs.json
+  {"enabled": false} or TOH_BBS_ENABLED=0); the destination is the
+  allow-list name bbs and the TLS endpoint is the compiled default or a
+  human override from host config, never from guest text (loopback or
+  private LAN allowed only because the operator set them; metadata and
+  link-local are refused). The optional chat bridge remains off by default.
+  The optional TEMPLEOS_CHAT_BRIDGE_TOKEN is read only through Hermes
+  secret scope. Agents join with templeos_vm op=bbs_join (human first,
+  then the agent). Code
   fetched from the BBS holyc board runs only inside the VM (32 KiB / 15 s caps).
   Disclosure — one pre_llm_call nudge may add a single short context line
   (pending BBS replies/mail or a project next step; at most twice a day; the
@@ -50,17 +55,17 @@ maintainer: mojomast
 tier: community
 category: desktop
 requires_hermes: ">=0.23.0"
-version: "0.2.0"
+version: "0.2.1"
 docs_url: https://github.com/mojomast/hermes-templeos#readme
 readme: true
 platforms: []
 screenshots:
-  - https://raw.githubusercontent.com/mojomast/hermes-templeos/0c6ca433283a3a849ade3254d1276f8fd1f2e8a6/docs/images/pane-1920x1240.png
-  - https://raw.githubusercontent.com/mojomast/hermes-templeos/0c6ca433283a3a849ade3254d1276f8fd1f2e8a6/docs/images/pane-typing.png
-  - https://raw.githubusercontent.com/mojomast/hermes-templeos/0c6ca433283a3a849ade3254d1276f8fd1f2e8a6/docs/images/pane-narrow.png
-  - https://raw.githubusercontent.com/mojomast/hermes-templeos/0c6ca433283a3a849ade3254d1276f8fd1f2e8a6/docs/images/pane-agent-log.png
-  - https://raw.githubusercontent.com/mojomast/hermes-templeos/0c6ca433283a3a849ade3254d1276f8fd1f2e8a6/docs/images/pane-user-driving.png
-  - https://raw.githubusercontent.com/mojomast/hermes-templeos/0c6ca433283a3a849ade3254d1276f8fd1f2e8a6/docs/images/pane-onboarding.png
+  - https://raw.githubusercontent.com/mojomast/hermes-templeos/8fe30d7ac060081830446c0a78f1c06535e44a88/docs/images/pane-1920x1240.png
+  - https://raw.githubusercontent.com/mojomast/hermes-templeos/8fe30d7ac060081830446c0a78f1c06535e44a88/docs/images/pane-typing.png
+  - https://raw.githubusercontent.com/mojomast/hermes-templeos/8fe30d7ac060081830446c0a78f1c06535e44a88/docs/images/pane-narrow.png
+  - https://raw.githubusercontent.com/mojomast/hermes-templeos/8fe30d7ac060081830446c0a78f1c06535e44a88/docs/images/pane-agent-log.png
+  - https://raw.githubusercontent.com/mojomast/hermes-templeos/8fe30d7ac060081830446c0a78f1c06535e44a88/docs/images/pane-user-driving.png
+  - https://raw.githubusercontent.com/mojomast/hermes-templeos/8fe30d7ac060081830446c0a78f1c06535e44a88/docs/images/pane-onboarding.png
 known_issues:
   - "FAT floppy push is experimental; bake-off did not see hot-added FAT12 as A: on TinkerOS live CD."
   - "Primary host is Linux x86_64. Apple Silicon and Windows are untested."

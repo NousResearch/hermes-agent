@@ -1,0 +1,41 @@
+name: werk
+repo: https://github.com/aaddrick/werk
+sha: 457f4aa78e14f170b8cbeee885d8396cb700f8b8
+description: "Plain-language equipment description in, engineering package out: werk triages the description into domains, breaks it into work items, runs them through review roles and domain-pack checks (a build123d STEP model for mechanical work; the elec pack ships SKiDL/KiCad tools but designs nothing in this release), and writes a COVER.md with the gaps it found written down. Proof of concept, NOT FOR CONSTRUCTION. Disclosure — `hermes werk doctor --setup` (after consent in a terminal) creates two worker profiles (werk-builder, werk-reviewer) and a Kanban board `werk`, symlinks werk into those profiles' plugins dirs and their plugin-data/werk to your own werk data dir, and uses uv to download a CPython 3.12 build and hash-pinned pack packages from PyPI (mostly wheels, including build123d/OCP) into the plugin's data dir; the elec pack's sdist-only skidl, hierplace and kinet2pcb are built locally with setuptools fetched unpinned at build time, in a minimal environment with no provider keys; `hermes werk run` is a long foreground run (default caps 60M tokens / 24 h) that spends model tokens through your configured providers and runs `hermes kanban` CLI calls; pack tools run as subprocesses in their own venvs with the network cut via `unshare -rn` when available, the elec pack calls the system `kicad-cli` (GPL) if present, and signed overrides use `ssh-keygen`. Three optional supplier-key settings are declared but unused in this version. No telemetry, no self-update."
+maintainer: aaddrick
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/aaddrick/werk#readme
+version: "0.1.0"
+image: https://raw.githubusercontent.com/aaddrick/werk/457f4aa78e14f170b8cbeee885d8396cb700f8b8/docs/social-card.png
+screenshots:
+  - https://raw.githubusercontent.com/aaddrick/werk/457f4aa78e14f170b8cbeee885d8396cb700f8b8/docs/example/conveyor-still.png
+readme: true
+platforms: [linux]   # only Linux is tested (unshare, uv-managed CPython 3.12)
+title: werk
+known_issues:
+  - "Proof of concept: packages are NOT FOR CONSTRUCTION and need review by a licensed engineer."
+  - "Only mechanical work is designed (a build123d 3D model); elec, power, safety and every other domain are listed as gaps in COVER.md, not designed."
+capabilities:
+  provides_tools:
+    - werk_bundle_read
+    - werk_item_show
+    - werk_item_advance
+    - werk_item_renew
+    - werk_finding_resolve
+    - werk_ir_write
+    - werk_tool_run
+    - werk_review_submit
+    - werk_measure_request
+    - werk_status
+    - werk_item_list
+    - werk_gaps
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - post_api_request
+    - kanban_task_completed
+    - kanban_task_blocked
+  provides_middleware: []
+  requires_env: []

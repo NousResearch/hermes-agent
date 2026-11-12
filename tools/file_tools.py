@@ -16,7 +16,7 @@ import stat
 import threading
 import time
 from contextlib import ExitStack
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from agent.file_safety import get_nt_namespace_error, get_read_block_error
 from agent.tool_result_classification import GUARDRAIL_REFUSAL_KEY
@@ -29,7 +29,7 @@ from tools import file_state
 from hermes_platform.host import facts
 from agent.redact import _is_secret_file_arg, redact_sensitive_text
 from tools.file_tools_paths import (
-    _expand_tilde, _path_resolution_warning, _resolve_base_dir, _resolve_entry_for_task,
+    _expand_tilde, _hosted_tilde, _path_resolution_warning, _resolve_base_dir, _resolve_entry_for_task,
     _resolve_path_for_task)
 from tools.file_tools_write_guards import (
     _READ_DEDUP_STATUS_MESSAGE, _check_approval_required_write, _check_binary_document_write,
@@ -38,7 +38,7 @@ from tools.file_tools_write_guards import (
 from tools.file_tools_read_tracking import (
     _bump_consecutive, _cap_read_tracker_data, _carry_full_write_baselines, _check_file_staleness,
     _check_not_found_cache, _dedup_lookup, _known_full_content_sha256,
-    _file_metadata, _file_version,
+    _file_metadata, _file_version, _on_host,
     _mark_full_write_baseline, _mark_verification_stale, _note_read_coverage, _note_read_served, _patch_failure_lock,
     _patch_failure_tracker, _read_tracker, _read_tracker_lock, _record_not_found,
     _record_patch_failure, _reset_patch_failures, _task_data, _update_read_timestamp)
@@ -152,25 +152,37 @@ _V4A_MOVE_HEADER_RE = re.compile(r'^(\*\*\*\s*Move\s+File:\s*)(.+?)\s*->\s*(.+)$
 
 
 def _rewrite_v4a_patch_paths_for_host(patch: str, path_to_resolved: dict, path_to_entry: dict,
-                                      file_ops) -> str:
+                                      file_ops, task_id: str = "default") -> str:
     """Rewrite V4A file headers to the resolved host paths (host backends only).
 
     The shell layer must patch the SAME files ``patch_tool`` resolved for
     locking/staleness, not re-resolve a relative header against its own cwd
     (which can differ — the git-worktree cwd bug). Delete and Move headers take
     ``path_to_entry``: they act on a symlink itself, never on its target.
+
+    In a hosted scope only a ``~`` header changes, to the sandbox's home; every other header is the
+    sandbox's to anchor and is sent as written.
     """
-    if not _file_ops_uses_host_paths(file_ops):
+    from tools.environments.sandbox_scope import hosted_scope
+    hosted = hosted_scope() is not None
+    if not _file_ops_uses_host_paths(file_ops) and not hosted:
         return patch
 
     def _res(raw: str, entry: bool = False) -> str:
         raw = raw.strip()
+        if hosted:
+            return _hosted_tilde(raw, task_id) if raw.startswith("~") else raw
         return (path_to_entry if entry else path_to_resolved).get(raw) or raw
 
+    def _as_written(m: re.Match) -> bool:
+        return hosted and not any(g.strip().startswith("~") for g in m.groups()[1:])
+
     patch = _V4A_SINGLE_HEADER_RE.sub(
-        lambda m: f"{m.group(1)}{_res(m.group(3), entry=m.group(2) == 'Delete')}", patch)
+        lambda m: m.group(0) if _as_written(m) else f"{m.group(1)}{_res(m.group(3), entry=m.group(2) == 'Delete')}",
+        patch)
     return _V4A_MOVE_HEADER_RE.sub(
-        lambda m: f"{m.group(1)}{_res(m.group(2), entry=True)} -> {_res(m.group(3), entry=True)}", patch)
+        lambda m: m.group(0) if _as_written(m)
+        else f"{m.group(1)}{_res(m.group(2), entry=True)} -> {_res(m.group(3), entry=True)}", patch)
 
 
 def _is_blocked_device_path(path: str) -> bool:
@@ -187,12 +199,15 @@ def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> boo
     Literal first so /dev/stdin is caught before resolving to a terminal path;
     every symlink hop is checked so an alias cannot bypass the guard.
     """
+    from tools.environments.sandbox_scope import hosted_scope
     expanded = _expand_tilde(filepath)
     if base_dir is not None and not os.path.isabs(expanded):
         expanded = os.path.join(os.fspath(base_dir), expanded)
     normalized = os.path.normpath(expanded)
     if _is_blocked_device_path(normalized):
         return True
+    if hosted_scope() is not None:
+        return False  # a sandbox path: its symlinks are not this host's to follow
 
     seen: set[str] = set()
     current = normalized
@@ -315,8 +330,10 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     Uses terminal_tool's per-task creation locks (no duplicate sandboxes).
     Subagent task_ids collapse to "default" (``_resolve_container_task_id``) so
     delegate_task children share the parent's container; RL/benchmark task_ids
-    with a registered env override keep their isolation.
+    with a registered env override keep their isolation. In a hosted scope every
+    task id resolves to the agent's sandbox, so these operations run there.
     """
+    from tools.environments.sandbox_scope import admit_env
     from tools.terminal_tool import (
         _active_environments, _env_lock, _last_activity, _start_cleanup_thread,
         _creation_locks, _creation_locks_lock, _resolve_container_task_id,
@@ -357,7 +374,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     with task_lock:
         # Double-check: another thread may have created it while we waited.
         with _env_lock:
-            terminal_env = _active_environments.get(task_id)
+            terminal_env = admit_env(_active_environments.get(task_id))
             if terminal_env is not None:
                 _last_activity[task_id] = time.time()
         if terminal_env is None:
@@ -431,9 +448,12 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
     (size cap, encrypted, malformed), or ``None`` to fall through to the normal
     read path. Runs BEFORE the binary-extension guard.
     """
+    from tools.environments.sandbox_scope import hosted_scope
     from tools.read_extract import (
         ANYDOC_EXTENSIONS, EXTRACTABLE_EXTENSIONS, MAX_DOCUMENT_BYTES, ExtractionError,
         extract_document_bytes, is_extractable_document)
+    if hosted_scope() is not None:
+        return None  # extraction parses the bytes in host temp files and host tools; the binary guard answers
 
     if not is_extractable_document(str(_resolved)):
         return None
@@ -554,8 +574,9 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
         count, dedup = _note_read_served(task_data, dedup_key, path, offset, limit)
         task_data["read_history"].add((path, offset, limit))
         try:
-            _mtime_now = os.path.getmtime(resolved_str)
-            task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
+            if _on_host(resolved_str):
+                _mtime_now = os.path.getmtime(resolved_str)
+                task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
         except OSError:
             pass
         baselines = task_data["full_write_baselines"]
@@ -600,6 +621,18 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
     return count
 
 
+def _read_device_base(path: str, task_id: str) -> tuple[Path | PurePosixPath | None, bool]:
+    """The base the device check anchors a relative read on, and whether the read is unanchored. In a hosted scope
+    with no known sandbox cwd the relative path is the sandbox's to anchor, sent as written (as search does)."""
+    try:
+        return (None if Path(path).expanduser().is_absolute() else _resolve_base_dir(task_id)), False
+    except ValueError:
+        from tools.environments.sandbox_scope import hosted_scope
+        if hosted_scope() is None:
+            raise
+        return None, True
+
+
 def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers.
 
@@ -618,14 +651,15 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         nt_err = get_nt_namespace_error(path, verb="Read")
         if nt_err:
             return tool_error(nt_err)
+        path = _hosted_tilde(path, task_id)  # a hosted read sends the path as given: ``~`` is the sandbox's home
 
-        device_base = None if Path(path).expanduser().is_absolute() else _resolve_base_dir(task_id)
+        device_base, unanchored = _read_device_base(path, task_id)
         if _is_blocked_device(path, base_dir=device_base):
             return tool_error(
                 f"Cannot read '{path}': this is a device file that would "
                 "block or produce infinite output.")
 
-        _resolved = _resolve_path_for_task(path, task_id)
+        _resolved = PurePosixPath(path) if unanchored else _resolve_path_for_task(path, task_id)
 
         # A read on a FIFO/socket blocks until the exec timeout: a self-shipped DoS.
         if _file_ops_uses_host_paths(_get_file_ops(task_id)):
@@ -999,7 +1033,7 @@ def patch_tool(mode: str = "replace", path: str | None = None, old_string: str |
                 if not patch:
                     return tool_error("patch content required")
                 result = file_ops.patch_v4a(
-                    _rewrite_v4a_patch_paths_for_host(patch, _path_to_resolved, _path_to_entry, file_ops))
+                    _rewrite_v4a_patch_paths_for_host(patch, _path_to_resolved, _path_to_entry, file_ops, task_id))
             else:
                 return tool_error(f"Unknown mode: {mode}")
 
@@ -1074,6 +1108,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         nt_err = get_nt_namespace_error(path, verb="Search")
         if nt_err:
             return tool_error(nt_err)
+        path = _hosted_tilde(path, task_id)
         try:
             resolved_search_path = str(_resolve_path_for_task(path, task_id))
         except (OSError, ValueError, RuntimeError) as exc:

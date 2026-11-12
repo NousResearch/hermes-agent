@@ -1,0 +1,22 @@
+name: asin
+title: Asin
+repo: https://github.com/asindotdev/hermes-plugin-asin
+sha: 14397b67830af4ce0a6988b828ec6d97e6fb90da
+version: "1.0.0"
+description: "Tools to search Amazon and read a product's price history and offers, through the Asin API. Disclosure — sends the tool arguments to www.asin.dev with your ASIN_API_KEY, and calls can use Asin credits. Reads the key only through Hermes's secret scope. Registers 3 tools, no hooks or middleware, writes no files, starts no processes, has no telemetry or self-updater, and uses only the Python standard library."
+maintainer: asindotdev
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/asindotdev/hermes-plugin-asin#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - asin_search_amazon
+    - asin_price_history
+    - asin_get_offers
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - ASIN_API_KEY

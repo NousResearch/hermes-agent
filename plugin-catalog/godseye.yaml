@@ -2,8 +2,72 @@ name: godseye
 title: Eye Of Hermes (EOH)
 repo: https://github.com/mojomast/EOH
 sha: 9d433e49645df8ee549b58467876eb1e5daa0f34
-description: "Eye Of Hermes (EOH), built on God's Eye View (bilawalsidhu/gods-eye-view, MIT): the same 11 composable godseye_* tools (godseye_view, godseye_query, godseye_layers, godseye_feeds, godseye_annotate, godseye_nav, godseye_track, godseye_scene, godseye_watch, godseye_capture, godseye_admin) for public data (aircraft, ships, satellites, quakes, fires, weather, infrastructure) backed by its MCP server, a live 3D globe pane in Hermes Desktop and the Webapp that Hermes can drive and read, and HUD summaries generated with the Hermes model (ctx.llm) instead of OpenAI. An Overlays sidebar (godseye_annotate op=overlays) lists pins, routes and trails, lines, areas, watches, and scenes, and imports or exports eoh.overlays.v1 JSON under plugin-data. godseye_scene director ops build, update, list, play, and stop a Director scene on the pane; godseye_annotate op=clip stores a YouTube or X URL on a pin; godseye_feeds op=fire_check runs FIRMS, the clearest recent image, then imagery before/after, and does not create a watch or a pin. v0.2.2 hardens Wayback imagery releases, overlays when the relay is out-of-process, pane routing timeouts, and layer/user-pref behavior; v0.2.3 keeps a visible imagery surface during compare swipe and the Wayback timeline; v0.2.4 captures the pane after render and falls back to public Overpass mirrors for OSM queries; v0.2.5 restores a clean plugin.yaml and adds a strict duplicate-key test; v0.2.6 declares street-level keys through Hermes requires_env/get_secret and removes the Gods Eye View env-file fallback. v0.2.7 addresses catalog security review (public-only fetches, scoped credentials, confined imports and minimal child environments) and bounds pane captures with explicit transport errors. v0.2.8 documents the public SDR receivers layer (sdr-receivers); the map layer needs gods-eye-view main at or after b361a25 (PR #5). v0.2.9 treats watch-alert titles as quoted third-party data, requires confirm=true for godseye_admin start/stop/restart/rebuild (refused inside batch), gesture-gates pane link opens and Ask Hermes, and stops re-posting runtime config after the app acknowledges it. v0.2.10 adds a read-only godseye_query op=sdr_receivers (nearest public SDR receivers; does not start audio), refuses private-LAN Overpass/Nominatim/OSRM/Valhalla/Wayback URLs, hardens the live relay and HUD bridge, and adds GitHub Actions CI. The same 11 tools also carry the recent God's Eye View v0.3-style ops (imagery before/after, a weather preset, GTFS-RT transit on the app's transit layer, and fire-perimeter watches). Requires Node 24 or newer (God's Eye View documents 24.14 or later, or 26.x) and a running God's Eye View checkout. No named-person search, face recognition, or tracking of individuals. Disclosure — starts one node MCP child from the user's God's Eye View checkout, plus git rev-parse, node and systemctl --user children with a minimal environment; runs loopback-only HUD bridge (127.0.0.1:18791) and live relay (127.0.0.1:18792) threads gated by a random token stored 0600 in plugin-data; registers a godseye.live-globe system-prompt section and ships a godseye-analyst skill; a pre_llm_call hook may add a short map line and queued watch alerts, whose feed titles are passed as quoted third-party text; an active area watch polls USGS, NASA FIRMS, OpenSky (falling back to api.adsb.lol when OpenSky fails), the local app, or Overpass/Nominatim from a daemon thread; place search, routes, isochrones, Wayback metadata, and pin research call public services (Nominatim, Overpass and public Overpass mirrors, OSRM, Valhalla, Esri, Wikipedia, Wikidata, Wikimedia, and venue sites), and private-LAN service URLs are refused; feed tools, including fire_check, and godseye_query op=sdr_receivers talk to the user's God's Eye View app, which itself fetches public third-party data feeds and the public SDR receiver directory; overlay import and export stay under plugin-data/godseye/overlays and are not uploaded, and credential-named files are refused for import; opening a pin drawer that has a clip loads a www.youtube-nocookie.com/embed
-  or platform.twitter.com/embed iframe inside the sandboxed frame, and pane link opens and Ask Hermes run only after a click on the pane's confirm bar; godseye_admin app_start, app_stop, app_restart, and rebuild require confirm=true, are refused inside batch, may run systemctl --user on gods-eye-view.service, start Node on the checkout's vite.js, or run npm run build:panel in the checkout, and refuse a foreign listener; all provider credentials are declared in plugin.yaml requires_env and read only via agent.secret_scope.get_secret; no plugin dotenv reads, key-file installation, or process-wide credential mutation; browser-facing credentials are written only to gitignored mode-0600 runtime config, while server-only secrets never enter the pane; the pane backend adds a base tag, an opt-in UI flag, a Cesium worker shim, the overlay sidebar and Director bridge scripts, and the live agent script inside the sandboxed frame only."
+image: https://raw.githubusercontent.com/mojomast/EOH/9d433e49645df8ee549b58467876eb1e5daa0f34/docs/images/eoh-banner.jpg
+description: >-
+  Eye Of Hermes (EOH) puts a live 3D globe beside your Hermes chat that the
+  agent can fly, read, annotate and watch. It is built on God's Eye View
+  (bilawalsidhu/gods-eye-view, MIT). Eleven composable tools (godseye_view,
+  godseye_query, godseye_layers, godseye_feeds, godseye_annotate, godseye_nav,
+  godseye_track, godseye_scene, godseye_watch, godseye_capture, godseye_admin)
+  work on public data (aircraft, ships, satellites, earthquakes, fires, weather,
+  infrastructure and public SDR receivers) and drive the pane in Hermes Desktop
+  and the Webapp. The agent can fly to a place and switch the visual style
+  (night vision, thermal, noir and others); answer "what am I looking at" from
+  the camera, the open pin or your last click; search for places and pin them
+  with research drawers and an attached YouTube or X clip; measure distances and
+  areas and draw walk, bike and drive routes and reach isochrones; compare
+  imagery before and after with Esri Wayback and replay earthquakes and fires on
+  a time slider; walk a route in Street View; follow a public aircraft, ship or
+  satellite by its identifier; play Director camera scenes; leave area watches
+  that report new items on the next chat turn; and save an investigation as an
+  HTML or Markdown report, GeoJSON or KML. The Overlays sidebar lists pins,
+  routes, areas, watches and scenes and imports or exports eoh.overlays.v1 JSON.
+  HUD summaries use your Hermes model (ctx.llm), not OpenAI. Use it for
+  situation briefs on a region, place and travel research, checking a fire or an
+  earthquake, and any answer that is clearer on a map. To start, you need Hermes
+  0.23.0 or newer, Node 24 or newer (God's Eye View documents 24.14 or later, or
+  26.x) and a running God's Eye View checkout; the public SDR layer needs
+  gods-eye-view main at or after b361a25. Run hermes plugins install godseye,
+  hermes plugins enable godseye and hermes plugins doctor godseye, open the Eye
+  Of Hermes pane, and start a new chat. Try "Fly to Tokyo and switch to night
+  vision" or "Any earthquakes above magnitude 5 in the last day?" (data
+  questions work with the pane closed). The bundled skill is
+  godseye:godseye-analyst. Photorealistic 3D tiles need CESIUM_ION_TOKEN, live
+  ships need AISSTREAM_API_KEY and fires need FIRMS_MAP_KEY; the Google Maps,
+  Mapillary and TomTom keys are optional. Set them as Hermes secrets.
+  Named-person search, face recognition and tracking of individuals are refused.
+  Disclosure — processes: starts one node MCP child from your God's Eye View
+  checkout, plus git rev-parse, node and systemctl --user children, all with a
+  minimal environment. godseye_admin app_start, app_stop, app_restart and
+  rebuild require confirm=true, are refused inside batch, may run systemctl
+  --user on gods-eye-view.service, start Node on the checkout's vite.js, or run
+  npm run build:panel in the checkout, and refuse a foreign listener. Disclosure
+  — background work and prompt: runs loopback-only HUD bridge (127.0.0.1:18791)
+  and live relay (127.0.0.1:18792) threads gated by a random token stored 0600
+  in plugin-data; registers a godseye.live-globe system-prompt section and ships
+  the godseye-analyst skill; a pre_llm_call hook may add a short map line and
+  queued watch alerts, whose feed titles are passed as quoted third-party text;
+  an active area watch polls USGS, NASA FIRMS, OpenSky (falling back to
+  api.adsb.lol when OpenSky fails), the local app, or Overpass/Nominatim from a
+  daemon thread. Disclosure — network: place search, routes, isochrones, Wayback
+  metadata and pin research call public services (Nominatim, Overpass and public
+  Overpass mirrors, OSRM, Valhalla, Esri, Wikipedia, Wikidata, Wikimedia and
+  venue sites), and private-LAN service URLs are refused. Feed tools, including
+  fire_check, and godseye_query op=sdr_receivers talk to your God's Eye View
+  app, which itself fetches public third-party data feeds and the public SDR
+  receiver directory. Disclosure — credentials: all provider credentials are
+  declared in plugin.yaml requires_env and read only through
+  agent.secret_scope.get_secret; no plugin dotenv reads, key-file installation
+  or process-wide credential mutation. Browser-facing credentials are written
+  only to gitignored mode-0600 runtime config, and server-only secrets never
+  enter the pane. Disclosure — files and pane: overlay import and export stay
+  under plugin-data/godseye/overlays and are not uploaded, and credential-named
+  files are refused for import. Opening a pin drawer that has a clip loads a
+  www.youtube-nocookie.com/embed or platform.twitter.com/embed iframe inside the
+  sandboxed frame. Pane link opens and Ask Hermes run only after a click on the
+  pane's confirm bar. The pane backend adds a base tag, an opt-in UI flag, a
+  Cesium worker shim, the overlay sidebar and Director bridge scripts, and the
+  live agent script inside the sandboxed frame only.
 maintainer: mojomast
 tier: community
 category: tools

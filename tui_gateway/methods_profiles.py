@@ -302,33 +302,52 @@ def _(rid, params: dict) -> dict:
     ``clone_from`` (omitted = fresh + bundled skills, or with ``clone_all`` a full copy of the active profile), ``clone_all``, ``clone_channels`` (opt-in: keep the
     source's bot tokens/allowlists — default strips them so two profiles never hold one bot), ``no_skills``, ``soul``,
     ``model`` + ``provider``, ``no_alias``, ``share_auth`` / ``mirror_credentials`` (both default true, the
-    bot page's defaults: a bare ``create_profile()`` seeds a comment-only .env = NO provider headless)."""
+    bot page's defaults: a bare ``create_profile()`` seeds a comment-only .env = NO provider headless).
+    ``hermes profile create`` also sends ``clone_config`` (``--clone``: copy the caller's profile),
+    ``sync_imports`` and ``report`` (add the receipt it prints, read here).
+
+    On ``/api/ws`` it runs in the connection's profile (``ws_legacy_fallback.dispatch_legacy`` binds the
+    ticket's), so ``--clone`` and the copied keys/model come from the profile the terminal is on. A
+    refused create answers 4062 with ``data.type`` / ``data.message_parts`` so a client re-raises it."""
+    from hermes_cli.config_backend import ConfigBackendUnavailable
+    from hermes_cli.profile_provision import (
+        CREATE_REFUSALS, ProfileCreateReceipt, ProfileCreateRequest, provision_profile, refusal,
+    )
     name = str(params.get("name") or "").strip()
-    if not name:
-        return _err(rid, 4061, "name required")
-    from hermes_cli.profile_provision import ProfileCreateRequest, provision_profile
+    if not name:  # the CLI shows its usual empty-name error, never "may have created"
+        return _err(rid, 4061, "name required", data=refusal(ValueError("profile name cannot be empty"))[1])
     clone_from = str(params.get("clone_from") or "").strip() or None
     clone_all = is_truthy_value(params.get("clone_all", False))
+    clone_config = is_truthy_value(params.get("clone_config", False)) or (bool(clone_from) and not clone_all)
     soul = params.get("soul")
     soul = soul if isinstance(soul, str) and soul.strip() else None
     model, provider = _model_provider_params(params)
+    request = ProfileCreateRequest(
+        name=name, clone_from=clone_from, clone_all=clone_all, clone_config=clone_config,
+        no_skills=is_truthy_value(params.get("no_skills", False)),
+        description=str(params.get("description") or "").strip() or None,
+        clone_channels=is_truthy_value(params.get("clone_channels", False)), soul=soul,
+        sync_imports=is_truthy_value(params.get("sync_imports", False)),
+        alias=not is_truthy_value(params.get("no_alias", False)),
+        mirror_credentials=is_truthy_value(params.get("mirror_credentials"), True),
+        share_auth=is_truthy_value(params.get("share_auth"), True),
+        model=model, provider=provider)
     try:
-        result = provision_profile(ProfileCreateRequest(
-            name=name, clone_from=clone_from, clone_all=clone_all,
-            clone_config=bool(clone_from) and not clone_all,
-            no_skills=is_truthy_value(params.get("no_skills", False)),
-            description=str(params.get("description") or "").strip() or None,
-            clone_channels=is_truthy_value(params.get("clone_channels", False)), soul=soul,
-            alias=not is_truthy_value(params.get("no_alias", False)),
-            mirror_credentials=is_truthy_value(params.get("mirror_credentials"), True),
-            share_auth=is_truthy_value(params.get("share_auth"), True),
-            model=model, provider=provider))
-    except (ValueError, FileExistsError, FileNotFoundError) as e:
-        return _err(rid, 4062, str(e))
-    except Exception as e:
-        return _err(rid, 5062, str(e))
-    return _ok(rid, {"ok": True, "name": name, "path": str(result.path), "soul_written": soul is not None,
-                     "model_set": result.model_set, "mirrored": result.mirrored, "warnings": result.warnings})
+        result = provision_profile(request)
+        receipt = ProfileCreateReceipt.of(request, result) if is_truthy_value(params.get("report", False)) else None
+    except (Exception, ConfigBackendUnavailable) as e:  # health: allow BLE001 -- the request's one reply (a config outage is a SystemExit)
+        # The full text (redacted) for Desktop's dialog; ``data`` carries it in the parts a client keeps.
+        message, data = refusal(e)
+        if isinstance(e, CREATE_REFUSALS):
+            return _err(rid, 4062, message, data=data)
+        # Not a refusal: it may have failed after the profile was made, so never "nothing was created".
+        logging.getLogger(__name__).warning("profiles.create %r failed", name, exc_info=True)
+        return _err(rid, 5062, message, data=data)
+    out = {"ok": True, "name": name, "path": str(result.path), "soul_written": soul is not None,
+           "model_set": result.model_set, "mirrored": result.mirrored, "warnings": result.warnings}
+    if receipt is not None:
+        out["receipt"] = receipt.to_wire()
+    return _ok(rid, out)
 
 
 @_profile_handler("profiles.describe", 5063)
@@ -531,6 +550,32 @@ def _configure_ui_meta(profile_dir, params, applied) -> None:
         applied["ui_meta"] = False
 
 
+def _profile_group_selection_context(profile_dir, target_model):
+    """The largest measured context among this profile's affected group members."""
+    from agent.usage_anchor import USAGE_ANCHOR_MODEL_CONFIG_KEY, persisted_anchor_tokens
+    from hermes_cli.model_selection_guards import SelectionContext
+    from hermes_state import SessionDB
+
+    path = profile_dir / "state.db"
+    if not path.is_file():
+        return None
+
+    largest = None
+    with SessionDB(path, read_only=True) as db:
+        sessions = db.list_sessions_rich(source="bot_room", limit=-1, include_hidden=True, compact_rows=True)
+        for session in sessions:
+            current_model = session["model"]
+            if current_model == target_model:
+                continue
+            sid = session["id"]
+            if not db.get_session_model_config_value(sid, USAGE_ANCHOR_MODEL_CONFIG_KEY):
+                continue
+            tokens = persisted_anchor_tokens(db, sid, db.get_messages_as_conversation(sid))
+            if tokens and (largest is None or tokens > (largest.context_tokens or 0)):
+                largest = SelectionContext(context_tokens=tokens, current_model=current_model)
+    return largest
+
+
 def _configure_model(profile_dir, params, applied):
     """Apply a ``model`` + ``provider`` pin, or return a confirm message and write NOTHING (client
     resends with ``confirm_expensive_model``). A failing guard = no warning (as _apply_model_switch)."""
@@ -547,7 +592,10 @@ def _configure_model(profile_dir, params, applied):
     # ``_apply_model_switch``.
     if not is_truthy_value(params.get("confirm_expensive_model", False)):
         warn = _lazy("hermes_cli.model_selection_guards", "combined_selection_warning")
-        confirm_message = _try(lambda: getattr(warn(model, provider=provider or None), "message", None), None)
+        context = _try(lambda: _profile_group_selection_context(profile_dir, model), None)
+        with _hermes_home_scope(profile_dir):
+            confirm_message = _try(
+                lambda: getattr(warn(model, provider=provider, selection_context=context), "message", None), None)
     if confirm_message is None:
         applied["model"] = _best_effort(lambda: _pin_profile_model(profile_dir, provider, model))
     return confirm_message
@@ -573,14 +621,14 @@ def _save_toolset_pin(cfg, enabled, save_config) -> None:
 def _mcp_entry_enabled(entry: dict) -> bool:
     """The runtime's ``enabled`` reader; a legacy ``disabled: true`` (what older editors wrote,
     migrated by config v46) still reads as off."""
-    from hermes_cli.tools_config import _parse_enabled_flag
     from tools.mcp_tool_common import mcp_server_enabled
-    return mcp_server_enabled(entry) and not _parse_enabled_flag(entry.get("disabled", False), default=False)
+    return mcp_server_enabled(entry)
 
 
 def _save_mcp_toggles(cfg, enabled, launch_mcp, save_config) -> None:
     """Write the ``enabled`` flag every runtime resolver reads (``enabled_mcp_server_names``,
     coding_context, oneshot); the legacy ``disabled`` key is dropped so old configs migrate."""
+    from tools.mcp_tool_common import write_mcp_server_enabled
     wanted = _clean_names(enabled)
     mcp_cfg = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
     for srv in wanted:
@@ -588,8 +636,7 @@ def _save_mcp_toggles(cfg, enabled, launch_mcp, save_config) -> None:
             mcp_cfg[srv] = dict(launch_mcp[srv])
     for srv, entry in mcp_cfg.items():
         if isinstance(entry, dict):
-            entry["enabled"] = srv in wanted
-            entry.pop("disabled", None)
+            write_mcp_server_enabled(entry, srv in wanted)
     if mcp_cfg:
         cfg["mcp_servers"] = mcp_cfg
     save_config(cfg)

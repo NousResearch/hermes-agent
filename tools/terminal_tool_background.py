@@ -56,7 +56,7 @@ _AUTO_BACKGROUND_NOTE = (
 _ASYNC_UNSUPPORTED_NOTE = (
     'notify_on_complete / watch_patterns are not available in this session — it cannot receive '
     'an async completion after the turn ends (a one-shot runner such as `hermes -z`, a /bg '
-    'background task, a cron job, a Kanban worker, or a stateless HTTP endpoint). The process is running in the '
+    'background task, a cron job, a Kanban worker, a hosted agent, or a stateless HTTP endpoint). The process is running in the '
     "background; retrieve its result with process_manage(action='poll') or process_manage(action='wait')."
 )
 
@@ -111,8 +111,11 @@ def _apply_async_support(proc_session, result_data, notify_on_complete, watch_pa
     if not (notify_on_complete or watch_patterns):
         return notify_on_complete, watch_patterns
     from gateway.session_context import async_delivery_supported, get_session_env
+    from tools.environments.sandbox_scope import hosted_scope
 
-    if async_delivery_supported():
+    # A hosted agent's process is invisible outside its scope, and no notification consumer binds
+    # that scope (the gateway watcher and every drain pass over it), so its notice could never land.
+    if async_delivery_supported() and hosted_scope() is None:
         _stamp_gateway_routing(proc_session, get_session_env)
         return notify_on_complete, watch_patterns
     result_data["notify_on_complete"] = False

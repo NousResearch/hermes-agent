@@ -203,6 +203,7 @@ in the same repo.
 | A typed dict back, validated against a schema | `complete_structured()` |
 | Image-or-text input with a typed dict back | `complete_structured()` |
 | The same call from async code (gateway adapters, async hooks) | `acomplete()` / `acomplete_structured()` |
+| Ordered query/document vectors | `embed()` / `aembed()` |
 
 For chat calls, provider selection, model resolution, auth, fallback, timeout,
 and vision routing are shared across the four completion methods. Embeddings
@@ -329,11 +330,19 @@ plugin trust gate as the completion methods.
 
 The `input_type` records the operation's semantics. Query text is used to
 retrieve document vectors; document text is indexed for later query retrieval.
-Providers with a documented query/document distinction receive the matching
-provider-specific mapping. Other providers receive the original text unchanged.
-OpenAI's `text-embedding-3-small` uses one shared vector space for query and
-document inputs. Do not mix vectors from different provider/model/dimension or
-normalization identities in one index.
+The initial OpenAI-compatible transport supports models with a shared query/document
+space and sends the original text unchanged, as with OpenAI's `text-embedding-3-small`.
+Models requiring task-specific parameters or prefixes need a supported mapping;
+unsupported handling fails explicitly. The result audit records the handling and
+normalization policy. Do not mix vectors from different provider/model/dimension,
+input-type handling, or normalization identities in one index.
+
+Embedding calls never follow chat/provider fallback chains. They can refresh or
+rotate credentials within the selected provider. Failures expose fixed `EmbeddingError`
+codes (`embedding_unconfigured`, `embedding_unsupported`, `embedding_failed`,
+`embedding_timeout`, `embedding_invalid_response`) without provider response bodies.
+An explicit timeout must be finite, positive, and at most 300 seconds; otherwise
+Hermes uses `auxiliary.embedding.timeout` (60 seconds by default).
 
 `aembed()` has the same arguments and result type for async plugin code:
 

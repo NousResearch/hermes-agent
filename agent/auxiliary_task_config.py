@@ -14,6 +14,13 @@ from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
 
+
+def positive_timeout(raw: Any) -> float | None:
+    """Coerce a config timeout to a positive float, rejecting boolean values."""
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw > 0:
+        return float(raw)
+    return None
+
 # A bypass session's (``--ignore-user-config``, safe mode) own saved ``auxiliary:`` section (code defaults
 # only), set by its ``policy_scope`` so its side tasks never read the profile. None (the default) reads
 # config.yaml.

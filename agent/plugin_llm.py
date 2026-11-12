@@ -1,7 +1,7 @@
 """Plugin LLM facade — host-owned LLM access for trusted plugins (``ctx.llm``).
 
-``complete`` / ``complete_structured`` (text + image inputs, JSON schema validation)
-and their async siblings. Provider/model/agent_id/profile are explicit keyword
+``complete`` / ``complete_structured`` (text + image inputs, JSON schema validation),
+``embed`` (ordered vectors), and their async siblings. Provider/model/agent_id/profile are explicit keyword
 arguments mirroring the host config shape; the host owns routing, auth, timeouts
 and fallback, so the plugin never sees raw tokens or keys. Every override knob is
 gated by the per-plugin ``plugins.entries.<id>.llm.allow_*_override`` trust flags
@@ -481,9 +481,9 @@ class PluginLlm:
 
     Constructed by :class:`hermes_cli.plugins.PluginContext` and exposed as
     ``ctx.llm``; the constructor binds plugin identity for trust enforcement, so
-    plugins should not instantiate it directly. Every public method is ``_gate``
-    (trust checks → call kwargs) → ``_invoke_*`` (host ``call_llm`` or injected
-    caller) → ``_finish`` (result + audit log)."""
+    plugins should not instantiate it directly. Completions use ``_gate`` →
+    ``_invoke_*`` → ``_finish``. Embeddings reuse the trust policy through a
+    capability-specific transport and strict vector validation."""
 
     def __init__(
         self, *, plugin_id: str, policy_loader: Optional[Callable[[str], _TrustPolicy]] = None,

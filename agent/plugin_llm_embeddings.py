@@ -35,11 +35,10 @@ def _request(llm: Any, inputs: Sequence[str], *, input_type: str, provider: str 
         raise ValueError("Embedding input_type must be query or document")
     if dimensions is not None and (type(dimensions) is not int or not 0 < dimensions <= MAX_DIMENSIONS):
         raise ValueError("Embedding dimensions must be an integer between 1 and 65536")
-    timeout = 60.0 if timeout is None else timeout
-    if not _finite_number(timeout) or not 0 < timeout <= 300:
+    if timeout is not None and (not _finite_number(timeout) or not 0 < timeout <= 300):
         raise ValueError("Embedding timeout must be finite and between 0 and 300 seconds")
     return dict(inputs=list(inputs), input_type=input_type, provider=provider, model=model,
-                dimensions=dimensions, timeout=float(timeout), profile=profile)
+                dimensions=dimensions, timeout=None if timeout is None else float(timeout), profile=profile)
 
 
 def _field(value: Any, name: str, default: Any = None) -> Any:
@@ -89,7 +88,7 @@ def _finish(llm: Any, kw: dict[str, Any], invoked: tuple[str, str, Any], purpose
         _invalid()
     vectors = _vectors(response, len(kw["inputs"]), kw["dimensions"])
     handling = _field(response, "_hermes_input_type_handling")
-    if handling not in ("shared", "input_type"):
+    if handling != "shared":
         _invalid()
     audit = {"plugin_id": llm._plugin_id, "purpose": purpose or "", "profile": kw["profile"] or "",
              "input_type": kw["input_type"], "input_type_handling": handling,

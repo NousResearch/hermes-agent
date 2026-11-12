@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -192,10 +193,31 @@ def _pin_paths(record: dict[str, Any]) -> list[str]:
     return sorted({os.path.realpath(p) for p in paths})
 
 
+_LIVE_PIN_TTL_S = 30.0
+_live_pin_cache: dict[str, tuple[float, list[str]]] = {}
+_live_pin_lock = threading.Lock()
+
+
 def _live_pins(record: dict[str, Any]) -> list[str]:
     """Pins of a ``running``/``claimed`` record: where the child is NOW, plus where its previous run stopped (a
-    continue's stored ``pin_paths``); a cached set never hides the live location."""
-    return sorted({*(record.get("pin_paths") or ()), *_pin_paths(record)})
+    continue's stored ``pin_paths``); a cached set never hides the live location.
+
+    The sweep asks again right before each tree it touches, so the git discovery behind the live part is memoized
+    for a few seconds, keyed on every record field that drives it: a checkpointed move changes the key and is
+    discovered at once, while the record itself is always read fresh. The only thing a cached answer can miss is a
+    worktree created within the TTL, and a tree that new is never past the sweep's idle tier."""
+    key = json.dumps([record.get(k) for k in ("cwd", "start_cwd", "worktrees_at_start", "repo_baselines")]
+                     + [(record.get("worktree") or {}).get("path")], sort_keys=True, default=str)
+    now = time.monotonic()
+    with _live_pin_lock:
+        hit = _live_pin_cache.get(key)
+    if hit is None or now - hit[0] > _LIVE_PIN_TTL_S:
+        hit = (now, _pin_paths(record))  # git runs outside the lock
+        with _live_pin_lock:
+            for stale in [k for k, (at, _p) in _live_pin_cache.items() if now - at > _LIVE_PIN_TTL_S]:
+                del _live_pin_cache[stale]
+            _live_pin_cache[key] = hit
+    return sorted({*(record.get("pin_paths") or ()), *hit[1]})
 
 
 def _note_repo(baselines: dict[str, list[str]], start_main: Optional[str], cwd: Optional[str]) -> None:
@@ -249,8 +271,10 @@ def record_start(run: Any) -> None:
     earlier = _write(path, lambda conn: _row(conn, sid)) or {}
     start_cwd = earlier.get("start_cwd") or cwd
     start_trees = _worktrees_of(start_cwd)
+    # ``lock`` serializes the start-record retries (heartbeat thread vs the stop path) with the terminal write, so a
+    # retry still waiting on the busy timeout can never land after ``record_stop`` and flip the row back to running.
     durable: dict[str, Any] = {"db": path, "cwd": cwd, "start_main": start_trees[0] if start_trees else None,
-                               "baselines": dict(earlier.get("repo_baselines") or {})}
+                               "baselines": dict(earlier.get("repo_baselines") or {}), "lock": threading.RLock()}
     _note_repo(durable["baselines"], durable["start_main"], cwd)
 
     def _do(conn):
@@ -282,10 +306,11 @@ def record_start(run: Any) -> None:
 def _flush(durable: dict[str, Any]) -> bool:
     """Retry the run's pending start record in its own transaction; True once it is persisted. Cleared only after
     that transaction committed, so a later write failing never leaves "persisted" set over a rolled-back row."""
-    pending = durable.get("pending")
-    if pending is not None and _write(durable.get("db"), pending):
-        durable["pending"] = pending = None
-    return pending is None
+    with durable["lock"]:
+        pending = durable.get("pending")
+        if pending is not None and not durable.get("stopped") and _write(durable.get("db"), pending):
+            durable["pending"] = pending = None
+        return pending is None
 
 
 def _ancestor_sessions(child: Any) -> set[str]:
@@ -376,15 +401,17 @@ def record_stop(run: Any, entry: Optional[dict[str, Any]]) -> None:
     # The segment it stopped in: with ``compression.in_place: false`` each rotation moved it to a new session.
     session_id = getattr(run.child, "session_id", None)
 
-    if not _flush(durable):  # never a partial row (no goal, route or owners) the parent cannot claim
-        return
-
     def _do(conn):
         record = _row(conn, sid) or {}
         if isinstance(session_id, str) and session_id:
             record["session_id"] = session_id
         _finish(conn, sid, record, entry, live_cause or record.get("stop_cause"), cwd=cwd)
-    _write(durable.get("db"), _do)
+
+    with durable["lock"]:
+        flushed = _flush(durable)
+        durable["stopped"] = True  # no start retry may run after the stop, landed or not
+        if flushed:  # never a partial row (no goal, route or owners) the parent cannot claim
+            _write(durable.get("db"), _do)
 
 
 def _finish(conn, sid: str, record: dict[str, Any], entry: dict[str, Any], cause: Optional[str], *,

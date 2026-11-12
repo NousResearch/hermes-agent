@@ -2457,6 +2457,9 @@ export interface Translations extends NoticeTranslations {
     fieldSkillsPlaceholder: string
     fieldDeliver: string
     fieldDeliverOnly: string
+    fieldSignature: string
+    fieldSignatureHint: string
+    signatureOptions: Record<string, string>
     fieldPrompt: string
     fieldPromptPlaceholder: string
     nameRequired: string

@@ -407,6 +407,8 @@ class WebhookCreate(BaseModel):
     deliver_only: bool = False
     deliver_chat_id: Optional[str] = None
     secret: Optional[str] = None  # omit to auto-generate
+    # Omitted: new routes are pinned to generic, an edit keeps the stored pin.
+    signature: Optional[Literal["generic", "github", "gitlab", "linear"]] = None
 
 class WebhookEnabledToggle(BaseModel):
     enabled: bool

@@ -2090,6 +2090,14 @@ export const ruOverrides = {
     fieldSkillsPlaceholder: 'имена навыков через запятую (необязательно)',
     fieldDeliver: 'Доставить в',
     fieldDeliverOnly: 'Доставлять только payload',
+    fieldSignature: 'Подпись',
+    fieldSignatureHint: 'Единственная схема подписи, которую принимает этот маршрут. Доставкам GitHub, GitLab и Linear нужна своя схема.',
+    signatureOptions: {
+      generic: 'Общая (с меткой времени)',
+      github: 'GitHub',
+      gitlab: 'GitLab',
+      linear: 'Linear'
+    },
     fieldPrompt: 'Промпт',
     fieldPromptPlaceholder: 'Инструкции для агента при срабатывании этого вебхука (необязательно)',
     nameRequired: 'Имя обязательно',

@@ -3241,6 +3241,14 @@ export const frOverrides = {
     fieldSkillsPlaceholder: 'noms de skills séparés par des virgules (facultatif)',
     fieldDeliver: 'Livrer vers',
     fieldDeliverOnly: 'Livrer le payload uniquement',
+    fieldSignature: 'Signature',
+    fieldSignatureHint: 'Le seul schéma de signature accepté par cette route. Les livraisons GitHub, GitLab et Linear exigent leur propre schéma.',
+    signatureOptions: {
+      generic: 'Générique (horodatée)',
+      github: 'GitHub',
+      gitlab: 'GitLab',
+      linear: 'Linear'
+    },
     fieldPrompt: 'Invite',
     fieldPromptPlaceholder: "Instructions pour l'agent quand ce webhook se déclenche (facultatif)",
     nameRequired: 'Nom requis',

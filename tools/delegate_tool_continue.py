@@ -110,14 +110,17 @@ def _durable_spec(sid: str, record: dict[str, Any], parent_agent: Any) -> tuple[
 
 
 def _claim(sid: str, parent_agent: Any) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]], Optional[str]]:
-    """``(spec, durable_record, error)``: the in-process record while it is retained, else the durable one; the
-    durable row is claimed in both cases so a continue from another process cannot run the same child too."""
+    """``(spec, durable_record, error)``: the in-process record while it is retained, else the durable one. The
+    durable claim is the single gate for both: a refusal there refuses the continue even when this caller holds the
+    in-process spec (a second continue that fell through to the row, or one from another process, owns it)."""
     from tools.delegate_tool_resumable import claim as claim_durable
     spec, err = _claim_resume(sid, parent_agent)
     if spec is None and err != _NOT_FOUND.format(sid=sid):
         return None, None, err
     record, durable_err = claim_durable(parent_agent, sid)
-    if durable_err and spec is None:  # in-process the live registry is the authority; across processes, the row
+    if durable_err:  # the durable row is the one gate: another continue holds it (here or in another process)
+        if spec is not None:
+            _release_resume(sid, spec)
         return None, None, durable_err
     if spec is None and record is not None:
         spec, err = _durable_spec(sid, record, parent_agent)
@@ -128,8 +131,18 @@ def _claim(sid: str, parent_agent: Any) -> tuple[Optional[dict[str, Any]], Optio
     return (spec, record, None) if spec else (None, None, err)
 
 
+def _segment_tip(db: Any, sid: str, session_id: str) -> str:
+    """The newest segment of the child's conversation: with ``compression.in_place: false`` a rotation after the
+    record was written moved the child on from *session_id* (``get_compression_tip`` skips delegate children)."""
+    if db is None:
+        return session_id
+    from tools.delegate_tool_sessions import stored_child_session
+    return stored_child_session(db, sid, [session_id]) or session_id
+
+
 def _start(
     sid: str, message: str, spec: dict[str, Any], parent_agent: Any, background: bool,
+    record: Optional[dict[str, Any]] = None,
 ) -> tuple[Optional[str], Optional[str]]:
     """Rebuild, hydrate and dispatch the continued child: ``(tool result JSON, None)`` or ``(None, error)`` when
     it was refused before anything ran."""
@@ -140,8 +153,9 @@ def _start(
     from tools.delegate_tool_dispatch import _Batch, _capture_origin, _run_batch
     from tools.delegation_live_log import create_live_transcripts
 
-    route, session_id = spec["route"], spec["session_id"]
+    route = spec["route"]
     with _transcript_store(parent_agent) as db:
+        session_id = _segment_tip(db, sid, spec["session_id"])
         history = db.get_messages_as_conversation(session_id, repair_alternation=True) if db is not None else []
         if not history:
             return None, f"Subagent '{sid}' has no saved transcript to continue from. Spawn a new task instead."
@@ -165,8 +179,10 @@ def _start(
             return None, err
         db.reopen_session(session_id)  # its close() ended it; the continued child's close() ends it again
         children[0][2]._delegate_continue_history = history
-        from tools.delegate_tool_resumable import last_workspace
+        from tools.delegate_tool_resumable import hold_claim, last_workspace
         children[0][2]._delegate_continue_workspace = last_workspace(parent_agent, sid)
+        if record is not None:  # a run that fails before it records itself hands the claim back
+            hold_claim(children[0][2], parent_agent, sid, record)
     batch = _Batch(
         task_list, [(0, task_list[0], children[0][2])], parent_agent, route.creds, None, "leaf",
         _get_max_concurrent_children(), live_id, writers, paths, *origin, time.monotonic(), live_home=live_home,
@@ -189,7 +205,7 @@ def continue_subagent(subagent_id: Optional[str], message: Optional[str], parent
     if spec is None:
         return tool_error(err or _NOT_FOUND.format(sid=sid))
     try:
-        result, err = _start(sid, text, spec, parent_agent, background)
+        result, err = _start(sid, text, spec, parent_agent, background, record)
     except Exception as exc:
         logger.warning("delegate_task continue of %s failed before dispatch", sid, exc_info=True)
         result, err = None, f"Could not continue subagent '{sid}': {exc}"

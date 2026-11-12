@@ -122,6 +122,8 @@ def _record_finished_child(batch: _Batch, entry: Any, honor_parent_interrupt: bo
 
 def _release_unstarted_child(batch: _Batch, child: Any) -> None:
     """Teardown for a child whose run never started (``_run_single_child``'s finally never runs for it)."""
+    from tools.delegate_tool_resumable import release_unstarted
+    release_unstarted(child)
     _detach_child(batch.parent_agent, child)
     _close_child(child, "Failed to close a subagent that never started")
 

@@ -300,9 +300,10 @@ def recover_abandoned_delegations() -> int:
     if alive is None:
         return 0
     now, recovered = time.time(), 0
+    from tools.delegate_tool_resumable import plan_recovery, recover_abandoned
+    plan = plan_recovery(_db_path(), alive)  # its git probes run before the write lock below
     with _DB_LOCK, _transaction() as conn:
-        from tools.delegate_tool_resumable import recover_abandoned
-        resumable = recover_abandoned(conn, alive)
+        resumable = recover_abandoned(conn, plan)
         rows = conn.execute("""SELECT delegation_id, origin_session, origin_ui_session_id,
                       parent_session_id, dispatched_at, owner_pid,
                       owner_started_at, task_json, origin_session_id, result_json, state

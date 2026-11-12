@@ -10,6 +10,7 @@ conservative: only LONG verbatim repeats (60+ chars) covering a majority of the 
 from __future__ import annotations
 
 import math
+import re
 from collections import Counter
 
 # Below this length the check doesn't run: short truncations trivially
@@ -192,3 +193,87 @@ class RunawayStreamWatch:
         tail = "".join(self._parts)[-_STREAM_TAIL_CHARS:]
         self._parts = [tail]
         return is_runaway_repetition(tail)
+
+
+# Semantic-cascade detection (#131098 defect 2). A model in free-association drift emits
+# a long final reply whose tail walks an association chain (chemistry -> thermodynamics ->
+# ... -> socks) with every n-gram unique, so ``is_runaway_repetition`` cannot see it.
+# This catches that shape instead: the opening vocabulary is abandoned mid-reply and
+# almost none of it resurfaces at the end.
+#
+# Thresholds (conservative: bias toward delivery; all three must agree to discard):
+# - _CASCADE_HEAD_CHARS (1500): the committed-answer anchor. The incident prefix was only
+#   368 chars, so the window also covers early drift; transitional scaffolding shared with
+#   the tail is discounted via the middle (see below), not by shrinking the window.
+# - _CASCADE_TAIL_CHARS (4000): the ending under test -- "did the reply end anywhere near
+#   where it started?"
+# - _CASCADE_RETURN_RATIO (0.10): of the head words used NOWHERE in the middle, at most
+#   this fraction may resurface in the tail. The incident shape scores 0.00; a long
+#   coherent reply scores 0.4+ or fails the floors below.
+# - Floors (fail open): _CASCADE_MIN_ABANDONED_WORDS (30) and _CASCADE_MIN_NOVEL_WORDS (50).
+#   Templated/batch tails reuse a tiny vocabulary (novel ~ 0) and coherent prose reuses its
+#   head vocabulary throughout (abandoned ~ 0); both fail open here.
+# - CASCADE_MIN_CHARS (8000): this gate's own length floor, deliberately lower than the
+#   16k repetition floor. Total vocabulary abandonment is a stronger degeneration signal
+#   than verbatim repetition, and the reported incident cascade was 12,657 chars -- a
+#   shared 16k floor cannot catch the reported case.
+#
+# Known limitation: a legitimately chaptered 8k+ reply that abandons its opening topic
+# fully and never returns reads cascade-shaped and trips this. Partial derailment after a
+# long coherent body is out of scope (the middle still carries head vocabulary, so the
+# reply fails open). No model calls, no embeddings, no new dependencies: three regex
+# passes plus set differences, O(n) in reply length.
+CASCADE_MIN_CHARS = 8_000
+_CASCADE_HEAD_CHARS = 1500
+_CASCADE_TAIL_CHARS = 4000
+_CASCADE_RETURN_RATIO = 0.10
+_CASCADE_MIN_ABANDONED_WORDS = 30
+_CASCADE_MIN_NOVEL_WORDS = 50
+
+_CASCADE_WORD_RE = re.compile(r"[a-z]+")
+_CASCADE_STOPWORDS = frozenset(
+    "a about above after again against all almost also always among amount another any "
+    "anyone around because been before being both bottom cannot could doing done down "
+    "during each either else enough even every few first from front full further had has "
+    "have having here however into itself least less many more most never next none nothing "
+    "often other over part same several should since some such than that then there these "
+    "through under until upon were what when where which while with within without would "
+    "your this they them those thus hence are was were for you his her its our their said "
+    "will shall may might must can does did the and ours yours his hers theirs am is be "
+    "been being".split()
+)
+
+
+def _cascade_content_words(text: str) -> set[str]:
+    """Lowercase alpha tokens of length 3+ minus glue words; numbers, IDs and symbols ignored."""
+    return {
+        word
+        for word in _CASCADE_WORD_RE.findall(text.lower())
+        if len(word) >= 3 and word not in _CASCADE_STOPWORDS
+    }
+
+
+def is_semantic_cascade(text: str) -> bool:
+    """True when a runaway-scale reply abandons its opening vocabulary and never returns.
+
+    ``abandoned = head - middle`` (opening words used nowhere in the bulk) and
+    ``novel = tail - middle`` (ending words introduced after the bulk); trips when at most
+    ``_CASCADE_RETURN_RATIO`` of the abandoned words resurface among the novel ones.
+    Middle-bulk discounting keeps recurring transitional scaffolding from counting as a
+    topical return. Fail-open for short input, small vocabularies and non-strings.
+    """
+    if not isinstance(text, str):
+        return False
+    if len(text) < CASCADE_MIN_CHARS:
+        return False
+    head = _cascade_content_words(text[:_CASCADE_HEAD_CHARS])
+    middle = _cascade_content_words(text[_CASCADE_HEAD_CHARS:-_CASCADE_TAIL_CHARS])
+    tail = _cascade_content_words(text[-_CASCADE_TAIL_CHARS:])
+    abandoned = head - middle
+    novel = tail - middle
+    if (
+        len(abandoned) < _CASCADE_MIN_ABANDONED_WORDS
+        or len(novel) < _CASCADE_MIN_NOVEL_WORDS
+    ):
+        return False
+    return len(abandoned & novel) / len(abandoned) <= _CASCADE_RETURN_RATIO

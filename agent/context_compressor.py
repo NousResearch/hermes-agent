@@ -34,6 +34,11 @@ from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_window import CompactionWindowMixin
 from agent.context_compressor_prune import ProactivePruneMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
+from agent.context_compressor_offload import (
+    EvictionOffloadMixin,
+    harvest_region_text,
+    _LEAN_RECOVERY_HEADING,
+)
 from agent.context_compressor_prompt_rules import EPISTEMIC_STANCE_RULE, UNVERIFIED_HYPOTHESES_SECTION, _today_for_prompt
 from agent.context_compressor_retry import retryable_user_text, typed_prompt_content
 from agent.context_compressor_tail import (
@@ -931,7 +936,6 @@ TAIL_MAX_CONTEXT_FRACTION = 0.20
 _LEAN_USER_MESSAGES_BUDGET_CHARS = 24_000  # ~6K tokens
 _LEAN_USER_MESSAGE_MAX_CHARS = 4_000
 _LEAN_USER_MESSAGES_HEADING = "## User Messages (verbatim, newest first)"
-_LEAN_RECOVERY_HEADING = "## Context Recovery"
 _SYNTHETIC_USER_ROW_PREFIXES = (
     "[System:", "[CONTEXT", "[PRIOR CONTEXT", "[IMPORTANT: Background", "[Your active task list",
     "[Planning state preserved", "[ASYNC DELEGATION", "[OUT-OF-BAND", "Cronjob Response:",
@@ -982,23 +986,6 @@ def _build_verbatim_user_section(turns: list[dict[str, Any]]) -> str:
     )
 
 
-def _build_recovery_footer(session_id: str, region_len: int) -> str:
-    """Deterministic pointer to the compacted region in session history.
-    state.db keeps every pre-compaction message; naming the session_search re-access path lets the model
-    treat compaction as deferred retrieval, not loss."""
-    if not session_id:
-        return ""
-    return (
-        "\n\n" + _LEAN_RECOVERY_HEADING + "\n"
-        f"The {region_len} compacted message(s) remain fully preserved in "
-        "session history. If you need any detail this summary does not carry "
-        "(exact command output, file contents, error text, earlier "
-        "reasoning), recover it with: "
-        f"session_search(query='<keywords>', session_id='{session_id}') — "
-        "do not guess at lost specifics when you can look them up."
-    )
-
-
 # Detailed session log comes from the SAME single summary request (one aux LLM
 # call per attempt); coverage via input sampling, exact needles via anchor index.
 # One flat 2-3K-token summary cannot carry a 400K+ region's specifics — the eval showed recall collapsing to
@@ -1043,8 +1030,7 @@ _ANCHOR_NOISE = frozenset({
 
 def _build_anchor_index(turns: list[dict[str, Any]]) -> str:
     """Regex-harvest exact identifiers from the compacted region (LLM-free); per-category caps, most-frequent first."""
-    contents = (_typed_user_text(m["content"]) if m.get("role") == "user" and isinstance(m.get("content"), str) else m.get("content") for m in turns)
-    text = "\n".join(c for c in contents if isinstance(c, str) and c)
+    text = harvest_region_text(turns)
     if not text:
         return ""
     sections: list[str] = []
@@ -2136,7 +2122,7 @@ Describe agent/tool work only as completed actions, state, or historical work.]"
 
 class ContextCompressor(
     SummaryDispatchMixin, PreLlmSkipMixin, CompressionTelemetryMixin, MicroCompactionMixin,
-    ProactivePruneMixin, CompactionWindowMixin, ContextEngine,
+    ProactivePruneMixin, CompactionWindowMixin, EvictionOffloadMixin, ContextEngine,
 ):
     """Default context engine: prune tool results, protect head/tail, summarize the middle
     with an LLM, and iteratively update the previous summary on later compactions."""
@@ -2804,11 +2790,14 @@ class ContextCompressor(
         model_thresholds: dict[str, float] | None = None, threshold_tokens_cap: Any = None,
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
-        custom_providers: list | None = None,
+        custom_providers: list | None = None, offload_evicted: bool = True,
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
         # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
         self.tail_mode = tail_mode if tail_mode in ("legacy", "lean") else "lean"
+        # Write the compacted region to a per-session searchable JSONL before summarizing
+        # (independent second copy beside the state.db archive; see agent/compaction_offload).
+        self.offload_evicted = bool(offload_evicted)
         # Per-model context_length overrides live in custom_providers; without them deferred
         # resolution falls back to the hardcoded family catalog (#83324).
         self.custom_providers = custom_providers or None
@@ -3581,7 +3570,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         for heading, build in (
             (_LEAN_ANCHOR_HEADING, lambda: _redact_compaction_text(_build_anchor_index(turns_to_summarize))),
             (_LEAN_USER_MESSAGES_HEADING, lambda: _redact_compaction_text(_build_verbatim_user_section(turns_to_summarize))),
-            (_LEAN_RECOVERY_HEADING, lambda: _build_recovery_footer(getattr(self, "_session_id", "") or "", len(turns_to_summarize))),
+            (_LEAN_RECOVERY_HEADING, lambda: self._recovery_footer(getattr(self, "_session_id", "") or "", len(turns_to_summarize))),
         ):
             if heading not in summary:
                 summary += build()
@@ -3929,6 +3918,9 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             from agent.conversation_compression import _raise_if_stale_attempt
 
             _raise_if_stale_attempt(self)
+            # Boundary audit AFTER every accept gate: diff the finished summary against the
+            # region's exact identifiers; genuinely dropped ones get a bounded verbatim repair.
+            summary = self._audit_summary_boundary(summary, turns_to_summarize)
             self._record_summary_success(summary)
             return self._with_summary_prefix(summary)
         except Exception as e:  # health: allow BLE001 -- unchanged summary boundary: every failure goes to _on_summary_failure
@@ -5454,6 +5446,10 @@ Write only the summary body. Do not include any preamble or prefix."""
                 n_messages,
             )
             return canonical_messages
+        # Lossless offload BEFORE summarize (deepagents pattern): an independent, greppable
+        # copy of the exact region, written whatever the summary/commit does after this point.
+        # The state.db archive at commit stays the primary store; failure never blocks.
+        self._maybe_offload_evicted(turns_to_summarize)
         if not self.quiet_mode:
             self._log_compression_start(
                 display_tokens, compress_start, compress_end, len(turns_to_summarize), n_messages - scan.tail_start,

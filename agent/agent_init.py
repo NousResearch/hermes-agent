@@ -35,6 +35,7 @@ from agent.model_metadata import (
 )
 from agent.agent_init_ollama import _clamp_compressor_to_ollama_num_ctx, _configure_ollama_num_ctx
 from agent.agent_init_compression_notice import _emit_compression_summary
+from agent.agent_init_compression import _compression_codex_settings
 from agent.primary_runtime_snapshot import _snapshot_primary_runtime
 from agent.process_bootstrap import _install_safe_stdio
 from agent.subdirectory_hints import SubdirectoryHintTracker
@@ -1343,32 +1344,6 @@ def _compression_threshold(agent, cfg: dict[str, Any]) -> tuple[float, bool]:
     return threshold, notice_enabled
 
 
-def _compression_codex_settings(cfg: dict[str, Any]) -> tuple[str, bool, Optional[int]]:
-    """``codex_app_server_auto`` / ``codex_responses_native`` / ``codex_responses_compact_threshold``."""
-    app_server_auto = str(cfg.get("codex_app_server_auto", "native") or "native").lower()
-    if app_server_auto not in {"native", "hermes", "off"}:
-        _ra().logger.warning(
-            "Invalid compression.codex_app_server_auto=%r; using 'native'. "
-            "Valid values are: native, hermes, off.",
-            app_server_auto,
-        )
-        app_server_auto = "native"
-    # Native Responses server-side compaction (opt-in; gate in agent/native_compaction.py).
-    # Truthy coercion so "false"/"off" strings stay disabled.
-    responses_native = is_truthy_value(cfg.get("codex_responses_native", False))
-    _raw = cfg.get("codex_responses_compact_threshold")
-    compact_threshold = None
-    if _raw is not None:
-        compact_threshold = _positive_int(_raw, reject=(bool, float))
-        if compact_threshold is None:
-            _ra().logger.warning(
-                "Invalid compression.codex_responses_compact_threshold=%r; "
-                "using the automatic threshold derived from local compression.",
-                _raw,
-            )
-    return app_server_auto, responses_native, compact_threshold
-
-
 def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
     """Parse the ``compression`` section. Defaults here MUST match DEFAULT_CONFIG."""
     cfg = _cfg_dict(_agent_cfg, "compression")
@@ -1405,6 +1380,9 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
         # "lean" keeps a clamped 2.5%/10K-25K verbatim tail (continuity rides the summary);
         # "legacy" restores the 0.20*threshold tail. Unknown → lean inside the compressor.
         tail_mode=str(cfg.get("tail_mode", "lean")).strip().lower(),
+        # Write the compacted region to a per-session searchable JSONL before summarizing
+        # (independent second copy beside the state.db archive).
+        offload_evicted=_cfg_flag(cfg, "offload_evicted_history", True),
         # Actionable user messages guaranteed to survive in the tail (default 1, floor 1).
         min_tail_users=max(1, _parse_config_int(cfg.get("min_tail_user_messages", 1), 1)),
         max_attempts=min(max_attempts, 10),
@@ -1859,7 +1837,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             proactive_prune_min_result_chars=cs.proactive_prune_min_chars,
             proactive_prune_min_reclaim_tokens=cs.proactive_prune_min_reclaim,
             min_tail_user_messages=cs.min_tail_users, tail_mode=cs.tail_mode,
-            custom_providers=_custom_providers,
+            custom_providers=_custom_providers, offload_evicted=cs.offload_evicted,
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):

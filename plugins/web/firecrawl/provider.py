@@ -281,6 +281,81 @@ def _error_entry(url: str, error: str, *, title: str = "", raw: bool = False, bl
 _SCRAPE_TIMEOUT_MSG = "Scrape timed out after 60s — page may be too large or unresponsive. Try browser_exec instead."
 _UNSAFE_REDIRECT_MSG = "Blocked: URL targets a private or internal network address"
 
+# Salvage limits: vendor markdown conversion silently empties <pre> content on
+# sites that wrap code in copy-button plugins (WordPress/Elementor rawHTML blocks).
+_SALVAGE_MIN_BLOCK_CHARS = 25
+_SALVAGE_MAX_BLOCKS = 20
+_SALVAGE_MAX_TOTAL_CHARS = 30_000
+_SALVAGE_HEADER = (
+    "\n\n------\n#### Salvaged <pre> block(s) — dropped by vendor markdown conversion; "
+    "content recovered verbatim from the raw HTML\n\n"
+)
+
+
+def _pre_block_texts(html: str) -> list[str]:
+    """Verbatim text of every <pre> block in *html* (tags stripped, entities decoded).
+
+    Stdlib HTMLParser only; only <pre> is recovered — inline <code> is prose, not dropped
+    code. Blocks skip<script> / <style> never appear inside <pre> legally.
+    """
+    from html.parser import HTMLParser
+    from html import unescape
+
+    class _PreCollector(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.blocks: list[str] = []
+            self._depth = 0
+            self._buf: list[str] = []
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "pre":
+                self._depth += 1
+                self._buf = []
+
+        def handle_endtag(self, tag):
+            if tag == "pre" and self._depth > 0:
+                self._depth -= 1
+                self.blocks.append(unescape("".join(self._buf)).strip())
+
+        def handle_data(self, data):
+            if self._depth > 0:
+                self._buf.append(data)
+
+    try:
+        parser = _PreCollector()
+        parser.feed(html)
+        return parser.blocks
+    except Exception:  # malformed HTML never fails the scrape
+        return []
+
+
+def _salvage_dropped_pre_blocks(html: Optional[str], markdown: Optional[str]) -> str:
+    """Fenced code blocks for every <pre> the markdown lost; '' when nothing was dropped.
+
+    A block counts as LOST when its whitespace-collapsed text is not a substring of the
+    collapsed markdown: covers verbatim drops AND empty fenced placeholders (```none\\n```).
+    """
+    if not html or not markdown:
+        return ""
+    folded_markdown = " ".join(markdown.split())
+    salvaged, total, seen = [], 0, set()
+    for text in _pre_block_texts(html):
+        if len(text) < _SALVAGE_MIN_BLOCK_CHARS or len(salvaged) >= _SALVAGE_MAX_BLOCKS:
+            continue
+        folded = " ".join(text.split())
+        if folded in folded_markdown or folded in seen:  # in markdown already, or duplicated pre (copy-buffer markup)
+            continue
+        seen.add(folded)
+        if total + len(text) > _SALVAGE_MAX_TOTAL_CHARS:
+            salvaged.append(f"[salvage truncated at {_SALVAGE_MAX_TOTAL_CHARS} chars]")
+            break
+        salvaged.append(text)
+        total += len(text)
+    if not salvaged:
+        return ""
+    return _SALVAGE_HEADER + "\n\n".join(f"```\n{b}\n```" for b in salvaged)
+
 
 def _final_url(metadata: dict[str, Any], requested: str) -> str:
     """The URL Firecrawl actually fetched. ``url`` is the scrape engine's post-redirect URL on every shape
@@ -329,6 +404,11 @@ async def _scrape_one(url: str, formats: list[str], format: Optional[str]) -> di
             return _error_entry(final_url, final_blocked["message"], title=title, raw=True, blocked=final_blocked)
         markdown, html = payload.get("markdown"), payload.get("html")
         content = markdown if format == "markdown" or (format is None and markdown) else html or markdown or ""
+        if html and format != "html":
+            salvaged = _salvage_dropped_pre_blocks(html, markdown or "")
+            if salvaged:
+                logger.info("Salvaged <pre> content from raw HTML for %s", url)
+                content = (content or "") + salvaged
         entry = {"url": final_url, "title": title, "content": content, "raw_content": content, "metadata": metadata}
         return _with_scrape_status(entry, metadata)
     except Exception as scrape_err:
@@ -374,7 +454,9 @@ class FirecrawlWebSearchProvider(BaseWebSearchProvider):
         if _use_keyless_ring("extract"):
             return await asyncio.to_thread(keyless_extract, "Firecrawl", "firecrawl", urls, logger)
         format = kwargs.get("format")
-        formats = [format] if format in ("markdown", "html") else ["markdown", "html"]
+        # Always request the raw HTML alongside markdown: vendor markdown conversion can
+        # silently empty <pre> code blocks, and the raw HTML is the only salvage source.
+        formats = ["html"] if format == "html" else ["markdown", "html"]
         return [
             {"url": url, "error": "Interrupted", "title": ""} if _is_interrupted() else await _scrape_one(url, formats, format)
             for url in urls

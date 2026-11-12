@@ -550,6 +550,11 @@ WEB_EXTRACT_SCHEMA = {
                 "type": "integer",
                 "description": "Optional per-page character budget sent back (default 15000). Pages larger than this are head+tail truncated with the full text stored to disk. Raise it when you need more of a long page inline.",
                 "minimum": 2000
+            },
+            "format": {
+                "type": "string",
+                "enum": ["markdown", "html"],
+                "description": "Optional output format. 'markdown' (default) is clean text; 'html' returns the raw page HTML, useful when rendered content (code blocks, widgets) is lost in markdown conversion."
             }
         },
         "required": ["urls"]
@@ -565,7 +570,8 @@ registry.register(
 registry.register(
     name="web_extract", toolset="web", schema=WEB_EXTRACT_SCHEMA,
     handler=lambda args, **kw: web_extract_tool(
-        args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [], "markdown",
+        args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [],
+        args.get("format") or "markdown",
         char_limit=args.get("char_limit"),
     ),
     check_fn=check_web_api_key, requires_env=_web_requires_env(), is_async=True, emoji="📄",

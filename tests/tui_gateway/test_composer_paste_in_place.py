@@ -62,9 +62,8 @@ def test_paste_is_referenced_in_place_not_copied_into_attachments(launch_home, t
     assert paste.read_text(encoding="utf-8") == "a long pasted body\n"
 
 
-def test_profile_session_still_reaches_an_installation_home_paste(launch_home, tmp_path):
-    """The desktop writes pastes under the installation home; a profile session's own
-    ``profile_home`` is a different tree, and the ref has to keep pointing at the paste."""
+def test_profile_session_stages_an_installation_home_paste(launch_home, tmp_path):
+    """A named profile's sandbox mounts its own cache, not the installation home."""
     paste = _paste_file(launch_home)
     profile_home = launch_home / "profiles" / "reviewer"
     profile_home.mkdir(parents=True)
@@ -73,10 +72,34 @@ def test_profile_session_still_reaches_an_installation_home_paste(launch_home, t
     stored, uploaded = server._stage_session_file_attachment(
         session, raw_path=str(paste), data_url="", name="")
 
-    assert stored == paste.resolve()
-    assert uploaded is False
+    assert uploaded is True
+    assert stored.parent == (profile_home / "attachments").resolve()
+    assert stored.read_bytes() == paste.read_bytes()
     assert _attachments(launch_home) == []
 
+
+def test_cross_profile_paste_is_visible_via_session_cache_mount(launch_home, tmp_path):
+    """#153415: a root paste must reach the named profile's sandbox, not a dangling host path."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.credential_files import map_cache_path_to_container
+
+    paste = _paste_file(launch_home)
+    profile_home = launch_home / "profiles" / "reviewer"
+    profile_home.mkdir(parents=True)
+    session = {"cwd": str(tmp_path / "project"), "profile_home": str(profile_home)}
+    stored, uploaded = server._stage_session_file_attachment(
+        session, raw_path=str(paste), data_url="", name="")
+
+    token = set_hermes_home_override(profile_home)
+    try:
+        assert map_cache_path_to_container(str(stored)) == (
+            f"/root/.hermes/attachments/{paste.name}"
+        )
+    finally:
+        reset_hermes_home_override(token)
+
+    assert uploaded is True
+    assert stored.read_bytes() == paste.read_bytes()
 
 def test_ordinary_out_of_workspace_file_is_still_staged(launch_home, tmp_path):
     """Nothing changes for a real drop: it is copied into ``attachments/`` as before."""

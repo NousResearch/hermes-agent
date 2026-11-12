@@ -262,24 +262,18 @@ def _stage_browser_file_attachment(session: dict, staged_upload: object, name: s
 
 
 def _is_composer_paste(session: dict, path: Path) -> bool:
-    """Whether *path* is a Desktop-managed large paste, which the agent already reaches in place.
+    """Only reuse a paste that the session's own cache mounts can expose.
 
-    ``writeComposerPaste`` writes it under ``<HERMES_HOME>/composer-pastes`` — outside every chat
-    workspace by construction — but that dir is the one staging root that needs no copy: the
-    workspace guard admits the ref there (``agent/context_references.py::_resolve_path``) and
-    ``tools/credential_files.py::_CACHE_DIRS`` bind-mounts it into container/remote backends
-    (#110174), which is all the copy into ``attachments/`` ever bought. Mirroring it there only
-    left two identical ``pasted_content_*.txt`` files per paste (#153415). The desktop writes
-    pastes under the installation home while a session may belong to another profile, so that
-    profile's home is checked too.
+    The workspace guard also admits installation-root pastes for named profiles,
+    but remote/container backends mount only the active profile's cache dirs.
+    A paste from a different profile must still be copied into this session's
+    attachments/ so its @file: reference remains reachable.
     """
     from pathlib import Path
     from agent.context_references import COMPOSER_PASTES_DIRNAME
-    from agent.file_safety import _hermes_dirs
 
-    profile_home = session.get("profile_home")
-    homes = [*_hermes_dirs()] + ([Path(profile_home).resolve()] if profile_home else [])
-    return any(path.is_relative_to(home / COMPOSER_PASTES_DIRNAME) for home in homes)
+    home = Path(session.get("profile_home") or _hermes_home).resolve()
+    return path.is_relative_to(home / COMPOSER_PASTES_DIRNAME)
 
 
 def _referenced_in_place(session: dict, path: Path, workspace: Path, *, staged: bool) -> bool:

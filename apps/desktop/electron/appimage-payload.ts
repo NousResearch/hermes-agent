@@ -198,7 +198,9 @@ async function unpackPayload(host: PayloadCopyHost, target: string): Promise<voi
     await fs.promises.rename(path.join(unpacked, 'resources', PAYLOAD_DIR), target)
   } catch (error) {
     host.log(`[payload] ${appimage} could not unpack its payload (${String(error)}); copying it from the mount`)
+    // A failed unpack can hold most of the payload; the space check allowed for one tree, not two.
     await fs.promises.rm(target, { recursive: true, force: true })
+    await fs.promises.rm(unpacked, { recursive: true, force: true })
     await copyTree(source, target)
   } finally {
     await fs.promises.rm(unpacked, { recursive: true, force: true })

@@ -1172,7 +1172,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         truncated_lines = any(len(line) > max_line_length for line in read_output.split('\n'))
         return ReadResult(
             content=self._add_line_numbers(read_output, offset), total_lines=total_lines,
-            file_size=file_size, truncated=truncated, hint=hint,
+            file_size=file_size, ends_with_newline=file_ends_with_newline,
+            truncated=truncated, hint=hint,
             truncated_lines=True if truncated_lines else None)
 
     # Confusable characters seen in real filenames, collapsed after NFC.

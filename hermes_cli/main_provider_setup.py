@@ -51,6 +51,7 @@ def _clear_stale_openai_base_url():
 
 # (task_key, display_name, short_description)
 _AUX_TASKS: list[tuple[str, str, str]] = [
+    ("embedding", "Embedding", "query/document vectors"),
     ("vision", "Vision", "image/screenshot analysis"),
     ("compression", "Compression", "context summarization"),
     ("approval", "Approval", "smart command approval"),
@@ -97,6 +98,8 @@ def _format_aux_current(task_cfg: dict) -> str:
     model = str(task_cfg.get("model") or "").strip()
     effort = _aux_effort_word(task_cfg)
     suffix = (f" · {model}" if model else "") + (f" · {effort}" if effort else "")
+    if task_cfg.get("input_type_handling") == "shared":
+        suffix += " · query/document shared"
     if base_url:
         return f"custom ({_short_url(base_url)})" + suffix
     if provider == "auto":
@@ -153,7 +156,8 @@ def _aux_task_display_name(task: str) -> str:
 
 
 def _save_aux_choice(task: str, *, provider: str, model: str = "", base_url: str = "",
-                     api_key: str = "", reasoning_effort: Optional[str] = None) -> None:
+                     api_key: str = "", reasoning_effort: Optional[str] = None,
+                     input_type_handling: str | None = None) -> None:
     """Persist an aux task's four routing fields (timeout etc. untouched; main model config never
     modified). ``delegation`` writes the top-level section, with "auto" stored as an empty provider.
     ``reasoning_effort``: a level word or "" (provider default) to write; None leaves the key alone."""
@@ -168,6 +172,8 @@ def _save_aux_choice(task: str, *, provider: str, model: str = "", base_url: str
     entry["model"] = model or ""
     entry["base_url"] = base_url or ""
     entry["api_key"] = api_key or ""
+    if task == "embedding":
+        entry["input_type_handling"] = input_type_handling
     if reasoning_effort is not None and _aux_task_takes_reasoning(task):
         entry["reasoning_effort"] = reasoning_effort
     save_config(cfg)
@@ -210,9 +216,14 @@ def _reset_aux_to_auto() -> int:
         if entry.get("provider") not in {None, "", auto}:
             entry["provider"] = auto
             changed = True
-        for field in ("model", "base_url", "api_key", "reasoning_effort"):
+        fields = ("model", "base_url", "api_key", "reasoning_effort")
+        if task == "embedding":
+            fields += ("dimensions", "input_type_handling")
+        for field in fields:
             # Reset = the shipped default: "" everywhere except a slot that ships one (voice_chat: none).
-            default = str((defaults.get(task) or {}).get(field) or "") if isinstance(defaults.get(task), dict) else ""
+            default_cfg = defaults.get(task) if isinstance(defaults.get(task), dict) else {}
+            default = (default_cfg.get(field) if field in {"dimensions", "input_type_handling"}
+                       else str(default_cfg.get(field) or ""))
             if (entry.get(field) or entry.get(field) is False or default) and entry.get(field) != default:
                 entry[field] = default
                 changed = True
@@ -238,7 +249,9 @@ def _aux_config_menu() -> None:
              '  to your main chat model.  "auto" means "use my main model" —',
              "  Hermes only falls back to a lightweight backend (OpenRouter,",
              "  Nous Portal) if the main model is unavailable.  Override a",
-             "  task below if you want it pinned to a specific provider/model.", "")
+             "  task below if you want it pinned to a specific provider/model.",
+             "  Embedding is separate: auto chooses an authenticated embedding route,",
+             "  never the main chat model.", "")
 
         menu_tasks = _all_aux_tasks() + [(_DELEGATION_TASK_KEY, _DELEGATION_TASK_NAME, _DELEGATION_TASK_DESC)]
         name_col = max(len(name) for _, name, _ in menu_tasks) + 2
@@ -283,14 +296,22 @@ def _aux_select_for_task(task: str) -> None:
         print(f"Could not detect authenticated providers: {exc}")
         providers = []
 
+    if task == "embedding":
+        providers = _embedding_picker_rows(providers, cfg)
+
     # (slug, label, models); "auto" always first
     auto_marker = "  ← current" if current_provider == "auto" and not current_base_url else ""
     auto_label = "auto (inherit main agent)" if task == _DELEGATION_TASK_KEY else "auto (recommended)"
     entries: list[tuple[str, str, list[str]]] = [("__auto__", f"{auto_label}{auto_marker}", [])]
-    entries.extend(format_aux_picker_entries(providers, current_provider=current_provider,
-                                             current_base_url=current_base_url))
+    if task == "embedding":
+        entries.extend(_format_embedding_picker_entries(
+            providers, current_provider=current_provider))
+    else:
+        entries.extend(format_aux_picker_entries(providers, current_provider=current_provider,
+                                                 current_base_url=current_base_url))
     custom_marker = "  ← current" if current_base_url else ""
-    entries.append(("__custom__", f"Custom endpoint (direct URL){custom_marker}", []))
+    if task != "embedding":
+        entries.append(("__custom__", f"Custom endpoint (direct URL){custom_marker}", []))
     entries.append(("__back__", "Back", []))
 
     _say("", f"  Configure {display_name} — current: {_format_aux_current(_aux_task_cfg_for_display(cfg, task))}", "")
@@ -301,12 +322,67 @@ def _aux_select_for_task(task: str) -> None:
     if slug == "__back__":
         return
     if slug == "__auto__":
-        _save_aux_choice(task, provider="auto", model="", base_url="", api_key="", reasoning_effort="")
+        _save_aux_choice(task, provider="auto", model="", base_url="", api_key="", reasoning_effort="",
+                         input_type_handling=None)
         print(f"{display_name}: reset to auto.")
     elif slug == "__custom__":
         _aux_flow_custom_endpoint(task, task_cfg)
     else:
         _aux_flow_provider_model(task, slug, models, current_model, current_effort=_aux_effort_word(task_cfg))
+
+
+def _embedding_picker_rows(rows: list[dict], config: dict) -> list[dict]:
+    """Keep only authenticated OpenAI-compatible embedding routes in the embedding picker.
+
+    OpenAI's OAuth/Codex route is intentionally excluded: its grant is not an OpenAI API key
+    and does not authorize the embeddings endpoint. User-defined provider entries are supported
+    because those are explicitly configured OpenAI-compatible endpoints with Hermes-owned auth.
+    """
+    providers = config.get("providers") if isinstance(config.get("providers"), dict) else {}
+    legacy = config.get("custom_providers") if isinstance(config.get("custom_providers"), list) else []
+    from hermes_cli.config_providers import _canonical_api_mode
+    from hermes_cli.providers import custom_provider_slug
+    from hermes_cli.runtime_provider import _detect_api_mode_for_url
+
+    def supports_embeddings(entry: dict) -> bool:
+        mode = str(entry.get("api_mode") or entry.get("transport") or "").strip()
+        url = str(entry.get("api") or entry.get("base_url") or entry.get("url") or "")
+        mode = _canonical_api_mode(mode) if mode else (_detect_api_mode_for_url(url) or "chat_completions")
+        return mode == "chat_completions"
+
+    configured_custom = {
+        custom_provider_slug(str(entry.get("name") or key), str(key))
+        for key, entry in providers.items()
+        if isinstance(entry, dict) and supports_embeddings(entry)
+    }
+    configured_custom.update(
+        custom_provider_slug(str(entry.get("name") or ""))
+        for entry in legacy if isinstance(entry, dict) and entry.get("name") and supports_embeddings(entry)
+    )
+    supported = {"openai-api", "openrouter"} | configured_custom
+    return [row for row in rows if str(row.get("slug") or "").lower() in supported]
+
+
+def _format_embedding_picker_entries(rows: list[dict], *, current_provider: str) -> list[tuple[str, str, list[str]]]:
+    """Render embedding routes without suggesting their chat-model catalog as embedding models."""
+    current = str(current_provider or "").strip().lower()
+    entries = []
+    for row in rows:
+        slug = str(row.get("slug") or "")
+        name = row.get("name") or slug
+        marker = "  ← current" if slug.lower() == current else ""
+        entries.append((slug, f"{name} — enter an embedding model{marker}", []))
+    return entries
+
+
+def _confirm_shared_embedding_space(provider: str, model: str) -> bool:
+    """Require an operator assertion before using query and document text in one vector space."""
+    _say(
+        "This route sends query and document text to one shared embedding space.",
+        "Confirm that the selected model returns compatible vectors for both uses.",
+    )
+    answer = _ask(f"Confirm shared query/document space for {provider} · {model}? [y/N] ", cancel_msg="")
+    return str(answer or "").strip().lower() in {"y", "yes"}
 
 
 def _aux_flow_provider_model(task: str, provider_slug: str, curated_models: list,
@@ -336,9 +412,20 @@ def _aux_flow_provider_model(task: str, provider_slug: str, curated_models: list
             print("No change.")
             return
 
+    if task == "embedding":
+        if not selected and provider_slug == "openai-api":
+            selected = "text-embedding-3-small"
+        if not selected:
+            print("Embedding requires an explicit model ID for this provider.")
+            return
+        if not _confirm_shared_embedding_space(provider_slug, selected):
+            print("Embedding selection unchanged; shared query/document semantics were not confirmed.")
+            return
+
     effort = _prompt_aux_reasoning_effort(task, current_effort) if _aux_task_takes_reasoning(task) else None
     _save_aux_choice(task, provider=provider_slug, model=selected or "", base_url="", api_key="",
-                     reasoning_effort=effort)
+                     reasoning_effort=effort,
+                     input_type_handling="shared" if task == "embedding" else None)
     effort_note = f" · reasoning {effort}" if effort else ""
     if selected:
         print(f"{display_name}: {provider_slug} · {selected}{effort_note}")

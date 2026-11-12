@@ -1,14 +1,15 @@
 ---
 sidebar_position: 11
 title: "Plugin LLM Access"
-description: "Run any LLM call from inside a plugin via ctx.llm — chat or structured, sync or async. Host-owned auth, fail-closed trust gate, optional JSON Schema validation."
+description: "Run authenticated chat, structured, or embedding inference from plugins via ctx.llm."
 ---
 
 # Plugin LLM Access
 
-`ctx.llm` is the supported way for a plugin to make an LLM call.
-Chat completion, structured extraction, sync, async, with or without
-images — same surface, same trust gate, same host-owned credentials.
+`ctx.llm` is the supported way for a plugin to make a model inference call.
+Chat completion, structured extraction, and embeddings each use Hermes-owned
+credentials and routing. Chat calls may follow the active chat model; embeddings
+have a separate capability-specific route and never use chat auto-routing.
 
 Plugins reach for this when they need to do something that involves
 the model but isn't part of the agent's conversation. A hook that
@@ -78,7 +79,7 @@ model couldn't produce valid JSON, `result.parsed` is `None` and
 
 ## What this lane gives you
 
-* **One call, four shapes.** `complete()` for chat,
+* **One completion call, four shapes.** `complete()` for chat,
   `complete_structured()` for typed JSON, `acomplete()` and
   `acomplete_structured()` for asyncio. Same arguments, same result
   objects.
@@ -202,9 +203,11 @@ in the same repo.
 | A typed dict back, validated against a schema | `complete_structured()` |
 | Image-or-text input with a typed dict back | `complete_structured()` |
 | The same call from async code (gateway adapters, async hooks) | `acomplete()` / `acomplete_structured()` |
+| Ordered query/document vectors | `embed()` / `aembed()` |
 
-Everything else — provider selection, model resolution, auth, fallback,
-timeout, vision routing — is the same across all four.
+For chat calls, provider selection, model resolution, auth, fallback, timeout,
+and vision routing are shared across the four completion methods. Embeddings
+use the separate `auxiliary.embedding` capability route.
 
 ## API surface
 
@@ -277,6 +280,75 @@ against your schema if `jsonschema` is installed.
   object that matches your schema.
 * `result.content_type == "text"` — parsing or validation failed;
   inspect `result.text` for the raw model response.
+
+### `embed()`
+
+```python
+def embed(
+    self, inputs: Sequence[str], *, input_type: Literal["query", "document"] = "document",
+    provider: str | None = None, model: str | None = None,
+    dimensions: int | None = None, timeout: float | None = None,
+    profile: str | None = None, purpose: str | None = None,
+) -> PluginLlmEmbeddingResult
+
+async def aembed(
+    self, inputs: Sequence[str], *, input_type: Literal["query", "document"] = "document",
+    provider: str | None = None, model: str | None = None,
+    dimensions: int | None = None, timeout: float | None = None,
+    profile: str | None = None, purpose: str | None = None,
+) -> PluginLlmEmbeddingResult
+```
+
+Embeddings use the dedicated `auxiliary.embedding` route. They do not follow
+the active chat model when that route is `auto`; Hermes selects
+`openai-api` / `text-embedding-3-small` when its API credentials are available,
+or raises an `EmbeddingError` with code `embedding_unconfigured`. Unsupported
+providers or auth modes raise `embedding_unsupported`.
+Call `embed()` or `aembed()` for vectors; passing `task="embedding"` to a chat
+completion method is rejected because completion cannot serve embedding requests.
+
+```python
+result = ctx.llm.embed(
+    ["What are the office hours?", "Where is the office?"],
+    input_type="query",       # "query" or "document"; default is "document"
+    dimensions=None,           # optional provider dimension hint
+    timeout=30,
+    purpose="helpdesk.search",
+)
+# → PluginLlmEmbeddingResult(vectors, provider, model, dimensions, usage, audit)
+```
+
+`vectors` preserves input order and has one finite, equally sized vector per
+input. Hermes rejects empty or oversized batches, ragged or non-finite vectors,
+and replies that do not match the requested dimensions. A call accepts at most
+128 inputs, 1 MiB total UTF-8 input, and 65,536 dimensions. `provider` and
+`model` identify the route that actually answered; `usage` is
+`PluginLlmUsage`; `audit` carries non-secret plugin, purpose, profile, and
+input-type metadata.
+Explicit `provider`, `model`, and `profile` overrides use the same fail-closed
+plugin trust gate as the completion methods.
+
+The `input_type` records the operation's semantics. Query text is used to
+retrieve document vectors; document text is indexed for later query retrieval.
+The initial OpenAI-compatible transport supports models with a shared query/document
+space and sends the original text unchanged, as with OpenAI's `text-embedding-3-small`.
+Models requiring task-specific parameters or prefixes need a supported mapping;
+unsupported handling fails explicitly. The result audit records the handling and
+normalization policy. Do not mix vectors from different provider/model/dimension,
+input-type handling, or normalization identities in one index.
+
+Embedding calls never follow chat/provider fallback chains. They can refresh or
+rotate credentials within the selected provider. Failures expose fixed `EmbeddingError`
+codes (`embedding_unconfigured`, `embedding_unsupported`, `embedding_failed`,
+`embedding_timeout`, `embedding_invalid_response`) without provider response bodies.
+An explicit timeout must be finite, positive, and at most 300 seconds; otherwise
+Hermes uses `auxiliary.embedding.timeout` (60 seconds by default).
+
+`aembed()` has the same arguments and result type for async plugin code:
+
+```python
+result = await ctx.llm.aembed(texts, input_type="document", purpose="index")
+```
 
 ### Async
 
@@ -467,6 +539,18 @@ class PluginLlmStructuredResult:
     parsed: Optional[Any]        # JSON object when content_type == "json"
     content_type: str            # "json" or "text"
     # audit also carries schema_name when supplied
+
+@dataclass
+class PluginLlmEmbeddingResult:
+    vectors: list[list[float]]
+    provider: str                # actually resolved embedding provider
+    model: str                   # actually resolved embedding model
+    dimensions: int              # validated vector width
+    usage: PluginLlmUsage
+    audit: Dict[str, Any]        # plugin_id, purpose, profile, input_type
+
+class EmbeddingError(Exception):
+    code: str                    # embedding_unconfigured or embedding_unsupported
 ```
 
 `usage` carries `input_tokens`, `output_tokens`, `total_tokens`,
@@ -478,8 +562,8 @@ provider returns those fields.
 The default behaviour is fail-closed. With no `plugins.entries`
 config block, a plugin can:
 
-* run any of the four methods against the user's active provider
-  and model,
+* run the four completion methods against the user's active provider
+  and model, and use the Hermes-selected embedding route for `embed()` / `aembed()`,
 * set request-shaping arguments (`temperature`, `max_tokens`,
   `timeout`, `system_prompt`, `purpose`, `messages`, `instructions`,
   `input`, `json_schema`),

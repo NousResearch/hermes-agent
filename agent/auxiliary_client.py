@@ -3769,13 +3769,6 @@ def _fallback_chain_entry(task: Optional[str], fb_label: str) -> Optional[dict[s
     return entry if isinstance(entry, dict) else None
 
 
-def _coerce_positive_timeout(raw: Any) -> Optional[float]:
-    """Coerce a config ``timeout`` to a positive float, or None (rejects bools, which are ints)."""
-    if isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw > 0:
-        return float(raw)
-    return None
-
-
 def _fallback_entry_timeout(task: Optional[str], fb_label: str) -> Optional[float]:
     """Per-entry ``timeout`` for a configured fallback candidate, or None (keep the task-level
     timeout). Inheriting the primary's deadline used to kill healthy-but-slower fallbacks.
@@ -3786,7 +3779,7 @@ def _fallback_entry_timeout(task: Optional[str], fb_label: str) -> Optional[floa
     that needs ~90s on the fallback died at the primary's 30s deadline every turn (#62452).
     """
     entry = _fallback_chain_entry(task, fb_label)
-    return _coerce_positive_timeout(entry.get("timeout") if entry else None)
+    return positive_timeout(entry.get("timeout") if entry else None)
 
 
 def _fallback_provider_from_label(label: str) -> str:
@@ -6012,6 +6005,9 @@ def _resolve_task_provider_model(
     but a first-class provider + base_url keeps the provider identity so its auth/transport
     shaping still applies. api_mode is "chat_completions", "codex_responses", or None (auto).
     """
+    if task == "embedding":
+        from agent.embedding_client import EmbeddingError
+        raise EmbeddingError("embedding_unsupported")
     cfg_provider = cfg_model = cfg_base_url = cfg_api_key = resolved_api_mode = None
     if task:
         task_config = _get_auxiliary_task_config(task)
@@ -6094,7 +6090,7 @@ _COMPRESSION_TIMEOUT_FLOOR_SECONDS = 300.0
 
 # Read-time resolution of auxiliary.<task> (plugin defaults, inherit_from) lives in its own module;
 # re-exported here because callers and tests reach it as agent.auxiliary_client._get_auxiliary_task_config.
-from agent.auxiliary_task_config import _get_auxiliary_task_config
+from agent.auxiliary_task_config import _get_auxiliary_task_config, positive_timeout
 
 
 class CompressionFastLane(NamedTuple):

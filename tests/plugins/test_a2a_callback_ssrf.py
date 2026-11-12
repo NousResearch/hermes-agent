@@ -98,6 +98,36 @@ def test_dns_name_is_judged_by_what_it_resolves_to(monkeypatch):
     assert security.is_safe_callback_url("https://public.example/hook", localhost_mode=False) is True
 
 
+def test_push_follows_the_owning_profiles_private_url_policy(monkeypatch, serve, tmp_path):
+    """The push runs on an HTTP handler thread, which carries no profile scope: a secondary
+    profile's own ``security.allow_private_urls`` must decide, not the launch profile's."""
+    from agent.runtime_scope import bind_state, scope_for_profile
+    from gateway.config import PlatformConfig
+    from plugins.platforms.a2a.adapter import A2AAdapter
+
+    for var in ("A2A_BEARER_TOKEN", "A2A_PEER_TOKENS", "HERMES_ALLOW_PRIVATE_URLS"):
+        monkeypatch.delenv(var, raising=False)
+    _resolve_as(monkeypatch, {"receiver.lan": "127.0.0.1"})
+    secondary = tmp_path / "profiles" / "sec"
+    secondary.mkdir(parents=True)
+    (secondary / "config.yaml").write_text("security:\n  allow_private_urls: true\n")
+    target = serve()
+    tokens = bind_state(scope_for_profile(secondary), hydrate_secrets=False)
+    try:
+        adapter = A2AAdapter(PlatformConfig(enabled=True))
+    finally:
+        tokens.reset()
+    adapter.tasks.create("t1", "c1", "peer")
+    adapter.tasks.set_push_config("t1", f"http://receiver.lan:{target.server_port}/hook")
+
+    pusher = threading.Thread(target=adapter._send_push_notification,
+                              args=("t1", "c1", "done", protocol.STATE_COMPLETED))
+    pusher.start()
+    pusher.join(30)
+
+    assert target.hits == [("POST", "/hook")]
+
+
 def test_redirect_onto_a_refused_address_is_not_followed(monkeypatch, serve):
     """Localhost-only mode allows a loopback callback; its 302 to a name the check refuses (it
     resolves to an internal address) must not be followed."""

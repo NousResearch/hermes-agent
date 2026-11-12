@@ -12,6 +12,7 @@ import os
 import html as _html
 import re
 import time
+import unicodedata
 from contextvars import ContextVar
 from datetime import datetime, timezone, UTC
 from weakref import WeakValueDictionary
@@ -356,6 +357,18 @@ from plugins.platforms.telegram.telegram_chunking import (
 # MarkdownV2 has no table syntax, so pipe tables become bullet groups via convert_table_to_bullets().
 from gateway.platforms.helpers import (
     TABLE_SEPARATOR_RE as _TABLE_SEPARATOR_RE, caption_is_command, compile_mention_patterns, prompt_id_counter)
+
+def _is_rtl_text(text: str) -> bool:
+    """True when strong-direction chars (outside fenced code) are mostly right-to-left."""
+    counts = {"R": 0, "AL": 0, "L": 0}
+    for ch in re.sub(r'```[\s\S]*?```', '', text or ''):
+        d = unicodedata.bidirectional(ch)
+        if d in counts:
+            counts[d] += 1
+    rtl = counts["R"] + counts["AL"]
+    # 0.3: RTL replies routinely embed English terms/commands, yet one quoted RTL word in English stays LTR.
+    return rtl > 0 and rtl / (rtl + counts["L"]) >= 0.3
+
 
 # Internal safety bounds (not user knobs): no reconnect/teardown path may hang on a dead CLOSE-WAIT
 # socket PTB's polling task is blocked on in epoll.
@@ -1225,7 +1238,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         return bool(content and self._RICH_CJK_RE.search(content))
 
     def _needs_rich_rendering(self, content: str) -> bool:
-        """True for constructs MarkdownV2 degrades: pipe tables, task lists, <details>, block math.
+        """True for constructs MarkdownV2 degrades: pipe tables, task lists, <details>, block math, RTL text.
         Ordinary replies stay on MarkdownV2 so clients render consistent font weight/spacing.
 
         The rich endpoint is reserved for constructs where raw markdown materially improves output: pipe
@@ -1234,6 +1247,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         """
         if not content:
             return False
+        if _is_rtl_text(content):  # only rich messages can carry is_rtl
+            return True
         if any(_TABLE_SEPARATOR_RE.match(line) for line in content.splitlines()):
             return True
         if re.search(r"(?m)^\s*[-*]\s+\[[ xX]\]\s+", content):
@@ -1303,6 +1318,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             escape_rich_currency_dollars(rich_normalize_linebreaks(escape_literal_hash_prefixes(normalize_rich_latex(content)))))}
         if skip_entity_detection or RICH_EMAIL_TOKEN_RE.search(content):
             payload["skip_entity_detection"] = True
+        if _is_rtl_text(content):
+            payload["is_rtl"] = True
         return payload
 
     def _is_rich_capability_error(self, exc: Exception) -> bool:

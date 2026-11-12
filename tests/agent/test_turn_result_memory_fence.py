@@ -100,6 +100,30 @@ def test_transformed_reply_original_drops_echoed_memory_block(monkeypatch):
     assert result["final_response"].startswith(result["pre_transform_response"])
 
 
+def test_codex_interim_keeps_whitespace_part_before_memory_fence():
+    """A newline-only output_text part must keep the memory tag on its own line."""
+    agent = _make_agent()
+    seen = []
+    agent.interim_assistant_callback = lambda text, *, already_streamed=False: seen.append(text)
+    msg = {
+        "role": "assistant",
+        "content": "Partial final answer.",
+        "codex_message_items": [{
+            "type": "message", "role": "assistant", "phase": "commentary",
+            "content": [
+                {"type": "output_text", "text": "Checking the inbox."},
+                {"type": "output_text", "text": "\n"},
+                {"type": "output_text", "text": ECHOED_BLOCK},
+            ],
+        }],
+    }
+
+    agent._emit_interim_assistant_message(msg)
+
+    assert seen == ["Checking the inbox."]
+    assert SENTINEL not in "\n".join(seen)
+
+
 def test_memory_only_commentary_does_not_fall_back_to_partial_answer():
     """Commentary filtered to nothing is still commentary: the tool round's partial answer in
     ``content`` must not be published as progress in its place."""

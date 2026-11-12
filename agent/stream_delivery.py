@@ -60,10 +60,11 @@ def _codex_commentary_texts(agent, assistant_msg: dict[str, Any]) -> list[str]:
         phase, content_parts = item.get("phase"), item.get("content")
         if not isinstance(phase, str) or phase.strip().lower() != "commentary" or not isinstance(content_parts, list):
             continue
+        # Keep whitespace-only parts: a newline can make the next tag a block.
         text = "".join(
             part["text"] for part in content_parts
             if isinstance(part, dict) and part.get("type") == "output_text"
-            and isinstance(part.get("text"), str) and part["text"].strip()
+            and isinstance(part.get("text"), str)
         ).strip()
         if text:
             texts.append(text)

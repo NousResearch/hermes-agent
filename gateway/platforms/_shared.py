@@ -286,6 +286,86 @@ def yaml_env_setter(*, fallback: bool = False) -> Callable[[str, Any], None]:
     return set_env
 
 
+def replace_bridged_env(name: str, value: str) -> None:
+    """Rewrite ``os.environ[name]`` (an adapter canonicalizing a list it reads, e.g. Discord usernames
+    resolved to IDs) without turning a bridge-owned value into one that looks operator-set: the marker
+    follows the new value, so the next YAML load still refreshes or retracts it."""
+    with _YAML_ENV_LOCK:
+        marker = bridged_env_marker(name)
+        owned = _is_bridge_leftover(name, os.getenv(marker))
+        os.environ[name] = value
+        if owned:
+            os.environ[marker] = bridged_env_digest(value) or ""
+
+
+# ---------------------------------------------------------------------------
+# Live allowlists: a config.yaml edit reaches the next inbound event, no reconnect
+# ---------------------------------------------------------------------------
+# Adapters copy their gate lists at connect time (per-profile isolation, #72348). These helpers keep
+# that copy and refresh it when the owning profile's config.yaml changes. An unchanged file costs a
+# stat; a changed one costs one ``load_gateway_config()`` (~20 ms on a 1,000-line config), which also
+# refreshes the launch profile's bridged env, so an operator's own env/.env value still wins (#109032).
+
+_LIVE_GATE_LOCK = threading.RLock()
+
+
+def _gate_config_version() -> tuple:
+    """Change signature of the active home's config.yaml plus the managed overlay's."""
+    from hermes_cli.config_backend import config_cache_version_or_none, config_version_or_none, get_config_backend
+    from hermes_cli.managed_scope import get_managed_dir
+    from hermes_constants import get_hermes_home
+
+    home = get_hermes_home()
+    managed = get_managed_dir()
+    managed_sig = None
+    if managed is not None and get_config_backend().honors_managed_config():
+        managed_sig = config_version_or_none(managed / "config.yaml")
+    return str(home), config_cache_version_or_none(home / "config.yaml"), managed_sig
+
+
+def mark_live_gate_baseline(adapter: Any) -> None:
+    """Record, on the adapter's first connect, which config the connect-time gate copy came from.
+    A reconnect keeps the first baseline so an edit made before it is still picked up."""
+    if getattr(adapter, "_live_gate_version", None) is None:
+        adapter._live_gate_version = _gate_config_version()
+
+
+def refresh_live_gate_extra(adapter: Any, keys: Iterable[str]) -> bool:
+    """Bring ``adapter.config.extra[keys]`` up to date with the profile's config.yaml when it changed.
+
+    Must run in the owning profile's scope (adapter event tasks inherit it), so a multiplexed profile
+    reads its own file and never another profile's process env. Returns True when the config was
+    reloaded; the adapter then re-derives its gate sets. An adapter that never connected keeps its
+    state. A config that fails to parse keeps the last good lists rather than dropping them.
+    """
+    if getattr(adapter, "_live_gate_version", None) is None:
+        return False
+    version = _gate_config_version()
+    if version == adapter._live_gate_version:
+        return False
+    with _LIVE_GATE_LOCK:
+        if version == adapter._live_gate_version:
+            return False
+        adapter._live_gate_version = version
+        from gateway.config import PlatformConfig, load_gateway_config
+        from gateway.config_loader import read_yaml_layers
+        from hermes_constants import get_hermes_home
+        try:
+            read_yaml_layers(get_hermes_home())
+        except Exception:  # any parse/overlay failure: the loader itself would fall back to env only
+            logger.warning("[%s] config.yaml changed but cannot be read; keeping the current allowlists",
+                           getattr(adapter, "name", "?"), exc_info=True)
+            return False
+        current = load_gateway_config().platforms.get(adapter.platform) or PlatformConfig()
+        extra = adapter.config.extra
+        for key in keys:
+            if key in current.extra:
+                extra[key] = current.extra[key]
+            else:
+                extra.pop(key, None)
+    return True
+
+
 def send_error(message: Any, *, nothing_sent: bool = False) -> dict:
     """Standalone-sender failure envelope with vendor exception text redacted (the same helper
     ``send_message`` uses), so a token or signed URL in an httpx/aiohttp error never reaches the

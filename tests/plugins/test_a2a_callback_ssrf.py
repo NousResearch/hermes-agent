@@ -21,6 +21,11 @@ _real_getaddrinfo = socket.getaddrinfo
 class _Recorder(BaseHTTPRequestHandler):
     def _handle(self):
         self.server.hits.append((self.command, self.path))
+        if self.server.endless_body:
+            self.send_response(200)
+            self.send_header("Content-Length", str(1 << 40))  # declared, never sent
+            self.end_headers()
+            return
         if self.server.redirect_to:
             self.send_response(302)
             self.send_header("Location", self.server.redirect_to)
@@ -39,9 +44,9 @@ class _Recorder(BaseHTTPRequestHandler):
 def serve():
     servers = []
 
-    def start(redirect_to: str = "") -> HTTPServer:
+    def start(redirect_to: str = "", endless_body: bool = False) -> HTTPServer:
         server = HTTPServer(("127.0.0.1", 0), _Recorder)
-        server.hits, server.redirect_to = [], redirect_to
+        server.hits, server.redirect_to, server.endless_body = [], redirect_to, endless_body
         threading.Thread(target=server.serve_forever, daemon=True).start()
         servers.append(server)
         return server
@@ -164,3 +169,17 @@ def test_callback_name_cannot_rebind_to_loopback_between_check_and_connect(monke
     _push(monkeypatch, f"http://rebind.example:{target.server_port}/hook")
 
     assert target.hits == []
+
+
+def test_push_reads_the_status_and_never_the_body(monkeypatch, serve):
+    """The callback is the peer's server: a 200 that declares a 1 TiB body must count as
+    delivered without downloading it (reading it pins the push thread and grows memory)."""
+    monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+    monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+    target = serve(endless_body=True)
+    sent, failed = protocol.metrics.push_sent, protocol.metrics.push_failed
+
+    _push(monkeypatch, f"http://127.0.0.1:{target.server_port}/hook")
+
+    assert target.hits == [("POST", "/hook")]
+    assert (protocol.metrics.push_sent, protocol.metrics.push_failed) == (sent + 1, failed)

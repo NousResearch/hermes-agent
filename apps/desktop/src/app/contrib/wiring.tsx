@@ -62,8 +62,8 @@ import {
   type AgentProfileRoute,
   ALL_PROFILES,
   ensureGatewayProfile,
-  newSessionInProfile,
-  normalizeProfileKey
+  normalizeProfileKey,
+  wakeSessionInProfile
 } from '@/store/profile'
 import { $newProjectSessionRequest, $startWorkSessionRequest, followActiveSessionCwd } from '@/store/projects'
 import { $backendRestartRequest, $routeRequest } from '@/store/recovery-requests'
@@ -851,7 +851,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
         if (targetProfile && normalizeProfileKey(targetProfile) !== activeProfile) {
           if (payload?.start_new_session !== false) {
-            newSessionInProfile(targetProfile)
+            void wakeSessionInProfile(targetProfile)
           } else {
             void ensureGatewayProfile(normalizeProfileKey(targetProfile)).catch((error: unknown) => {
               // #81094: the voice-path switch must surface its failure too.

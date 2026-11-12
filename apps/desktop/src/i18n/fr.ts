@@ -1311,6 +1311,7 @@ export const frOverrides = {
       },
       compression: {
         enabled: 'Auto-compression',
+        mode: 'Mode de compression',
         threshold: 'Seuil de compression',
         codexGpt55Autoraise: 'Relèvement automatique de la compression Codex',
         targetRatio: 'Objectif de compression',
@@ -1388,6 +1389,7 @@ export const frOverrides = {
       },
       compression: {
         enabled: 'Résumer le contexte ancien quand les conversations grossissent.',
+        mode: 'S’applique avec context.engine=compressor (ContextCompressor intégré). Résumé LLM standard, catalogue extractif ou hybride. La compression Codex native du fournisseur peut contourner ce réglage.',
         codexGpt55Autoraise: 'Relever la compression à 85 % pour les modèles ChatGPT Codex OAuth pris en charge.'
       },
       auxiliary: {

@@ -16,6 +16,9 @@ import pytest
 
 from hermes_state import SessionDB
 from tools.session_search_tool import (
+    SESSION_SEARCH_DISCOVERY_CALL,
+    SESSION_SEARCH_DISCOVERY_HINT,
+    SESSION_SEARCH_SCHEMA,
     _format_timestamp,
     _is_compacted_message,
     _resolve_to_parent,
@@ -1231,3 +1234,9 @@ class TestBrowseDefaultLimit:
             assert result["mode"] == "browse"
             assert len(result["results"]) == 10
         assert len(json.loads(session_search(db=db, limit=4))["results"]) == 4
+
+
+def test_schema_teaches_discovery_call():
+    description = SESSION_SEARCH_SCHEMA["description"]
+    assert SESSION_SEARCH_DISCOVERY_CALL in description
+    assert SESSION_SEARCH_DISCOVERY_HINT in description

@@ -781,6 +781,7 @@ export const ruOverrides = {
       },
       compression: {
         enabled: 'Авто-сжатие',
+        mode: 'Режим сжатия',
         threshold: 'Порог сжатия',
         codexGpt55Autoraise: 'Автоповышение сжатия Codex',
         targetRatio: 'Целевое сжатие',
@@ -854,6 +855,7 @@ export const ruOverrides = {
       },
       compression: {
         enabled: 'Сжимать более старый контекст, когда диалоги становятся большими.',
+        mode: 'Действует при context.engine=compressor (встроенный ContextCompressor). Стандартная LLM-сводка, извлекающий каталог или гибрид. Встроенное сжатие Codex у провайдера может обходить эту настройку.',
         codexGpt55Autoraise: 'Повышает порог сжатия до 85% для поддерживаемых моделей ChatGPT Codex OAuth.'
       },
       auxiliary: {

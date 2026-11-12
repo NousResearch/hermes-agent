@@ -1,6 +1,6 @@
 name: pollinations
 repo: https://github.com/greythx/hermes-pollinations
-sha: b91e5f6e7e29d71b1d16dfe4495b39cda25bca9b
+sha: bb531ccb5c94bf054aeac3a92d324a9d17d88b19
 title: Pollinations
 description: "Pollinations image generation and editing for image_generate.\n\nThe picker is read live from the Pollinations catalog, so it lists whatever Pollinations publishes and follows changes without a plugin update. No key is needed for the free route, which watermarks images and throttles per IP. A Pollinations key unlocks the rest of the catalog and image editing. Paid-only models stay hidden behind a toggle that ships off.\n\nDisclosure: prompts and reference images go to Pollinations. Keyless calls use the free route, where the prompt travels in the request URL. A reference image given as a URL is fetched from that host through Hermes' SSRF guard; a local path is read from disk; both are uploaded to Pollinations. With POLLINATIONS_API_KEY set, calls spend the account's credits. The toggle only hides paid-only models from the picker; a paid model set by id is still billed. Caches live under $HERMES_HOME/cache/ and images under $HERMES_HOME/cache/generated/images/. No telemetry, no shell, no background processes, no self-update."
 maintainer: greythx

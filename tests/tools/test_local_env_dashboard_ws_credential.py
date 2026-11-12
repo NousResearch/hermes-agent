@@ -8,7 +8,7 @@ working ``/api/ws`` login."""
 
 import pytest
 
-from tests.tools._child_env_fixtures import child_env, observe_child  # child_env: fixture
+from tests.tools._child_env_fixtures import child_env, observe_child
 from tools.environments import local
 
 TUI_URL_VARS = ["HERMES_TUI_SIDECAR_URL", "HERMES_TUI_GATEWAY_URL"]
@@ -23,7 +23,8 @@ KEPT = {"HERMES_TUI_MAX_TURNS": "7", "MY_CUSTOM_VAR": "x"}
     pytest.param(lambda: local.hermes_subprocess_env(), id="helper"),
     pytest.param(lambda: local.hermes_subprocess_env(inherit_credentials=True), id="inherit_credentials"),
 ])
-def test_dashboard_ws_credential_urls_never_reach_spawned_children(child_env, monkeypatch, builder):
+@pytest.mark.usefixtures("child_env")
+def test_dashboard_ws_credential_urls_never_reach_spawned_children(monkeypatch, builder):
     for name in TUI_URL_VARS:
         monkeypatch.setenv(name, URL)
     for name, value in KEPT.items():

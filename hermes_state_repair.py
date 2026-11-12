@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
-from hermes_startup_watchdog import report_startup_progress
+from hermes_agent.hermes_startup_watchdog import report_startup_progress
 from hermes_state_errors import is_disk_full_error
 from hermes_state_holders import read_only_db_uri
 from hermes_state_common import (

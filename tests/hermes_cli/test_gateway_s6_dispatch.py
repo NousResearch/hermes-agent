@@ -156,7 +156,7 @@ def test_redirect_falls_back_when_sleep_missing(
 def _armed_watchdog(monkeypatch: pytest.MonkeyPatch):
     """Arm the real watchdog as hermes_cli.main's argv fast-path does; the long timeout keeps the
     deadline out of the test, only the handle state at handoff is under test."""
-    import hermes_startup_watchdog as sw
+    import hermes_agent.hermes_startup_watchdog as sw
 
     monkeypatch.delenv(sw.ENV_STARTUP_WATCHDOG, raising=False)
     monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)

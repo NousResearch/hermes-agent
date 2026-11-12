@@ -1605,7 +1605,7 @@ def _run_legacy_gateway():
     from hermes_cli.resource_limits import apply_malloc_arena_max
     apply_malloc_arena_max()  # before the watchdog thread: glibc latches its arena limit
     with suppress(Exception):
-        from hermes_startup_watchdog import arm_startup_watchdog
+        from hermes_agent.hermes_startup_watchdog import arm_startup_watchdog
         arm_startup_watchdog()
     from gateway.run import start_gateway
     print(_t("cli.gateway.starting"))

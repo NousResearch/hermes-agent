@@ -586,3 +586,59 @@ describe('MessagingView Telegram quick setup', () => {
     }
   })
 })
+
+describe('MessagingView under Team Gateway', () => {
+  const teamGateway = {
+    direct_platforms: ['api_server', 'webhook'],
+    platforms: ['discord', 'telegram'],
+    portal_url: 'https://portal.example.test/agents'
+  }
+
+  it('replaces the messaging platforms with the Portal Manage Agents link and keeps the API server', async () => {
+    $settingsScopeOverride.set(null)
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [
+        platform({ id: 'telegram', name: 'Telegram', relay_exclusive: true, relay_fronted: true }),
+        platform({ id: 'api_server', name: 'API server', enabled: true, state: 'connected' })
+      ],
+      team_gateway: teamGateway
+    })
+
+    await renderMessaging()
+
+    expect(await screen.findByText('Messaging runs through Team Gateway')).toBeTruthy()
+    expect(screen.getByText('Available for this agent: discord, Telegram')).toBeTruthy()
+    expect(screen.queryByText('Telegram', { selector: 'h3' })).toBeNull()
+    expect(screen.queryByTestId('relay-link-telegram')).toBeNull()
+    expect(screen.getAllByText('API server').length).toBeGreaterThan(0)
+    fireEvent.click(screen.getByRole('button', { name: /Manage agents in Nous Portal/ }))
+    expect(openExternalLink).toHaveBeenCalledWith('https://portal.example.test/agents')
+  })
+
+  it('drops the Team Gateway notice as soon as the scope moves, before the new profile answers', async () => {
+    $settingsScopeOverride.set(null)
+    getMessagingPlatforms.mockResolvedValue({ platforms: [platform()], team_gateway: teamGateway })
+    await renderMessaging()
+    expect(await screen.findByText('Messaging runs through Team Gateway')).toBeTruthy()
+
+    // The other profile's answer is still in flight: the previous profile's notice must not linger.
+    getMessagingPlatforms.mockReturnValue(new Promise(() => {}))
+    await act(async () => {
+      $settingsScopeOverride.set('work')
+    })
+
+    await waitFor(() => expect(getMessagingPlatforms).toHaveBeenCalledWith('work'))
+    expect(screen.queryByText('Messaging runs through Team Gateway')).toBeNull()
+    $settingsScopeOverride.set(null)
+  })
+
+  it('keeps per-platform setup when Team Gateway does not own messaging', async () => {
+    $settingsScopeOverride.set(null)
+    getMessagingPlatforms.mockResolvedValue({ platforms: [platform()], team_gateway: null })
+
+    await renderMessaging()
+
+    expect(await screen.findAllByText('Microsoft Teams')).not.toHaveLength(0)
+    expect(screen.queryByText('Messaging runs through Team Gateway')).toBeNull()
+  })
+})

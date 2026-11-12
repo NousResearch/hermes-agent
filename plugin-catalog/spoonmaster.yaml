@@ -1,7 +1,7 @@
 name: spoonmaster
 title: Spoonmaster
 repo: https://github.com/gueysito/spoonmaster
-sha: dfdc7d7ca36ea4519d8e34e05e6c6740a5662e57
+sha: 4ef303a5082f0428806423a42174642be02489e9
 description: Compare restaurants using local recommendations, venue facts, and optional private tastes.
 maintainer: gueysito
 tier: community
@@ -24,6 +24,8 @@ capabilities:
     - on_session_reset
     - on_session_finalize
     - pre_llm_call
+    - pre_tool_call
+    - post_tool_call
     - transform_llm_output
   provides_middleware: []
   requires_env: []

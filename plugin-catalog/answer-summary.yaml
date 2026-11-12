@@ -1,6 +1,6 @@
 name: answer-summary
 repo: https://github.com/ArronPK/hermes-answer-summary
-sha: ca3e9394d4ca9a25f8246f6efa8e1741e8a847a3
+sha: 534c91e07895524001ae6ff55e20b9ea87a579e4
 title: Answer Summary
 description: >-
   Long-session comprehension for Hermes Desktop: a short AI recap above the
@@ -17,7 +17,7 @@ tier: community
 category: desktop
 requires_hermes: ">=0.23.0"
 version: "1.0.0"
-image: https://raw.githubusercontent.com/ArronPK/hermes-answer-summary/ca3e9394d4ca9a25f8246f6efa8e1741e8a847a3/docs/example-summary.png
+image: https://raw.githubusercontent.com/ArronPK/hermes-answer-summary/534c91e07895524001ae6ff55e20b9ea87a579e4/docs/example-summary.png
 docs_url: https://github.com/ArronPK/hermes-answer-summary#readme
 readme: true
 platforms: []

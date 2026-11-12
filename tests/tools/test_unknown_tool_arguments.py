@@ -23,10 +23,11 @@ def probe_tool():
         seen.append(dict(args))
         return json.dumps({"ok": True, "query": args.get("query", "<default>")})
 
-    def register(name, **parameters_extra):
-        registry.register(name=name, toolset="mcp-probe", handler=handler, schema={
-            "name": name, "description": "probe",
-            "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, **parameters_extra}})
+    def register(name, toolset="mcp-probe", properties=True, **parameters_extra):
+        parameters = {"type": "object", **({"properties": {"query": {"type": "string"}}} if properties else {}),
+                      **parameters_extra}
+        registry.register(name=name, toolset=toolset, handler=handler,
+                          schema={"name": name, "description": "probe", "parameters": parameters})
         names.append(name)
         return seen
 
@@ -45,6 +46,13 @@ def test_closed_schema_refuses_unknown_keys_before_the_handler_runs(probe_tool):
     assert "Do not wrap the arguments" in result["error"]
     assert json.loads(model_tools.handle_function_call("mcp__probe__closed", {"query": "hello"})) == {
         "ok": True, "query": "hello"}
+
+    # A plugin's closed no-argument schema may omit ``properties``: that declares none.
+    seen.clear()
+    probe_tool("plugin_probe_noargs", toolset="probe-plugin", properties=False, additionalProperties=False)
+    refused = json.loads(model_tools.handle_function_call("plugin_probe_noargs", {"arguments": {"x": 1}}))
+    assert seen == [] and "Valid parameters: none" in refused["error"]
+    assert json.loads(model_tools.handle_function_call("plugin_probe_noargs", {}))["ok"] is True
 
 
 def test_open_schema_still_admits_undeclared_keys(probe_tool):

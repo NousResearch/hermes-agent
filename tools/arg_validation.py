@@ -73,13 +73,24 @@ def _closed_schema_refusal(entry: Optional[ToolEntry], args: Any) -> Optional[st
     if entry is None or not isinstance(args, dict) or registry.is_builtin(entry):
         return None
     params = entry.schema.get("parameters")
-    if (not isinstance(params, dict) or params.get("additionalProperties") is not False
-            or not isinstance(params.get("properties"), dict) or any(key in params for key in _OPEN_ROOT_KEYWORDS)):
+    if not isinstance(params, dict):
         return None
-    unknown = [key for key in args if key not in params["properties"]]
+    # An omitted ``properties`` declares no arguments; a non-dict one is malformed and left alone.
+    properties = params.get("properties", {})
+    if (not isinstance(properties, dict) or params.get("additionalProperties") is not False
+            or any(key in params for key in _OPEN_ROOT_KEYWORDS)):
+        return None
+    unknown = [key for key in args if key not in properties]
+    if unknown and entry.dynamic_schema_overrides is not None:
+        # A name the served (dynamic) schema adds was offered to the model: never refuse it.
+        served = _served_parameters(entry, {**params, "properties": properties})
+        if served is None:
+            return None
+        properties = served["properties"]
+        unknown = [key for key in unknown if key not in properties]
     if not unknown:
         return None
-    valid = ", ".join(params["properties"]) or "none"
+    valid = ", ".join(properties) or "none"
     unwrap = (" Do not wrap the arguments in an \"arguments\" field (that shape is only for tool_call);"
               " pass each one at the top level." if "arguments" in unknown else "")
     return tool_error(f"{', '.join(unknown)}: not a parameter of {entry.name}. The tool was NOT invoked. "
@@ -134,7 +145,7 @@ def flag_unknown_args(result: Any, name: str, unknown: list[str], valid: str) ->
 
 
 def call_with_arg_checks(entry: Optional[ToolEntry], args: Any, call: Callable[[Any], Any]) -> Any:
-    """Run ``call(args)`` unless a required argument is missing; *args* is passed as received."""
+    """Run ``call(args)`` unless argument validation refuses the call; *args* is passed as received."""
     refusal, unknown, valid = check_tool_args(entry, args)
     if refusal is not None:
         return refusal

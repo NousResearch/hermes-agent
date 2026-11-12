@@ -3,9 +3,7 @@ repo: https://github.com/Frazzlesprite/hermes-cartridge
 sha: "e889a08fdb24b830881343440cecbaf77986db50"
 subdir: ""
 title: Cartridge
-description: 'A handheld ROM emulator pane that plays the user''s own .gb/.gbc files while the agent works,
-  holds the frame the instant an approval arrives, and resumes on the same frame once it is answered.
-  Desktop-only: no agent tools, hooks, middleware or env vars, and the pane makes no network calls.'
+description: "A handheld ROM emulator pane that plays the user's own .gb/.gbc files while the agent works, holds the frame the instant an approval arrives, and resumes on the same frame once it is answered. Desktop-only: no agent tools, hooks, middleware or env vars, and the pane makes no network calls. Disclosure — the pane can answer Hermes approval prompts: it shows the pending request with the same choices the chat offers (once / session / always / deny) and sends your click to Hermes through the Desktop SDK; ROMs, save states and settings stay in the plugin's own Desktop storage and nothing is sent over the network."
 maintainer: Frazzlesprite
 tier: community
 category: desktop

@@ -921,6 +921,28 @@ class TestNonStringContent:
         ]
         assert c._latest_user_task_snapshot(only_synthetic) is None
 
+    def test_task_snapshot_drops_the_inflight_replay_frame(self):
+        """#154023: a restated request carries Hermes' own replay frame; the anchor (and the
+        recent-focus hint) must quote the user's words, not the frame's imperative."""
+        from agent.context_compressor import _INFLIGHT_TASK_REPLAY_HEADER, _SUMMARY_END_MARKER
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        task = "Please summarize the changelog."
+        replay = {"role": "user", "content": f"{_INFLIGHT_TASK_REPLAY_HEADER}\n{task}",
+                  "display_metadata": {"compaction_inflight_task_restatement": True}}
+        merged = {"role": "user", "content": (
+            f"{SUMMARY_PREFIX}\n\n## Goal\n- ship the report\n\n{_SUMMARY_END_MARKER}\n\n"
+            f"{_INFLIGHT_TASK_REPLAY_HEADER}\n{task}")}
+
+        for row in (replay, c._strip_context_summary_handoff_message(merged)):
+            snapshot = c._latest_user_task_snapshot([row])
+            assert snapshot is not None and task in snapshot
+            assert "STILL IN PROGRESS" not in snapshot and "Continue it" not in snapshot
+            focus = c._derive_auto_focus_topic([row])
+            assert task in focus and "STILL IN PROGRESS" not in focus
+
     def test_grounding_preserves_following_sections_across_regrounding(self):
         """The snapshot rewrite must keep later headings intact — twice.
 

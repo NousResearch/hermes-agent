@@ -4333,7 +4333,9 @@ Write only the summary body. Do not include any preamble or prefix."""
             # display_kind notices are operational traffic, not user intent.
             if msg.get("role") != "user" or cls._is_synthetic_compression_user_turn(msg) or msg.get("display_kind"):
                 continue
-            text = _redact_compaction_text(_typed_user_text(_content_text_for_contains(msg.get("content"))).strip())
+            # A restated request carries Hermes' own replay frame and the gateway's reply pointer;
+            # neither is the user's words, so quote only the authored text (#154023).
+            text = _redact_compaction_text(_typed_user_text(_authored_request_text(msg.get("content"))).strip())
             if not text:
                 continue
             text = " ".join(text.split())
@@ -4360,7 +4362,9 @@ Write only the summary body. Do not include any preamble or prefix."""
         for msg in reversed(messages):
             if msg.get("role") != "user" or not _is_real_user_message(msg):
                 continue
-            text = _redact_compaction_text(_typed_user_text(_content_text_for_contains(msg.get("content"))).strip())
+            # A restated request carries Hermes' own replay frame and the gateway's reply pointer;
+            # neither is the user's words, so quote only the authored text (#154023).
+            text = _redact_compaction_text(_typed_user_text(_authored_request_text(msg.get("content"))).strip())
             if not text:
                 continue
             if len(text) > _ACTIVE_TASK_MAX_CHARS:

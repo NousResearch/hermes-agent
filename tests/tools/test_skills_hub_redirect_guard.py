@@ -135,6 +135,24 @@ def test_dns_failure_stays_retryable(transport, monkeypatch):
     assert len(sleeps) == 2 and seen == []
 
 
+@pytest.mark.parametrize("url", ["http://metadata.google.internal/v1/", "http://metadata.google.internal./v1/"])
+def test_unresolvable_metadata_hostname_stays_a_refusal(transport, monkeypatch, url):
+    """A host refused by name is not a transient DNS failure, even when it does not resolve."""
+    import socket
+
+    from tools import url_safety
+
+    def no_dns(host, port=None):
+        raise socket.gaierror("nxdomain")
+
+    monkeypatch.setattr(url_safety, "_getaddrinfo", no_dns)
+    monkeypatch.setattr(url_safety, "_proxy_is_configured", lambda: False)
+    monkeypatch.setattr(hub, "check_website_access", lambda _url: None)
+    with pytest.raises(hub.SkillsHubFetchBlocked):
+        hub._skills_hub_http_get(url)
+    assert transport[1] == []
+
+
 def test_redirect_chain_reuses_one_client(transport, monkeypatch):
     routes, seen = transport
     monkeypatch.setattr(hub, "is_safe_url", lambda _url: True)
@@ -159,11 +177,12 @@ def test_malformed_catalog_file_url_is_refused(transport):
     assert (files, seen) == ({}, [])
 
 
-def test_malformed_redirect_location_is_refused(transport, monkeypatch):
+@pytest.mark.parametrize("location", ["http://[", "javascript:alert(1)", "https://xn--/"])
+def test_malformed_redirect_location_is_refused(transport, monkeypatch, location):
     routes, seen = transport
     monkeypatch.setattr(hub, "is_safe_url", lambda _url: True)
     monkeypatch.setattr(hub, "check_website_access", lambda _url: None)
-    routes["https://hub.example/a"] = httpx.Response(302, headers={"location": "http://["})
+    routes["https://hub.example/a"] = httpx.Response(302, headers={"location": location})
 
     with pytest.raises(hub.SkillsHubFetchBlocked):
         hub._skills_hub_http_get("https://hub.example/a")

@@ -21,7 +21,7 @@ from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urljoin
 
 import httpx
 
@@ -140,11 +140,11 @@ def _unresolvable(url: str) -> bool:
     from tools import url_safety
 
     try:
-        host = urlsplit(url).hostname
+        host = url_safety._url_hostname(url)  # the name is_safe_url looked up
     except ValueError:
         return False  # malformed: an ordinary refusal, not a transient DNS failure
-    if not host:
-        return False
+    if not host or host in url_safety._BLOCKED_HOSTNAMES:
+        return False  # refused by name, so never retried as a DNS failure
     try:
         url_safety._getaddrinfo(host)
     except socket.gaierror:
@@ -188,6 +188,8 @@ def _skills_hub_http_get(url: str, *, timeout: float = _DEFAULT_HTTP_TIMEOUT,
                 if isinstance(exc.__cause__, socket.gaierror):
                     raise httpx.ConnectError(str(exc)) from exc
                 raise SkillsHubFetchBlocked(str(exc)) from exc
+            except (httpx.InvalidURL, UnicodeError) as exc:  # httpx builds next_request from Location
+                raise SkillsHubFetchBlocked(f"malformed redirect target from {current_url}") from exc
             location = resp.headers.get("location") if resp.status_code in _REDIRECT_STATUS_CODES else None
             if not location:
                 return resp

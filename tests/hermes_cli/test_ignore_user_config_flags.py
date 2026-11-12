@@ -162,10 +162,14 @@ class TestIgnoreUserConfigDelegationDefault:
         """cli-config.yaml.example is the user-facing statement of the same number."""
         from pathlib import Path
 
+        import re
+
         body = (Path(__file__).resolve().parents[2] / "cli-config.yaml.example").read_text(
             encoding="utf-8")
-        assert "max_iterations: 250" in body
-        assert "(default: 250)" in body
+        documented = re.search(r"max_iterations: (\d+)\s+#.*\(default: (\d+)\)", body)
+        assert documented is not None
+        default = _default("delegation", "max_iterations")
+        assert [int(n) for n in documented.groups()] == [default, default]
 
 
 class TestOneDefaultTableAndOneBypass:
@@ -265,6 +269,19 @@ class TestOneDefaultTableAndOneBypass:
         assert on_disk["display"]["skin"] == "mono"
         assert on_disk["model"]["api_key"] == "test-key-not-real"
 
+    def test_a_malformed_file_gets_the_same_refusal(self, tmp_path, monkeypatch):
+        """The refusal comes before the file is read, so broken YAML is a refusal too, not a read error."""
+        from hermes_cli import config as C
+        from hermes_cli.config_backend import ConfigWriteError
+
+        home = self._home(tmp_path, monkeypatch, "model: [unclosed\n")
+        before = (home / "config.yaml").read_bytes()
+        monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "1")
+        with pytest.raises(ConfigWriteError) as err:
+            C.save_config(C.load_config())
+        assert err.value.code == "config_user_ignored"
+        assert (home / "config.yaml").read_bytes() == before
+
     def test_a_partial_save_under_the_flag_merges_onto_the_file(self, tmp_path, monkeypatch):
         """A ``merge_existing`` save lands on the live file as it does without the flag: siblings
         stay, and an edit equal to the default is written, not dropped."""
@@ -306,12 +323,12 @@ class TestOneDefaultTableAndOneBypass:
         assert (home / "config.yaml").exists()
 
     def test_a_whole_file_save_with_no_user_file_is_not_refused(self, tmp_path, monkeypatch):
-        """With no config.yaml (or an empty one) there is nothing to overwrite."""
+        """With no config.yaml there is nothing to overwrite."""
         from hermes_cli import config as C
 
         home = self._home(tmp_path, monkeypatch)
+        (home / "config.yaml").unlink()
         monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "1")
-        assert (home / "config.yaml").read_text() == ""
         cfg = C.load_config()
         cfg["display"]["skin"] = "mono"
         C.save_config(cfg)

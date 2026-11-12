@@ -5,8 +5,8 @@ A managed worker binds its session's creation-time config (``agent.safe_worker_p
 (an ``always`` approval, a connector enable) must land only what it changed on the LIVE file:
 writing the whole snapshot back would revert every profile edit made since the session was
 created. Outside a frozen worker this is ``save_config``'s ordinary ``merge_existing`` handling,
-except that under ``--ignore-user-config`` a whole-file save over an existing file is refused:
-it would write defaults over the file. A write built from the raw file itself (a migration, a
+except that under ``--ignore-user-config`` a whole-file save over an existing file is refused
+(:func:`refuse_ignored_whole_file_save`): it would write defaults over the file. A write built from the raw file itself (a migration, a
 ``raw=True`` platform field) runs under :func:`saving_raw_file` and is not refused.
 """
 
@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import copy
+from pathlib import Path
 from typing import Any, Iterator
 
 USER_CONFIG_IGNORED = "config_user_ignored"
@@ -36,16 +37,27 @@ def saving_raw_file() -> Iterator[None]:
         _SAVING_RAW_FILE.reset(token)
 
 
+def refuse_ignored_whole_file_save(config_path: Path, merge_existing: bool) -> None:
+    """Under ``--ignore-user-config`` ``load_config()`` serves defaults, not the file, so a
+    whole-file save would replace the user's file: refuse it before the file is even read (a
+    malformed file gets the same refusal). A frozen worker rebases onto the live file instead."""
+    from hermes_cli import config as _config
+
+    if merge_existing or _SAVING_RAW_FILE.get() or not _config.user_config_ignored():
+        return
+    from hermes_cli.config_backend import ConfigWriteError, config_exists
+
+    if _config._worker_config_snapshot() is not None or not config_exists(config_path):
+        return
+    raise ConfigWriteError(USER_CONFIG_IGNORED_MESSAGE, code=USER_CONFIG_IGNORED)
+
+
 def rebase_for_save(config: dict[str, Any], live_raw: dict[str, Any], merge_existing: bool) -> dict[str, Any]:
     from hermes_cli import config as _config
 
     snapshot = _config._worker_config_snapshot()
     if snapshot is not None:
         return _three_way(live_raw or {}, config, _config.load_config(), _frozen_for_deletion(snapshot))
-    if not merge_existing and live_raw and not _SAVING_RAW_FILE.get() and _config.user_config_ignored():
-        # load_config() served defaults, not the file: a whole-file save would replace the user's file.
-        from hermes_cli.config_backend import ConfigWriteError
-        raise ConfigWriteError(USER_CONFIG_IGNORED_MESSAGE, code=USER_CONFIG_IGNORED)
     if merge_existing and live_raw:
         return _config._merge_partial_save(live_raw, config)
     return config

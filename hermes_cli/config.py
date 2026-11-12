@@ -2339,6 +2339,8 @@ def save_config(
 
         config_path = get_config_path()
         _refuse_failed_read(config_path, config)
+        from hermes_cli.config_worker_save import rebase_for_save, refuse_ignored_whole_file_save
+        refuse_ignored_whole_file_save(config_path, merge_existing)
         config = _strip_managed_keys_for_save(config)
 
         ensure_hermes_home()
@@ -2349,7 +2351,6 @@ def save_config(
         # strip pass drop every user section whose value matches a default (#113301).
         from hermes_cli.config_backend import keeping_read_base
         _raw_for_paths = keeping_read_base(lambda: require_readable_config_before_write(config_path))
-        from hermes_cli.config_worker_save import rebase_for_save  # frozen-worker writes + merge_existing
         config = rebase_for_save(config, _raw_for_paths, merge_existing)
 
         normalized = current_normalized = _canonicalize_config(config)

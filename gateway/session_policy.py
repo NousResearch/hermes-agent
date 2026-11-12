@@ -6,6 +6,7 @@ from functools import cached_property
 import contextlib
 import json
 import logging
+import ntpath
 from pathlib import Path
 
 from persistence.core.errors import AuthorityRefusal
@@ -1034,6 +1035,20 @@ def _policy_refused(field: str, detail: str) -> AuthorityRefusal:
     return AuthorityRefusal('storage_unavailable', field=field, detail=detail)
 
 
+def _stored_cwd_is_absolute(cwd: str) -> bool:
+    """Whether a RECEIPT's cwd is absolute in the spelling the machine that wrote it used.
+
+    A stored cwd records where the session was created, not where this host may run it: a Windows
+    install keeps ``C:\\Users\\<user>`` (not ``Path.is_absolute()`` on POSIX) and a POSIX install keeps
+    ``/home/<user>`` (not absolute to ``WindowsPath``). Judging it with this host's ``Path`` rejected
+    the whole otherwise-valid policy, so every control on a migrated session answered
+    ``storage_unavailable``; ``ntpath.isabs`` covers the foreign spelling while still refusing a
+    relative or drive-relative (``C:hermes``) path. Running a turn in that folder stays refused, by
+    name, through :func:`workspace_ready` -> ``workspace_unavailable``.
+    """
+    return Path(cwd).is_absolute() or ntpath.isabs(cwd)
+
+
 def restore_policy(data):
     """Reject incomplete private policy rather than rebuilding from current defaults.
 
@@ -1054,7 +1069,7 @@ def restore_policy(data):
         if not is_forward_policy(policy) and not source_ok:
             raise _policy_refused('source', f'stored source/platform {policy.source}/'
                                             f'{policy.platform} is not a known surface pair')
-        if not isinstance(policy.cwd, str) or not Path(policy.cwd).is_absolute():
+        if not isinstance(policy.cwd, str) or not _stored_cwd_is_absolute(policy.cwd):
             raise _policy_refused('cwd', 'the stored working directory is missing or not absolute')
         # model=None/'' is what our own writers persist when the model cannot be resolved (session_local
         # ``or None``, session_kanban's raw resolution); the launch path resolves an empty policy model

@@ -115,6 +115,36 @@ it.each(cases)('reserves $kind frames through cold decode, warm return and failu
   }
 })
 
+it('keeps a framed portrait markdown image inside its reserved frame (#154409)', async () => {
+  const view = render(<MarkdownImage alt="portrait" src="/geometry/portrait.png" />)
+  expect(parseFloat(frame(view.container).style.aspectRatio)).toBeCloseTo(4 / 3)
+  await decode(view.container, 1080, 1920)
+
+  // max-h-full on the image only caps it when every box up to the frame has
+  // a definite height: the frame (aspect-ratio), the absolute container and
+  // the click target.
+  const img = view.container.querySelector('img')!
+  const button = img.closest('button')!
+  const container = button.closest('[data-slot="aui_zoomable-image"]')!
+  expect(img.className.split(' ')).toContain('max-h-full')
+  expect(button.className.split(' ')).toContain('h-full')
+  expect(container.className.split(' ')).toContain('h-full')
+})
+
+it('leaves an unframed markdown image button at its natural height', async () => {
+  const path = '/geometry/unframed.png'
+  const first = render(<MarkdownImage alt="unframed" src={path} />)
+  await decode(first.container)
+  fireEvent.error(first.container.querySelector('img')!)
+  first.unmount()
+
+  const retry = render(<MarkdownImage alt="unframed" src={path} />)
+  expect(frame(retry.container)?.style.aspectRatio ?? '').toBe('')
+  await decode(retry.container, 1080, 1920)
+  const button = retry.container.querySelector('img')!.closest('button')!
+  expect(button.className.split(' ')).not.toContain('h-full')
+})
+
 it('keeps the pending generated-image frame when its result arrives', async () => {
   const path = '/geometry/pending.svg'
   const mounted = render(<GeneratedImage aspectRatio="square" />)

@@ -21,6 +21,11 @@ import textwrap
 
 import pytest
 
+
+def _default(*keys: str):
+    from hermes_cli.config import DEFAULT_CONFIG, cfg_get
+    return cfg_get(DEFAULT_CONFIG, *keys)
+
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
     """Ensure the two env-var gates start AND end each test in a known state.
@@ -124,42 +129,30 @@ class TestIgnoreUserConfigEnvGate:
         assert cfg["model"].get("default", "") not in ("test-vendor/project-sentinel", "test-vendor/user-sentinel")
 
 class TestIgnoreUserConfigDelegationDefault:
-    """``--ignore-user-config`` must not silently shrink the subagent iteration budget.
-
-    ``tools.delegate_tool_config._load_config()`` documents that
-    ``HERMES_IGNORE_USER_CONFIG=1`` "is only honored by the legacy loader, so it stays
-    authoritative when that flag is set" — i.e. the whole ``delegation`` section comes from
-    ``cli._cli_config_defaults()``, bypassing ``hermes_cli.config.DEFAULT_CONFIG``. Those two
-    default tables have to agree, or an isolated run gets a different cap from every other run.
-    """
+    """``--ignore-user-config`` must not silently shrink the subagent iteration budget: the
+    delegation reader must give the same cap as ``DEFAULT_CONFIG``."""
 
     def test_builtin_delegation_default_matches_the_delegate_tool_default(self):
         """The CLI's built-in default (``hermes_cli/cli_config_load.py``, re-exported by ``cli``) is the
         value a `--ignore-user-config` run actually uses."""
         import cli
-        from hermes_cli.config_defaults import DEFAULT_CONFIG
         from tools.delegate_tool import DEFAULT_MAX_ITERATIONS
 
-        assert DEFAULT_MAX_ITERATIONS == DEFAULT_CONFIG["delegation"]["max_iterations"] == 250
+        assert DEFAULT_MAX_ITERATIONS == _default("delegation", "max_iterations")
         assert cli._cli_config_defaults()["delegation"]["max_iterations"] == DEFAULT_MAX_ITERATIONS
 
-    def test_ignore_user_config_resolves_the_shared_iteration_cap(self, monkeypatch):
-        """End-to-end through the reader ``delegate_task`` calls for its iteration cap.
-
-        ``CLI_CONFIG`` is pinned to the built-in defaults so the assertion cannot be flipped by a
-        developer's untracked repo-root ``cli-config.yaml`` (the file ``load_cli_config`` falls back
-        to when the flag is set — see the NOTE on ``_write_user_config`` above).
-        """
-        import cli
+    def test_ignore_user_config_resolves_the_shared_iteration_cap(self, tmp_path, monkeypatch):
+        """End-to-end through the reader ``delegate_task`` calls for its iteration cap."""
         from tools import delegate_tool_config
         from tools.delegate_tool import DEFAULT_MAX_ITERATIONS
 
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text("delegation:\n  max_iterations: 7\n")
         monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "1")
-        monkeypatch.setattr(cli, "CLI_CONFIG", cli._cli_config_defaults())
 
         cfg = delegate_tool_config._load_config()
 
-        assert cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS) == DEFAULT_MAX_ITERATIONS, (
+        assert cfg["max_iterations"] == DEFAULT_MAX_ITERATIONS, (
             "an --ignore-user-config run resolved a different subagent iteration cap than "
             "delegation.max_iterations; migration 36 raised this to 250 because a smaller cap "
             "truncated substantial delegated work"
@@ -169,7 +162,62 @@ class TestIgnoreUserConfigDelegationDefault:
         """cli-config.yaml.example is the user-facing statement of the same number."""
         from pathlib import Path
 
+        import re
+
         body = (Path(__file__).resolve().parents[2] / "cli-config.yaml.example").read_text(
             encoding="utf-8")
-        assert "max_iterations: 250" in body
-        assert "(default: 250)" in body
+        documented = re.search(r"max_iterations: (\d+)\s+#.*\(default: (\d+)\)", body)
+        assert documented is not None
+        default = _default("delegation", "max_iterations")
+        assert [int(n) for n in documented.groups()] == [default, default]
+
+
+class TestSharedDefaults:
+    """The classic CLI reads shared defaults without changing ignore-config policy."""
+
+    def _home(self, tmp_path, monkeypatch, text=""):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(text)
+        import cli
+        monkeypatch.setattr(cli, "_hermes_home", tmp_path)
+        return tmp_path
+
+    def test_classic_cli_defaults_are_the_shared_defaults(self, tmp_path, monkeypatch):
+        """An empty config.yaml gives ``hermes chat`` the turn cap and subagent cap that load_config
+        (gateway, TUI, dashboard) gives: unlimited and 250."""
+        from hermes_cli.config import load_config
+
+        self._home(tmp_path, monkeypatch)
+        import cli
+        cfg, shared = cli.load_cli_config(), load_config()
+
+        assert cfg["agent"]["max_turns"] == shared["agent"]["max_turns"] == _default("agent", "max_turns")
+        assert cfg["delegation"]["max_iterations"] == shared["delegation"]["max_iterations"] == (
+            _default("delegation", "max_iterations"))
+
+    def test_a_shell_terminal_timeout_survives_a_file_terminal_section(self, tmp_path, monkeypatch):
+        """``hermes chat`` mirrors the file's terminal section to env; a key the file does not set
+        must not export a built-in default over the user's TERMINAL_TIMEOUT."""
+        self._home(tmp_path, monkeypatch, "terminal:\n  backend: local\n")
+        monkeypatch.setenv("TERMINAL_TIMEOUT", "600")
+        import cli
+        cli.load_cli_config()
+        assert os.environ["TERMINAL_TIMEOUT"] == "600"
+
+
+
+@pytest.mark.parametrize("limit,label", [(19, "19"), (None, "unlimited")])
+def test_classic_config_renders_the_resolved_budget(capsys, limit, label):
+    from datetime import datetime
+    from cli import HermesCLI
+    from hermes_cli.config import resolve_turn_limit
+    resolved = resolve_turn_limit(limit)
+    stand_in = HermesCLI.__new__(HermesCLI)
+    stand_in.api_key, stand_in.agent, stand_in.model, stand_in.base_url = None, None, "test/model", "local"
+    stand_in.max_turns, stand_in.enabled_toolsets, stand_in.verbose = resolved, [], False
+    stand_in.session_start = datetime(2026, 1, 1)
+    HermesCLI.show_config(stand_in)
+    output = capsys.readouterr().out
+    assert label in output
+    if limit is None:
+        assert str(resolved) not in output

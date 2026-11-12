@@ -1,6 +1,6 @@
 name: wearos
 repo: https://github.com/borealBytes/hermes-wearos-plugin
-sha: 1140a35406ed735f12adf701fd37415406f306a0
+sha: a3a52805855ff4f7e7ef88e9318f5e49af89e44f
 subdir: ""
 description: >-
   The whole Hermes gateway on a Wear OS watch: the watch enrolls its own tailnet node, pairs with

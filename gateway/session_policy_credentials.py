@@ -173,9 +173,8 @@ def _url(value):
     return normalize_route_base_url(str(value or '').strip())
 
 
-def _binding(config, path):
-    """Digest of the endpoint the secret at *path* authenticates in the frozen *config* (a terminal-scope
-    secret, ``path[0] is None``, authenticates no endpoint)."""
+def _endpoint_snapshot(config, path):
+    """The ``[path, endpoint]`` payload ``_binding`` digests for the secret at *path*."""
     owner = _owner_block(config, path) if path and path[0] is not None else None
     block = _defined(config, owner) if owner else _ABSENT
     endpoint = {k: block[k] for k in _ENDPOINT_KEYS if k in block} if isinstance(block, dict) else {}
@@ -189,7 +188,55 @@ def _binding(config, path):
     for key in _URL_KEYS:
         if isinstance(endpoint.get(key), str):
             endpoint[key] = _url(endpoint[key])
-    return hashlib.sha256(json.dumps([list(path), endpoint], sort_keys=True).encode()).hexdigest()
+    return [list(path), endpoint]
+
+
+def _digest_binding(payload):
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def _binding(config, path):
+    """Digest of the endpoint the secret at *path* authenticates in the frozen *config* (a terminal-scope
+    secret, ``path[0] is None``, authenticates no endpoint)."""
+    return _digest_binding(_endpoint_snapshot(config, path))
+
+
+def _identity_aliases(identity):
+    """Spellings of one route identity that #151775 changed without moving the endpoint.
+
+    A bare built-in name that also keys a ``providers:`` entry used to resolve to the built-in
+    (``openrouter``). After #151775 it resolves to ``custom:<name>``. The URL is unchanged; only
+    the identity string in the digest moved, which would otherwise refuse every pre-update session
+    (#154342).
+    """
+    name = str(identity or '')
+    aliases = [name]
+    if name.startswith('custom:'):
+        bare = name.split(':', 1)[1].strip()
+        if bare:
+            aliases.append(bare)
+    elif name and name not in ('auto', 'main', 'custom'):
+        aliases.append(f'custom:{name}')
+    return list(dict.fromkeys(aliases))
+
+
+def _compatible_bindings(config, path):
+    """The current binding plus digests that differ only by a #151775 identity spelling."""
+    payload = _endpoint_snapshot(config, path)
+    path_list, endpoint = payload
+    digests = {_digest_binding(payload)}
+    resolved = endpoint.get('resolved')
+    if not (isinstance(resolved, list) and len(resolved) >= 2):
+        return digests
+    # Last element is the normalized URL; the identity sits immediately before it
+    # (``[identity, url]``, or ``['main', identity, url]`` when an auxiliary route follows model).
+    idx = len(resolved) - 2
+    for alias in _identity_aliases(resolved[idx]):
+        variant = dict(endpoint)
+        variant['resolved'] = list(resolved)
+        variant['resolved'][idx] = alias
+        digests.add(_digest_binding([path_list, variant]))
+    return digests
 
 
 def config_reference(authority, session_id, policy, secrets):
@@ -226,7 +273,8 @@ def _check_scope(authority, source, policy, home, skip):
         return
     config = json.loads(policy.config_json)
     for path, digest in source['bound']:
-        if path[0] not in skip and not hmac.compare_digest(_binding(config, path), digest):
+        if path[0] not in skip and not any(
+                hmac.compare_digest(candidate, digest) for candidate in _compatible_bindings(config, path)):
             raise RuntimeStoreError('launch_credentials_unavailable', field=_field(path),
                                     detail='its endpoint moved in the session policy without a re-bind')
 

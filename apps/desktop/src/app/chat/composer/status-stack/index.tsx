@@ -37,7 +37,7 @@ import { $previewStatusBySession, dismissPreviewArtifact } from '@/store/preview
 import { $sessionControlBySession, refreshSessionControl } from '@/store/session-control'
 import { $sharedMetricsConsent, sharedMetricsOfferPending } from '@/store/shared-metrics'
 import { $threadScrolledUpBySession } from '@/store/thread-scroll'
-import { $retainedTodosBySession } from '@/store/todos'
+import { $retainedTodosBySession, $retainedTodosExpanded, setRetainedTodosExpanded } from '@/store/todos'
 import { openSessionInNewWindow } from '@/store/windows'
 
 import { PreviewStatusRow } from './preview-row'
@@ -126,7 +126,11 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
   // items actually changed.
   const items = useSessionSlice($statusItemsBySession, sessionId)
   const retainedTodos = useSessionSlice($retainedTodosBySession, sessionId)
-  const busy = useStore(useSessionView().$busy)
+
+  const retainedExpanded = useStoreSelector($retainedTodosExpanded, map =>
+    Boolean(sessionId && Object.hasOwn(map, sessionId))
+  )
+
   const previews = useSessionSlice($previewStatusBySession, sessionId)
   const controlEntry = useSessionValue($sessionControlBySession, sessionId)
 
@@ -310,30 +314,35 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
 
   // A settled snapshot is reviewable but never re-enters the live progress
   // feed. Only show this disclosure once the live Todo section has retired.
-  if (!busy && retainedTodos.length > 0 && !groups.some(group => group.type === 'todo')) {
+  // It stays put through turns: unmounting it on every prompt and remounting
+  // it at turn end made the stack jump and dropped the user's disclosure.
+  if (sessionId && retainedTodos.length > 0 && !groups.some(group => group.type === 'todo')) {
     const done = retainedTodos.filter(todo => todo.status === 'completed').length
     sections.push({
       key: 'retained-todo',
       node: (
         <StatusSection
-          defaultCollapsed
+          collapsed={!retainedExpanded}
           icon={<Codicon className="text-muted-foreground/70" name="checklist" size="0.8rem" />}
           label={t.statusStack.previousTodos(done, retainedTodos.length)}
+          onCollapsedChange={collapsed => setRetainedTodosExpanded(sessionId, !collapsed)}
         >
-          {todoTree(retainedTodos).map(([todo, depth]) => (
-            <StatusItemRow
-              historical
-              item={{
-                depth,
-                id: `retained-todo:${todo.id}`,
-                state: 'done',
-                title: todo.content,
-                todoStatus: todo.status,
-                type: 'todo'
-              }}
-              key={todo.id}
-            />
-          ))}
+          <div className="max-h-[25vh] overflow-y-auto overscroll-y-auto" data-slot="status-retained-todos">
+            {todoTree(retainedTodos).map(([todo, depth]) => (
+              <StatusItemRow
+                historical
+                item={{
+                  depth,
+                  id: `retained-todo:${todo.id}`,
+                  state: 'done',
+                  title: todo.content,
+                  todoStatus: todo.status,
+                  type: 'todo'
+                }}
+                key={todo.id}
+              />
+            ))}
+          </div>
         </StatusSection>
       )
     })

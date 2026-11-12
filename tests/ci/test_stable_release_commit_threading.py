@@ -123,6 +123,7 @@ CONTROLLER_REFERENCES = (
     ("key: visual-baselines-${{ github.ref_name }}", "restores main's baselines and never writes them for a stable run"),
     ("inputs.ref == github.sha", "saves candidates only for the triggering commit, so a stable claim never writes"),
     ("inputs.channel-build != '' && inputs.controller-sha", "smoke tests the staged artifact with the dispatched ref's scripts"),
+    ("cancel-in-progress: ${{ inputs.release != true &&", "only decides whether a side-branch dispatch supersedes its predecessor; a stable run short-circuits on inputs.release"),
 )
 FALLBACK = re.compile(r"inputs\.(commit|ref|sha) \|\|")
 REFERENCE = re.compile(r"GITHUB_SHA|github\.sha|github\.ref_name|github\.ref\b|GITHUB_REF")

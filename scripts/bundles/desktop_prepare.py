@@ -63,7 +63,7 @@ def selected_tool_inputs(request: BuildRequest) -> list[Path]:
     from pm.build_operations import verified_tools
     from pm.lock import Lockfile
 
-    selection = verified_tools(["python", "node", "npm"], source_store=request.cache / "tools",
+    selection = verified_tools(["python", "node", "pnpm"], source_store=request.cache / "tools",
                                target=request.target, lock=Lockfile(request.source / "pm/lock.json"))
     return [entry.path for entry in selection.entries.values()]
 

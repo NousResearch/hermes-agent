@@ -8,7 +8,7 @@ import { frontendArgs, isMain, productOutput, repoRoot, withProduct, workspaceTo
 import { recordProduct, buildInputs } from './freshness.mjs'
 
 // --- Bounded build (#63338) -------------------------------------------------
-// `npm run build` drives Vite 8's Rust-native bundler (Rolldown), whose rayon
+// `pnpm run build` drives Vite 8's Rust-native bundler (Rolldown), whose rayon
 // thread pool saturates every CPU on small hosts (200%+ `top` readings, OOMs
 // and frozen SSH sessions on 2–4 vCPU VPS boxes). Vite exposes no worker knob,
 // but Rolldown's native binding honours RAYON_NUM_THREADS, and V8's heap is

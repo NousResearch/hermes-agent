@@ -319,19 +319,59 @@ def _parse_structured_text(*, text: str, json_mode: bool, json_schema: Optional[
     a missing ``jsonschema`` package skips validation with a debug log."""
     if not (json_mode or json_schema is not None) or not text:
         return None, "text"
-    try:
-        parsed = json.loads(_strip_code_fences(text))
-    except (json.JSONDecodeError, ValueError):
-        return None, "text"
-    if json_schema is not None:
+    # The released order: the first fenced block (else the stripped reply) is the answer when it
+    # parses. Only when it does not parse or fit the schema is the whole reply tried, for a JSON
+    # value whose strings hold ``` fences; that fallback never adds an error of its own.
+    fenced, whole = _strip_code_fences(text), text.strip()
+    parsed = _json_or_missing(fenced)
+    if parsed is not _NOT_JSON:
         try:
-            import jsonschema  # type: ignore[import-untyped]
-            jsonschema.validate(parsed, json_schema)
-        except ImportError:
-            logger.debug("jsonschema unavailable; skipping schema validation")
-        except jsonschema.ValidationError as exc:  # type: ignore[attr-defined]
-            raise ValueError(f"Plugin LLM structured output did not match schema: {exc.message}") from exc
-    return parsed, "json"
+            _check_schema(parsed, json_schema)
+            return parsed, "json"
+        except ValueError:
+            if whole == fenced or (parsed := _whole_reply(whole, json_schema)) is _NOT_JSON:
+                raise
+            return parsed, "json"
+    parsed = _whole_reply(whole, json_schema) if whole != fenced else _NOT_JSON
+    return (None, "text") if parsed is _NOT_JSON else (parsed, "json")
+
+
+_NOT_JSON = object()
+
+
+def _json_or_missing(candidate: str) -> Any:
+    try:
+        return json.loads(candidate)
+    except (json.JSONDecodeError, ValueError):
+        return _NOT_JSON
+
+
+def _check_schema(parsed: Any, json_schema: Optional[Any]) -> None:
+    """ValueError when ``parsed`` does not match ``json_schema``; no-op without ``jsonschema``."""
+    if json_schema is None:
+        return
+    try:
+        import jsonschema  # type: ignore[import-untyped]
+        jsonschema.validate(parsed, json_schema)
+    except ImportError:
+        logger.debug("jsonschema unavailable; skipping schema validation")
+    except jsonschema.ValidationError as exc:  # type: ignore[attr-defined]
+        raise ValueError(f"Plugin LLM structured output did not match schema: {exc.message}") from exc
+
+
+def _whole_reply(whole: str, json_schema: Optional[Any]) -> Any:
+    """The whole reply parsed and fitting the schema, else ``_NOT_JSON`` (never raises).
+
+    A fallback only: any failure here (a reply or schema that exhausts the recursion limit, an
+    invalid schema, a ``$ref`` that does not resolve) leaves the released outcome of the
+    fenced-block path in place."""
+    try:
+        parsed = _json_or_missing(whole)
+        if parsed is not _NOT_JSON:
+            _check_schema(parsed, json_schema)
+        return parsed
+    except Exception:  # health: allow BLE001 -- the fallback never adds an error of its own
+        return _NOT_JSON
 
 
 def _extract_usage(response: Any) -> PluginLlmUsage:

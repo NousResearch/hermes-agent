@@ -1,9 +1,4 @@
 import { forceRedraw, type MouseTrackingMode } from '@hermes/ink'
-
-import { DASHBOARD_TUI_MODE, NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.js'
-import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
-import { hotkeys } from '../../../content/hotkeys.js'
-import { isSectionName, nextDetailsMode, parseDetailsMode, SECTION_NAMES } from '../../../domain/details.js'
 import type {
   ConfigFullResponse,
   ConfigGetValueResponse,
@@ -16,7 +11,12 @@ import type {
   SessionUndoResponse,
   SlashExecResponse,
   SystemBatteryResponse
-} from '../../../gatewayTypes.js'
+} from '@hermes/shared/gateway-types'
+
+import { DASHBOARD_TUI_MODE, NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.js'
+import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
+import { hotkeys } from '../../../content/hotkeys.js'
+import { isSectionName, nextDetailsMode, parseDetailsMode, SECTION_NAMES } from '../../../domain/details.js'
 import { t } from '../../../i18n/runtime.js'
 import { writeClipboardText } from '../../../lib/clipboard.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'
@@ -925,6 +925,10 @@ export const coreCommands: SlashCommand[] = [
             ctx.transcript.sys(
               t(r.removed === 1 ? 'slashCmd.core.undo.undidOne' : 'slashCmd.core.undo.undidOther', String(r.removed))
             )
+
+            if (r.undo_hint?.text) {
+              ctx.transcript.sys(r.undo_hint.text)
+            }
           } else {
             ctx.transcript.sys(t('slashCmd.core.undo.nothing'))
           }

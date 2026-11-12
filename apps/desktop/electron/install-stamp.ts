@@ -1,7 +1,7 @@
 // install-stamp.ts — the typed build-time install stamp.
 //
 // scripts/write-build-stamp.mjs writes build/install-stamp.json during
-// `npm run build`.
+// `pnpm run build`.
 // bundle-electron-main.mjs bakes that file into the
 // production bundle by defining the __HERMES_INSTALL_STAMP__ global as
 // the stamp.  The stamp is a constant of the artifact.

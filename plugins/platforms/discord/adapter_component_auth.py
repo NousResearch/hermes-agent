@@ -80,3 +80,21 @@ def _component_check_auth(
         except Exception:
             pass
     return False
+
+
+def opener_refusal(view, interaction) -> Optional[str]:
+    """The localized "only X can answer" note when *interaction*'s clicker may not answer *view*: a
+    picker card (its opener or an admin) or the ``/update`` prompt (its ``/update`` sender or an
+    admin), per ``gateway.approval_actor``; ``None`` for every other view or an allowed clicker."""
+    from gateway.approval_actor import picker_refusal, refusal_text, update_prompt_refusal
+
+    actor = getattr(getattr(interaction, "user", None), "id", "")
+    extra = getattr(view, "answer_extra", None) or {}
+    on_selected = getattr(view, "on_model_selected", None) or getattr(view, "on_choice_selected", None)
+    if on_selected is not None:
+        requester = picker_refusal(on_selected, actor, extra=extra)
+    elif getattr(view, "is_update_prompt", False):
+        requester = update_prompt_refusal(actor, extra=extra)
+    else:
+        return None
+    return refusal_text(requester) if requester else None

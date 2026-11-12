@@ -184,20 +184,22 @@ def test_windows_local_backend_gets_false_without_probing(configured_password, m
     env = _RecordingEnv()
     env.is_local = True
     monkeypatch.setattr(askpass.platform, "system", lambda: "Windows")
-    assert env._sudo_askpass_supported() is False
     assert env._prepare_command("sudo true") == ("sudo -S -p '' true", f"{PW}\n")
     assert env.calls == []
 
 
 def test_probe_error_counts_as_unsupported(configured_password):
     env = _RecordingEnv()
+    attempts = []
 
-    def _broken_run_bash(*_args, **_kwargs):
+    def _broken_run_bash(cmd_string, **_kwargs):
+        attempts.append(cmd_string)
         raise OSError("backend gone")
 
     env._run_bash = _broken_run_bash
-    assert env._sudo_askpass_supported() is False
     assert env._prepare_command("sudo true") == ("sudo -S -p '' true", f"{PW}\n")
+    assert env._prepare_command("sudo true") == ("sudo -S -p '' true", f"{PW}\n")
+    assert len(attempts) <= 1
 
 
 # --- 4. probe cached ------------------------------------------------------------------------------
@@ -530,26 +532,28 @@ def _probe_env(tmp_path, bin_dir):
 
 
 @_needs_posix_shell
-def test_capability_probe_live_passes_with_askpass_capable_sudo(tmp_path):
+def test_capability_probe_live_passes_with_askpass_capable_sudo(tmp_path, configured_password):
     _write_fake_sudo(tmp_path / "bin")
     env = _probe_env(tmp_path, tmp_path / "bin")
-    assert env._sudo_askpass_supported() is True
+    exec_command, sudo_stdin = env._prepare_command("sudo id -u")
+    assert exec_command == askpass.build_prologue(1, TOKEN) + 'SUDO_ASKPASS="$__hermes_sudo_dir/a" sudo -A id -u'
+    assert sudo_stdin == PW + "\n"
     assert list(tmp_path.glob("hermes-sudo.*")) == []
 
 
 @_needs_posix_shell
-def test_capability_probe_live_fails_when_sudo_rejects_askpass(tmp_path):
+def test_capability_probe_live_fails_when_sudo_rejects_askpass(tmp_path, configured_password):
     _write_fake_sudo(tmp_path / "bin", accepts_askpass=False)
     env = _probe_env(tmp_path, tmp_path / "bin")
-    assert env._sudo_askpass_supported() is False
+    assert env._prepare_command("sudo id -u") == ("sudo -S -p '' id -u", PW + "\n")
     assert list(tmp_path.glob("hermes-sudo.*")) == []
 
 
 @_needs_posix_shell
-def test_capability_probe_live_fails_without_sudo(tmp_path):
+def test_capability_probe_live_fails_without_sudo(tmp_path, configured_password):
     empty = tmp_path / "empty-bin"
     empty.mkdir()
     env = _probe_env(tmp_path, empty)
     if shutil.which("sudo", path=f"{empty}:/usr/bin:/bin"):
         pytest.skip("a sudo binary is on the fixed PATH")
-    assert env._sudo_askpass_supported() is False
+    assert env._prepare_command("sudo id -u") == ("sudo -S -p '' id -u", PW + "\n")

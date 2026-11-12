@@ -80,12 +80,7 @@ class CustomProfile(ProviderProfile):
                 # "none" / "default"; any graded level ("medium", "high") 400s (#75089).
                 top_level["reasoning_effort"] = "default"
             elif effort:
-                # A managed local model's chat template can raise on a level, which llama-server
-                # returns as HTTP 500, so the catalog lists the levels that template accepts.
-                from hermes_cli.local_runtime.capabilities import managed_reasoning_efforts
-                accepted = managed_reasoning_efforts(
-                    "custom", str(ctx.get("base_url") or ""), str(ctx.get("model") or ""))
-                top_level["reasoning_effort"] = clamp_effort(effort, accepted or OPENAI_COMPAT_WIRE_EFFORTS)
+                top_level["reasoning_effort"] = clamp_effort(effort, OPENAI_COMPAT_WIRE_EFFORTS)
         return extra_body, top_level
 
     def fetch_models(

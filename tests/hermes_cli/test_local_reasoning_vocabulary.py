@@ -41,8 +41,18 @@ def test_qwen38_gets_the_nearest_level_its_template_accepts(managed_endpoint, as
     assert _wire_effort(_model("qwen3.8-27b"), {"enabled": True, "effort": asked}) == sent
 
 
-def test_turning_thinking_off_still_sends_none(managed_endpoint):
-    assert _wire_effort(_model("qwen3.8-27b"), {"enabled": False}) == "none"
+@pytest.mark.parametrize("off", [{"enabled": False}, {"enabled": True, "effort": "none"}])
+def test_turning_thinking_off_still_sends_none(managed_endpoint, off):
+    assert _wire_effort(_model("qwen3.8-27b"), off) == "none"
+
+
+def test_a_background_call_to_the_same_model_is_clamped_too(managed_endpoint):
+    from agent.auxiliary_client import _build_call_kwargs
+
+    kwargs = _build_call_kwargs(
+        "custom", _model("qwen3.8-27b"), [{"role": "user", "content": "Hello"}],
+        reasoning_config={"enabled": True, "effort": "max"}, base_url=MANAGED)
+    assert kwargs["reasoning_effort"] == "xhigh"
 
 
 def test_a_model_whose_template_takes_any_level_keeps_the_request(managed_endpoint):
@@ -64,6 +74,7 @@ def test_the_picker_hint_names_the_level_actually_sent(managed_endpoint):
     assert (info["reasoning_effort"], info["reasoning_effort_wire"]) == ("max", "xhigh")
     assert effort_display_label("max", "llamacpp", model_id) == "max (sends xhigh on this route)"
     assert effort_display_label("high", "llamacpp", model_id) == "high"
+    assert effort_display_label("none", "llamacpp", model_id) == "none"
 
 
 def test_catalog_effort_levels_are_levels_hermes_can_send():

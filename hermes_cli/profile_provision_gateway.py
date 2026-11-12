@@ -98,17 +98,6 @@ def _made_here(made: ProfileCreateReceipt, local: Optional[Path], was_profile: b
             and profile_matches_home(local.name, Path(made.path)))
 
 
-def _this_homes_owner() -> Optional[str]:
-    """The ``instance_id`` of the ready gateway serving this home, or None (discovery only)."""
-    from hermes_cli.sessions_owner import live_owner
-    try:
-        owner = live_owner()
-    except Exception:
-        logger.debug("profile create: local gateway discovery failed", exc_info=True)
-        return None
-    return getattr(owner, "instance_id", None) if owner is not None else None
-
-
 async def _described_instance(client) -> Optional[str]:
     """The ``instance_id`` the connected gateway reports (``runtime.describe``), or None when it doesn't."""
     try:
@@ -143,13 +132,13 @@ def create_through_gateway(request: ProfileCreateRequest) -> Optional[ProfileCre
         if not profile:
             raise GatewayCreateError(f"this terminal's HERMES_HOME is not a named profile, so {where} cannot "
                                      "create from it; nothing was created")
-    else:
+    if not remote or request.alias:
         try:
             endpoint = live_owner()
         except Exception:
-            logger.debug("profile create: gateway discovery failed; creating locally", exc_info=True)
-        if endpoint is None:
-            return None
+            logger.debug("profile create: gateway discovery failed", exc_info=True)
+    if not remote and endpoint is None:
+        return None
     from hermes_cli.gateway_client import GatewayRPCError, NOT_SENT, connect_gateway
     machine = " on the gateway's machine" if remote else ""
     unknown = f"{where} may have created '{request.name}'; check `hermes profile list`{machine} before retrying"
@@ -158,13 +147,13 @@ def create_through_gateway(request: ProfileCreateRequest) -> Optional[ProfileCre
     # A discovered owner serves this home. A URL's gateway is this home's owner only if it reports the
     # instance this home's discovery names: path equality is no proof (another machine with the same home
     # layout reports the same path while a local create of the name runs), nor is a loopback URL.
-    ours = endpoint is not None
-    owner_here = _this_homes_owner() if remote and request.alias else None
+    ours = not remote
+    owner_here = endpoint.instance_id if remote and endpoint is not None else None
     attached = False
 
     async def _run():
         nonlocal attached, ours
-        async with connect_gateway(endpoint) as client:
+        async with connect_gateway(None if remote else endpoint) as client:
             attached = True
             if owner_here is not None:
                 ours = await _described_instance(client) == owner_here
@@ -178,7 +167,8 @@ def create_through_gateway(request: ProfileCreateRequest) -> Optional[ProfileCre
         raise GatewayCreateError(f"interrupted; {unknown}") from None
     except GatewayRPCError as exc:
         draining = _refusal_key(exc) == _DRAINING
-        if exc.code in _OLDER_OR_RETIRING or exc.unknown_method or draining:
+        unknown_method = exc.unknown_method and exc.code in (None, -32601)
+        if exc.code in _OLDER_OR_RETIRING or unknown_method or draining:
             if remote:
                 why = "is restarting; retry" if exc.code == 5035 or draining else (
                     "predates this version; update it, or unset HERMES_TUI_GATEWAY_URL to create locally")

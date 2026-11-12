@@ -2,12 +2,7 @@ name: zedmode
 repo: https://github.com/latentJake/hermes-zenmode
 sha: 0e6ebbacb1696e49d28181c37ff382ca41b05ec1
 title: Zed Mode
-description: 'Every Hermes Desktop conversation in one stack that recedes into the screen, ordered like an
-  inbox: failed, needs you, working, unread, pinned, then the rest. Answer approvals and questions on the card,
-  hold a thread beside the stack, start or branch a chat without leaving, switch a live chat''s model, and tune
-  the 3D live. Desktop plugin (desktop/plugin.js inside the plugin SDK surface) plus a read-only dashboard
-  backend that reads the session list from state.db. No network, no credentials, no agent tools, hooks,
-  middleware or env vars.'
+description: "Every Hermes Desktop conversation in one stack that recedes into the screen, ordered like an inbox: failed, needs you, working, unread, pinned, then the rest. Answer approvals and questions on the card, hold a thread beside the stack, start or branch a chat without leaving, switch a live chat's model, and tune the 3D live. Desktop plugin (desktop/plugin.js inside the plugin SDK surface) plus a read-only dashboard backend that reads the session list from state.db. No network, no credentials, no agent tools, hooks, middleware or env vars. Disclosure — reads every session's titles, prompts and tool-call summaries from state.db read-only for its stack (cache in the profile's plugin-data folder); its Desktop page can send prompts, answer approval and clarify requests you click, rename/branch chats and switch a live chat's model; the backend calls Hermes' private model resolver (`hermes_cli.model_switch.switch_model`) to explain unusable models, which can query your configured provider's model list."
 maintainer: latentJake
 tier: community
 category: desktop

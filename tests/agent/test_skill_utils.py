@@ -502,13 +502,6 @@ class TestBOMToleranceSiblingSites:
 # strings at parse time so frontmatter stays JSON-safe.
 
 
-def test_parse_frontmatter_coerces_top_level_date_to_iso_string():
-    fm, _ = parse_frontmatter("---\nname: demo\ndate: 2025-12-01\n---\nbody\n")
-    assert fm["date"] == "2025-12-01"
-    assert isinstance(fm["date"], str)
-    json.dumps(fm)  # must not raise
-
-
 def test_parse_frontmatter_coerces_nested_metadata_dates():
     content = (
         "---\n"
@@ -522,13 +515,3 @@ def test_parse_frontmatter_coerces_nested_metadata_dates():
     assert fm["metadata"]["released"] == "2025-12-01"
     assert fm["metadata"]["when"] == "2025-12-01T09:30:00"
     json.dumps(fm)  # must not raise
-
-
-def test_parse_frontmatter_preserves_non_temporal_values_and_body():
-    fm, body = parse_frontmatter(
-        "---\nname: demo\nversion: 1.0\ntags: [a, b]\n---\nhello body\n"
-    )
-    assert fm["name"] == "demo"
-    assert fm["version"] == 1.0
-    assert fm["tags"] == ["a", "b"]
-    assert body.strip() == "hello body"

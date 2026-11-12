@@ -217,12 +217,20 @@ class _LiveAreaOutput:
     cells wide. Every cell right of it then lands a column off: the row's last column falls off
     the edge, and a diff repaint writes over the wrong cells (#120588). Without the selector a
     glyph keeps its default presentation, the width prompt_toolkit measured.
+
+    A zero-width character that ends a line (VS16, a keycap's U+20E3) keeps a cell of its own,
+    which the renderer counts as one column. The character already went out merged into the cell
+    before it, so the leftover cell goes out as a space and the terminal's cursor keeps pace.
     """
 
     def __init__(self, output):
-        self._output = output
+        from prompt_toolkit.utils import get_cwidth  # imported late, like this module's other pt names
+
+        self._output, self._get_cwidth = output, get_cwidth
 
     def write(self, data: str) -> None:
+        if data.strip("\r\n") and self._get_cwidth(data) == 0:  # a cell measured as no width, not a cursor move
+            data = " "
         self._output.write(data.replace("\ufe0f", ""))
 
     def __getattr__(self, name):

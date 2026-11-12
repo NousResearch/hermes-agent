@@ -144,6 +144,12 @@ membership, and currency checks use the same declaration reader.
 PM prepares core requirements, enabled extras, and enabled plugin requirements
 together. It seeds resolution from the existing lock. Compatible transitive
 versions can change, but declared constraints and exact pins remain binding.
+Core's lock still takes precedence over that seed: a package core's `uv.lock`
+holds at a newer version than the previous environment does (a security release
+of a transitive, say) moves to core's version (`uv lock -P name==version`), and a
+plugin that cannot accept it is disabled by an update like any other plugin that
+no longer builds. Packages core's lock does not pin, and conflicts between plugins,
+keep the incumbent environment's versions.
 Each candidate gets a fresh workspace with explicit source, lock seed, and
 prepared environment inputs. Plugin snapshots keep a plugin's runtime dependencies
 and the optional extras this install selects (or the plugin's own requirements name);

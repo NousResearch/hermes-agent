@@ -535,7 +535,7 @@ class Venv(StatePackage):
         from pm.environment import managed_environment  # noqa: TID251
         from pm.lock import Facts
         from pm.native_build import source_build_environment
-        from pm.workspace import build_member_dirs, lock_and_sync
+        from pm.workspace import build_member_dirs, core_lock_upgrades, lock_and_sync
 
         project = self.project_root()
         generation = install_state_dir(project) / "environments" / uuid.uuid4().hex
@@ -568,9 +568,10 @@ class Venv(StatePackage):
                 replay = recorded.parent
             seed = (Path(prior["resolved_lock"]) if members and prior.get("resolved_lock")
                     else project / "uv.lock")
+            upgrade = core_lock_upgrades(project / "uv.lock", seed) if seed != project / "uv.lock" else []
             lock_and_sync(members, extras, root=generation / "workspace",
                           seed_lock=seed, frozen=repair or not members, replay=replay,
-                          source=project, environment=environment)
+                          source=project, environment=environment, upgrade=upgrade)
             resolved_lock = generation / "workspace" / "uv.lock"
             environment.check(resolved_lock)
             if repair:

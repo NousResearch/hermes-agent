@@ -10,7 +10,7 @@ import hashlib
 import json
 import os
 import shutil
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -715,6 +715,47 @@ def install_node_sidecar(
     return None
 
 
+def core_lock_upgrades(core_lock: Path, seed_lock: Path) -> list[str]:
+    """``uv lock -P`` requirements moving a seeded generation onto core's newer pins.
+
+    uv keeps every seeded pin that still resolves, so a core uv.lock bump (a security fix in a
+    transitive) never reached an install with plugin members (#91424). Only an index package
+    core's lock holds at a version newer than every pin the seed has for it moves: a package
+    only a plugin brings is not core's to pin, and one a plugin moved above core's pin stays
+    where the plugin needs it. Path, git and URL sources follow core's manifest already.
+    """
+    import tomllib
+
+    from packaging.utils import canonicalize_name
+    from packaging.version import InvalidVersion, Version
+
+    def entries(lock: Path) -> list[dict]:
+        return tomllib.loads(lock.read_text(encoding="utf-8-sig")).get("package", [])
+
+    seeded: dict[str, list[Version]] = {}
+    for package in entries(seed_lock):
+        if "registry" not in package.get("source", {}):
+            continue
+        try:
+            seeded.setdefault(canonicalize_name(package["name"]), []).append(Version(package["version"]))
+        except (KeyError, InvalidVersion):
+            continue
+    upgrades = []
+    for package in entries(core_lock):
+        name = canonicalize_name(package.get("name", ""))
+        if "registry" not in package.get("source", {}) or name not in seeded:
+            continue
+        try:
+            version = Version(package["version"])
+        except (KeyError, InvalidVersion):
+            continue
+        if all(version > pinned for pinned in seeded[name]):
+            # A name core forks by platform carries each fork's markers, or the exact pins clash.
+            markers = " or ".join(f"({marker})" for marker in package.get("resolution-markers", []))
+            upgrades.append(f"{name}=={version}" + (f"; {markers}" if markers else ""))
+    return upgrades
+
+
 def lock_and_sync(
     plugin_dirs: list[Path] | Mapping[Path, Path],
     extras: list[str],
@@ -725,10 +766,12 @@ def lock_and_sync(
     environment: PythonEnvironment,
     frozen: bool = False,
     replay: Path | None = None,
+    upgrade: Sequence[str] = (),
 ) -> None:
     """Prepare a fresh generation using explicit inputs and a prepared engine.
 
-    The caller selects the seed; uv retains its compatible versions. Repair
+    The caller selects the seed; uv retains its compatible versions except the
+    *upgrade* requirements (``uv lock -P``), which bind like core pins. Repair
     copies the recorded build inputs and never reads current manifests.
     Resolver conflicts remain distinct from download/build failures.
     """
@@ -750,4 +793,4 @@ def lock_and_sync(
         manifest.write_text(_without_release_age(manifest.read_text(encoding="utf-8-sig")), encoding="utf-8")
         frozen = True
 
-    environment.sync(root, extras=extras, frozen=frozen)
+    environment.sync(root, extras=extras, frozen=frozen, upgrade=() if frozen else upgrade)

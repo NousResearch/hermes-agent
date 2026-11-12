@@ -38,6 +38,10 @@ export const ruNotices = {
       'Hermes может не давать компьютеру засыпать, пока выполняется задача. Экран по-прежнему выключается, а от батареи компьютер всё равно может уснуть.',
     action: 'Не засыпать во время работы'
   },
+  connectorOffer: {
+    heading: 'Сохраните подключённые приложения',
+    body: 'Войдите в бесплатный аккаунт Nous, чтобы подключённые приложения, например Gmail или Slack, остались в вашем аккаунте.'
+  },
   billingBlock: {
     titleNous: 'Кредиты Nous закончились',
     titleProvider: provider => `Кредиты закончились — ${provider}`,
@@ -48,5 +52,5 @@ export const ruNotices = {
   }
 } satisfies Pick<
   TranslationOverrides,
-  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock'
+  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'connectorOffer' | 'billingBlock'
 >

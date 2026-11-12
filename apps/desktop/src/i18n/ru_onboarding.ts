@@ -33,7 +33,7 @@ export const ruOnboarding: TranslationOverrides['onboarding'] = {
     gemini: { short: 'модели Gemini', description: 'Прямой доступ к моделям Google Gemini.' },
     xai: { short: 'модели Grok', description: 'Прямой доступ к моделям xAI Grok.' },
     local: {
-      short: 'self-hosted',
+      short: 'свой сервер',
       description:
         'Укажите Hermes локальный или self-hosted OpenAI-совместимый endpoint (vLLM, llama.cpp, Ollama и т.д.).'
     }
@@ -80,7 +80,7 @@ export const ruOnboarding: TranslationOverrides['onboarding'] = {
   defaultModel: 'Модель по умолчанию',
   freeTier: 'Бесплатный тариф',
   pro: 'Pro',
-  free: 'Free',
+  free: 'Бесплатно',
   price: (input, output) => `${input} вход / ${output} выход за Mtok`,
   change: 'Изменить',
   startChatting: 'Начать',

@@ -11,6 +11,7 @@ export const ruErrorLayers: TranslationOverride<Pick<ThreadCopy, 'errorLayerBodi
     billing: 'Закончились средства',
     disk: 'Диск заполнен',
     endpoint: 'Ошибка пользовательского эндпоинта',
+    gateway: 'Не удалось отправить сообщение',
     generic: 'Ход не удался',
     provider: 'Ошибка провайдера',
     runtime: 'Ошибка локальной среды',

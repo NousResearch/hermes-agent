@@ -1,4 +1,5 @@
 import type { TranslationOverrides } from './define-locale'
+import { RU_NOUN } from './ru_plural'
 
 const resultWord = (count: number) => {
   const n = Math.abs(count) % 10
@@ -69,7 +70,68 @@ export const ruCatalog = {
   installHint: 'Проверьте исходный код перед установкой. Изменения применяются к новым сессиям.',
   results: (count: number) =>
     `${count.toLocaleString('ru')} ${resultWord(count)}`,
-  back: 'Назад к результатам'
+  back: 'Назад к результатам',
+  tier: 'Уровень',
+  previousSlide: 'Предыдущая рекомендация',
+  nextSlide: 'Следующая рекомендация',
+  slideOf: (index, count) => `${index} из ${count}`,
+  tierLabels: {
+    official: 'Официальный',
+    verified: 'Проверенный',
+    community: 'Сообщество'
+  },
+  tiers: {
+    official: {
+      title: 'Официальные плагины',
+      blurb: 'Создаются и поддерживаются Nous Research.'
+    },
+    verified: {
+      title: 'Проверенные плагины',
+      blurb: 'От компании, стоящей за интеграцией, проверены Nous.'
+    }
+  },
+  moreToExplore: 'Что ещё посмотреть',
+  moreToExploreBlurb: 'Небольшие уголки каталога, собранные в одном месте.',
+  skillsFor: category => `Навыки из категории «${category}».`,
+  discoverKind: kind => `Откройте для себя ${kind.toLowerCase()}`,
+  developer: {
+    heading: 'Режим разработчика',
+    title: 'Создавайте для Hermes',
+    pitch: 'Сделали инструмент, коннектор, плагин или мод?',
+    pitchFollowUp: 'Хотите, но не знаете как?',
+    submit: 'Отправить мод',
+    docs: 'Документация для разработчиков'
+  },
+  toolsets: {
+    mostUsed: 'Чаще всего',
+    mostUsedBlurb: 'Наборы инструментов, к которым Hermes чаще всего обращается в этом профиле.',
+    essentials: 'Основное',
+    essentialsBlurb: 'То, на чём держится большая часть работы Hermes.',
+    toolCount: count => `${count} ${RU_NOUN(count, 'инструмент', 'инструмента', 'инструментов')}`,
+    callCount: (count, calls) => `${count} ${RU_NOUN(calls, 'вызов', 'вызова', 'вызовов')}`,
+    themes: {
+      work: {
+        label: 'Работать в браузере и автоматизировать',
+        blurb: 'Управление браузером и рабочим столом, правка файлов, запуск кода и планирование задач.'
+      },
+      create: {
+        label: 'Видеть, слышать и создавать',
+        blurb: 'Просмотр изображений и видео, расшифровка речи и генерация медиа.'
+      },
+      recall: {
+        label: 'Память и знания',
+        blurb: 'Что Hermes помнит, а также навыки и история, по которым он может искать.'
+      },
+      connect: {
+        label: 'Подключаться и общаться',
+        blurb: 'Аккаунты, другие агенты, умный дом и поиск за пределами веба.'
+      },
+      more: {
+        label: 'Другие инструменты',
+        blurb: 'Всё остальное, что можно включить в этом профиле.'
+      }
+    }
+  }
 } satisfies TranslationOverrides['catalog']
 
 export const ruSkillDeepLink = {

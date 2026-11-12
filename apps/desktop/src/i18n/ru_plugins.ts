@@ -20,10 +20,11 @@ export const ruPluginSettings = {
     rescan: 'Пересканировать',
     reveal: 'Показать в файловом менеджере',
     failed: 'ошибка',
-    kinds: { bundled: 'встроенный', disk: 'на диске', runtime: 'runtime' },
+    kinds: { bundled: 'встроенный', disk: 'на диске', runtime: 'динамический' },
     installModal: {
       installFromGit: 'Установить из Git',
       reviewRepository: 'Посмотреть репозиторий',
+      repoPlaceholder: 'https://github.com/owner/repo',
       title: 'Установка плагина',
       description: 'Перед установкой посмотрите, что содержит этот репозиторий.',
       repoLabel: 'Репозиторий',

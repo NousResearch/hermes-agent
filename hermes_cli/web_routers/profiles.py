@@ -753,7 +753,7 @@ async def create_profile_endpoint(body: ProfileCreate):
     else:
         clone_from = "default" if body.clone_from_default else None
         clone_config = body.clone_from_default
-    from hermes_cli.profile_provision import ProfileCreateRequest, provision_profile
+    from hermes_cli.profile_provision import CREATE_REFUSALS, ProfileCreateRequest, provision_profile
     provider = (body.provider or "").strip()
     model = (body.model or "").strip()
     request = ProfileCreateRequest(
@@ -764,7 +764,7 @@ async def create_profile_endpoint(body: ProfileCreate):
         mcp_servers=tuple(body.mcp_servers), keep_skills=tuple(body.keep_skills),
         mirror_credentials=body.mirror_credentials, share_auth=body.share_auth)
     with _profile_errors("POST /api/profiles failed", not_found=(),
-                         bad_request=(ValueError, FileExistsError, FileNotFoundError)):
+                         bad_request=CREATE_REFUSALS):
         # Off the loop: creation asks a live multiplexer to serve the profile now over its control
         # socket, and on the gateway's own listener (the Webapp) that socket answers on this loop.
         result = await asyncio.to_thread(provision_profile, request)
@@ -963,8 +963,9 @@ async def update_profile_model_endpoint(name: str, body: ProfileModelUpdate):
     model = (body.model or "").strip()
     if not provider or not model:
         raise HTTPException(status_code=400, detail="provider and model are required")
+    from hermes_cli.model_assignment import ModelAssignmentRejected
     with _profile_errors("PUT /api/profiles/%s/model failed", name,
-                         not_found=(), bad_request=()):
+                         not_found=(), bad_request=(ModelAssignmentRejected,)):
         await run_in_threadpool(_write_profile_model, profile_dir, provider, model)
     return {"ok": True, "provider": provider, "model": model}
 

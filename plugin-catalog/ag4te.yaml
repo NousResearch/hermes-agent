@@ -1,0 +1,27 @@
+name: ag4te
+title: AG4TE
+repo: https://github.com/KyaniteLabs/ag4te
+sha: d884f9a5cdd3b6d03e95114e860cc134d5067b84
+subdir: plugins/ag4te-hermes
+version: "0.2.0"
+description: "Git archaeology in Hermes Desktop: dig a local repository's history with DevArch and read it as strata, with commits per day stacked by kind of work, eras, quiet gaps, signals and turning points, weekly rhythm, lines added and removed, practice health, change size, hotspots, releases, and authors merged across spellings and split into people, agents and bots. Adds a Desktop page, /ag4te (list, show, status, dig, stop, resume) and a read-only ag4te_dig tool for agents. Disclosure — runs DevArch as a child process via `uvx --from git+https://github.com/KyaniteLabs/ag4te@<pinned sha> devarch` (uv downloads that pinned DevArch commit and its Python dependencies on first run, which the catalog pin does not cover; needs uv on the gateway host); reads `git log` of the one repository you choose, which must sit under the configured repo_roots (default ~/workspaces); stores digs under <HERMES_HOME>/plugin-data/ag4te; no LLM calls, no API key, no network besides the uv download; one dig at a time, each step time-limited (timeout_seconds); /ag4te dig and resume are off on chat platforms unless allow_dig_on_gateway is set."
+maintainer: KyaniteLabs
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/KyaniteLabs/ag4te/tree/d884f9a5cdd3b6d03e95114e860cc134d5067b84/plugins/ag4te-hermes#readme
+image: https://raw.githubusercontent.com/KyaniteLabs/ag4te/d884f9a5cdd3b6d03e95114e860cc134d5067b84/plugins/ag4te-hermes/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/KyaniteLabs/ag4te/d884f9a5cdd3b6d03e95114e860cc134d5067b84/plugins/ag4te-hermes/docs/strata-dark.png
+  - https://raw.githubusercontent.com/KyaniteLabs/ag4te/d884f9a5cdd3b6d03e95114e860cc134d5067b84/plugins/ag4te-hermes/docs/rhythm-and-health.png
+  - https://raw.githubusercontent.com/KyaniteLabs/ag4te/d884f9a5cdd3b6d03e95114e860cc134d5067b84/plugins/ag4te-hermes/docs/strata-light.png
+readme: true
+platforms: []
+known_issues:
+  - "First dig downloads DevArch with uv, so it needs uv installed on the gateway host and takes longer than later digs."
+  - "Kinds of work are keyword heuristics from commit messages and paths, not a reading of the code."
+capabilities:
+  provides_tools: [ag4te_dig]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

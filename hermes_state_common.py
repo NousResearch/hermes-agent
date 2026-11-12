@@ -8,6 +8,7 @@ import logging
 import os
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 from hermes_cli.timefmt import EPOCH_MAX, EPOCH_MIN
@@ -1503,3 +1504,14 @@ def _json_or(raw: Any, fallback: Any, warning: str) -> Any:
     except (json.JSONDecodeError, TypeError):
         logger.warning(warning)
         return fallback
+
+
+def path_is_under(path: Path, root: Path) -> bool:
+    """True when *path* is *root* or a file inside it (normcase, resolved)."""
+    try:
+        path_key = os.path.normcase(str(path.resolve()))
+        root_key = os.path.normcase(str(root.resolve()))
+    except OSError:
+        path_key = os.path.normcase(str(path))
+        root_key = os.path.normcase(str(root))
+    return path_key == root_key or path_key.startswith(root_key + os.sep)

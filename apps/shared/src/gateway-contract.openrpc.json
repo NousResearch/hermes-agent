@@ -19716,6 +19716,41 @@
         "title": "GroupsCapabilitiesResult",
         "type": "object"
       },
+      "GroupsChangedPayload": {
+        "additionalProperties": true,
+        "description": "``change_watcher._groups_changed_payload``: the rooms whose log, tasks or live status moved; absent\nwhen something process-wide moved (every open room re-reads). ``broadcast_id`` names one broadcast: the\nsame frame reaches a window once per open socket, and a copy needs no second read.",
+        "properties": {
+          "room_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Room Ids"
+          },
+          "broadcast_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Broadcast Id"
+          }
+        },
+        "title": "GroupsChangedPayload",
+        "type": "object"
+      },
       "GroupsContextParams": {
         "additionalProperties": false,
         "properties": {
@@ -21059,6 +21094,7 @@
       },
       "GroupsStateResult": {
         "additionalProperties": false,
+        "description": "``change_events``: this backend broadcasts ``groups.changed`` when the room moves, so a client's poll is\nonly a backstop (absent on older backends: keep polling at the old rate).",
         "properties": {
           "room": {
             "$ref": "#/components/schemas/Room"
@@ -21084,6 +21120,18 @@
               }
             ],
             "default": null
+          },
+          "change_events": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Change Events"
           }
         },
         "required": [
@@ -30438,6 +30486,149 @@
         "title": "ProfileCanonicalSession",
         "type": "object"
       },
+      "ProfileCreateReceipt": {
+        "additionalProperties": false,
+        "description": "What ``hermes profile create`` prints about a new profile, read on the machine (and in the\nprofile scope) that made it: built after a local create, or sent by the gateway that made it\n(``profiles.create`` with ``report``). The contract uses this type itself; a stdlib dataclass, so a\nlocal create never loads pydantic. A client treats a receipt missing a field, or with a wrong type,\nas an unknown outcome.",
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "display_path": {
+            "title": "Display Path",
+            "type": "string"
+          },
+          "launch_label": {
+            "title": "Launch Label",
+            "type": "string"
+          },
+          "source_label": {
+            "title": "Source Label",
+            "type": "string"
+          },
+          "skills_synced": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Skills Synced"
+          },
+          "skills_opted_out": {
+            "title": "Skills Opted Out",
+            "type": "boolean"
+          },
+          "alias_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alias Path"
+          },
+          "alias_collision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alias Collision"
+          },
+          "mirrored": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "const": "shared",
+                  "type": "string"
+                }
+              ]
+            },
+            "title": "Mirrored",
+            "type": "object"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          },
+          "cloned_plugins": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Cloned Plugins",
+            "type": "array"
+          },
+          "memory_provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory Provider"
+          },
+          "channels_left_behind": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Channels Left Behind",
+            "type": "array"
+          },
+          "shared_channels": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Shared Channels",
+            "type": "array"
+          },
+          "served_now": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Served Now"
+          }
+        },
+        "required": [
+          "path",
+          "display_path",
+          "launch_label",
+          "source_label",
+          "skills_synced",
+          "skills_opted_out",
+          "alias_path",
+          "alias_collision",
+          "mirrored",
+          "warnings",
+          "cloned_plugins",
+          "memory_provider",
+          "channels_left_behind",
+          "shared_channels",
+          "served_now"
+        ],
+        "title": "ProfileCreateReceipt",
+        "type": "object"
+      },
       "ProfileMirrored": {
         "additionalProperties": false,
         "description": "What was copied from the launch profile; ``auth`` is ``\"shared\"`` when the new profile has no\nauth.json of its own and reads the default root's.",
@@ -31109,7 +31300,7 @@
       },
       "ProfilesCreateParams": {
         "additionalProperties": false,
-        "description": "``clone_from`` omitted = fresh profile + bundled skills; ``mirror_credentials`` and\n``share_auth`` default on (the bot page's defaults) so a headless bot has a provider.",
+        "description": "``clone_from`` omitted = fresh profile + bundled skills (with ``clone_all``: a full copy of the\nactive profile, no bundled skills); ``mirror_credentials`` and\n``share_auth`` default on (the bot page's defaults) so a headless bot has a provider.",
         "properties": {
           "profile": {
             "anyOf": [
@@ -31276,6 +31467,51 @@
             ],
             "default": null,
             "title": "Mirror Credentials"
+          },
+          "clone_config": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Clone Config"
+          },
+          "sync_imports": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sync Imports"
+          },
+          "report": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Report"
           }
         },
         "required": [
@@ -31320,6 +31556,17 @@
             },
             "title": "Warnings",
             "type": "array"
+          },
+          "receipt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProfileCreateReceipt"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -51186,6 +51433,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/GatewayReadyPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "groups.changed",
+      "summary": "A Group Chat log, task or live status moved; an open room re-reads its log delta and groups.state.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsChangedPayload"
           }
         }
       ]

@@ -769,3 +769,32 @@ async def test_plugin_rewrite_of_a_voice_note_reply_is_the_clarify_answer(hook_r
         assert entry.response == answer
     finally:
         clarify_gateway.clear_session(session)
+
+
+@pytest.mark.asyncio
+async def test_reply_boundary_flush_waits_for_the_batch_still_dispatching():
+    """A batch flushed early because the next chunk replies to another message still dispatches
+    after the chat's earlier batch settles (e.g. one waiting on a root-DM topic creation)."""
+    adapter = _make_adapter()
+    adapter._text_batch_delay_seconds = 0
+    adapter._text_batch_split_delay_seconds = 0
+    release_first = asyncio.Event()
+    dispatched = []
+
+    async def handle(event):
+        dispatched.append(event.text)
+        if event.text == "first":
+            await release_first.wait()
+
+    adapter.handle_message = AsyncMock(side_effect=handle)
+    adapter._enqueue_text_event(_make_event("first"))
+    await async_wait_until(lambda: dispatched == ["first"], timeout=2.0)
+    adapter._enqueue_text_event(_make_event("second"))
+    adapter._enqueue_text_event(_make_event("third", reply_to_message_id="r1", reply_to_text="quoted"))
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert dispatched == ["first"]
+
+    release_first.set()
+    await async_wait_until(lambda: len(dispatched) == 3, timeout=2.0)
+    assert dispatched == ["first", "second", "third"]

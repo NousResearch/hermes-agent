@@ -72,3 +72,23 @@ def test_caller_scope_restored_after_lookup(satellite_home):
         assert get_secret("ROUTE_CHAT_ID") == "-100satellite"
     finally:
         reset_secret_scope(token)
+
+
+def test_real_profile_bind_of_satellite_does_not_leak_into_primary_refs(satellite_home):
+    """The gateway drain binds the satellite's WHOLE scope (``_profile_runtime_scope``), not a bare mapping."""
+    from agent.runtime_scope import bind_profile_scope
+    from hermes_constants import get_hermes_home
+    _, sat_home = satellite_home
+    (sat_home / ".env").write_text("ROUTE_CHAT_ID=-100satellite\n", encoding="utf-8")
+    with bind_profile_scope(sat_home, hydrate_secrets=False):
+        routes = _primary_profile_routes_for_current_home()
+        assert str(get_hermes_home()) == str(sat_home)
+    assert [r.chat_id for r in routes] == ["-100primary"]
+
+
+@pytest.mark.usefixtures("satellite_home")
+def test_unscoped_satellite_process_env_does_not_fill_primary_refs(monkeypatch):
+    """A satellite CLI process (no scope bound) carries its own .env in os.environ; the primary's
+    refs must still come from the primary's .env."""
+    monkeypatch.setenv("ROUTE_CHAT_ID", "-100satellite")
+    assert [r.chat_id for r in _primary_profile_routes_for_current_home()] == ["-100primary"]

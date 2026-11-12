@@ -171,13 +171,13 @@ def _primary_profile_routes_for_current_home() -> list:
         # fail-closed. Expanding the primary's YAML there resolved its refs against the satellite's
         # .env: unresolved refs re-logged "keeping the literal placeholder" every housekeeping tick, and
         # a satellite key of the same name was substituted into the primary's config (#148606).
-        from agent.secret_scope import reset_secret_scope, set_secret_scope
-        from tui_gateway.launch_profile_policy import owner_secret_scope
-        scope_token = set_secret_scope(owner_secret_scope(primary_home), profile_home=str(primary_home))
-        try:
+        # Bind only home + secrets: the terminal policy is not read here, and hydrating external
+        # secret sources every housekeeping tick is the primary's boot job, not this read's.
+        from agent.runtime_scope import bind_state, scope_for_profile
+        from agent.secret_scope import _is_process_home
+        with bind_state(scope_for_profile(primary_home), hydrate_secrets=False, terminal=False,
+                        stamp_home=not _is_process_home(primary_home)):
             layered = read_yaml_layers(primary_home.expanduser())
-        finally:
-            reset_secret_scope(scope_token)
         routes_raw = layered.get("profile_routes")
         if routes_raw is None and isinstance(layered.get("gateway"), dict):
             routes_raw = layered["gateway"].get("profile_routes")

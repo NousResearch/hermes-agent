@@ -142,7 +142,7 @@ def _segment_tip(db: Any, sid: str, session_id: str) -> str:
 
 def _start(
     sid: str, message: str, spec: dict[str, Any], parent_agent: Any, background: bool,
-    record: Optional[dict[str, Any]] = None, origin: str = "continue",
+    record: Optional[dict[str, Any]] = None, run_origin: str = "continue",
 ) -> tuple[Optional[str], Optional[str]]:
     """Rebuild, hydrate and dispatch the continued child: ``(tool result JSON, None)`` or ``(None, error)`` when
     it was refused before anything ran."""
@@ -179,7 +179,7 @@ def _start(
             return None, err
         db.reopen_session(session_id)  # its close() ended it; the continued child's close() ends it again
         children[0][2]._delegate_continue_history = history
-        children[0][2]._delegate_run_origin = origin  # a parent's own continue ends automatic resumes of it
+        children[0][2]._delegate_run_origin = run_origin  # a parent's own continue ends automatic resumes of it
         from tools.delegate_tool_resumable import hold_claim, last_workspace
         children[0][2]._delegate_continue_workspace = last_workspace(parent_agent, sid)
         if record is not None:  # a run that fails before it records itself hands the claim back

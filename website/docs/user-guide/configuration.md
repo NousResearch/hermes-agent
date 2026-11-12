@@ -74,13 +74,13 @@ When Hermes itself writes a credential for a config field, the value goes to the
 | Field | Saved in `.env` as | `config.yaml` stores |
 |---|---|---|
 | `model.api_key` (`hermes config set`) | `HERMES_MODEL_API_KEY` | `${HERMES_MODEL_API_KEY}` |
-| `model.api_key` for a custom endpoint picked in the dashboard | `HERMES_CUSTOM_<HOST>[_<PORT>][_<PATH>]_API_KEY` | `${...}` |
+| `model.api_key` for a custom endpoint picked in the dashboard | `HERMES_CUSTOM_<HOST>[_<PORT>][_<PATH>]_<HASH>_API_KEY` | `${...}` |
 | `auxiliary.<task>.api_key` | `AUXILIARY_<TASK>_API_KEY` | `${AUXILIARY_<TASK>_API_KEY}` |
 | `delegation.api_key` | `HERMES_DELEGATION_API_KEY` | `${HERMES_DELEGATION_API_KEY}` |
-| a new `custom_providers` entry | `HERMES_CUSTOM_<HOST>[_<PORT>][_<PATH>]_API_KEY` | `key_env: <that name>` |
-| `custom_providers.<N>.api_key` / `providers.<name>.api_key` (`hermes config set`) | `HERMES_CUSTOM_<NAME>_API_KEY` | `${...}` |
+| a new `custom_providers` entry | `HERMES_CUSTOM_<HOST>[_<PORT>][_<PATH>]_<HASH>_API_KEY` | `key_env: <that name>` |
+| `custom_providers.<N>.api_key` / `providers.<name>.api_key` (`hermes config set`) | `HERMES_PROVIDER_<NAME>_<HASH>_API_KEY` | `${...}` |
 
-The path segment is only added when it is something other than `/v1`, so two gateways behind one host and port get separate variables. A value you type as a reference (`hermes config set model.api_key '${MY_KEY}'`) is stored as you typed it. These variables are stripped from terminal and subprocess environments, the same as provider keys. With a remote config backend, which does not share `.env` between hosts, values are stored as given.
+The path segment is only added when it is something other than `/v1`. `<HASH>` is 8 hex characters derived from the exact endpoint URL (or provider name), so endpoints whose names look alike, such as `my-host.com` and `my.host.com`, never share a variable. Hermes refuses to overwrite a variable that another endpoint in `config.yaml` already reads with a different key. A value you type as a reference (`hermes config set model.api_key '${MY_KEY}'`) is stored as you typed it. These variables are always stripped from terminal and subprocess environments, even when `env_passthrough` lists them or `inherit_credentials` is on. With a remote config backend, which does not share `.env` between hosts, values are stored as given.
 
 Inline credentials already in `config.yaml` still work and are not migrated, but they are discouraged. Move one by hand with `hermes config set <field> <value>`, which rewrites it as a reference.
 

@@ -316,8 +316,10 @@ class TestListNavigation:
         assert len(reloaded["custom_providers"]) == 2
         # Entry 0 was updated
         # The secret moved to .env (#77471); the entry holds the reference.
-        assert reloaded["custom_providers"][0]["api_key"] == "${HERMES_CUSTOM_PROVIDER_A_API_KEY}"
-        assert "HERMES_CUSTOM_PROVIDER_A_API_KEY=new-a" in _read_env(_isolated_hermes_home)
+        from hermes_cli.config_secret_refs import provider_name_key_env
+        env_name = provider_name_key_env("provider-a")
+        assert reloaded["custom_providers"][0]["api_key"] == f"${{{env_name}}}"
+        assert f"{env_name}=new-a" in _read_env(_isolated_hermes_home)
         assert reloaded["custom_providers"][0]["name"] == "provider-a"
         assert reloaded["custom_providers"][0]["base_url"] == "https://a.example.com"
         # Entry 1 is untouched
@@ -342,7 +344,8 @@ class TestListNavigation:
         import hermes_yaml as yaml
         reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
         entry = reloaded["custom_providers"][0]
-        assert entry["api_key"] == "${HERMES_CUSTOM_PROVIDER_A_API_KEY}"
+        from hermes_cli.config_secret_refs import provider_name_key_env
+        assert entry["api_key"] == f"${{{provider_name_key_env('provider-a')}}}"
         assert entry["name"] == "provider-a"
         assert entry["base_url"] == "https://a.example.com"
         assert set(entry["models"].keys()) == {"foo", "bar"}

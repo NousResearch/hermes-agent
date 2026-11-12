@@ -856,7 +856,10 @@ def delete_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
                 if _pop_legacy_custom_provider(cfg, provider_key) is None:
                     raise HTTPException(status_code=404, detail="custom endpoint not found")
             _detach_main_model_from_provider(cfg, provider_key, entry)
-            remove_env_value(custom_endpoint_key_env(provider_key))
+            from hermes_cli.config_secret_refs import env_still_referenced
+            env_var = custom_endpoint_key_env(provider_key)
+            if not env_still_referenced(cfg, env_var):  # another block may still read the key
+                remove_env_value(env_var)
             save_config(cfg)
             response = _custom_endpoint_response(cfg)
         response["ok"] = True

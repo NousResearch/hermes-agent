@@ -12,14 +12,19 @@ Names follow the conventions already in the tree:
 - ``model.api_key`` -> ``HERMES_MODEL_API_KEY``
 - ``auxiliary.<task>.api_key`` -> ``AUXILIARY_<TASK>_API_KEY`` (the legacy aux env-var spelling)
 - ``delegation.api_key`` -> ``HERMES_DELEGATION_API_KEY``
-- ``custom_providers[N].api_key`` / ``providers.<name>.api_key`` -> ``custom_endpoint_key_env(name)``
+- ``custom_providers[N].api_key`` / ``providers.<name>.api_key`` -> ``provider_name_key_env(name)``
 - a custom endpoint the dashboard or ``hermes model`` saves -> ``endpoint_api_key_env(base_url)``
+
+The derived names carry a hash of the exact endpoint / name: a readable slug alone folds ``-``, ``.``,
+``/``, ``:`` and ``_`` together, so ``my-host.com`` and ``my.host.com`` would share one variable and
+one host's key would be sent to the other.
 
 Every name is stripped from terminal / subprocess children (``_is_hermes_internal_secret``).
 """
 
 from __future__ import annotations
 
+import hashlib
 import re
 import urllib.parse
 from typing import Any, Optional
@@ -43,26 +48,108 @@ def aux_api_key_env(task: str) -> str:
     return f"AUXILIARY_{_env_slug(task) or 'TASK'}_API_KEY"
 
 
+def _digest(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:8].upper()
+
+
+def _canonical_endpoint(base_url: str) -> str:
+    """``scheme://host:port/path`` with the host lowercased, the default port filled in and trailing
+    slashes dropped: one string per endpoint, whatever spelling the caller used."""
+    parsed = urllib.parse.urlparse(str(base_url or "").strip())
+    scheme = parsed.scheme.lower()
+    port = parsed.port or {"http": 80, "https": 443}.get(scheme, "")
+    return f"{scheme}://{(parsed.hostname or '').lower()}:{port}{parsed.path.rstrip('/')}"
+
+
 def endpoint_identity(base_url: str) -> str:
-    """``host[_port]`` — the identity ``hermes model``'s custom flow keys ``.env`` on, so two servers
-    on one machine keep separate credentials — plus the path when it is more than ``/v1``, so two
-    gateways behind one host:port (``/old/v1``, ``/new/v1``) never overwrite each other's key."""
+    """``host[_port][_path]_<hash>``: the readable part names the endpoint in ``.env``; the hash of
+    :func:`_canonical_endpoint` keeps two endpoints whose slugs coincide (``my-host.com`` /
+    ``my.host.com``, ``a.com:8443`` / ``a.com/8443``) on separate variables."""
     parsed = urllib.parse.urlparse(str(base_url or "").strip())
     identity = parsed.hostname or ""
+    if not identity:
+        return ""
     if parsed.port:
         identity = f"{identity}_{parsed.port}"
     path = parsed.path.strip("/")
-    if identity and path and path.lower() != "v1":
+    if path and path.lower() != "v1":
         identity = f"{identity}_{path}"
-    return identity
+    return f"{identity}_{_digest(_canonical_endpoint(base_url))}"
 
 
 def endpoint_api_key_env(base_url: str) -> str:
-    """``HERMES_CUSTOM_<HOST[_PORT][_PATH]>_API_KEY`` (the ``hermes model`` custom flow's naming);
-    ``HERMES_MODEL_API_KEY`` when the URL has no host."""
+    """``HERMES_CUSTOM_<HOST[_PORT][_PATH]>_<HASH>_API_KEY``; ``HERMES_MODEL_API_KEY`` when the URL
+    has no host."""
     from hermes_cli.config import custom_endpoint_key_env
     identity = endpoint_identity(base_url)
     return custom_endpoint_key_env(identity) if identity else model_api_key_env()
+
+
+def provider_name_key_env(name: str) -> str:
+    """``HERMES_PROVIDER_<NAME>_<HASH>_API_KEY`` for a credential addressed by provider NAME
+    (``providers.<name>``, a ``custom_providers`` row): its own prefix, so a name never lands on an
+    endpoint's variable, and a hash of the exact name, so ``my.host`` and ``my-host`` stay apart."""
+    return f"HERMES_PROVIDER_{_env_slug(name) or 'CUSTOM'}_{_digest(str(name))}_API_KEY"
+
+
+def _credential_blocks(cfg: dict) -> list[dict]:
+    """Every config block that can hold a credential reference next to its own ``base_url``."""
+    blocks: list[Any] = [cfg.get("model"), cfg.get("delegation")]
+    for section in ("auxiliary", "providers"):
+        value = cfg.get(section)
+        blocks.extend(value.values() if isinstance(value, dict) else [])
+    rows = cfg.get("custom_providers")
+    blocks.extend(rows if isinstance(rows, list) else [])
+    return [b for b in blocks if isinstance(b, dict)]
+
+
+def env_reference_owners(cfg: dict, env_name: str) -> list[dict]:
+    """The blocks of a RAW (unexpanded) config that read ``env_name``: ``api_key: ${NAME}`` or
+    ``key_env`` / ``api_key_env: NAME``."""
+    ref = f"${{{env_name}}}"
+    return [b for b in _credential_blocks(cfg)
+            if str(b.get("api_key") or "").strip() == ref or env_name in (b.get("key_env"), b.get("api_key_env"))]
+
+
+def env_still_referenced(cfg: dict, env_name: str) -> bool:
+    """True when a block of ``cfg`` (raw or ``load_config``-expanded) still reads ``env_name``; an
+    expanded ``${NAME}`` shows up as the variable's value, so a block holding that value counts."""
+    from hermes_cli.config import load_env
+    if env_reference_owners(cfg, env_name):
+        return True
+    value = load_env().get(env_name)
+    return bool(value) and any(str(b.get("api_key") or "").strip() == value for b in _credential_blocks(cfg))
+
+
+def _block_base_url(block: dict) -> str:
+    return str(block.get("base_url") or block.get("url") or block.get("api") or "").strip()
+
+
+def _refuse_cross_endpoint_overwrite(env_name: str, value: str, base_url: str) -> None:
+    """Refuse to change ``env_name`` when a config block for ANOTHER endpoint reads it: the new value
+    is this endpoint's key, and overwriting would send it to that other host."""
+    from hermes_cli.config import load_env, read_raw_config
+    current = load_env().get(env_name)
+    if not current or current == value:
+        return
+    mine = _canonical_endpoint(base_url)
+    if any(_block_base_url(b) and _canonical_endpoint(_block_base_url(b)) != mine
+           for b in env_reference_owners(read_raw_config(), env_name)):
+        raise ValueError(f"refusing to overwrite {env_name}: another endpoint in config.yaml reads it "
+                         "and it holds a different key")
+
+
+def known_endpoint_key_env(cfg: dict, base_url: str) -> str:
+    """The Hermes-written ``key_env`` of a ``providers`` / ``custom_providers`` row already registered
+    for ``base_url``, so a save for that endpoint updates the row's variable instead of forking a
+    second one. User-chosen names (``OPENAI_API_KEY``) are never reused: they may serve elsewhere."""
+    wanted = _canonical_endpoint(base_url)
+    for block in _credential_blocks(cfg):
+        name = str(block.get("key_env") or "")
+        if (name.startswith(("HERMES_CUSTOM_", "HERMES_PROVIDER_")) and _block_base_url(block)
+                and _canonical_endpoint(_block_base_url(block)) == wanted):
+            return name
+    return ""
 
 
 def is_env_reference(value: Any) -> bool:
@@ -76,29 +163,32 @@ def refs_supported() -> bool:
     return supports_file_tooling()
 
 
-def store_secret(env_name: str, value: str) -> str:
+def store_secret(env_name: str, value: str, base_url: str = "") -> str:
     """Save ``value`` to ``.env`` as ``env_name`` and return the ``${env_name}`` reference.
-    Raises ``ValueError`` when the ``.env`` write lock forbids the name, so the caller refuses the
-    whole write instead of pointing config.yaml at a variable that was never saved."""
+    Raises ``ValueError`` when the ``.env`` write lock forbids the name, or when ``base_url`` (the
+    endpoint the key is for) is given and another endpoint's block reads ``env_name``, so the caller
+    refuses the whole write instead of pointing config.yaml at a variable that was never saved."""
     from hermes_cli.config import require_env_writable, save_env_value
     require_env_writable(env_name, "set")
+    if base_url:
+        _refuse_cross_endpoint_overwrite(env_name, value, base_url)
     save_env_value(env_name, value)
     return f"${{{env_name}}}"
 
 
-def secret_ref_for(env_name: str, value: Any) -> Any:
+def secret_ref_for(env_name: str, value: Any, base_url: str = "") -> Any:
     """The value a writer should persist for a credential field: ``${env_name}`` after saving a
     literal secret to ``.env``; empty values, existing references and non-strings unchanged (also
     under a backend that cannot share ``.env``)."""
     if not isinstance(value, str) or not value.strip() or is_env_reference(value) or not refs_supported():
         return value
-    return store_secret(env_name, value.strip())
+    return store_secret(env_name, value.strip(), base_url)
 
 
-def secret_key_env_for(env_name: str, value: Any) -> str:
+def secret_key_env_for(env_name: str, value: Any, base_url: str = "") -> str:
     """``key_env`` flavour of :func:`secret_ref_for` for blocks that take a variable NAME
     (``custom_providers`` entries): ``env_name`` once the secret is in ``.env``, else ""."""
-    return env_name if secret_ref_for(env_name, value) != value else ""
+    return env_name if secret_ref_for(env_name, value, base_url) != value else ""
 
 
 def _custom_provider_entry_name(user_config: dict, index: str) -> str:
@@ -113,7 +203,6 @@ def _custom_provider_entry_name(user_config: dict, index: str) -> str:
 def config_path_api_key_env(parts: list[str], user_config: dict) -> Optional[str]:
     """The ``.env`` name for a credential config path ``hermes config set`` stores by reference, or
     None for paths it writes as given."""
-    from hermes_cli.config import custom_endpoint_key_env
     if not parts or parts[-1] != "api_key":
         return None
     head = parts[:-1]
@@ -124,9 +213,9 @@ def config_path_api_key_env(parts: list[str], user_config: dict) -> Optional[str
     if len(head) == 2 and head[0] == "auxiliary":
         return aux_api_key_env(head[1])
     if len(head) == 2 and head[0] == "providers":
-        return custom_endpoint_key_env(head[1])
+        return provider_name_key_env(head[1])
     if len(head) == 2 and head[0] == "custom_providers":
-        return custom_endpoint_key_env(_custom_provider_entry_name(user_config, head[1]))
+        return provider_name_key_env(_custom_provider_entry_name(user_config, head[1]))
     return None
 
 

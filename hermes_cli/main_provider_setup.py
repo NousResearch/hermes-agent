@@ -535,7 +535,7 @@ def _save_custom_provider(base_url, api_key="", model="", context_length=None, n
     entry = {"name": name, "base_url": base_url}
     if api_key and not key_env:
         from hermes_cli.config_secret_refs import endpoint_api_key_env, secret_key_env_for
-        key_env = secret_key_env_for(endpoint_api_key_env(base_url), api_key)
+        key_env = secret_key_env_for(endpoint_api_key_env(base_url), api_key, base_url)
     if key_env:
         entry["key_env"] = key_env
     elif api_key:

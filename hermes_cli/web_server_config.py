@@ -679,8 +679,14 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
     # The submitted key goes to .env; model.api_key and the registered row hold only its reference.
     stored_key = api_key
     if api_key.strip():
-        from hermes_cli.config_secret_refs import endpoint_api_key_env, secret_ref_for
-        stored_key = secret_ref_for(endpoint_api_key_env(result.base_url), api_key.strip())
+        from hermes_cli.config_secret_refs import endpoint_api_key_env, known_endpoint_key_env, secret_ref_for
+        # A row already registered for this endpoint keeps its variable, so model.api_key and the
+        # row read the same key instead of two copies drifting apart.
+        env_name = known_endpoint_key_env(cfg, result.base_url) or endpoint_api_key_env(result.base_url)
+        try:
+            stored_key = secret_ref_for(env_name, api_key.strip(), result.base_url)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
     model_cfg = apply_main_model_assignment(cfg.get("model", {}), result, stored_key)
     if not (explicit_endpoint and entry_points_elsewhere(provider_entry, base_url)):
         # A submitted endpoint carries its own key (or none); a ``providers.custom`` block for

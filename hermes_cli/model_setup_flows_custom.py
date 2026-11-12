@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import contextlib
 import os
-import urllib.parse
 
 from hermes_cli.cli_output import line_input
 from hermes_cli.providers import custom_provider_slug
@@ -98,7 +97,7 @@ def _model_flow_custom(config):
     it appears in the provider menu on subsequent runs."""
     from hermes_cli.main_provider_setup import _auto_provider_name, _prompt_custom_api_mode_selection, _save_custom_provider
     from hermes_cli.auth import _save_model_choice, deactivate_provider
-    from hermes_cli.config import custom_endpoint_key_env, get_env_value, save_env_value
+    from hermes_cli.config import get_env_value
     from hermes_cli.secret_prompt import masked_secret_prompt
     current_url = get_env_value("OPENAI_BASE_URL") or ""
     current_key = get_env_value("OPENAI_API_KEY") or ""
@@ -161,17 +160,17 @@ def _model_flow_custom(config):
     if context_length is None and model_name:
         _report_context_length_detection(model_name, effective_url, effective_key)
 
-    # The key goes to .env and config.yaml only references it. Keyed on host:port
-    # so two servers on one machine keep separate credentials.
-    # See #69449.
+    # The key goes to .env and config.yaml only references it, under a name unique to the endpoint
+    # (#69449, #77471). Configs written by older releases keep the ${VAR} they already reference.
     custom_key_env = ""
     if effective_key:
-        _parsed = urllib.parse.urlparse(effective_url)
-        _identity = _parsed.hostname or ""
-        if _parsed.port:
-            _identity = f"{_identity}_{_parsed.port}"
-        custom_key_env = custom_endpoint_key_env(_identity)
-        save_env_value(custom_key_env, effective_key)
+        from hermes_cli.config_secret_refs import endpoint_api_key_env, store_secret
+        custom_key_env = endpoint_api_key_env(effective_url)
+        try:
+            store_secret(custom_key_env, effective_key, effective_url)
+        except ValueError as exc:
+            print(f"  ✗ {exc}")
+            return
         print(f"  API key saved to .env as {custom_key_env}")
 
     def _apply_endpoint(model: dict) -> None:

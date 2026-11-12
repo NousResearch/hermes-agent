@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import pytest
 
+from agent.i18n import t
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.event import MessageEvent, MessageType
@@ -138,6 +139,7 @@ async def test_turn_exception_text_stays_in_log_not_chat(tmp_path, monkeypatch, 
 
     assert len(adapter.sent) == 1
     reply = adapter.sent[0]
+    assert reply == t("gateway.notify.turn_error" if suppressed else "gateway.errors.generic_failed")
     assert secret not in reply
     assert "Incorrect API key" not in reply and "PermissionError" not in reply
     assert "Incorrect API key provided" in caplog.text

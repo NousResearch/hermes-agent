@@ -20,11 +20,17 @@ _in_flight: "weakref.WeakSet[asyncio.Event]" = weakref.WeakSet()
 
 
 def guard_under_commands(guard):
-    """The guard under any commands still in flight: a processing task that first runs while a command
-    is replying belongs to the guard it was scheduled under, which a refusal hands back."""
-    while guard in _in_flight:
+    """The guard under every command guard, settled or still in flight: a processing task that first runs
+    while a command is replying belongs to the guard it was scheduled under, which a refusal hands back."""
+    while guard in _replaced_guard:
         guard = _replaced_guard[guard]
     return guard
+
+
+def command_in_flight(guard) -> bool:
+    """True while *guard* is a command still replying: its own restore settles the session, so a
+    stale-lock heal must not clear it (and drop the finished owner's held input) underneath it."""
+    return guard in _in_flight
 
 
 async def dispatch_active_session_command(adapter, event, session_key: str, cmd: str) -> None:

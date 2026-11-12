@@ -14,10 +14,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult, TextDebounceState
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
+from gateway.session_ingress_burst import holds_busy_burst
 from tests.gateway.test_slash_access_dispatch import _make_event, _make_runner, _make_source
 from tests.waiting import async_wait_until
 
@@ -354,3 +355,91 @@ async def test_a_stop_before_the_owners_task_first_runs_leaves_no_stale_guard(se
     await helper
     finish.set()
     await async_wait_until(lambda: key not in adapter._active_sessions, timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_a_drain_started_under_a_settled_refusal_releases_the_session():
+    """Refusals A then B over the owner; A settles, the owner finishes into its pending slot while B
+    still replies, so a drain takes the session: it must own the owner's guard, not settled A's."""
+    adapter, started, finish, drained = _Adapter(), asyncio.Event(), asyncio.Event(), asyncio.Event()
+    gates = {"stop-a": asyncio.Event(), "stop-b": asyncio.Event()}
+    seen = []
+
+    async def handle(event):
+        seen.append(event.text)
+        if event.text == "/stop":
+            await gates[event.message_id].wait()
+            return "⛔ You can't run /stop here."
+        started.set()
+        await (finish if event.text == "write the report" else drained).wait()
+        return "done"
+    adapter.set_message_handler(handle)
+    adapter.set_authorization_check(lambda *_a, **_kw: True)
+    await adapter.handle_message(_event(OWNER, "write the report"))
+    await asyncio.wait_for(started.wait(), 5)
+    key = next(iter(adapter._session_tasks))
+    commands = {}
+    for message_id in gates:
+        before = adapter._active_sessions[key]
+        stop = _event(MEMBER, "/stop")
+        stop.message_id = message_id
+        commands[message_id] = asyncio.create_task(adapter.handle_message(stop))
+        await async_wait_until(lambda: adapter._active_sessions.get(key) is not before, timeout=5)
+    gates["stop-a"].set()
+    await asyncio.wait_for(commands["stop-a"], 5)
+    adapter._pending_messages[key] = _event(OWNER, HELD_TEXT)
+    finish.set()
+    await async_wait_until(lambda: HELD_TEXT in seen, timeout=5)  # the drain is running
+    gates["stop-b"].set()
+    await asyncio.wait_for(commands["stop-b"], 5)
+    drained.set()
+    await async_wait_until(lambda: key not in adapter._active_sessions, timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_a_message_during_a_refusal_after_the_owner_finished_keeps_the_held_burst(monkeypatch):
+    """A shared Signal group: the owner's held burst B, a stranger's refused /stop still replying when
+    the owner's turn ends, then the stranger's message Z. Z's stale-lock heal must not drop B: the
+    replying command settles the session itself."""
+    from plugins.platforms.signal.adapter import SignalAdapter
+    from tests.gateway.test_busy_burst_serial_reader import _busy_owner
+    monkeypatch.setenv("SIGNAL_ALLOWED_USERS", "+155****0001")
+    monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "*")
+    adapter = SignalAdapter(PlatformConfig(enabled=True, extra={"account": "+155****9999",
+                                                                "group_sessions_per_user": False}))
+    monkeypatch.setattr(adapter, "serial_receive_loop", False, raising=False)
+
+    def member(user_id):
+        return adapter.build_source(chat_id="group:g1", chat_type="group", user_id=user_id)
+    owner = await _busy_owner(monkeypatch, adapter, member("+155****0001"),
+                              GatewayConfig(group_sessions_per_user=False), busy_text_mode="queue",
+                              busy_text_timing=(5.0, 10.0))
+    executed = owner.runner._handle_message_with_agent
+    texts = []
+
+    async def turn(event, *args):
+        texts.append(event.text)
+        return await executed(event, *args)
+    monkeypatch.setattr(owner.runner, "_handle_message_with_agent", turn)
+    burst = asyncio.create_task(adapter.handle_message(MessageEvent(text="B", source=member("+155****0001"),
+                                                                    message_id="B")))
+    await async_wait_until(lambda: holds_busy_burst(adapter, owner.key), timeout=5)
+    replying, reply_gate, dispatch = asyncio.Event(), asyncio.Event(), adapter._message_handler
+
+    async def gated(event):
+        if event.text == "/stop":
+            replying.set()
+            await reply_gate.wait()
+        return await dispatch(event)
+    adapter.set_message_handler(gated)
+    stop = asyncio.create_task(adapter.handle_message(MessageEvent(text="/stop", source=member("+155****0002"),
+                                                                   message_id="S")))
+    await asyncio.wait_for(replying.wait(), 5)
+    settled = asyncio.create_task(owner.settle(2))  # the owner's turn A ends during the refusal
+    await async_wait_until(lambda: adapter._session_task_is_stale(owner.key), timeout=5)
+    await adapter.handle_message(MessageEvent(text="Z", source=member("+155****0002"), message_id="Z"))
+    reply_gate.set()
+    await asyncio.wait_for(stop, 5)
+    await async_wait_until(lambda: "B" in texts, timeout=15, what="the held burst B to run")
+    await asyncio.wait_for(settled, 15)
+    burst.cancel()

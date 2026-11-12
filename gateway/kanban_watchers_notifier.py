@@ -475,7 +475,12 @@ def _fmt_gave_up(ev, n) -> tuple:
     count = (t("gateway.kanban.ping.failed_n_times", count=int(failures)) if failures
              else t("gateway.kanban.ping.kept_failing"))
     last = _clip(ev, "error", "gateway.kanban.ping.last_error", 160)
-    return t("gateway.kanban.ping.gave_up", head=n.head, count=count, last=last, task_id=n.task_id), None, None
+    # Carry the (bounded, first-line) error into the wake so the woken agent
+    # sees why the task gave up instead of only "retries exhausted" (#151608).
+    wake_detail = _first_line(str(_payload(ev, "error") or ""), 160) or None
+    if wake_detail:
+        wake_detail = f"{wake_detail} Fix the cause, then `hermes kanban unblock {n.task_id}`."
+    return t("gateway.kanban.ping.gave_up", head=n.head, count=count, last=last, task_id=n.task_id), wake_detail, None
 
 
 def _fmt_timed_out(ev, n) -> tuple:

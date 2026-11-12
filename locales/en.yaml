@@ -229,7 +229,7 @@ gateway:
     no_output: "(no output)"
     wake:
       completed: "completed"
-      gave_up: "gave up (retries exhausted)"
+      gave_up: "gave up; blocked until fixed"
       crashed: "crashed (worker exited); dispatcher will retry"
       timed_out: "timed out; dispatcher will retry"
       blocked: "blocked; needs attention"

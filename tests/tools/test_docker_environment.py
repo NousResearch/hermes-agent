@@ -60,7 +60,30 @@ def _make_dummy_env(**kwargs):
         shared_container_key=kwargs.get("shared_container_key", ""),
         shm_size=kwargs.get("shm_size", docker_env._DEFAULT_SHM_SIZE),
         snap_compat=kwargs.get("snap_compat", False),
+        auto_mounts=kwargs.get("auto_mounts", True),
     )
+
+
+def test_docker_lifecycle_defaults_are_configurable():
+    """Profiles can override every Docker lifecycle default through config."""
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    terminal = DEFAULT_CONFIG["terminal"]
+    assert terminal["docker_persist_across_processes"] is True
+    assert terminal["docker_orphan_reaper"] is True
+
+
+def test_auto_mounts_disabled_omits_hermes_ro_mounts(monkeypatch):
+    """Worker sandboxes can opt out of every automatic Hermes host mount."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+    marker = "/host/secret:/root/.hermes/secret:ro"
+    monkeypatch.setattr(docker_env, "_readonly_skill_mount_args", lambda: ["-v", marker])
+
+    _make_dummy_env(auto_mounts=False, persist_across_processes=False)
+
+    run_args = next(cmd for cmd, _kwargs in calls if isinstance(cmd, list) and cmd[1] == "run")
+    assert marker not in run_args
 
 
 def test_ensure_docker_available_raises_when_not_found(monkeypatch):

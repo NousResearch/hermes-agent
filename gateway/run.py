@@ -1994,6 +1994,7 @@ def _bridge_terminal_config_to_env(_terminal_cfg: dict) -> None:
         "docker_extra_args": "TERMINAL_DOCKER_EXTRA_ARGS",
         "docker_shm_size": "TERMINAL_DOCKER_SHM_SIZE",
         "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
+        "docker_auto_mounts": "TERMINAL_DOCKER_AUTO_MOUNTS",
         "docker_network": "TERMINAL_DOCKER_NETWORK",
         "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
         "docker_snap_compat": "TERMINAL_DOCKER_SNAP_COMPAT",

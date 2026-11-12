@@ -354,6 +354,9 @@ DEFAULT_CONFIG = {
         # /output/... inside Docker and emit the host-visible path in MEDIA:, not the container one.
         "docker_volumes": [],
         "docker_mount_cwd_to_workspace": False,  # mount host cwd at /workspace (weakens isolation)
+        # Mount profile skills, caches, and credential files read-only. Set false only for
+        # a worker whose entire source and verification flow are injected by an operator.
+        "docker_auto_mounts": True,
         "docker_network": True,  # false = --network=none, no network access from commands
         "docker_extra_args": [],        # Extra flags passed verbatim to docker run
         # /dev/shm size for the Docker sandbox. Docker's 64 MB default silently breaks
@@ -369,6 +372,8 @@ DEFAULT_CONFIG = {
         # anything under `--init` or `--security-opt no-new-privileges` ("operation not
         # permitted"). True drops those two flags; every other hardening stays. See #9730.
         "docker_snap_compat": False,
+        "docker_persist_across_processes": True,
+        "docker_orphan_reaper": True,
         # Trusted profiles sharing one Docker container identity; empty = per-profile boundary.
         "docker_shared_container_key": "",
         # SSH: carry exported env vars between commands (cwd always carries). false = every command

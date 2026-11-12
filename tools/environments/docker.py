@@ -662,6 +662,7 @@ class DockerEnvironment(BaseEnvironment):
         memory: int = 0,
         disk: int = 0,
         persistent_filesystem: bool = False,
+        auto_mounts: bool = True,
         task_id: str = "default",
         volumes: list | None = None,
         forward_env: list[str] | None = None,
@@ -710,7 +711,8 @@ class DockerEnvironment(BaseEnvironment):
                 mount, cwd)
             cwd = mount
             self.cwd = mount
-        volume_args.extend(_readonly_skill_mount_args())
+        if auto_mounts:
+            volume_args.extend(_readonly_skill_mount_args())
         egress_label, egress_volume_args, egress_host_args, env_args, validated_extra = (
             self._egress_and_env_args(extra_args))
         volume_args.extend(egress_volume_args)

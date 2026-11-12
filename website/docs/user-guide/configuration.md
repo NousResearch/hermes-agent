@@ -420,6 +420,7 @@ terminal:
     - "--gpus=all"
     - "--network=host"
   docker_network: true             # false = air-gap the container (--network=none)
+  docker_auto_mounts: true         # false = do not add Hermes' automatic read-only host mounts
 
   # Resource limits
   container_cpu: 1                 # CPU cores (0 = unlimited)
@@ -443,6 +444,8 @@ terminal:
 **`terminal.docker_extra_args`** (also overridable via `TERMINAL_DOCKER_EXTRA_ARGS='["--gpus=all"]'`) lets you pass arbitrary `docker run` flags that Hermes doesn't surface as first-class keys — `--gpus`, `--network`, `--add-host`, alternative `--security-opt` overrides, etc. Each entry must be a string; the list is appended last to the assembled `docker run` invocation so it can override Hermes' defaults if needed. Use sparingly — flags that conflict with the sandbox hardening (capability drops, `--user`, the workspace bind mount) will silently weaken isolation.
 
 **`terminal.docker_network`** (default `true`; env: `TERMINAL_DOCKER_NETWORK`) — set to `false` to run the sandbox container with `--network=none`, cutting off all network egress from agent commands. This applies to the execution container used by `terminal`, `execute_code`, and the file tools. Because containers persist across Hermes processes, flipping this to `false` while an older networked container exists will remove that container and start a fresh air-gapped one (a warning is logged); background processes running inside it are lost. Prefer this key over passing `--network=none` through `docker_extra_args`.
+
+**`terminal.docker_auto_mounts`** (default `true`; env: `TERMINAL_DOCKER_AUTO_MOUNTS`) — set to `false` for an operator-controlled worker that must not receive Hermes' automatic read-only mounts for profile skills, caches, or credential files. This does not remove volumes you explicitly configure with `docker_volumes`, and it does not override `docker_mount_cwd_to_workspace`; disable or leave those settings empty as well when a worker must have no host filesystem access. Pair this setting with `docker_network: false` and `docker_persist_across_processes: false` for an ephemeral air-gapped worker.
 
 **Requirements:** Docker Desktop or Docker Engine installed and running. Hermes probes `$PATH` plus common macOS install locations (`/usr/local/bin/docker`, `/opt/homebrew/bin/docker`, Docker Desktop app bundle). Podman is supported out of the box: set `HERMES_DOCKER_BINARY=podman` (or the full path) to force it when both are installed.
 
@@ -498,6 +501,7 @@ Every key under `terminal:` has an env-var override of the form `TERMINAL_<KEY_U
 | `TERMINAL_DOCKER_VOLUMES` | `docker_volumes` | JSON array of `"host:container[:ro]"` strings |
 | `TERMINAL_DOCKER_EXTRA_ARGS` | `docker_extra_args` | JSON array |
 | `TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE` | `docker_mount_cwd_to_workspace` | `true` / `false` |
+| `TERMINAL_DOCKER_AUTO_MOUNTS` | `docker_auto_mounts` | `true` / `false` — default `true`; `false` omits automatic Hermes read-only mounts |
 | `TERMINAL_DOCKER_RUN_AS_HOST_USER` | `docker_run_as_host_user` | `true` / `false` |
 | `TERMINAL_DOCKER_SNAP_COMPAT` | `docker_snap_compat` | `true` / `false` — default `false` |
 | `TERMINAL_DOCKER_NETWORK` | `docker_network` | `true` / `false` — default `true`; `false` = `--network=none` |

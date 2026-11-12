@@ -889,6 +889,7 @@ def _get_env_config() -> dict[str, Any]:
         "container_memory": container_memory,
         "container_disk": container_disk,
         "container_persistent": _tenv_bool("TERMINAL_CONTAINER_PERSISTENT", "true"),
+        "docker_auto_mounts": _tenv_bool("TERMINAL_DOCKER_AUTO_MOUNTS", "true"),
         "docker_volumes": docker_volumes,
         "docker_env": docker_env,
         "docker_run_as_host_user": _tenv_bool("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false"),

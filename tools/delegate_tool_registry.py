@@ -139,6 +139,7 @@ def interrupt_subagent(subagent_id: str) -> bool:
     agent = record.get("agent") if record else None
     if agent is None:
         return False
+    agent._delegate_stop_requested = True  # read where a run that never started settles its record
     try:
         return bool(request_hard_interrupt(agent, f"Interrupted via TUI ({subagent_id})"))
     except Exception as exc:

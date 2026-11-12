@@ -19,9 +19,13 @@ export async function fetchBrowserImage(url: URL): Promise<Blob> {
     controller.signal.throwIfAborted()
     reader = response.body?.getReader()
 
-    if (!response.ok) {throw new Error(`Image download failed (${response.status})`)}
+    if (!response.ok) {
+      throw new Error(`Image download failed (${response.status})`)
+    }
 
-    if (!reader) {throw new Error('Image download has no readable body. Try opening the image in a separate tab.')}
+    if (!reader) {
+      throw new Error('Image download has no readable body. Try opening the image in a separate tab.')
+    }
 
     const chunks: Uint8Array<ArrayBuffer>[] = []
     let received = 0
@@ -30,7 +34,9 @@ export async function fetchBrowserImage(url: URL): Promise<Blob> {
       const { done, value } = await reader.read()
       controller.signal.throwIfAborted()
 
-      if (done) {break}
+      if (done) {
+        break
+      }
       received += value.byteLength
 
       // Content-Length may be absent, incorrect, or describe compressed bytes.

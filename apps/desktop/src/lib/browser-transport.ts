@@ -28,7 +28,9 @@ export class BrowserReauthRequiredError extends Error {
 }
 
 export function browserBootstrap(): BrowserBootstrap | null {
-  if (!hasBrowserHostBootstrap()) {return null}
+  if (!hasBrowserHostBootstrap()) {
+    return null
+  }
 
   const win = window as Window & BrowserHostGlobals
   const authRequired = win.__HERMES_AUTH_REQUIRED__ === true
@@ -53,11 +55,7 @@ export function endpointUrl(path: string, basePath: string, profile?: null | str
     throw new Error('Hermes API paths must remain on the Webapp origin')
   }
 
-  if (
-    normalizedBase &&
-    url.pathname !== normalizedBase &&
-    !url.pathname.startsWith(`${normalizedBase}/`)
-  ) {
+  if (normalizedBase && url.pathname !== normalizedBase && !url.pathname.startsWith(`${normalizedBase}/`)) {
     throw new Error('Hermes API paths must remain inside the configured base path')
   }
 
@@ -83,12 +81,10 @@ export function websocketUrl(
   })
 }
 
-function reauthError(
-  bootstrap: BrowserBootstrap,
-  response: Response,
-  text: string
-): BrowserReauthRequiredError | null {
-  if (!bootstrap.authRequired || response.status !== 401) {return null}
+function reauthError(bootstrap: BrowserBootstrap, response: Response, text: string): BrowserReauthRequiredError | null {
+  if (!bootstrap.authRequired || response.status !== 401) {
+    return null
+  }
 
   let payload: { detail?: unknown; error?: unknown; login_url?: unknown } = {}
 
@@ -113,7 +109,9 @@ function reauthError(
     return null
   }
 
-  if (target.origin !== window.location.origin) {return null}
+  if (target.origin !== window.location.origin) {
+    return null
+  }
 
   return new BrowserReauthRequiredError(
     `${String(payload.error)}: ${String(payload.detail || 'Unauthorized')}`,
@@ -127,7 +125,9 @@ export function navigateToBrowserLogin(error: BrowserReauthRequiredError): void 
     detail: { loginUrl: error.loginUrl }
   })
 
-  if (window.dispatchEvent(event)) {window.location.assign(error.loginUrl)}
+  if (window.dispatchEvent(event)) {
+    window.location.assign(error.loginUrl)
+  }
 }
 
 interface BrowserFetchRequest {
@@ -143,13 +143,17 @@ export async function browserFetch(
   bootstrap: BrowserBootstrap,
   request: BrowserFetchRequest
 ): Promise<{ response: Response; text: string }> {
-  if (!bootstrap.authRequired && !bootstrap.token) {throw webappSignInRequired()}
+  if (!bootstrap.authRequired && !bootstrap.token) {
+    throw webappSignInRequired()
+  }
 
   const controller = request.timeoutMs === undefined ? null : new AbortController()
   const timeout = controller ? window.setTimeout(() => controller.abort(), request.timeoutMs) : null
   const headers = new Headers(request.headers)
 
-  if (bootstrap.token) {headers.set(SESSION_HEADER, bootstrap.token)}
+  if (bootstrap.token) {
+    headers.set(SESSION_HEADER, bootstrap.token)
+  }
 
   try {
     const response = await fetch(endpointUrl(request.path, bootstrap.basePath, request.profile), {
@@ -163,7 +167,9 @@ export async function browserFetch(
     const text = await response.text()
 
     if (!response.ok) {
-      if (!bootstrap.authRequired && response.status === 401) {throw webappSignInRequired()}
+      if (!bootstrap.authRequired && response.status === 401) {
+        throw webappSignInRequired()
+      }
 
       const authError = reauthError(bootstrap, response, text)
 
@@ -175,7 +181,9 @@ export async function browserFetch(
 
     return { response, text }
   } finally {
-    if (timeout !== null) {window.clearTimeout(timeout)}
+    if (timeout !== null) {
+      window.clearTimeout(timeout)
+    }
   }
 }
 
@@ -210,7 +218,9 @@ export async function browserApi<T>(bootstrap: BrowserBootstrap, request: Hermes
     throw new Error(`${response.status}: ${text || response.statusText}`)
   }
 
-  if (!text) {return null as T}
+  if (!text) {
+    return null as T
+  }
 
   if (/^\s*<(?:!doctype|html)/i.test(text)) {
     throw new Error(`Hermes API returned HTML for ${request.path}`)
@@ -258,7 +268,9 @@ export async function fileEndpointUrl(
 
     const ticket = String(result?.ticket || '')
 
-    if (!ticket) {throw new Error('Hermes did not return a file ticket')}
+    if (!ticket) {
+      throw new Error('Hermes did not return a file ticket')
+    }
     url.searchParams.set('ticket', ticket)
   }
 
@@ -301,9 +313,13 @@ export async function ticketedWebsocketUrl(
 
   const ticket = String(result?.ticket || '').trim()
 
-  if (!ticket) {throw new Error(`Hermes did not return a ticket for ${path}`)}
+  if (!ticket) {
+    throw new Error(`Hermes did not return a ticket for ${path}`)
+  }
 
-  if (!gateway) {return websocketUrl(bootstrap.basePath, path, { ticket }, profile)}
+  if (!gateway) {
+    return websocketUrl(bootstrap.basePath, path, { ticket }, profile)
+  }
 
   const url = new URL(gatewaySocketUrl(bootstrap, profile))
   url.searchParams.set('ticket', ticket)

@@ -8,16 +8,27 @@ import type { SubmissionDestination } from './submission-destination'
 type Journal = typeof PreparedSubmissions
 
 const realStorage = window.localStorage
-const installStorage = (storage: Storage) => Object.defineProperty(window, 'localStorage', { configurable: true, value: storage })
+const installStorage = (storage: Storage) =>
+  Object.defineProperty(window, 'localStorage', { configurable: true, value: storage })
 
-afterEach(() => { installStorage(realStorage); vi.resetModules(); localStorage.clear() })
+afterEach(() => {
+  installStorage(realStorage)
+  vi.resetModules()
+  localStorage.clear()
+})
 
 // The single blob an earlier build kept every browser journal entry in.
 const LEGACY_KEY = 'hermes.desktop.preparedSubmissions.v1'
 const owner = { connectionId: 'local', profile: 'default' }
 const destination = { scopeKey: 'webapp::default' } as SubmissionDestination
 const intent = (text: string) => preparedSubmissionKey('stored', destination, text, [])
-const entry = (id: string, text: string): PreparedSubmission => ({ id, text, attachments: [], params: { submission_id: id }, owner })
+const entry = (id: string, text: string): PreparedSubmission => ({
+  id,
+  text,
+  attachments: [],
+  params: { submission_id: id },
+  owner
+})
 const legacySend = (text: string) => ({ key: intent(text), entry: entry(`${text} id`, text) })
 
 // One browser tab: its own module instance over its own view of the origin's storage, which the
@@ -41,7 +52,9 @@ async function retry(journal: Journal, send: ReturnType<typeof legacySend>, ackn
   const adopted = await journal.adoptPreparedSubmission(send.key, send.entry.id)
   await journal.writePreparedSubmission(adopted!.key, adopted!.entry)
 
-  if (acknowledged) { await journal.removePreparedSubmission(adopted!.key, adopted!.entry.id) }
+  if (acknowledged) {
+    await journal.removePreparedSubmission(adopted!.key, adopted!.entry.id)
+  }
 }
 
 test('a tab acting on a stale read of the journal keeps the entry another tab just wrote', async () => {
@@ -82,19 +95,28 @@ test('an entry an earlier build left in the blob is still offered and adopted, a
 })
 
 test('two tabs upgrading at once: each legacy entry they retire stays retired, every other stays adoptable', async () => {
-  const [untouched, ackedInA, ackedInB, unconfirmedInB] = ['untouched', 'acked in A', 'acked in B', 'unconfirmed in B'].map(legacySend)
+  const [untouched, ackedInA, ackedInB, unconfirmedInB] = [
+    'untouched',
+    'acked in A',
+    'acked in B',
+    'unconfirmed in B'
+  ].map(legacySend)
   const legacy = Object.fromEntries([untouched, ackedInA, ackedInB, unconfirmedInB].map(send => [send.key, send.entry]))
   const shared = new Map([[LEGACY_KEY, JSON.stringify(legacy)]])
   // Both tabs load the new build over the same blob; neither sees the other's writes until it flushes.
   const a = await openTab(shared)
   const b = await openTab(shared)
   await a.run(journal => retry(journal, ackedInA, true))
-  await b.run(async journal => { await retry(journal, ackedInB, true); await retry(journal, unconfirmedInB, false) })
+  await b.run(async journal => {
+    await retry(journal, ackedInB, true)
+    await retry(journal, unconfirmedInB, false)
+  })
   a.flush()
   b.flush()
 
   const reloaded = await openTab(shared)
-  const adopt = (send: ReturnType<typeof legacySend>) => reloaded.run(journal => journal.adoptPreparedSubmission(send.key, send.entry.id))
+  const adopt = (send: ReturnType<typeof legacySend>) =>
+    reloaded.run(journal => journal.adoptPreparedSubmission(send.key, send.entry.id))
   expect(await adopt(ackedInA)).toBeUndefined()
   expect(await adopt(ackedInB)).toBeUndefined()
   expect(await adopt(untouched)).toEqual(untouched)
@@ -131,7 +153,9 @@ const SPENT = 'hermes.desktop.preparedSubmissions.spent.v2:'
 // tab's writes landing while a journal read is part way through.
 function interleavedStorage(stored: Map<string, string>, onKey: () => void, onGet: (key: string) => void) {
   return {
-    get length() { return stored.size },
+    get length() {
+      return stored.size
+    },
     key: (index: number) => {
       const key = [...stored.keys()][index] ?? null
       onKey()
@@ -144,13 +168,20 @@ function interleavedStorage(stored: Map<string, string>, onKey: () => void, onGe
 
       return value
     },
-    setItem: (key: string, value: string) => { stored.set(key, value) },
-    removeItem: (key: string) => { stored.delete(key) },
+    setItem: (key: string, value: string) => {
+      stored.set(key, value)
+    },
+    removeItem: (key: string) => {
+      stored.delete(key)
+    },
     clear: () => stored.clear()
   } as unknown as Storage
 }
 
-async function readWhile(stored: Map<string, string>, { onKey = () => undefined, onGet = () => undefined }: { onKey?: () => void; onGet?: (key: string) => void }) {
+async function readWhile(
+  stored: Map<string, string>,
+  { onKey = () => undefined, onGet = () => undefined }: { onKey?: () => void; onGet?: (key: string) => void }
+) {
   const journal: Journal = await import('./prepared-submissions')
   installStorage(interleavedStorage(stored, onKey, onGet))
 
@@ -158,10 +189,17 @@ async function readWhile(stored: Map<string, string>, { onKey = () => undefined,
 }
 
 test('an entry read while another tab retires it is hidden even when its key already held an older tombstone', async () => {
-  const stored = new Map([[SPENT + 'a', 'older'], [ENTRY + 'a', JSON.stringify(entry('a', 'a'))]])
+  const stored = new Map([
+    [SPENT + 'a', 'older'],
+    [ENTRY + 'a', JSON.stringify(entry('a', 'a'))]
+  ])
 
   // The other tab's retirement tombstones 'a' under the same key just as this read takes the entry.
-  const onGet = (key: string) => { if (key === ENTRY + 'a') { stored.set(SPENT + 'a', 'a') } }
+  const onGet = (key: string) => {
+    if (key === ENTRY + 'a') {
+      stored.set(SPENT + 'a', 'a')
+    }
+  }
 
   expect(await readWhile(stored, { onGet })).toBeUndefined()
   expect([...stored.keys()]).toEqual([])
@@ -170,17 +208,28 @@ test('an entry read while another tab retires it is hidden even when its key alr
 test('an entry read while another tab retires it is hidden when its tombstone key appears after the key list', async () => {
   // This time the key held no tombstone at all when the read listed the keys.
   const stored = new Map([[ENTRY + 'a', JSON.stringify(entry('a', 'a'))]])
-  const onGet = (key: string) => { if (key === ENTRY + 'a') { stored.set(SPENT + 'a', 'a') } }
+
+  const onGet = (key: string) => {
+    if (key === ENTRY + 'a') {
+      stored.set(SPENT + 'a', 'a')
+    }
+  }
 
   expect(await readWhile(stored, { onGet })).toBeUndefined()
   expect([...stored.keys()]).toEqual([])
 })
 
 test('a tombstone a concurrent removal shifts out of the key list still hides its entry', async () => {
-  const stored = new Map([['unrelated', 'x'], [SPENT + 'a', 'a'], [ENTRY + 'a', JSON.stringify(entry('a', 'a'))]])
+  const stored = new Map([
+    ['unrelated', 'x'],
+    [SPENT + 'a', 'a'],
+    [ENTRY + 'a', JSON.stringify(entry('a', 'a'))]
+  ])
 
   // Another tab removes the first key just after it is listed: every later key moves down one index.
-  const onKey = () => { stored.delete('unrelated') }
+  const onKey = () => {
+    stored.delete('unrelated')
+  }
 
   expect(await readWhile(stored, { onKey })).toBeUndefined()
   expect([...stored.keys()]).toEqual([])

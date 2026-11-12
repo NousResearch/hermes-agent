@@ -54,7 +54,11 @@ export function packBento(items: CatalogEntry[], columns = BENTO_COLUMNS, maxRow
   const taken = (column: number, row: number) => occupied.has(`${column},${row}`)
 
   const claim = (column: number, row: number, w: number, h: number) => {
-    for (let y = row; y < row + h; y++) {for (let x = column; x < column + w; x++) {occupied.add(`${x},${y}`)}}
+    for (let y = row; y < row + h; y++) {
+      for (let x = column; x < column + w; x++) {
+        occupied.add(`${x},${y}`)
+      }
+    }
   }
 
   const tiles: BentoTile[] = heroes.map((entry, band) => {
@@ -65,7 +69,7 @@ export function packBento(items: CatalogEntry[], columns = BENTO_COLUMNS, maxRow
   })
 
   for (let row = 0; row < rows; row++) {
-    for (let column = 0; column < columns && rest.length; ) {
+    for (let column = 0; column < columns && rest.length;) {
       if (taken(column, row)) {
         column++
 
@@ -74,12 +78,16 @@ export function packBento(items: CatalogEntry[], columns = BENTO_COLUMNS, maxRow
 
       let run = 0
 
-      while (column + run < columns && !taken(column + run, row)) {run++}
+      while (column + run < columns && !taken(column + run, row)) {
+        run++
+      }
 
       const w = wides > 0 && run >= 2 ? 2 : 1
       const entry = rest.shift()!
 
-      if (w === 2) {wides--}
+      if (w === 2) {
+        wides--
+      }
       claim(column, row, w, 1)
       tiles.push({ entry, variant: 'compact', column, row, w, h: 1 })
       column += w

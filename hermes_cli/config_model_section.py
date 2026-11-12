@@ -64,7 +64,7 @@ def _normalize_root_model_keys(config: dict[str, Any]) -> dict[str, Any]:
                 if not _outer_provider or _outer_provider == "auto":
                     model["provider"] = _nested_provider
             for _extra in _val:
-                if _extra in ("model", "default", "provider", "name"):
+                if _extra in ("model", "default", "provider"):
                     continue
                 _warn_once_per_provider(
                     "model-section", f"discarded:{_key}.{_extra}",

@@ -747,7 +747,10 @@ class TestRootLevelProviderOverride:
         assert result["model"]["provider"] == "openai"
         assert "model" not in result["model"]
 
-    def test_nested_dict_default_extra_keys_warn_on_whole_file_save(self, tmp_path, caplog, monkeypatch):
+    @pytest.mark.parametrize("model_key", ["default", "model", "name"])
+    def test_nested_dict_default_extra_keys_warn_on_whole_file_save(
+        self, tmp_path, caplog, monkeypatch, model_key
+    ):
         """#153296: disclose discarded paths, not secret values or new runtime settings."""
         import os
         from unittest.mock import patch
@@ -758,8 +761,8 @@ class TestRootLevelProviderOverride:
 
         monkeypatch.setattr(config_providers, "_PROVIDER_NORMALIZE_WARNED", set())
         (tmp_path / "config.yaml").write_text(yaml.safe_dump({"model": {
-            "default": {"model": "x/y", "provider": "openrouter", "newer_field": "keepme",
-                        "base_url": "https://nested.example/v1"},
+            model_key: {"model": "x/y", "provider": "openrouter", "newer_field": "keepme",
+                        "name": "discarded-name-value", "base_url": "https://nested.example/v1"},
             "base_url": "https://outer.example/v1",
         }}), encoding="utf-8")
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
@@ -767,8 +770,10 @@ class TestRootLevelProviderOverride:
         model = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))["model"]
         assert model["default"] == "x/y" and model["provider"] == "openrouter"
         assert "newer_field" not in model
-        assert caplog.text.count("unsupported model.default.newer_field") == 1
-        assert caplog.text.count("unsupported model.default.base_url") == 1
+        assert caplog.text.count(f"unsupported model.{model_key}.newer_field") == 1
+        assert caplog.text.count(f"unsupported model.{model_key}.base_url") == 1
+        assert caplog.text.count(f"unsupported model.{model_key}.name") == 1
+        assert "discarded-name-value" not in caplog.text
         assert "keepme" not in caplog.text
         assert "https://nested.example/v1" not in caplog.text
         assert "https://outer.example/v1" not in caplog.text

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 from gateway.platforms.base import SendResult
 from gateway.platforms.helpers import TABLE_SEPARATOR_RE
@@ -257,16 +257,27 @@ async def send_rich_parts(
     if parts is None or not all(adapter._rich_content_ok(part, check_size=False) for part in parts):
         return None
     sent: list[SendResult] = []
+    result = await _deliver_parts(adapter, chat_id, parts, sent, reply_to, metadata, len(parts))
+    if result is not None and not result.success and sent:
+        return _with_delivered_prefix(result, content, parts, sent)
+    return result
+
+
+async def _deliver_parts(
+    adapter: Any, chat_id: str, parts: list[str], sent: list[SendResult], reply_to: Optional[str],
+    metadata: Optional[dict[str, Any]], total: int,
+) -> Optional[SendResult]:
+    """Send *parts* as rich messages after the ones already in *sent* (appending each that lands).
+    ``None`` only when nothing is in the chat yet and the first part found rich unavailable."""
     for index, part in enumerate(parts):
-        # Only the first part anchors the reply; later parts continue the same reply in order.
-        result = await adapter._try_send_rich(chat_id, part, reply_to if index == 0 else None, metadata)
-        if result is None and index == 0:
+        # Only the first part of the reply anchors it; later parts continue the same reply in order.
+        result = await adapter._try_send_rich(chat_id, part, None if sent else reply_to, metadata)
+        if result is None and not sent:
             return None  # nothing delivered — the legacy path may own the whole message
         if result is None:
             # A later part was refused for good (or rich went away): its text never reached the chat,
             # so the rest goes out as MarkdownV2 after the parts already shown, never re-sending them.
-            return _with_delivered_prefix(
-                await _send_legacy_tail(adapter, chat_id, parts[index:], sent, metadata), content, parts, sent)
+            return await _send_legacy_tail(adapter, chat_id, parts[index:], sent, metadata)
         if not result.success:
             raw = result.raw_response if isinstance(result.raw_response, dict) else {}
             if raw.get("delivery_uncertain") and index + 1 < len(parts):
@@ -276,12 +287,29 @@ async def send_rich_parts(
                     _legacy_chunks(adapter, _BLOCK_SEPARATOR.join(parts[index + 1:])))}
             if not sent:
                 return result  # nothing landed: the caller's normal retry still owns the message
-            return _with_delivered_prefix(_partial_failure(result, sent, len(parts)), content, parts, sent)
+            return _partial_failure(result, sent, total, rest=parts[index:])
         sent.append(result)
-    logger.info("Telegram: delivered an oversized rich message in %d parts (%d chars)", len(parts), len(content))
+    logger.info("Telegram: delivered an oversized rich message in %d parts", total)
     return SendResult(
         success=True, message_id=sent[0].message_id,
         raw_response={"message_ids": [r.message_id for r in sent if r.message_id is not None]})
+
+
+async def resume_rich_parts(adapter: Any, chat_id: str, result: SendResult,
+                            metadata: Optional[dict[str, Any]]) -> SendResult:
+    """``_resume_partial_send`` for a rich-part send stopped by a failure that proved the part
+    never reached the chat (``undelivered_rich_parts``): send that part and the ones after it as
+    rich messages, after the parts already shown, under the same per-chat lock and flood window."""
+    from plugins.platforms.telegram.adapter import _flood_cap_result
+    raw = result.raw_response
+    rest = list(raw["undelivered_rich_parts"])
+    sent = [SendResult(success=True, message_id=str(i)) for i in raw.get("delivered_message_ids") or ()]
+    total = len(sent) + len(rest)
+    async with adapter._chat_send_lock(chat_id):
+        cooldown = adapter._send_flood_cooldown_remaining(chat_id)
+        if cooldown is not None:
+            return _partial_failure(_flood_cap_result(cooldown), sent, total, rest=rest)
+        return await _deliver_parts(adapter, chat_id, rest, sent, None, metadata, total)
 
 
 async def edit_rich_parts(
@@ -407,11 +435,14 @@ def _with_delivered_prefix(result: SendResult, content: str, parts: list[str], s
     return result
 
 
-def _partial_failure(result: Optional[SendResult], sent: list[SendResult], total: int) -> SendResult:
+def _partial_failure(result: Optional[SendResult], sent: list[SendResult], total: int,
+                     rest: Sequence[str] = ()) -> SendResult:
     """A failure after earlier parts landed, under the ``partial_overflow`` contract
     (``BasePlatformAdapter._is_partial_delivery``): ``_send_with_retry`` then neither re-sends the
     whole message nor falls back to plain text, either of which would duplicate the visible parts.
-    No resumable tail is attached: a transient failure may have landed the part in flight."""
+    When the failure proves the part in flight never left (``retryable`` and not
+    ``delivery_uncertain``), it and the parts after it (*rest*) are attached as
+    ``undelivered_rich_parts``, so ``_send_with_retry`` resumes exactly them."""
     if result is None:  # no adapter to resume the tail through
         result = SendResult(success=False, error="rich_parts_unavailable", retryable=False)
     ids = [str(r.message_id) for r in sent if r.message_id is not None]
@@ -419,6 +450,8 @@ def _partial_failure(result: Optional[SendResult], sent: list[SendResult], total
     raw.update({
         "partial_overflow": True, "delivered_chunks": len(sent), "total_chunks": total,
         "last_message_id": ids[-1] if ids else None, "continuation_message_ids": tuple(ids[1:])})
+    if rest and result.retryable and not raw.get("delivery_uncertain"):
+        raw["undelivered_rich_parts"], raw["delivered_message_ids"] = tuple(rest), tuple(ids)
     result.raw_response = raw
     result.message_id = ids[-1] if ids else result.message_id
     result.continuation_message_ids = tuple(ids[1:])

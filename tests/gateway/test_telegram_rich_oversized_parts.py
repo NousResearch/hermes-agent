@@ -10,6 +10,8 @@ The ``telegram`` package is mocked by ``tests/gateway/conftest.py``, so a real `
 runs against a mock bot wired for ``do_api_request``.
 """
 
+import re
+from collections import Counter
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -220,7 +222,8 @@ async def test_a_part_refused_after_earlier_parts_landed_is_never_resent_whole(m
     assert result.raw_response["partial_overflow"] is True and result.raw_response["delivered_chunks"] == 1
     first_part = _rich_markdown(adapter._bot.do_api_request.await_args_list[0])
     assert sum(_rich_markdown(c) == first_part for c in adapter._bot.do_api_request.await_args_list) == 1
-    adapter._bot.send_message.assert_not_called()
+    # Only the exhausted-retry notice goes out as MarkdownV2; no reply text is re-sent in another shape.
+    assert not any("row " in c.kwargs.get("text", "") for c in adapter._bot.send_message.await_args_list)
 
 
 def test_standalone_send_delivers_an_oversized_rich_message_in_parts(monkeypatch):
@@ -362,8 +365,6 @@ async def test_a_streamed_reply_whose_first_preview_failed_shows_rich_part_one_o
     """The first preview send fails, the split-first send delivers rich part 1 and part 2 fails
     transiently: only the unseen tail goes out again, so every row reaches the chat exactly once."""
     import asyncio
-    import re
-    from collections import Counter
 
     from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
     from tests.waiting import async_wait_until
@@ -460,3 +461,32 @@ def test_a_table_without_outer_pipes_repeats_its_header_in_every_part():
     rows = "\n".join(f"name{index} | value {index} with some padding text" for index in range(3000))
     parts = split_rich_parts("name | value\n---|---\n" + rows, 32000)
     assert len(parts) > 1 and all(part.startswith("name | value\n---|---\n") for part in parts)
+
+
+@pytest.mark.asyncio
+async def test_a_later_part_that_never_left_is_resent_rich_after_the_parts_shown(monkeypatch):
+    """Part 2 refused by a connect error (it never reached Telegram) after part 1 landed: the
+    retry resends part 2 onward as rich parts, never part 1, instead of stopping at a partial."""
+    import telegram.error as tg_error
+
+    adapter = _make_adapter()
+    monkeypatch.setattr("gateway.platforms.base.asyncio.sleep", AsyncMock())
+    screen, attempts = [], {"rich": 0}
+
+    async def do_api_request(method, api_kwargs=None):
+        attempts["rich"] += 1
+        if attempts["rich"] == 2:
+            raise tg_error.NetworkError("Cannot connect to host api.telegram.org")
+        screen.append(api_kwargs["rich_message"]["markdown"])
+        return SimpleNamespace(message_id=700 + attempts["rich"])
+
+    adapter._bot.do_api_request = AsyncMock(side_effect=do_api_request)
+    content = _details_content(blocks=4, body_lines=400)
+
+    result = await adapter._send_with_retry("12345", content)
+
+    assert result.success is True
+    adapter._bot.send_message.assert_not_called()
+    rows = re.findall(r"row \d+-\d+:", "\n".join(screen))
+    assert sorted(rows) == sorted(re.findall(r"row \d+-\d+:", content))
+

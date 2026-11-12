@@ -136,6 +136,81 @@ def test_complete_happy_path(worker_env):
         conn.close()
 
 
+def test_complete_accepts_published_pr_as_a_first_class_argument(worker_env):
+    """D-32: the contract key is a string argument, not only a free-form dict.
+
+    The model reliably emits a top-level string; the object is what it returns as
+    ``{}`` under long context. The handler merges the argument into metadata so
+    ``collect_acceptance`` sees it exactly as before.
+    """
+    from tools import kanban_tools as kt
+
+    url = "https://github.com/iwatzon/research-foundry/pull/1"
+    out = kt._handle_complete({"summary": "published", "published_pr": url})
+    d = json.loads(out)
+    assert d["ok"] is True
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
+    try:
+        run = kb.latest_run(conn, worker_env)
+        assert run.metadata["published_pr"] == url
+    finally:
+        conn.close()
+
+
+def test_complete_top_level_published_pr_wins_over_metadata(worker_env):
+    from tools import kanban_tools as kt
+
+    url = "https://github.com/iwatzon/research-foundry/pull/2"
+    out = kt._handle_complete({
+        "summary": "published",
+        "published_pr": url,
+        "metadata": {"published_pr": "https://example.invalid/pull/0", "files": 1},
+    })
+    assert json.loads(out)["ok"] is True
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
+    try:
+        run = kb.latest_run(conn, worker_env)
+        assert run.metadata["published_pr"] == url
+        assert run.metadata["files"] == 1
+    finally:
+        conn.close()
+
+
+def test_complete_metadata_object_is_still_accepted(worker_env):
+    """The new argument is additive: workers that pass only metadata still work."""
+    from tools import kanban_tools as kt
+
+    url = "https://github.com/iwatzon/research-foundry/pull/3"
+    out = kt._handle_complete({
+        "summary": "published",
+        "metadata": {"published_pr": url},
+    })
+    assert json.loads(out)["ok"] is True
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
+    try:
+        assert kb.latest_run(conn, worker_env).metadata["published_pr"] == url
+    finally:
+        conn.close()
+
+
+def test_complete_schema_declares_published_pr_and_open_metadata():
+    from tools.kanban_tools_schemas import KANBAN_COMPLETE_SCHEMA
+
+    props = KANBAN_COMPLETE_SCHEMA["parameters"]["properties"]
+    assert props["published_pr"]["type"] == "string"
+    assert props["metadata"]["additionalProperties"] is True
+    assert props["metadata"]["properties"]["published_pr"]["type"] == "string"
+
+
 def test_complete_retry_with_empty_created_cards_succeeds(worker_env):
     """After a phantom rejection, retrying kanban_complete with
     created_cards=[] (the documented escape hatch) must complete the

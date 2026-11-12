@@ -116,7 +116,12 @@ def collect_acceptance(contract: str, published_pr: str | None,
         url = contract if declared else published_pr
         match = _PR.fullmatch(url or "")
         if not match or (not declared and match[1] != contract) or (declared and published_pr and published_pr != contract):
-            receipt["detail"] = "Supply metadata.published_pr matching the persisted completion contract."
+            receipt["detail"] = (
+                "Supply the merged PR URL as published_pr — e.g. "
+                'kanban_complete(..., published_pr="https://github.com/owner/repo/pull/123") '
+                "— not only inside metadata. Do not resend the previous arguments; "
+                "they carried no published_pr."
+            )
             return receipt
         repo, number = match[1], int(match[2])
         receipt["pr_url"] = url

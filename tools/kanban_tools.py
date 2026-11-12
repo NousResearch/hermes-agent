@@ -693,6 +693,13 @@ def _handle_complete(args: dict, **kw) -> str:
     summary = _redact_opt(args.get("summary"))
     result = _redact_opt(args.get("result"))
     metadata = args.get("metadata")
+    published_pr = _redact_opt(args.get("published_pr"))
+    if published_pr:
+        # The contract key has a first-class argument: a free-form object is what
+        # models emit empty under long context (D-32), and a string is not. The
+        # explicit argument wins over a stale value inside metadata.
+        metadata = {} if metadata is None else metadata
+        metadata["published_pr"] = published_pr
     if isinstance(metadata, dict):
         # Keep the unredacted dict if the redacted JSON cannot be re-parsed.
         metadata = _redact_metadata(metadata) or metadata
@@ -842,6 +849,10 @@ def _handle_request_review(args: dict, **kw) -> str:
         args, "summary", "summary is required — describe what was implemented and how it "
         "was verified so the reviewer has context"))
     metadata = args.get("metadata")
+    published_pr = _redact_opt(args.get("published_pr"))
+    if published_pr:
+        metadata = {} if metadata is None else metadata
+        metadata.setdefault("published_pr", published_pr)
     _require_dict_metadata(metadata)
     if metadata is not None:
         metadata = _redact_metadata(metadata)

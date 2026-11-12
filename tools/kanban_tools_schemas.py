@@ -111,12 +111,24 @@ KANBAN_COMPLETE_SCHEMA = _schema(
                 "Run History on the dashboard and in downstream "
                 "workers' context."
         )),
-        "metadata": _prop("object", (
-                "Free-form dict of structured facts about this "
-                "attempt — {\"changed_files\": [...], \"tests_run\": 12, "
-                "\"findings\": [...]}. Surfaced to downstream "
-                "workers alongside ``summary``."
+        "published_pr": _prop("string", (
+                "REQUIRED for a task created with a PR completion contract: "
+                "the URL of the merged pull request this card published, "
+                "e.g. https://github.com/owner/repo/pull/123. It is merged "
+                "into metadata.published_pr for you — pass it here rather "
+                "than inside ``metadata``, which some models emit empty."
         )),
+        "metadata": {
+            "type": "object",
+            "description": (
+                "Free-form dict of structured facts about this attempt — "
+                "{\"changed_files\": [...], \"tests_run\": 12, \"findings\": [...]}. "
+                "Surfaced to downstream workers alongside ``summary``. "
+                "published_pr may also live here; the top-level argument wins."
+            ),
+            "additionalProperties": True,
+            "properties": {"published_pr": {"type": "string"}},
+        },
         "result": _prop("string", (
                 "Short result log line (legacy field, maps to "
                 "task.result). Use ``summary`` instead when "
@@ -241,6 +253,12 @@ KANBAN_REQUEST_REVIEW_SCHEMA = _schema(
         "reviewer": _prop("string", (
                 "Optional reviewer profile. When provided, the task is "
                 "reassigned to that profile before review dispatch."
+        )),
+        "published_pr": _prop("string", (
+                "For a PR-contract task: the URL of the pull request this "
+                "handoff publishes, e.g. https://github.com/owner/repo/pull/123. "
+                "Merged into metadata.published_pr for you; prefer it over "
+                "passing the key inside ``metadata``."
         )),
         "metadata": {
             "type": "object",
@@ -499,7 +517,8 @@ KANBAN_CREATE_SCHEMA = _schema(
         )),
         "completion_contract": _prop("string", (
             "Declare at creation: local-only (default), OWNER/REPO for PR publication, or an exact GitHub PR URL. "
-            "PR tasks cannot complete until repository-required exact-head CI passes. On publication pass metadata.published_pr."
+            "PR tasks cannot complete until repository-required exact-head CI passes. On publication pass "
+            "``published_pr`` with the PR URL."
         )),
         "goal_max_turns": _prop("integer", (
                 "Turn budget for goal_mode workers. Caps how many "

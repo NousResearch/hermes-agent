@@ -1,7 +1,7 @@
 name: charrette
 title: Charrette
 repo: https://github.com/GuideboardLabs/charrette
-sha: "64c2fc49c4b410a11d76da1ac1b8381cb80cde31"
+sha: "e04c7ccb24006fb955e3bfcdf17d4103613c5cbf"
 description: >-
   A whiteboard beside the chat where the board is the message and the chat is its caption.
   You draw with a pen, a shape tool or a typed prompt; the agent reads the board the way it reads
@@ -22,8 +22,11 @@ tier: community
 category: desktop
 requires_hermes: ">=0.22"
 docs_url: https://github.com/GuideboardLabs/charrette#readme
-version: "0.2.2"
-image: https://raw.githubusercontent.com/GuideboardLabs/charrette/64c2fc49c4b410a11d76da1ac1b8381cb80cde31/docs/media/banner.png
+version: "0.3.0"
+image: https://raw.githubusercontent.com/GuideboardLabs/charrette/e04c7ccb24006fb955e3bfcdf17d4103613c5cbf/docs/media/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/GuideboardLabs/charrette/e04c7ccb24006fb955e3bfcdf17d4103613c5cbf/docs/media/screens/01-board.png
+  - https://raw.githubusercontent.com/GuideboardLabs/charrette/e04c7ccb24006fb955e3bfcdf17d4103613c5cbf/docs/media/screens/02-replay.png
 platforms: []
 capabilities:
   provides_tools:

@@ -77,4 +77,5 @@ MOVES: dict[str, str] = {
     "registration_lifecycle": "hermes_agent.registration_lifecycle",
     "toolset_distributions": "hermes_agent.toolset_distributions",
     "trajectory_compressor": "hermes_agent.trajectory_compressor",
+    "tui_gateway": "hermes_agent.tui_gateway",
 }

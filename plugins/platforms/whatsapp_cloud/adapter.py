@@ -103,6 +103,9 @@ _MESSAGE_TYPE_BY_KIND = {
     "location": MessageType.TEXT, "contacts": MessageType.TEXT,
 }
 _HTTP_PREFIXES = ("http://", "https://")
+_PHONE_ALLOW_ID_RE = re.compile(r"^\+?[\d\s().-]+$")
+_PHONE_ALLOW_ID_DIGITS_RE = re.compile(r"^[1-9][0-9]{5,14}$")
+_BSUID_RE = re.compile(r"^[A-Z]{2}\.[A-Za-z0-9]{1,128}$")
 
 
 def _interactive_inner(raw_message: dict[str, Any]) -> dict[str, Any]:
@@ -240,14 +243,29 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     @staticmethod
     def _normalize_allow_ids(ids: set[str]) -> set[str]:
-        """Normalize allowlist entries to bare wa_id (digits): strip ``@...`` JID suffixes and non-digits."""
-        return {re.sub(r"\D", "", entry.split("@", 1)[0]) or entry for entry in ids}
+        """Normalize phone allowlist entries without collapsing non-phone principals.
+
+        Cloud senders can be business-scoped user IDs (BSUIDs), whose letters are
+        part of the principal and must not be discarded like phone punctuation.
+        """
+        normalized = set()
+        for entry in ids:
+            bare = entry.split("@", 1)[0].strip()
+            if _PHONE_ALLOW_ID_RE.fullmatch(bare):
+                digits = re.sub(r"\D", "", bare)
+                if _PHONE_ALLOW_ID_DIGITS_RE.fullmatch(digits):
+                    bare = digits
+            normalized.add(bare)
+        return normalized
 
     def _entry_matches(self, entries, target: str) -> bool:
-        """Bare-wa_id membership first (Cloud senders are digits), then the shared WhatsApp matcher
-        so ``*`` and phone/LID aliases keep working for DM intake and groups as they always did."""
+        """Match phone aliases while treating Cloud BSUIDs as exact principals."""
         entries = set(entries or ())
-        bare = re.sub(r"\D", "", str(target).split("@", 1)[0]) or target
+        target = str(target).strip()
+        if _BSUID_RE.fullmatch(target):
+            entries = self._normalize_allow_ids(entries)
+            return target in entries or "*" in entries
+        bare = next(iter(self._normalize_allow_ids({target})), target)
         return bare in self._normalize_allow_ids(entries) or super()._entry_matches(entries, target)
 
     def _webhook_identity_matches(self, entry_id: Any, metadata: Any) -> bool:

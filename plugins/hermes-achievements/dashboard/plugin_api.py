@@ -139,9 +139,9 @@ ACHIEVEMENTS: list[dict[str, Any]] = [
 
 SNAPSHOT_FILE = "scan_snapshot.json"
 CHECKPOINT_FILE = "scan_checkpoint.json"
-# Checkpoint schema 2: per-session stats read the compaction-archived display history, not just
-# the active window. Version 1 caches were computed active-only and are rescanned once.
-_CHECKPOINT_SCHEMA_VERSION = 2
+# Schema 3 counts the underlying tools in tool_call envelopes. Older checkpoints missed
+# deferred tool activity even in unchanged sessions, so those stats must be rebuilt once.
+_CHECKPOINT_SCHEMA_VERSION = 3
 
 
 def _data_dir() -> Path:
@@ -245,10 +245,35 @@ def _scan_status_payload(now: Optional[int] = None) -> dict[str, Any]:
 
 # ---- Per-session analysis ----
 
-def _tool_name_from_call(call: Any) -> Optional[str]:
+def _tool_names_from_call(call: Any) -> list[str]:
+    """Attribute deferred invocations to their tools, without counting the bridge twice."""
     if not isinstance(call, dict):
-        return None
-    return call.get("name") or (call.get("function") or {}).get("name")
+        return []
+    function = call.get("function") or call
+    name = call.get("name") or function.get("name")
+    if name != "tool_call":
+        return [name] if name else []
+    arguments = function.get("arguments")
+    try:
+        if isinstance(arguments, str):
+            arguments = json.loads(arguments)
+        if not isinstance(arguments, dict):
+            return [name]
+        # The bridge also accepts the legacy single-call {name, arguments} shape.
+        calls = arguments.get("calls")
+        if calls is None:
+            calls = [arguments]
+        if isinstance(calls, str):
+            calls = json.loads(calls)
+    except json.JSONDecodeError:
+        return [name]
+    if isinstance(calls, dict):
+        calls = [calls]
+    if not isinstance(calls, list):
+        return [name]
+    names = [entry["name"] for entry in calls
+             if isinstance(entry, dict) and isinstance(entry.get("name"), str) and entry["name"]]
+    return names or [name]
 
 
 def _content(msg: dict[str, Any]) -> str:
@@ -306,10 +331,9 @@ def analyze_messages(session_id: str, title: str, messages: list[dict[str, Any]]
             if msg.get("role") != "tool":
                 tool_sequence.append(name)
         for call in msg.get("tool_calls") or []:
-            name = _tool_name_from_call(call)
-            if name:
-                tool_names.add(name)
-                tool_sequence.append(name)
+            names = _tool_names_from_call(call)
+            tool_names.update(names)
+            tool_sequence.extend(names)
         if ERROR_RE.search(text):
             error_count += 1
         blob = text

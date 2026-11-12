@@ -18,6 +18,7 @@ contract: the plugin scans ALL of your sessions, not the first 200.
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import threading
 import time
@@ -333,3 +334,66 @@ def test_scan_sessions_never_opens_a_writable_session_db(plugin_api, tmp_path, m
     assert result.get("error") is None
     assert [s["session_id"] for s in result["sessions"]] == ["s1"]
     assert writable_opens == [], "the achievements scan must attach read-only"
+
+
+@pytest.mark.parametrize(
+    ("arguments", "names"),
+    [
+        ({"calls": [{"name": "cronjob_manage", "arguments": {"action": "list"}}]}, ["cronjob_manage"]),
+        (json.dumps({"calls": [{"name": "cronjob_manage", "arguments": {"action": "list"}}]}), ["cronjob_manage"]),
+        ({"name": "cronjob", "arguments": {"action": "create"}}, ["cronjob"]),
+        ({"calls": [{"name": "cronjob_manage"}, {"name": "process_manage"}, {"name": "cronjob_manage"}]},
+         ["cronjob_manage", "process_manage", "cronjob_manage"]),
+        ({"calls": {"name": "cronjob_manage", "arguments": {}}}, ["cronjob_manage"]),
+        ({"calls": json.dumps([{"name": "cronjob_manage", "arguments": {}}])}, ["cronjob_manage"]),
+        ("invalid JSON cronjob_manage", ["tool_call"]),
+    ],
+)
+def test_wrapped_tool_calls_receive_the_same_credit_as_direct_calls(plugin_api, arguments, names):
+    """Count invocations, including repeated batch entries, without counting tool results twice."""
+    results = [{"role": "tool", "tool_name": name, "content": "ok"} for name in names]
+    direct = plugin_api.analyze_messages("s1", "Tools", [
+        {"role": "assistant", "tool_calls": [{"function": {"name": name}} for name in names]},
+        *results,
+    ])
+    wrapped = plugin_api.analyze_messages("s1", "Tools", [
+        {"role": "assistant", "tool_calls": [{"function": {"name": "tool_call", "arguments": arguments}}]},
+        *results,
+    ])
+
+    for metric in ("cron_calls", "process_calls", "tool_call_count", "tool_names", "distinct_tool_count"):
+        assert wrapped[metric] == direct[metric]
+
+
+def test_scan_backfills_wrapped_calls_from_old_checkpoints(plugin_api, tmp_path, monkeypatch):
+    """An unchanged delegated session must recover its missing credit after upgrading the scanner."""
+    import hermes_state
+    from hermes_state import SessionDB
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    with SessionDB(db_path=tmp_path / "state.db") as seed:
+        seed.create_session("parent", source="cli")
+        seed.create_session("child", source="subagent", parent_session_id="parent")
+        seed.append_message("child", "assistant", tool_calls=[{
+            "function": {"name": "tool_call", "arguments": json.dumps({
+                "calls": [{"name": "cronjob_manage", "arguments": {"action": "create"}}],
+            })},
+        }])
+        seed.append_message("child", "tool", "ok", tool_name="cronjob_manage")
+        metadata = seed.list_sessions_rich(limit=-1, include_children=True, project_compression_tips=False)
+    plugin_api._write_json(plugin_api.CHECKPOINT_FILE, {
+        "schema_version": 2,
+        "sessions": {meta["id"]: {
+            "fingerprint": plugin_api.session_fingerprint(meta),
+            "stats": {"cron_calls": 0, "tool_call_count": 1},
+        } for meta in metadata},
+    })
+
+    scan = plugin_api.scan_sessions()
+    warm_scan = plugin_api.scan_sessions()
+
+    assert scan["aggregate"]["total_cron_calls"] == 1
+    assert scan["scan_meta"]["sessions_reused"] == 0
+    assert warm_scan["aggregate"]["total_cron_calls"] == 1
+    assert warm_scan["scan_meta"]["sessions_rescanned"] == 0

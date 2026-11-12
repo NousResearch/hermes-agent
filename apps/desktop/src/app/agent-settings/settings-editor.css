@@ -68,8 +68,8 @@
   font-weight: 500;
 }
 .agent-settings-nav-group button:focus-visible {
-  outline: 2px solid var(--portal-brand-ink);
-  outline-offset: -2px;
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-inset);
 }
 .agent-settings-body {
   display: grid;
@@ -123,14 +123,6 @@
   margin-bottom: 8px;
   font-size: 15px;
   font-weight: 500;
-}
-/* Agent forms space their sections 32px apart (895:9662), a step under global settings. */
-.agent-settings-body .global-settings-overview {
-  --settings-section-gap: 2rem;
-}
-/* Agent pages draw r4 cards (895:9666); the shared list cards follow them here. */
-.agent-settings-body .global-settings-card {
-  border-radius: var(--portal-radius-card);
 }
 /* Titled settings groups (895:9666) and their 64px rows with a text column plus controls. */
 .agent-settings-group {
@@ -233,7 +225,7 @@
   justify-content: flex-end;
   gap: 12px;
   padding: 9px 12px;
-  border-top: 1px solid var(--ui-stroke-tertiary);
+  border-top: 1px solid var(--portal-stroke-divider);
 }
 .agent-settings-body > .agent-settings-capabilities,
 .agent-settings-body > .agent-settings-messaging {
@@ -294,11 +286,11 @@
 .agent-color-swatches > button[aria-pressed='true'] {
   box-shadow:
     0 0 0 2px var(--ui-chat-surface-background),
-    0 0 0 3.5px color-mix(in srgb, var(--ui-base) 98%, transparent);
+    0 0 0 3.5px var(--ui-text-primary);
 }
 .agent-color-swatches > button:focus-visible {
-  outline: 2px solid var(--portal-brand-ink);
-  outline-offset: 3px;
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
 }
 
 /* The redesign's picker (895:9675): 16px dots on 32px centres; the current one inside a 24px
@@ -315,7 +307,7 @@
 }
 
 :root[data-shell='portal'] .agent-color-swatches[data-variant='portal'] > button[aria-pressed='true'] {
-  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--ui-base) 98%, transparent);
+  box-shadow: inset 0 0 0 1.5px var(--ui-text-primary);
 }
 
 /* The default agent always wears the brand colour: the other primaries still show at full
@@ -377,8 +369,8 @@
 
 .agent-settings-panel-back:focus-visible {
   border-radius: var(--portal-radius-chip);
-  outline: 2px solid var(--portal-brand-ink);
-  outline-offset: 2px;
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
 }
 
 .agent-settings-panel-agent {
@@ -422,6 +414,6 @@
 }
 
 .agent-settings-name-field:focus-visible {
-  outline: 2px solid var(--portal-brand-ink);
-  outline-offset: 1px;
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
 }

@@ -273,12 +273,7 @@ export function HistoryRename({
       }}
       open
     >
-      <DialogContent
-        blurBackdrop={false}
-        bodyClassName="agent-history-dialog-body"
-        className="agent-history-dialog"
-        showCloseButton={!busy}
-      >
+      <DialogContent blurBackdrop={false} className="agent-history-dialog" showCloseButton={!busy}>
         <DialogHeader>
           <DialogTitle>{c.rename}</DialogTitle>
           <DialogDescription>{sessionTitle(row)}</DialogDescription>
@@ -432,12 +427,7 @@ export function HistoryDeleteDialog({ owner, rows, running, current, onClose, on
       }}
       open
     >
-      <DialogContent
-        blurBackdrop={false}
-        bodyClassName="agent-history-dialog-body"
-        className="agent-history-dialog"
-        showCloseButton={false}
-      >
+      <DialogContent blurBackdrop={false} className="agent-history-dialog" showCloseButton={false}>
         <DialogHeader>
           <DialogTitle>{c.deleteTitle(deletable.length)}</DialogTitle>
           <DialogDescription>{c.deleteDescription}</DialogDescription>
@@ -523,7 +513,6 @@ export function HistoryCleanupDialog({ owner, current, onClose, onDeleted, initi
     >
       <DialogContent
         blurBackdrop={false}
-        bodyClassName="agent-history-dialog-body"
         className="agent-history-dialog agent-history-cleanup-dialog"
         showCloseButton={false}
       >

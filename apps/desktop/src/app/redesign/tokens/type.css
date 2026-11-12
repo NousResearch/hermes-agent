@@ -51,6 +51,4 @@
   --portal-tracking-ui: 0.01em;
   --portal-tracking-chip: 0.04em;
   --portal-tracking-caption: 0.06em;
-  /* The chat sidebar's section captions (Pinned / Agents / Machines) track at the chip's 0.04em. */
-  --portal-legacy-caption-tracking-sidebar: 0.04em;
 }

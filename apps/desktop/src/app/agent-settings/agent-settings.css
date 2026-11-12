@@ -2,14 +2,10 @@
    the panel inset beside the agents panel, and holds the form width at every window width. No
    bottom padding: the scrollers run to the stage's edge and keep their own end space. */
 [data-page-surface] .management-panel.agent-management {
-  /* Agent pages already wear the language's card (1036:7576); global settings still read the legacy
-     5% fill through --ui-bg-card (DESIGN.md, Phase B). */
-  --ui-bg-card: var(--portal-surface-card);
-  --ui-stroke-tertiary: var(--portal-stroke-hairline);
   width: 100%;
   max-width: calc(var(--page-stage-inset) + var(--page-form-max-width) + var(--page-panel-inset));
   margin-inline: 0;
-  padding: 18px var(--page-panel-inset) 0 var(--page-stage-inset);
+  padding: var(--portal-page-top) var(--page-panel-inset) 0 var(--page-stage-inset);
   font-family: var(--portal-font-body);
 }
 
@@ -22,15 +18,6 @@
     var(--page-nav-width) + var(--page-panel-inset) + var(--page-form-max-width) + var(--page-panel-inset)
   );
   padding-inline: calc(var(--page-nav-width) + var(--page-panel-inset)) var(--page-panel-inset);
-}
-
-.agent-management-header {
-  display: flex;
-  flex-shrink: 0;
-  min-height: 68px;
-  align-items: center;
-  gap: 16px;
-  margin-bottom: 24px;
 }
 
 .agent-management-avatar {
@@ -46,28 +33,12 @@
   margin: auto;
 }
 
-.agent-management-identity {
-  flex: 1;
-  min-width: 0;
-}
-
-:root [data-page-surface] .agent-management .agent-management-identity h1 {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--portal-font-display);
-  font-size: 40px;
-  font-weight: 300;
-  line-height: 44px;
-}
-
 /* Meta row (877:4183): status dot, machine at .6, path at .4, DEFAULT chip. */
 .agent-management-meta {
   display: flex;
   align-items: center;
   white-space: nowrap;
   gap: 8px;
-  margin-top: 6px;
   color: var(--ui-text-quaternary);
   font-size: var(--portal-type-ui-size);
   letter-spacing: var(--portal-tracking-ui);
@@ -85,16 +56,16 @@
   color: var(--ui-text-secondary);
 }
 
-/* Warning banner (877:4212, 878:7066): #a22a20 at 8% with a 40% hairline, r4, orange warn glyph. */
+/* Warning banner (877:4212, 878:7066): the danger tint and stroke, r4, orange warn glyph. */
 .agent-channel-warning {
   display: flex;
   align-items: center;
   gap: 0.75rem;
   margin-bottom: 2rem;
   padding: 0.75rem 0.75rem 0.75rem 1rem;
-  border: 1px solid color-mix(in srgb, var(--portal-control-danger-fill) 40%, transparent);
+  border: 1px solid var(--portal-stroke-danger);
   border-radius: var(--portal-radius-card);
-  background: color-mix(in srgb, var(--portal-control-danger-fill) 8%, transparent);
+  background: var(--portal-surface-danger);
   font-size: var(--portal-type-body-size);
   font-weight: 500;
   line-height: 1.4;
@@ -143,13 +114,6 @@
   background: var(--portal-control-danger-fill);
 }
 
-.agent-management-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
 .agent-overview-menu {
   border-radius: 0.5rem;
 }
@@ -160,42 +124,6 @@
   border-radius: 0.375rem;
   padding: 0.5rem 0.75rem;
   font-size: var(--portal-type-body-size);
-}
-
-/* Tabs (877:4200): 24px apart, 2px #0000f2 underline on the active label, a light/5 rule under the row. */
-.agent-management-tabs {
-  display: flex;
-  flex-shrink: 0;
-  gap: 24px;
-  margin-bottom: 24px;
-  border-bottom: 1px solid var(--portal-legacy-tab-rail);
-}
-
-/* The active underline overlaps the row's rule rather than sitting on top of it. */
-.agent-management-tabs button {
-  min-height: 2rem;
-  margin-bottom: -1px;
-  padding-bottom: 0.5rem;
-  border-bottom: 2px solid transparent;
-  color: var(--ui-text-tertiary);
-  font-size: var(--portal-type-body-size);
-  font-weight: 500;
-  line-height: 1.4;
-}
-
-.agent-management-tabs button[aria-current],
-.agent-management-tabs button:hover {
-  color: var(--ui-text-primary);
-}
-
-.agent-management-tabs button[aria-current] {
-  border-bottom-color: var(--portal-brand-fill);
-}
-
-.agent-management-tabs button:focus-visible {
-  outline: 2px solid var(--portal-brand-ink);
-  outline-offset: 2px;
-  border-radius: var(--portal-radius-chip);
 }
 
 .agent-management-scroll,
@@ -258,8 +186,8 @@
 }
 
 .agent-overview-section-link:focus-visible {
-  outline: 2px solid var(--portal-brand-ink);
-  outline-offset: 4px;
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
   border-radius: var(--portal-radius-chip);
 }
 
@@ -298,8 +226,8 @@
 }
 
 .agent-overview-row:focus-visible {
-  outline: 2px solid var(--portal-brand-ink);
-  outline-offset: -2px;
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-inset);
 }
 
 .agent-overview-row > span:nth-child(2) {
@@ -380,16 +308,7 @@
   [data-page-surface] .management-panel.agent-management,
   [data-page-surface] .management-panel.agent-management:has(> .page-sidebar-panel) {
     max-width: calc(var(--page-panel-inset) + var(--page-form-max-width) + var(--page-panel-inset));
-    padding: 1rem var(--page-panel-inset) 0;
-  }
-
-  .agent-management-header {
-    flex-wrap: wrap;
-  }
-
-  .agent-management-actions {
-    width: 100%;
-    justify-content: flex-start;
+    padding: var(--portal-page-top) var(--page-panel-inset) 0;
   }
 
   .agent-overview-grid {
@@ -404,7 +323,7 @@
   flex-shrink: 0;
   padding: 0 4px;
   border-radius: var(--portal-radius-chip);
-  background: var(--portal-legacy-brand-selected);
+  background: var(--portal-surface-brand-selected);
   box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
   color: var(--ui-text-primary);
   font-size: var(--portal-type-chip-size);
@@ -414,6 +333,5 @@
 }
 
 :root:not(.dark) .agent-management-default {
-  background: var(--portal-legacy-brand-selected);
   color: var(--portal-brand-fill);
 }

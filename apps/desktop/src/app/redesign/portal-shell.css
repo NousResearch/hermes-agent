@@ -227,7 +227,7 @@
   [data-slot='panel-label'] {
   padding-inline-start: 0;
   color: var(--ui-text-primary);
-  font: 300 2rem / 1.1 var(--portal-font-display);
+  font: 300 var(--portal-type-display-lg-size) / 1.1 var(--portal-font-display);
   letter-spacing: var(--portal-tracking-display);
   text-transform: none;
 }
@@ -320,7 +320,7 @@
 }
 
 :root[data-shell='portal'] [data-zone-tabstrip] [role='tab']:hover {
-  background-color: var(--portal-legacy-row-hover-quiet);
+  background-color: var(--portal-surface-row-hover);
 }
 
 :root[data-shell='portal'] [data-zone-tabstrip] [role='tab'][data-active='true'] {

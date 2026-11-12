@@ -1,63 +1,5 @@
 /* Redesigned navigation sidebar (Figma 906:19684). Every class here exists only when the redesign
    renders it, so element selectors stay ungated; body-portalled surfaces gate on the root. */
-:root[data-shell='portal'] {
-  --sessions-pane-width: 20rem;
-  /* Below this the New-session split and the agents' two-line rows start to truncate (sash drags). */
-  --sessions-pane-min-width: 16.25rem;
-  /* The brand block, New session and search sit on the 20px inset; below them the list follows
-     Figma 147:7470: sections padded 12px (the gutter), rows bleeding 8px past the caption. */
-  --portal-sidebar-inset: 1.25rem;
-  --portal-sidebar-bleed: 0.5rem;
-  --portal-sidebar-gutter: calc(var(--portal-sidebar-inset) - var(--portal-sidebar-bleed));
-  --portal-sidebar-row: 2rem;
-  --portal-sidebar-pin-row: 1.875rem;
-  --portal-sidebar-machine-row: 2.5rem;
-  --portal-sidebar-chat-row: 1.9375rem;
-  --portal-sidebar-row-gap: 1px;
-  /* Section to section: 12px bottom pad, a 1px slot, 12px top pad (143:6237 → 143:6256). */
-  --portal-sidebar-section-gap: 1.5625rem;
-  /* Captions, meta, tags and ages: Figma's 10px. */
-  --portal-sidebar-caption: 0.625rem;
-  --portal-sidebar-hover: var(--portal-raw-ink-4);
-  --portal-sidebar-press: color-mix(in srgb, var(--ui-base) 7%, transparent);
-  --portal-sidebar-agent-hover: var(--portal-raw-ink-2);
-  /* Var1's soft pill: the open chat reads clearly stronger than a hovered row (4%). */
-  --portal-sidebar-selected: color-mix(in srgb, var(--ui-base) 7%, transparent);
-  --portal-sidebar-card: var(--portal-raw-ink-5);
-  /* The primary action (New session): Var1 draws it at light/20 with keycaps a step lighter; Brand
-     rev light at dark/2 with dark/2 keycaps on a dark/5 rim. */
-  --portal-sidebar-action: var(--portal-raw-ink-2);
-  --portal-sidebar-action-key: var(--portal-raw-ink-2);
-  --portal-sidebar-machine-fill: var(--portal-raw-ink-5);
-  --portal-sidebar-machine-head: color-mix(in srgb, var(--ui-base) 7%, transparent);
-  --portal-sidebar-guide: color-mix(in srgb, var(--ui-base) 20%, transparent);
-  /* A settled pinned row's dot wears the row's own ink (Var1 147:7470). */
-  --portal-sidebar-dot: var(--ui-text-secondary);
-  /* Captions at Var1's ~.65 (light: Brand rev's .6, the ladder's floor); tags, subtitles and ages
-     take the floor where Figma's .3-.5 fail AA at 10px; machine names keep Figma's .8. */
-  --portal-sidebar-label: var(--ui-text-quaternary);
-  --portal-sidebar-meta: var(--ui-text-quaternary);
-  /* On the expanded machine's 12% header bar the floor needs .55 to hold 4.5:1. */
-  --portal-sidebar-head-meta: color-mix(in srgb, var(--ui-base) 70%, transparent);
-  --portal-sidebar-machine-ink: color-mix(in srgb, var(--ui-base) 80%, transparent);
-  --portal-sidebar-green: var(--portal-status-online);
-  --portal-sidebar-orange: var(--portal-status-pending);
-}
-
-:root[data-shell='portal']:not(.dark) {
-  /* Brand rev light steps the machine card in black 2% / 4%: a quiet card with a header a shade
-     deeper, never a grey slab. */
-  --portal-sidebar-machine-fill: var(--portal-raw-ink-2);
-  --portal-sidebar-machine-head: var(--portal-raw-ink-4);
-}
-
-:root.dark[data-shell='portal'] {
-  --portal-sidebar-action: color-mix(in srgb, var(--ui-base) 20%, transparent);
-  --portal-sidebar-action-key: color-mix(in srgb, var(--ui-base) 20%, transparent);
-  --portal-sidebar-label: color-mix(in srgb, var(--ui-base) 65%, transparent);
-  --portal-sidebar-head-meta: color-mix(in srgb, var(--ui-base) 55%, transparent);
-}
-
 .portal-sidebar {
   /* The list scrolls inside overflow:hidden panels, so focus rings sit inside each control. */
   --portal-focus-ring-offset: var(--portal-focus-ring-inset);
@@ -478,7 +420,7 @@ button.portal-section-title:hover {
   overflow: hidden;
   font-size: var(--portal-sidebar-caption);
   font-weight: 500;
-  letter-spacing: var(--portal-legacy-caption-tracking-sidebar);
+  letter-spacing: var(--portal-sidebar-caption-tracking);
   line-height: 1.2;
   text-overflow: ellipsis;
   text-transform: uppercase;
@@ -489,8 +431,8 @@ button.portal-section-title:hover {
 .portal-section-count {
   min-width: 1.4375rem;
   padding: 0.1875rem 0.5rem;
-  border-radius: 10px;
-  background: var(--portal-selection-background);
+  border-radius: var(--portal-sidebar-count-radius);
+  background: var(--portal-sidebar-count-fill);
   color: var(--portal-brand-ink);
   font-size: var(--portal-sidebar-caption);
   font-variant-numeric: tabular-nums;

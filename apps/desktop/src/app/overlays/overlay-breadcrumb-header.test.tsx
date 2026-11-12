@@ -29,15 +29,15 @@ it('shares the V2 destination title while retaining breadcrumb and toolbar actio
     />
   )
   expect(screen.getByRole('heading', { level: 1, name: 'Board' })).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+
+  act(() => $shellChoice.set(false))
+  expect(screen.queryByRole('heading')).toBeNull()
   expect(container.querySelector('[aria-current="page"]')?.textContent).toBe('Board')
   fireEvent.click(screen.getByRole('button', { name: 'Plugins' }))
   fireEvent.click(screen.getByRole('button', { name: 'Kanban' }))
   expect(openGroup).toHaveBeenCalledOnce()
   expect(openChild).toHaveBeenCalledOnce()
-  fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
-
-  act(() => $shellChoice.set(false))
-  expect(screen.queryByRole('heading')).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
   expect(refresh).toHaveBeenCalledTimes(2)
 })

@@ -260,8 +260,8 @@ Hermes Portal skin and classic paints Nous (`defaultSkinName`); flipping the
 shell never writes a pick.
 
 Redesigned surfaces use neutral foreground-derived fills and strokes, not
-accent-tinted greys (the colour roles below). Global settings cards and agent settings cards still
-differ (see "To unify in Phase B", U1). Settings-navigation selection is the neutral selection role;
+accent-tinted greys (the colour roles below). Global settings cards and agent settings cards wear
+the one card role. Settings-navigation selection is the neutral selection role;
 sub-pages reveal under the active row, without per-row carets. Settings pages compose
 `SettingsOverview` / `SettingsCard` / `SettingsDisclosure` (`settings-card.tsx`), which fall back to
 the classic wrapper. Brand-blue selection remains on the global rail. Agent-management navigation
@@ -500,6 +500,7 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-raw-orange` | `#f27900` | ″ | Figma secondary/orange: pending and warning. |
 | `--portal-raw-danger` | `#a22a20` | ″ | Danger fill and stroke (877:4212, 878:7066, 1038:7836) and its soft status text (877:4312). |
 | `--portal-raw-danger-soft` | `#cc8a84` | ″ |  |
+| `--portal-raw-danger-bright` | `#ff7373` | ″ | The danger label on dark (1038:7836): bright enough for 4.5:1 on the danger tint. |
 | `--portal-raw-spectrum-red` | `#aa1515` | ″ | The composer's spectrum edge (906:19872). |
 | `--portal-raw-spectrum-yellow` | `#ddd61c` | ″ |  |
 | `--portal-raw-shadow-4` | `rgb(0 0 0 / 0.04)` | ″ | Shadow inks. |
@@ -507,7 +508,7 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-raw-shadow-20` | `rgb(0 0 0 / 0.2)` | ″ |  |
 | `--portal-raw-shadow-25` | `rgb(0 0 0 / 0.25)` | ″ |  |
 | `--portal-raw-shadow-50` | `rgb(0 0 0 / 0.5)` | ″ |  |
-| `--portal-raw-ink-2` | `color-mix(in srgb, var(--ui-base) 2%, transparent)` | ″ | The ink ladder (LANGUAGE §1.1): Figma's light/2, 5, 10, 40 plus the page steps 3, 4, 8, 14, 22, 28. No other neutral alpha belongs to the language; the off-ladder steps still in use are listed in color.css and the Phase B table. |
+| `--portal-raw-ink-2` | `color-mix(in srgb, var(--ui-base) 2%, transparent)` | ″ | The ink ladder (LANGUAGE §1.1): Figma's light/2, 5, 10, 40 plus the page steps 3, 4, 8, 14, 22, 28. No other neutral alpha belongs to the language; the off-ladder steps still in use are listed in color.css and the "Still to unify" table. |
 | `--portal-raw-ink-3` | `color-mix(in srgb, var(--ui-base) 3%, transparent)` | ″ |  |
 | `--portal-raw-ink-4` | `color-mix(in srgb, var(--ui-base) 4%, transparent)` | ″ |  |
 | `--portal-raw-ink-5` | `color-mix(in srgb, var(--ui-base) 5%, transparent)` | ″ |  |
@@ -522,6 +523,10 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-raw-brand-12` | `color-mix(in srgb, var(--portal-raw-blue) 12%, transparent)` | ″ |  |
 | `--portal-raw-brand-25` | `color-mix(in srgb, var(--portal-raw-blue) 25%, transparent)` | ″ |  |
 | `--portal-raw-brand-60` | `color-mix(in srgb, var(--portal-raw-blue) 60%, transparent)` | ″ |  |
+| `--portal-raw-danger-8` | `color-mix(in srgb, var(--portal-raw-danger) 8%, transparent)` | ″ | Danger tints (1038:7836): the tint 8, its hover and pressed steps 14 and 20, the stroke 50. |
+| `--portal-raw-danger-14` | `color-mix(in srgb, var(--portal-raw-danger) 14%, transparent)` | ″ |  |
+| `--portal-raw-danger-20` | `color-mix(in srgb, var(--portal-raw-danger) 20%, transparent)` | ″ |  |
+| `--portal-raw-danger-50` | `color-mix(in srgb, var(--portal-raw-danger) 50%, transparent)` | ″ |  |
 
 #### Colour roles (`color.css`)
 
@@ -530,7 +535,7 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-surface-brand` | `var(--portal-raw-blue)` | ″ | Brand. The fill is the same in every theme and mode; thin rings, underlines and small blue text use the brand ink, which lightens on dark canvases for contrast. |
 | `--portal-text-on-brand` | `var(--portal-raw-white)` | ″ |  |
 | `--portal-text-brand` | `var(--portal-raw-blue-ink-dark)` | `var(--portal-raw-blue)` |  |
-| `--portal-surface-brand-selected` | `var(--portal-raw-brand-25)` | `var(--portal-raw-brand-12)` | Brand selection: the selected segment, scope chip and cleanup choice (856:3444). |
+| `--portal-surface-brand-selected` | `var(--portal-raw-brand-25)` | `var(--portal-raw-brand-12)` | Brand selection: selected destinations, segments, scope chips, choice tiles and the DEFAULT / RUNNING chips (856:3444, 1036:7318). |
 | `--portal-spectrum-red` | `var(--portal-raw-spectrum-red)` | ″ |  |
 | `--portal-spectrum-yellow` | `var(--portal-raw-spectrum-yellow)` | ″ |  |
 | `--portal-text-primary` | `var(--ui-base)` | ″ | Text ladder. Figma steps ink 1 / .8 / .6 / .5 / .4 / .3, but .4 and .3 fail AA for the 12-13px meta and labels that use them, so the ladder's floor is the least ink that keeps 4.5:1 on every real surface (sidebar, stage, page canvas, cards, popovers, selected rows), and the rungs above are spaced by contrast, not alpha: light ≈ 16 / 8.9 / 6.7 / 5.1:1, dark ≈ 17 / 8.7 / 6.6 / 4.9:1. Dark ink on light canvases loses contrast faster, so light needs more alpha per rung. |
@@ -551,25 +556,28 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-surface-chrome` | `var(--portal-raw-ink-2)` | ″ | 30px chrome buttons and the session pill (906:19469): rest, hover, pressed. |
 | `--portal-surface-chrome-hover` | `var(--portal-raw-ink-5)` | ″ |  |
 | `--portal-surface-chrome-pressed` | `var(--portal-raw-ink-10)` | ″ |  |
-| `--portal-surface-control` | `var(--portal-raw-ink-5)` | `var(--portal-raw-ink-3)` | Secondary and icon buttons (877:4189) at rest, hover and pressed. |
-| `--portal-surface-control-hover` | `var(--portal-raw-ink-8)` | `color-mix(in srgb, var(--ui-base) 6%, transparent)` |  |
-| `--portal-surface-control-pressed` | `color-mix(in srgb, var(--ui-base) 11%, transparent)` | `color-mix(in srgb, var(--ui-base) 9%, transparent)` |  |
+| `--portal-surface-control` | `var(--portal-raw-ink-5)` | `var(--portal-raw-ink-3)` | Secondary and icon buttons (877:4189) at rest, hover and pressed: one ink step each. |
+| `--portal-surface-control-hover` | `var(--portal-raw-ink-8)` | `var(--portal-raw-ink-5)` |  |
+| `--portal-surface-control-pressed` | `var(--portal-raw-ink-10)` | `var(--portal-raw-ink-8)` |  |
 | `--portal-surface-field` | `var(--portal-raw-ink-4)` | `var(--portal-raw-ink-2)` | Inputs, search, segmented tracks (895:9670). |
 | `--portal-surface-select` | `var(--portal-raw-ink-8)` | `var(--portal-raw-ink-4)` | Select triggers (856:3456). |
 | `--portal-surface-floating-hover` | `color-mix(in srgb, var(--ui-base) 6%, transparent)` | `var(--portal-raw-ink-5)` | A menu item under the pointer, on the elevated surface. |
 | `--portal-surface-scrim` | `var(--portal-raw-shadow-50)` | `var(--portal-raw-shadow-20)` | The modal scrim: a plain dim, never a blur. |
-| `--portal-surface-danger-solid` | `var(--portal-raw-danger)` | ″ | The confirm of a destructive dialog (878:7066): a solid danger slab with white ink (7.3:1). |
+| `--portal-surface-danger-solid` | `var(--portal-raw-danger)` | ″ | Danger, one family (1038:7836). The confirm of a destructive dialog (878:7066) is the solid slab with white ink (7.3:1); every other destructive mark (outline buttons, menu items, banners) is the 8% tint with a 50% stroke and the danger ink, which keeps 4.5:1 on that tint: #FF7373 on dark (≈7:1), the slab's own red on light (≈6:1). |
 | `--portal-text-on-danger` | `var(--portal-raw-pure-white)` | ″ |  |
+| `--portal-surface-danger` | `var(--portal-raw-danger-8)` | ″ |  |
+| `--portal-surface-danger-hover` | `var(--portal-raw-danger-14)` | ″ |  |
+| `--portal-surface-danger-pressed` | `var(--portal-raw-danger-20)` | ″ |  |
+| `--portal-stroke-danger` | `var(--portal-raw-danger-50)` | ″ |  |
+| `--portal-text-danger` | `var(--portal-raw-danger-bright)` | `var(--portal-raw-danger)` |  |
 | `--portal-stroke-hairline` | `var(--portal-raw-ink-5)` | ″ | Strokes. Card edges, the panel-to-stage edge, page footer rules (1038:7803). |
-| `--portal-stroke-divider` | `var(--portal-raw-ink-3)` | ″ | Between rows inside a card (877:4229, 1038:7499). |
+| `--portal-stroke-divider` | `var(--portal-raw-ink-3)` | `var(--portal-raw-ink-5)` | Between rows inside a card and under the page tabs (877:4229, 1038:7499); light takes one step more to stay visible on #f2f2f2. |
 | `--portal-stroke-edge` | `var(--portal-raw-ink-10)` | ″ | The chat sidebar's edge and header rule (Var1 147:7470: light/10). |
 | `--portal-stroke-control` | `var(--portal-raw-ink-10)` | `var(--portal-raw-ink-14)` |  |
 | `--portal-stroke-field` | `var(--portal-raw-ink-14)` | `color-mix(in srgb, var(--ui-base) 18%, transparent)` |  |
 | `--portal-stroke-strong` | `var(--portal-raw-ink-28)` | ″ | Selects, checkbox and radio at rest. |
 | `--portal-stroke-selected` | `var(--portal-raw-ink-5)` | ″ |  |
-| `--portal-stroke-floating` | `var(--portal-raw-ink-10)` | `color-mix(in srgb, var(--ui-base) 12%, transparent)` |  |
-| `--portal-floating-separator` | `color-mix(in srgb, var(--ui-base) 6%, transparent)` | ″ | Menu separators and the floating menu's item ink (Figma .9). |
-| `--portal-floating-item-ink` | `color-mix(in srgb, var(--ui-base) 90%, transparent)` | ″ |  |
+| `--portal-stroke-floating` | `var(--portal-raw-ink-10)` | ″ |  |
 | `--portal-status-online` | `var(--portal-raw-mint)` | `var(--portal-raw-mint-deep)` | Status inks, one set for the whole redesign (sidebar machines, dots, chips, page status text): online is the pages' spec green (877:4308), pending Figma's orange, failed its soft red; each passes 4.5:1 on its mode's panels. |
 | `--portal-status-pending` | `var(--portal-raw-orange)` | `color-mix(in srgb, var(--portal-raw-orange) 70%, var(--portal-raw-black))` |  |
 | `--portal-status-error-ink` | `var(--portal-raw-danger-soft)` | `var(--portal-raw-danger)` |  |
@@ -577,7 +585,7 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-brand-fill` | `var(--portal-surface-brand)` | ″ | Names in use before the role names; Phase B moves their readers to the role and deletes them. |
 | `--portal-on-brand` | `var(--portal-text-on-brand)` | ″ |  |
 | `--portal-brand-ink` | `var(--portal-text-brand)` | ″ |  |
-| `--portal-selection-background` | `var(--portal-legacy-brand-selected)` | ″ |  |
+| `--portal-selection-background` | `var(--portal-surface-brand-selected)` | ″ |  |
 | `--portal-neutral-selection-background` | `var(--portal-surface-selected)` | ″ |  |
 | `--portal-neutral-selection-stroke` | `var(--portal-stroke-selected)` | ″ |  |
 | `--portal-window-background` | `var(--portal-surface-canvas)` | ″ |  |
@@ -596,12 +604,6 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-floating-surface` | `var(--portal-surface-elevated)` | ″ |  |
 | `--portal-floating-stroke` | `var(--portal-stroke-floating)` | ″ |  |
 | `--portal-floating-item-hover` | `var(--portal-surface-floating-hover)` | ″ |  |
-| `--portal-legacy-card-fill-settings` | `var(--portal-raw-ink-5)` | ″ | Global settings cards (--ui-bg-card at the root): 5%; agent pages already read the card role. |
-| `--portal-legacy-disclosure-fill` | `var(--portal-raw-ink-3)` | ″ | The global settings Advanced disclosure: its own fill and a control-strength stroke. |
-| `--portal-legacy-disclosure-stroke` | `var(--portal-raw-ink-10)` | ″ |  |
-| `--portal-legacy-tab-rail` | `var(--portal-raw-ink-5)` | ″ | The rail under the agent page tabs: a hairline where the divider role is lighter. |
-| `--portal-legacy-row-hover-quiet` | `var(--portal-raw-ink-2)` | ″ | Hover on the disclosure summary and on pane tab-strip tabs: a step quieter than row hover. |
-| `--portal-legacy-brand-selected` | `var(--portal-raw-brand-25)` | `var(--portal-raw-brand-10)` | The shell's brand selection (selected destinations), RUNNING and DEFAULT chips: light at 10% where the role takes 12%. |
 
 #### Type (`type.css`)
 
@@ -623,7 +625,6 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-tracking-ui` | `0.01em` | ″ |  |
 | `--portal-tracking-chip` | `0.04em` | ″ |  |
 | `--portal-tracking-caption` | `0.06em` | ″ |  |
-| `--portal-legacy-caption-tracking-sidebar` | `0.04em` | ″ | The chat sidebar's section captions (Pinned / Agents / Machines) track at the chip's 0.04em. |
 
 #### Space and layout (`space.css`)
 
@@ -653,6 +654,13 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--page-content-inset` | `1rem` | ″ | Full-width pages without a panel pad their catalog column by this much on each side. |
 | `--page-content-max-width` | `calc(var(--portal-column-catalog) + 2 * var(--page-content-inset))` | ″ |  |
 | `--portal-page-end-space` | `2rem` | ″ | The space a page scroller keeps below its last row, under its bottom fade. |
+| `--portal-page-top` | `1rem` | ″ | The page header (PageHeader, app/redesign/page-header.tsx), one geometry for every routed page so its H1, description and tab bar sit at the same y on all of them: the column's top (856:2827 y 18), a title block that always reserves the agent header's 68 (877:4166: 56 tile, or H1 44 + 6 + one 13px line), 24 to the tabs and from the tabs to the content (877:4166 gap 24), 32h tabs (877:4200) and the page rhythm of 32 between sections and after a heading with no tabs (1036:7405). |
+| `--portal-page-title-block` | `4.25rem` | ″ |  |
+| `--portal-page-header-gap` | `1.5rem` | ″ |  |
+| `--portal-page-rhythm` | `2rem` | ″ |  |
+| `--portal-page-tab-height` | `2rem` | ″ |  |
+| `--portal-page-tab-inset` | `0.75rem` | ″ |  |
+| `--portal-dialog-action-height` | `2.75rem` | ″ | The actions of a dialog or drawer footer (1038:7792): taller than the page's 36px buttons. |
 | `--portal-row-chrome` | `1.875rem` | ″ | Row heights: 30 chrome buttons (906:19469), 40 panel list rows (1038:7408). |
 | `--portal-row-panel` | `2.5rem` | ″ |  |
 | `--page-nav-width` | `var(--portal-panel-width)` | ″ | Names in use before the role names; Phase B moves their readers to the role and deletes them. |
@@ -679,7 +687,6 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-focus-ring-offset` | `var(--portal-focus-ring-outset)` | ″ |  |
 | `--portal-shadow-floating` | `0 8px 24px var(--portal-raw-shadow-50)` | `0 1px 2px var(--portal-raw-shadow-4), 0 8px 24px var(--portal-raw-shadow-8)` | Menus, popovers, dialogs (878:6044): one soft drop shadow. |
 | `--portal-shadow-composer` | `0 4px 4px var(--portal-raw-shadow-25)` | ″ | The composer card on dark (906:19844); light draws none. |
-| `--portal-legacy-card-radius-settings` | `8px` | ″ | Global settings cards and the agent-settings link card: the floating radius where cards take 4. |
 | `--portal-control-radius` | `var(--portal-radius-control)` | ″ | Names in use before the role names; Phase B moves their readers to the role and deletes them. |
 | `--portal-menu-radius` | `var(--portal-radius-card)` | ″ |  |
 | `--portal-panel-radius` | `var(--portal-radius-panel)` | ″ |  |
@@ -721,7 +728,7 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--ui-text-secondary` | `var(--portal-text-secondary)` | ″ |  |
 | `--ui-text-tertiary` | `var(--portal-text-tertiary)` | ″ |  |
 | `--ui-text-quaternary` | `var(--portal-text-quaternary)` | ″ |  |
-| `--ui-bg-card` | `var(--portal-legacy-card-fill-settings)` | ″ |  |
+| `--ui-bg-card` | `var(--portal-surface-card)` | ″ |  |
 | `--ui-stroke-primary` | `var(--portal-stroke-strong)` | ″ |  |
 | `--ui-stroke-secondary` | `var(--portal-raw-ink-14)` | ″ | Ink 14 in both modes; the field role is 14 / 18 (Phase B). |
 | `--ui-stroke-tertiary` | `var(--portal-stroke-hairline)` | ″ |  |
@@ -736,45 +743,96 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--page-nav-row-height` | `var(--portal-row-panel)` | ″ |  |
 | `--composer-width` | `var(--portal-column-conversation)` | ″ |  |
 | `--dialog-body-padding` | `1.5rem` | ″ |  |
-| `--dialog-body-gap` | `1.25rem` | ″ |  |
+| `--dialog-body-gap` | `1.5rem` | ″ |  |
 | `--titlebar-control-size` | `var(--portal-row-chrome)` | ″ | Figma's 30×30 chrome buttons (r3, 16px glyphs): titlebar, rails, pane headers; breadcrumb spacing 906:19467. |
 | `--titlebar-control-height` | `var(--portal-row-chrome)` | ″ |  |
 | `--titlebar-icon-size` | `1rem` | ″ |  |
 | `--titlebar-control-gap` | `0.625rem` | ″ |  |
 | `--ui-green` | `var(--portal-status-online)` | ″ |  |
 
+#### Chat sidebar (`sidebar.css`): the Variation 1 variant's own roles
+
+| Token | Dark | Light | Note |
+|---|---|---|---|
+| `--sessions-pane-width` | `20rem` | ″ |  |
+| `--sessions-pane-min-width` | `16.25rem` | ″ | Below this the New-session split and the agents' two-line rows start to truncate (sash drags). |
+| `--portal-sidebar-inset` | `1.25rem` | ″ | The brand block, New session and search sit on the 20px inset; below them the list follows Figma 147:7470: sections padded 12px (the gutter), rows bleeding 8px past the caption. |
+| `--portal-sidebar-bleed` | `0.5rem` | ″ |  |
+| `--portal-sidebar-gutter` | `calc(var(--portal-sidebar-inset) - var(--portal-sidebar-bleed))` | ″ |  |
+| `--portal-sidebar-row` | `2rem` | ″ |  |
+| `--portal-sidebar-pin-row` | `1.875rem` | ″ |  |
+| `--portal-sidebar-machine-row` | `2.5rem` | ″ |  |
+| `--portal-sidebar-chat-row` | `1.9375rem` | ″ |  |
+| `--portal-sidebar-row-gap` | `1px` | ″ |  |
+| `--portal-sidebar-section-gap` | `1.5625rem` | ″ | Section to section: 12px bottom pad, a 1px slot, 12px top pad (143:6237 → 143:6256). |
+| `--portal-sidebar-caption` | `0.625rem` | ″ | Captions, meta, tags and ages: Figma's 10px. |
+| `--portal-sidebar-hover` | `var(--portal-raw-ink-4)` | ″ |  |
+| `--portal-sidebar-press` | `color-mix(in srgb, var(--ui-base) 7%, transparent)` | ″ |  |
+| `--portal-sidebar-agent-hover` | `var(--portal-raw-ink-2)` | ″ |  |
+| `--portal-sidebar-selected` | `color-mix(in srgb, var(--ui-base) 7%, transparent)` | ″ | Var1's soft pill: the open chat reads clearly stronger than a hovered row (4%). |
+| `--portal-sidebar-card` | `var(--portal-raw-ink-5)` | ″ |  |
+| `--portal-sidebar-action` | `color-mix(in srgb, var(--ui-base) 20%, transparent)` | ″ | The primary action (New session): Var1 draws it at light/20 with keycaps a step lighter; Brand rev light at dark/2 with dark/2 keycaps on a dark/5 rim. |
+| `--portal-sidebar-action-key` | `color-mix(in srgb, var(--ui-base) 20%, transparent)` | ″ |  |
+| `--portal-sidebar-machine-fill` | `var(--portal-raw-ink-5)` | `var(--portal-raw-ink-2)` | Brand rev light steps the machine card in black 2% / 4%: a quiet card with a header a shade deeper, never a grey slab. |
+| `--portal-sidebar-machine-head` | `color-mix(in srgb, var(--ui-base) 7%, transparent)` | `var(--portal-raw-ink-4)` |  |
+| `--portal-sidebar-guide` | `color-mix(in srgb, var(--ui-base) 20%, transparent)` | ″ |  |
+| `--portal-sidebar-dot` | `var(--ui-text-secondary)` | ″ | A settled pinned row's dot wears the row's own ink (Var1 147:7470). |
+| `--portal-sidebar-label` | `color-mix(in srgb, var(--ui-base) 65%, transparent)` | ″ | Captions at Var1's ~.65 (light: Brand rev's .6, the ladder's floor); tags, subtitles and ages take the floor where Figma's .3-.5 fail AA at 10px; machine names keep Figma's .8. |
+| `--portal-sidebar-meta` | `var(--ui-text-quaternary)` | ″ |  |
+| `--portal-sidebar-head-meta` | `color-mix(in srgb, var(--ui-base) 55%, transparent)` | ″ | On the expanded machine's 12% header bar the floor needs .55 to hold 4.5:1. |
+| `--portal-sidebar-machine-ink` | `color-mix(in srgb, var(--ui-base) 80%, transparent)` | ″ |  |
+| `--portal-sidebar-green` | `var(--portal-status-online)` | ″ |  |
+| `--portal-sidebar-orange` | `var(--portal-status-pending)` | ″ |  |
+| `--portal-sidebar-caption-tracking` | `0.04em` | ″ | Section captions track at the chip's 0.04em, weight 500 (147:7470). |
+| `--portal-sidebar-count-fill` | `var(--portal-raw-brand-25)` | `var(--portal-raw-brand-10)` | The Agents count: a brand-tinted pill (147:6260), lighter on light. |
+| `--portal-sidebar-count-radius` | `10px` | ″ |  |
+
 <!-- design-tokens:end -->
 
-### To unify in Phase B
+### Page header (`app/redesign/page-header.tsx`)
 
-Phase A made the system real without moving a pixel, so roles that still have
-two values in the product keep both, each under its own token or literal. Each
-row is one reviewable change: point the legacy reader at the role (or edit the
-role), delete the loser, capture before/after in dark and light. Ordered by
-visual impact.
+Every routed page with a title or tabs renders `PageHeader` (Agents and an agent's Overview /
+History / Settings, Capabilities, Library, Messaging, Schedules, Spawn tree, Webhooks, every global
+Settings page), so the H1, its description, the actions and the tab bar sit at one place on all of
+them. The geometry is `--portal-page-*` in `tokens/space.css`: the column top 18 (16 on compact), an
+H1 row (H1, actions at its end), the description 6 under it spanning the column, an optional leading
+tile (the agent avatar) beside both; with tabs the title block always reserves 68 (877:4166), so the
+tab bar is at one y whether a page has a description or not, then 24 to the tabs, 32h tabs and 24 to
+the content; without tabs the content follows after the page rhythm, 32. `PageTabs` is a WAI-ARIA
+tab list (arrows, Home, End; roving focus) whose tabs all take the widest tab's width, and a count
+reserves three digits while it loads, so switching tabs or a count arriving never moves a neighbour.
+On compact the actions take their own row and the tabs keep their own widths in one row that scrolls sideways when it must (44px on touch).
+A page that loads in fills its first paint with placeholders shaped like the loaded content
+(`SettingsCardSkeleton`: the card's 64px rows and 48px add row), never arbitrary spacers.
+
+### The chat sidebar is a variant
+
+The owner chose Figma's "Variation 1: Flattened gateway/host" (147:7470) for the chat sidebar
+(`app/chat/sidebar/portal/**`), and it is matched to that frame. Where Variation 1 draws a state
+differently from the page language (row hover ink 4, the open chat's ink 7 pill without a stroke,
+500-weight captions at 0.04em, the r10 brand count pill, the 20% keycaps, its inset focus rings), the
+sidebar keeps those values as its own named roles in `tokens/sidebar.css` (`--portal-sidebar-*`)
+instead of the page roles. That is deliberate, not drift: change the sidebar there, and never point
+page components at `--portal-sidebar-*`.
+
+### Still to unify
+
+Phase B unified cards (U1: 2% fill, 5% hairline, r4), page rhythm (U2: 32), page tabs (U3), in-card
+dividers (U4: ink 3, light ink 5), row hover outside the sidebar (U5), danger (U10), display-lg (U11),
+the text ladder outside the sidebar (U12), dialogs and drawers (U13: 24 padding and gap, 44px footer
+actions), page focus rings (U16), brand selection (U17: 25% / light 12%) and control and floating
+states (U18). What remains, one reviewable change per row:
 
 | # | Role | Today: value · where | Winner (Figma) |
 |---|---|---|---|
-| U1 | Card (grouped rows) | `--portal-legacy-card-fill-settings` ink 5 (global settings cards via `--ui-bg-card`); `--portal-legacy-card-radius-settings` 8px (`.global-settings-card`, `.settings-agent-link`); `--portal-legacy-disclosure-fill` ink 3 + `--portal-legacy-disclosure-stroke` ink 10 (`.global-settings-disclosure`); capability rows stroke ink 10 (`capabilities/ui/page.css`, shared with classic) | `--portal-surface-card` ink 2, `--portal-stroke-hairline` ink 5, `--portal-radius-card` 4px (1036:7576) |
-| U2 | Page rhythm | global settings `--settings-section-gap` 36px and page-heading gap 36px (`global-overviews.css`, `appearance-overview.css`, `portal-pages.css`) vs 32px on agent pages (`settings-editor.css`) | 32 between sections and after the heading (1036:7405) |
-| U3 | Page tabs | two implementations (`.agent-management-tabs`, `.page-header-tabs`); rail `--portal-legacy-tab-rail` ink 5 and an ink 5 literal in `page-search-shell.css`; Capabilities tabs keep a 0.5rem bottom pad | one `PageTabs`, rail `--portal-stroke-divider` ink 3 (1038:7499) |
-| U4 | Divider inside a card | `--ui-stroke-tertiary` ink 5 (global settings rows, appearance groups, capability rows) vs `--portal-stroke-divider` ink 3 (agent, history, config cards) | `--portal-stroke-divider` ink 3 (light ink 5) |
-| U5 | Row hover | `--portal-surface-row-hover` ink 3 (pages); `--portal-sidebar-hover` ink 4 (chat sidebar); `--portal-legacy-row-hover-quiet` ink 2 (disclosure summary, pane tab-strip tabs) and `--portal-sidebar-agent-hover` ink 2; theme-mode tile ink 7 and gateway tile ink 8 literals | `--portal-surface-row-hover` (+1 step over rest) |
-| U6 | Neutral selection | `--portal-surface-selected` ink 5 + `--portal-stroke-selected` (page nav) vs `--portal-sidebar-selected` ink 7, no stroke (open pinned chat) and the pane tab-strip's active tab (ink 5, no stroke) | ink 5 + 0.5px ink 5 stroke (1036:7409) |
-| U7 | Caption | `--portal-legacy-caption-tracking-sidebar` 0.04em with weight 500 and line height 1.2 (`.portal-section-label`); new-session picker label 0.08em/500/brand ink; gateway menu `tracking-[0.08em]` | 10/1.4, `--portal-tracking-caption` 0.06em, 400, tertiary (1036:7408) |
-| U8 | Chip and Count | sidebar Agents count r10 pill at 700 (`.portal-section-count`); new-session tag 0.06em/500/r3; RUNNING/EMPTY chip line boxes | Chip h14 9/0.04em r2, Count h14 10/500 r2 (1036:7318, 856:3474) |
-| U9 | Keycap | `--portal-sidebar-action-key` (dark 20%) with a 0.5px ink 5 rim (sidebar, New agent row) vs `[data-slot=kbd]` field ink 4 + 1px control stroke | ink 4 fill, 1px ink 14, r3, 11px (1038:7401) |
-| U10 | Danger | `destructiveOutline` on the theme's `--color-destructive` at 10/18/24/45%; destructive menu item at 12%; thread error card `--err-alert`; `--portal-surface-danger-solid` `#a22a20` | one family: `#a22a20` fill 8% / stroke 50%, ink `#ff7373` dark / `#a22a20` light (1038:7836) |
-| U11 | Display-lg | pane title 2rem (`portal-shell.css`); dialog title without tracking (`portal-typography.css`) | `--portal-type-display-lg-size` 30, `--portal-tracking-display` (1038:7797) |
-| U12 | Text ink ladder | `--portal-floating-item-ink` ink 90; history heading/group ink 90 and settings-editor ink 98 literals; sidebar machine ink 80, head meta 70/55, dark caption 65 | the four `--portal-text-*` steps |
-| U13 | Dialog and drawer | `--dialog-body-gap` 20 (root) vs 16 (`.agent-history-dialog-body`, px) ; drawer footer buttons 36 | padding 24, block gap 24, footer buttons 44 (1038:7792) |
+| U6 | Neutral selection | the pane tab-strip's active tab (ink 5, no stroke) | ink 5 + 0.5px ink 5 stroke (1036:7409) |
+| U7 | Caption | new-session picker label 0.08em/500/brand ink; gateway menu `tracking-[0.08em]` | 10/1.4, `--portal-tracking-caption` 0.06em, 400, tertiary (1036:7408) |
+| U8 | Chip and Count | new-session tag 0.06em/500/r3; RUNNING/EMPTY chip line boxes | Chip h14 9/0.04em r2, Count h14 10/500 r2 (1036:7318, 856:3474) |
+| U9 | Keycap | New agent row keycaps (0.5px ink 5 rim, ink 5 fill, `portal-pages.css`) vs `[data-slot=kbd]` field ink 4 + 1px control stroke | ink 4 fill, 1px ink 14, r3, 11px (1038:7401) |
 | U14 | Small text in mixed TSX | 14 sizes between 0.6 and 0.82rem and 0.07–0.2em tracking in the classic/portal branches | caption / micro / meta / ui sizes |
-| U15 | Radius by role | off-scale `10px` (sidebar count), `0.5rem` / `0.375rem` (agent tile and avatar), Tailwind `rounded-*` in redesign TSX (G2 warnings) | the seven `--portal-radius-*` roles |
-| U16 | Focus ring | chat sidebar inset box-shadow; tabs and history rows reshape the ring's radius | one 2px outline, `--portal-focus-ring-*` |
-| U17 | Brand selection (light) | `--portal-legacy-brand-selected` 25% / light 10% (`--portal-selection-background`: rail destinations; RUNNING and DEFAULT chips) vs `--portal-surface-brand-selected` 25% / light 12% (segmented, scope chips) | 25% / light 12% (1036:7318) |
-| U18 | Control and floating states | `--portal-surface-control-hover` light ink 6, `--portal-surface-control-pressed` ink 11 / light 9; `--portal-stroke-floating` light ink 12; `--portal-floating-separator` ink 6 | control hover 8/5, pressed 10/8; floating stroke ink 10; separator `--portal-stroke-hairline` |
+| U15 | Radius by role | `0.5rem` / `0.375rem` (agent overview menu and items), Tailwind `rounded-*` in redesign TSX (G2 warnings) | the seven `--portal-radius-*` roles |
 | U19 | Units | px font sizes, line heights and radii in `agent-settings.css`, `history.css`, capabilities `page.css` (the guard's baseline lists them) | rem through the type tokens |
-| U20 | Spacing drift | 3/5/7/9/11/13/15/17/22/23px insets (sidebar, catalog, history, settings editor) | the 4px scale; Figma optical offsets keep `/* token-exempt */` |
+| U20 | Spacing drift | 3/5/7/9/11/13/15/17/22/23px insets (catalog, history, settings editor) | the 4px scale; Figma optical offsets keep `/* token-exempt */` |
 
 ### Rules of thumb
 
@@ -800,7 +858,7 @@ visual impact.
 2. Regenerate the tables: `python scripts/check_desktop_design_tokens.py --write-docs`
    (`scripts/check` fails while they are stale).
 3. Look at it in dark, light and Glass, on the states the role appears in.
-4. If the change unifies a Phase B row, delete the legacy token and its row, and
+4. If the change unifies a "Still to unify" row, delete the legacy token and its row, and
    lower the guard's baseline (`--write-baseline`) in the same change.
 
 `scripts/check` runs `check_desktop_design_tokens.py`: outside `tokens/`, redesign

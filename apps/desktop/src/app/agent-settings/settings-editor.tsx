@@ -202,22 +202,24 @@ function AgentSettingsEditorContent({
         {section === 'messaging' && <MessagingView className="agent-settings-messaging" />}
         {section === 'schedules' && <AgentSchedulesSettings owner={owner} />}
         {section === 'browser' && (
-          <>
-            <VaultSettings subpage={tab === 'vault' ? page : undefined} />
-            <SettingsDisclosure
-              description={layout.summaries.browser}
-              open={tab === 'config:browser' && Boolean(page)}
-              title={t.settings.sections.advanced}
-            >
-              <BrowserRealProfilePanel profile={owner} />
-              <ConfigSettings
-                activeSectionId="browser"
-                importInputRef={importInputRef}
-                onConfigSaved={onConfigSaved}
-                subpage="network"
-              />
-            </SettingsDisclosure>
-          </>
+          <VaultSettings
+            after={
+              <SettingsDisclosure
+                description={layout.summaries.browser}
+                open={tab === 'config:browser' && Boolean(page)}
+                title={t.settings.sections.advanced}
+              >
+                <BrowserRealProfilePanel profile={owner} />
+                <ConfigSettings
+                  activeSectionId="browser"
+                  importInputRef={importInputRef}
+                  onConfigSaved={onConfigSaved}
+                  subpage="network"
+                />
+              </SettingsDisclosure>
+            }
+            subpage={tab === 'vault' ? page : undefined}
+          />
         )}
         {section === 'providers' && (
           <AgentProviderSettings

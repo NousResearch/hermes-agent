@@ -67,7 +67,8 @@
 
 /* Destructive. The confirm of a destructive dialog (878:7066 "Delete 2 items", 878:8958) is a solid
    #A22A20 slab with white ink (7.3:1); inline and secondary destructive actions ("Delete agent" 895:*,
-   the History selection bar's Delete, row "Remove") take destructiveOutline: a red-tinted outline. */
+   the History selection bar's Delete, row "Remove") take destructiveOutline: the danger tint, stroke
+   and ink (tokens/color.css). */
 :root[data-shell='portal'] :is(button, a)[data-size][data-variant][data-variant='destructive'] {
   background-color: var(--portal-control-danger-fill);
   box-shadow: none;
@@ -88,21 +89,21 @@
 }
 
 :root[data-shell='portal'] :is(button, a)[data-size][data-variant][data-variant='destructiveOutline'] {
-  background-color: color-mix(in srgb, var(--color-destructive) 10%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-destructive) 45%, transparent);
-  color: var(--color-destructive);
+  background-color: var(--portal-surface-danger);
+  box-shadow: inset 0 0 0 1px var(--portal-stroke-danger);
+  color: var(--portal-text-danger);
 }
 
 :root[data-shell='portal'] :is(button, a)[data-size][data-variant][data-variant='destructiveOutline']:hover {
-  background-color: color-mix(in srgb, var(--color-destructive) 18%, transparent);
+  background-color: var(--portal-surface-danger-hover);
 }
 
 :root[data-shell='portal'] :is(button, a)[data-size][data-variant][data-variant='destructiveOutline']:active {
-  background-color: color-mix(in srgb, var(--color-destructive) 24%, transparent);
+  background-color: var(--portal-surface-danger-pressed);
 }
 
 :root[data-shell='portal'] :is(button, a)[data-size][data-variant][data-variant='destructiveOutline']:focus-visible {
-  --portal-focus-ring-color: var(--color-destructive);
+  --portal-focus-ring-color: var(--portal-text-danger);
 }
 
 /* Page and dialog scale: 36px boxes with 14px Medium labels (pages.md §4). */
@@ -125,6 +126,19 @@
   ):not([data-variant='link'], [data-variant='text'], [data-variant='textStrong'], [data-variant='ghost']) {
   padding-inline: 0.75rem 1rem;
   gap: 0.5rem;
+}
+
+/* Dialog and drawer actions (1038:7792): every button in the footer, Cancel included, takes the
+   footer's action height so the row reads as one line. */
+:root[data-shell='portal']
+  [data-slot='dialog-content']
+  :is([data-slot='dialog-footer'], .agent-history-preview-actions)
+  :is(button, a)[data-size][data-variant]:is([data-size='default'], [data-size='lg']):not(
+    [data-variant='link'],
+    [data-variant='text'],
+    [data-variant='textStrong']
+  ) {
+  min-height: var(--portal-dialog-action-height);
 }
 
 /* A list card's row action ("Change plan" 856:1835, "Manage"/"Reconnect" 895:17703), an empty

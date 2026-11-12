@@ -4,6 +4,7 @@ import { type ComponentProps, type ReactNode, type Ref, useLayoutEffect, useRef,
 
 import { Codicon } from '@/components/ui/codicon'
 import { EmptyState } from '@/components/ui/empty-state'
+import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
 import { usePortalShell } from '@/store/shell-variant'
 
@@ -16,7 +17,7 @@ interface SettingsOverviewProps {
   className?: string
 }
 
-/** The page's vertical rhythm: 36px between sections. */
+/** The page's vertical rhythm: 32px between sections (--portal-page-rhythm). */
 export function SettingsOverview({ children, className }: SettingsOverviewProps) {
   const redesign = usePortalShell()
 
@@ -58,11 +59,7 @@ export function SettingsGroup({ children, description, id, meta, title }: Settin
 export function SettingsPageDescription({ children }: { children: ReactNode }) {
   const redesign = usePortalShell()
 
-  return redesign ? (
-    <p className="mb-9" data-slot="page-description">
-      {children}
-    </p>
-  ) : null
+  return redesign ? <p data-slot="page-description">{children}</p> : null
 }
 
 interface SettingsAddRowProps extends Omit<ComponentProps<'button'>, 'className' | 'type'> {
@@ -92,6 +89,33 @@ export function SettingsCard({ className, classicClassName = 'contents', ...prop
   const redesign = usePortalShell()
 
   return <div className={redesign ? cn('global-settings-card', className) : classicClassName || undefined} {...props} />
+}
+
+interface SettingsCardSkeletonProps {
+  /** Settings rows (the card's 64px row) the loaded card is expected to hold. */
+  rows: number
+  /** The card closes with an "+ Add …" row. */
+  addRow?: boolean
+}
+
+/** A list card still loading: the loaded card's own rows at their own heights, so the content that
+ *  replaces it lands where the placeholder stood and nothing under it moves. */
+export function SettingsCardSkeleton({ addRow = false, rows }: SettingsCardSkeletonProps) {
+  return (
+    <div aria-hidden className="global-settings-card">
+      {Array.from({ length: rows }, (_, index) => (
+        <div className="global-settings-skeleton-row" key={index}>
+          <Skeleton className="h-3.5 w-40 max-w-full" />
+          <Skeleton className="h-3 w-64 max-w-full" />
+        </div>
+      ))}
+      {addRow && (
+        <div className="global-settings-skeleton-row" data-add-row>
+          <Skeleton className="h-3.5 w-24" />
+        </div>
+      )}
+    </div>
+  )
 }
 
 /** A list card with nothing in it yet. The redesign uses the one empty block (877:3596) as the card's

@@ -7,6 +7,8 @@ import { ResponsiveTabs } from '@/components/ui/tab-dropdown'
 import { cn } from '@/lib/utils'
 import { usePortalShell } from '@/store/shell-variant'
 
+import { PageHeader, PageTabs } from './redesign/page-header'
+
 // Tabs are data, not nodes: the shell owns their presentation so every page
 // gets the same behavior — a centered TextTab row on wide viewports that
 // collapses into a dropdown when the header can't fit both search and tabs.
@@ -95,8 +97,14 @@ export function PageSearchShell({
     />
   )
 
+  const value = activeTab ?? tabs?.[0]?.id ?? ''
+
   const tabStrip = hasTabs ? (
-    <ShellTabs activeTab={activeTab} align={redesigned ? 'start' : tabsAlign} onTabChange={onTabChange} tabs={tabs!} />
+    redesigned ? (
+      <PageTabs label={pageTitle!} onChange={id => onTabChange?.(id)} tabs={tabs!} value={value} />
+    ) : (
+      <ShellTabs activeTab={activeTab} align={tabsAlign} onTabChange={onTabChange} tabs={tabs!} />
+    )
   ) : null
 
   return (
@@ -127,9 +135,16 @@ export function PageSearchShell({
       <div className="shrink-0">
         {redesigned ? (
           <PageHeader
-            actions={searchTrailingAction}
+            actions={
+              (search || searchTrailingAction) && (
+                <>
+                  {search && <div className="page-header-search">{search}</div>}
+                  {searchTrailingAction}
+                </>
+              )
+            }
+            className="page-header"
             description={pageDescription}
-            search={search}
             tabs={tabStrip}
             title={pageTitle!}
           />
@@ -148,42 +163,6 @@ export function PageSearchShell({
         {children}
       </div>
     </section>
-  )
-}
-
-function PageHeader({
-  title,
-  description,
-  tabs,
-  search,
-  actions
-}: {
-  title: string
-  description?: string
-  tabs: ReactNode
-  search: ReactNode
-  actions: ReactNode
-}) {
-  return (
-    <header className="page-header">
-      <div className="page-header-title">
-        <div className="page-header-heading">
-          <h1>{title}</h1>
-          {description && <p className="page-header-description">{description}</p>}
-        </div>
-        {(search || actions) && (
-          <div className={cn('page-header-actions', search && 'max-w-sm flex-1 basis-64')}>
-            {search}
-            {actions}
-          </div>
-        )}
-      </div>
-      {tabs && (
-        <div className="page-header-tabs" data-tour="page-tabs">
-          {tabs}
-        </div>
-      )}
-    </header>
   )
 }
 

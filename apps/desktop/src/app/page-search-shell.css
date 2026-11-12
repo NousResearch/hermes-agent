@@ -10,9 +10,8 @@
   }
 }
 
-/* Redesigned page frame (Capabilities 919:9281): the shared page column (portal-pages.css), H1 row
-   with trailing actions, then 14px Medium tabs with counts over a 2px brand underline and a hairline
-   rule. Only the redesign renders these classes. */
+/* Redesigned page frame (Capabilities 919:9281): the shared page column (portal-pages.css) around the
+   one page header (redesign/page-header.tsx). Only the redesign renders these classes. */
 /* An empty page's card sits at the top of the page column (877:3596), not floating mid-canvas. */
 .page-search-empty {
   width: 100%;
@@ -30,90 +29,16 @@
 }
 
 .page-header {
-  display: grid;
-  gap: 1.5rem;
   width: 100%;
   max-width: var(--page-content-max-width);
   margin-inline: auto;
-  padding: calc(var(--titlebar-height) + 1.125rem) var(--page-content-inset) 1.5rem;
+  padding: calc(var(--titlebar-height) + var(--portal-page-top)) var(--page-content-inset) 0;
 }
 
-.page-header-title {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 0.75rem 1.5rem;
-}
-
-.page-header-heading {
-  min-width: 0;
-}
-
-/* 919:9095: 13px tertiary, 6px under the H1, two lines at most on the 640px column. */
-.page-header-description {
-  max-width: 32rem;
-  margin-top: 0.375rem;
-  color: var(--ui-text-tertiary);
-  font-size: 0.8125rem;
-  line-height: 1.4;
-}
-
-.page-header-actions {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 0.75rem;
-}
-
-.page-header-tabs {
-  border-bottom: 1px solid color-mix(in srgb, var(--ui-base) 5%, transparent);
-}
-
-.page-header-tabs > div {
-  gap: 1.5rem;
-}
-
-.page-header-tabs button[data-active] {
-  height: 2rem;
-  gap: 0.375rem;
-  margin-bottom: -1px;
-  padding: 0 0 0.5rem;
-  border-bottom: 2px solid transparent;
-  color: var(--ui-text-tertiary);
-  font-size: 0.875rem;
-  line-height: 1.4;
-}
-
-.page-header-tabs button[data-active] > span {
-  text-decoration: none;
-}
-
-.page-header-tabs button[data-active]:hover {
-  color: var(--ui-text-primary);
-}
-
-.page-header-tabs button[data-active='true'] {
-  border-bottom-color: var(--portal-brand-fill);
-  color: var(--ui-text-primary);
-}
-
-.page-header-tabs button[data-active]:focus-visible {
-  border-radius: 2px;
-  outline: 2px solid var(--portal-brand-ink);
-  outline-offset: 2px;
-  box-shadow: none;
-}
-
-/* Tab counts (919:9286): 11px, quieter than the label. A count reserves its loading chip's width, so
-   one or two digits arriving never nudge the tabs after it. */
-.page-header-tabs button[data-active] > span:last-child:not(:first-child) {
-  min-width: 0.875rem;
-  font-variant-numeric: tabular-nums;
-  color: var(--ui-text-quaternary);
-  font-size: 0.6875rem;
-  letter-spacing: 0.01em;
+/* A header search (Messaging) keeps its field width at the H1 row's end. */
+.page-header-search {
+  width: 24rem;
+  max-width: 100%;
 }
 
 /* The page column sits at Figma's left inset from the stage edge (919:9281: x 90) rather than
@@ -146,16 +71,16 @@
   margin-inline: var(--page-column-start) 0;
 }
 
-/* A header action (Library's refresh): the band's 30px chrome button, 2% plate, r3, 16px glyph. */
-.page-header-actions .page-header-chrome-button {
+/* A header action (Library's refresh): the band's 30px chrome button. */
+.portal-page-header-actions .page-header-chrome-button {
   width: var(--portal-chrome-button-size);
   height: var(--portal-chrome-button-size);
-  border-radius: 3px;
-  background: color-mix(in srgb, var(--ui-base) 2%, transparent);
+  border-radius: var(--portal-radius-control);
+  background: var(--portal-surface-chrome);
 }
 
-.page-header-actions .page-header-chrome-button:hover {
-  background: color-mix(in srgb, var(--ui-base) 5%, transparent);
+.portal-page-header-actions .page-header-chrome-button:hover {
+  background: var(--portal-surface-chrome-hover);
 }
 
 /* A left-anchored column needs no gutter at its start: the scrollbar's reserve stays at the end, so

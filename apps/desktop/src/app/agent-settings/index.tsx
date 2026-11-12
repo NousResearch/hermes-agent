@@ -38,6 +38,7 @@ import { useSimplifiedAgents } from '../chat/sidebar/use-simplified-agents'
 import { useHermesConfigRecord } from '../hooks/use-config-record'
 import { openSession } from '../open-session'
 import { Panel, PanelHeader } from '../overlays/panel'
+import { PageHeader, PageTabs } from '../redesign/page-header'
 import { PROFILES_ROUTE, SETTINGS_ROUTE } from '../routes'
 import { getNested, toolNames } from '../settings/helpers'
 import { settingsScopeLabel } from '../settings/profile-scope'
@@ -248,24 +249,27 @@ interface AgentManagementHeaderProps {
   onOpenChat: () => void
   owner: AgentSettingsOwner
   profile?: ProfileInfo
+  tabs: ReactNode
 }
 
-function AgentManagementHeader({ gateway, onDeleted, onOpenChat, owner, profile }: AgentManagementHeaderProps) {
+function AgentManagementHeader({ gateway, onDeleted, onOpenChat, owner, profile, tabs }: AgentManagementHeaderProps) {
   const { t } = useI18n()
   const c = useAgentSettingsCopy()
   const colors = useStore($profileColors)
   const machineState = useStore($gatewayState)
-  const label = profile ? settingsScopeLabel(profile) : owner.profile
 
   return (
-    <header className="agent-management-header">
-      <FigmaAgentIcon
-        className="agent-management-avatar [&>img]:brightness-0 dark:[&>img]:brightness-100"
-        color={profileColorSoft(resolveProfileColor(owner.profile, colors) ?? 'var(--portal-brand-fill)', 30)}
-      />
-      <div className="agent-management-identity">
-        <h1>{label}</h1>
-        <div className="agent-management-meta">
+    <PageHeader
+      actions={
+        <>
+          <Button onClick={onOpenChat} size="lg">
+            {c.openChat}
+          </Button>
+          <AgentOverviewActions onDeleted={onDeleted} owner={owner} profile={profile} />
+        </>
+      }
+      description={
+        <span className="agent-management-meta">
           <span className="agent-management-machine">
             <span
               aria-label={machineState === 'open' ? c.connected : c.disconnected}
@@ -277,15 +281,17 @@ function AgentManagementHeader({ gateway, onDeleted, onOpenChat, owner, profile 
           </span>
           {profile?.path && <PathText className="agent-management-path" path={profile.path} />}
           {profile?.is_default && <span className="agent-management-default">{t.profiles.defaultBadge}</span>}
-        </div>
-      </div>
-      <div className="agent-management-actions">
-        <Button onClick={onOpenChat} size="lg">
-          {c.openChat}
-        </Button>
-        <AgentOverviewActions onDeleted={onDeleted} owner={owner} profile={profile} />
-      </div>
-    </header>
+        </span>
+      }
+      leading={
+        <FigmaAgentIcon
+          className="agent-management-avatar [&>img]:brightness-0 dark:[&>img]:brightness-100"
+          color={profileColorSoft(resolveProfileColor(owner.profile, colors) ?? 'var(--portal-brand-fill)', 30)}
+        />
+      }
+      tabs={tabs}
+      title={profile ? settingsScopeLabel(profile) : owner.profile}
+    />
   )
 }
 
@@ -487,20 +493,19 @@ function AgentSettingsContent({
         onOpenChat={openChat}
         owner={editorOwner}
         profile={profile}
+        tabs={
+          <PageTabs
+            label={t.simplifiedAgents.settings}
+            onChange={id => openPanel(id === 'overview' ? null : id)}
+            tabs={[
+              { id: 'overview', label: c.overview },
+              { id: 'history', label: c.history },
+              { id: 'settings', label: t.commandCenter.settings }
+            ]}
+            value={selectedTab}
+          />
+        }
       />
-      <nav aria-label={t.simplifiedAgents.settings} className="agent-management-tabs">
-        {(
-          [
-            ['overview', c.overview, () => openPanel(null)],
-            ['history', c.history, () => openPanel('history')],
-            ['settings', t.commandCenter.settings, () => openPanel('settings')]
-          ] as const
-        ).map(([id, title, onClick]) => (
-          <button aria-current={selectedTab === id ? 'page' : undefined} key={id} onClick={onClick} type="button">
-            {title}
-          </button>
-        ))}
-      </nav>
       {history ? (
         <AgentHistory key={JSON.stringify(editorOwner)} onClose={props.onClose} owner={editorOwner} />
       ) : panel === 'settings' || panel === 'capabilities' || panel === 'messaging' ? (

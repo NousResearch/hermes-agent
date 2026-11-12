@@ -11,7 +11,7 @@
   display: grid;
   gap: 6px;
   margin-bottom: 24px;
-  color: color-mix(in srgb, var(--ui-base) 90%, transparent);
+  color: var(--ui-text-primary);
   font-size: var(--portal-type-ui-size);
   line-height: 1.4;
 }
@@ -38,8 +38,8 @@
 }
 .agent-history-stats > button:focus-visible {
   border-radius: var(--portal-radius-chip);
-  outline: 2px solid var(--portal-brand-ink);
-  outline-offset: 2px;
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
 }
 .agent-history-toolbar,
 .agent-history-selection,
@@ -209,7 +209,7 @@
 }
 .agent-history-group th {
   padding-block: 10px;
-  color: color-mix(in srgb, var(--ui-base) 90%, transparent);
+  color: var(--ui-text-primary);
   font-size: var(--portal-type-ui-size);
   font-weight: 500;
 }
@@ -251,8 +251,8 @@
   cursor: pointer;
 }
 .agent-history-row-main:focus-visible {
-  outline: 2px solid var(--portal-brand-ink);
-  outline-offset: 4px;
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
   border-radius: var(--portal-radius-control);
 }
 /* Data row title (877:5998): 14 Medium, then its state chips on the same line. */
@@ -287,12 +287,9 @@
 }
 /* RUNNING wears the DEFAULT chip's brand treatment (877:4260). */
 .agent-history-row-main small[data-tone='running'] {
-  background: var(--portal-legacy-brand-selected);
+  background: var(--portal-surface-brand-selected);
   box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
   color: var(--ui-text-primary);
-}
-:root:not(.dark) .agent-history-row-main small[data-tone='running'] {
-  background: var(--portal-legacy-brand-selected);
 }
 .agent-history-footer {
   display: flex;
@@ -371,29 +368,12 @@
   transform: scale(1);
 }
 .agent-history-filter-options input[type='radio']:focus-visible {
-  outline: 2px solid var(--portal-brand-ink);
-  outline-offset: 2px;
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
 }
 .agent-history-filter-popover > footer {
   padding: 8px 12px;
   border-top: 1px solid var(--ui-stroke-tertiary);
-}
-/* Confirmations (878:8018, 878:9901): 24px inset, 16px between blocks, actions 8px further down.
-   The variables (not padding) so the shared sticky footer cancels exactly this inset. */
-.agent-history-dialog-body {
-  --dialog-body-padding: 24px;
-  --dialog-body-gap: 16px;
-}
-/* The shared sticky dialog footer (portal-floating.css) is pushed up by the body's own padding when
-   it sticks, so it overlapped the last item and left 48px under the buttons. These confirmations
-   end at their actions: Figma's 8px above them (878:8037) and the 24px inset below. */
-:root[data-shell='portal']
-  .agent-history-dialog[data-slot='dialog-content']
-  > .agent-history-dialog-body
-  > [data-slot='dialog-footer'] {
-  position: static;
-  margin-bottom: 0;
-  padding-bottom: 0;
 }
 /* The page segmented control (856:3444) in a body-portalled dialog: field fill + 1px field stroke,
    r3, 3px inset; the selection is the same 25% brand wash with its 0.5px brand hairline. */
@@ -432,8 +412,8 @@
   background-color: var(--portal-surface-brand-selected);
 }
 :root[data-shell='portal'] .agent-history-cleanup-fields [data-slot='segmented-control'] > button:focus-visible {
-  outline: 2px solid var(--portal-brand-ink);
-  outline-offset: 1px;
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
 }
 .agent-history-cleanup-fields {
   display: grid;
@@ -618,10 +598,6 @@
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
-}
-.agent-history-preview-actions > button {
-  min-height: 44px;
-  font-size: var(--portal-type-body-size);
 }
 .agent-history-preview-actions > button:not(:first-child) {
   padding-inline: 12px 16px;

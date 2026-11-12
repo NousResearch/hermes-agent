@@ -1,7 +1,7 @@
 /* Redesigned global settings pages (Figma 856:*). Every class here is rendered only by the redesign's
    SettingsOverview / SettingsCard / SettingsDisclosure (settings-card.tsx), so no root gate is needed. */
 .global-settings-overview {
-  --settings-section-gap: 2.25rem;
+  --settings-section-gap: var(--portal-page-rhythm);
   display: grid;
   gap: var(--settings-section-gap);
 }
@@ -12,13 +12,13 @@
   margin-top: calc(0.75rem - var(--settings-section-gap));
 }
 
-/* ── Grouped rows card (856:3439): 5% fill, 5% stroke, r8, 64px rows with hairline dividers ── */
+/* ── Grouped rows card (1036:7576): the card role (2% fill, 5% hairline, r4), 64px rows, dividers ── */
 
 .global-settings-card {
   overflow: hidden;
-  border: 1px solid var(--ui-stroke-tertiary);
-  border-radius: var(--portal-legacy-card-radius-settings);
-  background: var(--ui-bg-card);
+  border: 1px solid var(--portal-stroke-hairline);
+  border-radius: var(--portal-radius-card);
+  background: var(--portal-surface-card);
 }
 
 .global-settings-card > div {
@@ -66,7 +66,7 @@
 
 .global-settings-card [data-slot='settings-row'] + [data-slot='settings-row'],
 .global-settings-card > div + div {
-  border-top: 1px solid var(--ui-stroke-tertiary);
+  border-top: 1px solid var(--portal-stroke-divider);
 }
 
 @container (min-width: 32rem) {
@@ -109,12 +109,12 @@
   line-height: 1.4;
 }
 
-/* ── Advanced disclosure (856:3467): 3% fill, 10% stroke, r4, count badge + chevron ── */
+/* ── Advanced disclosure (856:3467): a card (1036:7576) with a count badge and chevron ── */
 
 .global-settings-disclosure {
-  border: 1px solid var(--portal-legacy-disclosure-stroke);
+  border: 1px solid var(--portal-stroke-hairline);
   border-radius: var(--portal-radius-card);
-  background: var(--portal-legacy-disclosure-fill);
+  background: var(--portal-surface-card);
 }
 
 .global-settings-disclosure > summary {
@@ -133,12 +133,12 @@
 }
 
 .global-settings-disclosure > summary:hover {
-  background: var(--portal-legacy-row-hover-quiet);
+  background: var(--portal-surface-row-hover);
 }
 
 .global-settings-disclosure > summary:focus-visible {
-  outline: 2px solid var(--portal-brand-ink);
-  outline-offset: 2px;
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
 }
 
 .global-settings-disclosure-text {
@@ -188,7 +188,7 @@
 }
 
 .global-settings-disclosure-body [data-slot='settings-row'] + [data-slot='settings-row'] {
-  border-top: 1px solid var(--ui-stroke-tertiary);
+  border-top: 1px solid var(--portal-stroke-divider);
 }
 
 /* A disclosure body that holds whole rows lets them run to the card's edges. */
@@ -215,7 +215,7 @@
 
 /* Outside an overview grid the footer brings its own section break. */
 :not(.global-settings-overview) > * + .global-settings-footer {
-  margin-top: 2.25rem;
+  margin-top: var(--portal-page-rhythm);
 }
 
 /* ── Page-specific ─────────────────────────────────────────────────────────── */
@@ -225,16 +225,16 @@
   padding-inline: 1rem;
 }
 
-/* Settings rail → Agent settings (856:2764): a 5% card with icon, label, description and chevron. */
+/* Settings rail → Agent settings (856:2764): a card with icon, label, description and chevron. */
 .settings-agent-link {
   display: flex;
   width: 100%;
   align-items: flex-start;
   gap: 0.625rem;
   padding: 0.75rem 0.625rem;
-  border: 1px solid var(--ui-stroke-tertiary);
-  border-radius: var(--portal-legacy-card-radius-settings);
-  background: var(--ui-bg-card);
+  border: 1px solid var(--portal-stroke-hairline);
+  border-radius: var(--portal-radius-card);
+  background: var(--portal-surface-card);
   color: var(--ui-text-primary);
   font-size: var(--portal-type-ui-size);
   line-height: 1.4;
@@ -242,12 +242,12 @@
 }
 
 .settings-agent-link:hover {
-  background: var(--portal-raw-ink-8);
+  background: var(--portal-surface-row-hover);
 }
 
 .settings-agent-link:focus-visible {
-  outline: 2px solid var(--portal-brand-ink);
-  outline-offset: 2px;
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
 }
 
 .settings-agent-link-icon {
@@ -281,6 +281,20 @@
   line-height: 1.4;
 }
 
+/* A loading card's rows (SettingsCardSkeleton) at the loaded rows' heights: a 64px setting row, a
+   48px add row. */
+.global-settings-skeleton-row {
+  display: grid;
+  min-height: 4rem;
+  align-content: center;
+  gap: 0.375rem;
+  padding: 0.75rem 1rem;
+}
+
+.global-settings-skeleton-row[data-add-row] {
+  min-height: 3rem;
+}
+
 /* A list card with nothing in it yet: one quiet line on the card's 16px inset. */
 .global-settings-empty-row {
   padding: 0.875rem 1rem;
@@ -302,7 +316,7 @@
 }
 
 .global-settings-card > * + .global-settings-link-row {
-  border-top: 1px solid var(--ui-stroke-tertiary);
+  border-top: 1px solid var(--portal-stroke-divider);
 }
 
 .global-settings-link-row:hover {
@@ -353,7 +367,7 @@
 }
 
 .global-settings-card > * + .global-settings-add-row {
-  border-top: 1px solid var(--ui-stroke-tertiary);
+  border-top: 1px solid var(--portal-stroke-divider);
 }
 
 .global-settings-add-row:hover:not(:disabled) {
@@ -361,8 +375,8 @@
 }
 
 .global-settings-add-row:focus-visible {
-  outline: 2px solid var(--portal-brand-ink);
-  outline-offset: -2px;
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-inset);
 }
 
 .global-settings-add-row:disabled {
@@ -433,7 +447,7 @@
 }
 
 .gateway-mode-card:hover:not(:disabled) {
-  background: var(--portal-raw-ink-8);
+  background: var(--portal-surface-control-hover);
 }
 
 .gateway-mode-card[aria-pressed='true'] {
@@ -442,8 +456,8 @@
 }
 
 .gateway-mode-card:focus-visible {
-  outline: 2px solid var(--portal-brand-ink);
-  outline-offset: 2px;
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
 }
 
 .gateway-mode-card:disabled {

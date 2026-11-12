@@ -12,11 +12,9 @@
   margin-inline: var(--management-panel-lead) 0;
 }
 
-/* ── Page heading (856:3405): H1, 6px to its description, 36px to the first section ── */
-
-:root[data-shell='portal'] [data-page-surface] [data-slot='page-heading'] {
-  margin-bottom: 2.25rem;
-}
+/* ── Settings page heading (856:3405) ──
+   The H1 is the route frame's PageHeader; a settings page renders its own description line under it,
+   so the header gives up its rhythm to the description's 6px and the line carries the rhythm on. */
 
 :root[data-shell='portal']
   [data-page-surface]
@@ -26,6 +24,7 @@
 
 :root[data-shell='portal'] [data-page-surface] [data-slot='page-description'] {
   margin-top: 0;
+  margin-bottom: var(--portal-page-rhythm);
   color: var(--ui-text-tertiary);
   font-size: var(--portal-type-ui-size);
   line-height: 1.4;

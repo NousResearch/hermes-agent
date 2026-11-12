@@ -37,7 +37,7 @@ import { providerGroup, providerMeta, providerPriority } from './helpers'
 import { LocalModelsSettings } from './local-models-settings'
 import { SettingsContent, SettingsSkeleton } from './primitives'
 import { SettingsProfileScope, useSettingsOwner } from './profile-scope'
-import { SettingsAddRow, SettingsCard, SettingsEmptyRow, SettingsOverview } from './settings-card'
+import { SettingsAddRow, SettingsCard, SettingsCardSkeleton, SettingsEmptyRow, SettingsOverview } from './settings-card'
 import { useSettingsPagesCopy } from './settings-pages-copy'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
@@ -387,6 +387,67 @@ function LocalEndpointRow({ onOpen }: { onOpen: (reason: null | string) => void 
   )
 }
 
+/** OAuth providers for the owner: best-effort (a failed read just hides the panel), re-read when
+ *  the onboarding overlay that owns sign-in closes. `settled` once the first read has answered. */
+function useOAuthProviders(requestScope: Parameters<typeof listOAuthProviders>[0], onboardingActive: boolean) {
+  const [providers, setProviders] = useState<OAuthProvider[]>([])
+  const [settled, setSettled] = useState(false)
+
+  const refresh = useCallback(async () => {
+    const result = await listOAuthProviders(requestScope)
+    setProviders(result.providers)
+  }, [requestScope])
+
+  useEffect(() => {
+    let cancelled = false
+
+    void (async () => {
+      if (onboardingActive) {
+        return
+      }
+
+      try {
+        const result = await listOAuthProviders(requestScope)
+
+        if (!cancelled) {
+          setProviders(result.providers)
+        }
+      } catch {
+        // Ignore — the OAuth panel just won't render.
+      } finally {
+        if (!cancelled) {
+          setSettled(true)
+        }
+      }
+    })()
+
+    return () => void (cancelled = true)
+  }, [onboardingActive, requestScope])
+
+  return { providers, refresh, settled }
+}
+
+/** The redesign's accounts view keeps its placeholder until the first list read has answered either
+ *  way, so the providers arriving never grow the card under the reader. */
+function awaitingAccounts(view: ProviderView, redesign: boolean, settled: boolean) {
+  return redesign && view === 'accounts' && !settled
+}
+
+/** The loading view: the redesign's cards at the loaded view's shape (accounts' three rows, API
+ *  keys' row and "+ Add key"), classic's list skeleton. */
+function ProvidersSkeleton({ view }: { view: ProviderView }) {
+  if (!usePortalShell()) {
+    return <SettingsSkeleton search sections={[{ rows: 6 }]} />
+  }
+
+  return (
+    <SettingsContent>
+      <SettingsProfileScope className="mb-5" />
+      {view === 'keys' ? <SettingsCardSkeleton addRow rows={1} /> : <SettingsCardSkeleton rows={3} />}
+    </SettingsContent>
+  )
+}
+
 export function ProvidersSettings({
   onClose,
   onConfigSaved,
@@ -399,7 +460,6 @@ export function ProvidersSettings({
   const scopeProfile = useStore($settingsRequestProfile)
   const requestScope = useSettingsOwner() ?? scopeProfile
   const { rowProps, vars } = useEnvCredentials(scopeProfile)
-  const [oauthProviders, setOauthProviders] = useState<OAuthProvider[]>([])
   const [openProvider, setOpenProvider] = useState<null | string>(null)
   const [disconnecting, setDisconnecting] = useState<null | string>(null)
   // Free-text filter for the API-keys view (provider name / env-var key / desc).
@@ -408,6 +468,8 @@ export function ProvidersSettings({
   // re-read connection state when the user finishes (or dismisses) a sign-in
   // they launched from this page — otherwise the cards keep their stale status.
   const onboardingActive = useStore($desktopOnboarding).manual
+  const oauth = useOAuthProviders(requestScope, onboardingActive)
+  const oauthProviders = oauth.providers
 
   const keyGroupByEnv = useMemo(() => {
     const byEnv = new Map<string, string>()
@@ -435,33 +497,7 @@ export function ProvidersSettings({
     ready: key => apiKeysShown && keyGroupByEnv.has(key)
   })
 
-  const refreshOAuthProviders = useCallback(async () => {
-    // OAuth providers are best-effort — a failure here just hides the panel.
-    const { providers } = await listOAuthProviders(requestScope)
-    setOauthProviders(providers)
-  }, [requestScope])
-
-  useEffect(() => {
-    let cancelled = false
-
-    void (async () => {
-      if (onboardingActive) {
-        return
-      }
-
-      try {
-        const { providers } = await listOAuthProviders(requestScope)
-
-        if (!cancelled) {
-          setOauthProviders(providers)
-        }
-      } catch {
-        // Ignore — the OAuth panel just won't render.
-      }
-    })()
-
-    return () => void (cancelled = true)
-  }, [onboardingActive, requestScope])
+  const refreshOAuthProviders = oauth.refresh
 
   // External (CLI-managed) providers can't be cleared via the API by design —
   // Hermes never deletes creds another tool owns behind a silent API call.
@@ -534,8 +570,8 @@ export function ProvidersSettings({
     }
   }
 
-  if (!vars) {
-    return <SettingsSkeleton search sections={[{ rows: 6 }]} />
+  if (!vars || awaitingAccounts(view, redesign, oauth.settled)) {
+    return <ProvidersSkeleton view={view} />
   }
 
   const hasOauth = oauthProviders.length > 0

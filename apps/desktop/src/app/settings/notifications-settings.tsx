@@ -195,7 +195,7 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
 
   const caption = (
     <Caption
-      className={cn(redesign ? 'mb-9' : 'mb-2', 'leading-(--conversation-caption-line-height)')}
+      className={cn(!redesign && 'mb-2', 'leading-(--conversation-caption-line-height)')}
       data-slot="page-description"
     >
       {redesign ? forHost(pages.hostIntro.notifications) : copy.intro}

@@ -28,5 +28,6 @@
   font-family: var(--portal-font-display);
   font-size: var(--portal-type-display-lg-size);
   font-weight: 300;
+  letter-spacing: var(--portal-tracking-display);
   line-height: 1.1;
 }

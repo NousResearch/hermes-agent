@@ -4,7 +4,7 @@
   /* The form column at the panel inset. */
   max-width: calc(var(--page-panel-inset) + var(--page-form-max-width) + var(--page-panel-inset));
   margin-inline: 0;
-  padding: 1.125rem var(--page-panel-inset) 0;
+  padding: var(--portal-page-top) var(--page-panel-inset) 0;
 }
 
 /* Navigation folded away: the column spans the whole stage (not the empty nav track) and starts at
@@ -17,11 +17,8 @@
   }
 }
 
-/* The column owns the inset; the heading and sections inside it sit flush on it. */
-:root[data-shell='portal']
-  [data-page-surface]
-  [data-slot='overlay-main']
-  :is([data-slot='page-heading'], [data-slot='settings-content'] > div) {
+/* The column owns the inset; the sections inside it sit flush on it. */
+:root[data-shell='portal'] [data-page-surface] [data-slot='overlay-main'] [data-slot='settings-content'] > div {
   padding-inline: 0;
 }
 
@@ -32,19 +29,9 @@
   letter-spacing: var(--portal-tracking-display);
 }
 
-:root[data-shell='portal'] [data-page-surface] [data-slot='page-heading']:not(:has(nav:not(.hidden))) > div:last-child {
-  margin-top: 0;
-}
-
 :root[data-shell='portal']
   :is([data-page-surface], [data-slot='dialog-content'])
   [data-slot='button'][data-variant='default'] {
   background: var(--portal-brand-fill);
   color: var(--portal-on-brand);
-}
-
-@media (max-width: 47.5rem) {
-  :root[data-shell='portal'] [data-page-surface] [data-slot='overlay-main'] {
-    padding-top: 0.75rem;
-  }
 }

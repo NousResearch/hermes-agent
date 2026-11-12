@@ -13,6 +13,8 @@ import { translateNow } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { usePortalShell } from '@/store/shell-variant'
 
+import { PageHeader } from '../redesign/page-header'
+
 import { OVERLAY_TOP_CLEARANCE, OverlayView } from './overlay-view'
 
 // Overlay "panel" primitive — the centered, capped card + framed chrome lifted
@@ -80,9 +82,25 @@ interface PanelHeaderProps {
 
 export function PanelHeader({ actions, meta, subtitle, title, simplifiedTitle, hideInClassic }: PanelHeaderProps) {
   const simplified = usePortalShell()
-  const Heading = simplified ? 'h1' : 'h2'
 
-  if (hideInClassic && !simplified) {
+  if (simplified) {
+    return (
+      <PageHeader
+        actions={
+          (meta || actions) && (
+            <>
+              {meta && <span className="panel-header-meta">{meta}</span>}
+              {actions}
+            </>
+          )
+        }
+        description={subtitle}
+        title={simplifiedTitle ?? title}
+      />
+    )
+  }
+
+  if (hideInClassic) {
     return null
   }
 
@@ -95,9 +113,9 @@ export function PanelHeader({ actions, meta, subtitle, title, simplifiedTitle, h
       className={cn('panel-header mb-3 flex shrink-0 items-start justify-between gap-3', actions ? 'pr-8' : undefined)}
     >
       <div className="min-w-0">
-        <Heading className="text-[length:var(--portal-type-display-lg-size,0.875rem)] leading-tight font-semibold text-foreground">
-          {simplified ? (simplifiedTitle ?? title) : title}
-        </Heading>
+        <h2 className="text-[length:var(--portal-type-display-lg-size,0.875rem)] leading-tight font-semibold text-foreground">
+          {title}
+        </h2>
         {subtitle ? <p className="truncate text-xs text-muted-foreground/80">{subtitle}</p> : null}
       </div>
       {meta ? <span className="panel-header-meta">{meta}</span> : null}

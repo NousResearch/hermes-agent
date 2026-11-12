@@ -18,7 +18,7 @@
 }
 
 .portal-safety-mode + .portal-safety-mode {
-  border-top: 1px solid var(--ui-stroke-tertiary);
+  border-top: 1px solid var(--portal-stroke-divider);
 }
 
 .portal-safety-mode:hover:not(:has(:checked)) {

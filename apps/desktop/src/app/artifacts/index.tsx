@@ -41,6 +41,7 @@ import { usePortalShell } from '@/store/shell-variant'
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { openSessionFromPicker } from '../open-session'
+import { usePageFrameCopy } from '../overlays/page-frame-copy'
 import { PageSearchShell } from '../page-search-shell'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
@@ -141,6 +142,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const { t } = useI18n()
   const a = t.artifacts
   const redesign = usePortalShell()
+  const frame = usePageFrameCopy()
   const navigate = useNavigate()
   const [query, setQuery] = useState('')
   const [kindFilter, setKindFilter] = useRouteEnumParam('tab', ARTIFACT_FILTERS, 'all')
@@ -291,6 +293,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       activeTab={kindFilter}
       onSearchChange={setQuery}
       onTabChange={id => setKindFilter(id as typeof kindFilter)}
+      pageDescription={frame.libraryDescription}
       pageTitle={t.simplifiedAgents.library}
       searchHidden={counts.all === 0}
       searchHints={searchHints}

@@ -57,6 +57,20 @@
   --page-content-max-width: calc(var(--portal-column-catalog) + 2 * var(--page-content-inset));
   /* The space a page scroller keeps below its last row, under its bottom fade. */
   --portal-page-end-space: 2rem;
+  /* The page header (PageHeader, app/redesign/page-header.tsx), one geometry for every routed page so
+     its H1, description and tab bar sit at the same y on all of them: the column's top (856:2827 y 18),
+     a title block that always reserves the agent header's 68 (877:4166: 56 tile, or H1 44 + 6 + one
+     13px line), 24 to the tabs and from the tabs to the content (877:4166 gap 24), 32h tabs
+     (877:4200) and the page rhythm of 32 between sections and after a heading with no tabs
+     (1036:7405). */
+  --portal-page-top: 1.125rem;
+  --portal-page-title-block: 4.25rem;
+  --portal-page-header-gap: 1.5rem;
+  --portal-page-rhythm: 2rem;
+  --portal-page-tab-height: 2rem;
+  --portal-page-tab-inset: 0.75rem;
+  /* The actions of a dialog or drawer footer (1038:7792): taller than the page's 36px buttons. */
+  --portal-dialog-action-height: 2.75rem;
   /* Row heights: 30 chrome buttons (906:19469), 40 panel list rows (1038:7408). */
   --portal-row-chrome: 1.875rem;
   --portal-row-panel: 2.5rem;
@@ -83,6 +97,7 @@
 @media (max-width: 639.98px) {
   :root[data-shell='portal'] {
     --portal-rail-reserve: 0px;
+    --portal-page-top: 1rem;
     --portal-frame-inset: 1rem;
     --portal-stage-inset: 1rem;
     --page-content-inset: 1rem;
@@ -95,5 +110,6 @@
   html[data-hermes-desktop-host='browser'][data-shell='portal'] {
     --portal-row-chrome: var(--portal-touch-target);
     --portal-row-panel: var(--portal-touch-target);
+    --portal-page-tab-height: var(--portal-touch-target);
   }
 }

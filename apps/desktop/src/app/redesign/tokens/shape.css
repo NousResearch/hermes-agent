@@ -31,9 +31,6 @@
   /* The composer card on dark (906:19844); light draws none. */
   --portal-shadow-composer: 0 4px 4px var(--portal-raw-shadow-25);
 
-  /* Global settings cards and the agent-settings link card: the floating radius where cards take 4. */
-  --portal-legacy-card-radius-settings: 8px;
-
   /* Names in use before the role names; Phase B moves their readers to the role and deletes them. */
   --portal-control-radius: var(--portal-radius-control);
   --portal-menu-radius: var(--portal-radius-card);

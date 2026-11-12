@@ -4,8 +4,12 @@ import { afterEach, expect, it } from 'vitest'
 
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { $shellChoice } from '@/store/shell-variant'
+import { stubMenuDomApis } from '@/test/jsdom'
 
 import { PageSearchShell } from './page-search-shell'
+
+// A tapped tab scrolls itself into view; jsdom has no scrollIntoView.
+stubMenuDomApis()
 
 afterEach(() => {
   cleanup()
@@ -39,7 +43,7 @@ it('keeps search and tab selection when switching between V2 and classic headers
   render(<Page />)
   expect(screen.getByRole('heading', { level: 1, name: 'Capabilities' })).toBeTruthy()
   fireEvent.change(screen.getByPlaceholderText('Search capabilities'), { target: { value: 'calendar' } })
-  fireEvent.click(screen.getByRole('button', { name: 'Plugins' }))
+  fireEvent.click(screen.getByRole('tab', { name: 'Plugins' }))
   expect(screen.getByRole('status').textContent).toBe('plugins: calendar')
 
   act(() => $shellChoice.set(false))
@@ -64,6 +68,7 @@ it('keeps embedded surfaces compact and names an empty full-page destination', (
 it('returns focus to a V2 page action after closing its task dialog', async () => {
   function SettingsPage() {
     const [open, setOpen] = useState(false)
+
     return (
       <PageSearchShell pageTitle="Capabilities" searchHidden>
         <button onClick={() => setOpen(true)}>Configure</button>
@@ -76,6 +81,7 @@ it('returns focus to a V2 page action after closing its task dialog', async () =
       </PageSearchShell>
     )
   }
+
   $shellChoice.set(true)
   render(<SettingsPage />)
   const opener = screen.getByRole('button', { name: 'Configure' })

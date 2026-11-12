@@ -47,6 +47,7 @@ import { $gatewayRestarting, runGatewayRestart, watchGatewayRestartOutcome } fro
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { DetailColumn, ListColumn, MasterDetail } from '../master-detail'
+import { usePageFrameCopy } from '../overlays/page-frame-copy'
 import { PageSearchShell } from '../page-search-shell'
 import { CREDENTIAL_CONTROL_CLASS } from '../settings/credential-key-ui'
 import { credentialPreview } from '../settings/helpers'
@@ -309,6 +310,7 @@ function AgentChannelRow({ platform, pending, onEdit }: AgentChannelRowProps) {
 
 export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: MessagingViewProps) {
   const { t } = useI18n()
+  const frame = usePageFrameCopy()
   const m = t.messaging
   // Shared settings "Applies to" scope, request-shaped (undefined → follow
   // the active profile; the API helpers treat null as "target primary").
@@ -787,6 +789,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
   return (
     <PageSearchShell
+      pageDescription={frame.messagingDescription}
       pageTitle={pinnedOwner ? undefined : t.sidebar.nav.messaging}
       {...props}
       onSearchChange={setQuery}

@@ -2,7 +2,7 @@
    come from global-overviews.css; this file owns the intro and the theme-mode cards. */
 .appearance-overview {
   display: grid;
-  gap: 2.25rem;
+  gap: var(--portal-page-rhythm);
   min-width: 0;
   font-family: var(--portal-font-body);
   container-type: inline-size;
@@ -51,23 +51,23 @@
 }
 
 .appearance-mode-card:hover {
-  background: color-mix(in srgb, var(--ui-base) 7%, transparent);
+  background: var(--portal-surface-control-hover);
 }
 
 .appearance-mode-card:has(input:checked) {
   border-color: transparent;
   box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--portal-brand-ink) 38%, transparent);
-  background: color-mix(in srgb, var(--portal-brand-fill) 19%, transparent);
+  background: var(--portal-surface-brand-selected);
 }
 
 :root:not(.dark) .appearance-mode-card:has(input:checked) {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--portal-brand-ink) 45%, transparent);
-  background: color-mix(in srgb, var(--portal-brand-fill) 7%, transparent);
+  background: var(--portal-surface-brand-selected);
 }
 
 .appearance-mode-card:has(input:focus-visible) {
-  outline: 2px solid var(--portal-brand-ink);
-  outline-offset: 2px;
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
 }
 
 .appearance-mode-preview {
@@ -119,7 +119,7 @@
 
 .appearance-advanced-group-title {
   padding-bottom: 0.25rem;
-  border-bottom: 1px solid var(--ui-stroke-tertiary);
+  border-bottom: 1px solid var(--portal-stroke-divider);
   color: var(--ui-text-secondary);
   font-size: var(--portal-type-ui-size);
   font-weight: 500;
@@ -128,7 +128,7 @@
 
 .appearance-advanced-groups [data-slot='settings-row'] + [data-slot='settings-row'],
 .appearance-advanced-groups section > div > * + * {
-  border-top: 1px solid var(--ui-stroke-tertiary);
+  border-top: 1px solid var(--portal-stroke-divider);
 }
 
 .appearance-advanced-groups [data-slot='settings-row'] {

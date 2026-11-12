@@ -5,31 +5,15 @@
   width: 100%;
   max-width: var(--page-content-max-width);
   margin-inline: auto;
-  padding: 1.125rem var(--page-content-inset) 1.5rem;
+  padding: var(--portal-page-top) var(--page-content-inset) 1.5rem;
 }
 
-/* The page heading (856:3405): H1, 6px to its description, 36px to the content. */
-[data-page-surface] .panel-header {
-  flex-wrap: wrap;
-  align-items: flex-end;
-  margin-bottom: 2.25rem;
-  padding-right: 0;
-}
-
+/* A quiet count at the heading row's end ("3 schedules"). */
 [data-page-surface] .panel-header-meta {
-  margin-left: auto;
   color: var(--ui-text-tertiary);
   font-size: var(--portal-type-ui-size);
   line-height: 1.4;
   font-variant-numeric: tabular-nums;
-}
-
-[data-page-surface] .panel-header h1 + p {
-  margin-top: 0.375rem;
-  color: var(--ui-text-tertiary);
-  font-size: var(--portal-type-ui-size);
-  line-height: 1.4;
-  white-space: normal;
 }
 
 [data-page-surface] .panel-row {

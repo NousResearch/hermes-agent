@@ -80,7 +80,7 @@
   gap: 0.625rem;
   border-radius: var(--portal-radius-control);
   padding-inline: 0.625rem;
-  color: var(--portal-floating-item-ink);
+  color: var(--ui-text-primary);
   font-size: var(--portal-type-ui-size);
   line-height: 1.4;
 }
@@ -101,13 +101,13 @@
 
 :root[data-shell='portal']
   :is([data-slot='dropdown-menu-item'], [data-slot='context-menu-item'])[data-variant='destructive'] {
-  color: var(--color-destructive);
+  color: var(--portal-text-danger);
 }
 
 :root[data-shell='portal']
   :is([data-slot='dropdown-menu-item'], [data-slot='context-menu-item'])[data-variant='destructive'][data-highlighted] {
-  background-color: color-mix(in srgb, var(--color-destructive) 12%, transparent);
-  color: var(--color-destructive);
+  background-color: var(--portal-surface-danger-hover);
+  color: var(--portal-text-danger);
 }
 
 :root[data-shell='portal']
@@ -124,7 +124,7 @@
 :root[data-shell='portal']
   :is([data-slot='dropdown-menu-separator'], [data-slot='select-separator'], [data-slot='command-separator']) {
   margin-block: 4px;
-  background-color: var(--portal-floating-separator);
+  background-color: var(--portal-stroke-hairline);
 }
 
 :root[data-shell='portal'] [data-slot='dropdown-menu-shortcut'] {
@@ -136,7 +136,7 @@
 /* ── Command palette (HUD) ────────────────────────────────────────────────── */
 
 :root[data-shell='portal'] .hermes-floating-surface [data-slot='command-input-wrapper'] {
-  border-bottom-color: var(--portal-floating-separator);
+  border-bottom-color: var(--portal-stroke-hairline);
 }
 
 /* ── Dialogs ──────────────────────────────────────────────────────────────── */
@@ -170,13 +170,23 @@
 }
 
 /* A dialog taller than the window scrolls its body; the actions stay pinned to the bottom edge
-   instead of scrolling away with the form (the body box owns the scroll and its padding). A flush
+   instead of scrolling away with the form (the body box owns the scroll). The closing footer takes
+   over the body's bottom padding, so its plate runs to the body's edge whether the body scrolls or
+   not: a short dialog seats its buttons one padding above the edge, as a tall one does. A flush
    body (the model picker's p-0) lays its own footer out and is left alone. */
-:root[data-shell='portal'] [data-slot='dialog-content'] > div:not([class~='p-0']) > [data-slot='dialog-footer'] {
+:root[data-shell='portal']
+  [data-slot='dialog-content']
+  > div:not([class~='p-0']):has(> [data-slot='dialog-footer']:last-child) {
+  padding-bottom: 0;
+}
+
+:root[data-shell='portal']
+  [data-slot='dialog-content']
+  > div:not([class~='p-0'])
+  > [data-slot='dialog-footer']:last-child {
   position: sticky;
   z-index: 1;
   bottom: 0;
-  margin-bottom: calc(-1 * var(--dialog-body-padding, 1rem));
   padding-bottom: var(--dialog-body-padding, 1rem);
   background-color: var(--portal-floating-surface);
 }

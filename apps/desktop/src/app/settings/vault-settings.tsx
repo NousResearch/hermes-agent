@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router'
 
 import { Button } from '@/components/ui/button'
@@ -151,6 +151,9 @@ function buildSecret(form: VaultForm): Record<string, string> {
 
 interface VaultSettingsProps {
   subpage?: string
+  /** Shown after the vault's own sections once both reads have settled (the agent page's Advanced
+   *  disclosure), so the sections loading in never push it down. */
+  after?: ReactNode
 }
 
 function useVaultOwnerRequest() {
@@ -174,7 +177,7 @@ function useVaultOwnerRequest() {
   return { owner, requestGateway }
 }
 
-export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
+export function VaultSettings({ after, subpage }: VaultSettingsProps = {}) {
   const { t } = useI18n()
   const v = t.settings.vault
   const gatewayState = useStore($gatewayState)
@@ -199,7 +202,7 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
   const pendingMasterPassword = useRef('')
   const pendingSecret = useRef<null | Record<string, string>>(null)
 
-  const { data: sourcesData } = useQuery({
+  const { data: sourcesData, isPending: sourcesPending } = useQuery({
     enabled: gatewayState === 'open',
     queryKey: VAULT_SOURCES_QUERY_KEY,
     // Manager detection can change while this settings page is closed. Mark this
@@ -691,11 +694,12 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
 
   return (
     <VaultLayout
+      after={after}
       credentialRows={credentialRows}
       dialogs={dialogs}
       itemCount={isPending ? null : items.length}
       onAdd={() => openAdd()}
-      sourceCount={externalSources.length}
+      sourceCount={sourcesPending ? null : externalSources.length}
       sourceRows={sourceRows}
       subpage={subpage}
     />

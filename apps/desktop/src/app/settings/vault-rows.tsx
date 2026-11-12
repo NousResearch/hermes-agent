@@ -10,7 +10,14 @@ import { usePortalShell } from '@/store/shell-variant'
 
 import { ListRow, Pill, SectionHeading, SettingsContent } from './primitives'
 import { SettingsProfileScope } from './profile-scope'
-import { SettingsAddRow, SettingsCard, SettingsEmptyRow, SettingsGroup, SettingsOverview } from './settings-card'
+import {
+  SettingsAddRow,
+  SettingsCard,
+  SettingsCardSkeleton,
+  SettingsEmptyRow,
+  SettingsGroup,
+  SettingsOverview
+} from './settings-card'
 import { useSettingsPagesCopy } from './settings-pages-copy'
 import type { VaultItem, VaultKind, VaultSource } from './vault-settings'
 
@@ -172,12 +179,15 @@ export function VaultSourceRow({
 }
 
 interface VaultLayoutProps {
+  /** The redesign shows it under the sections once both reads have settled. */
+  after?: ReactNode
   credentialRows: ReactNode
   sourceRows: ReactNode
   dialogs: ReactNode
   /** Null while the first read is in flight. */
   itemCount: null | number
-  sourceCount: number
+  /** Null while the first read is in flight. */
+  sourceCount: null | number
   /** `credentials` or `sources` shows just that section (a deep link); none shows both. */
   subpage?: string
   onAdd: () => void
@@ -189,7 +199,7 @@ export function VaultLayout(props: VaultLayoutProps) {
   return usePortalShell() ? <RedesignVault {...props} /> : <ClassicVault {...props} />
 }
 
-function ClassicVault({ credentialRows, sourceRows, dialogs, itemCount, subpage, onAdd }: VaultLayoutProps) {
+function ClassicVault({ after, credentialRows, sourceRows, dialogs, itemCount, subpage, onAdd }: VaultLayoutProps) {
   const { t } = useI18n()
   const v = t.settings.vault
 
@@ -235,12 +245,14 @@ function ClassicVault({ credentialRows, sourceRows, dialogs, itemCount, subpage,
         </>
       )}
 
+      {after}
       {dialogs}
     </SettingsContent>
   )
 }
 
 function RedesignVault({
+  after,
   credentialRows,
   sourceRows,
   dialogs,
@@ -253,7 +265,8 @@ function RedesignVault({
   const v = t.settings.vault
   const pages = useSettingsPagesCopy()
   const showCredentials = subpage === undefined || subpage === 'credentials'
-  const showSources = (subpage === undefined || subpage === 'sources') && sourceCount > 0
+  const showSources = (subpage === undefined || subpage === 'sources') && Boolean(sourceCount)
+  const loaded = itemCount !== null && sourceCount !== null
 
   return (
     <SettingsContent>
@@ -265,11 +278,15 @@ function RedesignVault({
             meta={itemCount ? v.count(itemCount) : undefined}
             title={pages.vault.credentials}
           >
-            <SettingsCard>
-              {itemCount === 0 && <SettingsEmptyRow title={v.emptyDesc} />}
-              {credentialRows}
-              <SettingsAddRow onClick={onAdd}>{v.add}</SettingsAddRow>
-            </SettingsCard>
+            {itemCount === null ? (
+              <SettingsCardSkeleton addRow rows={1} />
+            ) : (
+              <SettingsCard>
+                {itemCount === 0 && <SettingsEmptyRow title={v.emptyDesc} />}
+                {credentialRows}
+                <SettingsAddRow onClick={onAdd}>{v.add}</SettingsAddRow>
+              </SettingsCard>
+            )}
           </SettingsGroup>
         )}
         {showSources && (
@@ -277,6 +294,7 @@ function RedesignVault({
             <SettingsCard>{sourceRows}</SettingsCard>
           </SettingsGroup>
         )}
+        {loaded && after}
       </SettingsOverview>
       {dialogs}
     </SettingsContent>

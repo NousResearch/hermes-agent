@@ -143,6 +143,17 @@
   border-top: 1px solid var(--ui-stroke-tertiary);
 }
 
+/* The redesign's card role (1036:7576) and its row divider. */
+:root[data-shell='portal'] .agent-capability-rows {
+  border-color: var(--portal-stroke-hairline);
+  border-radius: var(--portal-radius-card);
+  background: var(--portal-surface-card);
+}
+
+:root[data-shell='portal'] .agent-capability-rows > * + * {
+  border-top-color: var(--portal-stroke-divider);
+}
+
 /* Row (895:14754): 64px, 12/16 padding, text column then controls. */
 .agent-capability-row {
   display: flex;

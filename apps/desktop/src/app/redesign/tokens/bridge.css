@@ -15,7 +15,7 @@
   --ui-text-secondary: var(--portal-text-secondary);
   --ui-text-tertiary: var(--portal-text-tertiary);
   --ui-text-quaternary: var(--portal-text-quaternary);
-  --ui-bg-card: var(--portal-legacy-card-fill-settings);
+  --ui-bg-card: var(--portal-surface-card);
   --ui-stroke-primary: var(--portal-stroke-strong);
   /* Ink 14 in both modes; the field role is 14 / 18 (Phase B). */
   --ui-stroke-secondary: var(--portal-raw-ink-14);
@@ -32,7 +32,7 @@
   --page-nav-row-height: var(--portal-row-panel);
   --composer-width: var(--portal-column-conversation);
   --dialog-body-padding: 1.5rem;
-  --dialog-body-gap: 1.25rem;
+  --dialog-body-gap: 1.5rem;
   /* Figma's 30×30 chrome buttons (r3, 16px glyphs): titlebar, rails, pane headers; breadcrumb spacing
      906:19467. */
   --titlebar-control-size: var(--portal-row-chrome);

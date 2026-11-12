@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils'
 import { usePortalShell } from '@/store/shell-variant'
 
 import { PAGE_INSET_X } from '../layout-constants'
+import { PageHeader } from '../redesign/page-header'
 
 import type { OverlayNavGroup, OverlayNavLink } from './overlay-split-layout'
 
@@ -25,18 +26,23 @@ export function OverlayBreadcrumbHeader({
   rootLabel,
   trailing
 }: OverlayBreadcrumbHeaderProps) {
-  const simplified = usePortalShell()
+  // The redesign's page column already shows the open path (sub-pages expand under their
+  // destination), so every page keeps its H1 at the same height instead of dropping it under a
+  // trail on sub-pages only.
+  if (usePortalShell()) {
+    return (
+      <PageHeader
+        actions={trailing}
+        data-slot="page-heading"
+        title={grandchild?.label ?? child?.label ?? group.label}
+      />
+    )
+  }
 
   return (
-    <header className={cn('shrink-0', simplified ? 'mb-6' : 'mb-3', PAGE_INSET_X)} data-slot="page-heading">
+    <header className={cn('mb-3 shrink-0', PAGE_INSET_X)} data-slot="page-heading">
       <div className="flex items-start justify-between gap-3">
-        {/* The redesign's page column already shows the open path (sub-pages expand under their
-            destination), so every page keeps its H1 at the same height instead of dropping it
-            under a trail on sub-pages only. */}
-        <nav
-          aria-label={group.label}
-          className={cn('flex min-w-0 items-center gap-1.5 text-xs text-(--ui-text-tertiary)', simplified && 'hidden')}
-        >
+        <nav aria-label={group.label} className="flex min-w-0 items-center gap-1.5 text-xs text-(--ui-text-tertiary)">
           <span className="shrink-0">{rootLabel}</span>
           <ChevronRight aria-hidden className="size-3 shrink-0" />
           {child ? (
@@ -67,16 +73,8 @@ export function OverlayBreadcrumbHeader({
             </span>
           )}
         </nav>
-        {!simplified && trailing && <div className="flex shrink-0 items-center">{trailing}</div>}
+        {trailing && <div className="flex shrink-0 items-center">{trailing}</div>}
       </div>
-      {simplified && (
-        <div className="mt-3 flex flex-wrap items-center justify-between gap-4">
-          <h1 className="min-w-0 text-3xl leading-tight font-medium tracking-tight text-foreground">
-            {grandchild?.label ?? child?.label ?? group.label}
-          </h1>
-          {trailing && <div className="flex min-w-0 flex-wrap items-center gap-2">{trailing}</div>}
-        </div>
-      )}
     </header>
   )
 }

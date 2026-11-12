@@ -1,6 +1,6 @@
 /* Colour roles (LANGUAGE §1.2). Base = dark, `:not(.dark)` = light. A role reads primitives (raw.css)
    or the skin's seeds (--ui-base, --ui-bg-chrome, --ui-bg-elevated, --portal-skin-window); a skin never
-   decides a role. Values are today's: where Figma's newest frames want another value, the Phase B table
+   decides a role. Values are today's: where Figma's newest frames want another value, the "Still to unify" table
    in DESIGN.md says so, and the change is a one-line edit here. */
 :root[data-shell='portal'] {
   /* Brand. The fill is the same in every theme and mode; thin rings, underlines and small blue text
@@ -8,7 +8,8 @@
   --portal-surface-brand: var(--portal-raw-blue);
   --portal-text-on-brand: var(--portal-raw-white);
   --portal-text-brand: var(--portal-raw-blue-ink-dark);
-  /* Brand selection: the selected segment, scope chip and cleanup choice (856:3444). */
+  /* Brand selection: selected destinations, segments, scope chips, choice tiles and the DEFAULT /
+     RUNNING chips (856:3444, 1036:7318). */
   --portal-surface-brand-selected: var(--portal-raw-brand-25);
   --portal-spectrum-red: var(--portal-raw-spectrum-red);
   --portal-spectrum-yellow: var(--portal-raw-spectrum-yellow);
@@ -48,10 +49,10 @@
   --portal-surface-chrome: var(--portal-raw-ink-2);
   --portal-surface-chrome-hover: var(--portal-raw-ink-5);
   --portal-surface-chrome-pressed: var(--portal-raw-ink-10);
-  /* Secondary and icon buttons (877:4189) at rest, hover and pressed. */
+  /* Secondary and icon buttons (877:4189) at rest, hover and pressed: one ink step each. */
   --portal-surface-control: var(--portal-raw-ink-5);
   --portal-surface-control-hover: var(--portal-raw-ink-8);
-  --portal-surface-control-pressed: color-mix(in srgb, var(--ui-base) 11%, transparent);
+  --portal-surface-control-pressed: var(--portal-raw-ink-10);
   /* Inputs, search, segmented tracks (895:9670). */
   --portal-surface-field: var(--portal-raw-ink-4);
   /* Select triggers (856:3456). */
@@ -60,13 +61,22 @@
   --portal-surface-floating-hover: color-mix(in srgb, var(--ui-base) 6%, transparent);
   /* The modal scrim: a plain dim, never a blur. */
   --portal-surface-scrim: var(--portal-raw-shadow-50);
-  /* The confirm of a destructive dialog (878:7066): a solid danger slab with white ink (7.3:1). */
+  /* Danger, one family (1038:7836). The confirm of a destructive dialog (878:7066) is the solid slab
+     with white ink (7.3:1); every other destructive mark (outline buttons, menu items, banners) is the
+     8% tint with a 50% stroke and the danger ink, which keeps 4.5:1 on that tint: #FF7373 on dark
+     (≈7:1), the slab's own red on light (≈6:1). */
   --portal-surface-danger-solid: var(--portal-raw-danger);
   --portal-text-on-danger: var(--portal-raw-pure-white);
+  --portal-surface-danger: var(--portal-raw-danger-8);
+  --portal-surface-danger-hover: var(--portal-raw-danger-14);
+  --portal-surface-danger-pressed: var(--portal-raw-danger-20);
+  --portal-stroke-danger: var(--portal-raw-danger-50);
+  --portal-text-danger: var(--portal-raw-danger-bright);
 
   /* Strokes. Card edges, the panel-to-stage edge, page footer rules (1038:7803). */
   --portal-stroke-hairline: var(--portal-raw-ink-5);
-  /* Between rows inside a card (877:4229, 1038:7499). */
+  /* Between rows inside a card and under the page tabs (877:4229, 1038:7499); light takes one step
+     more to stay visible on #f2f2f2. */
   --portal-stroke-divider: var(--portal-raw-ink-3);
   /* The chat sidebar's edge and header rule (Var1 147:7470: light/10). */
   --portal-stroke-edge: var(--portal-raw-ink-10);
@@ -76,9 +86,6 @@
   --portal-stroke-strong: var(--portal-raw-ink-28);
   --portal-stroke-selected: var(--portal-raw-ink-5);
   --portal-stroke-floating: var(--portal-raw-ink-10);
-  /* Menu separators and the floating menu's item ink (Figma .9). */
-  --portal-floating-separator: color-mix(in srgb, var(--ui-base) 6%, transparent);
-  --portal-floating-item-ink: color-mix(in srgb, var(--ui-base) 90%, transparent);
 
   /* Status inks, one set for the whole redesign (sidebar machines, dots, chips, page status text):
      online is the pages' spec green (877:4308), pending Figma's orange, failed its soft red; each passes
@@ -94,7 +101,7 @@
   --portal-brand-fill: var(--portal-surface-brand);
   --portal-on-brand: var(--portal-text-on-brand);
   --portal-brand-ink: var(--portal-text-brand);
-  --portal-selection-background: var(--portal-legacy-brand-selected);
+  --portal-selection-background: var(--portal-surface-brand-selected);
   --portal-neutral-selection-background: var(--portal-surface-selected);
   --portal-neutral-selection-stroke: var(--portal-stroke-selected);
   --portal-window-background: var(--portal-surface-canvas);
@@ -113,27 +120,12 @@
   --portal-floating-surface: var(--portal-surface-elevated);
   --portal-floating-stroke: var(--portal-stroke-floating);
   --portal-floating-item-hover: var(--portal-surface-floating-hover);
-
-  /* Values one role still has at two or more call sites (DESIGN.md "To unify in Phase B"). */
-  /* Global settings cards (--ui-bg-card at the root): 5%; agent pages already read the card role. */
-  --portal-legacy-card-fill-settings: var(--portal-raw-ink-5);
-  /* The global settings Advanced disclosure: its own fill and a control-strength stroke. */
-  --portal-legacy-disclosure-fill: var(--portal-raw-ink-3);
-  --portal-legacy-disclosure-stroke: var(--portal-raw-ink-10);
-  /* The rail under the agent page tabs: a hairline where the divider role is lighter. */
-  --portal-legacy-tab-rail: var(--portal-raw-ink-5);
-  /* Hover on the disclosure summary and on pane tab-strip tabs: a step quieter than row hover. */
-  --portal-legacy-row-hover-quiet: var(--portal-raw-ink-2);
-  /* The shell's brand selection (selected destinations), RUNNING and DEFAULT chips: light at 10%
-     where the role takes 12%. */
-  --portal-legacy-brand-selected: var(--portal-raw-brand-25);
 }
 
 /* Light: Brand rev 491 + AA. The same alphas over #f2f2f2; strokes take one step more to stay visible. */
 :root[data-shell='portal']:not(.dark) {
   --portal-text-brand: var(--portal-raw-blue);
   --portal-surface-brand-selected: var(--portal-raw-brand-12);
-  --portal-legacy-brand-selected: var(--portal-raw-brand-10);
   --portal-text-secondary: color-mix(in srgb, var(--ui-base) 80%, transparent);
   --portal-text-tertiary: color-mix(in srgb, var(--ui-base) 72%, transparent);
   --portal-text-quaternary: color-mix(in srgb, var(--ui-base) 64%, transparent);
@@ -148,18 +140,19 @@
   --portal-page-background: var(--portal-surface-stage);
   --portal-page-sidebar-background: var(--portal-sidebar-background);
   --portal-surface-control: var(--portal-raw-ink-3);
-  --portal-surface-control-hover: color-mix(in srgb, var(--ui-base) 6%, transparent);
-  --portal-surface-control-pressed: color-mix(in srgb, var(--ui-base) 9%, transparent);
+  --portal-surface-control-hover: var(--portal-raw-ink-5);
+  --portal-surface-control-pressed: var(--portal-raw-ink-8);
   --portal-surface-field: var(--portal-raw-ink-2);
   --portal-surface-select: var(--portal-raw-ink-4);
   --portal-surface-floating-hover: var(--portal-raw-ink-5);
   --portal-surface-scrim: var(--portal-raw-shadow-20);
+  --portal-stroke-divider: var(--portal-raw-ink-5);
   --portal-stroke-control: var(--portal-raw-ink-14);
   --portal-stroke-field: color-mix(in srgb, var(--ui-base) 18%, transparent);
-  --portal-stroke-floating: color-mix(in srgb, var(--ui-base) 12%, transparent);
   --portal-status-online: var(--portal-raw-mint-deep);
   --portal-status-pending: color-mix(in srgb, var(--portal-raw-orange) 70%, var(--portal-raw-black));
   --portal-status-error-ink: var(--portal-raw-danger);
+  --portal-text-danger: var(--portal-raw-danger);
 }
 
 /* Window Glass (macOS default): the native material shows only on the canvas — the rails and the

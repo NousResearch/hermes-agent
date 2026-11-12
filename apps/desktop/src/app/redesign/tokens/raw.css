@@ -20,6 +20,8 @@
   /* Danger fill and stroke (877:4212, 878:7066, 1038:7836) and its soft status text (877:4312). */
   --portal-raw-danger: #a22a20;
   --portal-raw-danger-soft: #cc8a84;
+  /* The danger label on dark (1038:7836): bright enough for 4.5:1 on the danger tint. */
+  --portal-raw-danger-bright: #ff7373;
   /* The composer's spectrum edge (906:19872). */
   --portal-raw-spectrum-red: #aa1515;
   --portal-raw-spectrum-yellow: #ddd61c;
@@ -31,7 +33,7 @@
   --portal-raw-shadow-50: rgb(0 0 0 / 0.5);
   /* The ink ladder (LANGUAGE §1.1): Figma's light/2, 5, 10, 40 plus the page steps 3, 4, 8, 14, 22, 28.
      No other neutral alpha belongs to the language; the off-ladder steps still in use are listed in
-     color.css and the Phase B table. */
+     color.css and the "Still to unify" table. */
   --portal-raw-ink-2: color-mix(in srgb, var(--ui-base) 2%, transparent);
   --portal-raw-ink-3: color-mix(in srgb, var(--ui-base) 3%, transparent);
   --portal-raw-ink-4: color-mix(in srgb, var(--ui-base) 4%, transparent);
@@ -49,4 +51,9 @@
   --portal-raw-brand-12: color-mix(in srgb, var(--portal-raw-blue) 12%, transparent);
   --portal-raw-brand-25: color-mix(in srgb, var(--portal-raw-blue) 25%, transparent);
   --portal-raw-brand-60: color-mix(in srgb, var(--portal-raw-blue) 60%, transparent);
+  /* Danger tints (1038:7836): the tint 8, its hover and pressed steps 14 and 20, the stroke 50. */
+  --portal-raw-danger-8: color-mix(in srgb, var(--portal-raw-danger) 8%, transparent);
+  --portal-raw-danger-14: color-mix(in srgb, var(--portal-raw-danger) 14%, transparent);
+  --portal-raw-danger-20: color-mix(in srgb, var(--portal-raw-danger) 20%, transparent);
+  --portal-raw-danger-50: color-mix(in srgb, var(--portal-raw-danger) 50%, transparent);
 }

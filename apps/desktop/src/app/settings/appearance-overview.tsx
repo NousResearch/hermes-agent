@@ -54,11 +54,10 @@ export function AppearanceOverview({ advanced }: AppearanceOverviewProps) {
 
   return (
     <SettingsContent>
+      <p className="appearance-overview-intro" data-slot="page-description">
+        {copy.intro}
+      </p>
       <div className="appearance-overview" data-slot="appearance-overview">
-        <p className="appearance-overview-intro" data-slot="page-description">
-          {copy.intro}
-        </p>
-
         <fieldset className="appearance-mode-section">
           <legend>{t.settings.appearance.themeTitle}</legend>
           <p className="appearance-overview-description">{t.settings.appearance.colorModeDesc}</p>

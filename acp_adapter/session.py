@@ -24,6 +24,12 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
+def _same_origin(a: str, b: str) -> bool:
+    from utils import base_url_origin
+    origin = base_url_origin(a)
+    return bool(origin[1]) and origin == base_url_origin(b)
+
+
 def _translate_acp_cwd(cwd: str) -> str:
     """Translate Windows ACP cwd values (``E:\\Projects``, ``\\\\wsl.localhost\\``) to POSIX form
     when Hermes runs in WSL so agents, tools, and persisted sessions agree; no-op elsewhere."""
@@ -571,6 +577,12 @@ class SessionManager:
         try:
             runtime = resolve_runtime_provider(
                 requested=requested, target_model=(model or default_model) or None)
+            # The resolved key belongs to the resolved endpoint: a recorded base_url on another
+            # origin (a row stamped by an earlier fallback build, #142714) would send it there.
+            if base_url and runtime.get("base_url") and not _same_origin(base_url, runtime["base_url"]):
+                logger.warning("ACP session %s: recorded endpoint %s is not the resolved provider's "
+                               "endpoint %s; using the resolved one", session_id, base_url, runtime["base_url"])
+                base_url, api_mode = None, None
             kwargs.update({
                 "provider": runtime.get("provider"), "api_mode": api_mode or runtime.get("api_mode"),
                 "base_url": base_url or runtime.get("base_url"), "api_key": runtime.get("api_key"),

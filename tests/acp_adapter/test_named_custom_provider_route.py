@@ -179,3 +179,35 @@ def test_switch_model_never_pins_the_endpoint_for_an_unknown_provider(monkeypatc
     state.agent = _agent(provider_route="custom:gw", base_url="http://right/v1")
     agent._switch_model(state, "custom:gw:some-model", keep_endpoint=True)
     assert made["base_url"] == "http://right/v1"
+
+
+def test_restore_never_pairs_the_resolved_key_with_a_foreign_recorded_endpoint(monkeypatch, tmp_path):
+    """A poisoned row (#142714) whose bare kind still resolves (``model.provider: custom`` with a
+    configured endpoint and key) must not send that key to the recorded foreign origin: the
+    resolved endpoint owns the credential, so it wins over the row's base_url."""
+    built = _patch_resolution(monkeypatch, runtime={
+        "provider": "custom", "api_mode": "chat_completions", "base_url": "https://api.cheap.test/v1",
+        "api_key": "cheap-key", "credential_pool": None, "command": None, "args": []})
+    monkeypatch.setattr("hermes_cli.runtime_provider_custom.find_custom_provider_identity",
+                        lambda _base_url: None)
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session(session_id="poisoned", source="acp", model="some-model",
+                      model_config={"cwd": str(tmp_path), "provider": "custom",
+                                    "base_url": "https://api.x.ai/v1/", "api_mode": "chat_completions"},
+                      cwd=str(tmp_path))
+    db.append_message("poisoned", "user", "turn 1")
+    manager = SessionManager(db=db, agent_factory=None)
+    assert manager._restore("poisoned") is not None
+    assert built[-1]["api_key"] == "cheap-key"
+    assert built[-1]["base_url"] == "https://api.cheap.test/v1"
+    db.close()
+
+
+def test_make_agent_keeps_a_same_origin_recorded_endpoint(monkeypatch, tmp_path):
+    built = _patch_resolution(monkeypatch, runtime={
+        "provider": "custom", "api_mode": "chat_completions", "base_url": "https://gw.test/v1",
+        "api_key": "k", "credential_pool": None, "command": None, "args": []})
+    manager = SessionManager(db=None, agent_factory=None)
+    manager._make_agent(session_id="s-same", cwd=str(tmp_path), requested_provider="custom:gw",
+                        base_url="https://gw.test:443/openai/v1")
+    assert built[-1]["base_url"] == "https://gw.test:443/openai/v1"

@@ -120,15 +120,13 @@ class OnePasswordLoginBackend(LoginBackend):
             raise RuntimeError("1Password was locked while unlocking; try again")
 
     def _run(self, *args: str) -> str:
-        token = None if self._service_token else _unlock.get_session_token(self.name, context=self._account, touch=False)
-        if not self._service_token:
-            if token is None:
-                raise UnlockRequired(self)
-            if token == "":
-                _require_native_viewer()
-            token = _unlock.get_session_token(self.name, context=self._account)
-            if token is None:
-                raise UnlockRequired(self)
+        from tools.approval_context import _no_user_can_answer
+        # Validate the mode and refresh the SAME grant under the store lock; a second
+        # lookup could replace an approved manual snapshot with a forbidden native one.
+        token = None if self._service_token else _unlock.get_session_token(
+            self.name, context=self._account, allow_native=not _no_user_can_answer())
+        if not self._service_token and token is None:
+            raise UnlockRequired(self)
         proc = run_cli([str(self._op()), *args], env=self._env(token), timeout=_TIMEOUT, label="op",
                        timeout_message="op timed out", stdin=subprocess.DEVNULL)
         if proc.returncode != 0:

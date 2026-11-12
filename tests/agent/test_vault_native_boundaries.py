@@ -55,3 +55,29 @@ def test_native_grant_is_bound_to_configured_account():
         assert a.is_unlocked(), "an account mismatch must not revoke the original grant"
     finally:
         unlock.lock("onepassword")
+
+
+def test_headless_mode_is_validated_on_the_same_snapshot_that_is_used(monkeypatch):
+    backend = OnePasswordLoginBackend()
+    unlock.store_session_token("onepassword", "fixture-manual", context="")
+    get_token = unlock.get_session_token
+    reads = []
+
+    def replace_after_read(*args, **kwargs):
+        value = get_token(*args, **kwargs)
+        reads.append(value)
+        if len(reads) == 1:
+            unlock.lock("onepassword")
+            unlock.store_session_token("onepassword", "", context="")
+        return value
+
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+    monkeypatch.setattr(unlock, "get_session_token", replace_after_read)
+    monkeypatch.setattr(backend, "_op", lambda: Path(sys.executable))
+    try:
+        with patch("agent.vault_backends.onepassword.run_cli", return_value=CompletedProcess([], 0, "[]", "")) as call:
+            assert backend.list_items() == []
+        assert call.call_args.kwargs["env"].get("OP_SESSION") == "fixture-manual", \
+            "a manual snapshot must never be replaced by native auth between validation and use"
+    finally:
+        unlock.lock("onepassword")

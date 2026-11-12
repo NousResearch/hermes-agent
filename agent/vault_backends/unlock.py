@@ -85,7 +85,7 @@ def set_current_session_id(session_id: Optional[str]) -> None:
     _current_session_tls.sid = session_id
 
 
-def _live(backend: str, *, touch: bool, context: Optional[str] = None) -> Optional[str]:
+def _live(backend: str, *, touch: bool, context: Optional[str] = None, allow_native: bool = True) -> Optional[str]:
     key = _key(backend)
     with _lock:
         entry = _sessions.get(key)
@@ -97,14 +97,17 @@ def _live(backend: str, *, touch: bool, context: Optional[str] = None) -> Option
         if time.monotonic() - last > _IDLE_TTL_S:
             del _sessions[key]
             return None
+        if token == "" and not allow_native:
+            raise RuntimeError("Native password-manager access requires an interactive session")
         if touch:
             _sessions[key] = (token, time.monotonic(), stored_context)
         return token
 
 
-def get_session_token(backend: str, *, context: Optional[str] = None, touch: bool = True) -> Optional[str]:
+def get_session_token(backend: str, *, context: Optional[str] = None, touch: bool = True,
+                      allow_native: bool = True) -> Optional[str]:
     """Token for a real manager call; refreshes the idle timer."""
-    return _live(backend, touch=touch, context=context)
+    return _live(backend, touch=touch, context=context, allow_native=allow_native)
 
 
 def begin_unlock(backend: str) -> int:

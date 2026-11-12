@@ -3,13 +3,7 @@ title: Capalis
 repo: https://github.com/Femtech-web/Capalis
 sha: 13b2dde6efce5fa4ad54f50bc4a882a583c6c3ff
 subdir: plugin
-description: >-
-  Describe a job in one sentence, and Capalis sets it up, runs it and checks it really happened. It finds your
-  channels and repository by name, picks the right tool for each step and does a practice run that sends
-  nothing. It runs only after you approve that exact version, from your phone on Telegram if you like. For
-  example, a bug posted in Discord or Slack becomes one GitHub issue, a Slack notice and a reply to the
-  reporter, who hears back again when the issue is closed. Every write is read back, nothing is done twice,
-  and the job stops itself when a token, permission or tool changes.
+description: "Describe a job in one sentence, and Capalis sets it up, runs it and checks it really happened. It finds your channels and repository by name, picks the right tool for each step and does a practice run that sends nothing. It runs only after you approve that exact version, from your phone on Telegram if you like. For example, a bug posted in Discord or Slack becomes one GitHub issue, a Slack notice and a reply to the reporter, who hears back again when the issue is closed. Every write is read back, nothing is done twice, and the job stops itself when a token, permission or tool changes. Disclosure — Capalis runs a background worker in the Hermes process that executes owner-approved Recipes (schedules, waits, alerts) and sends to api.github.com, slack.com, hooks.slack.com, discord.com and api.telegram.org with the tokens you configure. Its http.get step fetches HTTPS pages at public addresses that you approve. Its pre_gateway_dispatch hook takes every new message in a channel a Recipe listens to away from the agent. Once you approve a contract, Recipes can call Hermes's web_search and web_extract tools outside an agent turn. The model can start an approved manual Recipe without a per-run prompt unless the Recipe requires per-run confirmation."
 maintainer: Femtech-web
 tier: community
 category: automation

@@ -50,6 +50,7 @@ export const arOverrides = {
     install: 'تثبيت',
     installed: 'المثبتة',
     searchSkills: 'البحث في المهارات',
+    showCommunity: 'إظهار سجلات المجتمع',
     searchPlugins: 'البحث في الإضافات',
     allSources: 'كل المصادر',
     allCategories: 'كل الفئات',

@@ -36,6 +36,7 @@ const cronBlueprintsScript = join(scriptDir, "extract-automation-blueprints.py")
 const pluginsScript = join(scriptDir, "extract-plugins.py");
 const pluginStarsScript = join(scriptDir, "fetch-plugin-stars.py");
 const outputFile = join(websiteDir, "static", "api", "skills.json");
+const officialOutputFile = join(websiteDir, "static", "api", "skills-official.json");
 const pluginsOutputFile = join(websiteDir, "static", "api", "plugins.json");
 const pluginsMetaOutputFile = join(websiteDir, "static", "api", "plugins-meta.json");
 const unifiedIndexFile = join(websiteDir, "static", "api", "skills-index.json");
@@ -46,6 +47,8 @@ const UNIFIED_INDEX_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h
 function writeEmptyFallback(reason) {
   mkdirSync(dirname(outputFile), { recursive: true });
   writeFileSync(outputFile, "[]\n");
+  // The desktop's default Skills feed; empty for the same reason skills.json is.
+  writeFileSync(officialOutputFile, "[]\n");
   console.warn(
     `[prebuild] extract-skills.py skipped (${reason}); wrote empty skills.json. ` +
       `Install python3 + ruamel.yaml locally for a populated Skills Hub page.`,

@@ -14,6 +14,7 @@ import { skillSearchTerms, usageOf } from '../skills/skills-data'
 import { CatalogAlert } from './catalog-alert'
 import { CatalogBrowser } from './catalog-browser'
 import { type CatalogEntry, parseCatalog } from './catalog-data'
+import { SkillsCommunityToggle } from './skills-community-toggle'
 
 interface SkillCatalogProps {
   skills: SkillInfo[]
@@ -294,6 +295,7 @@ function ScopedSkillCatalog({
   return (
     <CatalogBrowser
       actions={actions}
+      communityToggle={<SkillsCommunityToggle />}
       installedEntries={catalog.entries}
       installedPending={installedPending || identityPending}
       isInstalled={isInstalled}

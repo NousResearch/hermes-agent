@@ -190,7 +190,7 @@ async def _read_limited_feishu_webhook_body(request: Any, max_bytes: int) -> byt
     return body
 
 
-_FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
+_FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003, 99992354})  # reply target withdrawn/missing/invalid id → create fallback
 
 # Feishu reactions render as prominent badges, unlike Discord/Telegram's
 # small footer emoji — a success badge on every message would add noise, so
@@ -1705,6 +1705,46 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         except Exception as exc:
             logger.error("[Feishu] Send error: %s", (shown := describe_proxy_error(exc, env_proxy_for_redaction(_onboard_open_base_url(self._domain_name)))) or exc, exc_info=not shown)
             return SendResult(success=False, error=shown or str(exc))
+
+    async def _send_plain_fallback(
+        self, chat_id: str, content: str, *, reply_to: Optional[str], metadata: Any,
+    ) -> SendResult:
+        """Last-resort delivery as true plain text.
+
+        The base implementation re-enters send(), which re-detects markdown and rebuilds the
+        post payload that just failed — and truncates at 3500 chars, dropping the tail of long
+        reports. Instead: strip markdown, chunk at MAX_MESSAGE_LENGTH, and send every chunk
+        as ``text`` so the worst case still reaches the user in full."""
+        body = _strip_markdown_to_plain_text(content)
+        text = self.warning_text(
+            t("gateway.notify.plain_fallback_prefix", content=body), body, chat_id=chat_id, metadata=metadata,
+        ) or body
+        plain_chunks = self.truncate_message(text, self.MAX_MESSAGE_LENGTH) or [text]
+        last_response = None
+        undelivered: list[str] = []
+        for index, chunk in enumerate(plain_chunks):
+            payload = json.dumps({"text": chunk}, ensure_ascii=False)
+            try:
+                response = await self._feishu_send_with_retry(
+                    chat_id=chat_id, msg_type="text", payload=payload, reply_to=reply_to, metadata=metadata,
+                )
+            except Exception as exc:
+                undelivered.append(f"chunk {index + 1}/{len(plain_chunks)}: {exc}")
+                continue
+            if self._response_succeeded(response):
+                last_response = response
+            else:
+                undelivered.append(
+                    f"chunk {index + 1}/{len(plain_chunks)}: "
+                    f"[{getattr(response, 'code', '?')}] {getattr(response, 'msg', '') or 'unknown error'}"
+                )
+        if undelivered:
+            return SendResult(
+                success=False,
+                error="plain-text fallback failed — " + "; ".join(undelivered),
+                raw_response={"partial_overflow": last_response is not None},
+            )
+        return self._finalize_send_result(last_response, "plain-text fallback failed")
 
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
         """Edit a previously sent Feishu text/post message."""
@@ -3787,16 +3827,28 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
     ) -> Any:
         thread_id = (metadata or {}).get("thread_id")
         effective_reply_to = reply_to or ((metadata or {}).get("reply_to_message_id") if thread_id else None)
+        if not effective_reply_to and thread_id:
+            # Anchorless send inside a topic (synthetic wake, watch-pattern injection, cron):
+            # im.v1.message.create REJECTS receive_id_type="thread_id" with [99992402] field
+            # validation failed — the old code took that path and the message vanished. Anchor
+            # on a message already in the topic and reply in-thread instead. Worst case (no
+            # retrievable anchor): deliver top-level to the chat so the content is never
+            # silently lost.
+            effective_reply_to = await self._fetch_last_message_in_thread(thread_id)
+            if effective_reply_to:
+                logger.info("[Feishu] Anchorless thread send; re-anchored on %s in %s", effective_reply_to, thread_id)
+            else:
+                logger.warning(
+                    "[Feishu] Thread %s has no retrievable reply anchor; delivering %s as a "
+                    "top-level chat message so the content is not silently lost", thread_id, msg_type,
+                )
         if effective_reply_to:
             body = self._build_reply_message_body(
                 content=payload, msg_type=msg_type, reply_in_thread=bool(thread_id), uuid_value=str(uuid.uuid4()),
             )
             request = self._build_reply_message_request(effective_reply_to, body)
             return await self._run_blocking(self._client.im.v1.message.reply, request)
-        if thread_id:
-            # reply→create fallback inside a topic: thread_id as receive_id keeps it in the topic.
-            receive_id, receive_id_type = thread_id, "thread_id"
-        elif chat_id.startswith("feishu_user_id:"):
+        if chat_id.startswith("feishu_user_id:"):
             receive_id, receive_id_type = chat_id.split(":", 1)[1], "user_id"
         else:
             receive_id, receive_id_type = chat_id, "open_id" if chat_id.startswith("ou_") else "chat_id"
@@ -3978,11 +4030,24 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
                 if active_reply_to and not self._response_succeeded(response):
                     code = getattr(response, "code", None)
                     if code in _FEISHU_REPLY_FALLBACK_CODES:
-                        if (metadata or {}).get("thread_id"):
+                        thread_key = str((metadata or {}).get("thread_id") or "")
+                        if thread_key:
+                            # Reply target withdrawn/missing: re-anchor on the topic's latest
+                            # message before giving up — dropping the send here is silent loss.
+                            thread_anchor = await self._fetch_last_message_in_thread(thread_key)
+                            if thread_anchor and thread_anchor != active_reply_to:
+                                logger.warning(
+                                    "[Feishu] Reply to %s failed in thread %s (code %s); re-anchoring on %s",
+                                    active_reply_to, thread_key, code, thread_anchor,
+                                )
+                                active_reply_to = thread_anchor
+                                response = await _raw(thread_anchor)
+                                if self._response_succeeded(response):
+                                    return response
                             logger.warning(
                                 "[Feishu] Reply to %s failed in thread %s (code %s — message withdrawn/missing); "
                                 "skipping top-level fallback to avoid creating a new topic",
-                                active_reply_to, (metadata or {}).get("thread_id"), code,
+                                active_reply_to, thread_key, code,
                             )
                             return response
                         logger.warning(

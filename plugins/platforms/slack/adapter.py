@@ -4570,8 +4570,10 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         # _drop_bot_sender already resolved bot-user posts without payload bot markers.
         # Preserve that verdict at the early authorization seam: otherwise an allowed
         # peer bot is checked as a human before MessageEvent.source.is_bot is set.
+        # Same probe condition as _drop_bot_sender, so this is a cache hit, never a new lookup.
         sender_is_bot = self._event_declares_bot_sender(event) or bool(
-            self._user_is_bot_cache.get((str(team_id or ""), str(user_id or "")), False))
+            user_id and not event.get("client_msg_id") and await self._resolve_user_is_bot(
+                user_id, chat_id=channel_id, team_id=team_id))
         if self._early_reject_unauthorized(
                 user_id, channel_id, is_dm, thread_id=thread_ts, is_bot=sender_is_bot):
             return

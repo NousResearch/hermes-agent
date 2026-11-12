@@ -633,6 +633,25 @@ def _build_tool_trace(messages: Any) -> list[dict[str, Any]]:
                 tool_trace[-1].update(result_meta)  # no tool_call_id: pair with the latest call
     return tool_trace
 
+# A whole answer that is one empty JSON value, whitespace removed.
+_EMPTY_JSON_ANSWERS = frozenset({"", "{}", "[]", "null", '""'})
+
+def _carries_result(summary: str, schema_valid: Optional[bool]) -> bool:
+    """Whether a child's final text is a result. It is not when it is blank, run_agent's "(empty)" give-up sentinel
+    (repeated empty LLM responses, usually a transport bug), or one empty JSON value (``{}`` ``[]`` ``null`` ``""``,
+    at most inside one code fence) that no declared output_schema accepted. Only the whole text counts: prose that
+    mentions ``{}`` is a result, and so is an empty list a schema allows (no findings)."""
+    text = summary.strip()
+    if not text or text == "(empty)":
+        return False
+    if schema_valid is True:
+        return True
+    if len(text) >= 6 and text.startswith("```") and text.endswith("```"):
+        text = text[3:-3].strip()
+        if text[:4].lower() == "json":
+            text = text[4:]
+    return "".join(text.split()) not in _EMPTY_JSON_ANSWERS
+
 def _build_result_entry(
     child: Any, result: dict[str, Any], task_index: int, duration: float, schema: _SchemaOutcome,
 ) -> dict[str, Any]:
@@ -640,9 +659,7 @@ def _build_result_entry(
     ``status``/``exit_reason``/``truncated`` follow the ``_run_single_child`` contract; a structured failure always
     wins over the summary-presence heuristic (a fallback for legacy/mock results only)."""
     summary = result.get("final_response") or ""
-    # "(empty)" is run_agent's give-up sentinel after repeated empty LLM
-    # responses (usually a transport bug) — a failure, not a success.
-    usable_summary = bool(summary) and summary.strip() != "(empty)"
+    usable_summary = _carries_result(summary, schema.valid)
     interrupt_note = ""
     if result.get("interrupted", False):
         status, exit_reason = "interrupted", "interrupted"

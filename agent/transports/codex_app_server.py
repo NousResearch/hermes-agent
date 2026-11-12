@@ -124,15 +124,20 @@ class CodexAppServerClient:
                     cmd += ["-c", f"mcp_servers.{HERMES_TOOLS_MCP_SERVER_NAME}.env.{key}={json.dumps(os.environ[key])}"]
             cmd += ["-c", f'mcp_servers.{HERMES_TOOLS_MCP_SERVER_NAME}.env.{DELEGATED_CHILD_ENV_MARKER}=""']
         spawn_env = delegated_child_subprocess_env(spawn_env)
-        # Kanban workers must write handoff/status to the board DB outside the
-        # workspace: keep the sandbox on, add the Kanban root as writable.
+        # The task artifact workspace and board DB can both live outside the
+        # thread cwd. Grant only those roots to dispatcher-owned workers.
         if owned_task:
             kanban_db = spawn_env.get("HERMES_KANBAN_DB")
             default_root = os.path.join(spawn_env.get("HERMES_HOME", os.path.expanduser("~/.hermes")), "kanban")
             kanban_root = os.path.dirname(kanban_db) if kanban_db else spawn_env.get("HERMES_KANBAN_ROOT", default_root)
+            writable_roots = list(dict.fromkeys(
+                os.path.realpath(os.path.expanduser(root))
+                for root in (spawn_env.get("HERMES_KANBAN_WORKSPACE"), kanban_root)
+                if root
+            ))
             cmd += [
                 "-c", 'sandbox_mode="workspace-write"',
-                "-c", f'sandbox_workspace_write.writable_roots=["{kanban_root}"]',
+                "-c", f"sandbox_workspace_write.writable_roots={json.dumps(writable_roots, ensure_ascii=False)}",
                 "-c", "sandbox_workspace_write.network_access=false",
             ]
         # Codex emits tracing to stderr; default WARN keeps it quiet for users.

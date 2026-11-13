@@ -23,6 +23,43 @@ def git(root, *args):
                           text=True, encoding='utf-8').stdout.strip()
 
 
+def git_bytes(root, *args):
+    """Read blobs without text-mode newline translation or whitespace removal."""
+    return subprocess.run(['git', *args], cwd=root, check=True, capture_output=True).stdout
+
+
+def intercept_update_commands(monkeypatch, intercept):
+    """Intercept each command once while retaining its native execution path.
+
+    Windows updates use custody's job-bound Popen, bypassing subprocess.run.
+    Elsewhere custody delegates to subprocess.run; avoid injecting twice there.
+    The continuation also lets faults run real Git before changing its result.
+    """
+    from hermes_cli import update_custody
+
+    real_run, real_custody_run = subprocess.run, update_custody.run
+    seam = threading.local()
+
+    def guarded_run(command, *args, **kwargs):
+        if getattr(seam, 'custody', False):
+            return real_run(command, *args, **kwargs)
+        return intercept(real_run, command, *args, **kwargs)
+
+    def custody_call(command, *args, **kwargs):
+        previous = getattr(seam, 'custody', False)
+        seam.custody = True
+        try:
+            return real_custody_run(command, *args, **kwargs)
+        finally:
+            seam.custody = previous
+
+    def guarded_custody_run(command, *args, **kwargs):
+        return intercept(custody_call, command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, 'run', guarded_run)
+    monkeypatch.setattr(update_custody, 'run', guarded_custody_run)
+
+
 @pytest.fixture
 def update_tree(tmp_path, monkeypatch):
     monkeypatch.setenv('GIT_CONFIG_GLOBAL', str(tmp_path / 'git-config'))
@@ -130,6 +167,7 @@ def test_branch_update_uses_real_refs_and_completion_request(update_tree, monkey
         local.write_bytes(local_work)
     run = subprocess.run
     pushes = []
+    injected = []
 
     def _upstream_sha():
         # The fork sync merges the commit it resolved from refs/remotes/upstream/main (m2).
@@ -137,7 +175,7 @@ def test_branch_update_uses_real_refs_and_completion_request(update_tree, monkey
                     capture_output=True, text=True, encoding='utf-8')
         return found.stdout.strip() or '<no upstream>'
 
-    def fault(command, *args, **kwargs):
+    def fault(call, command, *args, **kwargs):
         assert Path(command[0]).name.lower() in {'git', 'git.exe'} or command[0] == sys.executable, command
         assert Path(kwargs['cwd']).resolve() in {t.clone, t.origin}, command
         # The upstream sync's tree move (`pull upstream main` on older updaters, a local merge of
@@ -147,24 +185,29 @@ def test_branch_update_uses_real_refs_and_completion_request(update_tree, monkey
             or ('merge' in command and _upstream_sha() in command))
         if 'merge' in command and '--ff-only' in command and not upstream_move:
             if case == 'no-move':
+                injected.append(case)
                 return subprocess.CompletedProcess(command, 0, stdout='', stderr='')
-            result = run(command, *args, **kwargs)
+            result = call(command, *args, **kwargs)
             if case in {'wrong-branch', 'fork-upstream-wrong-branch'}:
                 run(['git', 'checkout', '-qb', 'wrong'], cwd=t.clone, check=True, capture_output=True)
+                injected.append(case)
             if case == 'fork-upstream-reverted':
                 run(['git', 'reset', '--hard', t.base], cwd=t.clone, check=True, capture_output=True)
+                injected.append(case)
             return result
-        result = run(command, *args, **kwargs)
+        result = call(command, *args, **kwargs)
         if upstream_move and case.startswith('fork-late'):
             if case.endswith('wrong-branch'):
                 run(['git', 'checkout', '-qb', 'wrong'], cwd=t.clone, check=True, capture_output=True)
+                injected.append(case)
             if case.endswith('reverted'):
                 run(['git', 'reset', '--hard', t.base], cwd=t.clone, check=True, capture_output=True)
+                injected.append(case)
         if 'push' in command and 'origin' in command:
             pushes.append(result.returncode)
         return result
 
-    monkeypatch.setattr(subprocess, 'run', fault)
+    intercept_update_commands(monkeypatch, fault)
     fails = case in {'missing', 'check-missing', 'no-move', 'wrong-branch',
                      'fork-upstream-wrong-branch', 'fork-upstream-reverted',
                      'fork-late-wrong-branch', 'fork-late-reverted'}
@@ -173,8 +216,10 @@ def test_branch_update_uses_real_refs_and_completion_request(update_tree, monkey
             cli_main.cmd_update(t.args)
         assert error.value.code == 1
         assert t.requests == []
+        if case not in {'missing', 'check-missing'}:
+            assert injected == [case]
         if case.startswith('fork-late'):
-            assert git(t.clone, 'show', 'stash@{0}:.gitignore') == local_work.decode().strip()
+            assert git_bytes(t.clone, 'show', 'stash@{0}:.gitignore') == local_work
             assert local.read_bytes() != local_work
     else:
         cli_main.cmd_update(t.args)
@@ -227,10 +272,10 @@ def test_stable_git_uses_remote_identity_without_moving_local_tags(update_tree, 
         git(t.origin, 'branch', 'retained-branch', t.newer)
         t.args.branch = 'retained-branch'
         expected = t.newer
-    run = subprocess.run
     calls = []
+    refused = []
 
-    def guarded_run(command, *args, **kwargs):
+    def guarded_run(call, command, *args, **kwargs):
         command = list(map(str, command))
         assert Path(command[0]).name.lower() in {'git', 'git.exe'}, command
         cwd = Path(kwargs.get('cwd', os.getcwd())).resolve()
@@ -238,10 +283,11 @@ def test_stable_git_uses_remote_identity_without_moving_local_tags(update_tree, 
         assert 'push' not in command and 'pull' not in command and 'ls-remote' not in command, command
         calls.append(command)
         if 'fetch' in command and t.wanted in command and server == 'fetch-refused':
+            refused.append(command)
             return subprocess.CompletedProcess(command, 128, stdout='', stderr='fixture: raw SHA wants disabled')
-        return run(command, *args, **kwargs)
+        return call(command, *args, **kwargs)
 
-    monkeypatch.setattr(subprocess, 'run', guarded_run)
+    intercept_update_commands(monkeypatch, guarded_run)
     if server == 'fetch-refused':
         with pytest.raises(SystemExit) as error:
             cli_main.cmd_update(t.args)
@@ -249,6 +295,7 @@ def test_stable_git_uses_remote_identity_without_moving_local_tags(update_tree, 
         assert git(t.clone, 'rev-parse', 'HEAD') == t.base
         assert t.resumed
         assert t.requests == []
+        assert len(refused) == 1
     else:
         cli_main.cmd_update(t.args)
         request, = t.requests
@@ -305,7 +352,7 @@ def test_stable_zip_consumes_the_same_commit_through_the_real_swap(update_tree, 
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     urls, git_calls = [], []
-    real_open, real_run = urllib.request.urlopen, subprocess.run
+    real_open = urllib.request.urlopen
     fetched, failed = False, False
 
     def local_open(request, *args, **kwargs):
@@ -318,11 +365,7 @@ def test_stable_zip_consumes_the_same_commit_through_the_real_swap(update_tree, 
             local += '?' + parsed.query
         return real_open(local, *args, **kwargs)
 
-    from hermes_cli import update_custody
-
-    real_custody_run, seam = update_custody.run, threading.local()
-
-    def guard(command, args, kwargs, call):
+    def guard(call, command, *args, **kwargs):
         nonlocal fetched, failed
         command = list(map(str, command))
         assert Path(command[0]).name.lower() in {'git', 'git.exe'}, command
@@ -340,31 +383,13 @@ def test_stable_zip_consumes_the_same_commit_through_the_real_swap(update_tree, 
             fetched = True
         return result
 
-    def guarded_run(command, *args, **kwargs):
-        if getattr(seam, 'custody', False):  # already guarded at the custody seam below
-            return real_run(command, *args, **kwargs)
-        return guard(command, args, kwargs, real_run)
-
-    def custody_call(command, *args, **kwargs):
-        seam.custody = True
-        try:
-            return real_custody_run(command, *args, **kwargs)
-        finally:
-            seam.custody = False
-
-    def guarded_custody_run(command, *args, **kwargs):
-        # The updater's git goes through update_custody.run: on Windows inside an update that is a
-        # suspended Popen bound to the update's job, not subprocess.run, so faults go in here too.
-        return guard(command, args, kwargs, custody_call)
-
     if transport in {'gitless', 'no-git'}:
         (t.clone / '.git').rename(tmp_path / 'git-state')
     if transport == 'dirty':
         (t.clone / 'content.txt').write_text('local work\n', encoding='utf-8')
     before = (t.clone / 'content.txt').read_bytes()
     monkeypatch.setattr(urllib.request, 'urlopen', local_open)
-    monkeypatch.setattr(subprocess, 'run', guarded_run)
-    monkeypatch.setattr(update_custody, 'run', guarded_custody_run)
+    intercept_update_commands(monkeypatch, guard)
     try:
         if transport == 'dirty':
             with pytest.raises(SystemExit) as error:
@@ -460,17 +485,17 @@ def test_update_syntax_failure_restores_pre_update_head(update_tree, monkeypatch
         # Refused before the autostash too: the local work never left the tree, index included.
         assert not git(t.clone, 'stash', 'list')
         assert local.read_bytes() == unstaged
-        assert git(t.clone, 'show', ':.gitignore') == staged.decode().strip()
+        assert git_bytes(t.clone, 'show', ':.gitignore') == staged
         assert (t.clone / 'notes.txt').read_bytes() == b'untracked local work\n'
         return
     assert not git(t.clone, 'status', '--porcelain')
     assert bool(git(t.clone, 'stash', 'list')) is dirty
     if dirty:
-        assert git(t.clone, 'show', 'stash@{0}^2:.gitignore') == staged.decode().strip()
-        assert git(t.clone, 'show', 'stash@{0}:.gitignore') == unstaged.decode().strip()
+        assert git_bytes(t.clone, 'show', 'stash@{0}^2:.gitignore') == staged
+        assert git_bytes(t.clone, 'show', 'stash@{0}:.gitignore') == unstaged
         assert git(t.clone, 'show', 'stash@{0}^3:notes.txt') == 'untracked local work'
         git(t.clone, 'stash', 'apply', '--index')
         assert local.read_bytes() == unstaged
-        assert git(t.clone, 'show', ':.gitignore') == staged.decode().strip()
+        assert git_bytes(t.clone, 'show', ':.gitignore') == staged
         assert (t.clone / 'notes.txt').read_bytes() == b'untracked local work\n'
 

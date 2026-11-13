@@ -213,7 +213,48 @@ export function recordTranscriptTail(
   // entry (a no-op write) still bumps it to the MRU end.
   const keepTruncated = page.messages.length === 0 && existing?.possiblyTruncated
 
-  setTranscriptTailEntry(key, keepTruncated ? existing : tailStateFromPage(page, route))
+  setTranscriptTailEntry(
+    key,
+    keepTruncated
+      ? existing
+      : withoutPagingRegression(existing, tailStateFromPage(page, route))
+  )
+}
+
+/**
+ * A fresh hydration read always starts at the NEWEST row (#133569): adopting it
+ * wholesale drags a tail "Show earlier" already paged back past down to the
+ * offset-0 page, so every further click re-fetches rows the store already
+ * holds, the merge is an identity, and the button never retires.
+ *
+ * Paging state may only ADVANCE through this path. An incoming page may not
+ * re-arm or rewind a tail whose offset already reaches as far — the one
+ * sanctioned re-arm is `rewindTranscriptTail` (transcript retention), which
+ * writes its own entry. A page that DOES reach further (a session that outgrew
+ * a previously complete tail) is adopted, so a transcript growing past one page
+ * still arms the offer for the rows nobody has loaded.
+ */
+function withoutPagingRegression(
+  existing: TranscriptTailState | undefined,
+  incoming: TranscriptTailState
+): TranscriptTailState {
+  if (!existing) {
+    return incoming
+  }
+
+  const regressed = incoming.possiblyTruncated && incoming.nextOffset <= existing.nextOffset
+
+  if (!regressed) {
+    return incoming
+  }
+
+  // Keep the further-along paging state; adopt the incoming route, since that
+  // is the one the next older-page fetch will be sent with. Spread, so fields
+  // added to `TranscriptTailState` are kept rather than silently dropped.
+  return {
+    ...existing,
+    profile: incoming.profile
+  }
 }
 
 /** Advance the bookkeeping after one older backfill page landed. */

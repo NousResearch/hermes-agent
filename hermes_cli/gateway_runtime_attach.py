@@ -120,7 +120,8 @@ def mint_ticket(home: str | Path, endpoint, *, purpose: str = "interactive") -> 
 
     try:
         # A profile served by the default multiplexer has no socket of its own; the host mints its ticket.
-        return _session_ticket(Path(home), endpoint, purpose=purpose)
+        # An attach asks exactly as it always has (no ``purpose`` argument: the owner's default).
+        return _session_ticket(Path(home), endpoint, **({} if purpose == "interactive" else {"purpose": purpose}))
     except DiscoveryError as exc:
         raise TicketUnavailable(exc.reason, exc.bounded_detail(500)) from exc
     except (OSError, ValueError) as exc:

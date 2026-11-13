@@ -19,6 +19,7 @@ from typing import Any, Callable, Iterable, Optional
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
 from agent.secret_scope import get_secret as _scoped_get_secret
 from gateway.bridged_env import BRIDGED_ENV_MARKER_PREFIX, bridged_env_digest
+from gateway.bridged_env import YAML_ENV_LOCK as _YAML_ENV_LOCK
 
 logger = logging.getLogger(__name__)
 
@@ -238,7 +239,6 @@ class _YamlEnvLoad:
 
 # Loads are synchronous; copied contexts must not inherit another thread's partial seen-set.
 _YAML_ENV_LOAD = threading.local()
-_YAML_ENV_LOCK = threading.RLock()
 
 
 def cancel_yaml_env_refresh() -> None:
@@ -337,45 +337,6 @@ def yaml_env_setter(*, fallback: bool = False) -> Callable[[str, Any], None]:
             os.environ[marker] = bridged_env_digest(bridged)
 
     return set_env
-
-
-def follow_bridged_env(scope: dict) -> None:
-    """Bring a launch-profile secret mapping's YAML-bridged values up to the bridge's current ones.
-
-    The mapping starts from the env frozen at activation, which holds the bridged lists of THAT moment;
-    the bridge keeps refreshing ``os.environ`` from the launch profile's config.yaml afterwards. Only a
-    value the bridge owns in the mapping (its marker's digest matches) or a name the mapping lacks
-    follows: it takes the live bridge-owned value, or is dropped when the bridge retracted it (name
-    and marker both gone). Any other live state (a value another writer put there) keeps the frozen
-    value, and a frozen operator value (systemd, ``op run``) is never replaced from the live env; the
-    caller applies ``.env`` and secret sources over this.
-    ``allow_all_users`` is bridged without a marker: a frozen grant the live env no longer holds was
-    revoked (only the bridge clears it); a live one reaches the mapping via ``build_profile_secret_scope``."""
-    from gateway.config_loader import bridged_allow_all_users
-
-    with _YAML_ENV_LOCK:  # a load in progress is published all-or-nothing: never read its partial writes
-        live = dict(os.environ)
-        grant = bridged_allow_all_users()
-    # Revoke the grant BEFORE touching the lists: another thread of this body may read the mapping
-    # mid-update, and "no list, grant still on" would admit any sender for that one lookup.
-    if grant is None and "GATEWAY_ALLOW_ALL_USERS" not in live:
-        scope.pop("GATEWAY_ALLOW_ALL_USERS", None)
-    prefix = BRIDGED_ENV_MARKER_PREFIX
-    names = {key[len(prefix):] for key in (*scope, *live) if key.startswith(prefix) and key != prefix}
-    retracted = []
-    for name in sorted(names):  # deterministic, not hash-seed order
-        marker = bridged_env_marker(name)
-        if name in scope and bridged_env_digest(scope[name]) != scope.get(marker):
-            continue
-        if live.get(marker) is not None and bridged_env_digest(live.get(name)) == live[marker]:
-            scope[name], scope[marker] = live[name], live[marker]
-        elif name not in live and marker not in live:  # retracted: only the bridge removes both
-            retracted.append((name, marker))
-    # Every new list lands before any old one goes: an edit moving users from one list to another
-    # never shows a reader "no list at all", which a still-on grant would turn into admit-all.
-    for name, marker in retracted:
-        scope.pop(name, None)
-        scope.pop(marker, None)
 
 
 def bridge_owns_env(name: str) -> bool:
@@ -489,10 +450,6 @@ def _reload_live_gate_extra(adapter: Any, keys: Iterable[str], version: tuple,
     # bound scope, and the installed launch mapping (frozen env + .env) then takes them, so the gate
     # below and the runner's env check both read the edited lists (multiplexed: launch_secret_scope).
     token = _LAUNCH_GATE_RELOAD.set(launch)
-    # Fail-safe: _owner_scope binds the owner's own scope for a launch reload, so its bridge always
-    # runs and no current path makes this True. Should one ever skip the bridge, the env lists stay
-    # as they were and the edit stays unacknowledged, so the owner's own next event redoes it.
-    provisional = launch and bridge_env_skipped()
     try:  # ONE checked load: the fallback env-only config would drop the YAML-held lists
         loaded = load_gateway_config(strict=True)
     except Exception:
@@ -503,7 +460,7 @@ def _reload_live_gate_extra(adapter: Any, keys: Iterable[str], version: tuple,
         return False
     finally:
         _LAUNCH_GATE_RELOAD.reset(token)
-    if launch and not provisional:
+    if launch:  # _owner_scope bound the launch home's own scope, so this load bridged
         from tui_gateway.launch_profile_policy import follow_launch_bridged_env
         follow_launch_bridged_env()
     current = loaded.platforms.get(adapter.platform) or PlatformConfig()
@@ -516,8 +473,7 @@ def _reload_live_gate_extra(adapter: Any, keys: Iterable[str], version: tuple,
     if on_reload is not None:
         on_reload()
     # Retry this same edit after a transient read failure, without requiring a second write.
-    if not provisional:
-        adapter._live_gate_version = version
+    adapter._live_gate_version = version
     return True
 
 

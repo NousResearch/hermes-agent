@@ -148,7 +148,7 @@ def launch_secret_scope(launch_home: str | Path) -> dict[str, str]:
     nothing in the files shadows them.
     """
     from agent.secret_scope import _is_global_env, build_profile_secret_scope
-    from gateway.platforms._shared import follow_bridged_env
+    from gateway.bridged_env import follow_bridged_env
     scope = {k: v for k, v in _launch_env().items() if not _is_global_env(k)}
     # The frozen env's config.yaml-bridged lists follow the live bridge, or a user removed from the
     # launch profile's config.yaml stays admitted until a restart; operator values stay frozen.
@@ -163,7 +163,7 @@ def follow_launch_bridged_env() -> None:
     the edited lists. The caller runs this only with the launch scope bound (``_owner_scope``) and its
     bridge not skipped, so the mapping is never another profile's."""
     from agent.secret_scope import build_profile_secret_scope, current_secret_scope
-    from gateway.platforms._shared import follow_bridged_env
+    from gateway.bridged_env import follow_bridged_env
     from hermes_constants import get_hermes_home
 
     scope = current_secret_scope()

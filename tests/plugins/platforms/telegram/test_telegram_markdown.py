@@ -1,5 +1,6 @@
 """MarkdownV2 / rich-markdown conversion contracts, judged by the Bot API stand-in's parser."""
 
+import re
 import time
 
 import pytest
@@ -232,6 +233,8 @@ def test_link_shaped_text_inside_a_code_span_stays_verbatim(span):
     "http://h.example/x||y||z",
     "https://example.com/a*;b*c",
     "https://example.com/a**,b**c",
+    "https://example.com/a*;b*c*",
+    "https://x.example/a~~;b~~c~~",
 ])
 def test_bare_url_reaches_the_chat_as_literal_text(adapter, url):
     """Every char of a bare URL is escaped, so * ~ || inside it never become italic/strike/spoiler."""
@@ -274,6 +277,7 @@ def test_emphasis_wrapping_a_url_that_ends_in_slash_still_renders(adapter, wrapp
     ("~~https://x.example/a~~,next", "~https://x\\.example/a~,next"),
     ("**https://x/a**,next", "*https://x/a*,next"),
     ("**https://example.com/a**,next**word**", "*https://example\\.com/a*,next*word*"),
+    ("*Open https://example.com/a*;b*c* now*", "_Open https://example\\.com/a\\*;b\\*c\\* now_"),
 ])
 def test_emphasis_around_a_url_pairs_as_around_any_word(adapter, wrapped, rendered):
     """Bold across a newline, nested emphasis and a closer with prose right after it pair as they
@@ -281,6 +285,35 @@ def test_emphasis_around_a_url_pairs_as_around_any_word(adapter, wrapped, render
     out = adapter.format_message(wrapped)
     assert mdv2_error(out) is None
     assert out == rendered
+
+
+def _url_survives(text: str, url: str, out: str) -> bool:
+    """*url* reaches the chat whole (every mark escaped), or ends at a mark run that closes emphasis
+    opened before it: its text up to that run shows contiguous and escaped, the run renders as the
+    closer, and what follows the run is prose again."""
+    esc = telegram_markdown._escape_mdv2
+    if esc(url) in out:
+        return True
+    opened = text[:text.index(url)]
+    return any(run.group()[0] in opened and re.search(re.escape(esc(url[:run.start()])) + r"[*_~|]", out)
+               for run in re.finditer(r"[*~|]+", url))
+
+
+_URL_SHAPES = [f"a{m}{p}b{m}c{t}" for m in ("*", "**", "~~", "||") for p in ".,;:!?)" for t in ("", m)]
+_URL_WRAPPERS = ["{}", "Open {} now", "*{}*", "**{}**", "~~{}~~", "||{}||", '"{}"', "*Open {} now*",
+                 "**see\n{}**", "*x* {} *y*", "{}, then **b**"]
+
+
+@pytest.mark.parametrize("wrapper", _URL_WRAPPERS)
+def test_no_bare_url_loses_a_character_to_formatting(wrapper):
+    """Property over every internal-punctuation URL shape: a mark inside a URL is URL text unless it
+    closes emphasis opened outside the URL, so no URL character is dropped or turned into formatting."""
+    for shape in _URL_SHAPES:
+        url = "https://example.com/" + shape
+        text = wrapper.format(url)
+        out = telegram_markdown.to_markdown_v2(text)
+        assert mdv2_error(out) is None, text
+        assert _url_survives(text, url, out), (text, out)
 
 
 @pytest.mark.parametrize("unit", ["https://example.com/a ", "**see https://x.example/web/** ok "])

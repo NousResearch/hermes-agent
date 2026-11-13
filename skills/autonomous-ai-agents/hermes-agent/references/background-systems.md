@@ -82,7 +82,18 @@ sessions still have zero `kanban_*` schema footprint unless configured.
 - **CLI verbs (common):** `init`, `create`, `list` (alias `ls`),
   `show`, `assign`, `link`, `unlink`, `comment`, `complete`, `block`,
   `unblock`, `archive`, `tail`. Less common: `watch`, `stats`, `runs`,
-  `log`, `dispatch`, `daemon`, `gc`.
+  `log`, `dispatch`, `daemon`, `gc`, `specify`, `promote`.
+- **Lifecycle:** `triage → todo → ready → running → (review) → done`,
+  plus `blocked` and `archived`. `triage` is a parking column: with
+  `kanban.auto_decompose: true` (default) the dispatcher decomposes it;
+  otherwise release a card with `hermes kanban specify <id>`
+  (triage → todo). The dispatcher promotes `todo → ready` once all
+  parents are `done`; `hermes kanban promote <id>` is the manual
+  recovery for todo/blocked cards. `complete` only accepts `running`,
+  `ready`, `blocked` or `review` cards, so a `triage` card has to be
+  specified first. `unblock` returns a card to its source phase
+  (`review`/`ready`, or `todo` while a parent is open), never to
+  `triage`.
 - **Worker/orchestrator toolset:** `kanban_show`, `kanban_complete`,
   `kanban_block`, `kanban_heartbeat`, `kanban_comment`, `kanban_create`,
   `kanban_link`; profiles that explicitly enable the `kanban` toolset

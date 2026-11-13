@@ -45,7 +45,11 @@ _PROLOGUE_TEMPLATE = (
     " __hermes_sudo_dir= ;; esac\n"
     'if \\builtin test -n "$__hermes_sudo_dir" && \\command mkfifo "$__hermes_sudo_dir/p" "$__hermes_sudo_dir/l"'
     ' 2>/dev/null && \\exec 19<>"$__hermes_sudo_dir/l"; then\n'
-    "  \\builtin printf '#!/bin/sh\\nexec /bin/cat -- \"%s\" 2>/dev/null\\n' \"$__hermes_sudo_dir/p\""
+    # The helper takes a lock directory for its whole exchange, so helpers of sudos that ask at
+    # the same time are served one after another instead of sharing one line.
+    "  \\builtin printf '#!/bin/sh\\nd=\"%s\"\\n"
+    'until /bin/mkdir "$d/k" 2>/dev/null; do [ -d "$d" ] || exit 1; /bin/sleep 0.1 2>/dev/null || /bin/sleep 1; done\\n'
+    '/bin/cat -- "$d/p" 2>/dev/null; r=$?\\n/bin/rmdir "$d/k" 2>/dev/null\\nexit $r\\n\' "$__hermes_sudo_dir"'
     ' > "$__hermes_sudo_dir/a" && \\command chmod 700 "$__hermes_sudo_dir/a"\n'
     '( ( \\exec 8<"$__hermes_sudo_dir/l" 19>&- </dev/null >/dev/null 2>&1\n'
     "    \\builtin trap '' HUP PIPE; \\builtin trap '\\builtin :' TERM\n"
@@ -190,6 +194,7 @@ def has_own_stdin_or_askpass(command: str | None) -> bool:
 # ``mktemp -d`` under ${TMPDIR:-/tmp} runs, next to a FIFO the shell can open read+write.
 CAPABILITY_PROBE = (
     "SUDO_ASKPASS=/bin/false sudo -A -V >/dev/null 2>&1 || exit 1\n"
+    'for t in /bin/cat /bin/mkdir /bin/rmdir /bin/sleep; do [ -x "$t" ] || exit 1; done\n'
     'd=$(umask 077 && mktemp -d "${TMPDIR:-/tmp}/hermes-sudo.XXXXXXXXXX" 2>/dev/null) || exit 1\n'
     'case $d in *[\\"\\\\\\$\\`]*) rm -rf -- "$d"; exit 1 ;; esac\n'
     "r=1\n"

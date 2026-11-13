@@ -591,6 +591,22 @@ def test_live_every_counted_sudo_that_asks_is_served(tmp_path):
 
 
 @_needs_posix_shell
+def test_live_sudos_that_ask_at_the_same_time_are_each_served(tmp_path):
+    """Four background sudos with no shared ticket all ask at once; each helper gets its own line."""
+    sudo = _write_fake_sudo(tmp_path / "bin")
+    sudo.write_text(sudo.read_text(encoding="utf-8").replace('if [ ! -e "$ticket" ]; then', "if true; then"),
+                    encoding="utf-8")
+    body = " ".join(f"({sudo} true && echo OK{i} || echo FAIL{i}) &" for i in range(4)) + " wait"
+    command, count = terminal_tool_sudo._rewrite_real_sudo_invocations(body, askpass=True)
+    assert count == 4
+    for _ in range(5):
+        proc = _bash(askpass.build_prologue(count, "20") + command, stdin=PW + "\n",
+                     env_vars={"TMPDIR": str(tmp_path)})
+        assert sorted(proc.stdout.split()) == ["OK0", "OK1", "OK2", "OK3"], proc.stderr
+    wait_until(lambda: not list(tmp_path.glob("hermes-sudo.*")), timeout=5, what="askpass dir removed")
+
+
+@_needs_posix_shell
 def test_live_orphan_holding_fd_19_does_not_keep_the_writer_past_the_timeout(tmp_path):
     sudo = _write_fake_sudo(tmp_path / "bin")
     command, count = terminal_tool_sudo._rewrite_real_sudo_invocations(

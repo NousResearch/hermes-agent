@@ -161,12 +161,16 @@ def route_supported_efforts(
     provider: Optional[str], model: Optional[str], api_mode: Optional[str] = None,
     base_url: Optional[str] = None,
 ) -> tuple[str, ...]:
-    """Levels the (provider, model) route's ENTRY clamp accepts: the Codex/OpenAI Responses set per
-    model generation, the levels a managed local model's chat template accepts, else the widest
-    OpenAI-compatible vocabulary (narrower providers clamp again downstream, never upward). On the
-    Codex app-server runtime ``ultra`` is codex's own harness mode, accepted wherever the model's
-    ladder reaches ``max`` (codex runs it at ``max``; a model without ``max`` rejects it), so it is
-    sent verbatim there."""
+    """Levels the (provider, model) route's ENTRY clamp accepts: an explicit ``model_overrides``
+    declaration for the model, else the Codex/OpenAI Responses set per model generation, the levels a
+    managed local model's chat template accepts, else the widest OpenAI-compatible vocabulary
+    (narrower providers clamp again downstream, never upward). On the Codex app-server runtime
+    ``ultra`` is codex's own harness mode, accepted wherever the model's ladder reaches ``max``
+    (codex runs it at ``max``; a model without ``max`` rejects it), so it is sent verbatim there."""
+    from agent.models_dev import declared_supported_efforts
+    declared = declared_supported_efforts(provider or "", model or "")
+    if declared:
+        return declared
     if (provider or "").strip().lower() == "openai-codex":
         supported = codex_supported_efforts(model)
         return (*supported, "ultra") if api_mode == "codex_app_server" and "max" in supported else supported
@@ -176,10 +180,19 @@ def route_supported_efforts(
     return ("none", *local) if local else OPENAI_COMPAT_WIRE_EFFORTS
 
 
-def chat_endpoint_efforts(model: Optional[str], base_url: Optional[str]) -> tuple[str, ...]:
+def chat_endpoint_efforts(
+    model: Optional[str], base_url: Optional[str], provider: Optional[str] = None,
+) -> tuple[str, ...]:
     """Levels an OpenAI-compatible chat request to ``base_url`` may carry for ``model``. The endpoint
-    decides, whatever provider name the route carries: the managed local server answers with the
-    levels the model's chat template accepts, every other endpoint with the OpenAI-compatible set."""
+    decides, whatever provider name the route carries: an explicit ``model_overrides`` declaration
+    for ``provider``+``model`` names the model's vocabulary (#154352), the managed local server
+    answers with the levels the model's chat template accepts, every other endpoint with the
+    OpenAI-compatible set."""
+    if provider:
+        from agent.models_dev import declared_supported_efforts
+        declared = declared_supported_efforts(provider, model or "")
+        if declared:
+            return declared
     return route_supported_efforts("custom", model, None, base_url)
 
 

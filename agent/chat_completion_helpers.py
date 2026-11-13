@@ -1466,7 +1466,7 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         provider_preferences=_prefs or None, openrouter_min_coding_score=agent.openrouter_min_coding_score,
         supports_reasoning=agent._supports_reasoning_extra_body(),
         lmstudio_reasoning_options=agent._lmstudio_reasoning_options_cached() if _is_lmstudio else None,
-        qwen_session_metadata=_qwen_meta)
+        qwen_session_metadata=_qwen_meta, provider_name=agent.provider)
     if _profile:
         # Profiles handle per-provider quirks via hooks fed the context above.
         return transport.build_kwargs(provider_profile=_profile, **_common)
@@ -1479,7 +1479,6 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         is_kimi=any(base_url_host_matches(agent.base_url, h) for h in ("api.kimi.com", "moonshot.ai", "moonshot.cn")),
         is_tokenhub=base_url_host_matches(_host, "tokenhub.tencentmaas.com"),
         profile_endpoint=_profile_endpoint, endpoint_reasoning=agent._endpoint_reasoning_payload() if _profile_endpoint else None,
-        provider_name=agent.provider,
     )
 
 

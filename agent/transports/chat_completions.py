@@ -155,7 +155,10 @@ def is_router_timeout_shim(response: Any) -> bool:
     return not _has_positive_completion_tokens(getattr(response, "usage", None))
 
 
-def _reasoning_config_for_model(model: str, reasoning_config: dict | None, base_url: str | None = None) -> dict | None:
+def _reasoning_config_for_model(
+    model: str, reasoning_config: dict | None, base_url: str | None = None,
+    provider: str | None = None,
+) -> dict | None:
     """Clamp Hermes' extended effort set (``ultra``) to the OpenAI-compat wire vocabulary.
 
     Hermes' internal effort set extends the wire vocabulary with ``ultra`` (the /reasoning command documents
@@ -164,8 +167,10 @@ def _reasoning_config_for_model(model: str, reasoning_config: dict | None, base_
     the declared wire vocabulary via the shared policy in ``agent.reasoning_effort``; provider profiles with
     narrower sets clamp again downstream. A model on the managed local server is clamped onto the levels
     its chat template accepts: the template raises on any other level and llama-server answers HTTP 500.
+    An explicit ``model_overrides`` declaration for ``provider``+``model`` clamps onto the declared
+    per-model vocabulary (#154352).
     """
-    return clamp_reasoning_config(reasoning_config, chat_endpoint_efforts(model, base_url))
+    return clamp_reasoning_config(reasoning_config, chat_endpoint_efforts(model, base_url, provider=provider))
 
 
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
@@ -586,7 +591,8 @@ class ChatCompletionsTransport(ProviderTransport):
 
         is_kimi = params.get("is_kimi", False)
         supports_reasoning = params.get("supports_reasoning", False)
-        reasoning_config = _reasoning_config_for_model(model, params.get("reasoning_config"), params.get("base_url"))
+        reasoning_config = _reasoning_config_for_model(
+            model, params.get("reasoning_config"), params.get("base_url"), params.get("provider_name"))
         _apply_max_tokens(api_kwargs, model, reasoning_config, params)
 
         # Kimi / TokenHub by host (agents with no registered profile): top-level reasoning_effort (unless thinking disabled).
@@ -654,7 +660,9 @@ class ChatCompletionsTransport(ProviderTransport):
         sanitized = _swap_developer_role(profile.prepare_messages(sanitized), (model or "").lower())
         api_kwargs = _base_kwargs(model, sanitized, tools, params, profile=profile)
 
-        reasoning_config = _reasoning_config_for_model(model, params.get("reasoning_config"), params.get("base_url"))
+        reasoning_config = _reasoning_config_for_model(
+            model, params.get("reasoning_config"), params.get("base_url"),
+            params.get("provider_name") or getattr(profile, "name", None))
         # Profiles fronting several backends override get_max_tokens() per model.
         _apply_max_tokens(api_kwargs, model, reasoning_config, params, profile_max=profile.get_max_tokens(model))
 

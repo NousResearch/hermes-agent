@@ -2,10 +2,7 @@ name: strategic-arena
 repo: https://github.com/trillionverselabs-boop/strategic-arena
 sha: 174fda73f7abe986d5c020ca41bfa07cd97361b5
 title: Strategic Arena
-description: >-
-  Understand the landscape before you invest: give it a link and get the room that
-  reacts — who can block adoption, what each concession buys, and the claims you can
-  score later. Research papers also get a replication clock.
+description: "Understand the landscape before you invest: give it a link and get the room that reacts — who can block adoption, what each concession buys, and the claims you can score later. Research papers also get a replication clock. Disclosure — sends the documents you give it and the simulation prompts to your active Hermes model via ctx.llm; fetches URLs you or the model supply (http/https, public addresses only, re-checked on every redirect); reads the public Nous model catalog (inference-api.nousresearch.com/v1/models, anonymous, cached 6h) to price runs; runs simulations in a background thread; writes run history and exported decision records only under plugin-data/strategic-arena; adds a Desktop page and dashboard API routes."
 maintainer: LeMultiFox
 tier: community
 category: tools

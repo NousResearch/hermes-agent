@@ -89,14 +89,16 @@ def run_tool_round(
 
     # Normalize only this unpersisted turn. Each local bridge entry must pass
     # through the same scope, approvals, state and scheduling as a singleton.
-    from agent.tool_call_batches import expand_local_tool_batches
-    assistant_message.tool_calls = expand_local_tool_batches(
-        assistant_message.tool_calls, provider_data=getattr(assistant_message, "provider_data", None))
+    from agent.tool_call_batches import expand_local_tool_batches, prune_native_tool_blocks
+    provider_data = getattr(assistant_message, "provider_data", None)
+    assistant_message.tool_calls = expand_local_tool_batches(assistant_message.tool_calls, provider_data=provider_data)
 
-    # Post-call guardrails.
-    assistant_message.tool_calls = agent._deduplicate_tool_calls(
-        agent._cap_delegate_task_calls(assistant_message.tool_calls)
-    )
+    # Post-call guardrails. A dropped call gets no result, so it must leave the native
+    # replay sidecars too (before id normalization, while their ids still match).
+    emitted = assistant_message.tool_calls
+    assistant_message.tool_calls = agent._deduplicate_tool_calls(agent._cap_delegate_task_calls(emitted))
+    if provider_data and len(assistant_message.tool_calls) < len(emitted):
+        prune_native_tool_blocks(provider_data, emitted, assistant_message.tool_calls)
     # Filtering can turn a mixed batch into an all-provider one; re-check the final batch
     # before it is staged (idempotent for already-normalized ids).
     normalize_provider_tool_call_ids(assistant_message.tool_calls)

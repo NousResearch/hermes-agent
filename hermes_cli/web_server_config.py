@@ -678,12 +678,12 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
     endpoint_already_known = (
         provider_lc in BARE_CUSTOM_SELECTORS and bool(base_url) and _endpoint_known_to_config(cfg, base_url))
     # The submitted key goes to .env; model.api_key and the registered row hold only its reference.
-    stored_key, env_name, shared_env = api_key, "", ""
+    stored_key, env_name, shared_envs = api_key, "", []
     if api_key.strip():
         from hermes_cli.config_secret_refs import (
-            endpoint_api_key_env, known_endpoint_key_env, secret_ref_for, shared_endpoint_key_env,
+            endpoint_api_key_env, known_endpoint_key_env, secret_ref_for, shared_endpoint_key_envs,
         )
-        shared_env = shared_endpoint_key_env(cfg, result.base_url)
+        shared_envs = shared_endpoint_key_envs(cfg, result.base_url)
         # A row already registered for this endpoint keeps its variable, so model.api_key and the
         # row read the same key instead of two copies drifting apart.
         env_name = known_endpoint_key_env(cfg, result.base_url) or endpoint_api_key_env(result.base_url)
@@ -698,11 +698,12 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
         # that host's key. A block for the same host (its ``key_env``) still supplies the credential.
         _resolve_assignment_credentials(model_cfg, provider, provider_entry)
     cfg["model"] = model_cfg
-    if shared_env and stored_key != api_key:
+    if shared_envs and stored_key != api_key:
         # This endpoint's rows (and the key_env just copied from one) leave the variable it shares
         # with another endpoint for the one holding the submitted key.
         from hermes_cli.config_secret_refs import repoint_endpoint_key_env
-        repoint_endpoint_key_env(cfg, result.base_url, shared_env, env_name)
+        for shared_env in shared_envs:
+            repoint_endpoint_key_env(cfg, result.base_url, shared_env, env_name)
 
     new_provider = provider.strip().lower()
     gateway_tools = _apply_nous_gateway_defaults(cfg) if new_provider == "nous" else []

@@ -546,6 +546,22 @@ def test_write_locked_env_refuses_an_aux_endpoint_key_without_a_traceback_or_a_5
     assert SECRET not in _config_text(home) and "AUXILIARY_" not in _config_text(home)
 
 
+def test_aux_save_of_a_reference_is_not_refused_by_the_key_lock(home, monkeypatch):
+    """A ``${VAR}`` the user types writes nothing to ``.env``, so the lock that forbids the slot's
+    variable must not refuse it: a reference is the way around that lock."""
+    from hermes_cli import config
+    from hermes_cli.config import read_raw_config
+    from hermes_cli.web_server_config import _apply_aux_assignment_sync
+
+    monkeypatch.setattr(config, "env_write_refusal", lambda key, action: f"Cannot {action} {key}: managed")
+    (home / "config.yaml").write_text("model:\n  provider: openrouter\n  default: x/y\n", encoding="utf-8")
+
+    _apply_aux_assignment_sync(config.load_config(), "custom", "qwen3:8b", "vision", "http://127.0.0.1:11434/v1",
+                               "${MY_AUX_KEY}")
+
+    assert read_raw_config()["auxiliary"]["vision"]["api_key"] == "${MY_AUX_KEY}"
+
+
 def test_all_tasks_aux_save_under_a_per_key_lock_writes_no_slot_key(home, monkeypatch):
     """An all-tasks save (``task=""``) where the lock forbids one slot's variable refuses before any
     slot's key reaches ``.env``: no orphaned AUXILIARY_<TASK>_API_KEY line for an unsaved config."""
@@ -567,3 +583,57 @@ def test_all_tasks_aux_save_under_a_per_key_lock_writes_no_slot_key(home, monkey
     assert refusal.value.status_code == 400 and locked in refusal.value.detail
     assert SECRET not in (home / ".env").read_text(encoding="utf-8")
     assert "AUXILIARY_" not in (home / ".env").read_text(encoding="utf-8")
+
+
+def test_dashboard_save_moves_every_shared_legacy_name_of_the_endpoint(home, monkeypatch):
+    """Rows spelling the default port both ways carry two legacy host:port names (``GW_EXAMPLE``,
+    ``GW_EXAMPLE_443``), each shared with endpoint ``b``: a save for ``a`` moves both of ``a``'s rows."""
+    from hermes_cli.config import load_env
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_cli.web_server_config import _apply_model_assignment_sync
+
+    monkeypatch.setattr(
+        "hermes_cli.models_validate.validate_requested_model",
+        lambda *a, **k: {"accepted": True, "persist": True, "recognized": True, "message": None})
+    names = ("HERMES_CUSTOM_GW_EXAMPLE_API_KEY", "HERMES_CUSTOM_GW_EXAMPLE_443_API_KEY")
+    (home / ".env").write_text("".join(f"{n}=KEY-B\n" for n in names), encoding="utf-8")
+    rows = "".join(f"- name: {e}{i}\n  base_url: https://gw.example{port}/{e}/v1\n  key_env: {n}\n"
+                   for e in "ab" for i, (port, n) in enumerate(zip(("", ":443"), names), 1))
+    (home / "config.yaml").write_text(f"model:\n  provider: openrouter\n  default: x\ncustom_providers:\n{rows}",
+                                      encoding="utf-8")
+
+    _apply_model_assignment_sync("main", "custom", "m", "", "https://gw.example/a/v1", "KEY-A")
+
+    for name, value in load_env().items():
+        monkeypatch.setenv(name, value)
+    keys = {p: resolve_runtime_provider(requested=f"custom:{p}")["api_key"] for p in ("a1", "a2", "b1", "b2")}
+    assert keys == {"a1": "KEY-A", "a2": "KEY-A", "b1": "KEY-B", "b2": "KEY-B"}
+
+
+def test_hermes_model_custom_flow_moves_every_shared_legacy_name_of_the_endpoint(home, monkeypatch):
+    """The CLI twin of the dashboard case: ``providers`` rows for ``a`` spelling the default port both
+    ways sit on two legacy names, each shared with ``b``; ``hermes model`` for ``a`` moves both."""
+    from hermes_cli import model_setup_flows_custom as flow
+    from hermes_cli.config import load_env
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    names = ("HERMES_CUSTOM_GW_EXAMPLE_API_KEY", "HERMES_CUSTOM_GW_EXAMPLE_443_API_KEY")
+    (home / ".env").write_text("".join(f"{n}=KEY-B\n" for n in names), encoding="utf-8")
+    rows = "".join(f"  {e}{i}:\n    base_url: https://gw.example{port}/{e}/v1\n    key_env: {n}\n"
+                   for e in "ab" for i, (port, n) in enumerate(zip(("", ":443"), names), 1))
+    (home / "config.yaml").write_text(f"model:\n  provider: openrouter\n  default: x\nproviders:\n{rows}",
+                                      encoding="utf-8")
+    answers = iter(["https://gw.example/a/v1", "", "gw"])
+    monkeypatch.setattr(flow, "line_input", lambda _prompt="": next(answers))
+    monkeypatch.setattr("hermes_cli.secret_prompt.masked_secret_prompt", lambda _prompt="": "KEY-A")
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "")
+    monkeypatch.setattr("hermes_cli.models.probe_api_models", lambda *a, **k: {"models": ["m"]})
+    monkeypatch.setattr("hermes_cli.main_provider_setup._prompt_custom_api_mode_selection",
+                        lambda *a, **k: None)
+
+    flow._model_flow_custom({})
+
+    for name, value in load_env().items():
+        monkeypatch.setenv(name, value)
+    keys = {p: resolve_runtime_provider(requested=p)["api_key"] for p in ("a1", "a2", "b1", "b2")}
+    assert keys == {"a1": "KEY-A", "a2": "KEY-A", "b1": "KEY-B", "b2": "KEY-B"}

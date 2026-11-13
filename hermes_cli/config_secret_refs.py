@@ -177,15 +177,16 @@ def known_endpoint_key_env(cfg: dict, base_url: str) -> str:
     """The Hermes-written ``key_env`` of a ``providers`` / ``custom_providers`` row already registered
     for ``base_url``, so a save for that endpoint updates the row's variable instead of forking a
     second one. User-chosen names (``OPENAI_API_KEY``) are never reused: they may serve elsewhere, and
-    neither is a name another endpoint also reads (:func:`shared_endpoint_key_env`)."""
+    neither is a name another endpoint also reads (:func:`shared_endpoint_key_envs`)."""
     return next((name for name, shared in _endpoint_key_envs(cfg, base_url) if not shared), "")
 
 
-def shared_endpoint_key_env(cfg: dict, base_url: str) -> str:
-    """The legacy host:port ``key_env`` this endpoint's blocks share with another endpoint, or "".
-    A writer that saves this endpoint's key under a new variable moves the blocks onto it
-    (:func:`repoint_endpoint_key_env`), else selecting them later brings back the other key."""
-    return next((name for name, shared in _endpoint_key_envs(cfg, base_url) if shared), "")
+def shared_endpoint_key_envs(cfg: dict, base_url: str) -> list[str]:
+    """The legacy host:port ``key_env`` names this endpoint's blocks share with other endpoints (two
+    when rows spell the default port both ways). A writer that saves this endpoint's key under a new
+    variable moves the blocks onto it (:func:`repoint_endpoint_key_env`), else selecting them later
+    brings back the other key."""
+    return list(dict.fromkeys(name for name, shared in _endpoint_key_envs(cfg, base_url) if shared))
 
 
 def repoint_endpoint_key_env(cfg: dict, base_url: str, old_env: str, new_env: str) -> None:

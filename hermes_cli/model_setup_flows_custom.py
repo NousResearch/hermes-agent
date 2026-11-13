@@ -190,15 +190,15 @@ def _model_flow_custom(config):
     # (#69449, #77471). Configs written by older releases keep the ${VAR} they already reference.
     # An endpoint that already has a Hermes-written row keeps that row's variable, so a key
     # rotation reaches every block reading it instead of forking a second copy.
-    custom_key_env = shared_key_env = ""
+    custom_key_env, shared_key_envs = "", []
     if effective_key:
         from hermes_cli.config import read_raw_config
         from hermes_cli.config_secret_refs import (
-            endpoint_api_key_env, known_endpoint_key_env, shared_endpoint_key_env, store_secret,
+            endpoint_api_key_env, known_endpoint_key_env, shared_endpoint_key_envs, store_secret,
         )
         custom_key_env = (known_endpoint_key_env(read_raw_config(), effective_url)
                           or endpoint_api_key_env(effective_url))
-        shared_key_env = shared_endpoint_key_env(read_raw_config(), effective_url)
+        shared_key_envs = shared_endpoint_key_envs(read_raw_config(), effective_url)
         try:
             store_secret(custom_key_env, effective_key, effective_url)
         except ValueError as exc:
@@ -247,11 +247,12 @@ def _model_flow_custom(config):
     # Auto-save to custom_providers so it appears in the menu next time
     _save_custom_provider(effective_url, effective_key, model_name or "", context_length=context_length,
                           name=display_name, api_mode=api_mode, key_env=custom_key_env)
-    if shared_key_env:  # e.g. a providers.<name> row for this endpoint, still on the variable it shares
+    if shared_key_envs:  # e.g. a providers.<name> row for this endpoint, still on a variable it shares
         from hermes_cli.config import load_config, save_config
         from hermes_cli.config_secret_refs import repoint_endpoint_key_env
         cfg = load_config()
-        repoint_endpoint_key_env(cfg, effective_url, shared_key_env, custom_key_env)
+        for shared_key_env in shared_key_envs:
+            repoint_endpoint_key_env(cfg, effective_url, shared_key_env, custom_key_env)
         save_config(cfg)
     _prune_replaced_custom_model_config_credentials(effective_url, provider_name=display_name)
 

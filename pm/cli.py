@@ -515,16 +515,30 @@ def _doctor_uv_cache(*, repair: bool) -> int:
     return 0
 
 
-def _install_alive(store):
-    """A checkout still pins its tools while its dependency state dir exists: the orphan sweep
-    removes that only once it proves the checkout deleted, so a checkout this process cannot see
-    (another mount, a container sharing the data root) keeps its pins."""
+def _live_pin(store, lockfile):
+    """Whether a tool row in ``store``'s facts is still pinned by some checkout.
+
+    A row with no owners (written before per-install history) proves nothing either way and
+    stays, as does one matching this checkout's own lock. Otherwise a checkout still pins its
+    rows while its dependency state dir exists: the orphan sweep removes that only once it
+    proves the checkout deleted, so one this process cannot see (another mount, a container
+    sharing the data root) keeps its pins."""
     from pm.environments import installs_root
-    from pm.lock import install_owner
+    from pm.install import _identity
 
     roots = {installs_root(), store.root.parent / "installs"}
-    own = install_owner()
-    return lambda key: key == own or any((root / key).is_dir() for root in roots)
+
+    def live(name: str, row: dict) -> bool:
+        owners = row.get("owners")
+        if not owners:
+            return True
+        target = row.get("target")
+        identity = _identity(lockfile, name, target) if isinstance(target, str) else None
+        if (identity is not None and row.get("version") == lockfile.version(name)
+                and (target, tuple(row.get("artifacts") or ())) == (identity[0], tuple(identity[1]))):
+            return True
+        return any((root / owner).is_dir() for owner in owners for root in roots)
+    return live
 
 
 def _gc_store(store, facts) -> tuple[int, int]:
@@ -548,7 +562,7 @@ def _gc_store(store, facts) -> tuple[int, int]:
         from pm.defaults import RETIRED_DEFAULTS
 
         facts.forget(RETIRED_DEFAULTS)
-        facts.drop_dead_history(_install_alive(store))
+        facts.drop_dead_pins(_live_pin(store, _lockfile()))
         keep = facts.entries_in_use()
         collect_partials(partials_dir)
         removed += _reclaim_set_aside(store)

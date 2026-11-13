@@ -173,13 +173,7 @@ class Facts:
 
     def variants(self, name: str) -> tuple[dict, ...]:
         """Selected tool fact followed by still-published facts for other pins."""
-        fact = self.get(name)
-        if not isinstance(fact, dict) or "entry" not in fact:
-            return ()
-        previous = fact.get("previous", [])
-        if not isinstance(previous, list):
-            previous = []
-        return (fact, *(row for row in previous if isinstance(row, dict) and "entry" in row))
+        return _tool_rows(self.get(name))
 
     def selected(self, name: str, fact: dict) -> Facts:
         """Return a per-install view without changing the shared selection."""
@@ -322,26 +316,26 @@ class Facts:
         packages = _read(self.path, strict=True)["packages"]
         self.retain(set(packages) - set(names))
 
-    def drop_dead_history(self, live) -> None:
-        """Forget tool pins whose owning checkouts ``live(owner)`` reports gone.
+    def drop_dead_pins(self, live) -> None:
+        """Forget tool rows ``live(name, row)`` rejects, so gc reclaims their entries.
 
-        A dead selection gives way to the first live pin in its history; a row with no owners
-        (written before per-install history) is kept selected, since nothing proves it unused."""
+        A dead selection gives way to the first live pin in its history, and a tool left with
+        no live pin loses its fact."""
         packages = _read(self.path, strict=True)["packages"]
         changed = False
-        for name, fact in packages.items():
-            if not isinstance(fact, dict) or not isinstance(fact.get("previous"), list):
-                continue
-            top = {k: v for k, v in fact.items() if k != "previous"}
-            rows = [row for row in [top, *fact["previous"]]
-                    if isinstance(row, dict) and any(map(live, row.get("owners") or []))]
-            if not top.get("owners") and top not in rows:
-                rows.insert(0, top)
+        for name, fact in list(packages.items()):
+            rows = _tool_rows(fact)
             if not rows:
-                rows = [top]
-            kept = {**rows[0], "previous": rows[1:]} if rows[1:] else rows[0]
-            if kept != fact:
-                packages[name], changed = kept, True
+                continue
+            rows = [{k: v for k, v in row.items() if k != "previous"} for row in rows]
+            kept = [row for row in rows if live(name, row)]
+            if kept == rows:
+                continue
+            changed = True
+            if kept:
+                packages[name] = {**kept[0], "previous": kept[1:]} if kept[1:] else kept[0]
+            else:
+                del packages[name]
         if changed:
             _write(self.path, {"schema": SCHEMA, "packages": packages})
         self._packages = packages
@@ -349,6 +343,13 @@ class Facts:
     def entries_in_use(self) -> set[str]:
         return {fact["entry"] for name in self._packages
                 for fact in self.variants(name)}
+
+
+def _tool_rows(fact) -> tuple[dict, ...]:
+    if not isinstance(fact, dict) or "entry" not in fact:
+        return ()
+    previous = fact.get("previous") if isinstance(fact.get("previous"), list) else []
+    return (fact, *(row for row in previous if isinstance(row, dict) and "entry" in row))
 
 
 def install_owner() -> str:

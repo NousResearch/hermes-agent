@@ -402,18 +402,30 @@ def _refresh_found_env(package, location, target, operation) -> None:
     """:func:`_refresh_recorded_env` for an entry ``ensure`` found installed: `hermes update` skips
     installed defaults, so no install would re-record it. Only the writable store is re-recorded, under
     its install lock (a sealed store's facts ship with the artifact)."""
+    from pm.lock import install_owner
+
     facts, store = location
-    entry = store.entry(facts.get(package.name)["entry"])
-    if (facts.env_for(package.name, store.root) == package.env(entry, target)
+    found = facts.get(package.name)
+    entry = store.entry(found["entry"])
+    # A checkout using an entry another one recorded claims it, so that one's deletion leaves
+    # it in place (#149497).
+    claimed = install_owner() in (found.get("owners") or ())
+    if ((claimed and facts.env_for(package.name, store.root) == package.env(entry, target))
             or store.root != Store(paths.writable_store_root()).root):
         return
     with nullcontext() if operation is not None else store.install_lock():
         facts.reload()
         previous = next((row for row in facts.variants(package.name)
                          if row["entry"] == entry.name), None)
-        if previous is not None:
-            _refresh_recorded_env(package, facts.selected(package.name, previous),
-                                  store, entry, previous, target)
+        if previous is None:
+            return
+        selected = facts.selected(package.name, previous)
+        if install_owner() in (previous.get("owners") or ()):
+            _refresh_recorded_env(package, selected, store, entry, previous, target)
+        else:
+            selected.record(package.name, previous["version"], previous["entry"],
+                            package.env(entry, target), store.root, target=previous.get("target"),
+                            artifacts=previous.get("artifacts"), digest=previous.get("digest"))
 
 
 def _copy_verified_source(package, lockfile, copy_from, staged, version, target) -> None:

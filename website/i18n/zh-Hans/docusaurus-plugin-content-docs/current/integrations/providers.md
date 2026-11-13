@@ -1015,6 +1015,7 @@ ClawRouter 需要在 Base 或 Solana 上有 USDC 充值的钱包用于支付。�
 | [GMI Cloud](https://www.gmicloud.ai/) | `https://api.gmi-serving.com/v1` | 托管 OpenAI 兼容推理 |
 | [Cerebras](https://cerebras.ai) | `https://api.cerebras.ai/v1` | 晶圆级芯片推理 |
 | [Mistral AI](https://mistral.ai) | `https://api.mistral.ai/v1` | Mistral 模型 |
+| [TeamoRouter](https://teamorouter.com) | `https://api.teamorouter.com/v1` | 按量付费的多模型网关：Claude、GPT、Gemini、DeepSeek、Kimi、GLM、Qwen |
 | [OpenAI](https://openai.com) | `https://api.openai.com/v1` | 直连 OpenAI |
 | [Azure OpenAI](https://azure.microsoft.com) | `https://YOUR.openai.azure.com/` | 企业级 OpenAI |
 | [LocalAI](https://localai.io) | `http://localhost:8080/v1` | 自托管，多模型 |

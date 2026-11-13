@@ -1171,8 +1171,6 @@ platform:
         unknown: "Onbekende vaardigheid: `{name}`. Begin tik vir outovoltooi-voorstelle."
       auto_args_description: "Argumente: {args_hint}"
       auto_description_fallback: "Voer /{name} uit"
-    limits:
-      response_truncated: "⚠️ **Antwoord afgekap** — hierdie antwoord het die afleweringslimiet ({max_messages} boodskappe) oorskry. {dropped_chars} karakters is nie afgelewer nie; die volledige antwoord is in die sessieloglae."
     forum:
       default_title: "Nuwe plasing"
     voice:

@@ -744,7 +744,7 @@ Discord's per-upload size limit depends on the server's boost tier (25 MB free, 
 
 ## Long Replies
 
-A reply that would need more than 8 Discord messages (about 16,000 characters) is sent as one `reply-<id>.md` attachment holding the complete text, with a short caption, instead of a long run of 2,000-character messages. While a long reply streams, Hermes stops opening new messages at the limit, uploads the finished reply, then deletes the partial messages it had already posted for it. If the upload fails (no **Attach Files** permission, for example), nothing is deleted and the reply is delivered as messages, cut at 8 with a notice as before. A reply over the attachment limit is split across numbered files of at most 7 MB each.
+A reply that would need more than 8 Discord messages (about 16,000 characters) is sent as one `reply-<id>.md` attachment holding the complete text, with a short caption, instead of a long run of 2,000-character messages. While a long reply streams, Hermes stops opening new messages at the limit, uploads the finished reply, then deletes the partial messages it had already posted for it. If the upload fails (no **Attach Files** permission, for example), nothing is deleted and the whole reply is delivered as messages, never cut short; they go out at the pace Discord's rate limits allow (about five per channel every five seconds), and a rate-limited message is retried after the wait Discord asks for. A reply over the attachment limit is split across numbered files of at most 7 MB each.
 
 ## Receiving Arbitrary File Types
 

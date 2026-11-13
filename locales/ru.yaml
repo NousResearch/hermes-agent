@@ -1171,8 +1171,6 @@ platform:
         unknown: "Неизвестный навык: `{name}`. Начните вводить, чтобы получить подсказки автодополнения."
       auto_args_description: "Аргументы: {args_hint}"
       auto_description_fallback: "Выполнить /{name}"
-    limits:
-      response_truncated: "⚠️ **Ответ обрезан** — этот ответ превысил лимит доставки ({max_messages} сообщений). Не доставлено символов: {dropped_chars}; полный ответ есть в логах сеанса."
     forum:
       default_title: "Новый пост"
     voice:

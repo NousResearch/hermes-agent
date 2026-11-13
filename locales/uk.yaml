@@ -1171,8 +1171,6 @@ platform:
         unknown: "Невідома навичка: `{name}`. Почніть вводити, щоб побачити підказки автодоповнення."
       auto_args_description: "Аргументи: {args_hint}"
       auto_description_fallback: "Виконати /{name}"
-    limits:
-      response_truncated: "⚠️ **Відповідь обрізано** — вона перевищила ліміт доставки ({max_messages} повідомлень). {dropped_chars} символів не доставлено; повна відповідь є в журналах сеансу."
     forum:
       default_title: "Новий допис"
     voice:

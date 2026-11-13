@@ -1187,10 +1187,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
     supports_code_blocks = True  # Discord markdown renders fenced code blocks natively
     allow_from_covers_groups = True  # no group_allow_from: allow_from is the one user allowlist
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
-    # Safety ceiling on split deliveries: chunks beyond the cap become a notice (degenerate turns).
-    # Safety ceiling on split deliveries (#86581): a degenerate turn can produce tens of thousands of
-    # characters — without a cap the adapter posts every 2000-char chunk back-to-back and floods the channel
-    # (the incident delivered 60,698 chars as 31 messages).
+    # A reply needing more messages goes out as one .md file (#152012; the #86581 flood was 31 messages).
+    # If that upload fails the reply is still sent in full, paced by discord.py's rate-limit buckets.
     MAX_SPLIT_MESSAGES = 8
 
     # Voice auto-disconnect after N idle seconds (discord.voice_channel_inactivity_timeout_seconds; 0 off).
@@ -3135,26 +3133,6 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             logger.debug("Could not build reply-to reference: %s", e)
             return None
 
-    def _cap_split_chunks(self, chunks: list[str]) -> list[str]:
-        """Cap chunks at ``MAX_SPLIT_MESSAGES``: keep the first N-1 and replace the rest with a
-        notice so a degenerate turn can't flood the channel (full text stays in session history).
-
-        Cap the number of chunks sent for one logical response (#86581).
-        A degenerate turn can produce tens of thousands of characters; the 86581 incident delivered 60,698
-        chars as 31 back-to-back Discord messages. The full response remains available in the gateway
-        session history / logs. See #86581.
-        """
-        if len(chunks) <= self.MAX_SPLIT_MESSAGES:
-            return chunks
-        kept = chunks[: self.MAX_SPLIT_MESSAGES - 1]
-        dropped_chars = sum(len(c) for c in chunks[self.MAX_SPLIT_MESSAGES - 1 :])
-        notice = "\n\n" + t(
-            "platform.discord.limits.response_truncated",
-            max_messages=str(self.MAX_SPLIT_MESSAGES), dropped_chars=str(dropped_chars))
-        if self.warning_text(notice):
-            kept.append(notice)
-        return kept
-
     async def send(
         self,
         chat_id: str,
@@ -3195,9 +3173,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 result = await self._send_to_forum(channel, content)
                 return await self._record_response_async(reply_to, result, content, final_delivery, metadata)
             formatted = self.format_message(content)
-            chunks = self._cap_split_chunks(
-                self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
-            )
+            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
             message_ids = []
             reference = self._reply_reference_for_send(reply_to, channel)
             for i, chunk in enumerate(chunks):
@@ -3257,7 +3233,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         """Create a forum thread post with the message as starter (forum channels reject direct
         sends; name from the first line). Chunk failures land in ``raw_response['warnings']``."""
         formatted = self.format_message(content)
-        chunks = self._cap_split_chunks(self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH))
+        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         thread_name = _derive_forum_thread_name(content)
         starter_content = chunks[0] if chunks else thread_name
         try:
@@ -3422,7 +3398,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         A continuation failure still reports success plus ``partial_overflow`` so the consumer
         delivers the tail; only a first-chunk edit failure returns ``success=False``."""
         formatted = self.format_message(content)
-        chunks = self._cap_split_chunks(self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH))
+        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         if len(chunks) <= 1:
             # Defensive: pre-flight should guarantee >1 chunk; otherwise edit normally.
             await msg.edit(content=chunks[0] if chunks else formatted)

@@ -371,6 +371,7 @@ Returns a machine-readable description of the API server's stable surface for ex
     "run_status": true,
     "run_events_sse": true,
     "run_stop": true,
+    "run_pause": true,
     "reasoning_streaming": true
   }
 }
@@ -532,6 +533,8 @@ Poll the current run state. This is useful for dashboards that need status witho
 
 Statuses are retained briefly after terminal states (`completed`, `failed`, `cancelled`, or `interrupted`) for polling and UI reconciliation. When the gateway shuts down while a run is active, the run is persisted as `interrupted` (error `Gateway shutdown interrupted the run.`, terminal event `run.interrupted`) before the agent is asked to stop, so a durable run never survives a restart as `running`; a late result from the interrupted turn cannot overwrite it. A canonical run whose owner restarted mid-turn reports `unknown` instead, which is not terminal: later turns in that session wait until it is acknowledged with `POST /v1/runs/{run_id}/resolve-unknown` (below).
 
+A live run that was asked to pause reads `pausing` until it reaches its next safe boundary and `paused` while it is suspended there (see [pause and resume](#post-v1runsrun_idpause) below); after resume it reads `running` again.
+
 While the gateway is still draining (a `hermes gateway stop`/`restart` or SIGTERM with a turn in flight), every non-terminal run additionally carries `shutdown_requested_at` (Unix seconds) from the moment new turns are refused. `status` stays `running` because the turn is still being served; a poller that sees the field knows the process is on its way out and the run will end `interrupted` at the latest when the drain budget expires. Terminal runs never gain the field.
 
 ### GET /v1/runs/\{run_id\}/events
@@ -652,6 +655,45 @@ Interrupt a running agent turn. The endpoint returns immediately with `{"status"
 The run stays tracked as `stopping` until the executor-backed work exits, then
 settles as `cancelled`; requesting stop never hides a worker that is still
 running.
+
+### POST /v1/runs/\{run_id\}/pause
+
+Suspend a running turn mid-turn without losing it. The endpoint returns at once with
+`{"object": "hermes.run.pause", "run_id": "...", "status": "pausing", "max_pause_seconds": 1800}`;
+nothing in flight is aborted. The current tool call or model request finishes, and the turn
+then blocks at its next safe boundary: between tool batches, before the next model request.
+The status turns `paused` and the run's event stream emits `run.paused` (`paused_at`,
+`max_pause_seconds`). The turn keeps its context, its run slot and its place in the session.
+
+- Works for `POST /v1/runs` runs and for `POST /api/sessions/{id}/chat/stream` turns: the
+  chat stream's `run_id` is a run id here too, and the stream itself carries `run.paused` /
+  `run.resumed` as named events.
+- `POST /v1/runs/{run_id}/steer` while paused is accepted; the note is delivered right after
+  resume, before the next model request.
+- `POST /v1/runs/{run_id}/stop` while paused wakes the turn and stops it; the run settles
+  `cancelled` with no further model request.
+- SSE keepalive comments keep flowing on both streams while the run is paused.
+- A pause that is never resumed stops the run after `gateway.api_server.max_pause_seconds`
+  (default `1800`, `0` = never; env `API_SERVER_MAX_PAUSE_SECONDS`), so a forgotten pause does
+  not hold a run slot. The turn exit reason reads `interrupted_by_system(run_pause_timeout)`.
+- Delegated subagents already running keep running; the parent pauses at its own boundary.
+
+Returns `409 run_not_pausable` when the run is not `running` in this gateway (queued,
+settled, stopping, already pausing or paused, or a turn whose loop Hermes does not own, such
+as the Codex app-server runtime), and `404 run_not_found` for an unknown run. Advertised as
+`features.run_pause` and the `run_pause` / `run_resume` endpoints in `/v1/capabilities`;
+clients should hide Pause when the flag is absent.
+
+### POST /v1/runs/\{run_id\}/resume
+
+Let a `pausing` or `paused` run continue. Returns
+`{"object": "hermes.run.resume", "run_id": "...", "status": "running"}` and emits
+`run.resumed` (`previous_status`: `pausing` or `paused`). Resuming a run that never reached
+its boundary just cancels the pause. `409 run_not_paused` when the run is not pausing or
+paused (including after a stop or the max-pause auto-stop), `404 run_not_found` when unknown.
+
+A pause is live state of the gateway process that runs the turn; it is not persisted, and a
+gateway restart ends a paused run like any other running one.
 
 ### POST /v1/runs/\{run_id\}/approval
 
@@ -833,6 +875,7 @@ The API server gives full access to hermes-agent's toolset, **including terminal
 | `API_SERVER_KEY` | _(required)_ | Bearer token for auth |
 | `API_SERVER_CORS_ORIGINS` | _(none)_ | Comma-separated allowed browser origins |
 | `API_SERVER_MODEL_NAME` | _(profile name)_ | Model name on `/v1/models`. Defaults to profile name, or `hermes-agent` for default profile. |
+| `API_SERVER_MAX_PAUSE_SECONDS` | `1800` | Auto-stop a run left paused this long; `0` disables (overrides `max_pause_seconds`) |
 
 ### config.yaml
 
@@ -848,6 +891,7 @@ gateway:
     cors_origins: http://localhost:3000
     model_name: my-hermes
     max_concurrent_runs: 10   # concurrent-run cap; 0 disables the limit
+    max_pause_seconds: 1800   # auto-stop a run paused via /v1/runs/{id}/pause; 0 = never
     history_tool_output_max_chars: 0   # cap tool outputs in stored /v1/responses history; 0 = verbatim
 ```
 

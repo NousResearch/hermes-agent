@@ -5,6 +5,7 @@ import { getGlobalModelOptions } from '@/hermes'
 
 import {
   catalogProviderMatches,
+  catalogProviderSelectionId,
   customDefaultSupersedesPick,
   moaPickRemoved,
   modelOptionsQueryKey,
@@ -228,6 +229,39 @@ describe('catalogProviderMatches', () => {
     expect(catalogProviderMatches(cloudflare, 'Cloudflare')).toBe(true)
     expect(catalogProviderMatches(cloudflare, 'custom:cloudflare')).toBe(true)
     expect(catalogProviderMatches(cloudflare, 'openrouter')).toBe(false)
+  })
+})
+
+describe('catalogProviderSelectionId', () => {
+  it('emits the custom identity a keyed user-defined row aliases', () => {
+    // A keyed `providers:` entry is cataloged under its bare key plus the
+    // alias set; the alias tied to the KEY is the canonical identity.
+    expect(
+      catalogProviderSelectionId({
+        slug: 'minimax-cn',
+        name: 'A relay',
+        aliases: ['a relay', 'a-relay', 'custom:a-relay', 'custom:minimax-cn', 'minimax-cn']
+      })
+    ).toBe('custom:minimax-cn')
+  })
+
+  it('keeps a builtin row on its builtin slug', () => {
+    expect(catalogProviderSelectionId({ slug: 'minimax-cn', name: 'MiniMax China', aliases: [] })).toBe('minimax-cn')
+  })
+
+  it('keeps a row that only carries a display-name alias on its bare slug', () => {
+    // The alias set also carries the display name's spelling; only the
+    // alias tied to the row's own key may canonicalize the pick.
+    expect(catalogProviderSelectionId({ slug: 'minimax-cn', name: 'A relay', aliases: ['custom:a-relay'] })).toBe(
+      'minimax-cn'
+    )
+  })
+
+  it('keeps an already canonical row and the bare legacy custom endpoint', () => {
+    expect(catalogProviderSelectionId({ slug: 'custom:lab', name: 'Lab', aliases: ['custom:lab'] })).toBe('custom:lab')
+    expect(catalogProviderSelectionId({ slug: 'custom', name: 'Custom endpoint', aliases: ['custom:custom'] })).toBe(
+      'custom'
+    )
   })
 })
 

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
@@ -83,6 +83,36 @@ function renderPanel(onSelectModel = vi.fn(), onFollowDefaultModel?: () => void)
 
   return { onSelectModel, content }
 }
+
+describe('ModelMenuPanel provider selection identity', () => {
+  it.each([null, 'runtime-1'])('emits the custom key for a row click owned by %s', async sessionId => {
+    $activeSessionId.set(sessionId ?? '')
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          slug: 'minimax-cn',
+          name: 'A relay',
+          aliases: ['custom:a-relay', 'custom:minimax-cn', 'minimax-cn'],
+          models: ['selection-model']
+        }
+      ]
+    })
+    const { content, onSelectModel } = renderPanel()
+
+    const row = await content.findByText(/Selection Model/i)
+    await act(async () => {
+      fireEvent.click(row)
+    })
+
+    await vi.waitFor(() =>
+      expect(onSelectModel).toHaveBeenCalledWith({
+        model: 'selection-model',
+        provider: 'custom:minimax-cn',
+        sessionId
+      })
+    )
+  })
+})
 
 describe('ModelMenuPanel MoA presets', () => {
   it('selecting a MoA preset switches PERSISTENTLY via onSelectModel (not the one-shot dispatch)', async () => {

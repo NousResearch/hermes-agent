@@ -1,12 +1,5 @@
 import type { ModelOptionProvider, ModelOptionsResult, ModelPricing } from '@hermes/shared'
-import {
-  DEFAULT_REASONING_EFFORT,
-  planBlocks,
-  sectionAt,
-  splitRecommended,
-  usageLevel,
-  usageTag
-} from '@hermes/shared'
+import { DEFAULT_REASONING_EFFORT, planBlocks, sectionAt, splitRecommended, usageLevel, usageTag } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import {
@@ -44,7 +37,12 @@ import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { isSubmitEnter } from '@/lib/ime'
-import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import {
+  catalogProviderMatches,
+  catalogProviderSelectionId,
+  modelOptionsQueryKey,
+  requestModelOptions
+} from '@/lib/model-options'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import { accountResetMs, formatReset, modelResetMs } from '@/lib/provider-limit'
 import { reasoningEffortLabel } from '@/lib/reasoning-effort'
@@ -442,7 +440,7 @@ export function ModelCatalogMenu({
     const variantFast = !(caps?.fast ?? false) && !!family.fastId
     const targetId = variantFast && preset.fast === true ? family.fastId! : family.id
 
-    if ((await controller.select(targetId, provider.slug)) === false) {
+    if ((await controller.select(targetId, catalogProviderSelectionId(provider))) === false) {
       return false
     }
 
@@ -1208,7 +1206,7 @@ function ModelFamilyRow({
         fastControl={fastControl}
         isActive={isCurrent}
         model={family.id}
-        onSelectModel={nextModel => controller.select(nextModel, provider.slug)}
+        onSelectModel={nextModel => controller.select(nextModel, catalogProviderSelectionId(provider))}
         onSetOptions={patch =>
           controller.setOptions(patch, { isActive: isCurrent, model: family.id, provider: provider.slug })
         }
@@ -1458,7 +1456,10 @@ function nousPricingPoll(data: ModelOptionsResult | undefined, updates: number):
 // current-model pin above, so a pinned custom model lands under "Other models" instead of taking the
 // first pick's "Recommended" heading.
 function recommendedFirst(provider: ModelOptionProvider, families: ModelFamily[]): ModelFamily[] {
-  const split = splitRecommended(provider, families.map(family => family.id))
+  const split = splitRecommended(
+    provider,
+    families.map(family => family.id)
+  )
 
   if (!split) {
     return families

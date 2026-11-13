@@ -1,7 +1,7 @@
 import assert from 'node:assert'
 import zlib from 'node:zlib'
 
-import { test } from 'vitest'
+import { test, vi } from 'vitest'
 
 import { __testing, extractThemes, readCentralDirectory } from './vscode-marketplace'
 
@@ -243,6 +243,34 @@ test('extractThemes bounds the total inflated bytes across theme entries', () =>
 
   const total = extractThemes(zip).reduce((sum, theme) => sum + theme.contents.length, 0)
   assert.ok(total <= 64 * 1024 * 1024, `inflated ${total} bytes`)
+})
+
+test('extractThemes stops re-inflating a bomb listed many times', () => {
+  // A failed entry must still count against the theme cap and the byte budget;
+  // otherwise each duplicate listing re-inflates the bomb up to the entry cap.
+  const bomb = Buffer.alloc(16 * 1024 * 1024 + 1, 0x41)
+
+  const pkg = JSON.stringify({
+    name: 'repeat-bomb',
+    contributes: {
+      themes: Array.from({ length: 200 }, (_, i) => ({ label: `B${i}`, uiTheme: 'vs-dark', path: './b.json' }))
+    }
+  })
+
+  const zip = makeZipWithDeflated([
+    { name: 'extension/package.json', data: pkg, method: 0 },
+    { name: 'extension/b.json', data: bomb, method: 8 }
+  ])
+
+  const inflate = vi.spyOn(zlib, 'inflateRawSync')
+
+  try {
+    assert.deepStrictEqual(extractThemes(zip), [])
+    // package.json is stored, so every call is a bomb attempt; 64 MB / 16 MB.
+    assert.ok(inflate.mock.calls.length <= 4, `inflated the bomb ${inflate.mock.calls.length} times`)
+  } finally {
+    inflate.mockRestore()
+  }
 })
 
 test('extractThemes returns empty when the extension contributes no themes', () => {

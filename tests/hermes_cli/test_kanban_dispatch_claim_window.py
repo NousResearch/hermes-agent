@@ -8,6 +8,7 @@ never-vetted profile: the claim loses and the next tick gates the new assignee.
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -103,3 +104,22 @@ def test_reassign_before_default_fill_does_not_log_phantom_assignment(
     assert res.auto_assigned_default == []
     assert res.skipped_unassigned == []
     assert assigned_payloads == [{"assignee": "worker-b", "from": None}]
+
+
+def test_failed_default_fill_write_still_buckets_unassigned(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    """A fill-in whose write failed (no concurrent assign) keeps the card visible as unassigned."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="unassigned", assignee=None)
+
+        def boom(*_a, **_k):
+            raise sqlite3.OperationalError("disk I/O error")
+
+        monkeypatch.setattr(kb, "_append_event", boom)
+        res = kbd.dispatch_once(conn, default_assignee="worker-a", spawn_fn=lambda task, _ws: 4242)
+        task = kb.get_task(conn, tid)
+
+    assert task is not None and not task.assignee  # the failed txn rolled the UPDATE back
+    assert res.skipped_unassigned == [tid]
+    assert (res.auto_assigned_default, res.spawned) == ([], [])

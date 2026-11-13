@@ -116,6 +116,14 @@ class TestImageToBase64DataUrl:
         with pytest.raises(FileNotFoundError):
             _image_to_base64_data_url(tmp_path / "nonexistent.png")
 
+    def test_label_follows_bytes_not_the_hint(self, tmp_path):
+        """A JPEG handed in as image/png (browser screenshot paths) must be labelled image/jpeg."""
+        Image = pytest.importorskip("PIL.Image")
+        jpg = tmp_path / "shot.png"
+        Image.new("RGB", (8, 8), "red").save(jpg, format="JPEG")
+        assert _image_to_base64_data_url(jpg, mime_type="image/png").startswith("data:image/jpeg;base64,")
+        assert _resize_image_for_vision(jpg, mime_type="image/png").startswith("data:image/jpeg;base64,")
+
 
 # ---------------------------------------------------------------------------
 # _handle_vision_analyze — type signature & behavior

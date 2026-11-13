@@ -17,7 +17,7 @@ tier: community
 category: web
 requires_hermes: ">=0.22"
 docs_url: https://github.com/abundantbeing/hermes-browser-extension/blob/438460d460e67855d1183f6fc7a149292f3f722f/companion-plugin/install.md
-image: https://raw.githubusercontent.com/abundantbeing/hermes-browser-extension/438460d460e67855d1183f6fc7a149292f3f722f/assets/readme/release-v0.4.0.jpg
+image: https://raw.githubusercontent.com/abundantbeing/hermes-browser-extension/a97e191dc4670222a3689a0dc4092ea20d391c37/assets/readme/catalog-cover.jpg
 screenshots:
   - https://raw.githubusercontent.com/abundantbeing/hermes-browser-extension/438460d460e67855d1183f6fc7a149292f3f722f/assets/readme/hermes-browser-control.png
 readme: true

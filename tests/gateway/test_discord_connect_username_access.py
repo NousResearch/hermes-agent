@@ -85,3 +85,45 @@ async def test_a_single_profile_reconnect_then_an_unrelated_save_keeps_the_resol
     finally:
         await adapter.disconnect()
     assert verdict is True
+
+
+@pytest.mark.asyncio
+async def test_an_operators_own_list_still_wins_over_the_yaml_on_a_reconnect(connectable, tmp_path, monkeypatch):
+    """Only the bridge's own value is swapped for the YAML names on connect(): an operator's
+    DISCORD_ALLOWED_USERS keeps beating config.yaml (#109032), on every connection."""
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "333")
+    _write(tmp_path, {"allow_from": ["alice"]}, 0)
+    adapter = DiscordAdapter(load_gateway_config().platforms[Platform.DISCORD])
+    try:
+        assert await adapter.connect() is True
+        assert await adapter.connect() is True
+        verdicts = (adapter._is_allowed_user("333"), adapter._is_allowed_user("111"))
+    finally:
+        await adapter.disconnect()
+    assert verdicts == (True, False)
+
+
+@pytest.mark.asyncio
+async def test_a_multiplexed_profiles_own_env_list_wins_over_its_yaml(connectable, tmp_path, monkeypatch):
+    """Under multiplex the process env is the launch profile's: its bridge marker says nothing about a
+    served profile, whose own .env list must keep beating that profile's config.yaml."""
+    from agent.secret_scope import reset_multiplex_context, set_multiplex_context
+    from gateway.platforms._shared import bridged_env_digest
+    from gateway.run import _profile_runtime_scope
+
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "alice")  # the launch profile's bridged YAML value
+    monkeypatch.setenv("HERMES_BRIDGED_DISCORD_ALLOWED_USERS", bridged_env_digest("alice"))
+    home = tmp_path / "b"
+    home.mkdir()
+    _write(home, {"allow_from": ["alice"]}, 0)
+    (home / ".env").write_text("DISCORD_ALLOWED_USERS=333\n", encoding="utf-8")
+    token = set_multiplex_context(True)
+    try:
+        with _profile_runtime_scope(home):
+            adapter = DiscordAdapter(load_gateway_config().platforms[Platform.DISCORD])
+            assert await adapter.connect() is True
+            verdicts = (adapter._is_allowed_user("333"), adapter._is_allowed_user("111"))
+            await adapter.disconnect()
+    finally:
+        reset_multiplex_context(token)
+    assert verdicts == (True, False)

@@ -28,7 +28,6 @@ import {
   applyBargeInEnabledFromConfig,
   applyBargeInThresholdFromConfig,
   applyThinkingSoundFromConfig,
-  applyVoiceMaxRecordingSecondsFromConfig,
   applyVoiceSilenceMsFromConfig,
   applyVoiceStopPhraseFromConfig
 } from '@/store/voice-prefs'
@@ -135,7 +134,6 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
           return
         }
 
-        applyVoiceMaxRecordingSecondsFromConfig(config)
         setSttEnabled(config.stt?.enabled !== false)
 
         if (!canPublish()) {

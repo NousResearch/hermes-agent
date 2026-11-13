@@ -76,6 +76,11 @@ vi.mock('../scope', () => ({
 // The ambient selection resolveOwnerNow reads; tests flip it mid-recording.
 const ambient = { connectionId: 'gateway-a' as null | string, profile: 'worker_alpha' as null | string }
 
+vi.mock(import('@/api/client'), async importOriginal => ({
+  ...(await importOriginal()),
+  hermesApiAs: vi.fn().mockResolvedValue({})
+}))
+
 vi.mock('@/hermes', () => ({
   resolveOwnerNow: (owner?: { connectionId?: string; profile?: string }) => ({
     connectionId: owner?.connectionId || ambient.connectionId,
@@ -127,7 +132,10 @@ describe('useVoiceRecorder STT readiness barrier', () => {
     const hook = renderRecorder(transcribe)
 
     try {
-      act(() => hook.result.current.dictate())
+      await act(async () => {
+        hook.result.current.dictate()
+      })
+      expect(micHandle.start).toHaveBeenCalledTimes(1)
       hook.unmount()
       await act(async () => {
         ready.resolve()

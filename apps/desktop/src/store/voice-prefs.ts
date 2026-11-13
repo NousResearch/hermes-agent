@@ -166,20 +166,11 @@ export function applyVoiceSilenceMsFromConfig(config: ConfigPayload, defaults?: 
   $voiceSilenceMs.set(seconds !== null && seconds !== defaultSeconds ? seconds * 1_000 : DESKTOP_SILENCE_MS_DEFAULT)
 }
 
-// `voice.max_recording_seconds` — how long one dictation may run before it
-// stops itself. Every composer (main chat and session tiles) records against
-// it, so it lives here with the other voice settings rather than as a prop.
-const DEFAULT_MAX_RECORDING_SECONDS = 120
-
-export const $voiceMaxRecordingSeconds = atom<number>(DEFAULT_MAX_RECORDING_SECONDS)
-
-/** Seed the dictation cap from a loaded config payload. */
-export function applyVoiceMaxRecordingSecondsFromConfig(config: ConfigPayload) {
+/** Parse the dictation owner's cap, never the foreground profile's cache. */
+export function voiceMaxRecordingSecondsFromConfig(config: ConfigPayload): number {
   const value = voiceValue(config, 'max_recording_seconds')
 
-  $voiceMaxRecordingSeconds.set(
-    typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : DEFAULT_MAX_RECORDING_SECONDS
-  )
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 120
 }
 
 // `voice.thinking_sound` — ambient bubble blips while the agent works during a

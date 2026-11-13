@@ -1,6 +1,6 @@
-import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
+import { hermesApiAs } from '@/api/client'
 import { type ResolvedOwner, resolveOwnerNow } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { syncSttLease, VOICE_INPUT_LEASE } from '@/lib/stt-lease'
@@ -8,7 +8,7 @@ import { fetchVoiceClientConfigFor } from '@/lib/voice-client-direct'
 import { type DictationStreamSession, openDictationStream } from '@/lib/voice-stream'
 import { recordFeatureUse } from '@/store/desktop-metrics'
 import { notify, notifyError } from '@/store/notifications'
-import { $voiceMaxRecordingSeconds } from '@/store/voice-prefs'
+import { voiceMaxRecordingSecondsFromConfig } from '@/store/voice-prefs'
 
 import { useComposerScope } from '../scope'
 import type { VoiceActivityState, VoiceStatus } from '../types'
@@ -42,7 +42,6 @@ export function useVoiceRecorder({
   const { t } = useI18n()
   const voiceCopy = t.notifications.voice
   const { handle, level, recording } = useMicRecorder(voiceCopy)
-  const maxRecordingSeconds = useStore($voiceMaxRecordingSeconds)
   // The scope's session owner (a Bot tile's own connection + profile); the
   // main composer leaves it unset and the ambient scope fills it at mic-open.
   const { connectionId: ownerConnectionId, profile: ownerProfile } = useComposerScope()
@@ -185,6 +184,15 @@ export function useVoiceRecorder({
     dictationRef.current = dictation
 
     try {
+      // Bot tiles can outlive foreground profile changes. Read the cap from
+      // the same pinned owner as STT, before opening the mic or its timer.
+      const config = await hermesApiAs<Record<string, unknown>>(owner, { path: '/api/config' }).catch(() => null)
+
+      if (dictationRef.current !== dictation) {
+        return
+      }
+
+      const maxRecordingSeconds = voiceMaxRecordingSecondsFromConfig(config)
       await handle.start({
         onError: error => notifyError(error, voiceCopy.recordingFailed),
         onPcm: stream.push,

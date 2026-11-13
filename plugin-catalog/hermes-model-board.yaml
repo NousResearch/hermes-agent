@@ -1,0 +1,20 @@
+name: hermes-model-board
+repo: https://github.com/driptothebone/hermes-model-board
+sha: 17de6b85a7e746909d6e524b245d78ccf3187dc7
+description: Phone-first bulk model routing across profiles with exact preview, confirmation and saved-setting readback.
+maintainer: driptothebone
+tier: community
+category: models
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+title: Model Board
+screenshots:
+  - https://raw.githubusercontent.com/driptothebone/hermes-model-board/17de6b85a7e746909d6e524b245d78ccf3187dc7/docs/phone-demo.png
+known_issues:
+  - Requires an initialized in-process machine dashboard and local-file config backend; isolated plugin workers and remote backends are unsupported.
+  - Uses version-sensitive Hermes config-backend APIs; local validation reports private-import warnings.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

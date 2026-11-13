@@ -20,9 +20,12 @@ _FILLER = r"(?:\w+\s+){0,8}"
 # Env var reference ending in a secret-ish suffix (see exfil comment below).
 _SECRET_VAR = r"\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)S?\b"
 # "forget your original instructions" (#26977); shared with tools/skills_guard.py. The word before `forget` is
-# consumed rather than looked behind so the "don't / never / do not forget" exclusion holds across any run of
-# whitespace (fixed-width lookbehinds missed `Never  forget` and a line break).
-FORGET_RULES_RE = (r"(?:(?<![\w’'])(?!(?:\w*(?:n[’']?t|not)|never)\s)[\w’']+\s+|(?:^|[^\w\s’']|(?<!\w)[’'])\s*)"
+# consumed rather than looked behind so a "don't / never / do not forget" exclusion holds across any run of spaces
+# or tabs. Negators are an explicit whole-word list (a suffix match let `IMPORTANT` / `Agent` negate) and never reach
+# across a line break, so a heading line above the payload cannot suppress it.
+_NEGATOR = (r"(?:(?:do|does|did|ca|could|would|should|wo|must|need|is|are|was|were|ai|has|have|had)n[’']?t"
+            r"|cannot|not|never)")
+FORGET_RULES_RE = (rf"(?:(?<![\w’'])(?!{_NEGATOR}[ \t])[\w’']+[ \t]+|(?:^|[^\w’' \t]|(?<!\w)[’'])[ \t]*)"
                    r"forget\s+(?:about\s+)?(your|all|any|previous|prior|above|earlier)"
                    r"\s+(?:\w+\s+){0,3}(instructions|rules|guidelines)\b")
 # Verb prefix for "modify agent config" patterns.

@@ -980,6 +980,7 @@ platform:
     denied: "❌ 거부됨."
     approval_expired: "⌛ 승인이 만료되어 명령이 실행되지 않았어요 (이미 시간 초과되었거나 다른 곳에서 처리됨)."
   shared:
+    response_as_file: "📎 긴 답변이라 전체 내용을 파일로 첨부했습니다."
     truncated_suffix: "\n...(잘림)"
     unknown: "알 수 없음"
     approval_expired: "⌛ 승인이 만료되어 명령이 실행되지 않았어요 (이미 시간 초과되었거나 다른 곳에서 처리됨)."
@@ -1170,8 +1171,6 @@ platform:
         unknown: "알 수 없는 스킬: `{name}`. 입력을 시작하면 자동 완성 제안이 표시돼요."
       auto_args_description: "인수: {args_hint}"
       auto_description_fallback: "/{name} 실행"
-    limits:
-      response_truncated: "⚠️ **응답 잘림** — 이 답변이 전송 한도({max_messages}개 메시지)를 초과했어요. {dropped_chars}자가 전송되지 않았고, 전체 응답은 세션 로그에 있어요."
     forum:
       default_title: "새 게시물"
     voice:

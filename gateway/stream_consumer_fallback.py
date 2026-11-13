@@ -9,6 +9,7 @@ import logging
 from typing import Any, Callable, Optional
 
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
+from gateway.platforms.helpers import reply_file_off
 from gateway.stream_consumer_fences import ensure_closed_code_fences, open_code_fence_span
 
 logger = logging.getLogger("gateway.stream_consumer")
@@ -31,11 +32,13 @@ class StreamFallbackMixin:
         except Exception as e:
             logger.error("Stream send chunk error: %s", e, exc_info=True)
             if await self._uncertain_send_fully_shown(e):
+                self._ceiling_note_unknown()
                 self._already_sent = True
                 self._last_sent_text = text
                 return "__no_edit__"
             return reply_to_id
         if not result.success and await self._uncertain_send_fully_shown(result):
+            self._ceiling_note_unknown()
             # The head may be visible without a message id. Do not send it again
             # inside the whole answer; the split loop must send only its unseen tail.
             self._already_sent = True
@@ -171,6 +174,8 @@ class StreamFallbackMixin:
 
         _len_fn, raw_limit = self._fallback_len_budget()
         chunks = self._split_text_chunks(continuation, max(500, raw_limit - 100), len_fn=_len_fn)
+        if await self._ceiling_fallback_file(final_text, chunks):
+            return  # the continuation would pass the reply's message cap: the whole reply went as a file
 
         stale_message_id = self._message_id  # partial message to clean up
         last_message_id: Optional[str] = None
@@ -194,6 +199,7 @@ class StreamFallbackMixin:
             if shown:
                 # This chunk may be on screen: count it, so neither it nor the whole answer is
                 # sent again; later chunks still go out and must land on their own.
+                self._ceiling_note_unknown()
                 sent_any_chunk = True
                 last_successful_chunk = chunk
                 continue
@@ -213,6 +219,7 @@ class StreamFallbackMixin:
                     self._message_id = stale_message_id
                 self._fallback_prefix = ""
                 return
+            self._ceiling_observe(result)
             sent_any_chunk = True
             last_successful_chunk = chunk
             last_message_id = result.message_id or last_message_id
@@ -365,6 +372,7 @@ class StreamFallbackMixin:
             return "ambiguous" if await self._uncertain_send_fully_shown(result) else "failed"
 
         new_message_id = getattr(result, "message_id", None)
+        self._ceiling_observe(result)
         # Telegram reports delete failure by returning False; the flood window that
         # broke the finalize can reject this too — one bounded retry.
         await self._delete_previews(stale_ids, skip=new_message_id, label="Empty fallback",
@@ -466,9 +474,10 @@ class StreamFallbackMixin:
             _plat = getattr(getattr(self.adapter, "platform", None), "value", None)
             _platform_name = str(_plat or getattr(self.adapter, "name", "")).lower()
             _needs_reply_anchor = _platform_name in ("buzz", "slack", "mattermost", "feishu")
-            result = await self.adapter.send(
-                chat_id=self.chat_id, content=text,
-                reply_to=self._initial_reply_to_id if _needs_reply_anchor else None, metadata=_md)
+            with reply_file_off(False):  # a complete message: past the cap it goes out as one file (#152012)
+                result = await self.adapter.send(
+                    chat_id=self.chat_id, content=text,
+                    reply_to=self._initial_reply_to_id if _needs_reply_anchor else None, metadata=_md)
             # Do NOT set _already_sent: commentary is interim, and the flag would
             # suppress the real final after multiple tool calls.
             if result.success:

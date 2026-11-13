@@ -1024,6 +1024,7 @@ platform:
     denied: "❌ Denied."
     approval_expired: "⌛ Approval expired — command was not run (already timed out or resolved elsewhere)."
   shared:
+    response_as_file: "📎 Long reply: the full text is attached."
     truncated_suffix: "\n...(truncated)"
     unknown: "unknown"
     approval_expired: "⌛ Approval expired — the command was not run (it already timed out or was resolved elsewhere)."
@@ -1220,8 +1221,6 @@ platform:
         unknown: "Unknown skill: `{name}`. Start typing for autocomplete suggestions."
       auto_args_description: "Arguments: {args_hint}"
       auto_description_fallback: "Run /{name}"
-    limits:
-      response_truncated: "⚠️ **Response truncated** — this reply exceeded the delivery limit ({max_messages} messages). {dropped_chars} characters were not delivered; the full response is in the session logs."
     forum:
       default_title: "New Post"
     voice:

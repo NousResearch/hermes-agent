@@ -3317,9 +3317,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 return web.json_response({"error": scan_error}, status=400)
         return None
 
-    def _job_response(self, fn, job_id: str, *, notify: bool) -> web.Response:
+    def _job_response(self, fn, job_id: str, *, notify: bool, invalid_input=()) -> web.Response:
         from gateway.platforms.api_server_cron_jobs import job_response
-        return job_response(self, fn, job_id, notify=notify)
+        return job_response(self, fn, job_id, notify=notify, invalid_input=invalid_input)
 
     async def _job_lookup_or_mutate(self, request: web.Request, fn, *, notify: bool) -> web.Response:
         job_id, err = self._cron_request_guard(request, need_job_id=True)

@@ -1,0 +1,4 @@
+name: hermes-context-visor
+version: 0.1.0
+description: "Read-only Context Cockpit — /visor opens a glanceable context / LCM / cost / model dashboard. Prototype ships as localhost UI; please fold into Desktop, not leave it as a separate browser page."
+author: "@iog-creator"

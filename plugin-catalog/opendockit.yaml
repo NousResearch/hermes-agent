@@ -1,0 +1,17 @@
+name: opendockit
+repo: https://github.com/hyeonsang010716/OpenDocKit
+sha: 9cd9d1818fa602b3f35045cf49c606a74e23e808
+subdir: hermes-plugin
+description: "Read local documents as Markdown: PDF, Word, PowerPoint, Excel, CSV, HWP/HWPX, OpenDocument, RTF, EPUB, HTML and email, whole or by page, slide or sheet, with a skill for reading long documents in parts. Portable Agent Plugins v1 package (mcp.json + skills/). Disclosure — runs a local stdio MCP server through uvx (opendockit[mcp]==0.3.1 with dependencies resolved as of 2026-11-14, downloaded from PyPI on first start); read-only; reads any file the user can read unless OPENDOCKIT_MCP_ROOTS names the allowed folders; no network when converting, no telemetry, no credentials; no OCR."
+maintainer: hyeonsang010716
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/hyeonsang010716/OpenDocKit/tree/main/hermes-plugin
+version: "0.3.1"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

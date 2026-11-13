@@ -28,10 +28,10 @@ async def test_flood_response_defers_even_forced_flush_and_reuses_id(telegram_ap
     adapter, api = telegram_api
     status, clock = await initial_status(adapter, monkeypatch)
     mid = next(iter(api.messages))[1]
-    api.reject("editMessageText", 429, "Too Many Requests: retry after 30", retry_after=30, times=2)
+    api.reject("editMessageText", 429, "Too Many Requests: retry after 30", retry_after=30, times=1)
     await status.flush()
     attempts = len(api.requests("editMessageText"))
-    assert attempts == 2  # Markdown and plain fallback both see the real SDK RetryAfter.
+    assert attempts == 1  # A flood refusal is not answered with a plain-text fallback (#76494).
     await status.flush(force=True)
     assert len(api.requests("editMessageText")) == attempts
     clock[0] = 43

@@ -143,6 +143,18 @@ def admit_session_input(db, *, epoch: int, principal_id: str, session_id: str,
     if intent not in ('queue', 'steer', 'redirect'):
         raise RuntimeStoreError('invalid_params')
     encoded = _json(payload)
+    import time
+    arrived = time.time()
+    from session_input_primitives import prepare_input, retry_alias, snapshot_for
+    digest = admission_fingerprint(canonical_target=session_id, payload={'input': json.loads(encoded), 'intent': intent})
+    # The provider snapshot is frozen before any write transaction opens: no plugin
+    # call ever runs while the SQLite writer waits on it.
+    snapshot = snapshot_for(db, payload)
+    with db._read_ctx() as conn:
+        _epoch(conn, epoch)
+        alias = retry_alias(conn, principal=principal_id, session=session_id, request=request_id, digest=digest)
+    if alias is not None:
+        return alias
     from hermes_state_terminal import retry_terminal_admission
     retired = retry_terminal_admission(db, epoch=epoch, principal_id=principal_id, session_id=session_id,
         request_id=request_id, payload=payload, intent=intent)
@@ -160,19 +172,26 @@ def admit_session_input(db, *, epoch: int, principal_id: str, session_id: str,
             if _replay_guard is not None:
                 _replay_guard(conn)
             return _row(old)
+        alias = retry_alias(conn, principal=principal_id, session=session_id, request=request_id, digest=digest)
+        if alias is not None:
+            return alias
+        if _authorize_write is not None:
+            _authorize_write(conn)
+        prepared, folded = prepare_input(db, conn, principal=principal_id, session=session_id,
+            request=request_id, encoded=encoded, digest=digest, arrived=arrived, snapshot=snapshot)
+        if folded is not None:
+            return folded
         queued = conn.execute('''SELECT COUNT(*) FROM session_admissions WHERE target_session_id=?
             AND status='queued' ''', (session_id,)).fetchone()[0]
         # Main's cap holds in both states: a FIFO paused behind an unknown turn runs every accepted
         # input after Discard, so it must not grow without bound while nobody resolves it.
         if queued >= ADMISSION_QUEUE_MAX:
             raise RuntimeStoreError('queue_full')
-        if _authorize_write is not None:
-            _authorize_write(conn)
         admission_id = uuid.uuid4().hex
         conn.execute('''INSERT INTO session_admissions(admission_id,request_id,principal_id,
             target_session_id,lineage_json,payload_json,payload_digest,intent,status,owner_epoch)
             VALUES(?,?,?,?,?,?,?,?,'queued',?)''',
-            (admission_id, request_id, principal_id, session_id, json.dumps([session_id]), encoded, digest, intent, epoch))
+            (admission_id, request_id, principal_id, session_id, json.dumps([session_id]), prepared, digest, intent, epoch))
         return _row(_admission(conn, admission_id))
     return db._execute_write(write)
 
@@ -228,6 +247,9 @@ def claim_session_input(db, *, epoch: int, session_id: str, _guard=None, head=_A
             return False
         if row is None:
             return None
+        from session_input_primitives import remaining
+        if remaining(_row(row)):
+            return False
         generation = session['runtime_generation'] + 1
         conn.execute('UPDATE sessions SET runtime_generation=? WHERE id=?', (generation, session_id))
         changed = conn.execute("UPDATE session_admissions SET status='started',owner_epoch=?,generation=? WHERE admission_id=? AND status='queued'", (epoch, generation, row['admission_id']))

@@ -1,0 +1,7 @@
+name: session-input-inbox
+version: "0.1.0"
+description: "Example consumer of the session-input primitives: a short window folds consecutive plain-text messages into one admission, and input arriving during a running turn is handed to that turn's next checkpoint. Off unless this plugin is enabled for a profile."
+author: NousResearch
+tags:
+  - input
+  - inbox

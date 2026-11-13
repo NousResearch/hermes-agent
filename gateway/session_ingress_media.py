@@ -214,6 +214,8 @@ def reconcile_native_retry(db, *, principal_id, session_id, request_id, payload,
         row = conn.execute('SELECT status, payload_json FROM session_admissions WHERE principal_id=? AND '
                            'target_session_id=? AND request_id=?', (principal_id, session_id, request_id)).fetchone()
     retained = json.loads(row[1]) if row is not None else {}
+    from session_input_primitives import original_payload
+    retained = original_payload(retained)
     recorded = retained.get('native_text_v1', {}).get('ingress_sha256')
     if recorded is not None and recorded == ingress_fingerprint(payload, raw):
         resolved = retained

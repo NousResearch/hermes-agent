@@ -123,7 +123,7 @@ function fileActionContextKey(): string {
   return JSON.stringify([
     scope.cacheKey,
     $focusedStoredSessionId.get(),
-    owner?.connectionId || scope.connectionId || LOCAL_CONNECTION_ID,
+    owner?.connectionId || scope.connectionId || ($connection.get()?.mode === 'remote' ? null : LOCAL_CONNECTION_ID),
     owner?.profile || scope.profile || 'default',
     owner?.targetProfile ?? null,
     Boolean(owner)
@@ -133,7 +133,8 @@ function fileActionContextKey(): string {
 function assertFileActionOwner(scope?: FileActionScope): void {
   const tree = captureDesktopFsOperationScope()
   const owner = focusedFileOwner()
-  const connectionId = tree.connectionId || LOCAL_CONNECTION_ID
+  // A legacy remote descriptor is an ambient route, never proof of native local ownership.
+  const connectionId = tree.connectionId || ($connection.get()?.mode === 'remote' ? null : LOCAL_CONNECTION_ID)
   const profile = tree.profile || 'default'
 
   if (owner && ((owner.connectionId || connectionId) !== connectionId || owner.profile !== profile)) {

@@ -131,6 +131,48 @@ describe('Files tree mutation owner policy with real stores and preview routing'
     expect(createDirectoryExclusive).not.toHaveBeenCalled()
   })
 
+  it('refuses an explicit local owner for an unregistered remote window', async () => {
+    $connection.set({ mode: 'remote', profile: 'main', remoteKind: 'url', baseUrl: 'https://unregistered.example' } as never)
+    setApiRequestConnection(null)
+    focusTile({ connectionId: 'local', profile: 'main' })
+    requestFileDelete(target)
+    beginInlineRename(path)
+    await requestNewEntry({ directory: false, parentDir: '/work' })
+    await requestNewEntry({ directory: true, parentDir: '/work' })
+    expect($fileActionDialog.get()).toBeNull()
+    expect($renamingPath.get()).toBeNull()
+    expect($creatingEntry.get()).toBeNull()
+    await expect(executeFileDelete(path)).rejects.toThrow(/different.*connection or profile/i)
+    expect(api).not.toHaveBeenCalled()
+    expect(trashPath).not.toHaveBeenCalled()
+  })
+
+  it.each([false, true])('retains unregistered remote behavior with profile-only provenance=%s', async profileOnly => {
+    $connection.set({ mode: 'remote', profile: 'main', remoteKind: 'url', baseUrl: 'https://unregistered.example' } as never)
+    setApiRequestConnection(null)
+
+    if (profileOnly) {recordSessionEventScope(stampSecondaryProfileOwner({ session_id: 'primary-chat' } as never, 'main'))}
+
+    requestFileDelete(target)
+    const dialog = $fileActionDialog.get()!
+    expect(dialog).not.toBeNull()
+    await executeFileDelete(path, dialog.scope)
+    expect(api).toHaveBeenCalledWith(expect.objectContaining({ profile: 'main', method: 'DELETE', path: '/api/fs/delete' }))
+    expect(trashPath).not.toHaveBeenCalled()
+  })
+
+  it('retains native local routing without a registry id', async () => {
+    $connection.set({ mode: 'local', profile: 'main' } as never)
+    setApiRequestConnection(null)
+    focusTile({ connectionId: 'local', profile: 'main' })
+    requestFileDelete(target)
+    const dialog = $fileActionDialog.get()!
+    expect(dialog).not.toBeNull()
+    await executeFileDelete(path, dialog.scope)
+    expect(trashPath).toHaveBeenCalledWith(path)
+    expect(api).not.toHaveBeenCalled()
+  })
+
   it.each(['local', 'remote'] as const)('preserves ordinary %s tree list, preview, save and mutations', async mode => {
     $connection.set({ ...treeOwner, mode } as never)
     focusTile(treeOwner)

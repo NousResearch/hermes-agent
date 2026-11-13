@@ -1,5 +1,6 @@
 """Codex Responses bodies go out zstd-compressed to the official backend only (official-client parity)."""
 
+import asyncio
 import json
 
 import pytest
@@ -44,3 +45,53 @@ def test_other_destinations_stay_raw_json(base_url, path):
         client.close()
     assert "Content-Encoding" not in request.headers
     assert json.loads(request.content) == payload
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize("body_size", [131072, 131073, 400000])
+def test_multiblock_codex_bodies_stay_raw_without_losing_bytes(async_mode, body_size):
+    """Regress the live 128 KiB / 128 KiB+1 text-only encoding A/B boundary.
+
+    Some valid multi-block frames get a generic 400; streaming zstd is not a
+    general cure. Keep single-block compression, otherwise send the full JSON.
+    """
+    payload = {"model": "gpt-6.1-sol", "input": [
+        {"role": "user", "content": "protocol fixture: příliš žluťoučký\n"},
+    ]}
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+    raw = raw[:-4] + b"x" * (body_size - len(raw)) + raw[-4:]
+    assert len(raw) == body_size
+    json.loads(raw)
+    client = build_keepalive_http_client(OFFICIAL, async_mode=async_mode)
+    assert client is not None
+    request = client.build_request("POST", f"{OFFICIAL}/responses", content=raw,
+                                   headers={"Content-Type": "application/json"})
+
+    async def apply_async():
+        try:
+            for hook in client.event_hooks["request"]:
+                await hook(request)
+                encoded = request.content
+                await hook(request)
+                assert request.content == encoded
+        finally:
+            await client.aclose()
+
+    if async_mode:
+        asyncio.run(apply_async())
+    else:
+        try:
+            for hook in client.event_hooks["request"]:
+                hook(request)
+                encoded = request.content
+                hook(request)
+                assert request.content == encoded
+        finally:
+            client.close()
+    assert int(request.headers["Content-Length"]) == len(request.content)
+    if body_size <= 131072:
+        assert request.headers["Content-Encoding"] == "zstd"
+        assert zstd.decompress(request.content) == raw
+    else:
+        assert "Content-Encoding" not in request.headers
+        assert request.content == raw

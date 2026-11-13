@@ -107,7 +107,11 @@ def _latest_message_preview(db, session_id):
                 (session_id,)).fetchone()
     except Exception:
         return ""
-    text = " ".join(str(row[0] or "").split()).strip() if row else ""
+    text = str(row[0] or "") if row else ""
+    # Flatten markdown BEFORE cutting: a raw cut drops closing markers (a bold
+    # opening sentence > 80 chars), leaving a dangling "**" no client can pair.
+    text = _try(lambda: _lazy("gateway.platforms.helpers", "strip_markdown")(text), text)
+    text = " ".join(text.split()).strip()
     return text[:80] + "..." if len(text) > 80 else text
 
 

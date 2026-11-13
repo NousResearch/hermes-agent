@@ -439,8 +439,8 @@ def _built_by_pm(venv: Path) -> bool:
     from pm.environment import PM_BUILT_KEY  # noqa: TID251
 
     try:
-        lines = (venv / "pyvenv.cfg").read_text(encoding="utf-8-sig").splitlines()
-    except (OSError, ValueError):  # unreadable or not UTF-8: no PM-built env writes that
+        lines = (venv / "pyvenv.cfg").read_text(encoding="utf-8-sig", errors="replace").splitlines()
+    except (OSError, ValueError):  # unreadable: keep every parseable line of a partly corrupt file
         return False
     cfg = {key.strip(): value.strip() for key, _, value in (line.partition("=") for line in lines)}
     if cfg.get(PM_BUILT_KEY) == "true":

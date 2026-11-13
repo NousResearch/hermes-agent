@@ -95,8 +95,8 @@ def _interpreter_source(venv_dir: Path) -> str | None:
     if not cfg.is_file():
         return None
     try:
-        lines = cfg.read_text(encoding="utf-8-sig").splitlines()
-    except OSError:
+        lines = cfg.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+    except (OSError, ValueError):
         return None
     home = next((l.partition("=")[2].strip() for l in lines if l.lower().startswith("home")), "")
     interp = _interpreter_file(home) if home else None

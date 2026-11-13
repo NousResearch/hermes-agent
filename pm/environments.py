@@ -7,6 +7,7 @@ any dependency from that environment has been imported.
 from __future__ import annotations
 
 import argparse
+from contextlib import suppress
 import hashlib
 import json
 import os
@@ -390,27 +391,40 @@ def venv_python_version(venv: Path) -> tuple[int, int] | None:
     shim composed ``lib/python3.11/site-packages`` inside a 3.14 venv, found no
     tree, and failed *after* a successful update.
     """
+    cfg_version: tuple[int, int] | None = None
+    decoded_cleanly = True
     try:
-        for line in (venv / "pyvenv.cfg").read_text(encoding="utf-8-sig").splitlines():
+        raw = (venv / "pyvenv.cfg").read_bytes()
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            # Corrupt bytes must not discard the ASCII version lines around them: Windows
+            # has no lib/pythonX.Y to fall back on.
+            decoded_cleanly = False
+            text = raw.decode("utf-8-sig", errors="replace")
+        for line in text.splitlines():
             key, _, value = line.partition("=")
             if key.strip() not in ("version", "version_info"):  # venv / uv, virtualenv
                 continue
             major, _, rest = value.strip().partition(".")
             minor, _, _ = rest.partition(".")
             if major.isdigit() and minor.isdigit():
-                return int(major), int(minor)
-    except OSError:
+                cfg_version = int(major), int(minor)
+                break
+    except (OSError, ValueError):
         pass
+    if cfg_version is not None and decoded_cleanly:
+        return cfg_version
     try:
         candidates = sorted((venv / "lib").glob("python3*"))
-    except OSError:
-        return None
+    except (OSError, ValueError):
+        return cfg_version
     for candidate in candidates:
         major, _, rest = candidate.name.removeprefix("python").partition(".")
         minor, _, _ = rest.partition(".")
         if major.isdigit() and minor.isdigit():
             return int(major), int(minor)
-    return None
+    return cfg_version
 
 
 def site_packages(venv: Path) -> Path:
@@ -470,6 +484,7 @@ def activate_dependencies(project_root: Path) -> None:
     import sys
 
     state = install_state_dir(project_root)
+    release = None
     if state.is_dir():
         from hermes_cli.runtime_state import runtime_lock, recover_publication, lease_generation
         # The lock's holder may be another profile's backend running a full dependency rebuild;
@@ -489,7 +504,9 @@ def activate_dependencies(project_root: Path) -> None:
                 environment, release = current, lease_generation(current)
             selected = site_packages(environment)
             if not selected.is_dir() and not runtime_facts_path(project_root).is_file():
+                release()
                 return
+            built_for = venv_python_version(environment)
     else:
         # Sealed payloads still select once, before imports.
         # Never consult VIRTUAL_ENV: it can describe the invoking shell's Python.
@@ -499,7 +516,27 @@ def activate_dependencies(project_root: Path) -> None:
         selected = site_packages(environment)
         if not selected.is_dir():
             return  # External/Nix interpreter owns its original sys.path.
+        built_for = venv_python_version(environment)
+    # A foreign site-packages tree can only offer native extensions tagged for its
+    # own ABI. Keep the caller's launch environment rather than letting pure Python
+    # wrappers resolve beside unloadable extensions (#122555, #152211). Read the
+    # environment's metadata because Windows site-packages paths carry no version.
+    if built_for is not None and built_for != sys.version_info[:2]:
+        if release is not None:
+            release()
+        stream = sys.stderr if sys.stderr is not None else sys.__stderr__
+        if stream is not None:
+            with suppress(OSError, ValueError):
+                print(
+                    f"hermes: dependency environment {environment} targets Python "
+                    f"{built_for[0]}.{built_for[1]}; keeping the Python "
+                    f"{sys.version_info[0]}.{sys.version_info[1]} launch environment",
+                    file=stream,
+                )
+        return
     if not selected.is_dir():
+        if release is not None:
+            release()
         raise RuntimeError(f"dependency environment has no site-packages: {selected}")
     import site
 

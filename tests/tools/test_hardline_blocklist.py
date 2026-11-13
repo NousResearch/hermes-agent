@@ -273,6 +273,42 @@ def test_real_newline_separated_threats_still_blocked(command):
     assert desc
 
 
+# ``#`` opens a shell comment only at a word start (after IFS whitespace or a
+# command operator). ``\r``, ``\xa0``, and the ``)`` closing a ``$(...)`` are
+# ordinary word characters to bash, so ``x#`` mid-word is literal and the
+# ``;``-separated tail still runs. A scanner that treats them as comment
+# openers hides the tail command from every command-start-anchored check.
+_COMMENT_BOUNDARY_THREATS_BLOCK = [
+    "echo hi\r#x; reboot",
+    "echo hi\xa0#x; reboot",
+    "echo a$(true)#x; reboot",
+    "echo hi\r#x; mkfs /dev/sda",
+    "echo hi\r#x; dd if=/dev/zero of=/dev/sda",
+]
+
+_COMMENT_BOUNDARY_ALLOW = [
+    # A real word-start ``#`` opens a comment; the tail never executes.
+    "echo hi #x; reboot",
+    "echo hi;#x; reboot",
+]
+
+
+@pytest.mark.parametrize("command", _COMMENT_BOUNDARY_THREATS_BLOCK)
+def test_mid_word_hash_tail_still_blocked(command):
+    is_hl, desc = detect_hardline_command(command)
+    assert is_hl, f"tail hidden behind mid-word '#': {command!r}"
+    assert desc
+
+
+@pytest.mark.parametrize("command", _COMMENT_BOUNDARY_ALLOW)
+def test_real_comment_tail_not_blocked(command):
+    is_hl, desc = detect_hardline_command(command)
+    assert not is_hl, (
+        f"real shell comment false-positived the hardline floor: "
+        f"{command!r} (got: {desc})"
+    )
+
+
 def test_quoted_newline_data_not_blocked_by_full_guard_chain(clean_session):
     """End-to-end: the guard chain must not hardline-block a multi-line
     quoted message (yolo on, so only the unconditional floor can block)."""

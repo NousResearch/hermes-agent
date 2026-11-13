@@ -284,6 +284,28 @@ def test_home_mode_refuses_only_writes_another_user_can_make(tmp_path, monkeypat
 
 
 @pytest.mark.platforms("linux", "macos")
+def test_setgid_group_read_mode_2750_is_accepted_for_shared_groups(tmp_path, monkeypatch):
+    """The NixOS module provisions the gateway control dir setgid rwxr-x---
+    (2750: group read/search, no group write) so shared-group members keep
+    reachability, and home_mode_unsafe must accept it. Group write is the
+    exact dangerous predicate: 2750 returns before the shared-group analysis
+    even reaches the passwd scan, while 2770 under the same shared group stays
+    rejected."""
+    import grp
+    import os
+    import pwd
+    home = tmp_path / 'home'
+    home.mkdir()
+    user = pwd.getpwuid(os.getuid())
+    shared = grp.struct_group(('hermes', 'x', user.pw_gid, [user.pw_name, 'someone-else']))
+    monkeypatch.setattr(pwd, 'getpwall', lambda: [user])  # no other account on this gid
+    monkeypatch.setattr(grp, 'getgrgid', lambda _gid: shared)
+    for mode, unsafe in ((0o2750, False), (0o2770, True)):
+        home.chmod(mode)
+        assert home_mode_unsafe(home.lstat(), home) is unsafe, (oct(mode), shared.gr_name)
+
+
+@pytest.mark.platforms("linux", "macos")
 def test_group_write_is_private_only_when_no_other_account_has_that_primary_group(tmp_path, monkeypatch):
     import grp
     import os

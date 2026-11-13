@@ -441,22 +441,47 @@ def test_config_set_on_hostless_rows_keeps_each_row_its_own_key(home):
 _LEGACY_SHARED = "HERMES_CUSTOM_GW_EXAMPLE_8443_API_KEY"  # an older release keyed rows by host:port
 
 
-def _two_rows_on_one_legacy_variable(home):
+def _two_rows_on_one_legacy_variable(home, section="custom_providers"):
     (home / ".env").write_text(f"{_LEGACY_SHARED}=KEY-B\n", encoding="utf-8")
+    rows = {
+        "custom_providers": "".join(f"- name: {n}\n  base_url: https://gw.example:8443/{n}/v1\n"
+                                    f"  key_env: {_LEGACY_SHARED}\n" for n in "ab"),
+        "providers": "".join(f"  {n}:\n    base_url: https://gw.example:8443/{n}/v1\n"
+                             f"    key_env: {_LEGACY_SHARED}\n" for n in "ab"),
+    }[section]
     (home / "config.yaml").write_text(
-        "model:\n  provider: openrouter\n  default: x\ncustom_providers:\n"
-        f"- name: a\n  base_url: https://gw.example:8443/a/v1\n  key_env: {_LEGACY_SHARED}\n"
-        f"- name: b\n  base_url: https://gw.example:8443/b/v1\n  key_env: {_LEGACY_SHARED}\n", encoding="utf-8")
+        f"model:\n  provider: openrouter\n  default: x\n{section}:\n{rows}", encoding="utf-8")
 
 
-def test_hermes_model_custom_flow_moves_an_endpoint_off_a_shared_legacy_variable(home, monkeypatch):
+def _assert_each_endpoint_resolves_its_own_key(home, monkeypatch, provider_a, provider_b):
+    """The saved endpoint resolves KEY-A now (main) and when re-selected later; only ``b`` stays on
+    the shared variable, which still holds ``KEY-B``."""
+    from hermes_cli.config import load_env, read_raw_config
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    for name, value in load_env().items():
+        monkeypatch.setenv(name, value)
+    raw = read_raw_config()
+    rows = (raw.get("providers") or {}) | {row["name"]: row for row in raw.get("custom_providers") or []}
+    assert rows["a"]["key_env"] != _LEGACY_SHARED and rows["b"]["key_env"] == _LEGACY_SHARED
+    assert f"{_LEGACY_SHARED}=KEY-B" in (home / ".env").read_text(encoding="utf-8")
+    assert resolve_runtime_provider()["api_key"] == "KEY-A"
+    assert resolve_runtime_provider(requested=provider_a)["api_key"] == "KEY-A"
+    assert resolve_runtime_provider(requested=provider_b)["api_key"] == "KEY-B"
+
+
+@pytest.mark.parametrize("section,providers", [
+    ("custom_providers", ("custom:a", "custom:b")), ("providers", ("a", "b"))])
+def test_hermes_model_custom_flow_moves_an_endpoint_off_a_shared_legacy_variable(home, monkeypatch, section,
+                                                                                 providers):
     """Re-running ``hermes model`` for one of two endpoints an older release put on one variable
     gives it its own variable instead of refusing (or re-keying the other endpoint)."""
     from hermes_cli import model_setup_flows_custom as flow
     from hermes_cli.config import load_config
 
-    _two_rows_on_one_legacy_variable(home)
-    answers = iter(["https://gw.example:8443/a/v1", "", "a"])
+    _two_rows_on_one_legacy_variable(home, section)
+    # A display name other than "a": a new custom_providers row named "a" would shadow providers.a.
+    answers = iter(["https://gw.example:8443/a/v1", "", "gw"])
     monkeypatch.setattr(flow, "line_input", lambda _prompt="": next(answers))
     monkeypatch.setattr("hermes_cli.secret_prompt.masked_secret_prompt", lambda _prompt="": "KEY-A")
     monkeypatch.setattr("builtins.input", lambda _prompt="": "")
@@ -466,25 +491,30 @@ def test_hermes_model_custom_flow_moves_an_endpoint_off_a_shared_legacy_variable
 
     flow._model_flow_custom({})
 
-    cfg = load_config()
-    rows = {row["name"]: row for row in cfg["custom_providers"]}
-    assert cfg["model"]["api_key"] == "KEY-A" and rows["a"]["key_env"] != _LEGACY_SHARED
-    assert rows["b"]["key_env"] == _LEGACY_SHARED and f"{_LEGACY_SHARED}=KEY-B" in (home / ".env").read_text()
+    assert load_config()["model"]["api_key"] == "KEY-A"
+    _assert_each_endpoint_resolves_its_own_key(home, monkeypatch, *providers)
 
 
-def test_dashboard_main_save_moves_an_endpoint_off_a_shared_legacy_variable(home, monkeypatch):
+@pytest.mark.parametrize("section,submitted,providers", [
+    ("custom_providers", ("custom", "https://gw.example:8443/a/v1"), ("custom:a", "custom:b")),
+    ("providers", ("a", ""), ("a", "b"))])
+def test_dashboard_main_save_moves_an_endpoint_off_a_shared_legacy_variable(home, monkeypatch, section, submitted,
+                                                                            providers):
+    """The dashboard saves KEY-A for endpoint ``a`` under a new variable AND points ``a``'s own row
+    (and a ``providers.a`` key_env the save copies onto ``model``) at it."""
     from hermes_cli.config import load_config
     from hermes_cli.web_server_config import _apply_model_assignment_sync
 
     monkeypatch.setattr(
         "hermes_cli.models_validate.validate_requested_model",
         lambda *a, **k: {"accepted": True, "persist": True, "recognized": True, "message": None})
-    _two_rows_on_one_legacy_variable(home)
+    _two_rows_on_one_legacy_variable(home, section)
+    provider, base_url = submitted
 
-    _apply_model_assignment_sync("main", "custom", "m", "", "https://gw.example:8443/a/v1", "KEY-A")
+    _apply_model_assignment_sync("main", provider, "m", "", base_url, "KEY-A")
 
-    assert load_config()["model"]["api_key"] == "KEY-A"
-    assert f"{_LEGACY_SHARED}=KEY-B" in (home / ".env").read_text(encoding="utf-8")
+    assert load_config()["model"].get("key_env") != _LEGACY_SHARED
+    _assert_each_endpoint_resolves_its_own_key(home, monkeypatch, *providers)
 
 
 def test_write_locked_env_refuses_an_aux_endpoint_key_without_a_traceback_or_a_500(home, monkeypatch, capsys):
@@ -514,3 +544,4 @@ def test_write_locked_env_refuses_an_aux_endpoint_key_without_a_traceback_or_a_5
         asyncio.run(set_model_assignment(body))
     assert (refusal.value.status_code, refusal.value.detail) == (400, "Cannot set AUXILIARY_VISION_API_KEY: managed")
     assert SECRET not in _config_text(home) and "AUXILIARY_" not in _config_text(home)
+

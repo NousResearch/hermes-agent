@@ -1301,13 +1301,8 @@ function CronJobRuns({
 }
 
 // Canonical agent-chat target IDs stay unchanged; only their display name is localized.
-function deliverTargetLabel(target: CronDeliveryTarget, c: Translations['cron'], agentLabel: string): string {
-  let base = c.deliveryLabels[target.id] ?? target.name
-
-  if (target.id === 'bot-chat' || target.id.startsWith('bot-chat:')) {
-    const profile = target.id.slice('bot-chat:'.length)
-    base = profile ? `${agentLabel} (${profile})` : agentLabel
-  }
+function deliverTargetLabel(target: CronDeliveryTarget, c: Translations['cron']): string {
+  const base = target.id === 'local' ? c.deliveryLabels.local : (c.deliveryLabels[target.id] ?? target.name)
 
   return target.id !== 'local' && !target.home_target_set ? `${base} — ${c.deliverNeedsHomeChannel}` : base
 }
@@ -1358,7 +1353,7 @@ export function DeliverCheckboxes({
               id={checkboxId}
               onCheckedChange={next => onChange(toggleCronDeliveryTarget(value, target.id, next === true))}
             />
-            <span>{deliverTargetLabel(target, c, t.sidebar.filter.profile)}</span>
+            <span>{deliverTargetLabel(target, c)}</span>
           </label>
         )
       })}

@@ -27,7 +27,7 @@ def installs(monkeypatch):
     calls: list[tuple[Path, str]] = []
 
     def install_into(home, consent=None):
-        def install(name, ref=None, replace=None):
+        def install(name, discard=None):
             calls.append((home, name))
             (home / "plugins" / name).mkdir(parents=True, exist_ok=True)
             return {"ok": True}
@@ -66,7 +66,7 @@ def test_a_refused_enable_is_retried_until_the_user_decides(tmp_path, monkeypatc
     calls: list[str] = []
 
     def install_into(h, consent=None):
-        def install(name, ref=None, replace=None):
+        def install(name, discard=None):
             calls.append(name)
             installed = name.removeprefix("hermes-")  # hermes-user-off installs as user-off, like hermes-memory-wiki
             (h / "plugins" / installed).mkdir(parents=True, exist_ok=True)  # the clone lands before the enable
@@ -165,7 +165,7 @@ def test_a_new_home_or_a_failed_pass_unsettles_the_revision(tmp_path, monkeypatc
     online = [True]
 
     def install_into(home, consent=None):
-        def install(name, ref=None, replace=None):
+        def install(name, discard=None):
             if not online[0]:
                 raise OSError("fatal: unable to access 'https://github.com/'")
             (home / "plugins" / name).mkdir(parents=True, exist_ok=True)
@@ -216,10 +216,10 @@ def test_an_unreadable_config_keeps_the_home_owed_and_a_repinned_leftover_is_rep
     calls: list[tuple] = []
 
     def install_into(h, consent=None):
-        def install(name, ref=None, replace=None):
-            calls.append((name, ref, replace))
-            if replace is not None:
-                replace.rmdir()
+        def install(name, discard=None):
+            calls.append(name)
+            if discard is not None:
+                discard.rmdir()
             target = h / "plugins" / name
             if target.exists():
                 return {"ok": False, "error": f"Plugin '{name}' already exists."}
@@ -238,4 +238,40 @@ def test_an_unreadable_config_keeps_the_home_owed_and_a_repinned_leftover_is_rep
     # The catalog re-pins before the retry: the leftover tree is replaced at the new pin.
     repinned = dataclasses.replace(entry, sha="b" * 40)
     assert default_plugins.install_defaults(home, entries=[repinned])["installed"] == ["accent-picker"]
-    assert calls[-1] == ("accent-picker", "b" * 40, home / "plugins" / "accent-picker")
+    assert calls == ["accent-picker", "accent-picker"]
+
+
+def test_a_retry_that_removed_our_leftover_and_then_failed_stays_owed(tmp_path, monkeypatch):
+    """Greptile: the retry removes the leftover with the real remove path, then the install fails before
+    publishing (offline). The missing tree is ours, not the user's removal: the next pass tries again."""
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    home = tmp_path / "home"
+    home.mkdir()
+    attempts: list[str] = []
+
+    def install_into(h, consent=None):
+        def install(name, discard=None):
+            attempts.append(name)
+            if discard is not None:  # the real remove path, as the installer runs it
+                from hermes_cli.plugins_cmd_remove import _remove_plugin_core
+                from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+                token = set_hermes_home_override(h)
+                try:
+                    _remove_plugin_core(discard)
+                finally:
+                    reset_hermes_home_override(token)
+            if len(attempts) == 1:  # the clone lands, then the enable is refused
+                (h / "plugins" / name).mkdir(parents=True)
+                (h / "plugins" / name / "plugin.yaml").write_text(f"name: {name}\n", encoding="utf-8")
+                return {"ok": False, "error": "enable refused: dependency resolution failed"}
+            return {"ok": False, "error": "fatal: unable to access 'https://github.com/'"}
+        return install
+    monkeypatch.setattr(lcm, "_install_into", install_into)
+    entries = [_entry("accent-picker")]
+
+    assert default_plugins.install_defaults(home, entries=entries)["owed"] == ["accent-picker"]
+    assert default_plugins.install_defaults(home, entries=entries)["owed"] == ["accent-picker"]
+    assert not (home / "plugins" / "accent-picker").exists()  # the retry removed our leftover
+    assert default_plugins.install_defaults(home, entries=entries)["owed"] == ["accent-picker"]
+    assert attempts == ["accent-picker"] * 3, "a tree we removed was read as the user's removal"
+

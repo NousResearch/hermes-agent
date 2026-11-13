@@ -3,7 +3,8 @@
     "allowed_environments": [
       "local",
       "ci",
-      "preproduction-readonly"
+      "preproduction-readonly",
+      "preproduction"
     ],
     "base_sha": "f98f5e74e00e54c36088fa2e78171e2a408ba7c9",
     "branch": "codex/hermes-health-privacy-r1",
@@ -13,24 +14,55 @@
       "gateway/platforms/api_server.py",
       "tests/gateway/test_api_server.py"
     ],
-    "contract_sha256": "sha256:2f6f1340b0215a269b5fdad30c5569424a8ace2fc7baf108b3fe72a4b71b7ff5",
-    "created_at": "2026-11-13T16:28:25Z",
+    "contract_sha256": "sha256:a592349f8c77ee66fde1ab8ef3b2741641d6591935cc9acc87fab819741b50db",
+    "created_at": "2026-11-13T17:17:57Z",
     "forbidden_actions": [
       "production",
       "business-write",
-      "ecs-deploy",
       "merge"
     ],
-    "head_sha": "1c79c007473db7c0888cc2bc2ae08cbdb20dfb67",
+    "head_sha": "00355469e85aa6f0cafd75cc2a880bf20043163b",
     "plan": "ECS \u516c\u7f51\u670d\u52a1\u5b89\u5168\u6536\u655b\u4e0e Hermes Health \u9690\u79c1\u4fee\u590d",
     "pr_url": "",
-    "revision": "r1",
+    "revision": "r1.1",
     "schema_version": "review-snapshot-v1",
     "source_policy": "latest-compatible",
     "status": "active",
     "superseded_at": null
   },
   "branch": "codex/hermes-health-privacy-r1",
-  "history": [],
+  "history": [
+    {
+      "allowed_environments": [
+        "local",
+        "ci",
+        "preproduction-readonly"
+      ],
+      "base_sha": "f98f5e74e00e54c36088fa2e78171e2a408ba7c9",
+      "branch": "codex/hermes-health-privacy-r1",
+      "contract_body": false,
+      "contract_inputs": [
+        "AGENTS.md",
+        "gateway/platforms/api_server.py",
+        "tests/gateway/test_api_server.py"
+      ],
+      "contract_sha256": "sha256:2f6f1340b0215a269b5fdad30c5569424a8ace2fc7baf108b3fe72a4b71b7ff5",
+      "created_at": "2026-11-13T16:28:25Z",
+      "forbidden_actions": [
+        "production",
+        "business-write",
+        "ecs-deploy",
+        "merge"
+      ],
+      "head_sha": "1c79c007473db7c0888cc2bc2ae08cbdb20dfb67",
+      "plan": "ECS \u516c\u7f51\u670d\u52a1\u5b89\u5168\u6536\u655b\u4e0e Hermes Health \u9690\u79c1\u4fee\u590d",
+      "pr_url": "",
+      "revision": "r1",
+      "schema_version": "review-snapshot-v1",
+      "source_policy": "latest-compatible",
+      "status": "stale",
+      "superseded_at": "2026-11-13T17:17:57Z"
+    }
+  ],
   "schema_version": "review-snapshot-file-v1"
 }

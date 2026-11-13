@@ -19,7 +19,7 @@ def _text(payload):
 class GatewayReplyMixin:
     async def _project_tool(self, kind, sid, editor_id, aid, payload):
         """``tool.start`` / ``tool.complete`` as the in-process callbacks projected them (#134889 ACP-15)."""
-        from acp_adapter.tools import build_tool_complete, build_tool_start, coerce_tool_args
+        from hermes_agent.acp_adapter.tools import build_tool_complete, build_tool_start, coerce_tool_args
         # In-process turns publish ``tool_name``; managed workers publish ``name``.
         tool_name = payload.get("tool_name") or payload.get("name") or "tool"
         call_id = payload["tool_call_id"]
@@ -55,7 +55,7 @@ class GatewayReplyMixin:
 
     async def _flush_open_tools(self, sid, editor_id, aid):
         """Close every call admission *aid* started and never completed (``failed``: it produced no result)."""
-        from acp_adapter.tools import build_tool_abandoned
+        from hermes_agent.acp_adapter.tools import build_tool_abandoned
         for key in [key for key, held in self._tool_args.items() if key[0] == sid and held[2] == aid]:
             name, _, _ = self._tool_args.pop(key)
             if self._conn:
@@ -64,7 +64,7 @@ class GatewayReplyMixin:
     def _chunk(self, sid, text, *, thought=False):
         """An assistant (or thought) chunk carrying the session's current ``messageId``: ACP clients group
         chunks into one reply by it and start a new bubble when it changes."""
-        from acp_adapter.events import AssistantMessageIdAllocator
+        from hermes_agent.acp_adapter.events import AssistantMessageIdAllocator
         update = (acp.update_agent_thought_text if thought else acp.update_agent_message_text)(text)
         update.message_id = self._message_ids.setdefault(sid, AssistantMessageIdAllocator()).current()
         return update
@@ -85,7 +85,7 @@ class GatewayReplyMixin:
             update = self._chunk(sid, text, thought=True) if text else None
         else:
             import json
-            from acp_adapter.events import _build_plan_update_from_todo_result
+            from hermes_agent.acp_adapter.events import _build_plan_update_from_todo_result
             todos = payload.get("todos")
             update = _build_plan_update_from_todo_result(json.dumps({"todos": todos})) \
                 if isinstance(todos, list) else None

@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from acp_adapter.gateway_server import GatewayACPAgent
+from hermes_agent.acp_adapter.gateway_server import GatewayACPAgent
 
 _ENV = ('HERMES_YOLO_MODE', 'HERMES_SAFE_MODE', 'HERMES_IGNORE_USER_CONFIG', 'HERMES_IGNORE_RULES',
         'HERMES_ACCEPT_HOOKS', 'HERMES_MODEL', 'HERMES_INFERENCE_MODEL', 'HERMES_INFERENCE_PROVIDER')
@@ -47,10 +47,10 @@ async def test_safe_mode_acp_session_freezes_the_launch_model(monkeypatch, tmp_p
         monkeypatch.setenv(name, '')  # recorded, so cmd_acp's exports are undone after the test
     monkeypatch.setenv('HERMES_SAFE_MODE', '1')  # what main() exports for --safe-mode
     monkeypatch.setenv('HERMES_IGNORE_USER_CONFIG', '1')
-    import acp_adapter.entry
+    import hermes_agent.acp_adapter.entry
     from gateway.session_local import _bypass_policy
     from hermes_cli.main_agent_cmds import cmd_acp
-    monkeypatch.setattr(acp_adapter.entry, 'main', lambda argv: None)
+    monkeypatch.setattr(hermes_agent.acp_adapter.entry, 'main', lambda argv: None)
     cmd_acp(SimpleNamespace(model='anthropic/claude-sonnet-4', provider='openrouter'))
     created = []
     await _agent(created).new_session(cwd=str(tmp_path))
@@ -94,9 +94,9 @@ async def test_cli_only_acp_flags_reach_the_session(monkeypatch, tmp_path):
     """--accept-hooks / --ignore-rules have no other route from the `hermes acp` parser to the owner."""
     for name in _ENV:
         monkeypatch.setenv(name, '')  # recorded, so cmd_acp's exports are undone after the test
-    import acp_adapter.entry
+    import hermes_agent.acp_adapter.entry
     from hermes_cli.main_agent_cmds import cmd_acp
-    monkeypatch.setattr(acp_adapter.entry, 'main', lambda argv: None)
+    monkeypatch.setattr(hermes_agent.acp_adapter.entry, 'main', lambda argv: None)
     cmd_acp(SimpleNamespace(accept_hooks=True, ignore_rules=True))
     created = []
     await _agent(created).new_session(cwd=str(tmp_path))

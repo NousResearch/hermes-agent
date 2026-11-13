@@ -12,9 +12,9 @@ from unittest.mock import patch
 
 import pytest
 
-from acp_adapter.model_catalog import _named_custom_provider_catalogs
-from acp_adapter.server import HermesACPAgent
-from acp_adapter.session import SessionManager
+from hermes_agent.acp_adapter.model_catalog import _named_custom_provider_catalogs
+from hermes_agent.acp_adapter.server import HermesACPAgent
+from hermes_agent.acp_adapter.session import SessionManager
 from acp.schema import SessionModelState
 
 
@@ -185,7 +185,7 @@ class TestModelStateIncludesNamedProviders:
         acp_agent = HermesACPAgent(session_manager=manager)
 
         with patch(
-            "acp_adapter.model_catalog._named_custom_provider_catalogs",
+            "hermes_agent.acp_adapter.model_catalog._named_custom_provider_catalogs",
             return_value=[("custom:ollama", "Ollama", [])],
         ):
             resp = await acp_agent.new_session(cwd="/tmp")
@@ -207,7 +207,7 @@ class TestModelStateIncludesNamedProviders:
         acp_agent = HermesACPAgent(session_manager=manager)
 
         with patch(
-            "acp_adapter.model_catalog._named_custom_provider_catalogs",
+            "hermes_agent.acp_adapter.model_catalog._named_custom_provider_catalogs",
             return_value=[
                 (
                     "custom:bedrock-mantle",
@@ -254,7 +254,7 @@ class TestModelStateIncludesNamedProviders:
         with patch("hermes_cli.config.load_config", return_value=cfg), patch(
             "hermes_cli.inventory.build_models_payload", return_value=inventory
         ), patch(
-            "acp_adapter.model_catalog._named_custom_provider_catalogs",
+            "hermes_agent.acp_adapter.model_catalog._named_custom_provider_catalogs",
             return_value=[("custom:relay", "Relay", [("model-a", "")])],
         ):
             resp = await acp_agent.new_session(cwd="/tmp")
@@ -319,7 +319,7 @@ class TestModelStateIncludesNamedProviders:
         ]}
 
         with patch("hermes_cli.inventory.build_models_payload", return_value=inventory), patch(
-            "acp_adapter.model_catalog._named_custom_provider_catalogs",
+            "hermes_agent.acp_adapter.model_catalog._named_custom_provider_catalogs",
             return_value=[("custom:openrouter", "openrouter", [("model-a", "")])],
         ):
             resp = await acp_agent.new_session(cwd="/tmp")

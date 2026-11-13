@@ -1,7 +1,7 @@
 """Browsing ACP history is not an execution/storage owner."""
 import sqlite3
 
-from acp_adapter.session import SessionManager
+from hermes_agent.acp_adapter.session import SessionManager
 from hermes_state import SessionDB
 
 

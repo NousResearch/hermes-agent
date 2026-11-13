@@ -1,4 +1,4 @@
-"""Tests for acp_adapter.events — callback factories for ACP notifications."""
+"""Tests for hermes_agent.acp_adapter.events — callback factories for ACP notifications."""
 
 import asyncio
 import gc
@@ -12,7 +12,7 @@ import pytest
 import acp
 from acp.schema import AgentPlanUpdate
 
-from acp_adapter.events import (
+from hermes_agent.acp_adapter.events import (
     _send_update,
     make_message_cb,
     make_step_cb,
@@ -55,7 +55,7 @@ class TestToolProgressCallback:
         progress_cb = make_tool_progress_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
         step_cb = make_step_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
 
-        with patch("acp_adapter.events.asyncio.run_coroutine_threadsafe") as mock_rcts:
+        with patch("hermes_agent.acp_adapter.events.asyncio.run_coroutine_threadsafe") as mock_rcts:
             future = MagicMock(spec=Future)
             future.result.return_value = None
             mock_rcts.return_value = future
@@ -93,8 +93,8 @@ class TestStepCallback:
         from collections import deque
 
         cb = make_step_cb(mock_conn, "session-1", event_loop_fixture, {"terminal": deque(["tc-f"])}, {})
-        with patch("acp_adapter.events.asyncio.run_coroutine_threadsafe") as mock_rcts, \
-             patch("acp_adapter.events.build_tool_complete") as mock_btc:
+        with patch("hermes_agent.acp_adapter.events.asyncio.run_coroutine_threadsafe") as mock_rcts, \
+             patch("hermes_agent.acp_adapter.events.build_tool_complete") as mock_btc:
             mock_rcts.return_value = MagicMock(spec=Future)
             cb(1, [{"name": "terminal", "result": raw}])
         mock_btc.assert_called_once_with("tc-f", "terminal", result=expected, function_args=None, snapshot=None)
@@ -107,8 +107,8 @@ class TestStepCallback:
         tool_call_meta = {}
         loop = event_loop_fixture
 
-        with patch("acp_adapter.events.make_tool_call_id", return_value="tc-meta"), \
-             patch("acp_adapter.events._send_update") as mock_send, \
+        with patch("hermes_agent.acp_adapter.events.make_tool_call_id", return_value="tc-meta"), \
+             patch("hermes_agent.acp_adapter.events._send_update") as mock_send, \
              patch("agent.display.capture_local_edit_snapshot", return_value="snapshot"):
             cb = make_tool_progress_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
             cb("tool.started", "write_file", None, {"path": "diff-test.txt", "content": "hello"})
@@ -134,7 +134,7 @@ class TestStepCallback:
             '],"summary":{"total":3}}'
         )
 
-        with patch("acp_adapter.events._send_update") as mock_send:
+        with patch("hermes_agent.acp_adapter.events._send_update") as mock_send:
             cb(1, [{"name": "todo", "result": todo_result}])
 
         updates = [call.args[3] for call in mock_send.call_args_list]
@@ -209,12 +209,12 @@ class TestAssistantMessageIds:
     """Streamed chunks carry a per-message ACP messageId; the None flush sentinel starts a new one."""
 
     def test_deltas_share_one_uuid_until_flush(self, mock_conn, event_loop_fixture):
-        from acp_adapter.events import AssistantMessageIdAllocator
+        from hermes_agent.acp_adapter.events import AssistantMessageIdAllocator
 
         ids = AssistantMessageIdAllocator()
         cb = make_message_cb(mock_conn, "s", event_loop_fixture, ids)
         sent = []
-        with patch("acp_adapter.events._send_update",
+        with patch("hermes_agent.acp_adapter.events._send_update",
                    side_effect=lambda c, s, l, u: sent.append(u)):
             cb("Hello ")
             cb("")  # empty delta is ignored, not a flush
@@ -227,13 +227,13 @@ class TestAssistantMessageIds:
         assert uuid.UUID(sent[0].message_id) and uuid.UUID(sent[2].message_id)
 
     def test_thought_chunks_carry_id(self, mock_conn, event_loop_fixture):
-        from acp_adapter.events import AssistantMessageIdAllocator
+        from hermes_agent.acp_adapter.events import AssistantMessageIdAllocator
 
         ids = AssistantMessageIdAllocator()
         think = make_thinking_cb(mock_conn, "s", event_loop_fixture, ids)
         msg = make_message_cb(mock_conn, "s", event_loop_fixture, ids)
         sent = []
-        with patch("acp_adapter.events._send_update",
+        with patch("hermes_agent.acp_adapter.events._send_update",
                    side_effect=lambda c, s, l, u: sent.append(u)):
             think("pondering")
             msg("answer")
@@ -243,7 +243,7 @@ class TestAssistantMessageIds:
     def test_no_allocator_keeps_legacy_shape(self, mock_conn, event_loop_fixture):
         cb = make_message_cb(mock_conn, "s", event_loop_fixture)
         sent = []
-        with patch("acp_adapter.events._send_update",
+        with patch("hermes_agent.acp_adapter.events._send_update",
                    side_effect=lambda c, s, l, u: sent.append(u)):
             cb("text")
         assert sent[0].message_id is None
@@ -257,7 +257,7 @@ class TestToolCallsAlwaysReachATerminalStatus:
     is still open at turn end is failed with BOTH per-turn dicts drained together."""
 
     def _patch(self):
-        return patch("acp_adapter.events.asyncio.run_coroutine_threadsafe")
+        return patch("hermes_agent.acp_adapter.events.asyncio.run_coroutine_threadsafe")
 
     def test_tool_completed_closes_the_call_once_and_the_step_closer_stands_down(self, mock_conn, event_loop_fixture):
         from collections import deque
@@ -265,7 +265,7 @@ class TestToolCallsAlwaysReachATerminalStatus:
         ids, meta, turn_state = {"read": deque(["tc-1", "tc-2"])}, {"tc-1": {"args": {"path": "a"}}}, {}
         progress = make_tool_progress_cb(mock_conn, "s", event_loop_fixture, ids, meta, turn_state=turn_state)
         step = make_step_cb(mock_conn, "s", event_loop_fixture, ids, meta, turn_state)
-        with self._patch() as rcts, patch("acp_adapter.events.build_tool_complete") as btc:
+        with self._patch() as rcts, patch("hermes_agent.acp_adapter.events.build_tool_complete") as btc:
             rcts.return_value = MagicMock(spec=Future)
             progress("tool.completed", "read", None, None, result="file body")
             step(2, [{"name": "read", "result": "file body", "arguments": '{"path": "a"}'}])
@@ -282,7 +282,7 @@ class TestToolCallsAlwaysReachATerminalStatus:
         a denied edit is then failed at turn end, draining ``tool_call_ids`` AND ``tool_call_meta``."""
         from collections import deque
 
-        from acp_adapter.events import flush_open_tool_calls
+        from hermes_agent.acp_adapter.events import flush_open_tool_calls
 
         ids = {"write_file": deque(["tc-1"]), "edit": deque(["tc-denied"])}
         meta = {"tc-1": {"args": {"path": "a"}, "snapshot": None}, "tc-denied": {"args": {}}}

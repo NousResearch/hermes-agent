@@ -46,7 +46,7 @@ cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['acp'], explici
 
 - `hermes acp`
 - `hermes-acp`
-- `python -m acp_adapter`
+- `python -m hermes_agent.acp_adapter`
 
 ## 启动 ACP 服务器
 
@@ -61,7 +61,7 @@ hermes-acp
 ```
 
 ```bash
-python -m acp_adapter
+python -m hermes_agent.acp_adapter
 ```
 
 Hermes 将日志输出到 stderr，以保留 stdout 用于 ACP JSON-RPC 流量。

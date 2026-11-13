@@ -1,6 +1,6 @@
 """Tests for ACP session-provenance derivation (issue #33617).
 
-Exercises acp_adapter.provenance against a real SessionDB — no mocks — covering
+Exercises hermes_agent.acp_adapter.provenance against a real SessionDB — no mocks — covering
 the acceptance-criteria matrix: root session, compression-split continuation,
 multi-depth chains, rotation flagging, and graceful handling of unknown ids.
 """
@@ -9,7 +9,7 @@ import time
 
 import pytest
 
-from acp_adapter.provenance import build_session_provenance, session_provenance_meta
+from hermes_agent.acp_adapter.provenance import build_session_provenance, session_provenance_meta
 from hermes_state import SessionDB
 
 

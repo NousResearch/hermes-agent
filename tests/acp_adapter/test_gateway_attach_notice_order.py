@@ -4,13 +4,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from acp_adapter.gateway_server import GatewayACPAgent
+from hermes_agent.acp_adapter.gateway_server import GatewayACPAgent
 
 
 @pytest.mark.asyncio
 async def test_speed_discovery_does_not_publish_commands_before_the_attach_reply(monkeypatch):
-    monkeypatch.setattr('acp_adapter.gateway_session_meta.model_state', lambda info: None)
-    monkeypatch.setattr('acp_adapter.gateway_session_meta.provenance_meta', lambda *args: None)
+    monkeypatch.setattr('hermes_agent.acp_adapter.gateway_session_meta.model_state', lambda info: None)
+    monkeypatch.setattr('hermes_agent.acp_adapter.gateway_session_meta.provenance_meta', lambda *args: None)
     agent = GatewayACPAgent()
     reply_returned = False
     command_order = []
@@ -40,8 +40,8 @@ async def test_speed_discovery_does_not_publish_commands_before_the_attach_reply
 
 @pytest.mark.asyncio
 async def test_mode_changed_during_speed_discovery_is_used_by_the_attach_reply(monkeypatch):
-    monkeypatch.setattr('acp_adapter.gateway_session_meta.model_state', lambda info: None)
-    monkeypatch.setattr('acp_adapter.gateway_session_meta.provenance_meta', lambda *args: None)
+    monkeypatch.setattr('hermes_agent.acp_adapter.gateway_session_meta.model_state', lambda info: None)
+    monkeypatch.setattr('hermes_agent.acp_adapter.gateway_session_meta.provenance_meta', lambda *args: None)
     agent = GatewayACPAgent()
 
     async def rpc(method, **params):

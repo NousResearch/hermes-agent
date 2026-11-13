@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from acp_adapter.session import SessionManager
+from hermes_agent.acp_adapter.session import SessionManager
 from hermes_state import SessionDB
 
 
@@ -148,7 +148,7 @@ def test_restore_recovers_a_bare_kind_row_from_its_recorded_endpoint(monkeypatch
 
 
 def test_switch_model_never_pins_the_endpoint_for_an_unknown_provider(monkeypatch):
-    from acp_adapter.server import HermesACPAgent
+    from hermes_agent.acp_adapter.server import HermesACPAgent
     from hermes_cli.model_switch import ModelSwitchResult
 
     monkeypatch.setattr("hermes_cli.config.load_config", dict)
@@ -235,7 +235,7 @@ def test_persist_keeps_the_resolved_built_in_provider(monkeypatch, tmp_path, con
 def test_switch_model_compares_an_alias_session_by_its_resolved_provider(monkeypatch, tmp_path):
     """A ``claude`` session runs on ``anthropic``: /model must seed switch_model with that, or
     ``keep_endpoint`` never matches switch_model's canonical target."""
-    from acp_adapter.server import HermesACPAgent
+    from hermes_agent.acp_adapter.server import HermesACPAgent
 
     _patch_resolution(monkeypatch, runtime={
         "provider": "anthropic", "api_mode": "anthropic_messages", "base_url": "https://api.test",

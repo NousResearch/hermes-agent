@@ -17,7 +17,7 @@ class TestDetectProviderEntra:
         """A runtime returning a callable ``api_key`` (Entra bearer token
         provider) must be detected as a configured provider, not
         ``None``."""
-        from acp_adapter import auth as _acp_auth
+        from hermes_agent.acp_adapter import auth as _acp_auth
 
         def _fake_runtime(**_kwargs):
             return {

@@ -16,8 +16,8 @@ from acp.schema import (
 
 from hermes_cli.gateway_client import GatewayClientError, connect_gateway
 from hermes_constants import get_hermes_home
-from acp_adapter.gateway_reply import GatewayReplyMixin, _text
-from acp_adapter.session import _translate_acp_cwd, _normalize_cwd_for_compare
+from hermes_agent.acp_adapter.gateway_reply import GatewayReplyMixin, _text
+from hermes_agent.acp_adapter.session import _translate_acp_cwd, _normalize_cwd_for_compare
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ def _slash_command(text):
     Only a registered command (or alias) is a command: ``/etc/hosts is wrong`` or ``/tmp/x``
     (a path, the same rule ``MessageEvent.get_command`` applies) and unknown ``/words`` are
     prompt text for the model. A registered command is never sent as prompt text: it is answered
-    by a gateway verb or refused by name (``acp_adapter/gateway_commands.py``)."""
+    by a gateway verb or refused by name (``hermes_agent/acp_adapter/gateway_commands.py``)."""
     stripped = text.lstrip()
     if not stripped.startswith('/'):
         return None
@@ -39,7 +39,7 @@ def _slash_command(text):
     command = resolve_command(name)
     if command is not None:
         return command.name
-    from acp_adapter.gateway_commands import ROUTES
+    from hermes_agent.acp_adapter.gateway_commands import ROUTES
     return name if name in ROUTES else None
 
 
@@ -134,12 +134,12 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         message = getattr(event, "message", None)
         if getattr(event, "direction", None) == "incoming" and isinstance(message, dict) \
                 and message.get("method") == "initialize":
-            from acp_adapter.elicitation import client_supports_form_elicitation
+            from hermes_agent.acp_adapter.elicitation import client_supports_form_elicitation
             self._form_elicitation = client_supports_form_elicitation(message.get("params"))
 
     async def initialize(self, **kwargs):
         from hermes_cli import __version__
-        from acp_adapter.auth import build_auth_methods
+        from hermes_agent.acp_adapter.auth import build_auth_methods
         return InitializeResponse(protocol_version=acp.PROTOCOL_VERSION,
             agent_info=Implementation(name="hermes-agent", version=__version__),
             agent_capabilities=AgentCapabilities(load_session=True,
@@ -149,7 +149,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             auth_methods=build_auth_methods())
 
     async def authenticate(self, method_id, **kwargs):
-        from acp_adapter.server import HermesACPAgent
+        from hermes_agent.acp_adapter.server import HermesACPAgent
         return await HermesACPAgent.authenticate(self, method_id, **kwargs)
 
     async def _client(self):
@@ -218,7 +218,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
     async def _request_live_reasoning(self, client, session_id):
         """Ask the owner to stream this session's reasoning (``show_reasoning``), as the CLI does.
 
-        The in-process server gave every editor turn a reasoning sink (``acp_adapter/server.py``). The
+        The in-process server gave every editor turn a reasoning sink (``hermes_agent/acp_adapter/server.py``). The
         owner publishes ``reasoning.delta`` only for a live session whose flag a viewer set, and a restarted
         owner's sessions start without it, so every attach and re-attach asks (#134889 ACP-4). The flag is
         the session's: a viewer that hides reasoning later turns it off until the editor attaches again."""
@@ -299,8 +299,8 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
     async def _session_fields(self, session_id, info, editor_id):
         """Main's new/load/resume/fork reply fields (model picker, modes, provenance ``_meta``); the
         command list and context indicator follow once the reply is queued, as main scheduled them."""
-        from acp_adapter.gateway_session_meta import model_state, provenance_meta, session_config_options, session_modes
-        from acp_adapter.modes import EDIT_APPROVAL_POLICY_CONFIG_ID, MODE_TO_EDIT_APPROVAL_POLICY
+        from hermes_agent.acp_adapter.gateway_session_meta import model_state, provenance_meta, session_config_options, session_modes
+        from hermes_agent.acp_adapter.modes import EDIT_APPROVAL_POLICY_CONFIG_ID, MODE_TO_EDIT_APPROVAL_POLICY
         title = info.get("title")
         if isinstance(title, str) and title.strip():
             self._titles[session_id] = title
@@ -322,7 +322,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                 "config_options": options}
 
     async def _after_attach(self, session_id, editor_id):
-        from acp_adapter.gateway_session_meta import available_commands_update
+        from hermes_agent.acp_adapter.gateway_session_meta import available_commands_update
         await asyncio.sleep(0)  # after the session reply: the editor routes updates by a known id
         try:
             await self._conn.session_update(session_id=editor_id, update=available_commands_update())
@@ -347,7 +347,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
 
     async def _resume(self, cwd, held_id, mcp_servers):
         client = await self._client()
-        from acp_adapter.catalog import logical_session_id
+        from hermes_agent.acp_adapter.catalog import logical_session_id
         from hermes_cli.gateway_client import GatewayRPCError
         session_id = await asyncio.to_thread(logical_session_id, self._home / "state.db", held_id)
         # The latest load names the id this editor addresses the conversation by.
@@ -381,7 +381,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         await self._adopt(session_id, snapshot)
         if 'editor' in resume_params:
             self._editor_mcp[session_id] = resume_params['editor']
-        from acp_adapter.server import _history_replay_updates
+        from hermes_agent.acp_adapter.server import _history_replay_updates
         if self._conn:
             # The editor replays the live transcript in stored order, as main's ACP did; archived rows
             # (summarized away by a compression) are display-only.
@@ -495,7 +495,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         self._mutations.acknowledge(session_id, 'model', payload)
         if result.get('status') == 'deferred' and self._conn:
             # A pick during a running turn lands for the next one (#139604); say so, as Desktop does.
-            from acp_adapter.gateway_commands import deferred_pick_text
+            from hermes_agent.acp_adapter.gateway_commands import deferred_pick_text
             await self._conn.session_update(session_id=self._editor_id(session_id),
                                             update=acp.update_agent_message_text(deferred_pick_text(result) + "\n"))
         return SetSessionModelResponse()
@@ -505,7 +505,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         written, the pick stays pending): the same permission request as an idle pick. Yes re-sends
         the same selection once with the owner's token (as Ink/Desktop); no, or no editor, keeps the
         committed model, and the editor is told which outcome it got, never left on the promise."""
-        from acp_adapter.gateway_commands import _model_text, deferred_pick_text, refused_pick_text
+        from hermes_agent.acp_adapter.gateway_commands import _model_text, deferred_pick_text, refused_pick_text
         from hermes_cli.gateway_mutations import model_refusal_text
 
         async def say(text):
@@ -573,7 +573,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
     async def set_session_mode(self, mode_id, session_id, **kwargs):
         """Main's Default / Accept Edits / Don't Ask: the session's edit approval policy on the owner."""
         from acp.schema import SetSessionModeResponse
-        from acp_adapter.modes import MODE_TO_EDIT_APPROVAL_POLICY
+        from hermes_agent.acp_adapter.modes import MODE_TO_EDIT_APPROVAL_POLICY
         if mode_id not in MODE_TO_EDIT_APPROVAL_POLICY:
             raise GatewayClientError("invalid_params")
         await self._set_edit_policy(self._held_session(session_id), MODE_TO_EDIT_APPROVAL_POLICY[mode_id])
@@ -586,11 +586,11 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         Another id is accepted so editors do not fail on their own config writes,
         as main did. The reply is the full list, read back from the owner."""
         from acp.schema import SetSessionConfigOptionResponse
-        from acp_adapter.gateway_session_meta import (
+        from hermes_agent.acp_adapter.gateway_session_meta import (
             REASONING_CONFIG_ID, SERVICE_TIER_CONFIG_ID, SERVICE_TIER_LABELS, current_mode, model_state,
             reasoning_choices, session_config_options,
         )
-        from acp_adapter.modes import EDIT_APPROVAL_POLICY_CONFIG_ID, EDIT_APPROVAL_POLICY_TO_MODE
+        from hermes_agent.acp_adapter.modes import EDIT_APPROVAL_POLICY_CONFIG_ID, EDIT_APPROVAL_POLICY_TO_MODE
         editor_id, session_id = session_id, self._held_session(session_id)
         if config_id == EDIT_APPROVAL_POLICY_CONFIG_ID:
             if value not in EDIT_APPROVAL_POLICY_TO_MODE:
@@ -618,7 +618,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
     async def _set_edit_policy(self, session_id, policy):
         """The owner's ``edit_policy`` mutation; every surface attached to the session reads the
         committed policy from ``session.info``."""
-        from acp_adapter.modes import EDIT_APPROVAL_POLICY_TO_MODE
+        from hermes_agent.acp_adapter.modes import EDIT_APPROVAL_POLICY_TO_MODE
         await self._idle_control(session_id, "edit_policy", {"policy": policy}, "Mode")
         self._modes[session_id] = EDIT_APPROVAL_POLICY_TO_MODE[policy]
 
@@ -644,7 +644,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
 
     async def list_sessions(self, cursor=None, cwd=None, **kwargs):
         from acp.schema import ListSessionsResponse, SessionInfo
-        from acp_adapter.catalog import catalog_sessions
+        from hermes_agent.acp_adapter.catalog import catalog_sessions
         rows = await asyncio.to_thread(catalog_sessions, self._home / "state.db", cwd)
         if cursor:
             index = next((i for i, row in enumerate(rows) if row["session_id"] == cursor), None)
@@ -662,7 +662,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         if self._has_unknown(session_id):
             # Only a text-only /discard passes a lost turn, recognised BEFORE staging: a refused
             # prompt must not write its media or retire the editor's retained retry identity.
-            from acp_adapter.content import _content_blocks_to_openai_user_content
+            from hermes_agent.acp_adapter.content import _content_blocks_to_openai_user_content
             content = _content_blocks_to_openai_user_content(prompt)
             if not isinstance(content, str) or _slash_command(content) != 'discard':
                 raise GatewayClientError(self._unknown_recovery(session_id, submitted=False))
@@ -733,7 +733,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             raise GatewayClientError(self._unknown_recovery(session_id, admission_id))
         if outcome == "failed":
             raise GatewayClientError("admitted_turn_failed")
-        from acp_adapter.gateway_session_meta import turn_usage
+        from hermes_agent.acp_adapter.gateway_session_meta import turn_usage
         # The turn's last ``session.usage`` precedes its ``message.complete`` on the stream.
         return PromptResponse(stop_reason="cancelled" if outcome == "cancelled" else "end_turn",
                               usage=turn_usage(self._usage.get(session_id)))
@@ -765,7 +765,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         command = _slash_command(text)
         if command is None:
             return False, text
-        from acp_adapter.gateway_commands import CommandRefused, run_command
+        from hermes_agent.acp_adapter.gateway_commands import CommandRefused, run_command
         parts = text.strip().split(None, 1)
         try:
             reply, text = await run_command(self, session_id, command, parts[1].strip() if len(parts) > 1 else '')
@@ -781,8 +781,8 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
     async def _prepare_submit(self, session_id, prompt):
         """``(retry_key, input_id, (text, attachments))`` for one ACP prompt, or None when the editor's Stop
         arrived while it was staged."""
-        from acp_adapter.content import _content_blocks_to_openai_user_content
-        from acp_adapter.gateway_media import stage_user_content, submit_fingerprint
+        from hermes_agent.acp_adapter.content import _content_blocks_to_openai_user_content
+        from hermes_agent.acp_adapter.gateway_media import stage_user_content, submit_fingerprint
         content = _content_blocks_to_openai_user_content(prompt)
         retry_key = submit_fingerprint(session_id, content)
         # Only this session's very next prompt may be the editor's retry of an un-acked submit; any
@@ -870,7 +870,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
     def _unknown_recovery(self, session_id, admission_id=None, *, submitted=True):
         """The refusal for a FIFO blocked by a lost turn, naming the existing recovery control.
 
-        The editor's own ``/discard <id>`` (``acp_adapter.gateway_commands._discard_unknown``, the
+        The editor's own ``/discard <id>`` (``hermes_agent.acp_adapter.gateway_commands._discard_unknown``, the
         same fenced ``prompt.resolve_unknown`` the classic chat uses) acknowledges the exact lost
         admission without replaying it, and the queue then continues."""
         from hermes_constants import profile_name_for_home
@@ -1062,7 +1062,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         if kind == "session.updated" and payload.get("operation") == "model" and payload.get("status") == "refused":
             # A deferred pick that no longer resolved at the turn boundary: dropped, named here.
             if self._conn:
-                from acp_adapter.gateway_commands import refused_pick_text
+                from hermes_agent.acp_adapter.gateway_commands import refused_pick_text
                 await self._conn.session_update(session_id=editor_id, update=acp.update_agent_message_text(
                     refused_pick_text(payload) + "\n"))
             return
@@ -1085,7 +1085,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
 
     async def _project_mode(self, sid, editor_id, payload, client=None):
         """Another surface's ``edit_policy`` change (its ``session.info``) as ``current_mode_update``."""
-        from acp_adapter.modes import EDIT_APPROVAL_POLICY_TO_MODE
+        from hermes_agent.acp_adapter.modes import EDIT_APPROVAL_POLICY_TO_MODE
         mode = EDIT_APPROVAL_POLICY_TO_MODE.get(payload.get("edit_approval_policy"))
         # A session's first (its attach's snapshot) seeds silently: the attach's reply shows it.
         if mode is not None and self._modes.setdefault(sid, mode) != mode:
@@ -1100,7 +1100,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         """Zed draws its pickers only from ``configOptions`` once an agent sends them (it then ignores
         ``current_mode_update``), so a mode, model, effort or tier change from another surface resends
         the full list. A partial ``session.info`` keeps what it omits."""
-        from acp_adapter.gateway_session_meta import current_mode, model_state, session_config_options
+        from hermes_agent.acp_adapter.gateway_session_meta import current_mode, model_state, session_config_options
         fields = ("model", "provider", "reasoning_effort")
         if not any(key in payload for key in (*fields, "edit_approval_policy", "service_tier")):
             return
@@ -1123,7 +1123,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
 
     async def _project_usage(self, sid, editor_id, stats):
         """The owner's usage dict: kept for the turn's ``PromptResponse.usage``, shown as ``usage_update``."""
-        from acp_adapter.gateway_session_meta import usage_update
+        from hermes_agent.acp_adapter.gateway_session_meta import usage_update
         self._usage[sid] = stats
         if self._conn and (update := usage_update(stats)) is not None:
             await self._conn.session_update(session_id=editor_id, update=update)
@@ -1135,7 +1135,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             return
         self._titles[sid] = title
         if self._conn:
-            from acp_adapter.gateway_session_meta import title_update
+            from hermes_agent.acp_adapter.gateway_session_meta import title_update
             await self._conn.session_update(session_id=editor_id, update=title_update(title))
 
     def _permission(self, session_id, prompt):
@@ -1159,7 +1159,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
 
     async def _answer_clarify(self, session_id, prompt):
         from acp.schema import AllowedOutcome
-        from acp_adapter.elicitation import (
+        from hermes_agent.acp_adapter.elicitation import (
             ELICITATION_METHOD, SKIP_OPTION, build_clarify_elicitation, build_clarify_permission,
             elicited_answer,
         )
@@ -1190,7 +1190,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
 
     async def _answer_permission(self, session_id, prompt):
         from acp.schema import AllowedOutcome
-        from acp_adapter.permissions import (
+        from hermes_agent.acp_adapter.permissions import (
             _build_permission_options, _build_permission_tool_call, _OPTION_ID_TO_HERMES,
         )
         choices = prompt["choices"]
@@ -1199,7 +1199,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             if _OPTION_ID_TO_HERMES[option.option_id] in choices]
         try:
             if 'edit' in prompt:
-                from acp_adapter.edit_approval import EditProposal, build_acp_edit_tool_call
+                from hermes_agent.acp_adapter.edit_approval import EditProposal, build_acp_edit_tool_call
                 tool_call = build_acp_edit_tool_call(EditProposal(**prompt['edit']))
             else:
                 tool_call = _build_permission_tool_call(prompt.get('command', ''), prompt.get('description', ''))

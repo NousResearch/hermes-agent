@@ -304,7 +304,7 @@ def test_relay_rewrite_precedes_sequential_policy_approval_checkpoint_and_dispat
         ),
         patch.object(agent._tool_guardrails, "before_call", side_effect=observe_guardrail),
         patch(
-            "acp_adapter.edit_approval.maybe_require_edit_approval",
+            "hermes_agent.acp_adapter.edit_approval.maybe_require_edit_approval",
             side_effect=observe_approval,
         ),
         patch("model_tools.registry.dispatch", side_effect=dispatch),

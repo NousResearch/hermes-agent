@@ -91,7 +91,7 @@ def cmd_acp(args):
         if getattr(args, attr, None):
             os.environ[name] = getattr(args, attr)
     try:
-        from acp_adapter.entry import main as acp_main
+        from hermes_agent.acp_adapter.entry import main as acp_main
         acp_main([flag for attr, flag in _ACP_FLAGS if getattr(args, attr, False)])
     except ImportError as e:
         print("The ACP server can't start: its protocol packages are missing from this install.", file=sys.stderr)

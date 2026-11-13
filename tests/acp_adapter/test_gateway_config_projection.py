@@ -6,12 +6,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from acp_adapter.gateway_server import GatewayACPAgent
+from hermes_agent.acp_adapter.gateway_server import GatewayACPAgent
 
 
 @pytest.mark.asyncio
 async def test_another_surfaces_mode_and_effort_change_resend_the_config_options(monkeypatch):
-    monkeypatch.setattr('acp_adapter.gateway_session_meta.model_state', lambda info: None)
+    monkeypatch.setattr('hermes_agent.acp_adapter.gateway_session_meta.model_state', lambda info: None)
     agent = GatewayACPAgent()
     agent._conn = AsyncMock()
     info = {'edit_approval_policy': 'ask', 'model': 'fixture', 'reasoning_effort': 'medium'}
@@ -34,7 +34,7 @@ async def test_a_projection_superseded_during_its_catalog_build_never_lands_afte
         if not building.is_set():  # the pump's projection: held until the adoption has sent its own
             building.set()
             release.wait(30)
-    monkeypatch.setattr('acp_adapter.gateway_session_meta.model_state', model_state)
+    monkeypatch.setattr('hermes_agent.acp_adapter.gateway_session_meta.model_state', model_state)
     agent = GatewayACPAgent()
     agent._conn = AsyncMock()
     info = {'edit_approval_policy': 'session', 'model': 'fixture', 'reasoning_effort': 'medium'}
@@ -61,7 +61,7 @@ async def test_an_equal_adoption_during_the_catalog_build_does_not_swallow_the_u
         if not building.is_set():  # the event's projection: held until the adoption has run
             building.set()
             release.wait(30)
-    monkeypatch.setattr('acp_adapter.gateway_session_meta.model_state', model_state)
+    monkeypatch.setattr('hermes_agent.acp_adapter.gateway_session_meta.model_state', model_state)
     agent = GatewayACPAgent()
     agent._conn = AsyncMock()
     info = {'edit_approval_policy': 'ask', 'model': 'fixture', 'reasoning_effort': 'medium'}

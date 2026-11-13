@@ -6,8 +6,8 @@ from unittest.mock import patch
 import pytest
 from acp.schema import TextContentBlock
 
-from acp_adapter.server import HermesACPAgent
-from acp_adapter.session import SessionManager
+from hermes_agent.acp_adapter.server import HermesACPAgent
+from hermes_agent.acp_adapter.session import SessionManager
 
 
 class FakeAgent:

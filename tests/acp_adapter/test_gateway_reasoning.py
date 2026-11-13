@@ -1,6 +1,6 @@
 """Live reasoning for editors on the gateway path (#134889 ACP-4).
 
-The in-process server (``acp_adapter/server.py``) gave every editor turn a reasoning sink and streamed it as
+The in-process server (``hermes_agent/acp_adapter/server.py``) gave every editor turn a reasoning sink and streamed it as
 ``agent_thought_chunk``. On the gateway path the owner publishes ``reasoning.delta`` only for a live session
 whose ``show_reasoning`` flag a viewer set (``gateway/local_viewer_events.py``), so the editor asks for it on
 every attach. The end-to-end test runs an actual ``hermes acp`` stdio process against an ordinary isolated
@@ -15,7 +15,7 @@ import pytest
 from acp.schema import AllowedOutcome
 from websockets.exceptions import ConnectionClosed
 
-from acp_adapter.gateway_server import GatewayACPAgent
+from hermes_agent.acp_adapter.gateway_server import GatewayACPAgent
 from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
 from tests.acp_adapter.test_gateway_sessions import editor, viewer
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text
@@ -77,7 +77,7 @@ async def test_every_session_the_editor_attaches_streams_its_reasoning_live(daem
 async def test_an_attach_asks_for_live_reasoning_before_it_replies_and_never_fails_on_it(monkeypatch, attach, failure):
     # The owner runs the conversation as "logical"; a load or resume may hold another id for it (a compressed
     # chain's), and a fork holds its child.
-    monkeypatch.setattr("acp_adapter.catalog.logical_session_id", lambda db, held: "logical")
+    monkeypatch.setattr("hermes_agent.acp_adapter.catalog.logical_session_id", lambda db, held: "logical")
     agent = GatewayACPAgent()
     agent._conn = AsyncMock()
     agent._conn.request_permission.side_effect = lambda session_id, tool_call, options: SimpleNamespace(
@@ -129,7 +129,7 @@ async def test_an_attach_asks_for_live_reasoning_before_it_replies_and_never_fai
         async def connect_gateway():
             yield owner
 
-        monkeypatch.setattr("acp_adapter.gateway_server.connect_gateway", connect_gateway)
+        monkeypatch.setattr("hermes_agent.acp_adapter.gateway_server.connect_gateway", connect_gateway)
         await agent._client()
     owner_id = "child" if attach == "fork" else "logical"
     try:

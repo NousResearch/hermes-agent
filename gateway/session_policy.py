@@ -125,7 +125,7 @@ def _refuse(field, detail=None):
     raise RuntimeStoreError('invalid_params', field=field, detail=detail)
 
 
-# ``acp_adapter/edit_approval.py``'s AUTO_APPROVE_* values, in main's ACP mode order.
+# ``hermes_agent/acp_adapter/edit_approval.py``'s AUTO_APPROVE_* values, in main's ACP mode order.
 EDIT_APPROVAL_POLICIES = ('ask', 'workspace_session', 'session')
 
 

@@ -173,7 +173,7 @@ class TestHandleFunctionCall:
             lambda name, **kwargs: hook_calls.append((name, kwargs)) or [],
         )
         monkeypatch.setattr(
-            "acp_adapter.edit_approval.maybe_require_edit_approval",
+            "hermes_agent.acp_adapter.edit_approval.maybe_require_edit_approval",
             lambda *_args, **_kwargs: json.dumps({"error": "Edit approval denied"}),
         )
         monkeypatch.setattr(

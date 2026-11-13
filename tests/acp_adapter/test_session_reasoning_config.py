@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 import hermes_yaml as yaml
 
-from acp_adapter.session import SessionManager
+from hermes_agent.acp_adapter.session import SessionManager
 
 
 class _CapturingAgent:
@@ -31,7 +31,7 @@ def acp_env(monkeypatch, tmp_path):
         lambda requested=None, **_kwargs: {"provider": requested or "openai-api", "api_mode": "codex_responses",
                                            "base_url": "https://example.invalid/v1", "api_key": "test-key"},
     )
-    monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
+    monkeypatch.setattr("hermes_agent.acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
     monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kwargs: None)
 
     def _write_config(cfg: dict) -> None:

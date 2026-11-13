@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from acp_adapter.edit_approval import (
+from hermes_agent.acp_adapter.edit_approval import (
     EditProposal,
     build_acp_edit_tool_call,
     build_edit_proposal,

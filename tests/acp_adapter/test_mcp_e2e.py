@@ -24,9 +24,9 @@ from acp.schema import (
     ToolCallStart,
 )
 
-from acp_adapter.server import HermesACPAgent
-from acp_adapter.session import SessionManager
-from acp_adapter.tools import build_tool_start
+from hermes_agent.acp_adapter.server import HermesACPAgent
+from hermes_agent.acp_adapter.session import SessionManager
+from hermes_agent.acp_adapter.tools import build_tool_start
 
 
 # ---------------------------------------------------------------------------

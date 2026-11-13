@@ -9,7 +9,7 @@ from typing import Callable
 
 from acp.schema import ModelInfo, SessionModelState
 
-logger = logging.getLogger("acp_adapter.server")
+logger = logging.getLogger("hermes_agent.acp_adapter.server")
 
 # Per-provider row cap (clients render all `availableModels` in one dropdown; mirrors the
 # MoA picker cap). Not a total cap; the current model is always kept via the fallback insert.

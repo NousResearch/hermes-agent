@@ -104,7 +104,7 @@ async def test_cli_chat_view_asks_and_applies_a_guarded_model_once_with_the_toke
 @pytest.mark.asyncio
 async def test_acp_set_session_model_asks_through_request_permission(tmp_path, monkeypatch):
     from acp.schema import AllowedOutcome, DeniedOutcome
-    from acp_adapter.gateway_server import GatewayACPAgent
+    from hermes_agent.acp_adapter.gateway_server import GatewayACPAgent
     owner = _Owner(tmp_path, monkeypatch)
     asked = []
 

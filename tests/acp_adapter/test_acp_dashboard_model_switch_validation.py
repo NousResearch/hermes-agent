@@ -19,7 +19,7 @@ from hermes_cli.model_switch import ModelSwitchResult
 
 
 def _acp_agent():
-    from acp_adapter.server import HermesACPAgent
+    from hermes_agent.acp_adapter.server import HermesACPAgent
     made: dict = {}
 
     class _SM:

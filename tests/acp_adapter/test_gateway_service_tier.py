@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from acp_adapter.gateway_server import GatewayACPAgent
+from hermes_agent.acp_adapter.gateway_server import GatewayACPAgent
 from hermes_cli.gateway_client import GatewayRPCError
 from tests.acp_adapter.test_gateway_sessions import editor, viewer
 from tests.acp_adapter.test_gateway_session_metadata import _updates
@@ -73,7 +73,7 @@ async def test_unsupported_route_has_no_tier_picker_and_refuses_a_direct_pick(da
 
 @pytest.mark.asyncio
 async def test_older_owner_keeps_existing_pickers_without_a_service_tier_read():
-    from acp_adapter.gateway_session_meta import session_config_options
+    from hermes_agent.acp_adapter.gateway_session_meta import session_config_options
 
     owner = AsyncMock()
     owner.rpc.side_effect = GatewayRPCError('invalid_params')
@@ -87,7 +87,7 @@ async def test_older_owner_keeps_existing_pickers_without_a_service_tier_read():
 
 @pytest.mark.asyncio
 async def test_an_existing_unavailable_tier_is_not_silently_displayed_as_normal():
-    from acp_adapter.gateway_session_meta import session_config_options
+    from hermes_agent.acp_adapter.gateway_session_meta import session_config_options
 
     owner = AsyncMock()
     owner.rpc.return_value = {'value': 'ultrafast', 'options': ['normal', 'fast']}
@@ -99,7 +99,7 @@ async def test_an_existing_unavailable_tier_is_not_silently_displayed_as_normal(
 
 @pytest.mark.asyncio
 async def test_reconnect_projects_speed_using_the_connection_being_attached(monkeypatch):
-    monkeypatch.setattr('acp_adapter.gateway_session_meta.model_state', lambda info: None)
+    monkeypatch.setattr('hermes_agent.acp_adapter.gateway_session_meta.model_state', lambda info: None)
     agent = GatewayACPAgent()
     agent._conn = AsyncMock()
     agent._snapshots['session'] = {}

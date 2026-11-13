@@ -6,10 +6,13 @@ progress line, verbose args and callbacks would show it in chat (#72298). Typed
 values are masked whatever they look like; selectors, URLs and the rest of the code
 stay readable. The snippet is parsed as Python, so the typed argument is found by
 keyword or position whatever its spelling (``('pw')``, ``'' 'pw'``, ``text=..., selector=...``,
-f-strings, ``'a' + pw``); a name it uses (``pw = 'x'; fill_input(sel, pw)``) has the literals
-bound to that name masked too. Code that does not parse masks every literal inside each typing
-call (fail closed), and a snippet the walk cannot finish has every string literal masked. Values typed one key at a time (``Input.dispatchKeyEvent`` in a loop) are
-not recognised. The tool itself always receives the untouched code.
+f-strings, ``'a' + pw``, ``*args``/``**{'text': ...}`` splats); a name it uses has the literals
+bound to that name masked too, whether assigned (``pw = 'x'``, ``sel, pw = '#p', 'x'``), looped
+over (``for pw in ['x']``) or passed to a function the snippet defines (``def go(pw): ...``;
+``go('x')``). Code that does not parse masks every literal inside each typing call (fail closed),
+and a snippet the walk cannot finish has every string literal masked. Not recognised: values
+typed one key at a time (``Input.dispatchKeyEvent`` in a loop), and values reached through
+attributes, subscripts, imports or functions the snippet does not define. The tool itself always receives the untouched code.
 """
 import ast
 import re
@@ -68,11 +71,16 @@ def _call_end(code: str, i: int, pair: str = "()") -> int:
     return i
 
 
+# A source line with its terminator: Python's tokenizer ends a line at \r\n, \r or \n alone.
+_SOURCE_LINE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+")
+
+
 class _Spans:
-    """Char offsets of AST nodes in ``code`` (AST columns count UTF-8 bytes)."""
+    """Char offsets of AST nodes in ``code`` (AST columns count UTF-8 bytes), with the line breaks
+    the parser counts, so a bare ``\r`` cannot shift a span onto another line's text."""
 
     def __init__(self, code: str):
-        self.lines = [line + "\n" for line in code.split("\n")]
+        self.lines = _SOURCE_LINE.findall(code) + [""]
         self.starts = [0]
         for line in self.lines:
             self.starts.append(self.starts[-1] + len(line))
@@ -85,19 +93,44 @@ class _Spans:
                 self._offset(node.end_lineno, node.end_col_offset))
 
 
+def _bind(out: dict, target: ast.AST, value: ast.AST) -> None:
+    """Bind every name in *target* to *value*; a tuple target takes the whole value (fail closed)."""
+    for node in ast.walk(target):
+        if isinstance(node, ast.Name):
+            out.setdefault(node.id, []).append(value)
+
+
+def _call_bindings(tree: ast.AST, out: dict) -> None:
+    """A parameter of a function defined in the snippet is bound to every argument passed to it."""
+    params = {node.name: node.args for node in ast.walk(tree)
+              if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in params):
+            continue
+        args = params[node.func.id]
+        names = [a.arg for a in [*args.posonlyargs, *args.args, *args.kwonlyargs]]
+        names += [a.arg for a in (args.vararg, args.kwarg) if a is not None]
+        for value in [*node.args, *(kw.value for kw in node.keywords)]:
+            for name in names:
+                out.setdefault(name, []).append(value)
+
+
 def _name_bindings(tree: ast.AST) -> dict[str, list[ast.AST]]:
-    """Every value assigned to each plain name anywhere in the snippet."""
+    """Every value bound to each plain name anywhere in the snippet: assignments (tuple targets
+    included), loop and comprehension variables, ``with ... as``, and parameters of functions the
+    snippet defines and calls."""
     out: dict[str, list[ast.AST]] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign):
-            targets = node.targets
-        elif isinstance(node, (ast.AnnAssign, ast.AugAssign, ast.NamedExpr)):
-            targets = [node.target]
-        else:
-            continue
-        for target in targets:
-            if isinstance(target, ast.Name) and node.value is not None:
-                out.setdefault(target.id, []).append(node.value)
+            for target in node.targets:
+                _bind(out, target, node.value)
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign, ast.NamedExpr)) and node.value is not None:
+            _bind(out, node.target, node.value)
+        elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+            _bind(out, node.target, node.iter)
+        elif isinstance(node, ast.withitem) and node.optional_vars is not None:
+            _bind(out, node.optional_vars, node.context_expr)
+    _call_bindings(tree, out)
     return out
 
 
@@ -143,11 +176,14 @@ class _TypedValues(ast.NodeVisitor):
         name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
         if name in _TYPING_CALLS:
             pos = _TYPING_CALLS[name]
-            if len(node.args) > pos:
-                self._strings(node.args[pos])
+            for i, arg in enumerate(node.args):
+                if i == pos or isinstance(arg, ast.Starred):  # a splat may carry the value
+                    self._strings(arg)
             for kw in node.keywords:
                 if kw.arg == "text":
                     self._strings(kw.value)
+                elif kw.arg is None:
+                    self._dict_text(kw.value)
         elif _is_insert_text(node):
             for kw in node.keywords:
                 (self._strings if kw.arg == "text" else self._dict_text)(kw.value)
@@ -156,43 +192,45 @@ class _TypedValues(ast.NodeVisitor):
         self.generic_visit(node)
 
 
-def _unparsed_masks(code: str) -> list[tuple[int, int, str]]:
-    """Every literal inside each typing call region of a snippet that does not parse."""
-    out = []
-    for m in _TYPING_CALL_RE.finditer(code):
-        i, end = m.end(), _call_end(code, m.end())
-        while i < end:
-            lit = _literal_mask(code, i)
-            if lit is None:
-                i += 1
-                continue
-            out.append(lit)
-            i = max(lit[1], i + 1)
+def _literal_regions(code: str, start: int, end: int) -> list[tuple[int, int, str]]:
+    """A mask for every string literal in code[start:end], found by scanning the raw text."""
+    out, i = [], start
+    while i < end:
+        lit = _literal_mask(code, i) if code[i] in "'\"`\\" else None
+        if lit is None:
+            i += 1
+            continue
+        out.append(lit)
+        i = max(lit[1], i + 1)
     return out
 
 
-def _parsed_masks(tree: ast.AST, code: str) -> list[tuple[int, int, str]]:
-    """The typed values of a parsed snippet; every string literal in it when the walk fails, so a
-    shape the walk mishandles fails closed instead of raising before the browser call dispatches."""
-    try:
-        visitor = _TypedValues(tree, code)
-        visitor.visit(tree)
-        return visitor.out
-    except Exception:  # health: allow BLE001 -- display masking must never block the call; mask everything
-        spans = _Spans(code)
-        return [(*spans.of(n), _MASK) for n in ast.walk(tree)
-                if isinstance(n, ast.JoinedStr) or (isinstance(n, ast.Constant) and isinstance(n.value, str))]
+def _unparsed_masks(code: str) -> list[tuple[int, int, str]]:
+    """Every literal inside each typing call region of a snippet that does not parse."""
+    return [lit for m in _TYPING_CALL_RE.finditer(code)
+            for lit in _literal_regions(code, m.end(), _call_end(code, m.end()))]
 
 
-def mask_typed_browser_text(code: str) -> str:
-    """``code`` with every value it types into a page replaced by ``***``."""
+def _typed_masks(code: str) -> list[tuple[int, int, str]]:
     try:
         tree = ast.parse(code)
     except (SyntaxError, ValueError, RecursionError):
         masks = _unparsed_masks(code)
     else:
-        masks = _parsed_masks(tree, code)
-    masks += [lit for m in _VALUE_ASSIGN.finditer(code) if (lit := _literal_mask(code, m.end()))]
+        visitor = _TypedValues(tree, code)
+        visitor.visit(tree)
+        masks = visitor.out
+    return masks + [lit for m in _VALUE_ASSIGN.finditer(code) if (lit := _literal_mask(code, m.end()))]
+
+
+def mask_typed_browser_text(code: str) -> str:
+    """``code`` with every value it types into a page replaced by ``***``. A snippet the walk
+    cannot finish has every string literal masked by a raw-text scan that shares nothing with the
+    walk, so display masking never raises before the browser call dispatches."""
+    try:
+        masks = _typed_masks(code)
+    except Exception:  # health: allow BLE001 -- display masking must never block the call; mask everything
+        masks = _literal_regions(code, 0, len(code))
     out, pos = [], 0
     for start, end, replacement in sorted(masks, key=lambda s: (s[0], -s[1])):
         if start < pos:  # inside a span already masked

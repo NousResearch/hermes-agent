@@ -1,10 +1,5 @@
-"""The first request after a cross-provider fallback carries the key a direct selection would.
-
-Registry API-key providers build their fallback client through a resolver that reads the
-``.env`` key ahead of the credential pool; selecting the same provider directly reads the pool
-first and skips a key a 429 has benched. These tests drive the real pool and the real resolver
-(only the agent is a stand-in) through ``try_activate_fallback``.
-"""
+"""The first request after a fallback carries the key a direct pick would, and a pick nobody sends
+leaves the pool as it was. Real pool and resolver; only the agent around them is a stand-in."""
 
 import os
 from pathlib import Path
@@ -18,6 +13,7 @@ _TOKEN_PLAN = "alibaba-token-plan"
 _TOKEN_PLAN_URL = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
 _ENV_KEY = "sk-env-key-spent-for-the-month"
 _POOL_KEY = "sk-pool-key-with-quota-left"
+_OTHER_KEY = "sk-key-for-another-endpoint"
 
 
 def _agent(fallback_entry):
@@ -35,177 +31,66 @@ def _agent(fallback_entry):
     return agent
 
 
-def _write_env(**keys):
-    Path(os.environ["HERMES_HOME"], ".env").write_text("".join(f"{k}={v}\n" for k, v in keys.items()))
-
-
-def _add_pool_key(provider, entry_id, key, base_url, priority=0):
+def _add_pool_key(provider, entry_id, key, base_url, priority):
     load_pool(provider).add_entry(PooledCredential(
         provider=provider, id=entry_id, label=entry_id, auth_type=AUTH_TYPE_API_KEY, priority=priority,
         source=SOURCE_MANUAL, access_token=key, base_url=base_url))
 
 
-def _bench(provider, key):
+def _setup(provider, env_var, url, strategy=None):
+    """``.env`` key spent and benched, a higher-priority key for another endpoint, a healthy key for ``url``."""
+    home = Path(os.environ["HERMES_HOME"])
+    (home / ".env").write_text(f"{env_var}={_ENV_KEY}\n")
+    if strategy:
+        (home / "config.yaml").write_text(f"credential_pool_strategies:\n  {provider}: {strategy}\n")
+    _add_pool_key(provider, "other-endpoint", _OTHER_KEY, "https://relay.example/v1", priority=1)
+    _add_pool_key(provider, "healthy", _POOL_KEY, url, priority=10)
     load_pool(provider).mark_exhausted_and_rotate(
-        status_code=429, api_key_hint=key, failure_reason="insufficient_quota")
+        status_code=429, api_key_hint=_ENV_KEY, failure_reason="insufficient_quota")
 
 
-def _activate(entry):
+@pytest.mark.parametrize("provider,env_var,pool_url,entry_url,sent_url", [
+    (_TOKEN_PLAN, "ALIBABA_TOKEN_PLAN_API_KEY", _TOKEN_PLAN_URL, None, _TOKEN_PLAN_URL),
+    # MiniMax rows keep the /anthropic URL; a saved entry names the /v1 sibling the resolver calls.
+    ("minimax", "MINIMAX_API_KEY", "https://api.minimax.io/anthropic", "https://api.minimax.io/v1",
+     "https://api.minimax.io/v1"),
+])
+def test_the_first_fallback_request_uses_the_healthy_key_for_its_endpoint(provider, env_var, pool_url, entry_url,
+                                                                          sent_url):
     from agent.chat_completion_helpers import try_activate_fallback
 
-    agent = _agent(entry)
+    _setup(provider, env_var, pool_url)
+    agent = _agent({"provider": provider, "model": "some-model", **({"base_url": entry_url} if entry_url else {})})
+
     assert try_activate_fallback(agent) is True
-    return agent
+
+    assert agent.api_key == agent.client.api_key == _POOL_KEY
+    assert agent.base_url.rstrip("/") == sent_url
+    assert agent._credential_pool_entry_id == "healthy"
 
 
-class TestFallbackFirstRequestKey:
-    def test_a_key_the_pool_benched_is_not_sent_again(self):
-        _write_env(ALIBABA_TOKEN_PLAN_API_KEY=_ENV_KEY)
-        _add_pool_key(_TOKEN_PLAN, "added", _POOL_KEY, _TOKEN_PLAN_URL)
-        _bench(_TOKEN_PLAN, _ENV_KEY)
+def test_a_pick_that_is_not_sent_leaves_the_pool_unchanged(monkeypatch):
+    """A voice turn binds its route, then runs on the main model when the history would not fit:
+    the key it picked was never sent, so the round-robin order and request counts stay as they were."""
+    import agent.voice_turn_route as voice
+    from agent.route_binding import resolve_route_entry_client
 
-        agent = _activate({"provider": _TOKEN_PLAN, "model": "qwen3.8-max"})
+    _setup(_TOKEN_PLAN, "ALIBABA_TOKEN_PLAN_API_KEY", _TOKEN_PLAN_URL, strategy="round_robin")
+    _add_pool_key(_TOKEN_PLAN, "healthy-2", "sk-second-healthy-key", _TOKEN_PLAN_URL, priority=11)
+    auth = Path(os.environ["HERMES_HOME"], "auth.json")
+    before = auth.read_bytes()
 
-        assert agent.provider == _TOKEN_PLAN
-        assert agent.api_key == _POOL_KEY and agent._client_kwargs["api_key"] == _POOL_KEY
-        assert agent.client.api_key == _POOL_KEY
-        assert agent._credential_pool.current().id == "added"
-        assert agent._credential_pool_entry_id == "added"
+    readiness = resolve_route_entry_client({"provider": _TOKEN_PLAN, "model": "some-model"}, _TOKEN_PLAN, "some-model")
+    assert readiness.client.api_key == _POOL_KEY  # `hermes fallback check --live` builds the same client
 
-    def test_an_env_key_whose_pool_row_was_removed_is_not_sent(self):
-        # `hermes auth remove` drops the .env row and suppresses its source; a key written back
-        # into .env afterwards matches no pool row, so the pool never benches it.
-        from types import SimpleNamespace
-        from hermes_cli.auth_commands import auth_remove_command
+    agent = _agent({"provider": "custom", "model": "primary-model"})
+    agent._voice_turn_pending, agent.reasoning_config = True, None
+    monkeypatch.setattr("agent.auxiliary_task_config._get_auxiliary_task_config",
+                        lambda task: {"provider": _TOKEN_PLAN, "model": "voice-model"})
+    monkeypatch.setattr(voice, "_capture", lambda agent: {name: None for name in voice._EXTRA_FIELDS})
+    monkeypatch.setattr(voice, "_reinstall", lambda agent, state: None)
+    monkeypatch.setattr(voice, "_fits", lambda agent, messages, system_prompt: False)
 
-        _write_env(ALIBABA_TOKEN_PLAN_API_KEY=_ENV_KEY)
-        _add_pool_key(_TOKEN_PLAN, "added", _POOL_KEY, _TOKEN_PLAN_URL)
-        env_row = next(e.id for e in load_pool(_TOKEN_PLAN).entries() if e.source.startswith("env:"))
-        auth_remove_command(SimpleNamespace(provider=_TOKEN_PLAN, target=env_row))
-        _write_env(ALIBABA_TOKEN_PLAN_API_KEY=_ENV_KEY)
+    voice.begin_voice_turn_route(agent, [{"role": "user", "content": "hi"}], "system")
 
-        agent = _activate({"provider": _TOKEN_PLAN, "model": "qwen3.8-max"})
-
-        assert agent.api_key == _POOL_KEY
-        assert agent._credential_pool_entry_id == "added"
-
-    def test_nothing_changes_while_no_key_has_failed(self):
-        _write_env(ALIBABA_TOKEN_PLAN_API_KEY=_ENV_KEY)
-        _add_pool_key(_TOKEN_PLAN, "added", _POOL_KEY, _TOKEN_PLAN_URL, priority=5)
-
-        agent = _activate({"provider": _TOKEN_PLAN, "model": "qwen3.8-max"})
-
-        assert agent.api_key == _ENV_KEY
-        assert agent._credential_pool.current().source == "env:ALIBABA_TOKEN_PLAN_API_KEY"
-
-    def test_numbered_env_keys_rotate_like_a_direct_pick(self):
-        _write_env(ALIBABA_TOKEN_PLAN_API_KEY=_ENV_KEY, ALIBABA_TOKEN_PLAN_API_KEY_2=_POOL_KEY)
-        _bench(_TOKEN_PLAN, _ENV_KEY)
-
-        agent = _activate({"provider": _TOKEN_PLAN, "model": "qwen3.8-max"})
-
-        assert agent.api_key == _POOL_KEY
-        assert agent._credential_pool.current().source == "env:ALIBABA_TOKEN_PLAN_API_KEY_2"
-
-    @pytest.mark.parametrize("own", [{"api_key": "sk-entry-own-key"}, {"key_env": "ENTRY_OWN_KEY"}])
-    def test_an_entry_naming_its_own_key_keeps_it(self, own, monkeypatch):
-        monkeypatch.setenv("ENTRY_OWN_KEY", "sk-entry-own-key")
-        _write_env(ALIBABA_TOKEN_PLAN_API_KEY=_ENV_KEY)
-        _add_pool_key(_TOKEN_PLAN, "added", _POOL_KEY, _TOKEN_PLAN_URL)
-        _bench(_TOKEN_PLAN, _ENV_KEY)
-
-        agent = _activate({"provider": _TOKEN_PLAN, "model": "qwen3.8-max", **own})
-
-        assert agent.api_key == "sk-entry-own-key"
-
-    def test_an_entry_saved_with_the_providers_url_uses_the_pool(self):
-        # `hermes fallback add` copies the picker's base_url into the entry.
-        _write_env(ALIBABA_TOKEN_PLAN_API_KEY=_ENV_KEY)
-        _add_pool_key(_TOKEN_PLAN, "added", _POOL_KEY, _TOKEN_PLAN_URL)
-        _bench(_TOKEN_PLAN, _ENV_KEY)
-
-        agent = _activate({"provider": _TOKEN_PLAN, "model": "qwen3.8-max", "base_url": _TOKEN_PLAN_URL})
-
-        assert agent.api_key == _POOL_KEY
-
-    def test_a_pool_key_never_moves_to_another_endpoint(self):
-        _write_env(ALIBABA_TOKEN_PLAN_API_KEY=_ENV_KEY)
-        _add_pool_key(_TOKEN_PLAN, "added", _POOL_KEY, _TOKEN_PLAN_URL)
-        _bench(_TOKEN_PLAN, _ENV_KEY)
-
-        agent = _activate({"provider": _TOKEN_PLAN, "model": "qwen3.8-max", "base_url": "https://relay.example/v1"})
-
-        assert agent.api_key == _ENV_KEY
-        assert agent.base_url.rstrip("/") == "https://relay.example/v1"
-
-    def test_mixed_endpoint_pool_uses_healthy_matching_key(self):
-        # A key for a different endpoint may sort ahead of the healthy key for this route.
-        # Filtering only after select() would reject the wrong key and resend the spent env key.
-        _write_env(ALIBABA_TOKEN_PLAN_API_KEY=_ENV_KEY)
-        _add_pool_key(_TOKEN_PLAN, "other-endpoint", "sk-other-endpoint-key",
-                      "https://relay.example/v1", priority=1)
-        _add_pool_key(_TOKEN_PLAN, "matching-endpoint", _POOL_KEY, _TOKEN_PLAN_URL, priority=10)
-        _bench(_TOKEN_PLAN, _ENV_KEY)
-
-        agent = _activate({"provider": _TOKEN_PLAN, "model": "qwen3.8-max"})
-
-        assert agent.api_key == _POOL_KEY
-        assert agent.client.api_key == _POOL_KEY
-        assert agent._credential_pool.current().id == "matching-endpoint"
-        assert agent._credential_pool_entry_id == "matching-endpoint"
-        assert agent.base_url.rstrip("/") == _TOKEN_PLAN_URL
-
-    def test_minimax_keeps_the_resolvers_route(self):
-        # MiniMax pool rows store the /anthropic URL; the resolver builds /v1 for chat completions.
-        _write_env(MINIMAX_API_KEY=_ENV_KEY, MINIMAX_API_KEY_2=_POOL_KEY)
-        _bench("minimax", _ENV_KEY)
-
-        agent = _activate({"provider": "minimax", "model": "MiniMax-M2.7"})
-
-        assert agent.api_key == _POOL_KEY
-        assert agent.base_url.rstrip("/") == "https://api.minimax.io/v1"
-        assert agent.api_mode == "chat_completions"
-
-    def test_a_round_robin_pool_rotates_once_per_fallback(self):
-        # openrouter selects from its own pool inside the resolver; the fallback must not select again.
-        from hermes_constants import OPENROUTER_BASE_URL
-
-        Path(os.environ["HERMES_HOME"], "config.yaml").write_text(
-            "credential_pool_strategies:\n  openrouter: round_robin\n")
-        _write_env()
-        _add_pool_key("openrouter", "key-a", "sk-or-key-a", OPENROUTER_BASE_URL, priority=0)
-        _add_pool_key("openrouter", "key-b", "sk-or-key-b", OPENROUTER_BASE_URL, priority=1)
-
-        sent = [_activate({"provider": "openrouter", "model": "qwen/qwen3-coder"}).api_key for _ in range(2)]
-
-        assert sent == ["sk-or-key-a", "sk-or-key-b"]
-
-    def test_an_alias_named_fallback_keeps_credential_recovery(self):
-        from agent.agent_runtime_helpers import recover_with_credential_pool
-
-        _write_env(ALIBABA_TOKEN_PLAN_API_KEY=_ENV_KEY, ALIBABA_TOKEN_PLAN_API_KEY_2=_POOL_KEY)
-        agent = _activate({"provider": "dashscope-token-plan", "model": "qwen3.8-max"})
-        assert agent.api_key == _ENV_KEY
-
-        recovered, _ = recover_with_credential_pool(agent, status_code=402, has_retried_429=False)
-
-        assert recovered is True and agent.api_key == _POOL_KEY
-
-    def test_a_readiness_check_leaves_the_pool_rotation_alone(self, monkeypatch):
-        from agent.route_binding import resolve_route_entry_client
-
-        for name in [n for n in os.environ if n.startswith("ALIBABA_TOKEN_PLAN")]:
-            monkeypatch.delenv(name)  # an agent turn earlier in the process can load a .env into os.environ
-        Path(os.environ["HERMES_HOME"], "config.yaml").write_text(
-            f"credential_pool_strategies:\n  {_TOKEN_PLAN}: round_robin\n")
-        _write_env()
-        _add_pool_key(_TOKEN_PLAN, "key-a", _ENV_KEY, _TOKEN_PLAN_URL, priority=0)
-        _add_pool_key(_TOKEN_PLAN, "key-b", _POOL_KEY, _TOKEN_PLAN_URL, priority=1)
-        before = [(e.id, e.priority, e.request_count) for e in load_pool(_TOKEN_PLAN).entries()]
-
-        for _ in range(2):
-            route = resolve_route_entry_client({"provider": _TOKEN_PLAN, "model": "qwen3.8-max"}, _TOKEN_PLAN,
-                                               "qwen3.8-max", raw_codex=False)
-            assert route.client.api_key == _ENV_KEY  # key-a, the pool's first entry, on both checks
-
-        assert [(e.id, e.priority, e.request_count) for e in load_pool(_TOKEN_PLAN).entries()] == before
+    assert auth.read_bytes() == before

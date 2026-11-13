@@ -108,6 +108,29 @@ class TestSingleTask:
         assert payload["child_summary"] == "Done!"
         assert payload["duration_ms"] == 5000
 
+    def test_reaches_first_party_lifecycle_observers(self):
+        """subagent_stop goes through hermes_cli.lifecycle like subagent_start, so the
+        built-in observers that close the child's session see it (plugins still get it once)."""
+        captured = _register_capturing_hook()
+        observed = []
+
+        def _observe(hook_name, **kwargs):
+            observed.append((hook_name, kwargs.get("child_session_id")))
+
+        with patch("tools.delegate_tool._run_single_child") as mock_run, \
+             patch("hermes_cli.observability.observe_lifecycle", side_effect=_observe):
+            mock_run.return_value = {
+                "task_index": 0, "status": "completed",
+                "summary": "x", "api_calls": 1, "duration_seconds": 0.1,
+                "_child_role": None,
+            }
+            delegate_task(goal="go", parent_agent=_make_parent())
+
+        stops = [entry for entry in observed if entry[0] == "subagent_stop"]
+        assert len(stops) == 1
+        assert stops[0][1] == captured[0]["child_session_id"]
+        assert len(captured) == 1
+
     def test_fires_on_parent_thread(self):
         """Dispatch and callback body stay on the parent/caller thread."""
         captured = _register_capturing_hook()

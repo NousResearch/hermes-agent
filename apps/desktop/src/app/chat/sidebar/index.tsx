@@ -2052,7 +2052,20 @@ export function ChatSidebar({
           </div>
         )}
 
-        {!showSessionSections && <SidebarBlankState onNewProject={openProjectCreate} />}
+        {!showSessionSections && (
+          <SidebarBlankState
+            onNewChat={() => {
+              // Same seam as the header '+': grouped, a chat starts through a
+              // project; ungrouped, a plain session in the live gateway profile.
+              if (agentsGrouped) {
+                openProjectCreate()
+              } else {
+                onNewSessionInWorkspace(null)
+              }
+            }}
+            onNewProject={openProjectCreate}
+          />
+        )}
 
         {/* Off, the statusbar's profile dropdown (beside the gateway switcher)
             takes over — the rail is a duplicate door for bot-only setups. */}

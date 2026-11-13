@@ -895,6 +895,21 @@ class TestClassifyApiError:
         e = MockAPIError("Error code: 400 - {'detail': 'Unsupported content type'}", status_code=400, body=body)
         assert classify_api_error(e, provider=provider, model="gpt-5.5").reason == expected
 
+    @pytest.mark.parametrize(("provider", "body", "expected"), [
+        ("openai-codex", {"detail": "Bad Request"}, FailoverReason.server_error),
+        ("openai-codex", None, FailoverReason.server_error),
+        ("openai-codex", {"detail": "Bad Request", "param": "tools"}, FailoverReason.format_error),
+        ("openai", {"detail": "Bad Request"}, FailoverReason.format_error),
+    ], ids=["codex-dict-body", "codex-message-only", "codex-extra-field", "other-provider"])
+    def test_codex_bare_bad_request_is_retried(self, provider, body, expected):
+        """The ChatGPT Codex backend intermittently rejects a valid first request with a bare
+        ``{"detail": "Bad Request"}``; replaying the identical body succeeds, so retry it."""
+        e = MockAPIError("Error code: 400 - {'detail': 'Bad Request'}", status_code=400, body=body)
+        result = classify_api_error(e, provider=provider, model="gpt-5.5")
+        assert result.reason == expected
+        if expected == FailoverReason.server_error:
+            assert result.retryable is True
+
     def test_thinking_signature_invalid_uses_encrypted_replay_recovery(self):
         """#70595: the OpenAI code contains "thinking" + "signature", so it must beat the Anthropic
         thinking-block heuristic and reach the one-shot encrypted-replay strip (retry, no fallback)."""

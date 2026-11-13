@@ -22,6 +22,7 @@ import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Callable, Iterable, Iterator, List, Optional
 
+from tools.tts_spoken_text_hook import apply_spoken_text_hook
 from tools.tts_text_normalize import _strip_markdown_for_tts
 from tools.tts_tool_delivery import _origin, _remove_quietly as _unlink_quietly
 
@@ -330,13 +331,15 @@ class _StreamerPlayback:
 
 def stream_tts_to_speaker(
     text_queue: queue.Queue, stop_event: threading.Event, tts_done_event: threading.Event,
-    display_callback: Optional[Callable[[str], None]] = None, provider: Optional[str] = None):
+    display_callback: Optional[Callable[[str], None]] = None, provider: Optional[str] = None,
+    *, session_id: str = "", platform: str = ""):
     """Consume text deltas from *text_queue*, cut into sentences, speak each the moment it's ready.
 
     A registered streaming provider plays chunked PCM; every other provider is spoken
     per-sentence via ``text_to_speech_tool``, so audio still starts on sentence one. Protocol:
     ``str`` deltas, a ``None`` sentinel = end-of-text (flush), *stop_event* aborts (barge-in),
-    *tts_done_event* is **set** in ``finally`` so continuous voice mode knows playback finished."""
+    *tts_done_event* is **set** in ``finally`` so continuous voice mode knows playback finished.
+    *session_id* / *platform* reach the ``transform_spoken_text`` hook (``surface="streaming"``)."""
     tts_done_event.clear()
     origin = _origin()
     sync_pipeline: Optional[_SyncSentencePipeline] = None
@@ -370,6 +373,11 @@ def stream_tts_to_speaker(
             spoken_sentences.append(cleaned)
             if display_callback is not None:
                 display_callback(sentence)  # raw sentence on screen before TTS processing
+            cleaned = apply_spoken_text_hook(
+                cleaned, surface="streaming", platform=platform, session_id=session_id,
+                index=len(spoken_sentences) - 1)
+            if not cleaned:
+                return
             if sync_pipeline is not None:
                 sync_pipeline.speak(cleaned)
                 return
@@ -381,7 +389,7 @@ def stream_tts_to_speaker(
                 delta = text_queue.get(timeout=0.5)
             except queue.Empty:
                 delta = ""  # idle producer: flush a long buffer instead of sitting on it
-                sentences = chunker.flush() if len(chunker.buf) > 100 else ()
+                sentences = chunker.flush(hold_open_tag=True) if len(chunker.buf) > 100 else ()
             else:
                 sentences = chunker.flush() if delta is None else chunker.feed(delta)
             for sentence in sentences:

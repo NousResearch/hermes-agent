@@ -452,15 +452,18 @@ class GatewayVoiceMixin:
     def _should_echo_stt_transcripts(self) -> bool:
         return bool(getattr(self.config, "stt_echo_transcripts", True))
 
-    async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
+    async def _send_voice_reply(self, event: MessageEvent, text: str, session_id: str = "") -> None:
         """Generate TTS audio and send as a voice message before the text reply. The TTS tool
         may return one combined file or several separately valid ones (combination unavailable /
         over a platform limit); legacy single-file results keep working."""
         audio_path, actual_paths = None, []
         try:
+            from tools.tts_spoken_text_hook import apply_spoken_text_hook
             from tools.tts_text_normalize import _strip_markdown_for_tts
             from tools.tts_tool import text_to_speech_tool
-            tts_text = _strip_markdown_for_tts(text)
+            tts_text = await asyncio.to_thread(
+                apply_spoken_text_hook, _strip_markdown_for_tts(text), surface="voice_reply",
+                platform=event.source.platform.value, session_id=session_id)
             if not tts_text:
                 return
             # Platforms whose native voice bubbles require Ogg/Opus (OPUS_VOICE_PLATFORMS) get an
@@ -480,7 +483,9 @@ class GatewayVoiceMixin:
                 logger.warning("Auto voice reply TTS failed: %s", result.get("error"))
                 return
             actual_paths = paths
-            await self._deliver_voice_reply(event, actual_paths)
+            # Only audio that went out lets the adapter's text send apply the display hook: a
+            # plugin hiding the text must never leave the user with neither audio nor text.
+            event._voice_reply_sent = await self._deliver_voice_reply(event, actual_paths)
         except Exception as e:
             logger.warning("Auto voice reply failed: %s", e, exc_info=True)
         finally:
@@ -488,23 +493,22 @@ class GatewayVoiceMixin:
                 with suppress(OSError):
                     os.unlink(p)
 
-    async def _deliver_voice_reply(self, event: MessageEvent, audio_paths: list[str]) -> None:
-        """Play the files in the connected voice channel, else send them as voice messages."""
+    async def _deliver_voice_reply(self, event: MessageEvent, audio_paths: list[str]) -> bool:
+        """Play the files in the connected voice channel, else send them as voice messages.
+        True only when every file went out: played, or sent with a successful result."""
         adapter = self._delivery_adapter_for(event.source)
         guild_id = self._get_guild_id(event)
         play = getattr(adapter, "play_in_voice_channel", None)
         is_in_vc = getattr(adapter, "is_in_voice_channel", None)
         if guild_id and callable(play) and callable(is_in_vc) and is_in_vc(guild_id):
-            for path in audio_paths:
-                await play(guild_id, path)
-            return
+            return all([bool(await play(guild_id, path)) for path in audio_paths])
         if not callable(send_voice := getattr(adapter, "send_voice", None)):
-            return
+            return False
         reply_anchor = self._reply_anchor_for_event(event)
         # notify=True mirrors the final-text path in platforms/base.py so notification-gating
         # adapters (Telegram "important" mode) deliver it. Clone: shared w/ typing-indicator state.
         thread_meta = dict(self._thread_metadata_for_source(event.source, reply_anchor) or {})
         thread_meta["notify"] = True
-        for path in audio_paths:
-            await send_voice(chat_id=event.source.chat_id, audio_path=path, reply_to=reply_anchor,
-                             metadata=thread_meta)
+        results = [await send_voice(chat_id=event.source.chat_id, audio_path=path, reply_to=reply_anchor,
+                                    metadata=thread_meta) for path in audio_paths]
+        return all(bool(getattr(result, "success", False)) for result in results)

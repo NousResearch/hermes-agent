@@ -435,6 +435,7 @@ if (_checkout_root := str(Path(__file__).resolve().parents[2])) not in sys.path:
     sys.path.append(_checkout_root)  # append, never prepend: never shadow same-named installed packages
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import fence_state_after, reply_file_off, try_reply_file, typing_metadata_for_turn, typing_pause_key
+from gateway.platforms.base_auto_tts import play_spoken_reply
 from gateway.platforms.base_post_delivery import run_post_delivery_callback
 from gateway.platforms.base_delivery_ledger import (
     finalize_final_obligation, ledger_attempted, ledger_bracket, record_final_obligation)
@@ -4065,11 +4066,11 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         return random.uniform(lo / 1000.0, hi / 1000.0)
 
     async def _synthesize_auto_tts(self, text_content: str, source: Optional[SessionSource] = None,
-                                   ) -> tuple[list[str], Optional[str]]:
+                                   session_key: str = "") -> tuple[list[str], Optional[str]]:
         """``(existing_paths, requested_path)``, synthesized in ``source``'s profile scope (the turn's
         scope is gone post-handler); platform-aware path built HERE (HERMES_SESSION_PLATFORM is cleared)."""
         from gateway.platforms.base_auto_tts import synthesize_auto_tts
-        return await synthesize_auto_tts(self, text_content, source, build_auto_tts_output_path)
+        return await synthesize_auto_tts(self, text_content, source, build_auto_tts_output_path, session_key)
 
     def _wants_auto_tts(self, event: MessageEvent, session_key: str, interrupt_event: asyncio.Event,
                         text_content: str, media_files: list) -> bool:
@@ -4405,17 +4406,11 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                 _tts_paths, _tts_requested_path = [], None
                 if self._wants_auto_tts(
                         event, session_key, interrupt_event, text_content, media_files):
-                    _tts_paths, _tts_requested_path = await self._synthesize_auto_tts(text_content, event.source)
-                # TTS plays before text; generated files are removed afterwards.
-                _tts_caption_delivered = False
-                for _tts_index, _tts_path in enumerate(_tts_paths):
-                    try:
-                        _tts_caption_delivered |= await self._play_tts_file(
-                            event, text_content, _tts_path, _tts_index == 0, _final_thread_metadata,
-                            _record_delivery)
-                    finally:
-                        with contextlib.suppress(OSError):
-                            os.remove(_tts_path)
+                    _tts_paths, _tts_requested_path = await self._synthesize_auto_tts(
+                        text_content, event.source, session_key)
+                # TTS plays before text; generated files are removed afterwards (base_auto_tts.py).
+                text_content, _tts_caption_delivered = await play_spoken_reply(
+                    self, event, session_key, text_content, _tts_paths, _final_thread_metadata, _record_delivery)
                 if not _tts_paths and _tts_requested_path is not None:
                     with contextlib.suppress(OSError):
                         os.remove(_tts_requested_path)

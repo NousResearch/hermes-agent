@@ -1,7 +1,7 @@
 name: hermes-hands
 title: Hermes Hands
 repo: https://github.com/Ridwannurudeen/hermes-hands-plugin
-sha: "99d3f54437578873d19603174c7792c369275da4"
+sha: "1eb7dc3fc1365fd397550b2e480af5820587e0f3"
 subdir: hermes-hands
 description: >-
   Run Hermes terminal and file tools on a paired Windows or Linux computer while Hermes stays on a
@@ -14,7 +14,7 @@ description: >-
   Disclosure: runs shell commands and file operations on the device as its logged in user (not a
   sandbox); a compromised gateway or helper account can still command paired devices; the device
   agent is a separate Python package (hermes-hands), installed with pipx from this repository at the
-  reviewed commit (a full 40 character SHA), that keeps its private key in the OS keyring or an owner only file; command text, which can hold sensitive arguments, is kept in local receipts;
+  pinned device commit (a full 40 character SHA), that keeps its private key in the OS keyring or an owner only file; command text, which can hold sensitive arguments, is kept in local receipts;
   screenshots are cached on the gateway and go to the configured vision model and chat platform;
   the checkup probes 1.1.1.1, 8.8.8.8 and 9.9.9.9 on port 443 and resolves example.com; optional H
   help puts device text into a user-role model turn; no telemetry.
@@ -22,9 +22,9 @@ maintainer: Ridwan Nurudeen
 tier: community
 category: tools
 requires_hermes: ">=0.23.1"
-docs_url: https://github.com/Ridwannurudeen/hermes-hands-plugin/tree/99d3f54437578873d19603174c7792c369275da4/hermes-hands#readme
+docs_url: https://github.com/Ridwannurudeen/hermes-hands-plugin/tree/1eb7dc3fc1365fd397550b2e480af5820587e0f3/hermes-hands#readme
 version: "0.2.1"
-image: https://raw.githubusercontent.com/Ridwannurudeen/hermes-hands-plugin/99d3f54437578873d19603174c7792c369275da4/hermes-hands/assets/banner.png
+image: https://raw.githubusercontent.com/Ridwannurudeen/hermes-hands-plugin/1eb7dc3fc1365fd397550b2e480af5820587e0f3/hermes-hands/assets/banner.png
 platforms:
   - linux
 known_issues:

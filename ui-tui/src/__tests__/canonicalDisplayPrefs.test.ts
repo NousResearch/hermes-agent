@@ -46,7 +46,7 @@ beforeEach(() => {
   patchUiState({ sid: 'owner' })
 })
 
-it('the shared gateway persists display preferences through config.set and prints main\'s text', async () => {
+it("the shared gateway persists display preferences through config.set and prints main's text", async () => {
   const { notices, request, slash } = harness(true)
 
   for (const cmd of COMMANDS) {

@@ -22,13 +22,22 @@ async function equalIdClient(resume: (profile: string) => Promise<unknown>) {
   return { calls, client, emit: (event: Record<string, unknown>) => (client as any).handleEvent(event) }
 }
 
-const snapshot = (profile: string, epoch: string) => ({ session_id: 'same', revision: 1, execution_generation: 2, replay_epoch: epoch, prompts: [], info: { profile_name: profile } })
+const snapshot = (profile: string, epoch: string) => ({
+  session_id: 'same',
+  revision: 1,
+  execution_generation: 2,
+  replay_epoch: epoch,
+  prompts: [],
+  info: { profile_name: profile }
+})
 
 test('a failed owner reconciliation is probed again by the next frame', async () => {
   let down = false
 
   const { calls, client, emit } = await equalIdClient(async profile => {
-    if (down) { throw new Error('owner unavailable') }
+    if (down) {
+      throw new Error('owner unavailable')
+    }
 
     return snapshot(profile, `epoch-${profile}`)
   })
@@ -50,14 +59,19 @@ test('the frame that triggered a successful reconciliation is delivered to its o
   let restarted = false
 
   const { client, emit } = await equalIdClient(async profile =>
-    snapshot(profile, restarted && profile === 'beta' ? 'beta-restarted' : `epoch-${profile}`))
+    snapshot(profile, restarted && profile === 'beta' ? 'beta-restarted' : `epoch-${profile}`)
+  )
 
   await client.request('session.resume', { session_id: 'same', profile: 'alpha' })
   await client.request('session.resume', { session_id: 'same', profile: 'beta' })
   const named: any[] = []
   const wildcard: any[] = []
   client.on('message.complete', event => named.push(event))
-  client.onAny(event => { if (event.type === 'message.complete') { wildcard.push(event) } })
+  client.onAny(event => {
+    if (event.type === 'message.complete') {
+      wildcard.push(event)
+    }
+  })
   restarted = true
   emit({ type: 'message.complete', session_id: 'same', replay_epoch: 'beta-restarted', payload: { text: 'done' } })
   await vi.waitFor(() => expect(named).toHaveLength(1))
@@ -67,14 +81,27 @@ test('the frame that triggered a successful reconciliation is delivered to its o
 })
 
 test('a prompt declined locally is shown again while the authority still lists it', async () => {
-  const prompt = { kind: 'approval', prompt_id: 'pending', execution_generation: 2, command: 'build', choices: ['once'] }
-  const { calls, client } = await equalIdClient(async () => ({ session_id: 's', revision: 1, execution_generation: 2, prompts: [prompt] }))
+  const prompt = {
+    kind: 'approval',
+    prompt_id: 'pending',
+    execution_generation: 2,
+    command: 'build',
+    choices: ['once']
+  }
+  const { calls, client } = await equalIdClient(async () => ({
+    session_id: 's',
+    revision: 1,
+    execution_generation: 2,
+    prompts: [prompt]
+  }))
   const shown: any[] = []
 
   client.onRequest(request => {
     shown.push(request)
 
-    if (shown.length === 1) { request.fail(-32603, 'session interrupted') }
+    if (shown.length === 1) {
+      request.fail(-32603, 'session interrupted')
+    }
   })
   await client.request('session.resume', { session_id: 's' })
   await client.request('session.resume', { session_id: 's' })

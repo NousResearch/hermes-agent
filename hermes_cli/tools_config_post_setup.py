@@ -321,6 +321,30 @@ def _module_installed(module_name: str) -> bool:
         return False
 
 
+def _module_in_committed_generation(module_name: str) -> bool:
+    """Does the dependency generation PM committed for this install, the one the next boot loads, hold
+    ``module_name``? A Python post-setup installs into a new generation and a running process never
+    switches to it (``pm.environments.activate_dependencies``). Found on disk, never imported."""
+    from importlib.machinery import PathFinder
+
+    from pm.environments import committed_venv, site_packages
+    from pm.paths import repo_root
+
+    try:
+        environment = committed_venv(repo_root())
+        return environment is not None and PathFinder.find_spec(
+            module_name, [str(site_packages(environment))]) is not None
+    except (OSError, RuntimeError, ValueError):
+        return False  # an unreadable selection record is no finished install
+
+
+def post_setup_missing_status(post_setup_key: str) -> str:
+    """Status of a post_setup row whose installed-check fails in this process: ``needs_restart`` when the
+    install finished into the generation the next boot loads, else ``needs_setup``."""
+    spec = _PYTHON_POST_SETUP_HOOKS.get(post_setup_key)
+    return "needs_restart" if spec and _module_in_committed_generation(spec["module"]) else "needs_setup"
+
+
 def _chromium_installed() -> bool:
     """Everything ``_run_post_setup("chromium")`` provides is present: browser-harness and a Chromium, so
     "Run setup" flips to installed only when re-running it would be a no-op."""
@@ -346,7 +370,7 @@ def _lightpanda_installed() -> bool:
 
 
 # post_setup_key -> predicate(): True when the install side-effect is satisfied. Used by
-# ``provider_readiness_status`` to mark a keyless post_setup row "ready" vs "needs_setup"; mirrors the
+# ``provider_readiness_status`` to mark a keyless post_setup row "ready", else ``post_setup_missing_status``; mirrors the
 # installed-checks the hooks perform. Credential bootstraps (``xai_grok``, ``openai_codex``) are absent —
 # they live in ``_POST_SETUP_AUTH_READY`` as auth checks. Late-bound lambdas so tests can monkeypatch the underlying predicates.
 _POST_SETUP_READY: dict = {

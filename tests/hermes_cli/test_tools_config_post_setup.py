@@ -1,5 +1,6 @@
 """Provider setup delegates package policy to PM and external server owners."""
 
+import json
 import os
 import sys
 from types import ModuleType
@@ -91,3 +92,33 @@ def test_importable_sdk_does_not_bypass_pm_constraints(monkeypatch, capsys, key,
         assert "Restart Hermes" not in output
     else:
         assert "Restart Hermes" in output
+
+
+def _commit_generation(modules):
+    """Commit a dependency generation for this checkout under the test's HERMES_HOME, holding ``modules``."""
+    from pm.environments import install_state_dir, site_packages
+    from pm.paths import repo_root
+
+    venv = install_state_dir(repo_root()) / "environments" / "after-install" / "venv"
+    site_packages(venv).mkdir(parents=True)
+    for module in modules:
+        (site_packages(venv) / module).mkdir()
+        (site_packages(venv) / module / "__init__.py").write_text("", encoding="utf-8")
+    (venv / "pyvenv.cfg").write_text("home = fixture\n", encoding="utf-8")
+    (install_state_dir(repo_root()) / "facts.json").write_text(
+        json.dumps({"packages": {"venv": {"environment": str(venv)}}}), encoding="utf-8")
+
+
+@pytest.mark.parametrize("committed,status", [
+    (("ddgs",), "needs_restart"), (("piper",), "needs_setup"), (None, "needs_setup")])
+def test_a_finished_install_this_process_cannot_load_needs_a_restart(monkeypatch, committed, status):
+    """A post-setup installs into a new dependency generation that a running process never switches
+    to (pm.environments.activate_dependencies): until a restart the row must read ``needs_restart``,
+    not the ``needs_setup`` of a module present in neither."""
+    from hermes_cli import tools_config_post_setup
+    from hermes_cli.tools_config_providers import provider_readiness_status
+
+    monkeypatch.setattr(tools_config_post_setup, "_module_installed", lambda name: False)
+    if committed is not None:
+        _commit_generation(committed)
+    assert provider_readiness_status({"name": "DuckDuckGo (ddgs)", "post_setup": "ddgs"}, {}) == status

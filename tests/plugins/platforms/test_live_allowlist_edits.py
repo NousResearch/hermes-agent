@@ -263,3 +263,39 @@ def test_a_bot_message_follows_an_allow_bots_edit(_home, monkeypatch):
                               mentions=[adapter._client.user], channel=SimpleNamespace(id=1), guild=None)
     assert adapter._discord_message_admission(message, claim=False) == (False, False)
     assert adapter._get_allow_bots() == "none"
+
+
+
+def test_a_read_failure_after_a_good_read_never_applies_an_env_only_config(tmp_path, monkeypatch):
+    """The refresh reads config.yaml once and applies THAT result. Production reads it through
+    ``gateway.config_loader.read_yaml_layers`` (from ``_load_yaml_layer``); the patch fails every read
+    after the first in the refresh, the transient error a preflight-then-reload swallows into an
+    env-only config. A secondary profile's YAML allow_from must not then fall back to its .env channel
+    grant (no env bridge masks it there)."""
+    from agent.secret_scope import reset_multiplex_context, set_multiplex_context
+    from gateway import config_loader
+    from gateway.run import _profile_runtime_scope
+
+    home = tmp_path / "b"
+    home.mkdir()
+    (home / ".env").write_text("DISCORD_ALLOWED_CHANNELS=555\n", encoding="utf-8")
+    _write(home, {"allow_from": [str(USER_ID)]})
+    token = set_multiplex_context(True)
+    try:
+        with _profile_runtime_scope(home):
+            adapter, guild, _member = _connected_discord(roles=())
+        stranger = SimpleNamespace(id=9999, roles=[], guild=guild)
+        _write(home, {"allow_from": [str(USER_ID), "777"]})
+        real_read = config_loader.read_yaml_layers
+        reads = itertools.count()
+
+        def fail_after_first_read(path):
+            if next(reads) >= 1:
+                raise OSError("config.yaml was temporarily unavailable")
+            return real_read(path)
+
+        monkeypatch.setattr(config_loader, "read_yaml_layers", fail_after_first_read)
+        with _profile_runtime_scope(home):
+            assert adapter._is_allowed_user("9999", stranger, guild=guild, is_dm=False, channel_ids={"555"}) is False
+    finally:
+        reset_multiplex_context(token)

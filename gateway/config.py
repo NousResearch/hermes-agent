@@ -847,8 +847,11 @@ class GatewayConfig:
         return "public" if choice is None else choice
 
 
-def load_gateway_config() -> GatewayConfig:
-    """Load gateway configuration. Priority: env > ~/.hermes/config.yaml > legacy gateway.json > defaults."""
+def load_gateway_config(*, strict: bool = False) -> GatewayConfig:
+    """Load gateway configuration. Priority: env > ~/.hermes/config.yaml > legacy gateway.json > defaults.
+
+    ``strict=True`` raises a config.yaml failure instead of falling back to env + gateway.json: a live
+    allowlist refresh keeps its last good lists rather than apply an env-only config."""
     from gateway import config_loader
 
     _home = get_hermes_home()
@@ -856,6 +859,8 @@ def load_gateway_config() -> GatewayConfig:
     try:
         config_loader.load_yaml_layer(_home, gw_data)
     except Exception as e:
+        if strict:
+            raise
         logger.warning(
             # DingTalk settings → env vars: migrated to the dingtalk plugin's apply_yaml_config_fn hook
             # (plugins/platforms/dingtalk/adapter.py). #41112 / #3823.

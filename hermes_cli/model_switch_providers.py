@@ -1049,6 +1049,38 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
         b.record_section3_pair(display_name, ep_url_norm)
 
 
+def _config_model_block() -> dict:
+    """config.yaml's ``model:`` mapping, or ``{}``. A legacy bare-string value (see
+    load_picker_context) carries no provider/base_url/credential to recover."""
+    try:
+        from hermes_cli.config import load_config
+        cfg_model = load_config().get("model")
+    except Exception:  # health: allow BLE001 -- config.yaml may be user-edited or mid-migration; a read failure must degrade to "no row" / "no probe key", never crash the picker
+        return {}
+    return cfg_model if isinstance(cfg_model, dict) else {}
+
+
+def _model_block_probe_key(cfg_model: dict, api_url: str) -> str:
+    """The credential the ``model:`` block declares for ``api_url``, by the bare-custom runtime's
+    rules (``_resolve_openrouter_runtime``): ``model.api_key`` / legacy ``model.api``, then
+    ``model.key_env`` through the per-profile scope, skipping placeholders. Only when
+    ``model.base_url`` is exactly this endpoint (path case included, as ``_model_cfg_key_env_for``
+    compares) and the runtime trusts it for bare ``custom``, so a key declared for one endpoint
+    never reaches another. The block has no ``key_cmd``: that rung belongs to ``providers:``
+    entries, and probing with it would list models the chat request cannot authenticate for."""
+    from hermes_cli.auth import has_usable_secret
+    from hermes_cli.model_switch import _scoped_key_env
+    from hermes_cli.runtime_provider import _config_base_url_trustworthy_for_bare_custom
+    cfg_base_url = str(cfg_model.get("base_url") or "").strip().rstrip("/")
+    if cfg_base_url != api_url or not _config_base_url_trustworthy_for_bare_custom(
+            cfg_base_url, str(cfg_model.get("provider") or "")):
+        return ""
+    inline = next((v.strip() for v in (cfg_model.get("api_key"), cfg_model.get("api"))
+                   if isinstance(v, str) and v.strip()), "")
+    key_env = str(cfg_model.get("key_env") or cfg_model.get("api_key_env") or "").strip()
+    return next((c for c in (inline, _scoped_key_env(key_env)) if has_usable_secret(c)), "")
+
+
 def _lap_bare_custom_row(b: _PickerBuild, custom_providers: list | None) -> None:
     """Section 3b: ``model.provider: custom`` + ``model.base_url`` with no named
     providers:/custom_providers row — surface it so /model does not look like it ignored
@@ -1058,23 +1090,19 @@ def _lap_bare_custom_row(b: _PickerBuild, custom_providers: list | None) -> None
     and otherwise from the static config.yaml ``model:`` block: the row used to appear only
     while it happened to be the active provider, so switching away made it vanish and the
     unconfigured-canonical fallback substituted a misleading 0-model placeholder (#59702).
-    ``is_current`` is then true only when the caller's slice points back at this URL."""
+    ``is_current`` is then true only when the caller's slice points back at this URL.
+
+    The ``/models`` probe carries the block's credential: a keyed endpoint (LiteLLM, vLLM
+    ``--api-key``) rejects an anonymous listing, and the row then collapsed to the single
+    ``model.default`` although every other model on the endpoint was usable."""
     if "custom" in b.seen_slugs:
         return
     base_url = default_model = ""
+    cfg_model = _config_model_block()
     if b.current_provider_norm == "custom" and b.current_base_url:
         base_url = b.current_base_url
         default_model = b.current_model
     else:
-        try:
-            from hermes_cli.config import load_config
-            cfg_model = load_config().get("model")
-        except Exception:  # health: allow BLE001 -- config.yaml may be user-edited or mid-migration; a read failure must degrade to "no row", never crash the picker
-            cfg_model = None
-        # config.model can be a bare string in older configs (see load_picker_context);
-        # only a mapping carries a provider/base_url to recover here.
-        if not isinstance(cfg_model, dict):
-            return
         base_url = str(cfg_model.get("base_url") or "").strip()
         if str(cfg_model.get("provider") or "").strip().lower() != "custom" or not base_url:
             return
@@ -1089,7 +1117,7 @@ def _lap_bare_custom_row(b: _PickerBuild, custom_providers: list | None) -> None
     native_catalog_empty = False
     try:
         discovered, native_catalog_empty = _discover_endpoint_models(
-            "", api_url, "custom", False, headers=None, api_mode=None,
+            _model_block_probe_key(cfg_model, api_url), api_url, "custom", False, headers=None, api_mode=None,
             probe_live=bool(b.refresh or (b.probe_current_custom_provider and is_current)),
             discovery_allowed=True,
             fast_custom_probe=b.resolved_fast_custom_probe)

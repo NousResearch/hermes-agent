@@ -26,8 +26,8 @@ rename sibling of `dropTilesForProfile`. Add any new profile-keyed localStorage
 family to BOTH, or a rename leaves it pointing at a backend that no longer
 exists ("Couldn't open this session" on every restore).
 
-Tile rotation stays coordinated by `store/session-states.ts`; its owner comparisons
-and placement-preserving merge live in `store/session-tile-identity.ts`. Matching
+Tile rotation stays coordinated by `store/session-states.ts`; its owner-profile projection,
+owner comparisons and placement-preserving merge live in `store/session-tile-identity.ts`. Matching
 stored ids alone must not merge tiles from different backend routes or Bot owners.
 Live-turn silence deadlines use the same monotonic clock as their latest-event
 stamp. A timer armed before newer activity waits out the remaining silence window

@@ -94,7 +94,7 @@ import {
   type SessionOwnerScope,
   type SessionProfileRoute
 } from './session-request-router'
-import { mergeSessionTile, sameSessionOwner, tilesShareOwner } from './session-tile-identity'
+import { mergeSessionTile, ownerProfileKey, sameSessionOwner, tilesShareOwner } from './session-tile-identity'
 import { orderTilesByTree } from './session-tile-order'
 import { ackStoredSessionId, isMessagingCompletion, markSessionUnreadFinished } from './session-unread'
 import { migrateTranscriptTailsForProfile } from './transcript-tail-cache'
@@ -1581,14 +1581,6 @@ function rekeyTileList(
   }
 
   return tiles.map(t => (t === stale ? { ...t, storedSessionId: nextStoredSessionId } : t))
-}
-
-function ownerProfileKey(owner: SessionOwnerScope): string | undefined {
-  if (isSessionOwnerRoute(owner)) {
-    return normalizeProfileKey(owner.profile)
-  }
-
-  return typeof owner === 'string' ? normalizeProfileKey(owner) : undefined
 }
 
 /**

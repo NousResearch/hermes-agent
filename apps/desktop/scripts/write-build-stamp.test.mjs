@@ -33,9 +33,63 @@ test('fromLocalGit reads HEAD + branch + dirty status', () => {
     commit: 'b'.repeat(40),
     branch: 'main',
     dirty: true,
-    source: 'local'
+    source: 'local',
+    baseVersion: null,
+    displayVersion: null,
+    distance: null,
+    tag: null
   })
   assert.ok(calls.includes('git rev-parse HEAD'))
+})
+
+test('fromLocalGit names the release tag so a packaged build reports a version', () => {
+  // Exactly on the released tag: the release version and no distance.
+  const atTag = fromLocalGit('/repo', (argv) => {
+    const cmd = argv.join(' ')
+    if (cmd === 'git rev-parse HEAD') return 'c'.repeat(40)
+    if (cmd === 'git rev-parse --abbrev-ref HEAD') return 'HEAD'
+    if (cmd === 'git status --porcelain -uno') return ''
+    if (cmd === 'git describe --tags --long --abbrev=7') return 'v0.23.1-0-gc0c0c0c'
+    return null
+  })
+  assert.deepEqual(atTag, {
+    commit: 'c'.repeat(40),
+    branch: null,
+    dirty: false,
+    source: 'local',
+    baseVersion: '0.23.1',
+    displayVersion: '0.23.1',
+    distance: 0,
+    tag: 'v0.23.1'
+  })
+
+  // Past the tag: the CLI's `<release>+<distance>.g<sha>` identity.
+  const pastTag = fromLocalGit('/repo', (argv) => {
+    const cmd = argv.join(' ')
+    if (cmd === 'git rev-parse HEAD') return 'd'.repeat(40)
+    if (cmd === 'git rev-parse --abbrev-ref HEAD') return 'main'
+    if (cmd === 'git status --porcelain -uno') return ''
+    if (cmd === 'git describe --tags --long --abbrev=7') return 'v0.23.1-279-gd1d1d1d'
+    return null
+  })
+  assert.equal(pastTag.baseVersion, '0.23.1')
+  assert.equal(pastTag.displayVersion, '0.23.1+279.gd1d1d1d')
+  assert.equal(pastTag.distance, 279)
+})
+
+test('fromLocalGit keeps version fields empty for a non-release tag', () => {
+  const stamp = fromLocalGit('/repo', (argv) => {
+    const cmd = argv.join(' ')
+    if (cmd === 'git rev-parse HEAD') return 'e'.repeat(40)
+    if (cmd === 'git rev-parse --abbrev-ref HEAD') return 'main'
+    if (cmd === 'git status --porcelain -uno') return ''
+    if (cmd === 'git describe --tags --long --abbrev=7') return 'v0.23.0+canary.20261108T064411Z-12-ge1e1e1e'
+    return null
+  })
+  assert.equal(stamp.baseVersion, null)
+  assert.equal(stamp.displayVersion, null)
+  assert.equal(stamp.distance, 12)
+  assert.equal(stamp.tag, 'v0.23.0+canary.20261108T064411Z')
 })
 
 test('fromFallback uses the all-zero placeholder commit', () => {

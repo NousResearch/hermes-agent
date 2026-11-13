@@ -224,13 +224,23 @@ _POSITIONAL_OPERAND = {
     "taskset": r"(?:0x)?[0-9a-fA-F]+",
 }
 
+def _is_positional_operand(wrapper: str, token: str) -> bool:
+    if wrapper not in _POSITIONAL_OPERAND:
+        return False
+    pattern = _POSITIONAL_OPERAND[wrapper]
+    return pattern is None or bool(re.fullmatch(pattern, token))
+
 def _skip_wrapper_args(argv: list[str], idx: int, wrapper: str) -> int:
     """Consume wrapper operands by arity, expanding env's command-bearing -S."""
     after_option = False  # previous token was a flag that took no operand
     while idx < len(argv):
         token = argv[idx]
         if token == "--":
-            return idx + 1
+            # "--" ends options, not the positional operand: ``timeout -- 5 sh``.
+            idx += 1
+            if idx < len(argv) and _is_positional_operand(wrapper, argv[idx]):
+                idx += 1
+            return idx
         if token in {"--help", "--version"}:
             return len(argv)
         if wrapper == "env" and (_is_env_assignment(token) or token == "-"):
@@ -244,10 +254,8 @@ def _skip_wrapper_args(argv: list[str], idx: int, wrapper: str) -> int:
             after_option = nxt == idx + 1
             idx = nxt
             continue
-        if wrapper in _POSITIONAL_OPERAND:
-            pattern = _POSITIONAL_OPERAND[wrapper]
-            if pattern is None or re.fullmatch(pattern, token):
-                return idx + 1
+        if _is_positional_operand(wrapper, token):
+            return idx + 1
         # An option of unknown arity (``time -f FMT``, ``env -P DIR``) left its
         # operand here; skip it when a shell or wrapper follows rather than
         # treating the operand as the wrapped command.

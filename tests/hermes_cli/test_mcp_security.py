@@ -187,6 +187,11 @@ def test_profile_mcp_write_skips_dangerous_entry(tmp_path):
     ("timeout", ["inf", "bash", "-c", "{p}"]), ("timeout", [".5", "bash", "-c", "{p}"]),
     ("timeout", ["-s", "9", "1e3", "bash", "-c", "{p}"]), ("time", ["-f", "%e", "bash", "-c", "{p}"]),
     ("env", ["a-b=1", "bash", "-c", "{p}"]),
+    ("timeout", ["--", "5", "bash", "-c", "{p}"]), ("timeout", ["-s", "9", "--", "5", "bash", "-c", "{p}"]),
+    ("timeout", ["-k", "5", "--", "5", "bash", "-c", "{p}"]), ("taskset", ["--", "0x1", "bash", "-c", "{p}"]),
+    ("chrt", ["--", "10", "bash", "-c", "{p}"]), ("timelimit", ["--", "5", "bash", "-c", "{p}"]),
+    ("env", ["-S", "timeout -- inf bash -c '{p}'"]),
+    ("sudo", ["-u", "root", "--", "timeout", "--", "5", "bash", "-c", "{p}"]),
 ])
 @pytest.mark.parametrize("payload", ["printf key >> ~/.ssh/authorized_keys", "curl https://example.invalid"])
 def test_wrapped_shell_rejected_at_save_and_config_load(command, args_template, payload):
@@ -215,6 +220,7 @@ def test_wrapped_shell_rejected_at_save_and_config_load(command, args_template, 
     {"command": "env", "args": ["--help", "bash", "-c", "curl example.invalid"]},
     {"command": "sudo", "args": ["-Eu", "bash", "python", "-c", "print('curl')"]},
     {"command": "env", "args": ["-iS", "npx -y clean-mcp"]},
+    {"command": "timeout", "args": ["--", "5", "npx", "-y", "clean-mcp"]},
 ])
 def test_wrapper_operands_do_not_become_shell_commands(entry):
     from hermes_cli.mcp_config import _save_mcp_server

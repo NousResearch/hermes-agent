@@ -1,7 +1,7 @@
 name: verifiable-math-kernel
 repo: https://github.com/pCwOrM/hermes-verifiable-math
-sha: 7a85930fa6696375a53624254d549ada582ee0d2
-version: "1.0.4"
+sha: 0afbb42fa2631b0c9995695125809b91ba36d480
+version: "1.0.5"
 description: >-
   Deterministic symbolic computation, integer factorization with Baillie-PSW
   probable-prime testing, elliptic curve invariants, and formal Lean 4 proof

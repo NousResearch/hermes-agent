@@ -209,8 +209,9 @@ def test_pager_fits_the_terminal_in_cells_with_a_cjk_prompt(cli, monkeypatch, co
 
 
 @pytest.mark.parametrize("cols,footer", [
-    (100, "Browsing transcript · ↑↓/jk scroll · ←→/hl prompts · ↵ edit · f fork · esc back"),
-    (80, "Browsing transcript · ↑↓/jk ←→/hl · ↵ edit · f fork · esc back"),
+    (110, "Browsing transcript · ↑↓/jk scroll · ←→/hl prompts · ↵ edit · d cut · f fork · esc back"),
+    (80, "Browsing transcript · ↑↓/jk ←→/hl · ↵ edit · d cut · f fork · esc back"),
+    (72, "Browsing transcript · ↑↓/jk ←→/hl · ↵ edit · f fork · esc back"),
     (50, "Browsing transcript · ↵ edit · esc back"),
 ])
 def test_footer_sheds_whole_hints_at_narrow_widths(cli, monkeypatch, cols, footer):

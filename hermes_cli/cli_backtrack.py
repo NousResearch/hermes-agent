@@ -2,7 +2,8 @@
 (hint ``esc again to edit previous message``; any other key cancels it), the second opens BROWSE
 mode: a transcript pager of the session's prompts and replies with the selected prompt in reverse
 video (``cli_backtrack_browse``). ←/→ pick an older/newer prompt, ↑/↓ PgUp/PgDn scroll, Enter puts
-the prompt back in the composer, ``f`` forks a branch before it, Esc/q close. ``/rewind`` opens
+the prompt back in the composer, ``d`` cuts the session back to just before it without sending
+anything, ``f`` forks a branch before it, Esc/q close. ``/rewind`` opens
 browse directly; Esc Esc in quick succession goes straight to browse, as before.
 
 Edit & resend cuts NOTHING until the edited text is submitted: the submission travels to the
@@ -20,7 +21,7 @@ from __future__ import annotations
 from agent.i18n import t
 
 
-_BROWSE_KEYS = ("left", "right", "h", "l", "up", "down", "j", "k", "pageup", "pagedown", "enter", "q", "f")
+_BROWSE_KEYS = ("left", "right", "h", "l", "up", "down", "j", "k", "pageup", "pagedown", "enter", "q", "f", "d")
 
 
 class BacktrackResend(str):
@@ -188,6 +189,13 @@ class CLIBacktrackMixin:
             # Branching writes the DB and switches sessions: run it on the process loop like /branch.
             self._pending_input.put(f"/rewind fork {picked[0] + 1}")
 
+    def _backtrack_choose_cut(self) -> None:
+        picked = self._backtrack_selected()
+        self._close_backtrack_picker()
+        if picked is not None:
+            # The rewind writes the DB: run it on the process loop like fork.
+            self._pending_input.put(f"/rewind cut {picked[0] + 1}")
+
     # ---- edit & resend -------------------------------------------------------------------
     def _backtrack_begin_edit(self, ordinal: int, text: str) -> None:
         self._backtrack_edit = {"ordinal": ordinal, "expected": text, "session_id": self.session_id,
@@ -232,16 +240,30 @@ class CLIBacktrackMixin:
         _cprint(f"  {t('cli.backtrack.forked', number=ordinal + 1, parent=parent_session_id)}")
         self._prefill_input_buffer(rewound[0])
 
+    # ---- cut ----------------------------------------------------------------------------
+    def _backtrack_cut(self, ordinal: int) -> None:
+        """Cut the session back to just before prompt ``ordinal`` and send nothing: the same
+        durable rewind /undo uses (rows archived with ``active=0``, never deleted), with that
+        prompt prefilled for editing."""
+        from cli import _cprint
+        rewound = self._rewind_to_user_ordinal(ordinal, failure_key="cli.backtrack.rewind_failed")
+        if rewound is None:
+            return
+        _cprint(f"  {t('cli.backtrack.cut_done', number=ordinal + 1, count=rewound[1])}")
+        if rewound[0]:
+            self._prefill_input_buffer(rewound[0])
+
     # ---- /rewind -------------------------------------------------------------------------
     def _handle_rewind_command(self, cmd_original: str) -> None:
-        """/rewind opens the picker; ``/rewind N`` edits prompt N; ``/rewind fork N`` forks before it."""
+        """/rewind opens the picker; ``/rewind N`` edits prompt N; ``/rewind cut N`` cuts back to just
+        before it without sending; ``/rewind fork N`` forks before it."""
         from cli import _cprint
         if self._agent_running:
             return _cprint(f"  {t('cli.commands.shared.agent_busy', command='/rewind')}")
         args = cmd_original.split()[1:]
-        fork = bool(args) and args[0].lower() == "fork"
-        args = args[1:] if fork else args
-        if not args and not fork:
+        mode = args[0].lower() if args and args[0].lower() in ("fork", "cut") else None
+        args = args[1:] if mode else args
+        if not args and not mode:
             self._open_backtrack_picker()
             return None
         if len(args) != 1 or not args[0].isdigit():
@@ -252,8 +274,10 @@ class CLIBacktrackMixin:
             return _cprint(f"  {t('cli.backtrack.nothing')}")
         if not 1 <= number <= len(prompts):
             return _cprint(f"  {t('cli.backtrack.invalid', value=args[0], total=len(prompts))}")
-        if fork:
+        if mode == "fork":
             return self._backtrack_fork(number - 1)
+        if mode == "cut":
+            return self._backtrack_cut(number - 1)
         self._backtrack_begin_edit(number - 1, prompts[number - 1])
         return None
 
@@ -375,6 +399,7 @@ class CLIBacktrackMixin:
                 (("pageup",), lambda event: self._backtrack_scroll(pages=-1)),
                 (("pagedown",), lambda event: self._backtrack_scroll(pages=1)),
                 (("f",), lambda event: self._backtrack_choose_fork()),
+                (("d",), lambda event: self._backtrack_choose_cut()),
                 (("q",), lambda event: self._close_backtrack_picker()),
                 (("c-d",), lambda event: self._close_backtrack_picker())):  # never exit from browse
             kb.add(*keys, filter=picker)(handler)

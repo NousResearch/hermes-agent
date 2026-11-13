@@ -160,6 +160,11 @@ transcript's own lifetime:
   delete still replays its answer. Past the bound, an API/bot/cron retry reads a definitive
   "no result" (never a second execution), and `gateway.local_policy.v1:*` receipts are
   deleted with the session they were created for.
+  The row keeps the reply, flags, usage and cost by value. The turn's heavy message fields
+  (tool output, tool-call arguments, reasoning) are kept by reference to the `messages` rows
+  that already hold them (`row_refs` in the `_stored` envelope) and are reloaded and redacted
+  on read. The live-only `bedrock_content_blocks` sidecar is dropped, and inline images are
+  stored as the transcript's `[screenshot]` marker.
 
 `hermes sessions recover` copies the row-bearing tables above into the
 recovered database (FTS indexes and `schema_version` are regenerated), including

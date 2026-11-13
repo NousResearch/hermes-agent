@@ -249,7 +249,7 @@ def settle_session_input(db, *, epoch: int, admission_id: str, generation: int, 
     not commit, may run again on SQLite retry, and raising rolls the settlement back."""
     if outcome not in ('completed', 'interrupted', 'rejected', 'failed'):
         raise RuntimeStoreError('invalid_params')
-    from hermes_state_terminal import compact_result, encode_result
+    from hermes_state_terminal import compact_result, encode_result, reference_transcript_rows
     def write(conn):
         _epoch(conn, epoch)
         row = _admission(conn, admission_id)
@@ -263,7 +263,8 @@ def settle_session_input(db, *, epoch: int, admission_id: str, generation: int, 
             _terminal_write(conn, row)
         if result is not None:
             from hermes_state_terminal import RESULT_PREFIX
-            encoded = _json(encode_result(compact_result(result, user_message=json.loads(row['payload_json']).get('text'))))
+            compacted = compact_result(result, user_message=json.loads(row['payload_json']).get('text'))
+            encoded = _json(encode_result(reference_transcript_rows(conn, compacted)))
             conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) '
                          'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
                          (RESULT_PREFIX + admission_id, encoded))
@@ -679,11 +680,11 @@ def resolve_unknown_session_input(db, *, epoch: int, admission_id: str, generati
             outcome, stored = _captured
             if outcome not in ('completed', 'interrupted', 'failed'):
                 raise RuntimeStoreError('invalid_params')
-            from hermes_state_terminal import compact_result, encode_result
+            from hermes_state_terminal import compact_result, encode_result, reference_transcript_rows
+            compacted = compact_result(stored, user_message=json.loads(row['payload_json']).get('text'))
             conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) '
                          'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
-                         (RESULT_PREFIX + admission_id, _json(encode_result(compact_result(
-                             stored, user_message=json.loads(row['payload_json']).get('text'))))))
+                         (RESULT_PREFIX + admission_id, _json(encode_result(reference_transcript_rows(conn, compacted)))))
         if _terminal_write is not None:
             _terminal_write(conn, row)
         _retire_admission_workers(conn, row, row['owner_epoch'])

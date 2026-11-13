@@ -216,3 +216,75 @@ def test_a_host_reload_under_a_foreign_stamped_scope_waits_for_the_host(_home, t
         reset_secret_scope(token)
     refresh_telegram_gates(adapter)
     assert _decision_under_host_scope(_home, "222") is False
+
+
+class _OrderedScope(dict):
+    """A mapping that records every key it loses, in order, and what the gate would see then."""
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.views: list[tuple[str, bool, bool]] = []
+
+    def pop(self, key, *default):
+        value = super().pop(key, *default)
+        self.views.append((key, "TELEGRAM_ALLOWED_USERS" in self, "GATEWAY_ALLOW_ALL_USERS" in self))
+        return value
+
+
+def test_a_retracted_grant_goes_before_the_list_it_masked(monkeypatch):
+    """One edit removes a list AND the allow_all_users it masked: a reader sharing the mapping
+    must never see "no list, grant still on", which admits every sender."""
+    from gateway import config_loader
+    from gateway.platforms._shared import bridged_env_digest, bridged_env_marker, follow_bridged_env
+
+    name, value = "TELEGRAM_ALLOWED_USERS", "111"
+    scope = _OrderedScope({name: value, bridged_env_marker(name): bridged_env_digest(value),
+                           "GATEWAY_ALLOW_ALL_USERS": "true"})
+    for var in (name, bridged_env_marker(name), "GATEWAY_ALLOW_ALL_USERS"):
+        monkeypatch.delenv(var, raising=False)  # the bridge retracted both
+    monkeypatch.setattr(config_loader, "_BRIDGED_ALLOW_ALL_USERS", False)
+
+    follow_bridged_env(scope)
+
+    assert name not in scope and "GATEWAY_ALLOW_ALL_USERS" not in scope
+    assert not any(not has_list and has_grant for _key, has_list, has_grant in scope.views), scope.views
+
+
+def test_following_snapshots_the_env_under_the_load_lock(monkeypatch):
+    """A load publishes all-or-nothing under _YAML_ENV_LOCK; following reads the env only while
+    holding it, so it never sees a list rewritten without its marker (or the reverse)."""
+    from collections.abc import MutableMapping
+
+    from gateway.platforms import _shared
+
+    seen: list[bool] = []
+
+    class _Env(MutableMapping):
+        def __init__(self, env):
+            self._env = dict(env)
+
+        def __getitem__(self, key):
+            seen.append(_shared._YAML_ENV_LOCK._is_owned())
+            return self._env[key]
+
+        def __iter__(self):
+            return iter(self._env)
+
+        def __len__(self):
+            return len(self._env)
+
+        def __setitem__(self, key, value):
+            self._env[key] = value
+
+        def __delitem__(self, key):
+            del self._env[key]
+
+        def get(self, key, default=None):
+            seen.append(_shared._YAML_ENV_LOCK._is_owned())
+            return self._env.get(key, default)
+
+    monkeypatch.setattr(_shared.os, "environ", _Env(os.environ))
+
+    _shared.follow_bridged_env({})
+
+    assert seen and all(seen), seen

@@ -356,6 +356,10 @@ def follow_bridged_env(scope: dict) -> None:
     with _YAML_ENV_LOCK:  # a load in progress is published all-or-nothing: never read its partial writes
         live = dict(os.environ)
         grant = bridged_allow_all_users()
+    # Revoke the grant BEFORE touching the lists: another thread of this body may read the mapping
+    # mid-update, and "no list, grant still on" would admit any sender for that one lookup.
+    if grant is None and "GATEWAY_ALLOW_ALL_USERS" not in live:
+        scope.pop("GATEWAY_ALLOW_ALL_USERS", None)
     prefix = BRIDGED_ENV_MARKER_PREFIX
     names = {key[len(prefix):] for key in (*scope, *live) if key.startswith(prefix) and key != prefix}
     for name in names:
@@ -367,8 +371,6 @@ def follow_bridged_env(scope: dict) -> None:
         elif name not in live and marker not in live:  # retracted: only the bridge removes both
             scope.pop(name, None)
             scope.pop(marker, None)
-    if grant is None and "GATEWAY_ALLOW_ALL_USERS" not in live:
-        scope.pop("GATEWAY_ALLOW_ALL_USERS", None)
 
 
 def bridge_owns_env(name: str) -> bool:

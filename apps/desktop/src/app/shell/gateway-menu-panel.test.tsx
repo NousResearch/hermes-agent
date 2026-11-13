@@ -50,6 +50,8 @@ vi.mock('@/store/system-actions', () => ({
   runGatewayRestart: vi.fn()
 }))
 
+import { getLogs } from '@/hermes'
+
 import { GatewayMenuPanel } from './gateway-menu-panel'
 
 const renderPanel = (gatewayState: string) =>
@@ -99,5 +101,36 @@ describe('GatewayMenuPanel reconnect action', () => {
     const reconnect = screen.getByRole('button', { name: 'Reconnect gateway' })
     await act(async () => fireEvent.click(reconnect))
     expect(mocks.reconnectGateway).toHaveBeenCalledOnce()
+  })
+})
+
+describe('GatewayMenuPanel recent activity source', () => {
+  const logs = vi.mocked(getLogs)
+
+  beforeEach(() => {
+    logs.mockReset().mockResolvedValue({ file: 'gateway', lines: [] })
+  })
+
+  afterEach(() => {
+    cleanup()
+    logs.mockReset().mockResolvedValue({ file: 'gateway', lines: [] })
+  })
+
+  it('tails the live gateway log instead of a stale gui log (#155027)', async () => {
+    // Under the gateway runtime, gui.log stopped when the backend last ran in
+    // mode="gui": its last lines are days old, while gateway.log is live.
+    logs.mockImplementation(async ({ file }) => ({
+      file: file ?? 'gateway',
+      lines:
+        file === 'gateway'
+          ? ['2026-11-13 13:02:11,004 INFO gateway is alive']
+          : ['2026-11-06 08:14:02,871 WARNING gui stale line']
+    }))
+
+    renderPanel('open')
+
+    expect(await screen.findByText(/gateway is alive/)).toBeTruthy()
+    expect(logs).toHaveBeenCalledWith({ file: 'gateway', lines: 120 })
+    expect(screen.queryByText(/gui stale line/)).toBeNull()
   })
 })

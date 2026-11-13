@@ -493,6 +493,18 @@ def _record_search_metric(current_tool_defs: list[dict[str, Any]], *, hits: int,
     record_tool_search(scope=scope, hits=hits, outcome=outcome)
 
 
+def _unalias_wire_name(name: str) -> str:
+    """Real tool name for an Anthropic-OAuth wire alias (``chat_history_lookup`` ->
+    ``session_search``), else ``name``. The OAuth wire shows the model aliased names in the
+    deferred catalog, and ``normalize_response`` reverses only ``tool_use`` block names, not the
+    names it passes back as ``tool_describe`` / ``tool_call`` arguments. A registered tool that
+    owns the name wins, as it does on the wire."""
+    from agent.anthropic_adapter import _OAUTH_TOOL_NAME_REVERSE_ALIASES
+
+    real = _OAUTH_TOOL_NAME_REVERSE_ALIASES.get(name)
+    return real if real and _registry_entry(name) is None else name
+
+
 def dispatch_tool_describe(args: dict[str, Any], *, current_tool_defs: list[dict[str, Any]],
                            config: Optional[ToolSearchConfig] = None,
                            connector_describe: Optional[Any] = None, call: Optional[Any] = None) -> str:
@@ -512,7 +524,8 @@ def dispatch_tool_describe(args: dict[str, Any], *, current_tool_defs: list[dict
     errors: dict[str, str] = {}
     session_names = session_tool_names(current_tool_defs)
     for name in names:
-        fn = by_name.get(name)
+        target = name if name in by_name else _unalias_wire_name(name)
+        fn = by_name.get(target)
         remote_fn = remote_schemas.get(name)
         if fn is not None:
             tools[name] = {"description": fn.get("description", ""),
@@ -522,13 +535,13 @@ def dispatch_tool_describe(args: dict[str, Any], *, current_tool_defs: list[dict
                            "parameters": remote_fn.get("parameters", {})}
         elif is_connector_name(name):
             (undescribed if hosted_failure else not_found).append(name)
-        elif unavailable := session_unavailable_error(name, session_names):
+        elif unavailable := session_unavailable_error(target, session_names):
             # A core tool absent here, deferred or not: tool_search cannot surface it.
             errors[name] = unavailable
-        elif _registry_entry(name) is not None and not is_deferrable_tool_name(
-            name, load_config_readonly().effective_defer_tools):
+        elif _registry_entry(target) is not None and not is_deferrable_tool_name(
+            target, load_config_readonly().effective_defer_tools):
             # Registered but bridge/core/GUI-surface: a real name, wrong door.
-            errors[name] = not_deferrable_error(name, session_names)
+            errors[name] = not_deferrable_error(target, session_names)
         else:
             not_found.append(name)
     result: dict[str, Any] = {"tools": tools}
@@ -606,7 +619,7 @@ def resolve_underlying_call(args: dict[str, Any], session_tool_names: Optional[I
     if is_connector_name(entries[0]["name"]):
         return CONNECTOR_BATCH_SENTINEL, {"calls": entries}, None
 
-    name = entries[0]["name"]
+    name = _unalias_wire_name(entries[0]["name"])
     raw_args = entries[0]["arguments"]
     unavailable = session_unavailable_error(name, session_tool_names)
     if unavailable:

@@ -55,8 +55,10 @@ def _redact_leaf(value: str, key: Any) -> str:
     if key is None:
         return _redact(value)
 
-    prefix = json.dumps(key) + ": "
-    redacted = _redact(prefix + json.dumps(value))
+    # ensure_ascii=False matches _settled: a \uXXXX escape ending in a letter
+    # would hide a token glued to non-ASCII text from the leaf pass.
+    prefix = json.dumps(key, ensure_ascii=False) + ": "
+    redacted = _redact(prefix + json.dumps(value, ensure_ascii=False))
     if not redacted.startswith(prefix):
         return _MASK
 

@@ -156,3 +156,13 @@ def test_never_settling_redactor_returns_content_free_sentinel(
     monkeypatch.setattr("agent.redact.redact_sensitive_text", always_changes)
 
     assert redact_structured(payload) == expected
+
+
+@pytest.mark.parametrize("glue", ["中", "é", "ü"])
+def test_token_glued_to_non_ascii_text_is_masked_without_erasing_siblings(glue):
+    token = "sk-" + "proj" + "A" * 30
+    out = redact_structured({"note": glue + token, "safe": "keep", glue: glue + token})
+    assert out["safe"] == "keep"
+    assert token not in json.dumps(out, ensure_ascii=False)
+    assert out["note"].startswith(glue + "sk-")
+    assert _settled(out)

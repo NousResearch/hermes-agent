@@ -252,11 +252,40 @@ def _sandbox_visible_spillover_path(host_path: str, env) -> str | None:
     except Exception as exc:
         logger.debug("Spillover sync failed: %s", exc)
     try:
-        if env.execute(f"test -r {shlex.quote(visible)}", timeout=15).get("returncode", 1) == 0:
+        if env.execute(f"test -r {_sandbox_shell_path(visible)}", timeout=15).get("returncode", 1) == 0:
             return visible
     except Exception as exc:
         logger.debug("Spillover readability probe failed: %s", exc)
     return None
+
+
+def _sandbox_shell_path(path: str) -> str:
+    """Shell word for *path* in the sandbox. ssh/daytona/vercel paths are ``~/.hermes/...`` (#154749):
+    a quoted ``~`` never expands, so the readability probe always failed and every spill fell back to
+    the sandbox temp dir. Keep ``~/`` expandable as ``"$HOME"/`` and quote the rest."""
+    if path.startswith("~/"):
+        return '"$HOME"/' + shlex.quote(path[2:])
+    return shlex.quote(path)
+
+
+def _sandbox_spillover_copy(content: str, host_path: str | None, filename: str, env) -> str | None:
+    """Write an in-sandbox copy at the spillover path the backend maps (``~/.hermes/cache/spillover``,
+    ``/root/.hermes/cache/spillover``), so the model sees one spill location; None when the backend
+    maps no path or the write fails."""
+    from tools.credential_files import to_agent_visible_cache_path
+    from tools.terminal_scope import TerminalPolicyUnavailable
+    source = host_path or str(get_spillover_dir() / filename)
+    try:
+        target = to_agent_visible_cache_path(source)
+    except TerminalPolicyUnavailable:
+        return None
+    if target == source or not target.endswith("/" + filename):
+        return None
+    try:
+        return target if _write_to_sandbox(content, target, env) else None
+    except Exception:  # health: allow BLE001 -- any backend exec failure falls back to the temp-dir copy, logged with its traceback
+        logger.warning("Sandbox spillover copy failed for %s", target, exc_info=True)
+        return None
 
 
 def _resolve_storage_dir(env) -> str:
@@ -370,15 +399,18 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     storage_dir = os.path.dirname(remote_path)
     # Private dir: archived results carry tool output (can hold secrets) under a
     # shared temp root on remote backends. The umask also covers the cat redirect.
-    from tools.code_execution_rpc import _private_dirs_cmd
-    cmd = (f"{_private_dirs_cmd(storage_dir)} "
-           f"&& cat > {shlex.quote(remote_path)}")
+    if remote_path.startswith("~/"):
+        qdir, qpath = _sandbox_shell_path(storage_dir), _sandbox_shell_path(remote_path)
+        cmd = f"umask 077 && mkdir -p {qdir} && cat > {qpath}"
+    else:
+        from tools.code_execution_rpc import _private_dirs_cmd
+        cmd = f"{_private_dirs_cmd(storage_dir)} && cat > {shlex.quote(remote_path)}"
     if env.execute(cmd, timeout=30, stdin_data=content).get("returncode", 1) != 0:
         return False
 
     expected = len(content.encode("utf-8", errors="replace"))
     try:
-        probe = env.execute(f"wc -c < {shlex.quote(remote_path)}", timeout=15)
+        probe = env.execute(f"wc -c < {_sandbox_shell_path(remote_path)}", timeout=15)
     except Exception as exc:
         logger.debug("Sandbox size probe failed for %s: %s", remote_path, exc)
         return True
@@ -393,7 +425,7 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     logger.warning("Sandbox spill for %s is not lossless (%d bytes in sandbox, expected %d) — discarding archive",
                    remote_path, persisted_size, expected)
     try:
-        env.execute(f"rm -f {shlex.quote(remote_path)}", timeout=15)
+        env.execute(f"rm -f {_sandbox_shell_path(remote_path)}", timeout=15)
     except Exception:
         pass
     return False
@@ -464,6 +496,8 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
         visible = _sandbox_visible_spillover_path(host_path, env) if host_path else None
         if visible is not None:
             return _persisted(visible, f" [host: {host_path}]")
+        if (copied := _sandbox_spillover_copy(persisted_content, host_path, filename, env)) is not None:
+            return _persisted(copied, f" [host: {host_path}]")
         remote_path = f"{_resolve_storage_dir(env)}/{filename}"
         try:
             if _write_to_sandbox(persisted_content, remote_path, env):

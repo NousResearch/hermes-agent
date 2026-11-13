@@ -1079,7 +1079,7 @@ def _emit_tool_complete_and_risk(agent, ref: _ToolCallRef, result, risk_metadata
 
 
 def _result_storage_env(task_id: str, *, needs_persistence: bool):
-    """Return an active sandbox for a spill, creating one only when a spill is needed."""
+    """Active sandbox for a spill; started only when a spill is needed (a remote reader can't open host paths)."""
     env = get_active_env(task_id)
     return ensure_task_env(task_id) if env is None and needs_persistence else env
 
@@ -1141,17 +1141,12 @@ def _commit_tool_result(
     agent._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s){_status_suffix}")
 
     persisted_result = function_result
+    multimodal = _is_multimodal_tool_result(persisted_result)
+    texts = [p.get("text") for p in (persisted_result.get("content") or []) if isinstance(p, dict)] if multimodal else [persisted_result]
     threshold = budget.resolve_threshold(function_name)
-    text_parts = (
-        [part.get("text") for part in persisted_result.get("content") or []
-         if isinstance(part, dict) and part.get("type") == "text"]
-        if _is_multimodal_tool_result(persisted_result) else [persisted_result]
-    )
-    storage_env = _result_storage_env(
-        effective_task_id,
-        needs_persistence=any(isinstance(text, str) and len(text) > threshold for text in text_parts),
-    )
-    if _is_multimodal_tool_result(persisted_result):
+    storage_env = _result_storage_env(effective_task_id, needs_persistence=any(
+        isinstance(t, str) and len(t) > threshold for t in texts))
+    if multimodal:
         persisted_result = _persist_multimodal_text_parts(
             persisted_result, function_name, tool_call_id, storage_env, budget,
         )
@@ -1248,11 +1243,8 @@ def _finalize_tool_batch(agent, messages: list, effective_task_id: str, num_tool
         return
     batch = messages[-num_tools:]
     contents_before = [message.get("content") for message in batch]
-    storage_env = _result_storage_env(
-        effective_task_id,
-        needs_persistence=sum(_content_text_size(message.get("content")) for message in batch)
-        > budget.turn_budget,
-    )
+    batch_chars = sum(_content_text_size(message.get("content")) for message in batch)
+    storage_env = _result_storage_env(effective_task_id, needs_persistence=batch_chars > budget.turn_budget)
     enforce_turn_budget(batch, env=storage_env, config=budget)
     plugin_live_notes.keep_after_turn_budget(agent, batch)
     sync_rewritten_tool_rows(agent, batch, contents_before)

@@ -70,7 +70,18 @@ export PYTHONPATH="$REPO:$SITE"
 # in launcher_wrapper.py). The -c bootstrap below runs addsitedir() on it.
 export HERMES_SITE="$SITE"
 export PYTHONPYCACHEPREFIX="${{PYTHONPYCACHEPREFIX:-${{XDG_CACHE_HOME:-$HOME/.cache}}/hermes-pycache}}"
-{extra}exec "$PYTHON" -P -c {shlex.quote(code)} "$@"
+{extra}if [ "${{1-}}" = --run-module ]; then
+    # The store launcher's switch (hermes_cli/_launchers.py): a macOS bundle's services run their
+    # other modules (the launchd stderr wrapper) through this launcher. The name is checked before
+    # it is spliced into the source, which keeps it visible to the gateway's process matching.
+    case "${{2-}}" in
+        ""|[!A-Za-z_]*|*[!A-Za-z0-9_.]*) printf '%s\\n' '{name}: --run-module needs a module' >&2; exit 2 ;;
+    esac
+    module=$2
+    shift 2
+    exec "$PYTHON" -P -c "import os, sys, runpy; import site; site.addsitedir(os.environ['HERMES_SITE']); runpy.run_module('$module', run_name='__main__', alter_sys=True)" "$@"
+fi
+exec "$PYTHON" -P -c {shlex.quote(code)} "$@"
 '''
 
 

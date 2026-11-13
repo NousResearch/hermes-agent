@@ -30,6 +30,17 @@ def _kbn():
     from hermes_cli import kanban_db_notify
     return kanban_db_notify
 
+
+def _pin_first():
+    """Machine-flow board resolution: env pins outrank the enumerated slug.
+
+    The slug here came from ``list_boards()``, not from a user — on a box whose
+    env pins ``HERMES_KANBAN_DB`` every board must resolve to the pinned file
+    or the notifier reads per-slug DBs nobody writes (see
+    ``kanban_db.pin_first_board_resolution``)."""
+    from hermes_cli import kanban_db
+    return kanban_db.pin_first_board_resolution()
+
 # "status" covers dashboard drag-drop and `_set_status_direct()`.
 # ``review_requested`` wakes the origin like a block but is not one;
 # the task is not archived so later review cycles keep notifying.
@@ -106,14 +117,22 @@ def _wake_scope_id(adapter: Any, sub: dict) -> Optional[str]:
 
 _ANCHORLESS_WARNED: set[tuple] = set()
 
+# Chat types whose ``chat_id`` is the thread's own id, not the conversation it lives in: only those
+# rows need a recorded ``parent_chat_id`` to be placed under a channel-level route.
+_THREAD_CHAT_TYPES = frozenset({"thread", "forum", "forum_post", "forum-post", "topic"})
+
+
+def _chat_type_of(sub: dict, metadata: dict) -> str:
+    """The subscription's chat type, normalized; ``""`` when the row records none."""
+    return str(sub.get("chat_type") or metadata.get("chat_type") or "").strip().lower()
+
 
 def _warn_anchorless_thread_sub_once(sub: dict, platform: str) -> None:
     """A thread-shaped subscription without ``parent_chat_id`` cannot match a channel-level
     ``profile_routes`` entry, so the fail-closed route gate skips it on every tick. Say so ONCE per
     row at WARNING — a subscription that can never deliver was invisible below DEBUG (#110919)."""
     metadata = sub.get("delivery_metadata") or {}
-    thread_like = bool(sub.get("thread_id")) or (sub.get("chat_type") or metadata.get("chat_type")) in {
-        "thread", "forum", "forum_post", "forum-post", "topic"}
+    thread_like = bool(sub.get("thread_id")) or _chat_type_of(sub, metadata) in _THREAD_CHAT_TYPES
     if not thread_like or metadata.get("parent_chat_id"):
         return
     key = (sub.get("task_id"), platform, sub.get("chat_id"), sub.get("thread_id") or "")
@@ -172,9 +191,19 @@ def _adapter_for_subscription(runner: Any, platform: Any, sub: dict, owner_profi
     parent = metadata.get("parent_chat_id")
     chat, thread = sub.get("chat_id"), sub.get("thread_id") or None
     user_id = sub.get("user_id") or None
-    thread_like = bool(thread) or (sub.get("chat_type") or metadata.get("chat_type")) in {
-        "thread", "forum", "forum_post", "forum-post", "topic",
-    }
+    chat_type = _chat_type_of(sub, metadata)
+    thread_like = bool(thread) or chat_type in _THREAD_CHAT_TYPES
+    # The anchor a channel route may stand in for. Only a KNOWN non-thread ``chat_type`` proves
+    # ``chat`` is the conversation a thread lives in: a DM or a channel carries its own parent, so
+    # only a route that really names that chat may claim it — standing the ROUTE's chat in instead
+    # let any channel route on the platform match itself and refuse a DM thread the default profile
+    # owns (#151520). Known means supplied by the subscriber (``add_notify_sub`` copies it into the
+    # metadata): the row column defaults to 'dm' when none was given, so a CLI Discord thread row
+    # storing the thread's own id in ``chat_id`` would read as hosted. Such a row, and an untyped
+    # legacy one, has no knowable parent and the ordered gate keeps its historical assumption: an
+    # earlier channel route is never skipped (#110919).
+    stated_type = str(metadata.get("chat_type") or "").strip().lower()
+    hosted_parent = chat if thread_like and stated_type and stated_type not in _THREAD_CHAT_TYPES else None
     # Preserve canonical route order, including equal-specificity ties. An older
     # row missing an anchor must not skip a potentially winning route. Reuse the
     # route's matcher (including platform-specific identity aliases), not a second
@@ -194,7 +223,8 @@ def _adapter_for_subscription(runner: Any, platform: Any, sub: dict, owner_profi
             served = {name for name, _home in _multiplex_profile_homes(config)}
             return primary if profile in served else None
         if route.matches(platform.value, guild_id=guild or route.guild_id, chat_id=chat,
-                         thread_id=thread, parent_chat_id=parent or (route.chat_id if thread_like else None),
+                         thread_id=thread,
+                         parent_chat_id=parent or hosted_parent or (route.chat_id if thread_like else None),
                          user_id=user_id or route.user_id):
             return None
     # A stateless (api_server) subscription carries a RAW session id, not a routable chat, so no
@@ -243,21 +273,24 @@ class _Collector:
             logger.debug("kanban notifier: no connected adapters; skipping tick")
             return self.deliveries
         # Poll each resolved DB path once: several slugs can map to one DB when
-        # HERMES_KANBAN_DB pins the board path.
+        # HERMES_KANBAN_DB pins the board path. The whole tick resolves pin-first:
+        # on a dispatcher-pinned box each enumerated slug must map to the pinned
+        # DB, never to that slug's own (empty) physical file.
         kb = self.kb
-        seen_db_paths: set[str] = set()
-        for board_meta in _list_boards(kb):
-            slug = board_meta.get("slug") or kb.DEFAULT_BOARD
-            db_path = board_meta.get("db_path")
-            try:
-                resolved_db_path = str(Path(db_path).expanduser().resolve()) if db_path else str(kb.kanban_db_path(slug).resolve())
-            except Exception:
-                resolved_db_path = f"slug:{slug}"
-            if resolved_db_path in seen_db_paths:
-                logger.debug("kanban notifier: skipping duplicate board slug %s for DB %s", slug, resolved_db_path)
-                continue
-            seen_db_paths.add(resolved_db_path)
-            self.collect_board(slug)
+        with _pin_first():
+            seen_db_paths: set[str] = set()
+            for board_meta in _list_boards(kb):
+                slug = board_meta.get("slug") or kb.DEFAULT_BOARD
+                db_path = board_meta.get("db_path")
+                try:
+                    resolved_db_path = str(Path(db_path).expanduser().resolve()) if db_path else str(kb.kanban_db_path(slug).resolve())
+                except Exception:
+                    resolved_db_path = f"slug:{slug}"
+                if resolved_db_path in seen_db_paths:
+                    logger.debug("kanban notifier: skipping duplicate board slug %s for DB %s", slug, resolved_db_path)
+                    continue
+                seen_db_paths.add(resolved_db_path)
+                self.collect_board(slug)
         return self.deliveries
 
     def _board_has_subs(self, slug: str) -> bool:
@@ -312,7 +345,6 @@ class _Collector:
         """Claim events on one board, appending delivery dicts to ``deliveries``."""
         if not self._board_has_subs(slug):
             return
-        kb = self.kb
         try:
             conn = _kbc().connect(board=slug)
         except Exception as exc:
@@ -456,7 +488,7 @@ def _fmt_timed_out(ev, n) -> tuple:
 # archived / unblocked are claimed (so the cursor advances past them) but
 # intentionally silent (no formatter), and excluded from _WAKE_KINDS so they
 # never wake the creator.
-_EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
+_EVENT_FORMATTERS: dict[str, Callable[[Any, _KanbanNotification], tuple]] = {
     "completed": _fmt_completed,
     "blocked": lambda ev, n: (
         t("gateway.kanban.ping.blocked", head=n.head, reason=_clip(ev, "reason", "gateway.kanban.ping.reason_suffix", 160)),
@@ -777,7 +809,7 @@ class _KanbanNotification:
                 if self.wake_kinds:
                     wake_payloads.append((self.synth, self.wake_diagnostic, self.wake_kinds))
             self.d = {**self.d, "events": original_events}
-        wake_kinds, is_push = self.wake_kinds, self.is_push_adapter
+        is_push = self.is_push_adapter
         from gateway.wake import WakeNotAccepted
 
         # A requested wake is required even when its passive ping already landed.

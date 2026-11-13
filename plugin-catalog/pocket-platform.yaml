@@ -1,0 +1,40 @@
+name: pocket-platform
+title: Hermes Pocket
+repo: https://github.com/AgentMadeThis/hermes-pocket
+sha: 224c9f9b57509ce03da7c9663bd8298a56d1376e
+subdir: plugin
+version: "0.2.0"
+description: >-
+  A native Hermes platform for an owner-enrolled low-bandwidth radio companion:
+  bounded chat replies, notes and opt-in P2/R2 home-music controls. Requires a
+  separately provisioned radio/USB bridge and a new dedicated, unrouted,
+  in-process Pocket-only Hermes home. Model tool execution is blocked in that
+  dedicated process; installation alone does not block unrelated tool calls.
+  Disclosure: the adapter listens on a private local Unix socket with peer-UID
+  and HMAC authentication. POCKET_HMAC_KEY is read through Hermes's scoped secret
+  helper; the bridge is provisioned independently. Local request identities,
+  notes and replay state are journaled. Optional location reads an operator-set
+  SQLite snapshot; optional music reads approved local files through an existing
+  loopback HTTP service. Normal chat uses the operator's Hermes model/provider
+  and may leave the host and incur provider charges. No arbitrary model tools,
+  shell commands, self-updater, telemetry, bundled firmware or media. The source
+  includes bridge libraries, not a turnkey standalone radio service or handheld
+  firmware installer. The source qualification uses synthetic provider/HTTP
+  fixtures and does not certify this published package's physical RF or audio.
+maintainer: AgentMadeThis
+tier: community
+category: platform
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/AgentMadeThis/hermes-pocket/tree/224c9f9b57509ce03da7c9663bd8298a56d1376e/plugin
+readme: true
+platforms: [linux]
+known_issues:
+  - "Requires separate radio/USB firmware, contact enrollment and bridge-service wiring; these are not bundled."
+  - "Use a new dedicated Pocket-only in-process home, not a general-purpose or multiplexed profile. Stop/unload before repurposing an armed process."
+  - "Serial SDK dependency closure and physical radio, touch and audible-output acceptance are separate operator qualifications."
+  - "No claim of cloud independence: chat follows the operator's selected Hermes provider."
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_tool_call]
+  provides_middleware: []
+  requires_env: [POCKET_HMAC_KEY]

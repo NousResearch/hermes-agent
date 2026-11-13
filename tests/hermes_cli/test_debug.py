@@ -235,7 +235,7 @@ class TestCaptureLogSnapshotRedaction:
     ):
         """Regression test: redact_sensitive_text short-circuits without force=True.
 
-        If a future refactor drops `force=True` from `_redact_log_text`, this
+        If a future refactor drops `force=True` from `redact_debug_support_text`, this
         test fails immediately. Without `force=True`, the redactor returns the
         input unchanged when HERMES_REDACT_SECRETS=false, and the share-time
         redaction feature ships silently broken for users who opted out of
@@ -286,6 +286,38 @@ class TestCaptureLogSnapshotRedaction:
         # Default threads redact=True to all three captured logs.
         assert _REDACT_FIXTURE_TOKEN not in snaps["agent"].tail_text
         assert _REDACT_FIXTURE_TOKEN not in (snaps["agent"].full_text or "")
+
+    def test_redacts_complete_log_lines_before_applying_byte_limits(
+        self, hermes_home_with_secret
+    ):
+        from hermes_cli.debug import _capture_log_snapshot
+
+        max_bytes = 512
+        raw_window = 8192
+        tail_canary = "r36_REDACTED_tail_boundary_canary_012345"
+        full_canary = "r36_REDACTED_full_boundary_canary_678901"
+        payload = bytearray(b"x" * 12_000)
+
+        # The backwards-read window and the final full-log window each begin
+        # inside a credential field. Truncating first drops ``accessToken=``
+        # while retaining its complete value, which the redactor cannot then
+        # classify. A redacted share must either scrub the complete logical
+        # line before either cap or omit that partial line.
+        for boundary, canary in (
+            (len(payload) - raw_window, tail_canary),
+            (len(payload) - max_bytes, full_canary),
+        ):
+            marker = f"accessToken={canary}".encode()
+            start = boundary - len("accessToken=")
+            payload[start:start + len(marker)] = marker
+
+        (hermes_home_with_secret / "logs" / "agent.log").write_bytes(payload)
+
+        snap = _capture_log_snapshot("agent", tail_lines=1, max_bytes=max_bytes)
+
+        assert tail_canary not in snap.tail_text
+        assert snap.full_text is not None
+        assert full_canary not in snap.full_text
 
 
 
@@ -780,6 +812,34 @@ class TestSweepExpiredPastes:
         assert remaining == 1
         assert len(_load_pending()) == 1
 
+    def test_share_scheduled_during_sweep_deletes_is_kept(self, hermes_home):
+        """A paste scheduled while the sweep waits on network DELETEs must survive its save."""
+        import threading
+        import time
+
+        from hermes_cli.debug import _load_pending, _save_pending, _schedule_auto_delete, _sweep_expired_pastes
+
+        _save_pending([{"url": "https://paste.rs/old", "expire_at": time.time() - 100}])
+        in_delete = threading.Event()
+        share_done = threading.Event()
+
+        def blocking_delete(url):
+            in_delete.set()
+            assert share_done.wait(10)
+            return True
+
+        result = []
+        with patch("hermes_cli.debug.delete_paste", side_effect=blocking_delete):
+            sweeper = threading.Thread(target=lambda: result.append(_sweep_expired_pastes()))
+            sweeper.start()
+            assert in_delete.wait(10)
+            _schedule_auto_delete(["https://paste.rs/new"])
+            share_done.set()
+            sweeper.join(10)
+
+        assert result == [(1, 1)]
+        assert [e["url"] for e in _load_pending()] == ["https://paste.rs/new"]
+
 
 
 
@@ -887,9 +947,30 @@ class TestCollectShareBundle:
 
         assert query_token not in bundle
         assert password not in bundle
-        # Only the credential values go; the URLs stay readable.
+        # Query credentials are masked in place; strict URL redaction masks the
+        # complete userinfo field while preserving the host and port.
         assert "export.csv?token=***&page=2" in bundle
-        assert "alice:***@10.0.0.5:3128" in bundle
+        assert "***:***@10.0.0.5:3128" in bundle
+
+    def test_redaction_masks_credentials_pasted_into_a_chat(self, hermes_home):
+        """#64351: the gateway logs an inbound preview; a pasted OAuth client secret or access
+        token has no secret-named key beside it once the preview cuts the JSON."""
+        from hermes_cli.debug import collect_share_bundle
+
+        client_secret = "GOCSPX-" + "k1fQ7zP2mX9vLk4nRt8wYb1cDf6"
+        access_token = "ya29." + "a0AfH6SMBq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0"
+        (hermes_home / "logs" / "gateway.log").write_text(
+            "2026-07-14 11:00:00 INFO gateway.run: inbound message: platform=telegram user=u chat=1 "
+            f"msg='client_secret\":\"{client_secret}\",\"redirect_uris\":[' reply_to_id=None\n"
+            "2026-07-14 11:00:01 INFO gateway.run: inbound message: platform=telegram user=u chat=1 "
+            f"msg='my token is {access_token}' reply_to_id=None\n"
+        )
+        with patch("hermes_cli.dump.run_dump"):
+            bundle = "\n".join(collect_share_bundle(log_lines=50, redact=True).values())
+
+        assert "inbound message: platform=telegram" in bundle
+        assert client_secret not in bundle
+        assert access_token not in bundle
 
 
 
@@ -1009,17 +1090,60 @@ class TestDebugSlashCommand:
             self._handler()(cmd_original)
         return captured
 
-    def test_bare_debug_defaults_to_paste(self):
-        c = self._captured("/debug")
+    @pytest.mark.parametrize("cmd", ["/debug", "/debug nous", "/debug NOUS please",
+                                     "/debug do not upload", "/debug nous no upload"])
+    def test_without_upload_word_prints_notice_and_uploads_nothing(self, cmd, capsys):
+        """The privacy notice must precede any upload: no ``upload`` word, no network (#94876)."""
+        with patch("hermes_cli.debug.upload_to_pastebin") as paste, \
+             patch("hermes_cli.diagnostics_upload.share_to_nous") as nous, \
+             patch("hermes_cli.debug.collect_share_bundle") as collect:
+            self._handler()(cmd)
+        paste.assert_not_called()
+        nous.assert_not_called()
+        collect.assert_not_called()
+        out = capsys.readouterr().out
+        assert "⚠️" in out and "upload" in out
+
+    def test_debug_upload_is_the_consent(self):
+        c = self._captured("/debug upload")
         assert c["nous"] is False and c["local"] is False
-        # The slash command IS the consent action → skip the [y/N] prompt
+        # The explicit `upload` word IS the consent → skip the [y/N] prompt
         # (input() would hang inside prompt_toolkit's event loop).
         assert c["yes"] is True
 
+    def test_debug_upload_dpaste_fallback_matches_one_day_consent(self, capsys):
+        """A classic slash upload must not outlive the 1-day fallback disclosed before consent."""
+        from hermes_cli.debug import run_debug_slash
+
+        expiry_days = []
+
+        def _fake_dpaste(_content, expiry_days=1):
+            requested_days.append(expiry_days)
+            return "https://dpaste.com/TEST"
+
+        requested_days = expiry_days
+        with patch("hermes_cli.debug._best_effort_sweep_expired_pastes"), \
+             patch("hermes_cli.debug.collect_share_bundle",
+                   return_value={"report": "redacted summary"}), \
+             patch("hermes_cli.debug._upload_paste_rs",
+                   side_effect=OSError("paste.rs offline")), \
+             patch("hermes_cli.debug._upload_dpaste_com",
+                   side_effect=_fake_dpaste), \
+             patch("hermes_cli.debug._schedule_auto_delete"):
+            run_debug_slash("/debug upload")
+
+        output = capsys.readouterr().out
+        assert "default: 1 day" in output
+        assert expiry_days == [1]
+        assert "stay public for 1 day(s)" in output
 
     def test_word_parsing_is_case_insensitive(self):
-        c = self._captured("/debug NOUS")
-        assert c["nous"] is True
+        c = self._captured("/debug NOUS Upload")
+        assert c["nous"] is True and c["yes"] is True
+
+    def test_local_needs_no_upload_word(self):
+        c = self._captured("/debug local")
+        assert c["local"] is True and c["nous"] is False
 
 
 

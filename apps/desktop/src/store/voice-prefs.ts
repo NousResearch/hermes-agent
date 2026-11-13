@@ -8,11 +8,32 @@ export const $autoSpeakReplies = atom<boolean>(storedBoolean(AUTO_SPEAK_KEY, fal
 // Best-effort persistence must not give config refresh authority again.
 let autoSpeakChosen = readKey(AUTO_SPEAK_KEY) !== null
 
-/** Migrate the legacy value once without editing the backend configuration. */
+/** Migrate the legacy value once without editing the backend configuration.
+ *  Provisional: every client on this machine migrates from the same config, and
+ *  a fresh browser's migrated value must not replace one the user chose in
+ *  native Desktop in the machine's shared preferences (#145213). */
 export function applyAutoSpeakFromConfig(config: { voice?: { auto_tts?: unknown } | null } | null | undefined) {
   if (config != null && !autoSpeakChosen) {
-    void setAutoSpeakReplies(Boolean(config.voice?.auto_tts))
+    storeAutoSpeak(Boolean(config.voice?.auto_tts), true)
   }
+}
+
+function storeAutoSpeak(enabled: boolean, provisional: boolean) {
+  autoSpeakChosen = true
+  persistBoolean(AUTO_SPEAK_KEY, enabled, { provisional })
+  $autoSpeakReplies.set(enabled)
+}
+
+// Follow the toggle in every open window. The preference sync announces another
+// window's change with a `storage` event; without this, turning read-aloud off
+// in one window left every other window still speaking.
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', event => {
+    if (event.key === AUTO_SPEAK_KEY) {
+      autoSpeakChosen = event.newValue !== null
+      $autoSpeakReplies.set(storedBoolean(AUTO_SPEAK_KEY, false))
+    }
+  })
 }
 
 // Backend default for `voice.stop_phrases` (DEFAULT_VOICE_STOP_PHRASES in
@@ -158,7 +179,5 @@ export function applyThinkingSoundFromConfig(
 
 /** Persist even an unchanged value, so migrating false is also one-time. */
 export async function setAutoSpeakReplies(enabled: boolean): Promise<void> {
-  autoSpeakChosen = true
-  persistBoolean(AUTO_SPEAK_KEY, enabled)
-  $autoSpeakReplies.set(enabled)
+  storeAutoSpeak(enabled, false)
 }

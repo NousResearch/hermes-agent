@@ -13,7 +13,7 @@ RETIREMENT_DATE = "May 15, 2026"
 
 # Official mapping per xAI migration guide. ``grok-4.3`` reasons by default, so ``*-non-reasoning``
 # variants need ``reasoning_effort="none"`` to emulate their behavior.
-_RETIRED_MODELS: Dict[str, Dict[str, Optional[str]]] = {
+_RETIRED_MODELS: dict[str, dict[str, Optional[str]]] = {
     "grok-4-0709":                  {"replacement": "grok-4.3", "reasoning_effort": None,  "note": None},
     "grok-4-fast-reasoning":        {"replacement": "grok-4.3", "reasoning_effort": None,  "note": None},
     "grok-4-fast-non-reasoning":    {"replacement": "grok-4.3", "reasoning_effort": "none", "note": None},
@@ -49,13 +49,13 @@ def _looks_like_xai(model_id: Optional[str]) -> bool:
     return isinstance(model_id, str) and _normalize(model_id).startswith("grok-")
 
 
-def find_retired_xai_refs(config: Dict[str, Any]) -> List[RetirementIssue]:
+def find_retired_xai_refs(config: dict[str, Any]) -> list[RetirementIssue]:
     """Walk all model slots in a Hermes config and return retirement issues.
 
     Slots scanned: ``principal.model``, ``auxiliary.<any>.model`` (introspective, covers future
     aux slots), ``delegation.model``, ``tts.xai.model``, ``plugins.image_gen.xai.model``.
     """
-    issues: List[RetirementIssue] = []
+    issues: list[RetirementIssue] = []
     if not isinstance(config, dict):
         return issues
 
@@ -69,7 +69,7 @@ def find_retired_xai_refs(config: Dict[str, Any]) -> List[RetirementIssue]:
                 reasoning_effort=entry.get("reasoning_effort"),
                 note=entry.get("note")))
 
-    def _section(*keys: str) -> Optional[Dict[str, Any]]:
+    def _section(*keys: str) -> Optional[dict[str, Any]]:
         node: Any = config
         for key in keys:
             if not isinstance(node, dict):
@@ -107,11 +107,11 @@ class ApplyResult:
 
     file_path: Path
     backup_path: Optional[Path]
-    issues_resolved: List[RetirementIssue]
+    issues_resolved: list[RetirementIssue]
     config_changed: bool
 
 
-def _walk_to_parent(yaml_doc: Any, dotted_path: str) -> "tuple[Any, str]":
+def _walk_to_parent(yaml_doc: Any, dotted_path: str) -> tuple[Any, str]:
     """Resolve a dotted slot path to (parent_mapping, leaf_key)."""
     *parents, leaf = dotted_path.split(".")
     if not parents:
@@ -125,14 +125,17 @@ def _walk_to_parent(yaml_doc: Any, dotted_path: str) -> "tuple[Any, str]":
 
 
 def apply_migration(
-    config_path: Path, issues: List[RetirementIssue], backup: bool = True) -> ApplyResult:
+    config_path: Path, issues: list[RetirementIssue], backup: bool = True) -> ApplyResult:
     """Rewrite ``config_path`` in place (ruamel round-trip: comments, order, type literals kept).
 
     Unless ``backup=False`` a copy goes to ``backups/config/`` (reason ``pre-migrate-xai``).
     """
     from ruamel.yaml import YAML  # local import — avoid hard dep at module load
+    from hermes_cli.config_backend import require_file_tooling
+    # A type-literal-preserving rewrite of the file itself; a non-file backend has no file.
+    require_file_tooling("The xAI model migration")
     config_path = Path(config_path)
-    if not config_path.exists():
+    if not config_path.exists():  # config-reader: ok — file tooling, gated on supports_file_tooling()
         raise FileNotFoundError(config_path)
     unchanged = ApplyResult(file_path=config_path, backup_path=None, issues_resolved=[], config_changed=False)
     if not issues:
@@ -142,12 +145,12 @@ def apply_migration(
     yaml = YAML(typ="rt")
     yaml.width = ROUNDTRIP_YAML_WIDTH
     yaml.preserve_quotes = True
-    with config_path.open("r", encoding="utf-8-sig") as fh:
+    with config_path.open("r", encoding="utf-8-sig") as fh:  # config-reader: ok — file tooling (gated above)
         doc = yaml.load(fh)
     if doc is None:
         return unchanged
 
-    resolved: List[RetirementIssue] = []
+    resolved: list[RetirementIssue] = []
     for issue in issues:
         try:
             parent, leaf = _walk_to_parent(doc, issue.config_path)
@@ -175,5 +178,5 @@ def apply_migration(
     # 0640 / container installs; a root-run migration must not flip ownership).
     buf = io.StringIO()
     yaml.dump(doc, buf)
-    atomic_write_text(config_path, buf.getvalue(), preserve_mode=True)
+    atomic_write_text(config_path, buf.getvalue(), preserve_mode=True)  # config-reader: ok — file tooling (gated above)
     return ApplyResult(file_path=config_path, backup_path=backup_path, issues_resolved=resolved, config_changed=True)

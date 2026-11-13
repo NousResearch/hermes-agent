@@ -2422,7 +2422,7 @@ class TestInboundMediaLocalisation:
                     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
                     "+A8AAQUBAScY42YAAAAASUVORK5CYII="
                 )
-            with open(output_path, "wb") as handle:
+            with open(output_path, "wb") as handle:  # noqa: ASYNC230 -- test fake writes a tiny fixture file; a local open() is non-blocking in practice
                 handle.write(payload)
             return 0, "", ""
 
@@ -2591,7 +2591,7 @@ class TestInboundMediaLocalisation:
                 "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
                 "+A8AAQUBAScY42YAAAAASUVORK5CYII="
             )
-            with open(output_path, "wb") as handle:
+            with open(output_path, "wb") as handle:  # noqa: ASYNC230 -- test fake writes a tiny fixture file; a local open() is non-blocking in practice
                 handle.write(payload)
             return 0, "", ""
 
@@ -2873,11 +2873,11 @@ class TestBuzzAdapterLifecycle:
     @pytest.mark.asyncio
     async def test_disconnect_releases_scoped_lock(self, monkeypatch):
         """The identity lock taken in connect() must be released on disconnect."""
-        import gateway.status as gateway_status
+        import gateway.status_scoped_locks as scoped_locks
 
         released = []
         monkeypatch.setattr(
-            gateway_status,
+            scoped_locks,
             "release_scoped_lock",
             lambda platform, key: released.append((platform, key)),
         )

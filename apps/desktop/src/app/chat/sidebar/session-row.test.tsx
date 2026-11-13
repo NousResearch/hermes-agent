@@ -10,6 +10,7 @@ import type { SessionInfo } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type * as ChatRuntime from '@/lib/chat-runtime'
 import { SESSION_ROW_AREAS, type SessionRowSlotProps } from '@/lib/session-row-slots'
+import type * as SessionSource from '@/lib/session-source'
 import type * as Time from '@/lib/time'
 import type * as ComposerStatusStore from '@/store/composer-status'
 import { $sidebarRowMeta } from '@/store/layout'
@@ -76,10 +77,15 @@ vi.mock('@/lib/chat-runtime', async importOriginal => {
   return { ...actual, sessionTitle: (s: SessionInfo) => sessionTitle(s) }
 })
 vi.mock('@/lib/haptics', () => ({ triggerHaptic: vi.fn() }))
-vi.mock('@/lib/session-source', () => ({
-  handoffOriginSource: (state?: string, platform?: string) => (state && platform ? platform : null),
-  sessionSourceLabel: (source: string) => source
-}))
+vi.mock('@/lib/session-source', async importOriginal => {
+  const actual = await importOriginal<typeof SessionSource>()
+
+  return {
+    ...actual,
+    handoffOriginSource: (state?: string, platform?: string) => (state && platform ? platform : null),
+    sessionSourceLabel: (source: string) => source
+  }
+})
 vi.mock('@/lib/time', async importOriginal => {
   const actual = await importOriginal<typeof Time>()
 
@@ -499,5 +505,28 @@ describe('SidebarSessionRow decoration slots', () => {
     })
 
     expect(screen.queryByTestId('lead-deco')).toBeNull()
+  })
+})
+
+// A messaging row's title is the conversation's topic, never WHO is on the
+// other end — several people's DMs read identically without the sender's name.
+describe('SidebarSessionRow messaging origin name', () => {
+  const originName = (container: HTMLElement) => container.querySelector('[title][data-origin-name]')
+
+  it('paints the sender name of a messaging session', () => {
+    const origin = JSON.stringify({ platform: 'dingtalk', chat_type: 'dm', user_name: '郑裕川' })
+    const { container } = renderRow(makeSession({ origin_json: origin, source: 'dingtalk', title: '权限修改记录' }))
+
+    expect(originName(container)?.textContent).toBe('郑裕川')
+  })
+
+  it('paints nothing for a local session and for a messaging row without a name', () => {
+    const local = renderRow(makeSession({ title: 'Local chat' }))
+
+    expect(originName(local.container)).toBeNull()
+
+    const unnamed = renderRow(makeSession({ source: 'dingtalk', title: 'No name' }))
+
+    expect(originName(unnamed.container)).toBeNull()
   })
 })

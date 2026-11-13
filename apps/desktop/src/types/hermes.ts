@@ -688,6 +688,10 @@ export interface SessionInfo {
    *  explicitly marked unread or a response arrived after it was last read.
    *  Undefined against a backend predating the flag; treat as read. */
   unread?: boolean
+  /** Raw origin payload of a messaging-platform session (the backend's
+   *  `sessions.origin_json`): platform, chat id, and for a DM the human
+   *  sender's name. A DM's title never says WHO wrote it; this does. */
+  origin_json?: null | string
   preview: null | string
   source: null | string
   started_at: number

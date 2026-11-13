@@ -262,3 +262,38 @@ def test_conflicting_userconfig_twins_reach_children_as_the_one_file_bridged(bri
     assert [value for key, value in env.items() if key.upper() == "NPM_CONFIG_USERCONFIG"] == [str(selected)]
     assert env["npm_config_registry"] == "https://selected.invalid/"
     assert npm_registry(dict(os.environ)) == "https://selected.invalid/"
+
+
+@pytest.mark.platforms("posix")
+def test_an_empty_lowercase_twin_does_not_hide_a_non_empty_uppercase_one(bridge, tmp_path, monkeypatch):
+    """pnpm 12 reads a set lowercase name even when it is empty, falling back to ``~/.npmrc``."""
+    from hermes_cli.source_build import source_build_env
+    from pm.index_config import npm_registry
+
+    (bridge / "npmrc").write_text("registry=https://hermes-file.invalid/\n", encoding="utf-8")
+    selected = tmp_path / "selected-npmrc"
+    selected.write_text("registry=https://selected.invalid/\n", encoding="utf-8")
+    monkeypatch.setenv("npm_config_userconfig", "")
+    monkeypatch.setenv("NPM_CONFIG_USERCONFIG", str(selected))
+
+    env = source_build_env()
+
+    assert [value for key, value in env.items() if key.upper() == "NPM_CONFIG_USERCONFIG"] == [str(selected)]
+    assert env["npm_config_registry"] == "https://selected.invalid/"
+    assert npm_registry(dict(os.environ)) == "https://selected.invalid/"
+
+
+@pytest.mark.platforms("posix")
+def test_a_mixed_case_userconfig_reaches_children_under_the_name_pnpm_reads(bridge, tmp_path, monkeypatch):
+    """npm reads ``npm_config_*`` names in any case; pnpm 12 ignores a mixed-case one."""
+    from hermes_cli.source_build import source_build_env
+
+    (bridge / "npmrc").write_text("registry=https://hermes-file.invalid/\n", encoding="utf-8")
+    selected = tmp_path / "selected-npmrc"
+    selected.write_text("registry=https://selected.invalid/\n", encoding="utf-8")
+    monkeypatch.setenv("Npm_Config_Userconfig", str(selected))
+
+    env = source_build_env()
+
+    assert [(key, value) for key, value in env.items() if key.upper() == "NPM_CONFIG_USERCONFIG"] == [
+        ("NPM_CONFIG_USERCONFIG", str(selected))]

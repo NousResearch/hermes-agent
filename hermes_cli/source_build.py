@@ -50,11 +50,11 @@ def source_build_env(base_env: dict | None = None, *, explicit: bool = False, ve
     env.pop("ESBUILD_BINARY_PATH", None)
     npmrc = user_npmrc(env)
     twins = [name for name in env if name.upper() == "NPM_CONFIG_USERCONFIG"]
-    if npmrc == hermes_npmrc() or len(twins) > 1:
-        # npm reads the last non-empty twin in environ order; pnpm reads a non-empty lowercase one,
-        # else the uppercase one (empty as unset), so twins split the installers and an empty one
-        # hides the Hermes file. One variable naming the file user_npmrc picked (a non-empty
-        # lowercase one first) replaces them.
+    if npmrc == hermes_npmrc() or twins:
+        # npm reads the last non-empty twin in environ order; pnpm reads the lowercase name when
+        # set, even empty (as unset: ~/.npmrc), else the uppercase one, and never a mixed-case one.
+        # So twins split the installers and an empty one hides the Hermes file. One variable naming
+        # the file user_npmrc picked (a non-empty lowercase one first) replaces them.
         env = {name: value for name, value in env.items() if name.upper() != "NPM_CONFIG_USERCONFIG"}
         env["NPM_CONFIG_USERCONFIG"] = str(npmrc)
     # pnpm reads the npmrc that user_npmrc selects (an explicit userconfig, else Hermes's, else

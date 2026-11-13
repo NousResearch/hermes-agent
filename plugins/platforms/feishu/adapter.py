@@ -1315,30 +1315,34 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
         _extra_or_env = _extra_or_secret
 
         raw_group_rules = extra.get("group_rules", {})
-        group_rules: dict[str, FeishuGroupRule] = {}
-        if isinstance(raw_group_rules, dict):
-            for chat_id, rule_cfg in raw_group_rules.items():
-                if not isinstance(rule_cfg, dict):
-                    continue
-                allowlist = _id_set(rule_cfg.get("allowlist", []))
-                blacklist = _id_set(rule_cfg.get("blacklist", []))
-                
-                # Fixed: Automatically derive policy if omitted but allowlist/blacklist is provided
-                if "policy" in rule_cfg:
-                    policy = str(rule_cfg.get("policy", "open")).strip().lower()
-                elif allowlist:
-                    policy = "allowlist"
-                elif blacklist:
-                    policy = "blacklist"
-                else:
-                    policy = "open"
+group_rules: dict[str, FeishuGroupRule] = {}
+valid_policies = {"open", "allowlist", "blacklist", "admin_only", "disabled"}
 
-                group_rules[str(chat_id)] = FeishuGroupRule(
-                    policy=policy,
-                    allowlist=allowlist,
-                    blacklist=blacklist,
-                    require_mention=_to_boolean(rule_cfg["require_mention"]) if "require_mention" in rule_cfg else None,
-                )
+if isinstance(raw_group_rules, dict):
+    for chat_id, rule_cfg in raw_group_rules.items():
+        if not isinstance(rule_cfg, dict):
+            continue
+            
+        allowlist = _id_set(rule_cfg.get("allowlist", []))
+        blacklist = _id_set(rule_cfg.get("blacklist", []))
+        
+        if "policy" in rule_cfg:
+            policy = str(rule_cfg.get("policy", "open")).strip().lower()
+            if policy not in valid_policies:
+                policy = "disabled" 
+        elif "allowlist" in rule_cfg:
+            policy = "allowlist"
+        elif "blacklist" in rule_cfg:
+            policy = "blacklist"
+        else:
+            policy = "open"
+
+        group_rules[str(chat_id)] = FeishuGroupRule(
+            policy=policy,
+            allowlist=allowlist,
+            blacklist=blacklist,
+            require_mention=_to_boolean(rule_cfg["require_mention"]) if "require_mention" in rule_cfg else None,
+        )
 
         allow_bots = str(_extra_or_secret("allow_bots", "FEISHU_ALLOW_BOTS", "none") or "none").strip().lower()
         if allow_bots not in {"none", "mentions", "all"}:

@@ -537,7 +537,7 @@ def test_write_locked_env_refuses_an_aux_endpoint_key_without_a_traceback_or_a_5
 
     mps._aux_flow_custom_endpoint("compression", {})
 
-    assert "Cannot set AUXILIARY_COMPRESSION_API_KEY: managed" in capsys.readouterr().out
+    assert "  ✗ Cannot set AUXILIARY_COMPRESSION_API_KEY: managed" in capsys.readouterr().out
     body = ModelAssignment(scope="auxiliary", task="vision", provider="custom", model="qwen3:8b",
                            base_url="http://127.0.0.1:11434/v1", api_key=SECRET, confirm_expensive_model=True)
     with pytest.raises(HTTPException) as refusal:
@@ -545,3 +545,25 @@ def test_write_locked_env_refuses_an_aux_endpoint_key_without_a_traceback_or_a_5
     assert (refusal.value.status_code, refusal.value.detail) == (400, "Cannot set AUXILIARY_VISION_API_KEY: managed")
     assert SECRET not in _config_text(home) and "AUXILIARY_" not in _config_text(home)
 
+
+def test_all_tasks_aux_save_under_a_per_key_lock_writes_no_slot_key(home, monkeypatch):
+    """An all-tasks save (``task=""``) where the lock forbids one slot's variable refuses before any
+    slot's key reaches ``.env``: no orphaned AUXILIARY_<TASK>_API_KEY line for an unsaved config."""
+    from fastapi import HTTPException
+
+    from hermes_cli import config
+    from hermes_cli.config_secret_refs import aux_api_key_env
+    from hermes_cli.web_server_config import _apply_aux_assignment_sync, _aux_task_slots
+
+    locked = aux_api_key_env(_aux_task_slots()[-1])  # the LAST slot: every earlier one would write first
+    real = config.env_write_refusal
+    monkeypatch.setattr(config, "env_write_refusal",
+                        lambda key, action: f"Cannot {action} {key}: managed" if key == locked else real(key, action))
+    (home / "config.yaml").write_text("model:\n  provider: openrouter\n  default: x/y\n", encoding="utf-8")
+
+    with pytest.raises(HTTPException) as refusal:
+        _apply_aux_assignment_sync({}, "custom", "qwen3:8b", "", "http://127.0.0.1:11434/v1", SECRET)
+
+    assert refusal.value.status_code == 400 and locked in refusal.value.detail
+    assert SECRET not in (home / ".env").read_text(encoding="utf-8")
+    assert "AUXILIARY_" not in (home / ".env").read_text(encoding="utf-8")

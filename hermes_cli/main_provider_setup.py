@@ -377,7 +377,7 @@ def _aux_flow_custom_endpoint(task: str, task_cfg: dict) -> None:
         _save_aux_choice(task, provider="custom", model=model, base_url=url, api_key=api_key,
                          reasoning_effort=effort)
     except ValueError as exc:  # .env write-locked: the refusal names the variable, never the key
-        print(exc)
+        print(f"  ✗ {exc}")
         return
     print(f"{display_name}: custom ({_short_url(url)})" + (f" · {model}" if model else "")
           + (f" · reasoning {effort}" if effort else ""))

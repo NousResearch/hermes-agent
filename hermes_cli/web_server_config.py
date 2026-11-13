@@ -752,6 +752,20 @@ def _aux_default_effort(slot: str) -> str:
     return str(block.get("reasoning_effort") or "") if isinstance(block, dict) else ""
 
 
+def _refuse_unwritable_aux_keys(slots: list, api_key: str) -> None:
+    """400 before ANY slot's key reaches ``.env`` when the write lock forbids one slot's variable,
+    so an all-tasks save never leaves an earlier slot's line behind with config.yaml unsaved."""
+    from hermes_cli.config import require_env_writable
+    from hermes_cli.config_secret_refs import aux_api_key_env, is_env_reference, refs_supported
+    if is_env_reference(api_key) or not refs_supported():
+        return
+    for slot in slots:
+        try:
+            require_env_writable(aux_api_key_env(slot), "set")
+        except ValueError as exc:  # the refusal names the variable, never the key
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 def _apply_aux_assignment_sync(cfg: dict, provider: str, model: str, task: str, base_url: str, api_key: str,
                                reasoning_effort: Optional[str] = _UNSET) -> dict:
     from hermes_cli.config import save_config
@@ -785,6 +799,8 @@ def _apply_aux_assignment_sync(cfg: dict, provider: str, model: str, task: str, 
 
     targets = [task] if task else list(slots)
     new_provider = provider.strip().lower()
+    if base_url and api_key:
+        _refuse_unwritable_aux_keys([slot for slot in targets if slot in slots], api_key)
     for slot in targets:
         if slot not in slots:
             raise HTTPException(status_code=400, detail=f"unknown auxiliary task: {slot}")

@@ -413,15 +413,17 @@ _PS_DELETE_VERB = r"(?:remove-item|rmdir|erase|del|rd|ri|rm)"
 # powershell/pwsh as the program a command runs: line start, a shell separator, or a launcher
 # (sudo -u bob, env FOO=1, timeout 5, xargs, wsl, cmd /c, ssh -p 22 <host>; option tokens may carry
 # one value; ssh and cmd /c may quote the remote command), with an optional directory prefix (`C:\\...\\powershell.exe`). The prefix excludes
-# `(){}` and backticks so a run of them is not re-scanned from every position (quadratic).
+# `(){}` and backticks so a run of them is not re-scanned from every position (quadratic). Likewise
+# for blank-line runs: the whitespace before the program is possessive (the prefix class excludes
+# whitespace, so nothing is lost) and, as in _CMDPOS, only the last newline of a run starts a match.
 _PS_LAUNCHER_OPTIONS = r"(?:\s+-\S+(?:\s+[^\s;&|=-][^\s=]*(?!\S))?|\s+\w+=\S*)*"
 _PS_EXE_AT_COMMAND_POSITION = (
-    r"(?:^|[;&|({`\n]"
-    r"|(?:^|[;&|({`\n])\s*+(?:sudo|doas|env|exec|nohup|start|time|nice|command|xargs|wsl|busybox|timeout\s+\S+)"
+    r"(?:^|[;&|({`]|\n(?![^\S\n]*+\n)"
+    r"|(?:^|[;&|({`]|\n(?![^\S\n]*+\n))\s*+(?:sudo|doas|env|exec|nohup|start|time|nice|command|xargs|wsl|busybox|timeout\s+\S+)"
     + _PS_LAUNCHER_OPTIONS + r"\s"
     r"|\bcmd(?:\.exe)?\s+/[ck]\s+[\"']?"
-    r"|(?:^|[;&|({`\n])[^\S\n]*+ssh(?:[^\S\n]+-[^\s;&|]+(?:[^\S\n]+[^\s;&|-][^\s;&|]*)?)*[^\S\n]+[^\s;&|-][^\s;&|]*[^\S\n]+[\"']?)"
-    r"\s*(?:[^\s;&|\"'(){}\x60]*[\\/])?(?:powershell|pwsh)(?:\.exe)?(?=\s)"
+    r"|(?:^|[;&|({`]|\n(?![^\S\n]*+\n))[^\S\n]*+ssh(?:[^\S\n]+-[^\s;&|]+(?:[^\S\n]+[^\s;&|-][^\s;&|]*)?)*[^\S\n]+[^\s;&|-][^\s;&|]*[^\S\n]+[\"']?)"
+    r"\s*+(?:[^\s;&|\"'(){}\x60]*[\\/])?(?:powershell|pwsh)(?:\.exe)?(?=\s)"
 )
 
 DANGEROUS_PATTERNS = [

@@ -89,14 +89,17 @@ def test_shallow_and_sequential_substitutions_are_still_scanned():
 
 def test_blank_line_heredoc_finishes_end_to_end():
     # The #7485 shape through the public entry point: a long blank-line run inside one command
-    # re-split every _CMDPOS whitespace run (400 lines ~1.4 s, cubic beyond that).
+    # re-split every _CMDPOS whitespace run (400 lines ~1.4 s, cubic beyond that), and every other
+    # rule that may start at any newline rescans the rest of the run from each one (quadratic:
+    # 24000 lines ~20 s, indented ~107 s). The sizes stay under the parser limit on purpose.
     _run_bounded('''
 import time
 from tools.approval_detection import detect_dangerous_command
 detect_dangerous_command("ls")
 # Harmless on purpose: a dangerous match short-circuits before every rule has scanned the run.
-command = "cat <<EOF > notes.txt\\n" + "\\n" * 2000 + "EOF"
-started = time.perf_counter()
-assert detect_dangerous_command(command)[0] is False
-assert time.perf_counter() - started < 3.0
-''')
+for run in ("\\n" * 24000, "\\n    " * 24000):
+    command = "cat <<EOF > notes.txt" + run + "\\nEOF"
+    started = time.perf_counter()
+    assert detect_dangerous_command(command) == (False, None, None)
+    assert time.perf_counter() - started < 3.0
+''', timeout=60)

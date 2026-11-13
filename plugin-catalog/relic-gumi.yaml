@@ -1,0 +1,17 @@
+name: relic-gumi
+title: RELIC Gumi
+repo: https://github.com/yuzushi-dev/hermes-relic
+sha: "2bd4bf060abd0663a9436fc1f3e93c9ed27d0e05"
+version: "0.1.0"
+description: "A companion that gets to know you and supports self-reflection, built on published psychometric instruments (TIPI for the Big Five, ECR-RS for attachment) as a self-report baseline plus consented check-ins, with an output safety critic and Telegram or Desktop onboarding. Not a diagnostic tool; based on the paper arXiv:2611.08504. Disclosure — state lives under $RELIC_HOME (default ~/.relic); the installer creates a dedicated relic-gumi profile, edits that profile's config.yaml (enables the plugin, sets cron.wrap_response false, copies the base model provider/model/base_url but never keys), creates an empty .env there that the plugin never reads or writes, moves a relic plugin copy found in the base Hermes home to a backup and removes it from the base plugins.enabled list, and creates Hermes cron jobs in that profile that stay silent until the user consents during onboarding; with the \"learn from what you write\" consent it reads the profile's own Hermes state.db user messages to update a self-report profile; credentials (TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_USERS, TELEGRAM_HOME_CHANNEL, GEMINI_API_KEY, OLLAMA_API_KEYS) are optional plugin secrets read only through Hermes' secret scope; check-ins are delivered by detached subprocesses (job and scoped credentials over a private stdin pipe, minimal environment with proxy/CA settings) straight to the Telegram Bot API; network is the configured Hermes provider, Telegram, local Ollama classifiers, Google Gemini/Lyria media only with RELIC_ENABLE_GOOGLE_MEDIA=1 and a key, Ollama Cloud (ollama.com) only if explicitly configured, and local ComfyUI or ACE-Step servers only if the user enables them; no telemetry, no self-updater."
+maintainer: yuzushi-dev
+tier: community
+category: general
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/yuzushi-dev/hermes-relic#readme
+platforms: [linux, macos]
+capabilities:
+  provides_tools: [gumi_read_canon, gumi_write_report, relic_continuity_candidate]
+  provides_hooks: [pre_llm_call, post_llm_call, transform_llm_output, pre_gateway_dispatch]
+  provides_middleware: []
+  requires_env: []

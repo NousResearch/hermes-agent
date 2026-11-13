@@ -9,6 +9,7 @@ import pytest
 
 from agent.message_sanitization import (
     apply_reasoning_content_policy, reapply_reasoning_echo, reasoning_replay_route, rejected_reasoning_carriers,
+    rejected_reasoning_fields,
 )
 from agent.transports.chat_completions import ChatCompletionsTransport
 
@@ -47,6 +48,9 @@ def _wire(provider, base_url, model="m", rejected=()):
     # everyone else: the de-facto standard alias
     ("zai", "https://api.z.ai/api/paas/v4", "glm-5.3", {"reasoning_content"}),
     ("openai-api", "https://api.openai.com/v1", "gpt-5", {"reasoning_content"}),
+    # a remote gateway named under `providers:` resolves to "custom"; local-engine carriers would
+    # send the `reasoning` alias next to `reasoning_content` -> 400 duplicate field (#136486)
+    ("custom", "https://api.inference.wandb.ai/v1", "m", {"reasoning_content"}),
 ])
 def test_each_route_gets_exactly_the_carriers_it_reads(provider, base_url, model, expected):
     turn, bare = _wire(provider, base_url, model)
@@ -149,3 +153,86 @@ def test_value_complaint_never_strips_reasoning_content_from_a_must_echo_route()
                  "Extra inputs are not permitted, field: 'messages[1].reasoning_content'"):
         assert record_reasoning_field_rejection(agent, body, sent) == frozenset()
     assert agent._reasoning_rejecting_routes == {}
+
+
+@pytest.mark.parametrize("provider,model,base_url,expected_pad", [
+    # must-echo family (mimo): the learned strip keeps the echoed field and the pad.
+    ("custom", "mimo-v2.6-pro", "https://api.example-relay.test/v1", True),
+    # a plain vLLM-style custom route does NOT must-echo; the strip must still keep
+    # reasoning_content there — a duplicate-field error means the schema READS it.
+    ("custom", "qwen3-32b", "http://vllm.local/v1", False),
+])
+def test_duplicate_field_rejection_strips_the_alias_and_keeps_reasoning_content(
+        provider, model, base_url, expected_pad):
+    """A schema that treats ``reasoning`` as an alias of ``reasoning_content`` rejects a replayed message
+    that carries both with ``duplicate field `reasoning_content``` (serde alias collision). The learned
+    strip must drop the alias carrier and keep ``reasoning_content`` (the field the schema reads) on
+    every route; an identical repeat must not retry."""
+    from types import SimpleNamespace
+    from agent.message_sanitization import record_reasoning_field_rejection
+
+    agent = SimpleNamespace(provider=provider, model=model, base_url=base_url,
+                            api_mode="chat_completions", _reasoning_rejecting_routes={}, session_id=None)
+    sent = [{"role": "assistant", "content": "", "reasoning": "thought", "reasoning_content": "thought"}]
+    body = ("litellm.BadRequestError: OpenAIException - Invalid JSON data: Failed to deserialize the JSON body "
+            "into the target type: messages[0]: duplicate field `reasoning_content`")
+    assert record_reasoning_field_rejection(agent, body, sent) == frozenset({"reasoning"})
+    # The re-shaped route keeps only the carrier the schema reads, still padded for must-echo routes.
+    route = reasoning_replay_route("chat_completions", agent.provider, agent.model, agent.base_url,
+                                   rejected=rejected_reasoning_carriers(agent))
+    assert route.carriers == {"reasoning_content"}
+    assert route.pad is expected_pad
+    assert record_reasoning_field_rejection(agent, body, sent) == frozenset()  # already learned -> no loop
+
+
+def test_single_reasoning_field_error_learns_only_the_replayed_alias():
+    """Flint's keyless alias-collision rejection needs the same one-retry recovery (#136486)."""
+    gw = _agent("flint")
+    gw.provider, gw.base_url = "custom", "http://127.0.0.1:11500/v1"
+    sent = [{"role": "assistant", "content": "", "reasoning_content": "thought", "reasoning": "thought"}]
+    body = '{"error": "Use one reasoning field per message"}'
+
+    assert _recover(gw, body, sent) is True
+    assert rejected_reasoning_carriers(gw) == frozenset({"reasoning"})
+    assert _recover(gw, body, sent) is False  # the identical rejection cannot re-trigger recovery
+    route = reasoning_replay_route("chat_completions", gw.provider, gw.model, gw.base_url,
+                                   rejected=rejected_reasoning_carriers(gw))
+    reapply_reasoning_echo(sent, route.pad, route.carriers)
+    assert sent[0]["reasoning_content"] == "thought" and "reasoning" not in sent[0]
+
+    # A single-carrier message cannot cause the alias collision; don't learn from it.
+    solo = _agent("flint")
+    solo.provider, solo.base_url = "custom", "http://127.0.0.1:11500/v1"
+    assert _recover(solo, body, [{"role": "assistant", "reasoning_content": "thought"}]) is False
+    assert not rejected_reasoning_carriers(solo)
+
+
+_PAIR = {"role": "assistant", "content": "", "reasoning": "t", "reasoning_content": "t"}
+_SERDE = "Failed to deserialize the JSON body into the target type: "
+
+
+@pytest.mark.parametrize("body,sent,expected", [
+    # serde names whichever spelling its struct declares, with or without the message path (#136486)
+    (_SERDE + "duplicate field `reasoning_content` at line 1 column 259", [_PAIR], {"reasoning"}),
+    (_SERDE + "duplicate field `reasoning` at line 1 column 259", [_PAIR], {"reasoning"}),
+    (_SERDE + "messages[2]: duplicate field 'reasoning' at line 1 column 845", [_PAIR], {"reasoning"}),
+    # reasoning_details is its own serde field, not the alias: a named collision keeps it
+    (_SERDE + "messages[2]: duplicate field `reasoning_content`",
+     [{**_PAIR, "reasoning_details": _DETAILS}], {"reasoning"}),
+    # ...and with no `reasoning` next to reasoning_content there is no named collision to undo
+    (_SERDE + "duplicate field `reasoning`",
+     [{"role": "assistant", "reasoning_content": "t", "reasoning_details": _DETAILS}], set()),
+    # rec rejects ANY second carrier, so the keyless wording drops details too
+    ('{"error": "Use one reasoning field per message"}',
+     [{"role": "assistant", "reasoning_content": "t", "reasoning_details": _DETAILS}], {"reasoning_details"}),
+    # only aliases that rode next to reasoning_content in ONE message collide
+    ('{"error": "Use one reasoning field per message"}',
+     [{"role": "assistant", "reasoning_content": "t"}, {"role": "assistant", "reasoning": "t"}], set()),
+    # nothing left to drop: a route that sends only reasoning_content learns nothing (no retry)
+    (_SERDE + "messages[0]: duplicate field `reasoning_content`", [{"role": "assistant", "reasoning_content": "t"}], set()),
+    # the duplicate is not a carrier; reasoning is only mentioned in passing
+    ("messages[1]: duplicate field `content`, reasoning is fine", [_PAIR], set()),
+    ("messages[2]: duplicate field `x`, reasoning ok", [_PAIR], set()),
+])
+def test_alias_collision_keeps_reasoning_content_and_drops_only_colliding_aliases(body, sent, expected):
+    assert rejected_reasoning_fields(body, sent) == frozenset(expected)

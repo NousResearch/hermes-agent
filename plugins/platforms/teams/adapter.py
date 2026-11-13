@@ -64,7 +64,7 @@ from agent.i18n import t
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms._shared import (
     coerce_port, extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
-    seed_extra_from_env as _seed_extra_from_env, send_error
+    request_never_left, seed_extra_from_env as _seed_extra_from_env, send_error
 )
 
 logger = logging.getLogger(__name__)
@@ -199,7 +199,8 @@ async def _standalone_send(
     extra = getattr(pconfig, "extra", {}) or {}
     client_id, client_secret, tenant_id = _credentials(pconfig)
     if not (client_id and client_secret and tenant_id):
-        return send_error("Teams standalone send: TEAMS_CLIENT_ID, TEAMS_CLIENT_SECRET, and TEAMS_TENANT_ID are all required")
+        return send_error("Teams standalone send: TEAMS_CLIENT_ID, TEAMS_CLIENT_SECRET, and TEAMS_TENANT_ID are all required",
+                          nothing_sent=True)
     raw_service_url = extra.get("service_url") or _get_scoped_secret("TEAMS_SERVICE_URL", "") or _DEFAULT_TEAMS_SERVICE_URL
     service_url = _validate_teams_service_url(raw_service_url)
     for failed, error in (
@@ -210,7 +211,7 @@ async def _standalone_send(
         (not _TEAMS_CONV_ID_RE.match(tenant_id), "TEAMS_TENANT_ID contains characters outside the expected set"),
         (not AIOHTTP_AVAILABLE, "aiohttp not installed")):
         if failed:
-            return send_error(f"Teams standalone send: {error}")
+            return send_error(f"Teams standalone send: {error}", nothing_sent=True)
     token_url, token_form = _bf_token_request(tenant_id, client_id, client_secret)
     activities_url = f"{service_url}v3/conversations/{chat_id}/activities"
     try:
@@ -224,11 +225,12 @@ async def _standalone_send(
             ) as token_resp:
                 if token_resp.status >= 400:
                     body = await token_resp.text()
-                    return send_error(f"Teams standalone send: token request failed ({token_resp.status}): {body[:300]}")
+                    return send_error(f"Teams standalone send: token request failed ({token_resp.status}): {body[:300]}",
+                                      nothing_sent=True)  # the activity was never posted
                 token_payload = await token_resp.json()
             access_token = token_payload.get("access_token")
             if not access_token:
-                return send_error("Teams standalone send: token response missing access_token")
+                return send_error("Teams standalone send: token response missing access_token", nothing_sent=True)
             async with session.post(
                 activities_url, json={"type": "message", "text": message, "textFormat": "markdown"},
                 headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
@@ -243,7 +245,8 @@ async def _standalone_send(
         raise
     except Exception as e:
         logger.debug("Teams standalone send raised", exc_info=not (shown := describe_proxy_error(e, env_proxy_for_redaction(token_url, activities_url, trust_env=gateway_trust_env()))))
-        return send_error(f"Teams standalone send failed: {shown or e}")  # the text may echo the proxy URL
+        # the text may echo the proxy URL
+        return send_error(f"Teams standalone send failed: {shown or e}", nothing_sent=request_never_left(e))
 
 
 # SDK module → names rebound into this module's globals by check_teams_requirements().
@@ -476,7 +479,7 @@ class TeamsAdapter(BasePlatformAdapter):
         """Download attachment bytes with SSRF protection. Connector URLs get the bot's bearer token;
         redirects and body size go through the shared guards (as the cache_*_from_url helpers)."""
         from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
-        from gateway.platforms.base import ssrf_redirect_guard, _read_httpx_body_with_limit
+        from gateway.platforms.base import ssrf_redirect_guard, read_httpx_body_with_limit
         if not is_safe_url(url):
             raise ValueError("Blocked unsafe attachment URL (SSRF protection)")
         headers = {"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)"}
@@ -490,7 +493,7 @@ class TeamsAdapter(BasePlatformAdapter):
             async with client.stream("GET", url, headers=headers) as response:
                 response.raise_for_status()
                 # Never buffer .content — a lying Content-Length must not OOM the gateway.
-                return await _read_httpx_body_with_limit(response, media_type="attachment")
+                return await read_httpx_body_with_limit(response, media_type="attachment")
 
     async def _on_message(self, ctx: ActivityContext[MessageActivity]) -> None:
         activity = ctx.activity
@@ -651,7 +654,8 @@ class TeamsAdapter(BasePlatformAdapter):
             return self._invoke_message(t("platform.teams.approval.unknown_action"))
         from gateway.approval_actor import approval_refusal, refusal_text
         clicker = getattr(ctx.activity.from_, "aad_object_id", None) or getattr(ctx.activity.from_, "id", "")
-        if requester := approval_refusal(session_key, clicker, extra=self.config.extra, request_id=data.get("request_id")):
+        if requester := approval_refusal(session_key, clicker, extra=self.config.extra, request_id=data.get("request_id"),
+                                         choice=choice):
             return self._invoke_message(refusal_text(requester))  # shown to the clicker; card keeps its buttons
         # Cards from an older build carry cmd/desc in the button data instead.
         cmd, desc = self._approval_previews.get(data.get("prompt_id", ""), (data.get("cmd", ""), data.get("desc", "")))

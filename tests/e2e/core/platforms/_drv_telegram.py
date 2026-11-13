@@ -105,7 +105,7 @@ class TelegramDriver:
                 if not c.faulted and str(c.params.get("chat_id")) == str(chat_id)]
 
     def sends(self, chat_id: str) -> list[Call]:
-        return self._ok(("sendMessage",), chat_id)
+        return self._ok(("sendMessage", "sendRichMessage"), chat_id)
 
     def edits(self, chat_id: str) -> list[Call]:
         return self._ok(("editMessageText",), chat_id)

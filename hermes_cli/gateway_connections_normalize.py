@@ -254,10 +254,12 @@ def _remote_like_clean(clean: dict, entry: dict, kind: str) -> Optional[str]:
     headers = normalize_remote_headers(entry.get("headers"))
     if headers:
         clean["headers"] = headers
-    for field in ("name", "org"):
-        value = js_str(entry.get(field)).strip()
-        if kind == "cloud" and value:
-            clean[field] = value
+    name = js_str(entry.get("name")).strip()
+    if kind in ("remote", "cloud") and name:
+        clean["name"] = name
+    org = js_str(entry.get("org")).strip()
+    if kind == "cloud" and org:
+        clean["org"] = org
     return None
 
 
@@ -410,10 +412,12 @@ def _remote_input(data: dict, cid: str, kind: str, registry: dict) -> dict:
         headers = normalize_remote_headers(data["headers"])
         if headers:
             entry["headers"] = headers
-    for field in ("name", "org"):
-        value = js_str(data.get(field)).strip()
-        if kind == "cloud" and value:
-            entry[field] = value
+    name = js_str(data.get("name")).strip()
+    if kind in ("remote", "cloud") and name:
+        entry["name"] = name
+    org = js_str(data.get("org")).strip()
+    if kind == "cloud" and org:
+        entry["org"] = org
     return entry
 
 
@@ -449,7 +453,7 @@ def merge_connection_input(data: dict, existing: Optional[dict]) -> dict:
 
     for field in ("url", "authMode", "org"):
         inherit(field)
-    if data.get("kind") == "cloud" and ("url" not in data or _same_url(data["url"], existing.get("url"))):
+    if data.get("kind") in ("remote", "cloud") and ("url" not in data or _same_url(data["url"], existing.get("url"))):
         inherit("name")
     for field in ("host", "keyPath", "remoteHermesPath", "remoteProfile", "headers"):
         inherit(field)

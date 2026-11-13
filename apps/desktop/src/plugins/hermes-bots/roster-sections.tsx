@@ -87,7 +87,7 @@ interface RosterGatewaySection<TRow extends RosterGatewayRow = RosterGatewayRow>
 /** Sections built from rows that always carry their resolved roster row. */
 export type ResolvedRosterGatewaySection = RosterGatewaySection<RosterGatewayRow & { bot: RosterRow }>
 
-export function rosterGatewayOptions(sources: GatewaySource[], roster: RosterRow[]) {
+export function rosterGatewayOptions(sources: GatewaySource[], roster: RosterRow[], primaryConnectionId?: string) {
   const byId = new Map<string, RosterGatewayOption & { count: number }>()
 
   for (const source of Array.isArray(sources) ? sources : []) {
@@ -113,6 +113,7 @@ export function rosterGatewayOptions(sources: GatewaySource[], roster: RosterRow
       connectionId: id,
       kind: bot.connectionKind,
       label: bot.connectionLabel || id,
+      ...(bot.gatewayName ? { name: bot.gatewayName } : {}),
       reachable: bot.sourceReachable,
       error: bot.sourceError,
       count: 0
@@ -122,11 +123,23 @@ export function rosterGatewayOptions(sources: GatewaySource[], roster: RosterRow
     byId.set(id, source)
   }
 
-  return [...byId.values()].sort((a, b) =>
-    String(a.label || a.connectionId).localeCompare(String(b.label || b.connectionId), undefined, {
+  // D7 — the primary connection's section leads, then the rest alphabetically
+  // by label (today's order). Without this a cloud gateway can outrank
+  // "This device" and push the user's own bots below it.
+  const primary = String(primaryConnectionId || '').trim()
+
+  return [...byId.values()].sort((a, b) => {
+    const aPrimary = Boolean(primary) && a.connectionId === primary
+    const bPrimary = Boolean(primary) && b.connectionId === primary
+
+    if (aPrimary !== bPrimary) {
+      return aPrimary ? -1 : 1
+    }
+
+    return String(a.label || a.connectionId).localeCompare(String(b.label || b.connectionId), undefined, {
       sensitivity: 'base'
     })
-  )
+  })
 }
 
 export function rosterGatewaySections<TRow extends RosterGatewayRow>(
@@ -310,7 +323,7 @@ export function GatewaySectionHeading({ collapsed, count, onToggle, option }: Ga
     sourceReachable: option?.reachable
   })
 
-  const label = option?.label || option?.connectionId || b.roster.currentGateway
+  const label = option?.name || option?.label || option?.connectionId || b.roster.currentGateway
   const kind = option?.kind || 'remote'
 
   return (

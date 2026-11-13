@@ -115,6 +115,10 @@ export interface RosterRow {
    *  roster source has seen it — stable across Desktops, unlike `connectionId`
    *  / `connectionLabel`, which are THIS Desktop's names for the connection. */
   installId?: string
+  /** Gateway attribution for a `hermes cloud` row: the registry entry's cloud
+   *  name (e.g. `cloud-123`). Rendered as the row subtitle badge so the
+   *  identity survives a collapsed gateway section. Absent on every other row. */
+  gatewayName?: string
   last_session?: SessionPreview | null
   remoteSource?: boolean
   /** Kept from an earlier paint because its source did not answer this
@@ -364,6 +368,13 @@ export interface GatewaySource {
   kind?: string
   label?: string
   reachable?: boolean
+  /** Dialled endpoint, when the source is a saved remote/cloud entry. */
+  url?: string
+  /** Gateway name: the registry entry's cloud instance name, else its label. */
+  name?: string
+  /** Present only for `hermes cloud` entries — carries the gateway identity
+   *  the row subtitle and section heading read (`bot`, `gateway_id`). */
+  cloud?: { bot: string; gateway_id?: string }
 }
 
 export type AvatarShape = 'circle' | 'cloud' | 'drop' | 'hexagon' | 'pill' | 'squircle' | 'triangle'

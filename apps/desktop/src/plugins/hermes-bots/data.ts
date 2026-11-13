@@ -775,6 +775,8 @@ interface UnionAgentRow {
   connectionId?: string
   connectionKind?: string
   connectionLabel?: string
+  /** Cloud-gateway name for a `hermes cloud` row (Electron's RosterAgent). */
+  gatewayName?: string
   handle?: string
   profile?: string
   /** Credential-free metadata Electron enumerates alongside the name — the
@@ -903,6 +905,7 @@ async function fetchRosterSnapshot(activeConnectionId: null | string | undefined
         ...merged,
         profiles,
         sources,
+        ...(union?.primaryConnectionId ? { primaryConnectionId: union.primaryConnectionId } : {}),
         fetchedAt: issuedAt
       }
     } catch {
@@ -1140,6 +1143,13 @@ export function mergeMultiSourceRoster(
       row.connectionKind = agent.connectionKind
       row.connectionLabel = agent.connectionLabel
       row.targetProfile = agent.targetProfile || profile
+
+      if (agent.gatewayName) {
+        row.gatewayName = agent.gatewayName
+      } else {
+        delete row.gatewayName
+      }
+
       row.route = {
         connectionId,
         mode: agent.connectionKind === 'local' ? 'local' : 'remote',
@@ -1168,6 +1178,7 @@ export function mergeMultiSourceRoster(
       connectionId,
       connectionKind: agent.connectionKind,
       connectionLabel: agent.connectionLabel,
+      ...(agent.gatewayName ? { gatewayName: agent.gatewayName } : {}),
       targetProfile: agent.targetProfile || profile,
       route: {
         connectionId,
@@ -1613,6 +1624,10 @@ export function annotateBotSource(bot: RosterRow, sources: GatewaySource[] | nul
     ...bot,
     connectionKind: bot.connectionKind || source.kind,
     connectionLabel: bot.connectionLabel || source.label,
+    // The source knows its cloud identity even for a retained (last-good) row
+    // the union omitted this poll — re-stamp it so a dropped poll cannot
+    // strip the gateway badge.
+    ...(source.cloud?.bot ? { gatewayName: source.cloud.bot } : {}),
     ...(source.installId ? { installId: source.installId } : {}),
     sourceError: source.error || null,
     sourceMissing: false,

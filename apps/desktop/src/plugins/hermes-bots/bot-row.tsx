@@ -66,6 +66,7 @@ import { displayName, stripPreviewMarkdown } from './labels'
 import { duplicateBot } from './profile-ops'
 import { botRecentSession, openBotRecentSession } from './recent-session'
 import { openRosterBot } from './roster-actions'
+import { GatewayKindGlyph } from './roster-sections'
 import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
 import { rowAge } from './row-age'
 import {
@@ -185,9 +186,13 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
 
   const handle = botHandle(bot.name, bot)
   const gatewayLabel = bot.connectionLabel || (bot.connectionId === 'local' ? b.bot.thisDevice : '')
-  const showDetailsRow = Boolean(showHandle || displayPreview || fromBot)
+  // Cloud-gateway attribution (§6.1): rows owned by a `hermes cloud` gateway
+  // carry the gateway name on the row itself, so the identity survives a
+  // collapsed gateway section. Absent on every other row → today's subtitle.
+  const gatewayName = String(bot.gatewayName || '').trim()
+  const showDetailsRow = Boolean(showHandle || displayPreview || fromBot || gatewayName)
 
-  const rowTooltip = [displayName(bot, meta), `@${handle}`, gatewayLabel, sourceStatus.label]
+  const rowTooltip = [displayName(bot, meta), `@${handle}`, gatewayName || gatewayLabel, sourceStatus.label]
     .filter(Boolean)
     .join(' · ')
 
@@ -305,6 +310,20 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
         </div>
         {showDetailsRow ? (
           <div className="flex min-w-0 items-center gap-1.5 text-xs text-(--ui-text-tertiary)">
+            {gatewayName ? (
+              <Tip label={gatewayName}>
+                <span
+                  className="flex min-w-0 shrink items-center gap-1 rounded-sm bg-(--chrome-action-hover) px-1 py-px text-[0.625rem] font-medium text-(--ui-text-tertiary)"
+                  data-gateway-badge={gatewayName}
+                >
+                  <GatewayKindGlyph className="shrink-0" kind={bot.connectionKind} />
+                  <span className="min-w-0 truncate">{gatewayName}</span>
+                </span>
+              </Tip>
+            ) : null}
+            {gatewayName && (showHandle || displayPreview) ? (
+              <span className="shrink-0 text-(--ui-text-quaternary)">·</span>
+            ) : null}
             {showHandle ? (
               <span className="shrink-0 font-mono text-[0.6875rem] text-(--ui-text-quaternary)">{`@${handle}`}</span>
             ) : null}

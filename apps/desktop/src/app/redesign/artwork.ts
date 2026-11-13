@@ -6,8 +6,9 @@ import { randomUuid } from '@hermes/shared'
 import { readJson, readKey, writeJson } from '@/lib/storage'
 import { $portalShell } from '@/store/shell-variant'
 
-/** Figma's rows, in order: the cycle every theme walks. */
-export const ARTWORKS = ['vanilla', 'wing', 'angel', 'ascend', 'karborn'] as const
+/** The cycle every theme walks: Figma's rows, with Vanilla (a faint watermark, close to no artwork)
+ *  moved to the end so a first launch opens on a picture. */
+export const ARTWORKS = ['wing', 'angel', 'ascend', 'karborn', 'vanilla'] as const
 
 export type Artwork = (typeof ARTWORKS)[number]
 export type ArtworkMode = 'dark' | 'light'

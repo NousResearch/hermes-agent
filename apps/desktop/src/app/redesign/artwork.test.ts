@@ -28,11 +28,11 @@ function launches(mode: ArtworkMode, count: number): Artwork[] {
 
 describe('the launch rotation', () => {
   it('walks every dark artwork in Figma order, then starts over', () => {
-    expect(launches('dark', 6)).toEqual(['vanilla', 'wing', 'angel', 'ascend', 'karborn', 'vanilla'])
+    expect(launches('dark', 6)).toEqual(['wing', 'angel', 'ascend', 'karborn', 'vanilla', 'wing'])
   })
 
   it('alternates the two light artworks', () => {
-    expect(launches('light', 4)).toEqual(['vanilla', 'ascend', 'vanilla', 'ascend'])
+    expect(launches('light', 4)).toEqual(['ascend', 'vanilla', 'ascend', 'vanilla'])
   })
 
   it('never paints the same artwork on two launches in a row, even across a theme change', () => {
@@ -56,8 +56,8 @@ describe('the launch rotation', () => {
   })
 
   it('starts the cycle over from an unreadable record', () => {
-    expect(artworkForLaunch({ launch: 'old', artwork: 'retired' }, 'now', 'dark').artwork).toBe('vanilla')
-    expect(artworkForLaunch('garbage', 'now', 'light').artwork).toBe('vanilla')
+    expect(artworkForLaunch({ launch: 'old', artwork: 'retired' }, 'now', 'dark').artwork).toBe('wing')
+    expect(artworkForLaunch('garbage', 'now', 'light').artwork).toBe('ascend')
   })
 
   it('maps a pick onto the other theme by name, else to the next artwork that theme draws', () => {
@@ -123,7 +123,7 @@ describe('installArtworkAttributes', () => {
     expect(localStorage.getItem(ARTWORK_KEY)).toBeNull()
 
     $shellChoice.set(true)
-    expect(root.dataset.artworkDark).toBe('vanilla')
+    expect(root.dataset.artworkDark).toBe('wing')
     $shellChoice.set(false)
     expect(root.dataset.artworkDark).toBeUndefined()
   })

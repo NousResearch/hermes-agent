@@ -213,8 +213,6 @@
   justify-content: flex-start;
   gap: var(--portal-rail-gap);
   padding-block-start: var(--portal-rail-top);
-  /* The rail's edge against the sidebar (1089:7985). */
-  border-inline-end: 1px solid var(--portal-stroke-floating);
 }
 
 :root[data-shell='portal'] .portal-rail-badge {

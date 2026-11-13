@@ -282,11 +282,25 @@ def _launchd_plist_dirs() -> list[tuple[str, Path]]:
     ]
 
 
+def _launchd_backend_command(argv: list[str]) -> list[str]:
+    """The command a launchd job's ``ProgramArguments`` runs under the installer's two wrappers: the
+    osascript Local Network wrapper (#71206), then the stderr-timestamp launcher. Each is peeled only
+    in the exact form this install writes; anything else is returned as it is."""
+    from hermes_cli.gateway_launchd import launchd_wrapped_command
+    from hermes_cli.gateway_runtime_service_identity import _launch_module
+    command = launchd_wrapped_command(argv) or argv
+    module, args = _launch_module(command, legacy=False) or (None, [])
+    if module == "hermes_cli.stderr_timestamp" and args[:1] == ["--error-log"] and args[2:3] == ["--"]:
+        return args[3:]
+    return command
+
+
 def _loaded_launchd_backend_jobs(
     plist_dirs: list[tuple[str, Path]] | None = None,
 ) -> list[tuple[str, str, list[str], int | None]]:
-    """``(domain, label, program_arguments, live_pid)`` for every LOADED launchd job whose
-    ``ProgramArguments`` is a ``hermes dashboard`` / ``hermes serve`` backend. macOS only (empty
+    """``(domain, label, command, live_pid)`` for every LOADED launchd job whose
+    ``ProgramArguments`` runs a ``hermes dashboard`` / ``hermes serve`` backend (``command`` is that
+    backend's argv, under ``_launchd_backend_command``'s wrappers). macOS only (empty
     elsewhere). Reads the plists (unreadable/malformed ones are skipped) and asks ``launchctl print``
     per candidate label — a job that is not loaded in any domain is not returned, so an operator's
     stale plist never claims a process."""
@@ -319,7 +333,7 @@ def _loaded_launchd_backend_jobs(
             args = data.get("ProgramArguments")
             if not label or not isinstance(args, list) or not args:
                 continue
-            argv = [str(a) for a in args]
+            argv = _launchd_backend_command([str(a) for a in args])
             if _parse_dashboard_runtime(shlex.join(argv)) is None:
                 continue
             domains = ("system",) if kind == "daemon" else (f"gui/{uid}", f"user/{uid}")
@@ -372,8 +386,10 @@ def _restart_launchd_job(domain: str, label: str, old_pid: int | None, *, timeou
 
 
 def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
-    """Exact argv of a running process: ``/proc/<pid>/cmdline`` (Linux), ``ps -o command=`` + shlex
-    (macOS), None on Windows (no graceful taskkill window; Desktop manages its backend)."""
+    """Exact argv of a running process: ``/proc/<pid>/cmdline`` (Linux), psutil (macOS), then
+    ``ps -o command=`` + shlex, None on Windows (no graceful taskkill window; Desktop manages its
+    backend). ``ps`` prints a newline inside an argument as ``\\012``, so a ``python -c`` bootstrap
+    read back through it loses its source and the respawn dies with a SyntaxError."""
     if sys.platform == "win32":
         return None
     try:
@@ -383,6 +399,10 @@ def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
                 raw = f.read()
             argv = [part.decode("utf-8", errors="replace") for part in raw.split(b"\x00") if part]
             return argv or None
+        import psutil
+        with contextlib.suppress(psutil.Error):
+            if argv := psutil.Process(pid).cmdline():
+                return argv
         result = _run_probe(["ps", "-p", str(pid), "-o", "command="], timeout=10)
         if result.returncode != 0:
             return None

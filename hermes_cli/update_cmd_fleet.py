@@ -314,13 +314,18 @@ def _marker_owed_gateways(inventory: object) -> set[tuple[str, str]] | None:
     if not isinstance(runtimes, list):
         raise ValueError("fleet-restart inventory has no runtime list")
     owed: set[tuple[str, str]] = set()
+    # One process recorded twice (a launchd gateway the sweep also stopped as unmapped) owes one
+    # successor, the mapped row's; a different unmapped PID still owes its own (#144754, #147873).
+    mapped_pids = {row.get("pid") for row in runtimes if isinstance(row, dict) and row.get("kind") == "gateway"
+                   and not row.get("stopped_unmapped") and isinstance(row.get("pid"), int)}
     for runtime in runtimes:
         if not isinstance(runtime, dict):
             raise ValueError("fleet-restart inventory row is not an object")
         if runtime_outside_gateway_evidence(runtime):
             continue
         if runtime.get("kind") == "gateway" and runtime.get("stopped_unmapped"):
-            owed.add(_UNMAPPED_GATEWAY)
+            if runtime.get("pid") not in mapped_pids:
+                owed.add(_UNMAPPED_GATEWAY)
             continue
         profile = runtime.get("profile")
         if runtime.get("kind") != "gateway" or not isinstance(profile, str) or not profile.strip() or profile == "unknown":

@@ -238,3 +238,22 @@ def test_same_sha_retry_adds_newly_stopped_unmapped_debt_to_an_existing_inventor
     assert fleet._fleet_restart_obligation_armed()
     fleet_rows.append({"profile": "work", "state": "current", "code_sha": "head", "pid": 9})
     assert fleet._marker_only_restart_obsolete() is True
+
+
+def test_unmapped_row_naming_a_mapped_gateways_pid_is_settled_by_that_gateways_restart(monkeypatch, tmp_path):
+    # Records armed in the wild (#144754, #147873) name ONE process twice: the mapped launchd gateway and
+    # a manual stop of the same pid. `default` coming back current is that process's successor, so the
+    # record must settle; a different unmapped pid (the test above) still owes its own successor.
+    from hermes_cli import update_cmd_fleet as fleet, update_host_obligation as host, update_receipt
+
+    monkeypatch.setattr(host, "host_obligation_path", lambda: tmp_path / "host-update-restart.json")
+    monkeypatch.setattr(fleet, "_current_checkout_sha", lambda: "head")
+    fleet._write_fleet_restart_pending_marker(expected_sha="head", runtimes=[
+        {"kind": "gateway", "profile": "default", "pid": 740, "supervisor": "launchd"},
+        {"kind": "gateway", "profile": None, "pid": 740, "stopped_unmapped": True},
+    ])
+    monkeypatch.setattr(update_receipt, "collect_fleet_versions", lambda **kw: [
+        {"profile": "default", "state": "current", "code_sha": "head", "pid": 1943}])
+
+    assert fleet._marker_only_restart_obsolete() is True
+    assert not fleet._fleet_restart_obligation_armed()

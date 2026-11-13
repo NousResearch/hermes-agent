@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { type KeybindRuntimeDeps, useKeybinds } from '@/app/hooks/use-keybinds'
 import { FindBar } from '@/components/find-bar'
 import { I18nProvider } from '@/i18n'
-import { findBarClaimsCombo, findBarKeyAction, formatMatchLabel } from '@/lib/find-in-page'
+import { CONVERSATION_SEARCH_EVENT, findBarClaimsCombo, findBarKeyAction, formatMatchLabel } from '@/lib/find-in-page'
 import { actionAllowedInInput } from '@/lib/keybinds/combo'
 import {
   $findInPage,
@@ -588,6 +588,28 @@ function renderFindBarWithNavigation(initialPath = '/session/a') {
 }
 
 describe('FindBar', () => {
+  it('hands the query to the surface transcript search, which reaches unrendered turns', async () => {
+    const surface = plantSurface()
+    surface.innerHTML = '<button data-conversation-search></button><p>tail only</p>'
+    const opened = vi.fn()
+    surface.addEventListener(CONVERSATION_SEARCH_EVENT, event => opened((event as CustomEvent).detail))
+    openFindBar()
+    renderFindBar()
+
+    fireEvent.change(await screen.findByRole('searchbox', { name: /find in page/i }), {
+      target: { value: 'older needle' }
+    })
+    fireEvent.click(await screen.findByRole('button', { name: /search in chat/i }))
+
+    expect(opened).toHaveBeenCalledWith({ query: 'older needle' })
+    expect($findInPage.get().active).toBe(false)
+    // A surface without a transcript search (a tile) offers no hand-off.
+    surface.querySelector('button')!.remove()
+    openFindBar()
+    fireEvent.change(await screen.findByRole('searchbox', { name: /find in page/i }), { target: { value: 'x' } })
+    expect(screen.queryByRole('button', { name: /search in chat/i })).toBeNull()
+  })
+
   it('renders nothing while closed', () => {
     renderFindBar()
 

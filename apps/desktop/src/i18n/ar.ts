@@ -10,6 +10,7 @@ import { arConnectors } from './ar_connectors'
 import { arDiagnostics } from './ar_diagnostics'
 import { arFirstRun } from './ar_first_run'
 import { arSettings } from './ar_settings'
+import { conversationSearchCopy } from './conversation-search'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 
 export const arOverrides = {
@@ -18,6 +19,7 @@ export const arOverrides = {
     lookupFailed: "تعذّر العثور على هذه المجموعة على البوابة. حاول مجددًا.",
     missing: "لم تعد محادثة المجموعة هذه موجودة."
   },
+  conversationSearch: conversationSearchCopy['ar'],
 
   catalog: {
     add: 'إضافة',

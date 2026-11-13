@@ -4267,3 +4267,12 @@ html[data-hermes-desktop-host='browser'] [data-slot='sidebar-container'] {
   background: none;
   color: var(--err-ink);
 }
+
+/* Explicit stored-transcript match selection; cleared on query/scope change. */
+/* On the bubble, not the message root: the root bleeds 1rem past its content-visibility row
+   box (which clips paint there), and the positioned bubble paints over an ancestor's outline. */
+[data-message-id][data-conversation-match] .composer-human-message,
+[data-message-id][data-conversation-match]:not(:has(.composer-human-message)) {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: -2px;
+}

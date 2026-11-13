@@ -116,3 +116,7 @@ export function findBarKeyAction(event: FindBarKeyEvent, options: { inInput?: bo
 export function findBarClaimsCombo(combo: string): boolean {
   return combo === 'mod+g' || combo === 'mod+shift+g' || combo === 'escape'
 }
+
+/** Dispatched on a chat surface (detail: `{ query }`) to open its stored-transcript search with
+ *  that query: ⌘F only sees rendered turns, the transcript search reaches the whole session. */
+export const CONVERSATION_SEARCH_EVENT = 'hermes:conversation-search'

@@ -1,6 +1,7 @@
 // health: allow FILE_LINES -- locale data: translated copy for the usage-window plan UI (allowance gauges, Large/Free tags, the limit card), one key per string
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
+import { conversationSearchCopy } from './conversation-search'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { frBoot } from './fr_boot'
 import { frClarify } from './fr_clarify'
@@ -34,6 +35,7 @@ export const frOverrides = {
     lookupFailed: "Impossible de retrouver ce groupe sur la passerelle. Réessayez.",
     missing: "Cette discussion de groupe n’existe plus."
   },
+  conversationSearch: conversationSearchCopy['fr'],
   sharedMetrics: frSharedMetrics,
   firstRun: frFirstRun,
   intro: introFr,

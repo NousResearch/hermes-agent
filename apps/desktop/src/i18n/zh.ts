@@ -1,6 +1,7 @@
 // health: allow FILE_LINES -- locale data: translated copy for the usage-window plan UI (allowance gauges, Large/Free tags, the limit card), one key per string
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
+import { conversationSearchCopy } from './conversation-search'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introZh } from './intro-zh'
 import { zhCatalog, zhSkillDeepLink } from './zh_catalog'
@@ -33,6 +34,7 @@ export const zhOverrides = {
     lookupFailed: "无法在网关上查找此群组，请重试。",
     missing: "此群聊已不存在。"
   },
+  conversationSearch: conversationSearchCopy['zh'],
   catalog: zhCatalog,
   externalOpenFailed: {
     title: '无法打开此链接',

@@ -5,7 +5,9 @@ import { useLocation } from 'react-router'
 import { appViewForPath, isOverlayView } from '@/app/routes'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
-import { findBarKeyAction, formatMatchLabel } from '@/lib/find-in-page'
+import { CONVERSATION_SEARCH_EVENT, findBarKeyAction, formatMatchLabel } from '@/lib/find-in-page'
+import { currentFindScope } from '@/lib/find-in-page-scope'
+import { Search } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import {
   $findInPage,
@@ -293,6 +295,16 @@ export function FindBar() {
 
   const matchLabel = formatMatchLabel(query, matchOrdinal, matchCount)
 
+  // ⌘F only sees rendered turns; hand the query to the surface's stored-transcript search
+  // (older pages, compacted history) when it has one.
+  const scope = currentFindScope()
+  const fullSearch = localQuery.trim() ? scope?.querySelector('[data-conversation-search]:not(:disabled)') : null
+
+  const searchFullChat = () => {
+    scope?.dispatchEvent(new CustomEvent(CONVERSATION_SEARCH_EVENT, { detail: { query: localQuery } }))
+    closeFindBar()
+  }
+
   const barStyle = filesPaneRight != null ? { right: `calc(${filesPaneRight}px + 0.75rem)` } : undefined
 
   return (
@@ -326,6 +338,19 @@ export function FindBar() {
         <span aria-live="polite" className="min-w-[3rem] text-center text-[0.6875rem] text-(--ui-text-tertiary)">
           {matchLabel}
         </span>
+      )}
+
+      {fullSearch && (
+        <Tip label={t.conversationSearch.open}>
+          <button
+            aria-label={t.conversationSearch.open}
+            className="flex h-7 w-7 items-center justify-center rounded text-(--ui-text-secondary) hover:bg-(--ui-control-hover-background)"
+            onClick={searchFullChat}
+            type="button"
+          >
+            <Search className="size-3.5" />
+          </button>
+        </Tip>
       )}
 
       <Tip label={t.findInPage.previous}>

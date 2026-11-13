@@ -4,9 +4,10 @@ import type { ChatMessage } from '@/lib/chat-messages'
 
 export interface TranscriptWindowValue {
   /** Store holds older messages the runtime window has not materialized. */
+  searchAvailable?: boolean
   olderAvailable: boolean
   /** Direct row addressing replaces only the display page; null means no jump. */
-  revealRow?: (rowId: number, signal: AbortSignal) => Promise<string | null>
+  revealRow?: (rowId: number, signal: AbortSignal, kind?: 'match') => Promise<string | null>
   /** Cancel any pending jump and reselect the current live tail. */
   returnToLatest?: () => void
   isHistorical?: boolean
@@ -20,6 +21,7 @@ export interface TranscriptWindowValue {
 }
 
 const DEFAULT_TRANSCRIPT_WINDOW: Required<TranscriptWindowValue> = {
+  searchAvailable: false,
   olderAvailable: false,
   expandWindow: () => {},
   revealRow: async () => null,

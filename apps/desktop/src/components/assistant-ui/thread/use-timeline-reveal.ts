@@ -72,7 +72,7 @@ export function useTimelineReveal(options: TimelineRevealOptions) {
           !latest.current.groups.some(group => group.id === id) &&
           latest.current.history.revealRow
         ) {
-          const target = await latest.current.history.revealRow(rowId, controller.signal)
+          const target = await latest.current.history.revealRow(rowId, controller.signal, request.kind)
 
           if (!target || !valid()) {
             return false

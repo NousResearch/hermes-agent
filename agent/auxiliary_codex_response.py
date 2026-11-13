@@ -46,10 +46,21 @@ def _parse_codex_final_response(
     usage = None
     resp_usage = getattr(final, "usage", None)
     if resp_usage:
-        def _u(key: str) -> int:
-            return getattr(resp_usage, key, 0) or (resp_usage.get(key, 0) if isinstance(resp_usage, dict) else 0)
+        from agent.usage_pricing import normalize_usage
+
+        details = normalize_usage(resp_usage, api_mode="codex_responses")
+        def _u(key: str, default: Any = 0) -> Any:
+            value = resp_usage.get(key, default) if isinstance(resp_usage, dict) else getattr(resp_usage, key, default)
+            return default if value is None else value
         usage = SimpleNamespace(
             prompt_tokens=_u("input_tokens"), completion_tokens=_u("output_tokens"),
-            total_tokens=_u("total_tokens"))
+            total_tokens=_u("total_tokens"),
+            # Aux accounting normalizes the adapter's Chat Completions shape, so
+            # carry the nested details under the matching Chat field names too.
+            prompt_tokens_details=SimpleNamespace(
+                cached_tokens=details.cache_read_tokens, cache_write_tokens=details.cache_write_tokens,
+            ),
+            completion_tokens_details=SimpleNamespace(reasoning_tokens=details.reasoning_tokens),
+        )
     return text_parts, tool_calls_raw, usage, finish_reason
 

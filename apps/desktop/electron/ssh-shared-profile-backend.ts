@@ -23,6 +23,7 @@
 
 import { normalizeSshConfig } from './connection-config'
 import type { RegistryConnection } from './connection-registry'
+import { registrySshRemoteProfile } from './registry-ssh-profile'
 
 export interface SharedSshProfileScope {
   connectionId: string
@@ -49,7 +50,7 @@ export function managedSshConfig(source: RegistryConnection, profile: null | str
     port: source.port,
     keyPath: source.keyPath,
     remoteHermesPath: source.remoteHermesPath,
-    remoteProfile: source.remoteProfile || (profileKey === 'default' ? '' : profileKey)
+    remoteProfile: registrySshRemoteProfile(source.remoteProfile, profileKey)
   })
 }
 

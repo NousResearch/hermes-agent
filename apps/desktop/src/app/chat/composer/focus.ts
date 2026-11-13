@@ -414,6 +414,8 @@ export interface DraftRequestDetail {
   token: number
   ids: string[]
   active?: boolean
+  /** Address an exact composer, independent of keyboard focus and session ids. */
+  target?: ComposerTarget
   /** Set-draft payload; absent on read requests. */
   text?: string
   /** Stamped by the first owning surface so a second owner of the same id
@@ -495,14 +497,16 @@ if (typeof window !== 'undefined') {
  *  callers fall back to `takeSessionDraft` for the persisted copy. */
 export const requestComposerGetDraft = (
   ids: string[],
-  opts?: { active?: boolean }
+  opts?: { active?: boolean; target?: ComposerTarget }
 ): Promise<null | { text: null | string }> => {
   const cleaned = [...new Set(ids.map(id => id?.trim()).filter(Boolean))] as string[]
   const active = opts?.active === true
   const token = ++draftToken
 
   const promise =
-    cleaned.length || active ? requestDraftOnce('get', GET_DRAFT_EVENT, { active, ids: cleaned, token }) : null
+    cleaned.length || active || opts?.target
+      ? requestDraftOnce('get', GET_DRAFT_EVENT, { active, ids: cleaned, target: opts?.target, token })
+      : null
 
   if (!promise) {
     return Promise.resolve(null)
@@ -534,7 +538,7 @@ export const requestComposerSetDraft = (ids: string[], text: string, opts?: { ac
  *  — the rest stay ignored so N mounted composers coexist on the bus. `read`
  *  answers with the live text; `write` replaces the draft and reports success. */
 export const onComposerDraftRequests = (
-  address: { getIds: () => string[]; isActive: () => boolean },
+  address: { getIds: () => string[]; isActive: () => boolean; target?: ComposerTarget },
   handlers: { read: () => null | string; write: (text: string) => boolean }
 ) => {
   if (typeof window === 'undefined') {
@@ -559,7 +563,11 @@ export const onComposerDraftRequests = (
       return
     }
 
-    if (e.detail.active) {
+    if (e.detail.target) {
+      if (address.target !== e.detail.target) {
+        return
+      }
+    } else if (e.detail.active) {
       if (!address.isActive()) {
         return
       }

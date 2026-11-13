@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import type { NavigateFunction } from 'react-router'
 
 import { $freshSessionRequest, refreshActiveProfile } from '@/store/profile'
@@ -8,6 +8,38 @@ import { resetProjectTreeState } from '../right-sidebar/files/use-project-tree'
 import { SETTINGS_ROUTE } from '../routes'
 
 import { $restartPreviewServer } from './panes'
+import {
+  type OnSessionsRefreshed,
+  useGatewayScopeRefresh as useGatewayScopeRefreshBase
+} from './use-gateway-scope-refresh'
+
+export function useGatewayScopeRefresh(
+  activeConnectionId: null | string,
+  activeGatewayProfile: string,
+  refreshCurrentModel: (force: boolean) => Promise<unknown>,
+  refreshHermesConfig: (force: boolean) => Promise<unknown>,
+  refreshSessions: () => Promise<unknown>,
+  restoreMostRecentSession: (isCurrent: () => boolean) => void | Promise<unknown>,
+  onSessionsRefreshed: OnSessionsRefreshed,
+  getRecoveryIntent: () => string
+) {
+  const refreshScope = useCallback(() => {
+    void refreshActiveProfile()
+    resetProjectTreeState()
+  }, [])
+
+  useGatewayScopeRefreshBase(
+    activeConnectionId,
+    activeGatewayProfile,
+    refreshCurrentModel,
+    refreshHermesConfig,
+    refreshSessions,
+    restoreMostRecentSession,
+    onSessionsRefreshed,
+    getRecoveryIntent,
+    refreshScope
+  )
+}
 
 type RestartPreviewServer = NonNullable<ReturnType<typeof $restartPreviewServer.get>>
 
@@ -66,34 +98,4 @@ export function useFreshSessionRequest(startFreshSessionDraft: () => void) {
     lastFreshRef.current = freshSessionRequest
     startFreshSessionDraft()
   }, [freshSessionRequest, startFreshSessionDraft])
-}
-
-// Swapping the live gateway to another source or profile must re-pull that
-// source's model/config/profile state. Two sources commonly both expose a
-// `default` profile, so profile alone is not a sufficient identity.
-export function useGatewayScopeRefresh(
-  activeConnectionId: null | string,
-  activeGatewayProfile: string,
-  refreshCurrentModel: (force: boolean) => Promise<unknown>,
-  refreshHermesConfig: (force: boolean) => Promise<unknown>
-) {
-  const gatewayScope = `${activeConnectionId ?? ''}\0${activeGatewayProfile}`
-  const lastGatewayScopeRef = useRef(gatewayScope)
-
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
-  useEffect(() => {
-    if (gatewayScope === lastGatewayScopeRef.current) {
-      return
-    }
-
-    lastGatewayScopeRef.current = gatewayScope
-    // Force: the new source/profile pair has its own defaults, so reseed the
-    // selector even if the composer already shows values from the previous
-    // backend. These refreshes carry intent tokens so an in-flight picker
-    // click still wins.
-    void refreshCurrentModel(true)
-    void refreshHermesConfig(true)
-    void refreshActiveProfile()
-    resetProjectTreeState()
-  }, [gatewayScope, refreshCurrentModel, refreshHermesConfig])
 }

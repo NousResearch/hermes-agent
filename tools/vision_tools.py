@@ -121,7 +121,8 @@ async def _run_encode_on_cpu_executor(fn, *args, **kwargs):
     """Run a sync encode/resize callable on the bounded vision CPU executor (never the LLM call)."""
     import functools
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_vision_cpu_executor, functools.partial(fn, *args, **kwargs))
+    from agent.memory_provider import ctx_bound
+    return await loop.run_in_executor(_vision_cpu_executor, ctx_bound(functools.partial(fn, *args, **kwargs)))
 
 
 async def _validate_image_url_async(url: str) -> bool:

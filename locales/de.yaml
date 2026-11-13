@@ -980,6 +980,7 @@ platform:
     denied: "❌ Abgelehnt."
     approval_expired: "⌛ Genehmigung abgelaufen — Befehl wurde nicht ausgeführt (Zeitüberschreitung oder bereits anderswo entschieden)."
   shared:
+    response_as_file: "📎 Lange Antwort: Der vollständige Text ist angehängt."
     truncated_suffix: "\n...(gekürzt)"
     unknown: "unbekannt"
     approval_expired: "⌛ Genehmigung abgelaufen — der Befehl wurde nicht ausgeführt (Zeitüberschreitung oder bereits anderswo entschieden)."
@@ -1170,8 +1171,6 @@ platform:
         unknown: "Unbekannter Skill: `{name}`. Tippen Sie los, um Vorschläge zur Vervollständigung zu erhalten."
       auto_args_description: "Argumente: {args_hint}"
       auto_description_fallback: "/{name} ausführen"
-    limits:
-      response_truncated: "⚠️ **Antwort gekürzt** — diese Antwort hat das Zustellungslimit ({max_messages} Nachrichten) überschritten. {dropped_chars} Zeichen wurden nicht zugestellt; die vollständige Antwort steht in den Sitzungs-Logs."
     forum:
       default_title: "Neuer Beitrag"
     voice:

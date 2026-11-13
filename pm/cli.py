@@ -516,7 +516,9 @@ def _doctor_uv_cache(*, repair: bool) -> int:
 
 
 def _install_alive(store):
-    """An install still pins its tools while its state dir exists (orphan gc removes it)."""
+    """A checkout still pins its tools while its dependency state dir exists: the orphan sweep
+    removes that only once it proves the checkout deleted, so a checkout this process cannot see
+    (another mount, a container sharing the data root) keeps its pins."""
     from pm.environments import installs_root
     from pm.lock import install_owner
 

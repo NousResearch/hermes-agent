@@ -1,6 +1,6 @@
 name: permission-tiers
 repo: https://github.com/imperator-clawdius/hermes-permission-tiers
-sha: 080cd7edfa0bb2193d4fe1277a2503b725a27b8e
+sha: f5f61832f60614f78e36501bfadf25c6bd02c12d
 description: >-
   Host-enforced tiered tool permissions: assign allow/ask/block tiers to tool-name patterns
   (fnmatch globs), and the plugin's pre_tool_call hook vetoes or escalates matching calls

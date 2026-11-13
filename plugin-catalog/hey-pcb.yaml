@@ -1,6 +1,6 @@
 name: hey-pcb
 repo: https://github.com/imperator-clawdius/hermes-hey-pcb
-sha: 15e5a25636e65bc52074251caa4d9ee7e71c37a7
+sha: 545f30ee0e51116a72d933b82f94addbed635ee6
 description: >-
   Agent-driven PCB engineering through HeyPCB's first-party MCP server: design real KiCad
   boards from a text brief, instant fabrication estimates, and production tracking, with a

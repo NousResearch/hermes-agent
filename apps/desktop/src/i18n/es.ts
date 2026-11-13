@@ -1384,7 +1384,7 @@ export const esOverrides = {
         engine: 'Estrategia para gestionar conversaciones largas cerca del límite de contexto.'
       },
       compression: {
-        enabled: 'Resume contexto antiguo cuando las conversaciones crecen.',
+        enabled: 'Resume el contexto anterior cuando las conversaciones crecen.',
         codexGpt55Autoraise: 'Sube la compresión al 85 % para los modelos compatibles de ChatGPT Codex OAuth.'
       },
       auxiliary: {
@@ -4107,9 +4107,9 @@ export const esOverrides = {
       revert: 'Revertir',
       revertAll: 'Revertir todo',
       revertConfirm:
-        '¿Descartar los cambios en este archivo y restaurarlo al estado comprometido? Esto no se puede deshacer.',
+        '¿Descartar los cambios en este archivo y restaurarlo al estado del último commit? Esto no se puede deshacer.',
       revertAllConfirm:
-        '¿Descartar todos los cambios y restaurar archivos al estado comprometido? Esto no se puede deshacer.',
+        '¿Descartar todos los cambios y restaurar los archivos al estado del último commit? Esto no se puede deshacer.',
       staged: 'Preparados',
       noChanges: 'Sin cambios',
       notRepo: 'No es un repositorio Git',

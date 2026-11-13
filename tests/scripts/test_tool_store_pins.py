@@ -7,6 +7,8 @@ differs from what this checkout's package code records makes `pm install`
 re-record the shared facts.json.
 """
 import json
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -25,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def _executable(path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("#!/bin/sh\n")
+    path.write_text("#!/bin/sh\n", encoding="utf-8")
     path.chmod(0o755)
     return path
 
@@ -68,9 +70,9 @@ def _entry_binary(store: Path, name: str) -> Path:
 
 
 def _stale_env(store: Path, name: str) -> None:
-    data = json.loads((store / "facts.json").read_text())
+    data = json.loads((store / "facts.json").read_text(encoding="utf-8-sig"))
     data["packages"][name]["env"] = {}
-    (store / "facts.json").write_text(json.dumps(data))
+    (store / "facts.json").write_text(json.dumps(data), encoding="utf-8")
 
 
 BREAKAGES = {
@@ -95,3 +97,58 @@ def test_store_running_from_which_would_write_to_it_is_not_shared(tmp_path, brea
     after = sorted((p.relative_to(store), p.is_file() and p.read_bytes(), p.stat().st_mode)
                    for p in store.rglob("*"))
     assert after == before, "the check must stay read-only (no heal, no re-record, no .corrupt)"
+
+
+def _snapshot(store: Path) -> list:
+    return sorted((p.relative_to(store), p.is_file() and p.read_bytes(), p.stat().st_mode) for p in store.rglob("*"))
+
+
+def _provisioned_store(tmp_path: Path, account: Path, home: Path, naming: dict) -> Path:
+    """The store the real runner aims its setup step at, in a repo-shaped tree holding the real
+    runner, activation library, pin check and pm. Setup is replaced at its process boundary: it
+    records the store pm resolves for this run and stops, so nothing is installed. ``getent``
+    answers with ``account`` as the OS account's home, which makes ``home`` a faked HOME."""
+    root = tmp_path / "checkout"
+    if not root.exists():
+        (root / "scripts").mkdir(parents=True)
+        for name in ("run_tests.sh", "run-in-hermes-env", "_activation.sh", "tool_store_pins.py"):
+            shutil.copy2(ROOT / "scripts" / name, root / "scripts" / name)
+        for name in ("pm", "hermes_constants.py", "hermes_platform"):
+            (root / name).symlink_to(ROOT / name)
+        python = _executable(root / ".venv" / "bin" / "python")  # the bootstrap interpreter
+        python.write_text(f"#!/bin/sh\nexec '{sys.executable}' \"$@\"\n", encoding="utf-8")
+        (root / "setup-hermes.sh").write_text(
+            f"'{python}' -I -B -c 'import sys\nsys.path.insert(0, sys.argv[1])\n"
+            "from pm.environments import store_root\nprint(store_root(sys.argv[1]), end=\"\")' "
+            f"'{root}' > '{root}/provisioned'\nexit 1\n", encoding="utf-8")
+        _executable(tmp_path / "bin" / "getent").write_text(
+            f"#!/bin/sh\necho 'account:x:0:0::{account}:/bin/sh'\n", encoding="utf-8")
+    home.mkdir(exist_ok=True)
+    (root / "provisioned").unlink(missing_ok=True)
+    run = subprocess.run(
+        ["bash", str(root / "scripts" / "run_tests.sh"), "tests/nothing.py"], cwd=root,
+        env={"PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}", "HOME": str(home), **naming},
+        capture_output=True, text=True, encoding="utf-8", timeout=120, check=False,
+    )
+    assert (root / "provisioned").is_file(), run.stdout + run.stderr
+    return Path((root / "provisioned").read_text(encoding="utf-8-sig"))
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("named_by", ["HERMES_RUNTIME_DIR", "HERMES_HOME"])
+def test_faked_home_run_naming_the_account_store_never_provisions_other_pins_into_it(tmp_path, named_by):
+    """A lane that passes the account's store explicitly, or inherits the agent shell's HERMES_HOME,
+    must not re-stage its checkout's pins over the ones the account's own Hermes runs on."""
+    account, home = tmp_path / "account", tmp_path / "fakehome"
+    store = account / ".hermes" / "tools"
+    _matching_store(store)
+    naming = {"HERMES_RUNTIME_DIR": str(store)} if named_by == "HERMES_RUNTIME_DIR" else {"HERMES_HOME": str(store.parent)}
+    assert _provisioned_store(tmp_path, account, home, naming).samefile(store), \
+        "control: a named store at this checkout's pins is used as is"
+
+    data = json.loads((store / "facts.json").read_text(encoding="utf-8-sig"))
+    data["packages"]["chromium"]["version"] = "0+another-checkouts-pin"
+    (store / "facts.json").write_text(json.dumps(data), encoding="utf-8")
+    before = _snapshot(store)
+    assert _provisioned_store(tmp_path, account, home, naming) == (home / ".hermes" / "tools").resolve()
+    assert _snapshot(store) == before

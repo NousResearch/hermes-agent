@@ -1,22 +1,22 @@
 name: model-explainer
 repo: https://github.com/tuancookiez-hub/hermes-model-explainer
-sha: 4b876bb5021c56fe14e14a15d4e379b5e6506c9e
+sha: 430c33cae144f4de9639b7de70a075162738d6d9
 title: Model Explainer
-description: "A Models page for Hermes Desktop built around your own model picker: choose a model to see its Hermes Index score, cost per task, context and output limits, price, abilities and your own measured speed and spend, with a score-against-cost frontier chart, and compare up to four side by side. Every value cites a source and date. Disclosure — one GET of a public JSON data file from the author's GitHub repo (raw.githubusercontent.com/tuancookiez-hub/hermes-model-explainer, main branch, so its contents can change after this pin), at most daily and only when the page opens (can be turned off; the bundled copy works offline; the file is validated data, never code); reads model.options and the focused session's model and usage figures; writes plugin storage, and switches the chat model only when the user presses Use this model (the same config.set request as the built-in picker, scoped to the open chat). Desktop only: no agent tools, hooks, middleware or env vars."
+description: "A Models page for Hermes Desktop, plus a button beside the chat model pill that opens it as a pop-up, built around your own model picker: choose a model to see its Hermes Index score, cost per task, context and output limits, price, abilities and your own measured speed and spend, with a score-against-cost frontier chart, and compare up to four side by side. Every value cites a source and date. Disclosure — one GET of a public JSON data file on raw.githubusercontent.com, at most daily and only when the page or pop-up opens (can be turned off; the bundled copy works offline; the file is validated data, never code); reads model.options and the focused session's model and usage figures; writes plugin storage, and switches the chat model only when the user presses Use this model (the same config.set request as the built-in picker, scoped to the open chat). Desktop only: no agent tools, hooks, middleware or env vars."
 maintainer: tuancookiez-hub
 tier: community
 category: models
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/tuancookiez-hub/hermes-model-explainer#readme
-version: "0.3.0"
-image: https://raw.githubusercontent.com/tuancookiez-hub/hermes-model-explainer/4b876bb5021c56fe14e14a15d4e379b5e6506c9e/docs/banner.png
+version: "0.5.0"
+image: https://raw.githubusercontent.com/tuancookiez-hub/hermes-model-explainer/430c33cae144f4de9639b7de70a075162738d6d9/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-model-explainer/4b876bb5021c56fe14e14a15d4e379b5e6506c9e/docs/screenshots/01-details.png
-  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-model-explainer/4b876bb5021c56fe14e14a15d4e379b5e6506c9e/docs/screenshots/02-frontier-and-suites.png
-  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-model-explainer/4b876bb5021c56fe14e14a15d4e379b5e6506c9e/docs/screenshots/03-sources.png
-  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-model-explainer/4b876bb5021c56fe14e14a15d4e379b5e6506c9e/docs/screenshots/04-compare.png
-  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-model-explainer/4b876bb5021c56fe14e14a15d4e379b5e6506c9e/docs/screenshots/05-no-data.png
-  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-model-explainer/4b876bb5021c56fe14e14a15d4e379b5e6506c9e/docs/screenshots/06-light-theme.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-model-explainer/430c33cae144f4de9639b7de70a075162738d6d9/docs/screenshots/01-details.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-model-explainer/430c33cae144f4de9639b7de70a075162738d6d9/docs/screenshots/02-frontier-and-suites.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-model-explainer/430c33cae144f4de9639b7de70a075162738d6d9/docs/screenshots/03-sources.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-model-explainer/430c33cae144f4de9639b7de70a075162738d6d9/docs/screenshots/04-compare.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-model-explainer/430c33cae144f4de9639b7de70a075162738d6d9/docs/screenshots/05-popup-in-chat.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-model-explainer/430c33cae144f4de9639b7de70a075162738d6d9/docs/screenshots/06-light-theme.png
 platforms: []
 capabilities:
   provides_tools: []

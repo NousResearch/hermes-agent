@@ -445,6 +445,9 @@ def record_stop(run: Any, entry: Optional[dict[str, Any]]) -> None:
         if isinstance(session_id, str) and session_id:
             record["session_id"] = session_id
         record["auto_promised"] = bool(durable.get("promised"))
+        if durable.get("promised"):
+            from tools.delegate_tool_auto_resume import note_promised
+            note_promised()
         if durable.get("gave_up"):
             record["auto_gave_up"] = record["auto_note"] = durable["gave_up"]
         _finish(conn, sid, record, entry, live_cause or record.get("stop_cause"), cwd=cwd)
@@ -595,17 +598,20 @@ def claim(parent_agent: Any, sid: str) -> tuple[Optional[dict[str, Any]], Option
         return None, (f"Subagent '{sid}' is still running or being continued. Try again shortly; if this persists, "
                       "spawn a new task.") if record.get("state") in ("running", "claimed") else None
     owner = _owner_identity()  # boot recovery must not reclaim a continue this live process is starting
+    from tools.delegate_tool_auto_resume import CANCEL_DEBT  # the parent took it over: no automatic report owed
     claimed = _write(path, lambda conn: conn.execute(
-        "UPDATE resumable_subagents SET state='claimed', owner_pid=?, owner_started_at=?, updated_at=? "
-        "WHERE subagent_id=? AND state=?",
+        f"UPDATE resumable_subagents SET state='claimed', owner_pid=?, owner_started_at=?, updated_at=?, "
+        f"record_json=json_set(record_json, {CANCEL_DEBT}) WHERE subagent_id=? AND state=?",
         (owner["owner_pid"], owner["owner_started_at"], time.time(), sid, record["state"])).rowcount)
     return (record, None) if claimed == 1 else (None, f"Subagent '{sid}' is already being continued.")
 
 
 def release(parent_agent: Any, sid: str, record: dict[str, Any]) -> None:
-    """Hand a claimed record back (the continue was refused before anything ran)."""
+    """Hand a claimed record back (the continue was refused before anything ran), with the debt it had."""
     _write(_db_path_for(parent_agent), lambda conn: conn.execute(
-        "UPDATE resumable_subagents SET state=? WHERE subagent_id=? AND state='claimed'", (record["state"], sid)))
+        "UPDATE resumable_subagents SET state=?, record_json=json_set(record_json, '$.auto_promised', json(?)) "
+        "WHERE subagent_id=? AND state='claimed'",
+        (record["state"], "true" if record.get("auto_promised") else "false", sid)))
 
 
 def hold_claim(child: Any, parent_agent: Any, sid: str, record: dict[str, Any]) -> None:
@@ -626,8 +632,10 @@ def release_unstarted(child: Any) -> None:
     # decision: the row ends ``stopped``, never handed back for the scheduler to resume.
     stopped = (getattr(child, "_delegate_run_origin", None) == "auto"
                and getattr(child, "_delegate_stop_requested", False) is True)
+    from tools.delegate_tool_auto_resume import CANCEL_DEBT
+    debt = f"json_set(record_json, {CANCEL_DEBT})" if stopped else "record_json"
     _write(path, lambda conn: conn.execute(
-        "UPDATE resumable_subagents SET state=?, record_json=json_remove(record_json, '$.auto_claim') "
+        f"UPDATE resumable_subagents SET state=?, record_json=json_remove({debt}, '$.auto_claim') "
         "WHERE subagent_id=? AND state='claimed' AND owner_pid=?",
         ("stopped" if stopped else state, sid, os.getpid())))
 

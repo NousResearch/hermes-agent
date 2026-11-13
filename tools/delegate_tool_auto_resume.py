@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -156,6 +157,8 @@ def boot_notice(conn, sids: list[str], records: dict[str, dict[str, Any]]) -> tu
             promised[sid] = auto
         elif gave_up(candidate):
             spent.append(sid)
+    if promised or spent:
+        note_promised()
     for sid in [*promised, *spent]:
         conn.execute("UPDATE resumable_subagents SET record_json=json_set(record_json, '$.auto_promised', json('true'))"
                      " WHERE subagent_id=?", (sid,))
@@ -174,12 +177,21 @@ def _write(fn) -> Any:
     return write(_db(), fn)
 
 
+# The parent cancelled it (stop, /stop, session end, its own continue): the one marker of a cleared debt is
+# ``auto_promised`` false, set in the same write as the cancel, so no later path (TTL expiry, auto_resume turned off)
+# reports a child its parent cancelled.
+CANCEL_DEBT = "'$.auto_promised', json('false')"
+_CANCEL_STATES = (SUPERSEDED, "stopped")
+
+
 def _note(conn, sid: str, *, state: Optional[str], note: str, from_states=("resumable",), unpin=False,
           unstarted_claim=False) -> bool:
-    """Record why the scheduler will not (or no longer) run this record; *state* moves it when given.
-    *unstarted_claim*: also a record an automatic continue claimed whose run has not started (``$.auto_claim``)."""
+    """Record why the scheduler will not (or no longer) run this record; *state* moves it when given (a cancel
+    state also clears its debt). *unstarted_claim*: also a record an automatic continue claimed whose run has not
+    started (``$.auto_claim``)."""
     marks = ",".join("?" * len(from_states))
-    sets = "record_json=json_remove(json_set(record_json, '$.auto_note', ?), '$.auto_claim'), updated_at=?"
+    debt = f", {CANCEL_DEBT}" if state in _CANCEL_STATES else ""
+    sets = f"record_json=json_remove(json_set(record_json, '$.auto_note', ?{debt}), '$.auto_claim'), updated_at=?"
     if state:
         sets += ", state=?" + (", pinned=0" if unpin else "")
     claimed = (" OR (state='claimed' AND json_extract(record_json, '$.auto_claim') IS NOT NULL)"
@@ -191,6 +203,41 @@ def _note(conn, sid: str, *, state: Optional[str], note: str, from_states=("resu
 
 # A promised record no give-up failure was delivered for: its parent is owed exactly one report.
 OWED_SQL = ("json_extract(record_json, '$.auto_promised') AND json_extract(record_json, '$.auto_gave_up') IS NULL")
+
+
+def _cancel_expired(conn, sid: str, note: str) -> bool:
+    """A cancel that lands after the TTL moved an owed record to ``expired`` but before a tick reported it."""
+    return conn.execute(f"UPDATE resumable_subagents SET record_json=json_set(record_json, '$.auto_note', ?, "
+                        f"{CANCEL_DEBT}), updated_at=? WHERE subagent_id=? AND state='expired' AND {OWED_SQL}",
+                        (note, time.time(), sid)).rowcount == 1
+
+
+# WHY: with auto_resume off the tick only settles debts, and only this process can create one (a promise needs the
+# gateway that owns the profile, and auto_resume on). So each profile's store is scanned once per process (rows a
+# previous process promised) and again only after this process wrote a promise; never-enabled means no per-tick DB.
+_promise_lock = threading.Lock()
+_promise_gen = 0
+_settled_at_gen: dict[str, int] = {}
+
+
+def note_promised() -> None:
+    """A promise (or a last-chance give-up debt) was written: the next disabled tick of every profile re-scans."""
+    global _promise_gen
+    with _promise_lock:
+        _promise_gen += 1
+
+
+def _settle_disabled(now: float) -> None:
+    db = str(_db())
+    with _promise_lock:
+        gen = _promise_gen
+    if _settled_at_gen.get(db) == gen:
+        return
+    owed = _candidates(now, owed_only=True)
+    for record in owed:
+        _give_up(record, EXPIRED if record["expired"] else TURNED_OFF)
+    if not owed:  # a settled pass re-scans once more: a failed give-up write stays owed and is retried
+        _settled_at_gen[db] = gen
 
 
 def _candidates(now: float, *, owed_only: bool = False) -> list[dict[str, Any]]:
@@ -434,9 +481,7 @@ def tick(start: Callable[..., Optional[str]], *, capacity: int, now: Optional[fl
     message)`` performs the continue and returns an error string, or None once the child was dispatched."""
     from tools.delegate_tool_registry import is_spawn_paused
     if not enabled():  # nothing starts; a child the stop promised a resume still gets its one report
-        now = now or time.time()
-        for record in _candidates(now, owed_only=True):
-            _give_up(record, EXPIRED if record["expired"] else TURNED_OFF)
+        _settle_disabled(now or time.time())
         return []
     # A full pool or a spawn pause holds only new starts (no claim, no stand-in parent built): give-ups, notes and
     # supersessions still settle, so a deadline reports on time.
@@ -626,9 +671,10 @@ def supersede_for_session(*, session_key: str = "", origin_ui_session_id: str = 
         units = {row[0] for row in conn.execute(f"SELECT delegation_id FROM async_delegations WHERE {where}",
                                                 [val for _, val in selectors])}
         rows = conn.execute("SELECT subagent_id, json_extract(record_json, '$.unit_id') FROM resumable_subagents "
-                            "WHERE state IN ('resumable','claimed')" + promised_only).fetchall()
+                            f"WHERE (state IN ('resumable','claimed'){promised_only}) "
+                            f"OR (state='expired' AND {OWED_SQL})").fetchall()
         note = f"its parent conversation was stopped or closed ({reason or 'session end'})"
-        return sum(_note(conn, sid, state=SUPERSEDED, note=note, unstarted_claim=True)
+        return sum(_note(conn, sid, state=SUPERSEDED, note=note, unstarted_claim=True) or _cancel_expired(conn, sid, note)
                    for sid, unit in rows if unit in units)
     return int(_write(do) or 0)
 
@@ -641,13 +687,15 @@ def dismiss(parent_agent: Any, sid: str) -> bool:
     from tools.delegate_tool_resumable import _db_path_for, _row, _write as write
     path = _db_path_for(parent_agent)
     record = write(path, lambda conn: _row(conn, sid))
-    waiting = record and (record.get("state") in ("resumable", SUPERSEDED)
+    owed_expired = record and record.get("state") == "expired" and not record.get("auto_gave_up")
+    waiting = record and (record.get("state") in ("resumable", SUPERSEDED) or owed_expired
                           or (record.get("state") == "claimed" and record.get("auto_claim")))
     if not waiting or not (record.get("auto_promised") or enabled()):
         return False
     if not _owns_subagent_record({"ancestor_owner_session_ids": record.get("owners") or ()}, parent_agent):
         return False
     # An automatic continue that claimed it but has not started it yet is cancelled too (``confirm_start``).
-    return bool(write(path, lambda conn: _note(conn, sid, state="stopped", note="dismissed by its parent",
+    note = "dismissed by its parent"
+    return bool(write(path, lambda conn: _note(conn, sid, state="stopped", note=note,
                                                from_states=("resumable", SUPERSEDED), unpin=True,
-                                               unstarted_claim=True)))
+                                               unstarted_claim=True) or _cancel_expired(conn, sid, note)))

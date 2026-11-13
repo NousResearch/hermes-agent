@@ -2,6 +2,8 @@
 of attempts or time reports exactly ONE failure."""
 import json
 import time
+
+import pytest
 from unittest.mock import patch
 
 from tests.tools.test_delegate_auto_resume import _AlwaysLimited, _enable, _repo, _scheduler
@@ -312,3 +314,57 @@ def test_retention_limits_never_eat_a_waiting_childs_report(tmp_path):
         tick(lambda *args: None, capacity=3, now=time.time() + 60)
     events = _events(unit)
     assert len(events) == 1 and "expired" in events[0]["results"][0]["error"], events
+
+
+def _expire(parent, sid):
+    from pathlib import Path
+    from tools.delegate_tool_resumable import _apply_limits, _write
+    _sql(parent, "UPDATE resumable_subagents SET expires_at=? WHERE subagent_id=?", (time.time() - 1, sid))
+    _write(Path(parent._session_db.db_path), _apply_limits)
+
+
+def _cancelled_then_expired(tmp_path, cancel, *, expire_first):
+    from hermes_constants import get_hermes_home
+    from tools.delegate_tool_auto_resume import tick
+    _enable()
+    parent = _parent()
+    sid, unit = _silent_stop(tmp_path, parent)
+    if expire_first:
+        _expire(parent, sid)
+    cancel(parent, sid)
+    (get_hermes_home() / "config.yaml").write_text(json.dumps({"delegation": {"auto_resume": False}}))
+    if not expire_first:
+        _expire(parent, sid)
+    for _ in range(3):
+        tick(_scheduler(parent, []), capacity=3)
+    return _events(unit)
+
+
+def _slash_stop(parent, _sid):
+    from tools.delegate_tool_auto_resume import supersede_for_session
+    assert supersede_for_session(parent_session_id=parent.session_id, reason="/stop") == 1
+
+
+def _stop(parent, sid):
+    from tools.delegate_tool import delegate_task
+    out = json.loads(delegate_task(action="stop", subagent_id=sid, parent_agent=parent))
+    assert out["status"] == "dismissed", out
+
+
+@pytest.mark.parametrize("expire_first", [False, True], ids=["cancel-then-ttl", "ttl-then-cancel"])
+@pytest.mark.parametrize("cancel", [_slash_stop, _stop], ids=["slash-stop", "action-stop"])
+def test_a_child_its_parent_cancelled_never_reports_even_when_its_record_expires(tmp_path, cancel, expire_first):
+    assert _cancelled_then_expired(tmp_path, cancel, expire_first=expire_first) == []
+
+
+def test_a_tick_with_auto_resume_never_enabled_does_not_open_the_store_each_pass(tmp_path):
+    import tools.delegate_tool_auto_resume as auto
+    from hermes_constants import get_hermes_home
+    parent = _parent()
+    (get_hermes_home() / "config.yaml").write_text(json.dumps({"delegation": {"auto_resume": False}}))
+    auto.tick(lambda *args: None, capacity=3)  # this process's one scan for rows an earlier process promised
+    opened, write = [], auto._write
+    with patch.object(auto, "_write", side_effect=lambda fn: (opened.append(1), write(fn))[1]):
+        for _ in range(5):
+            auto.tick(lambda *args: None, capacity=3)
+    assert opened == [] and parent._session_db.db_path

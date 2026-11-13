@@ -37,6 +37,7 @@ import {
 } from './overlayStore.js'
 import { togglePasteSections } from './pasteStore.js'
 import { respondToServerRequest } from './serverRequestStore.js'
+import { $sessionSidebarVisible, toggleSessionSidebar } from './sessionSidebarStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
 import { $uiState, getUiState } from './uiStore.js'
@@ -687,6 +688,17 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   )
 
   useInput((ch, key, event) => {
+    const activeOverlay = $overlayState.get()
+
+    if (
+      $sessionSidebarVisible.get() &&
+      !$isBlocked.get() &&
+      !activeOverlay.agents &&
+      !activeOverlay.journey
+    ) {
+      return
+    }
+
     const live = getUiState()
     const isVoiceKey = key.escape && isVoiceToggleKey(key, ch, voice.recordKey)
     const now = Date.now()
@@ -898,6 +910,12 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       if (isMac) {
         return
       }
+    }
+
+    if (key.ctrl && key.shift && (ch.toLowerCase() === 'y' || ch === '\x19')) {
+      toggleSessionSidebar()
+
+      return
     }
 
     if (isCtrl(key, ch, 'x') && handleInputSelectionClipboard(getInputSelection(), 'cut')) {

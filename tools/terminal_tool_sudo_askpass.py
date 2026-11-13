@@ -28,7 +28,9 @@ _TIMEOUT_SLACK_S = 30
 _FALLBACK_TIMEOUT_S = 120
 
 SUDO_ASKPASS_PREFIX = 'SUDO_ASKPASS="$__hermes_sudo_dir/a" '
-SUDO_ASKPASS_SUFFIX = " -A"
+# Expands to ``-A`` once the helper is set up, and to ``-S -p ''`` when setup failed at run time
+# (the command then reads its password lines from stdin exactly as the stdin form does).
+SUDO_ASKPASS_SUFFIX = ' "${__hermes_sudo_o[@]}"'
 
 # bash 3.2 syntax only. ``\command`` / ``\builtin`` keep aliases and functions from the session
 # snapshot from shadowing the commands the prologue relies on; ``exec`` is written ``\exec``
@@ -36,21 +38,32 @@ SUDO_ASKPASS_SUFFIX = " -A"
 # open, so the detached watchdog would hold the command's output pipe. A temp path holding a
 # character that is special inside double quotes (the helper embeds it in one) counts as a
 # setup failure.
-_PROLOGUE_HEAD = "__hermes_sudo_pw=; IFS= \\builtin read -r __hermes_sudo_pw || \\builtin :\n"
+_PROLOGUE_HEAD = "__hermes_sudo_pw=; __hermes_sudo_o=(-S -p '')\n"
 _PROLOGUE_TEMPLATE = (
     _PROLOGUE_HEAD
     + '__hermes_sudo_dir=$(\\builtin umask 077 && \\command mktemp -d "${TMPDIR:-/tmp}/hermes-sudo.XXXXXXXXXX"'
     " 2>/dev/null) || __hermes_sudo_dir=\n"
     'case $__hermes_sudo_dir in *[\\"\\\\\\$\\`]*) \\command rm -rf -- "$__hermes_sudo_dir" 2>/dev/null;'
     " __hermes_sudo_dir= ;; esac\n"
+    # Setup comes before any read of stdin: when a step fails the password lines stay on stdin
+    # and every counted sudo keeps ``-S -p ''``, which is the stdin form.
     'if \\builtin test -n "$__hermes_sudo_dir" && \\command mkfifo "$__hermes_sudo_dir/p" "$__hermes_sudo_dir/l"'
-    ' 2>/dev/null && \\exec 19<>"$__hermes_sudo_dir/l"; then\n'
+    " 2>/dev/null &&\n"
     # The helper takes a lock directory for its whole exchange, so helpers of sudos that ask at
     # the same time are served one after another instead of sharing one line.
     "  \\builtin printf '#!/bin/sh\\nd=\"%s\"\\n"
     'until /bin/mkdir "$d/k" 2>/dev/null; do [ -d "$d" ] || exit 1; /bin/sleep 0.1 2>/dev/null || /bin/sleep 1; done\\n'
     '/bin/cat -- "$d/p" 2>/dev/null; r=$?\\n/bin/rmdir "$d/k" 2>/dev/null\\nexit $r\\n\' "$__hermes_sudo_dir"'
-    ' > "$__hermes_sudo_dir/a" && \\command chmod 700 "$__hermes_sudo_dir/a"\n'
+    ' > "$__hermes_sudo_dir/a" 2>/dev/null && \\command chmod 700 "$__hermes_sudo_dir/a" 2>/dev/null &&\n'
+    '  \\exec 19<>"$__hermes_sudo_dir/l"; then\n'
+    # One password line per counted sudo is on stdin; the helper form needs the first only.
+    "  IFS= \\builtin read -r __hermes_sudo_pw || \\builtin :\n"
+    "  __hermes_sudo_i=1\n"
+    "  while \\builtin test \"$__hermes_sudo_i\" -lt @COUNT@; do\n"
+    "    IFS= \\builtin read -r __hermes_sudo_x || \\builtin break; __hermes_sudo_i=$((__hermes_sudo_i + 1))\n"
+    "  done\n"
+    "  \\builtin unset __hermes_sudo_x __hermes_sudo_i\n"
+    "  __hermes_sudo_o=(-A)\n"
     '( ( \\exec 8<"$__hermes_sudo_dir/l" 19>&- </dev/null >/dev/null 2>&1\n'
     "    \\builtin trap '' HUP PIPE; \\builtin trap '\\builtin :' TERM\n"
     "    __hermes_sudo_n=@COUNT@\n"
@@ -67,33 +80,44 @@ _PROLOGUE_TEMPLATE = (
     "  done; } 8<&- &\n"
     "    __hermes_sudo_w=$!\n"
     "    \\builtin unset __hermes_sudo_pw\n"
-    # A timed-out read while the command's shell ($$) still runs, as after a yield to the
-    # background, keeps serving; EOF on fd 19 or a gone shell ends the wait. A timeout is status
-    # > 128 on bash 4+, and status 1 after the full wait on bash 3.2 (EOF returns 1 at once;
-    # SECONDS counts whole seconds, hence the one-second margin).
-    "    __hermes_sudo_t=@TIMEOUT@\n"
-    "    __hermes_sudo_e=$((__hermes_sudo_t > 1 ? __hermes_sudo_t - 1 : 1))\n"
-    '    while SECONDS=0; \\builtin read -r -t "$__hermes_sudo_t" __hermes_sudo_x <&8; __hermes_sudo_r=$?\n'
-    '      { \\builtin test "$__hermes_sudo_r" -gt 128 || { \\builtin test "$__hermes_sudo_r" -ne 0 &&\n'
-    '        \\builtin test "$SECONDS" -ge "$__hermes_sudo_e"; }; } && \\builtin kill -0 $$ 2>/dev/null\n'
-    "    do \\builtin :; done\n"
+    # The wait ends at EOF on fd 19 (the shell and every child holding it are gone). It is
+    # checked every two seconds: while the command's shell ($$) runs, as after a yield to the
+    # background, serving continues; once the shell is gone it stops at once, unless a counted
+    # sudo was put in the background (@BG@ = 1), which is then served for up to @TIMEOUT@ more
+    # seconds. A timed-out read is status > 128 on bash 4+ and status 1 after the wait on bash
+    # 3.2, where EOF returns 1 at once (SECONDS counts whole seconds, hence ``-lt 1``).
+    "    __hermes_sudo_t=@TIMEOUT@; __hermes_sudo_g=0\n"
+    "    while \\builtin :; do\n"
+    "      SECONDS=0; \\builtin read -r -t 2 __hermes_sudo_x <&8; __hermes_sudo_r=$?\n"
+    '      if \\builtin test "$__hermes_sudo_r" -le 128 && \\builtin test "$SECONDS" -lt 1; then \\builtin break; fi\n'
+    "      if \\builtin kill -0 $$ 2>/dev/null; then \\builtin continue; fi\n"
+    "      if \\builtin test @BG@ -eq 0; then \\builtin break; fi\n"
+    "      __hermes_sudo_g=$((__hermes_sudo_g + 2))\n"
+    '      if \\builtin test "$__hermes_sudo_g" -ge "$__hermes_sudo_t"; then \\builtin break; fi\n'
+    "    done\n"
     '\\builtin kill "$__hermes_sudo_w" 2>/dev/null\n'
     '\\exec 7<>"$__hermes_sudo_dir/p" 2>/dev/null\n'
     '\\command rm -rf "$__hermes_sudo_dir"\n'
     "\\exec 7>&-\n"
     "  ) & )\n"
+    "else\n"
+    '  \\builtin test -z "$__hermes_sudo_dir" || \\command rm -rf -- "$__hermes_sudo_dir" 2>/dev/null\n'
+    "  __hermes_sudo_dir=\n"
     "fi\n"
     "\\builtin unset __hermes_sudo_pw\n"
 )
 
 
-def build_prologue(count: int, timeout_token: str) -> str:
+def build_prologue(count: int, timeout_token: str, background: bool = True) -> str:
     """Shell text that serves the password read from stdin to *count* askpass helper calls.
 
-    *timeout_token* goes where the watchdog's ``read -t`` seconds go: a literal number, or
-    ``SUDO_ASKPASS_TIMEOUT_TOKEN`` for ``fill_timeout_token`` to replace later.
+    Stdin carries *count* password lines, as for the stdin form. *timeout_token* is how long a
+    backgrounded sudo is still served after the command's shell has exited: a literal number,
+    or ``SUDO_ASKPASS_TIMEOUT_TOKEN`` for ``fill_timeout_token`` to replace later. With
+    *background* false (no counted sudo runs in the background) serving stops with the shell.
     """
-    return _PROLOGUE_TEMPLATE.replace("@COUNT@", str(int(count))).replace("@TIMEOUT@", timeout_token)
+    return (_PROLOGUE_TEMPLATE.replace("@COUNT@", str(int(count))).replace("@TIMEOUT@", timeout_token)
+            .replace("@BG@", "1" if background else "0"))
 
 
 def fill_timeout_token(command: str, timeout) -> str:
@@ -185,8 +209,52 @@ def has_own_stdin_or_askpass(command: str | None) -> bool:
                 break
             if kind == "word":
                 words.append(chunk[start:end])
-        if _option_words_carry_own_input(words[2:]):  # [0] sudo word, [1] the added -A
+        if _option_words_carry_own_input(words[2:]):  # [0] sudo word, [1] the added option word
             return True
+    return False
+
+
+def has_background_sudo(command: str | None) -> bool:
+    """True when a counted sudo may still ask after the command's shell has exited.
+
+    That is a counted sudo followed by a background ``&`` in the same list, or one inside a
+    group, subshell or function body with a background ``&`` anywhere after it. It errs toward
+    True: a miss would stop serving a backgrounded sudo that the stdin form still feeds.
+    """
+    from tools.terminal_tool_sudo import _rewrite_real_sudo_invocations, _scan_shell
+
+    if not command:
+        return False
+    marked, count = _rewrite_real_sudo_invocations(command, askpass=True)
+    if not count:
+        return False
+    prefix_word = SUDO_ASKPASS_PREFIX.strip()
+    depth = 0
+    in_list = in_group = False
+    for kind, start, end, _ in _scan_shell(marked):
+        text = marked[start:end]
+        if kind == "op":
+            if text == "(":
+                depth += 1
+            elif text == ")":
+                depth = max(0, depth - 1)
+            elif text == "&":
+                if marked[start - 1:start] in ("<", ">") or marked[end:end + 1] == ">":
+                    continue  # part of a redirection
+                if in_list or in_group:
+                    return True
+            elif text in (";", ";;") and depth == 0:
+                in_list = False
+        elif kind == "ws" and text == "\n" and depth == 0:
+            in_list = False
+        elif kind == "word":
+            if text == "{":
+                depth += 1
+            elif text == "}":
+                depth = max(0, depth - 1)
+            elif text == prefix_word:
+                in_list = True
+                in_group = in_group or depth > 0
     return False
 
 

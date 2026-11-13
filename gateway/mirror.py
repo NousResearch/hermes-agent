@@ -40,8 +40,8 @@ def mirror_to_session(
     """Append a delivery-mirror message to the target session's SQLite transcript.
 
     Pass ``session_id`` when the caller already holds the exact session (e.g. the
-    cron in_channel seed) to skip the origin scan, which refuses to guess on a
-    populated chat (flat + N thread sessions per chat_id) and would drop the mirror.
+    cron in_channel seed) to skip the origin scan, which drops the mirror when a bare
+    target's room can't be told apart (no General/thread-1 and no flat session).
     Text that is NOT the agent speaking (e.g. a cron brief) must pass
     ``role="user"``: ``mirror`` metadata is dropped at the SQLite boundary, so an
     assistant-role mirror replays as a real turn and yields assistant→assistant
@@ -81,17 +81,23 @@ def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = Non
     origin.  With *user_id*, exact sender matches win; several same-chat candidates
     with no user match → None rather than contaminate another participant's session.
 
-    Queries state.db gateway session rows (primary source since #9006); falls back to scanning sessions.json
-    for pre-migration databases.
+    A bare (thread-less) target names the chat itself, never "any room in it": probe the
+    General room (thread "1"), the flat session, then a thread keyed on its own id (Discord
+    thread channels store ``chat_id == thread_id``); none → None. An unfiltered scan returned
+    the newest-started room of a threaded chat instead. Every probe runs against state.db
+    before the sessions.json fallback, so a stale JSON entry never beats a live row.
     """
+    probes = (str(thread_id),) if thread_id is not None else ("1", "", str(chat_id))
     try:
         from hermes_state_registry import acquire, release_or_close
         db = acquire()
         try:
             finder = getattr(db, "find_session_by_origin", None)
-            session_id = finder(platform=platform, chat_id=chat_id, thread_id=thread_id, user_id=user_id) if callable(finder) else None
-            if session_id:
-                return str(session_id)
+            if callable(finder):
+                for probe in probes:
+                    session_id = finder(platform=platform, chat_id=chat_id, thread_id=probe, user_id=user_id)
+                    if session_id:
+                        return str(session_id)
         finally:
             release_or_close(db)
     except Exception as e:
@@ -104,12 +110,21 @@ def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = Non
         data = json.loads(sessions_index.read_text(encoding="utf-8-sig"))
     except Exception:
         return None
+    for probe in probes:
+        session_id = _find_in_sessions_index(data, platform, chat_id, probe, user_id)
+        if session_id:
+            return session_id
+    return None
 
+
+def _find_in_sessions_index(data: dict, platform: str, chat_id: str, thread_id: str,
+                            user_id: Optional[str]) -> Optional[str]:
+    """One exact-thread lookup in the pre-migration ``sessions.json`` index."""
     def _matches(entry: dict) -> bool:
         origin = entry.get("origin") or {}
         return ((origin.get("platform") or entry.get("platform", "")).lower() == platform.lower()
                 and str(origin.get("chat_id", "")) == str(chat_id)
-                and (thread_id is None or str(origin.get("thread_id") or "") == str(thread_id)))
+                and str(origin.get("thread_id") or "") == thread_id)
 
     # Keys starting with "_" (e.g. the gateway's "_README") are metadata sentinels.
     candidates = [e for k, e in data.items() if not str(k).startswith("_") and isinstance(e, dict) and _matches(e)]

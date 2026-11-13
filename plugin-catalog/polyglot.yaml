@@ -1,0 +1,17 @@
+name: polyglot
+repo: https://github.com/Subramanyarao11/hermes-polyglot
+sha: fbe2fc02e8e61648642887cb0d11d7012ae59b1d
+description: "Live interpreter for group chats on the Hermes gateway (Telegram, Discord): an authorized user sends /polyglot on in a group, and every message from a sender Hermes admits is then translated into each other member's reading language, returned as the reply. Languages are learned from each person's first message or set with /lang; \"hermes, ...\" or an @mention still reaches Hermes as a normal question. Translates with the user's own Hermes model; a Sarvam AI key is optional for Indian languages. Disclosure — registers one hook (post_gateway_admission, so it runs only after Hermes's authorization) and two commands (/polyglot, /lang), no tools; in chats where an authorized user ran /polyglot on, message text from admitted members goes to the configured model provider through Hermes's ctx.llm, and, only if SARVAM_API_KEY is set, text for Indian languages goes to https://api.sarvam.ai; translations are posted back to the group as the bot's reply, and ordinary group messages in those chats no longer start an agent turn; stores each group's member languages and display names in Hermes's plugin state; no file reads, shell commands, background processes or telemetry."
+maintainer: Subramanyarao11
+tier: community
+category: platform
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Subramanyarao11/hermes-polyglot
+version: "0.2.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+  - post_gateway_admission
+  provides_middleware: []
+  requires_env: []

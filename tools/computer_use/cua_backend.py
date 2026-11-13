@@ -125,8 +125,15 @@ def _computer_use_max_image_dimension() -> Optional[int]:
 def desktop_identity(env: Optional[dict[str, str]] = None) -> str:
     """The screen a backend spawned from ``env`` acts on: its DISPLAY (``''`` when none). Recorded next to the
     cached backend so a Bot Desktop that starts (or restarts on another number) AFTER the backend was cached is
-    noticed — the cached cua-driver still points at the old seat or at no display at all."""
-    return str((cua_driver_child_env(env) if env is None else env).get("DISPLAY") or "")
+    noticed — the cached cua-driver still points at the old seat or at no display at all. A running Bot Desktop
+    is that screen wherever it is hosted; one inside the terminal backend is not part of this machine's env."""
+    if env is None:
+        from tools.bot_desktop import runtime as _bd_runtime
+        if screen := _bd_runtime.published_env().get("DISPLAY"):
+            _bd_runtime.touch_activity()
+            return str(screen)
+        env = cua_driver_child_env()
+    return str(env.get("DISPLAY") or "")
 
 
 def backend_display_stale(recorded: str, current: str) -> bool:

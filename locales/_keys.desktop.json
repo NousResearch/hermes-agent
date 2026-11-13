@@ -3183,6 +3183,8 @@
     "settings.config.autosaveFailed",
     "settings.config.builtinOnly",
     "settings.config.commaSeparated",
+    "settings.config.desktopReadAloudDesc",
+    "settings.config.desktopReadAloudTitle",
     "settings.config.disableF12Desc",
     "settings.config.disableF12Title",
     "settings.config.emptyDesc",

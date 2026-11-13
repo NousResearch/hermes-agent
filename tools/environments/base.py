@@ -30,6 +30,7 @@ from tools.environments.base_session_env import (
 )
 from tools.environments.base_processes import LongLivedProcessMixin
 from tools.environments.base_wait import _WaitTrace
+from tools.terminal_tool_sudo_askpass import fill_timeout_token, sudo_askpass_supported_once
 from utils import atomic_json_write, env_var_enabled, file_signature
 
 logger = logging.getLogger(__name__)
@@ -709,6 +710,7 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
             from tools.terminal_tool_sudo import _rewrite_compound_background
             exec_command = _rewrite_compound_background(exec_command)
         effective_timeout = timeout or self.timeout
+        exec_command = fill_timeout_token(exec_command, effective_timeout)
         effective_cwd = cwd or self.cwd
 
         # Merge sudo stdin with caller stdin.
@@ -818,19 +820,17 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
             pass
 
     def _prepare_command(self, command: str) -> tuple[str, str | None]:
-        """Rewrite sudo for a piped password, or leave it alone when this backend has NOPASSWD.
-
-        Also applies the macOS ``open`` frontmost raise-ladder (a pure string
-        rewrite, no-op on non-Darwin) so files opened via tool calls are
-        brought to the front instead of landing behind the Hermes window.
-        """
+        """Rewrite sudo for an askpass helper or a piped password (untouched under NOPASSWD) and
+        apply the macOS ``open`` raise-ladder (no-op off Darwin) so opened files come to the front."""
         from tools.terminal_tool_macos_open import _transform_macos_open_command
         from tools.terminal_tool_sudo import _transform_sudo_command
         return _transform_sudo_command(
             _transform_macos_open_command(command),
             sudo_nopasswd_check=self._sudo_nopasswd_works,
+            askpass_supported=self._sudo_askpass_supported,
         )
 
+    _sudo_askpass_supported = sudo_askpass_supported_once
     _SUDO_PROBE_TIMEOUT_S = 3
 
     def _sudo_nopasswd_works(self) -> bool:

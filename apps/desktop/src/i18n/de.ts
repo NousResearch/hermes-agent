@@ -1546,6 +1546,9 @@ export const deOverrides = {
         'Wie groß eine lokale Datei sein darf, die Desktop für Vorschauen und Bildanhänge lädt, in MB. Standard ist 16. Remote-Anhänge ohne Bild verwenden ein eigenes Limit von 256 MB. Ein sehr hoher Wert lädt die gesamte Datei in den Speicher, was die App einfrieren oder abstürzen lassen kann.',
       attachmentSizeUnit: 'MB',
       attachmentSizeLabel: 'Maximale Vorschau-/Bildladegröße in Megabyte',
+      desktopReadAloudTitle: 'Antworten in dieser App vorlesen',
+      desktopReadAloudDesc:
+        'Liest jede fertige Antwort in Desktop vor. Derselbe Schalter wie im Eingabefeld; er gilt für alle offenen Fenster, und Ausschalten stoppt eine Antwort mitten im Satz. „Antworten vorlesen“ unten gilt für Messaging und die CLI.',
       showOptions: 'Optionen anzeigen'
     },
     hudModifier: {

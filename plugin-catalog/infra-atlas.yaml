@@ -1,0 +1,27 @@
+name: infra-atlas
+repo: https://github.com/hnasheralneam/hermes-infra-atlas
+sha: "5e3e602b15ec57204fa7ea60f8df9974838bf701"
+description: "Registry-backed infrastructure graph with drift detection, a read-before-touch guardrail, and autonomous downtime response. Disclosure — on downtime of a registered service it can restart it on this host with one of a fixed set of commands (systemctl/service restart or start, docker compose restart/start/up in the registry's project directory, pct/qm start) taken from your registry, always through Hermes' command approval and only when `auto_heal_mode` is changed from the default `notify_only`; it can install a recurring cron watchdog and a script under the Hermes scripts directory, probes registered hosts over HTTP/TCP with TLS verification off, reads the Hermes config (read-only) and cron job list, writes Markdown into the registry directory, and keeps a local credential vault whose values the agent can read (plaintext if `cryptography` is not installed)."
+maintainer: hnasheralneam
+tier: community
+category: automation
+requires_hermes: ">=0.21.5"
+version: "0.1.0"
+readme: true
+platforms: [linux]
+title: "Infra Atlas"
+capabilities:
+  provides_tools:
+    - infra_query
+    - infra_sweep
+    - infra_diff
+    - infra_upsert
+    - infra_bootstrap
+    - infra_incidents
+    - infra_credentials
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - on_session_start
+  provides_middleware: []
+  requires_env: []

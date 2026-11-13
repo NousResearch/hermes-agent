@@ -916,8 +916,12 @@ class GoogleChatAdapter(BasePlatformAdapter):
             if event is None:
                 return
             text = (event.text or "").strip()
+            # The intercept skips the runner's allowlist, so it serves only a sender that check
+            # accepts; anyone else goes to handle_message and gets the runner's deny/pairing path.
             # The sender email (user_id_alt) is the per-user OAuth token key.
-            if text.startswith("/setup-files") and event.source is not None and await self._handle_setup_files_command(
+            if text.startswith("/setup-files") and event.source is not None and self._is_sender_authorized(
+                event.source.user_id, event.source.chat_type, event.source.chat_id,
+            ) is True and await self._handle_setup_files_command(
                 chat_id=event.source.chat_id, thread_id=event.source.thread_id, raw_text=text,
                 sender_email=event.source.user_id_alt or None,
             ):

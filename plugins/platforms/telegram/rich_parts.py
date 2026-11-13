@@ -231,6 +231,18 @@ def split_rich_parts(content: str, limit: int) -> list[str]:
     return parts
 
 
+def rich_part_count(adapter: Any, content: str, metadata: Optional[dict[str, Any]] = None) -> Optional[int]:
+    """Rich messages :func:`send_rich_parts` would post for *content*, or ``None`` when the legacy
+    MarkdownV2 path owns it (same gates, nothing sent)."""
+    if adapter._should_attempt_rich(content, metadata=metadata):
+        return 1
+    if ((metadata or {}).get("expect_edits") or not adapter._needs_rich_rendering(content)
+            or not adapter._rich_delivery_enabled() or getattr(adapter, "_rich_send_disabled", False)):
+        return None
+    parts = _fitting_parts(adapter, content)
+    return len(parts) if parts and all(adapter._rich_content_ok(part, check_size=False) for part in parts) else None
+
+
 async def send_rich_parts(
     adapter: Any, chat_id: str, content: str, reply_to: Optional[str], metadata: Optional[dict[str, Any]] = None,
 ) -> Optional[SendResult]:
@@ -257,7 +269,7 @@ async def send_rich_parts(
     if parts is None or not all(adapter._rich_content_ok(part, check_size=False) for part in parts):
         return None
     sent: list[SendResult] = []
-    result = await _deliver_parts(adapter, chat_id, parts, sent, reply_to, metadata, len(parts))
+    result = await _deliver_parts(adapter, chat_id, parts, sent, reply_to, metadata, len(parts), whole=content)
     if result is not None and not result.success and sent:
         return _with_delivered_prefix(result, content, parts, sent)
     return result
@@ -265,7 +277,7 @@ async def send_rich_parts(
 
 async def _deliver_parts(
     adapter: Any, chat_id: str, parts: list[str], sent: list[SendResult], reply_to: Optional[str],
-    metadata: Optional[dict[str, Any]], total: int,
+    metadata: Optional[dict[str, Any]], total: int, whole: Optional[str] = None,
 ) -> Optional[SendResult]:
     """Send *parts* as rich messages after the ones already in *sent* (appending each that lands).
     ``None`` only when nothing is in the chat yet and the first part found rich unavailable."""
@@ -277,7 +289,7 @@ async def _deliver_parts(
         if result is None:
             # A later part was refused for good (or rich went away): its text never reached the chat,
             # so the rest goes out as MarkdownV2 after the parts already shown, never re-sending them.
-            return await _send_legacy_tail(adapter, chat_id, parts[index:], sent, metadata)
+            return await _send_legacy_tail(adapter, chat_id, parts[index:], sent, metadata, whole=whole)
         if not result.success:
             raw = result.raw_response if isinstance(result.raw_response, dict) else {}
             if raw.get("delivery_uncertain") and index + 1 < len(parts):
@@ -411,6 +423,7 @@ def _legacy_chunks(adapter: Any, text: str) -> list[str]:
 
 async def _send_legacy_tail(
     adapter: Any, chat_id: str, rest: list[str], sent: list[SendResult], metadata: Optional[dict[str, Any]],
+    whole: Optional[str] = None,
 ) -> SendResult:
     """Deliver the rich parts *rest* (none of them in the chat) as MarkdownV2 chunks after the
     parts in *sent*, through the adapter's partial-send resume: same lock, flood window, retries
@@ -418,8 +431,13 @@ async def _send_legacy_tail(
     logger.warning("Telegram: a rich part was refused after %d part(s) landed; sending the rest as MarkdownV2",
                    len(sent))
     delivered = tuple(str(r.message_id) for r in sent if r.message_id is not None)
+    chunks = tuple(_legacy_chunks(adapter, _BLOCK_SEPARATOR.join(rest)))
+    if whole is not None:  # recount: the landed parts plus this tail may pass the reply's message cap
+        from gateway.platforms.helpers import hand_off_split
+        if as_file := await hand_off_split(adapter, chat_id, whole, len(chunks), delivered, metadata=metadata):
+            return as_file
     pending = SendResult(success=False, raw_response={
-        "undelivered_chunks": tuple(_legacy_chunks(adapter, _BLOCK_SEPARATOR.join(rest))),
+        "undelivered_chunks": chunks,
         "delivered_message_ids": delivered})
     result = await adapter._resume_partial_send(chat_id, pending, reply_to=None, metadata=metadata)
     if result is None:  # nothing to resume over (no bot): report the honest partial

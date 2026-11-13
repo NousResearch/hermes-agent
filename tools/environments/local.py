@@ -784,29 +784,49 @@ def _path_env_key(run_env: dict) -> str | None:
     return next((k for k in run_env if k.upper() == "PATH"), None) if _IS_WINDOWS else "PATH"
 
 
+def routed_terminal_base() -> dict:
+    """The process env a served profile's terminal children start from. The process env is the
+    LAUNCH profile's; under a routed home override its ``.env`` residue is dropped first
+    (``strip_launch_profile_env``, a no-op for the launch profile). Under multiplex the bound scope
+    overlays it next — the same semantics as ``build_subprocess_env(strip_launch_profile=True)`` —
+    so a served profile's commands run with its own ``.env``/source names (launch-residue values
+    lose, managed policy keys keep precedence) instead of only the names the launch process also
+    happened to define (#142798). The caller's scrub still filters every value."""
+    base = strip_launch_profile_env(os.environ.copy())
+    from agent.secret_scope import current_secret_scope, is_multiplex_active
+    if is_multiplex_active():
+        # First-party context credentials (``BUZZ_*``) keep the process value when the
+        # context entitles them — the scope is the routed profile's ``.env``, never the
+        # platform context ("never scope-resolved", as in ``_filter_secret_env``).
+        base.update(
+            {k: v for k, v in (current_secret_scope() or {}).items()
+             if not _is_terminal_first_party_env(k)})
+        restore_managed_env(base)
+    return base
+
+
 def _make_run_env(env: dict) -> dict:
-    """Build a run environment with a sane PATH and provider-var stripping. The process env is
-    the LAUNCH profile's; under a routed home override its ``.env`` residue is dropped first
-    (``strip_launch_profile_env``, a no-op for the launch profile) so the backend's own ``env``
-    and the served profile's declared passthrough names are what the child sees. A local session's
-    client toolchain (PATH, venv, nvm/pyenv/conda: ``agent.session_client_env``) replaces the daemon's
-    beneath the backend's own ``env``."""
+    """Build a run environment with a sane PATH and provider-var stripping, from
+    :func:`routed_terminal_base` so the backend's own ``env`` and the served profile's own names
+    are what the child sees. A local session's client toolchain (PATH, venv, nvm/pyenv/conda:
+    ``agent.session_client_env``) replaces the daemon's beneath the backend's own ``env``."""
     from agent.session_client_env import toolchain_environ
+    base = routed_terminal_base()
     run_env = _scrubbed_env(
-        [(dict(toolchain_environ(strip_launch_profile_env(os.environ.copy())) | env), True)],
+        [(dict(toolchain_environ(base) | env), True)],
         frozenset(),
         lambda p: _user_tools_first(_append_missing_sane_path_entries(p)),
     )
     # While this profile's Bot Desktop is running, its DISPLAY/XAUTHORITY/DBUS ride along so GUI
     # apps the agent launches from the terminal open on the Bot Screen the user is watching, not
-    # on the user's own seat (#125830). published_env() is the pure read (no activity stamp — a
-    # plain ``ls`` must not keep the screen alive past idle_stop_minutes), and it wins over the
-    # login snapshot's seat DISPLAY; a user who wants their own seat uses an inline
-    # ``DISPLAY=:0 cmd`` prefix, which bash applies after this env. Empty (or module missing) →
-    # the seat env passes through untouched.
+    # on the user's own seat (#125830). host_published_env() is the pure read (no activity stamp — a
+    # plain ``ls`` must not keep the screen alive past idle_stop_minutes; empty for a screen inside the
+    # terminal backend), and it wins over the login snapshot's seat DISPLAY; a user who wants their own
+    # seat uses an inline ``DISPLAY=:0 cmd`` prefix, which bash applies after this env. Empty (or module
+    # missing) → the seat env passes through untouched.
     try:
-        from tools.bot_desktop.runtime import published_env
-        published = published_env()
+        from tools.bot_desktop.runtime import host_published_env
+        published = host_published_env()
     except Exception:
         published = {}
     if published:

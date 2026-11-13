@@ -356,7 +356,8 @@ def _stop(parent, sid):
 
 def _stop_claimed(parent, sid):  # the parent's own continue holds it: not a dismiss, but the stop is kept
     from tools.delegate_tool import delegate_task
-    assert "error" in json.loads(delegate_task(action="stop", subagent_id=sid, parent_agent=parent))
+    out = json.loads(delegate_task(action="stop", subagent_id=sid, parent_agent=parent))
+    assert out.get("status") == "stop_recorded", out
 
 
 @pytest.mark.parametrize("expire_first", [False, True], ids=["cancel-then-ttl", "ttl-then-cancel"])
@@ -438,3 +439,33 @@ def test_a_stop_during_the_parents_own_continue_claim_is_never_lost(tmp_path, ca
     dispatched, (state, _pinned, rec), events = _manual_claim_then(tmp_path, cancel)
     assert dispatched == [] and events == [], (dispatched, events)
     assert state in ("superseded", "stopped") and rec["auto_promised"] is False and "auto_cancel" not in rec
+
+
+def test_a_stop_racing_the_refused_continues_hand_back_is_never_lost(tmp_path):
+    """The refused continue hands the row back while ``action='stop'`` is deciding: the read and the cancel are one
+    transaction, so the stop lands on whichever row it sees and the child is never resumed."""
+    import tools.delegate_tool_resumable as res
+    from tools.delegate_tool import delegate_task
+    from tools.delegate_tool_auto_resume import tick
+    _enable()
+    parent = _parent()
+    sid, unit = _silent_stop(tmp_path, parent)
+    record, err = res.claim(parent, sid)
+    assert record and not err
+    real, calls = res._write, []
+
+    def hand_back_first(path, fn):  # the refused continue's hand-back reaches the store just before the stop does
+        calls.append(1)
+        if len(calls) == 1:
+            res.release(parent, sid, record)
+        return real(path, fn)
+    with patch.object(res, "_write", side_effect=hand_back_first):
+        out = json.loads(delegate_task(action="stop", subagent_id=sid, parent_agent=parent))
+    assert out.get("status") == "dismissed", out
+    res._write(res._db_path_for(parent), lambda c: c.execute("UPDATE resumable_subagents SET record_json=json_set("
+                                                             "record_json, '$.next_attempt_at', 0) WHERE subagent_id=?",
+                                                             (sid,)))
+    dispatched = []
+    with patch("run_agent.AIAgent", side_effect=_AlwaysLimited()):
+        tick(_scheduler(parent, dispatched), capacity=3)
+    assert dispatched == [] and _events(unit) == []

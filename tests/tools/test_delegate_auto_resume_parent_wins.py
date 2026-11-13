@@ -216,8 +216,9 @@ def test_failing_closed_leaves_no_marker_that_turns_a_manual_continue_into_a_dis
         if dispatched:
             _settled(dispatched[-1])
     assert dr.claim(parent, sid)[0] is not None  # the parent continues it by hand
-    assert 'error' in json.loads(delegate_task(action='stop', subagent_id=sid, parent_agent=parent))
-    assert _db_rows(parent)[sid][0] == 'claimed'  # the manual continue is not dismissed as an automatic one
+    out = json.loads(delegate_task(action='stop', subagent_id=sid, parent_agent=parent))
+    assert out.get('status') == 'stop_recorded', out  # recorded for the hand-back, not dismissed as an automatic one
+    assert _db_rows(parent)[sid][0] == 'claimed'
 
 
 def test_a_stop_while_the_automatic_run_fails_closed_is_kept(tmp_path):

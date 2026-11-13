@@ -149,6 +149,47 @@ def test_a_malformed_line_gets_an_error_reply_and_the_channel_stays_open(home, l
 
 
 @pytest.mark.platforms("linux", "macos")
+@pytest.mark.parametrize("line", [
+    # Under the length limit; too deep for the JSON decoder on interpreters with a low nesting limit.
+    "[" * 20_000 + "0" + "]" * 20_000,
+    "[" * 100_000 + "0" + "]" * 100_000,  # too deep for every decoder, and over the length limit
+    # Over the 64 KiB limit: refused although it is otherwise a valid request.
+    json.dumps({"id": 1, "purpose": "native-http", "pad": "x" * 64 * 1024}),
+    "x" * (3 * 64 * 1024 + 1),
+], ids=["deeply-nested", "deeply-nested-and-oversized", "oversized-valid-request", "oversized-garbage"])
+def test_a_deeply_nested_or_oversized_line_gets_one_error_reply_and_the_channel_stays_open(home, line):
+    tickets = TicketStore("owner", frozenset({str(home)}))
+    stop = _serve(home, tickets)
+    try:
+        with _channel(home) as (_hello, ask, done):
+            refused = ask(line)
+            assert (refused["id"], refused["ok"], refused["error"]["code"]) == (None, False, "invalid_request")
+            assert "ticket" not in refused and not tickets.outstanding()
+            # Exactly one reply for it: the next line read back is the next request's own reply.
+            following = ask('{"id":7,"purpose":"native-http"}')
+            assert (following["id"], following["ok"]) == (7, True)
+    finally:
+        stop()
+    assert "Traceback" not in done["stderr"]
+
+
+@pytest.mark.platforms("linux", "macos")
+def test_a_request_line_of_exactly_the_length_limit_is_still_answered(home):
+    tickets = TicketStore("owner", frozenset({str(home)}))
+    stop = _serve(home, tickets)
+    try:
+        with _channel(home) as (_hello, ask, _done):
+            request = '{"id":1,"purpose":"native-http","pad":""}'
+            line = request.replace('""', json.dumps("x" * (64 * 1024 - len(request))))
+            assert len(line) == 64 * 1024
+            assert ask(line)["ok"] is True
+            assert ask(line + " ")["error"]["code"] == "invalid_request"
+            assert ask('{"id":7,"purpose":"native-http"}')["id"] == 7
+    finally:
+        stop()
+
+
+@pytest.mark.platforms("linux", "macos")
 def test_a_gateway_that_refuses_the_ticket_is_an_error_reply_not_a_crash(home):
     """No ticket store: the owner answers identify (ready) but refuses session-ticket."""
     stop = _serve(home, None)

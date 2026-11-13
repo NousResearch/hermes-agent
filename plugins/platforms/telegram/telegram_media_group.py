@@ -24,10 +24,30 @@ def add_item_note(event: Any, note: str) -> None:
     """Append ``note`` to the event text (the caption survives) and record it as this item's own note."""
     event.text = f"{event.text}\n\n{note}" if event.text else note
     event.__dict__.setdefault(ITEM_NOTES_ATTR, []).append(note)
+    if CAPTION_TEXT_ATTR in event.__dict__:
+        caption = event.__dict__[CAPTION_TEXT_ATTR]
+        event.__dict__[CAPTION_TEXT_ATTR] = f"{caption}\n\n{note}" if caption else note
 
 
 def item_notes(event: Any) -> list[str]:
     return list(getattr(event, ITEM_NOTES_ATTR, None) or [])
+
+
+# Private event attribute: the item's text WITHOUT any inlined file content (caption + notes). An album
+# merge builds it alongside the full text, so the album's one caption is judged on its own.
+CAPTION_TEXT_ATTR = "_telegram_caption_text"
+
+
+def inline_item_text(event: Any, injection: str) -> None:
+    """Prepend a document's text to the item's caption and flag it inlined (``media_text_inlined``)."""
+    event.__dict__[CAPTION_TEXT_ATTR] = event.text or ""
+    event.text = f"{injection}\n\n{event.text}" if event.text else injection
+    event.media_text_inlined = [True]
+
+
+def caption_text(event: Any) -> str:
+    """The event's text without inlined file content (its full text when nothing was inlined)."""
+    return event.__dict__.get(CAPTION_TEXT_ATTR, event.text or "")
 
 # Upper bound on how long a due flush waits for in-flight siblings before sending what it has.
 MEDIA_GROUP_MAX_WAIT_SECONDS = 8.0

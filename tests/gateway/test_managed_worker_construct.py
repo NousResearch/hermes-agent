@@ -217,7 +217,7 @@ def test_construct_inputs_follow_the_session_mode(tmp_path, monkeypatch):
     profile_reads = []
     runner = SimpleNamespace(config=None, _prefill_messages=[{'role': 'user', 'content': 'P'}],
                              _refresh_fallback_model=lambda: profile_reads.append('fallback') or chain,
-                             _get_system_prompt_for_channel=lambda *a: profile_reads.append('prompt') or 'SYS')
+                             _get_system_prompt_for_channel=lambda *a, **k: profile_reads.append('prompt') or 'SYS')
     authority = SimpleNamespace(runner=runner, profile_id=str(tmp_path))
     launch = {'cwd': str(tmp_path), 'model': 'm', 'provider': 'custom', 'base_url': 'http://127.0.0.1:9/v1'}
     ordinary = build_policy(launch, {})

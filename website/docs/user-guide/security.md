@@ -418,7 +418,7 @@ These categories are always denied, even when `HERMES_WRITE_SAFE_ROOT` is unset:
 | Category | Examples |
 |----------|----------|
 | OS credential stores | `~/.ssh/` (keys, `authorized_keys`), `~/.aws/`, `~/.kube/`, `/etc/sudoers`, `~/.netrc` |
-| Hermes secret stores | `.env`, `.anthropic_oauth.json`, `auth/google_oauth.json`, Bitwarden and 1Password caches (`bws_cache.json`, `bws_cache.enc.json`, `op_cache.json`), the Photon sidecar token (`photon-sidecar.json`), `vault/`, `browser-profile/`, `mcp-tokens/`, `pairing/` under HERMES_HOME (active profile and global root). Control files (`auth.json`, `config.yaml`, `webhook_subscriptions.json`) are read-denied but stay writable. |
+| Hermes secret stores | `.env`, `.anthropic_oauth.json`, `auth/google_oauth.json`, Bitwarden and 1Password caches (`bws_cache.json`, `bws_cache.enc.json`, `op_cache.json`), the Photon sidecar token (`photon-sidecar.json`), `vault/`, `browser-profile/`, `mcp-tokens/`, `pairing/` under HERMES_HOME: the active profile, every profile under `profiles/`, and the global root. Control files (`auth.json`, `config.yaml`, `webhook_subscriptions.json`) are read-denied but stay writable. |
 | Windows NT/device-namespace paths | `\??\...`, `\\.\...`, `\\?\UNC\...`, `\\?\GLOBALROOT...` — rejected for both reads and writes on every platform. On Windows, merely *resolving* such a path (e.g. `\??\UNC\host\share`) triggers outbound SMB authentication and can leak the user's NTLM hash; the prefixes also bypass normal path normalization. Ordinary extended-length local paths (`\\?\C:\...`) and plain UNC shares (`\\server\share`) are unaffected. |
 
 Project-local `.env`, `.env.local`, `.env.production` and `.envrc` files are **read-denied** anywhere on disk (the file tools refuse to read them) but remain writable: the agent can create or edit them for you, it just cannot read the values back.
@@ -768,6 +768,8 @@ PATH, HOME, USER, LANG, LC_ALL, TERM, SHELL, TMPDIR
 
 Plus any `XDG_*` variables. All other environment variables (API keys, tokens, secrets) are **stripped**.
 
+Variables supplied by an [external secret source](secrets/index.md) (Bitwarden, 1Password, a command helper) are also passed, except Hermes-managed credentials: model-provider keys, tool keys Hermes uses itself, and bot, gateway and relay tokens. That covers every name Hermes reads such a credential by: the numbered rotation keys (`DEEPSEEK_API_KEY_2`), any variable a [credential pool](features/credential-pools.md) entry points at (`source: env:MY_KEY`), any variable the profile's `config.yaml` names as a provider key (`key_env` / `api_key_env` on `model`, `custom_providers`, `providers`, `auxiliary` or fallback entries, or a credential field such as `api_key` written as `${VAR}` / `${env:VAR}`), and the profile-suffixed form the active profile uses (`TELEGRAM_BOT_TOKEN_<PROFILE>`). Those are stripped wherever they are stored. If a server needs one, declare it in that server's `env` (for example `OPENAI_API_KEY: "${OPENAI_API_KEY}"`).
+
 Variables explicitly defined in the MCP server's `env` config are passed through:
 
 ```yaml
@@ -832,7 +834,7 @@ security:
   allow_private_urls: true   # default: false
 ```
 
-When on, web tools, the browser, vision URL fetches, and gateway media downloads no longer reject RFC 1918 / loopback / link-local / CGNAT destinations. Cloud-metadata endpoints (`169.254.169.254`, `metadata.google.internal`, and the like) stay blocked even with this on. **This is a deliberate trust boundary** — only enable it on machines where the agent running arbitrary prompt-injected URLs against the local network is an acceptable risk. Public-facing gateways should leave it off.
+When on, web tools, the browser, vision URL fetches, gateway media downloads, and cron `monitor_url` fetches no longer reject RFC 1918 / loopback / link-local / CGNAT destinations. Cloud-metadata endpoints (`169.254.169.254`, `metadata.google.internal`, and the like) stay blocked even with this on. **This is a deliberate trust boundary** — only enable it on machines where the agent running arbitrary prompt-injected URLs against the local network is an acceptable risk. Public-facing gateways should leave it off.
 
 The host-substring guard (which blocks lookalike Unicode domain tricks even when the underlying IP is public) stays on regardless of this setting.
 

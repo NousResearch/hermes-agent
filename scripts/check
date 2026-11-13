@@ -113,6 +113,7 @@ _GUARDS = {
     "os-marker-fakes": ["scripts/ci/check_os_marker_fakes.py"],
     "agents-md": ["scripts/ci/check_agents_md_size.py"],
     "case-collisions": ["scripts/check-case-collisions.py"],
+    "line-endings": ["scripts/ci/check_line_endings.py"],
     "lazy-deps": ["scripts/ci/check_lazy_deps_imports.py"],
     "profile-archives": ["scripts/ci/check_profile_archive_boundary.py"],
 }

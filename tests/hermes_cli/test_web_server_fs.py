@@ -99,6 +99,9 @@ def test_fs_routes_workspace_reads_to_ssh_backend(client, monkeypatch):
             calls.append(("read", path, max_bytes, read_limit))
             return b"hello", 5, path
 
+        def normalize(self, path):
+            return path
+
         def write_text(self, path, content, *, max_bytes):
             calls.append(("write", path, content, max_bytes))
             return path, len(content.encode("utf-8"))
@@ -164,12 +167,14 @@ def test_fs_routes_workspace_reads_to_ssh_backend(client, monkeypatch):
     assert calls == [
         ("list", "/srv/repos"),
         ("branch", "/srv/repos"),
+        ("inspect", "/srv/repos/project/README.md"),
         (
             "read",
             "/srv/repos/project/README.md",
             file_routes._FS_TEXT_SOURCE_MAX_BYTES,
             file_routes._FS_TEXT_PREVIEW_MAX_BYTES,
         ),
+        ("inspect", "/srv/repos/project/logo.png"),
         ("read", "/srv/repos/project/logo.png", web_server._FS_DATA_URL_MAX_BYTES, None),
         ("write", "/srv/repos/project/README.md", "updated", file_routes._FS_TEXT_WRITE_MAX_BYTES),
         ("git-root", "/srv/repos/project/src"),
@@ -232,6 +237,79 @@ def test_fs_download_rejects_sensitive_resolved_ssh_path_before_streaming(client
     )
 
     assert response.status_code == 403
+
+
+@pytest.mark.parametrize("endpoint", ["/api/fs/read-text", "/api/fs/read-data-url"])
+@pytest.mark.parametrize("resolved", ["/srv/repos/.env", "/home/dev/.hermes/auth.json",
+                                      "/home/dev/.hermes/mcp-tokens/github.json"])
+def test_fs_readers_reject_sensitive_resolved_ssh_path_before_reading(client, monkeypatch, endpoint, resolved):
+    """An SSH profile's previews refuse what download refuses, judged on the path the SSH machine
+    resolves (a harmless-looking link to a credential file included), before any byte is read."""
+    class FakeSshFs:
+        def inspect_file(self, _path):
+            return resolved, 8
+
+        def read_bytes(self, _path, *, max_bytes, read_limit=None):
+            pytest.fail("sensitive SSH files must not be read")
+
+    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: FakeSshFs())
+
+    response = client.get(endpoint, params={"path": "/srv/repos/safe-link", "profile": "remote-dev"})
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Access to sensitive files is not allowed"
+
+
+@pytest.mark.parametrize("endpoint", ["/api/fs/read-text", "/api/fs/read-data-url"])
+def test_fs_ssh_readers_read_the_resolved_path_they_vetted(client, monkeypatch, endpoint):
+    """The preview reads the resolved target the sensitive-path check judged, not the link again."""
+    reads = []
+
+    class FakeSshFs:
+        def inspect_file(self, _path):
+            return "/srv/repos/notes.txt", 2
+
+        def read_bytes(self, path, *, max_bytes, read_limit=None):
+            reads.append(path)
+            return b"hi", 2, path
+
+    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: FakeSshFs())
+
+    response = client.get(endpoint, params={"path": "/srv/repos/safe-link", "profile": "remote-dev"})
+
+    assert response.status_code == 200
+    assert reads == ["/srv/repos/notes.txt"]
+
+
+@pytest.mark.parametrize("endpoint", ["/api/fs/read-text", "/api/fs/read-data-url", "/api/fs/download"])
+def test_fs_ssh_readers_refuse_a_resolved_name_the_adapter_would_rewrite(client, monkeypatch, endpoint):
+    """The real adapter strips whitespace from paths it reads, so a link resolving to ``.env ``
+    (trailing space, not sensitive by name) must not be served: reading it would open ``.env``."""
+    resolved = base64.b64encode(b"/srv/repos/.env ").decode()
+
+    class FakeEnv:
+        cwd = "/srv/repos"
+        timeout = 30
+        _remote_home = "/home/dev"
+
+        def __init__(self):
+            self.commands = []
+
+        def execute(self, command, **_kwargs):
+            self.commands.append(command)
+            if len(self.commands) > 1:
+                pytest.fail("a path the adapter rewrites must not be read")
+            return {"returncode": 0, "output": f"__HERMES_FS_TARGET__:{resolved}\n__HERMES_FS_SIZE__:8\n"}
+
+        def _build_ssh_command(self):
+            pytest.fail("a path the adapter rewrites must not be streamed")
+
+    backend = ssh_workspace_fs.SshWorkspaceFs(FakeEnv())
+    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: backend)
+
+    response = client.get(endpoint, params={"path": "/srv/repos/safe-link", "profile": "remote-dev"})
+
+    assert response.status_code == 400
 
 
 def test_fs_download_streams_ssh_files_without_preview_cap(client, monkeypatch):
@@ -622,6 +700,61 @@ def test_fs_write_text_never_decodes_percent_path(client, tmp_path):
     assert (tmp_path / "report%20v2.md").read_text() == "new"
 
 
+@pytest.mark.parametrize("name", [".env", "config.yaml", "auth.json"])
+def test_fs_write_text_refuses_sensitive_files(client, tmp_path, name):
+    """#85387: read-text refuses credential files, so the spot editor's save must too."""
+    secret = tmp_path / name
+    secret.write_text("SECRET=1")
+
+    for target in (str(secret), secret.as_uri()):
+        response = client.post("/api/fs/write-text", json={"path": target, "content": "EVIL=1"})
+        assert response.status_code == 403, target
+    assert secret.read_text() == "SECRET=1"
+
+
+@pytest.mark.require_symlinks
+def test_fs_write_text_refuses_sensitive_files_through_symlinks(client, tmp_path):
+    """A link to a credential file is refused, and so is a credential name linking to a backing file."""
+    secret = tmp_path / "auth.json"
+    secret.write_text("SECRET=1")
+    alias = tmp_path / "notes.md"
+    alias.symlink_to(secret)
+    store = tmp_path / "settings-store"
+    store.write_text("model: safe\n")
+    config = tmp_path / "config.yaml"
+    config.symlink_to(store)
+
+    encoded = f"{tmp_path.as_uri()}/config%2Eyaml"  # only the decode turns this into the link's name
+    for target in (str(alias), str(config), f"{config} ", config.as_uri(), encoded, f"{encoded} "):
+        response = client.post("/api/fs/write-text", json={"path": target, "content": "EVIL=1"})
+        assert response.status_code == 403, repr(target)
+    assert secret.read_text() == "SECRET=1"
+    assert store.read_text() == "model: safe\n"
+
+
+@pytest.mark.require_symlinks
+def test_fs_write_text_refuses_a_credential_name_mid_link_chain(client, tmp_path, monkeypatch):
+    store = tmp_path / "settings-store"
+    store.write_text("model: safe\n")
+    (tmp_path / "config.yaml").symlink_to(store)
+    alias = tmp_path / "notes.md"
+    alias.symlink_to(tmp_path / "config.yaml")
+    monkeypatch.chdir(tmp_path)  # a relative path resolves against the process cwd
+
+    for target in (str(alias), alias.as_uri(), "notes.md"):
+        response = client.post("/api/fs/write-text", json={"path": target, "content": "EVIL=1"})
+        assert response.status_code == 403, repr(target)
+
+    async def detail(session_id, profile=None):  # ... or, with a session, against its cwd
+        return {"id": session_id, "cwd": str(tmp_path)}
+
+    monkeypatch.setattr("hermes_cli.web_routers.sessions.get_session_detail", detail)
+    monkeypatch.chdir(tmp_path.parent)
+    response = client.post("/api/fs/write-text", json={"path": "notes.md", "content": "EVIL=1", "session_id": "s"})
+    assert response.status_code == 403
+    assert store.read_text() == "model: safe\n"
+
+
 def test_fs_read_data_url_reads_a_browser_paste_from_the_host_for_an_ssh_profile(client, monkeypatch):
     """A browser paste is saved in the profile's host image cache even when its workspace is an
     SSH machine. Sending it reads it back through this route, so that one host-owned path must not
@@ -755,6 +888,9 @@ class _NotOnTheSshMachine:
     def __init__(self):
         self.asked = []
         self.written = []
+
+    def normalize(self, path):
+        return path
 
     def write_text(self, path, content, *, max_bytes):
         self.written.append((path, content))

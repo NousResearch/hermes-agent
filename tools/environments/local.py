@@ -26,7 +26,7 @@ from tools.environments.local_env_policy import (
     _ALWAYS_STRIP_FOLDED, _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST, _HERMES_PROVIDER_ENV_FORCE_PREFIX,
     _is_hermes_internal_secret, _is_provider_env_blocklisted, _is_terminal_first_party_env,
     _home_adapter_secret_env, _matches_terminal_first_party_prefix, _plugin_terminal_env_strip_keys,
-    _registered_adapter_secret_env, _registry_adapter_secret_env,
+    _registered_adapter_secret_env, _registry_adapter_secret_env, _secret_source_bootstrap_env,
     strip_profile_gate_env, strip_supervised_process_identity)
 from tools.environments.local_pythonpath import (
     _build_hermes_repo_root_aliases, _strip_hermes_owned_pythonpath_and_runtime_markers)
@@ -468,7 +468,18 @@ def served_profile_child_env(
                     "no profile secret scope bound while multiplexing is on; the child would inherit the "
                     "launch profile's credentials. Bind the profile scope (or pass target_home) at the spawn site.")
         env.update((k, v) for k, v in (secrets or {}).items() if v is not None)
+        if not (_is_routed_home(target) if target else secrets is not None):
+            _restore_bootstrap_tokens(env, os.environ if base is None else base)
     return env
+
+
+def _restore_bootstrap_tokens(env: dict[str, str], source: Mapping[str, str]) -> None:
+    """A credentialed child of the launch home (a gateway it starts, a ``key_cmd`` helper such as
+    ``op read``) authenticates to the home's vault itself, so it keeps the bootstrap token the Tier-1
+    scrub removed, from the process env (systemd, Docker ``-e``) or ``.env`` (an overlay wins)."""
+    for name in _secret_source_bootstrap_env():
+        if name not in env and source.get(name):
+            env[name] = source[name]
 
 
 def host_gateway_child_env(
@@ -784,29 +795,49 @@ def _path_env_key(run_env: dict) -> str | None:
     return next((k for k in run_env if k.upper() == "PATH"), None) if _IS_WINDOWS else "PATH"
 
 
+def routed_terminal_base() -> dict:
+    """The process env a served profile's terminal children start from. The process env is the
+    LAUNCH profile's; under a routed home override its ``.env`` residue is dropped first
+    (``strip_launch_profile_env``, a no-op for the launch profile). Under multiplex the bound scope
+    overlays it next — the same semantics as ``build_subprocess_env(strip_launch_profile=True)`` —
+    so a served profile's commands run with its own ``.env``/source names (launch-residue values
+    lose, managed policy keys keep precedence) instead of only the names the launch process also
+    happened to define (#142798). The caller's scrub still filters every value."""
+    base = strip_launch_profile_env(os.environ.copy())
+    from agent.secret_scope import current_secret_scope, is_multiplex_active
+    if is_multiplex_active():
+        # First-party context credentials (``BUZZ_*``) keep the process value when the
+        # context entitles them — the scope is the routed profile's ``.env``, never the
+        # platform context ("never scope-resolved", as in ``_filter_secret_env``).
+        base.update(
+            {k: v for k, v in (current_secret_scope() or {}).items()
+             if not _is_terminal_first_party_env(k)})
+        restore_managed_env(base)
+    return base
+
+
 def _make_run_env(env: dict) -> dict:
-    """Build a run environment with a sane PATH and provider-var stripping. The process env is
-    the LAUNCH profile's; under a routed home override its ``.env`` residue is dropped first
-    (``strip_launch_profile_env``, a no-op for the launch profile) so the backend's own ``env``
-    and the served profile's declared passthrough names are what the child sees. A local session's
-    client toolchain (PATH, venv, nvm/pyenv/conda: ``agent.session_client_env``) replaces the daemon's
-    beneath the backend's own ``env``."""
+    """Build a run environment with a sane PATH and provider-var stripping, from
+    :func:`routed_terminal_base` so the backend's own ``env`` and the served profile's own names
+    are what the child sees. A local session's client toolchain (PATH, venv, nvm/pyenv/conda:
+    ``agent.session_client_env``) replaces the daemon's beneath the backend's own ``env``."""
     from agent.session_client_env import toolchain_environ
+    base = routed_terminal_base()
     run_env = _scrubbed_env(
-        [(dict(toolchain_environ(strip_launch_profile_env(os.environ.copy())) | env), True)],
+        [(dict(toolchain_environ(base) | env), True)],
         frozenset(),
         lambda p: _user_tools_first(_append_missing_sane_path_entries(p)),
     )
     # While this profile's Bot Desktop is running, its DISPLAY/XAUTHORITY/DBUS ride along so GUI
     # apps the agent launches from the terminal open on the Bot Screen the user is watching, not
-    # on the user's own seat (#125830). published_env() is the pure read (no activity stamp — a
-    # plain ``ls`` must not keep the screen alive past idle_stop_minutes), and it wins over the
-    # login snapshot's seat DISPLAY; a user who wants their own seat uses an inline
-    # ``DISPLAY=:0 cmd`` prefix, which bash applies after this env. Empty (or module missing) →
-    # the seat env passes through untouched.
+    # on the user's own seat (#125830). host_published_env() is the pure read (no activity stamp — a
+    # plain ``ls`` must not keep the screen alive past idle_stop_minutes; empty for a screen inside the
+    # terminal backend), and it wins over the login snapshot's seat DISPLAY; a user who wants their own
+    # seat uses an inline ``DISPLAY=:0 cmd`` prefix, which bash applies after this env. Empty (or module
+    # missing) → the seat env passes through untouched.
     try:
-        from tools.bot_desktop.runtime import published_env
-        published = published_env()
+        from tools.bot_desktop.runtime import host_published_env
+        published = host_published_env()
     except Exception:
         published = {}
     if published:
@@ -1171,15 +1202,15 @@ class LocalEnvironment(BaseEnvironment):
             # The command dies with this process however it dies: a SIGKILLed / OOM-killed host left a
             # running `npm run dev` or `sleep` on init. Released once the wait returns (see below).
             own_process_groups([proc.pid])
-            proc._hermes_owned_pgid = proc.pid
-            with contextlib.suppress(ProcessLookupError):
-                proc._hermes_pgid = os.getpgid(proc.pid)
-                # Record the group leader's start-time fingerprint so _kill_process can
-                # detect PID/PGID recycling before signalling the group (#43044). The
-                # psutil fallback in get_process_start_time captures a baseline on every
-                # platform, macOS included.
-                from gateway.status import get_process_start_time
-                proc._hermes_pgid_start = get_process_start_time(proc.pid)
+            # start_new_session: the group is the leader's pid by construction (a getpgid read-back
+            # fails on macOS once a fast `cmd &` wrapper has exited, losing the group).
+            proc._hermes_owned_pgid = proc._hermes_pgid = proc.pid
+            # Record the group leader's start-time fingerprint so _kill_process can
+            # detect PID/PGID recycling before signalling the group (#43044). The
+            # psutil fallback in get_process_start_time captures a baseline on every
+            # platform, macOS included.
+            from gateway.status import get_process_start_time
+            proc._hermes_pgid_start = get_process_start_time(proc.pid)
         if stdin_data is not None:
             _pipe_stdin(proc, stdin_data)
         return proc
@@ -1207,9 +1238,10 @@ class LocalEnvironment(BaseEnvironment):
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
         if not _IS_WINDOWS:
-            with contextlib.suppress(ProcessLookupError):
-                proc._hermes_pgid = os.getpgid(proc.pid)
-            proc._hermes_owned_pgid = proc.pid
+            # spawn_owned starts a new session, so the group is the leader's pid by construction.
+            # Never read back with getpgid: a leader that already exited (a fast `cmd &; exit`) has
+            # no pgid on macOS, and the stop could then never reach the descendants it left behind.
+            proc._hermes_pgid = proc._hermes_owned_pgid = proc.pid
         return proc
 
     def _kill_process(self, proc):

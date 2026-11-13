@@ -528,3 +528,270 @@ def test_platform_store_bundle_survives_an_unwritable_home(tmp_path, monkeypatch
     monkeypatch.setattr(ssl_verify, "_PLATFORM_STORE_BUNDLE", None)
     monkeypatch.setattr(ssl_verify, "_stdlib_ssl_context_class", lambda: _StoreWithACert)
     assert ssl_verify._platform_store_bundle() is None
+
+
+def test_openssl_bundle_reload_is_memoized_per_context(tmp_path):
+    """#139765: truststore's OpenSSL backend re-runs set_default_verify_paths()
+    on the same inner context for every wrap_socket/wrap_bio, re-parsing the
+    system CA bundle per connection — on the event loop for async clients.
+    After install_truststore(), one context is configured once per bundle
+    generation; a rotated bundle file reloads; contexts are not retained."""
+    import importlib.util
+    import os
+    import subprocess
+    import sys
+
+    if importlib.util.find_spec("truststore") is None:
+        pytest.skip("truststore not installed (3.11-3.13 bridge installs)")
+
+    bundle = tmp_path / "ca-bundle.pem"
+    bundle.write_bytes(b"# initial bundle\n")
+    script = """
+import contextlib, gc, ssl, sys, weakref
+
+import truststore
+from truststore import _api
+
+calls = []
+
+@contextlib.contextmanager
+def openssl_configure(ctx):
+    calls.append(ctx)
+    yield
+
+openssl_configure.__module__ = "truststore._openssl"
+real_configure = _api._configure_context
+_api._configure_context = openssl_configure
+
+from agent.ssl_verify import install_truststore
+assert install_truststore() is True
+wrapped = _api._configure_context
+assert wrapped is not openssl_configure and wrapped is not real_configure
+
+def connect(context):
+    context.wrap_bio(ssl.MemoryBIO(), ssl.MemoryBIO(), server_hostname="localhost")
+
+pool_context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+for _ in range(3):
+    connect(pool_context)
+assert len(calls) == 1, calls  # one bundle load per context, not per connection
+
+with open(sys.argv[1], "ab") as fh:
+    fh.write(b"# rotated bundle\\n")
+connect(pool_context)
+assert len(calls) == 2, calls  # a changed bundle file reloads
+
+second = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+connect(second)
+assert len(calls) == 3  # a fresh context still configures itself
+
+inner = weakref.ref(calls[0])
+del pool_context
+calls.clear()
+gc.collect()
+assert inner() is None  # the memo never keeps a context alive
+"""
+    env = os.environ.copy()
+    env.pop("SSL_CERT_DIR", None)
+    env["SSL_CERT_FILE"] = str(bundle)
+    child = subprocess.run(
+        [sys.executable, "-c", script, str(bundle)],
+        env=env, capture_output=True, text=True, timeout=60, check=False,
+    )
+    assert child.returncode == 0, child.stdout + child.stderr
+
+
+@pytest.mark.platforms("macos", "windows")  # Linux runs the OpenSSL backend, memoized above
+def test_platform_verifier_backends_are_left_alone():
+    """macOS/Windows trust via the platform verifier has no per-connection
+    bundle reload; install_truststore() must not touch those backends."""
+    import importlib.util
+    import subprocess
+    import sys
+
+    if importlib.util.find_spec("truststore") is None:
+        pytest.skip("truststore not installed (3.11-3.13 bridge installs)")
+
+    child = subprocess.run([sys.executable, "-c", """
+from truststore import _api
+original = _api._configure_context
+from agent.ssl_verify import install_truststore
+assert install_truststore() is True
+assert _api._configure_context is original
+assert getattr(_api._configure_context, "__module__", "") != "truststore._openssl"
+"""], capture_output=True, text=True, timeout=30, check=False)
+    assert child.returncode == 0, child.stdout + child.stderr
+
+
+@pytest.mark.platforms("linux")  # the OpenSSL backend that reloads per connection
+def test_memoized_context_still_verifies_and_picks_up_a_changed_bundle(tmp_path):
+    """Real handshakes through ONE truststore context whose trust comes from the bundle OpenSSL's
+    defaults name (``SSL_CERT_FILE``): a host signed by a CA outside the bundle is refused, a
+    second connection still verifies, and a CA appended to the bundle afterwards is trusted on
+    the same context, so the memo reloads a changed bundle instead of freezing the first load."""
+    import importlib.util
+    import subprocess
+    import sys
+
+    if importlib.util.find_spec("truststore") is None:
+        pytest.skip("truststore not installed (3.11-3.13 bridge installs)")
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    with _private_https_server(tmp_path / "a") as (server_a, ca_a), \
+            _private_https_server(tmp_path / "b") as (server_b, ca_b):
+        bundle = tmp_path / "bundle.pem"
+        bundle.write_bytes(ca_a.read_bytes())
+        script = """
+import socket, ssl, sys
+from agent.ssl_verify import install_truststore
+assert install_truststore() is True
+port_a, port_b, bundle, ca_b = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3], sys.argv[4]
+ctx = ssl.create_default_context()
+
+def handshake(port):
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as raw:
+        with ctx.wrap_socket(raw, server_hostname="127.0.0.1"):
+            return True
+
+assert handshake(port_a) and handshake(port_a)
+try:
+    handshake(port_b)
+except ssl.SSLCertVerificationError:
+    pass
+else:
+    raise AssertionError("a CA outside the bundle was trusted")
+with open(bundle, "ab") as fh, open(ca_b, "rb") as extra:
+    fh.write(extra.read())
+assert handshake(port_b), "the appended CA was not loaded"
+"""
+        env = _child_env(tmp_path)
+        env["SSL_CERT_FILE"] = str(bundle)
+        child = subprocess.run(
+            [sys.executable, "-c", script, str(server_a.server_port), str(server_b.server_port),
+             str(bundle), str(ca_b)],
+            env=env, capture_output=True, text=True, timeout=60, check=False,
+        )
+        assert child.returncode == 0, child.stdout + child.stderr
+
+
+@pytest.mark.platforms("linux")  # the OpenSSL backend's distro-candidate fallback
+def test_memoized_context_picks_up_a_changed_distro_fallback_bundle(tmp_path):
+    """With no usable OpenSSL default (``SSL_CERT_FILE`` missing, ``SSL_CERT_DIR`` empty) truststore
+    loads the first existing distro candidate bundle. A CA appended to that bundle must be trusted
+    on the same context: the memo has to notice the fallback file changing, not only the defaults."""
+    import importlib.util
+    import subprocess
+    import sys
+
+    if importlib.util.find_spec("truststore") is None:
+        pytest.skip("truststore not installed (3.11-3.13 bridge installs)")
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    (tmp_path / "empty_dir").mkdir()
+    with _private_https_server(tmp_path / "a") as (server_a, ca_a), \
+            _private_https_server(tmp_path / "b") as (server_b, ca_b):
+        bundle = tmp_path / "distro.pem"
+        bundle.write_bytes(ca_a.read_bytes())
+        script = """
+import socket, ssl, sys
+port_a, port_b, bundle, ca_b = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3], sys.argv[4]
+import truststore._openssl
+truststore._openssl._CA_FILE_CANDIDATES[:] = [bundle]  # stand-in for /etc/ssl/certs/...
+from agent.ssl_verify import install_truststore
+assert install_truststore() is True
+defaults = ssl.get_default_verify_paths()
+assert defaults.cafile is None, defaults  # the fallback path is the one in force
+ctx = ssl.create_default_context()
+
+def handshake(port):
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as raw:
+        with ctx.wrap_socket(raw, server_hostname="127.0.0.1"):
+            return True
+
+assert handshake(port_a) and handshake(port_a)
+try:
+    handshake(port_b)
+except ssl.SSLCertVerificationError:
+    pass
+else:
+    raise AssertionError("a CA outside the fallback bundle was trusted")
+with open(bundle, "ab") as fh, open(ca_b, "rb") as extra:
+    fh.write(extra.read())
+assert handshake(port_b), "the CA appended to the fallback bundle was not loaded"
+"""
+        env = _child_env(tmp_path)
+        env["SSL_CERT_FILE"] = str(tmp_path / "missing.pem")
+        env["SSL_CERT_DIR"] = str(tmp_path / "empty_dir")
+        child = subprocess.run(
+            [sys.executable, "-c", script, str(server_a.server_port), str(server_b.server_port),
+             str(bundle), str(ca_b)],
+            env=env, capture_output=True, text=True, timeout=60, check=False,
+        )
+        assert child.returncode == 0, child.stdout + child.stderr
+
+
+@pytest.mark.platforms("linux")
+def test_memoized_context_reloads_same_size_bundle_with_preserved_mtime(tmp_path):
+    """#139765: an in-place CA replacement can preserve size and mtime.
+
+    An installer restoring timestamps may write a new trusted root without
+    changing the four stat fields in the memo. A pooled context must still
+    trust that root on its next connection, as truststore's original
+    per-connection configure path did.
+    """
+    import subprocess
+    import sys
+
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    with _private_https_server(tmp_path / "a") as (server_a, ca_a), \
+            _private_https_server(tmp_path / "b") as (server_b, ca_b):
+        first_ca, second_ca = ca_a.read_bytes(), ca_b.read_bytes()
+        bundle_size = max(len(first_ca), len(second_ca))
+        bundle = tmp_path / "ca-bundle.pem"
+        bundle.write_bytes(first_ca.ljust(bundle_size, bytes([10])))
+        script = """
+import os, socket, ssl, sys
+from pathlib import Path
+from agent.ssl_verify import install_truststore
+
+port_a, port_b = int(sys.argv[1]), int(sys.argv[2])
+bundle, next_ca = Path(sys.argv[3]), Path(sys.argv[4])
+bundle_size = int(sys.argv[5])
+assert install_truststore() is True
+assert ssl.get_default_verify_paths().cafile == str(bundle)
+ctx = ssl.create_default_context()
+
+def handshake(port):
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as raw:
+        with ctx.wrap_socket(raw, server_hostname="127.0.0.1"):
+            pass
+
+handshake(port_a)
+try:
+    handshake(port_b)
+except ssl.SSLCertVerificationError:
+    pass
+else:
+    raise AssertionError("the new CA was trusted before the bundle changed")
+
+before = bundle.stat()
+with bundle.open("r+b") as file:
+    file.write(next_ca.read_bytes().ljust(bundle_size, bytes([10])))
+    file.truncate()
+os.utime(bundle, ns=(before.st_atime_ns, before.st_mtime_ns))
+after = bundle.stat()
+assert (before.st_mtime_ns, before.st_size, before.st_ino, before.st_dev) == (
+    after.st_mtime_ns, after.st_size, after.st_ino, after.st_dev
+)
+assert before.st_ctime_ns != after.st_ctime_ns, "in-place rewrite did not advance ctime"
+handshake(port_b)  # the same pooled context must load the newly trusted CA
+"""
+        env = _child_env(tmp_path)
+        env["SSL_CERT_FILE"] = str(bundle)
+        child = subprocess.run(
+            [sys.executable, "-c", script, str(server_a.server_port), str(server_b.server_port),
+             str(bundle), str(ca_b), str(bundle_size)],
+            env=env, capture_output=True, text=True, timeout=60, check=False,
+        )
+        assert child.returncode == 0, child.stdout + child.stderr

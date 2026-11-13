@@ -157,9 +157,10 @@ class GatewayRuntimeInitMixin:
         # Strong refs to detached fatal-error handler tasks so the loop can't GC them mid-run.
         self._fatal_handler_tasks: set = set()
         # Slash-confirm state lives in tools.slash_confirm (module-level) so adapters resolve callbacks
-        # without a runner backref; local counter keeps confirm_ids compact (64-byte callback_data caps).
-        import itertools
-        self._slash_confirm_counter = itertools.count(1)
+        # without a runner backref; a counter keeps confirm_ids compact (64-byte callback_data caps)
+        # and its random start keeps a pre-restart card from answering a new confirmation.
+        from gateway.platforms.helpers import prompt_id_counter
+        self._slash_confirm_counter = prompt_id_counter()
 
     def _init_session_db(self) -> None:
         """Open the session DB for the active scope and run opportunistic state.db / checkpoint maintenance."""

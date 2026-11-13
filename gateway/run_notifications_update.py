@@ -67,11 +67,19 @@ class GatewayUpdateNotificationsMixin:
     class _UpdateTarget:
         """Resolved delivery target for update watcher messages."""
 
-        adapter: Any
+        pinned_adapter: Any
         chat_id: Any
         session_key: Optional[str]
         metadata: Any
         platform: Any
+        # Re-runs the owner lookup: an update outlives a reconnect, whose replacement adapter must
+        # carry the prompt (the retired one has no bot and its button state would never be read).
+        resolve_adapter: Optional[Any] = None
+
+        @property
+        def adapter(self):
+            live = self.resolve_adapter() if self.resolve_adapter is not None else None
+            return live if live is not None else self.pinned_adapter
 
         def send_metadata(self):
             from gateway.run import _non_conversational_metadata
@@ -166,13 +174,15 @@ class GatewayUpdateNotificationsMixin:
                 platform = Platform(platform_str)
                 # The requester's OWN profile bot (marker ``profile``, else the ``agent:<profile>:`` key
                 # lane); a bare self.adapters lookup is the default bot under multiplex.
-                adapter = self._authorization_adapter(platform, self._marker_profile(pending))
+                profile = self._marker_profile(pending)
+                adapter = self._authorization_adapter(platform, profile)
                 if not adapter:
                     return None
                 metadata = self._pending_marker_metadata(platform, chat_id, pending, adapter)
                 # Fallback session key if not stored (old pending files)
                 return self._UpdateTarget(
                     adapter, chat_id, session_key or f"{platform_str}:{chat_id}", metadata, platform,
+                    resolve_adapter=lambda: self._authorization_adapter(platform, profile),
                 )
         return None
 

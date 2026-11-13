@@ -478,6 +478,7 @@ hermes webhook subscribe <name> [options]
 | `--deliver` | 投递目标：`log`（默认）、`telegram`、`discord`、`slack`、`github_comment`。 |
 | `--deliver-chat-id` | 跨平台投递的目标聊天/频道 ID。 |
 | `--secret` | 自定义 HMAC 密钥。省略时自动生成。 |
+| `--signature` | 路由接受的签名方案：`generic`（新路由默认；`X-Webhook-Signature-V2` + `X-Webhook-Timestamp` 或 Standard Webhooks）、`github`、`gitlab` 或 `linear`。其他请求头一律拒绝。更新时省略则保留原值。参见[固定签名方案](../user-guide/messaging/webhooks.md#pin-the-signature-scheme)。 |
 | `--deliver-only` | 跳过 agent——将渲染后的 `--prompt` 作为字面消息投递。零 LLM 成本，亚秒级投递。要求 `--deliver` 为真实目标（非 `log`）。 |
 | `--script` | 位于 `~/.hermes/scripts/` 下的过滤/转换脚本。webhook payload 以 JSON 形式通过 stdin 传入；JSON stdout 会替换 payload，空 stdout、`[SILENT]` 或非零退出码会忽略该 webhook。参见[脚本过滤与转换](../user-guide/messaging/webhooks.md#script-filters-and-transforms)。 |
 

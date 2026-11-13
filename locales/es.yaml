@@ -167,7 +167,10 @@ gateway:
     full_logs_hint: "Para subir registros completos, usa `hermes debug share` desde la CLI."
     share_hint: "Comparte estos enlaces con el equipo de Hermes para obtener soporte."
     report_label: "Informe"
-    local_refused: "`/debug local` mantiene el informe en la máquina donde se ejecuta Hermes, así que no está disponible desde un chat. Envía `/debug` para subir el informe resumido."
+    local_refused: "`/debug local` mantiene el informe en la máquina donde se ejecuta Hermes, así que no está disponible desde un chat. Envía `/debug upload` para subir el informe resumido."
+    upload_hint: "No se subió nada. Envía `/debug upload` para subir el informe resumido."
+    upload_hint_local: "No se subió nada. Envía `/debug upload` para subir el informe resumido, o `/debug local` para verlo aquí."
+    nous_refused: "No se subió nada. Las subidas privadas a Nous no están disponibles desde aquí: ejecuta `hermes debug share --nous` en una terminal o usa Send diagnostics en la app de escritorio. `/debug upload` sube el resumen a un paste público en su lugar."
   deny:
     stale: "❌ Comando denegado (la aprobación había caducado)."
     no_pending: "No hay ningún comando pendiente que denegar."
@@ -332,6 +335,7 @@ gateway:
     title_error_untitled: "\n⚠️ {error} — sesión iniciada sin título."
     title_empty_untitled: "\n⚠️ El título queda vacío tras la limpieza — sesión iniciada sin título."
     tip: "\n✦ Consejo: {tip}"
+    paused_left: "\n⚠️ {count} mensaje(s) que enviaste mientras la conversación anterior estaba en pausa siguen guardados en la conversación anterior, sin respuesta. Para ejecutarlos: /resume {session_id} y luego {discard}."
   restart:
     in_progress: "⏳ El reinicio del gateway ya está en curso..."
     restarting: "♻ Reiniciando el gateway. Si no recibes notificación en 60 segundos, reinicia desde la consola con `hermes gateway restart`."
@@ -646,8 +650,6 @@ gateway:
     media_delivery_failed_with_name: "⚠️ No se pudo entregar el adjunto de {kind} ({file_name})."
     delivery_failed_retry: "⚠️ La entrega del mensaje falló tras varios intentos. Inténtalo de nuevo — tu solicitud se procesó, pero la respuesta no se pudo enviar."
     plain_fallback_prefix: "(Falló el formato de la respuesta, texto sin formato:)\n\n{content}"
-    turn_error_no_details: "sin detalles disponibles"
-    turn_error_detailed: "Lo siento, ocurrió un error ({error_type}).\n{error_detail}\nInténtalo de nuevo o usa /reset para iniciar una sesión nueva."
     turn_error: "Lo siento, ocurrió un error."
     context_injection_refused: "Inyección de contexto rechazada."
     no_home_channel: "📬 No hay un canal principal configurado para {platform}. El canal principal es donde Hermes entrega los resultados de las tareas programadas (cron) y los mensajes entre plataformas.\n\nEscribe {sethome_cmd} para convertir este chat en tu canal principal, o ignora este mensaje para omitirlo."
@@ -746,6 +748,8 @@ gateway:
     reject_loop: "El agente está en ejecución — usa /loop status / pause / stop durante la ejecución, o /stop antes de definir un nuevo bucle."
     draining_maintenance: "⏳ Este agente se está vaciando para una acción de mantenimiento y ahora mismo no acepta turnos nuevos. Volverá en un momento — reenvía tu mensaje en breve."
     another_turn_running: "⏳ Otro turno sigue en ejecución en esta sesión. Para proteger la transcripción, este mensaje no se procesó. Espera a que termine el turno activo y luego reenvíalo."
+    setup_timeout: "⏳ La preparación del turno se atascó sin actividad del agente y se canceló. Vuelve a enviar tu mensaje."
+    setup_waiting: "⏳ Este turno aún se está iniciando ({minutes} min, sin actividad del agente todavía). Tu mensaje está en cola. Usa /stop para cancelarlo junto con todo lo que está en cola."
     behavior_queue_short: "se ponen en cola para el siguiente turno"
     behavior_queue_long: "Los mensajes se pondrán en cola para el siguiente turno mientras Hermes esté ocupado."
     behavior_steer_short: "se redirigen a la ejecución actual (tras la próxima herramienta)"
@@ -979,6 +983,7 @@ platform:
     denied: "❌ Denegado."
     approval_expired: "⌛ Aprobación expirada — el comando no se ejecutó (ya se agotó el tiempo o se resolvió en otro lugar)."
   shared:
+    response_as_file: "📎 Respuesta larga: el texto completo va adjunto."
     truncated_suffix: "\n...(truncado)"
     unknown: "desconocido"
     approval_expired: "⌛ Aprobación expirada — el comando no se ejecutó (ya se agotó el tiempo o se resolvió en otro lugar)."
@@ -1169,8 +1174,6 @@ platform:
         unknown: "Skill desconocida: `{name}`. Empieza a escribir para ver sugerencias de autocompletado."
       auto_args_description: "Argumentos: {args_hint}"
       auto_description_fallback: "Ejecutar /{name}"
-    limits:
-      response_truncated: "⚠️ **Respuesta truncada** — esta respuesta superó el límite de entrega ({max_messages} mensajes). No se entregaron {dropped_chars} caracteres; la respuesta completa está en los registros de la sesión."
     forum:
       default_title: "Nueva publicación"
     voice:
@@ -1706,7 +1709,7 @@ slash:
   version:
     description: "Mostrar la versión de Hermes Agent"
   debug:
-    description: "Subir un informe de depuración (info del sistema + registros) y obtener enlaces compartibles"
+    description: "Informe de depuración (info del sistema + registros): muestra primero el aviso de privacidad; /debug upload comparte enlaces"
   quit:
     description: "Salir de la CLI (usa --delete para eliminar también el historial de la sesión)"
 cli:

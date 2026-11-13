@@ -31,6 +31,12 @@ Background terminal processes belong to the agent that starts them. Closing a ch
 
 A child should wait for its builds, tests, and other bounded background commands before returning its final summary. Start a CI watcher or server in the parent session if it must continue after the child finishes; returning a process ID does not transfer ownership to the parent.
 
+## Approvals from background children
+
+A background child that needs approval for a command after the parent's turn has ended still asks in the chat the parent was started from. On messaging platforms the approval card (or the plain-text `/approve` prompt) appears there, and `/approve`, `/deny` or a tap on the card answers that child's command. A card the child raised while the parent was still replying stays answerable after the parent finishes. Stopping the child (`/stop`), resetting the session (`/new`) or the child finishing withdraws its open prompts.
+
+Where no chat can show the prompt once the parent's turn is over (API-server runs, webhooks, local viewers), the child's command is refused with an explicit "no approval channel" result. It is never reported as pending.
+
 ## Single Task
 
 ```python
@@ -85,6 +91,8 @@ Subagents start with a **completely fresh conversation**. They have zero knowled
 
 One exception: when the parent has a resolved workspace directory, every subagent's system prompt embeds that workspace's **project context files** (`.hermes.md` > AGENTS.md chain > CLAUDE.md > `.cursorrules` — the same discovery, priority, and size caps as the main agent's system prompt; SOUL.md is excluded). Subagents working in a repo operate under the repo's own conventions without having to rediscover them.
 
+The `context` and `goal` arrive as the subagent's first user message, context first. Its system prompt carries nothing task-specific, so the subagents of one parent send an identical prompt prefix and can read each other's prompt cache, including a context they share. That first message is kept verbatim through context compression.
+
 This means the parent agent must pass **everything** the subagent needs in the call:
 
 ```python
@@ -102,7 +110,7 @@ delegate_task(
 )
 ```
 
-The subagent receives a focused system prompt built from your goal and context, instructing it to complete the task and provide a structured summary of what it did, what it found, any files modified, and any issues encountered.
+The subagent's first message is your context followed by the goal. Its system prompt instructs it to complete the task and provide a structured summary of what it did, what it found, any files modified, and any issues encountered.
 
 ### Forwarding Images to a Subagent
 
@@ -542,6 +550,39 @@ The parent agent orchestrates its own running children with the same `delegate_t
 
 Control actions run synchronously in-turn (never backgrounded), are scoped to the caller's own spawn tree — a conversation can never see or control another session's children — and never consume the per-turn subagent spawn cap, so `stop` keeps working even after the cap is hit.
 
+**Continue a finished child.** `{"action": "continue", "subagent_id": "sa-0-1a2b3c4d", "message": "now add tests for it"}` gives a child that already returned its result a follow-up. The child is rebuilt on the same route (model, provider, profile) and toolsets, its history is loaded from its saved transcript, and `message` becomes its next turn; it keeps its `subagent_id` and session (the transcript appends, like `--resume`) and runs as a new background delegation with its own `delegation_id`, so the result arrives as a normal completion. A still-running child is refused with a pointer to `steer`, and so is a child whose inherited route now resolves to a different provider or endpoint because the parent switched since it ran. Only the owning conversation (or an ancestor in its spawn tree) can continue a child; background processes it started are gone, so it gets a fresh terminal, which starts in the directory and worktree the child stopped in. A continue is an ordinary dispatch: a closed chat, `max_concurrent_children`, `max_spawn_depth` and the spawn pause all refuse it the same way they refuse a spawn. It is not offered in one-shot sessions or managed worker sessions.
+
+**Resumable after a restart or crash.** Every child also keeps a durable record in the profile's `state.db`, so `continue` works after a gateway restart, a hard kill or a PC crash, not only while the process still remembers it. After a restart the child's route is re-resolved from its own routing request and must land on the same provider and endpoint. A child that did not complete and was not stopped by you or its parent (gateway shutdown, a crash, a usage limit, a provider refusal) is *resumable*: its completion entry carries `resume_mode`, and a limit failure also carries `failure_resets_at` (and `usage_limit` on a plan window) so you know when continuing can succeed. `resume_mode` is one of:
+
+| `resume_mode` | Typical cause | What continuing needs |
+|---|---|---|
+| `AUTO_AT` | usage/rate limit with a reset time, transient provider errors | wait until `failure_resets_at` |
+| `AUTO_ON_BOOT` | gateway shutdown, crash or hard kill | nothing; check git state and the last tool before re-running side effects |
+| `ON_FIX` | credits, auth, model access, account policy, request-shape errors | you fix the cause first |
+| `REPAIR_THEN_CONTINUE` | the conversation no longer fits, or an image/reasoning part is rejected | the transcript needs repairing first |
+| `HANDOFF` | a provider safety refusal of this conversation | another model, or the parent takes the work over |
+
+A resumable child's worktree (where its terminal was when it stopped, plus any worktree it created) is kept from the startup worktree sweep while its record lives: `delegation.resumable_ttl_hours` (default 48), at most `delegation.max_resumable` (default 32) per profile; beyond the cap the oldest loses its pin first. When the pin ends the normal sweep archives the tree to `refs/hermes/archive/` before removing it. Completed children and children you stopped are not pinned. Nothing resumes on its own unless you opt in with `delegation.auto_resume: true` (default `false`, see below).
+
+### Automatic resume (`delegation.auto_resume`, opt-in)
+
+With `delegation.auto_resume: true` the gateway continues stopped background children on its own, through the same claim and `continue` path as `action='continue'`, on the child's own conversation and worktree, with a message naming the real cause ("Your run was stopped by a provider limit; continue where you left off."). A gateway checks every profile it serves every 15 seconds, each under that profile's own configuration, credentials and `state.db`.
+
+- **What resumes:** `AUTO_AT` children once their limit's reset time has passed, and `AUTO_ON_BOOT` children (gateway shutdown, crash, hard kill) once the gateway is back up.
+- **What never resumes:** `ON_FIX`, `REPAIR_THEN_CONTINUE` and `HANDOFF` children (credits, auth, model not found, refusals, deterministic request errors), children you or the parent stopped, children whose stop did not promise a resume (stopped while `auto_resume` was off, or under a parent no gateway serves, such as a classic local CLI: those get the manual `continue` hint), expired records, records whose worktree pin was dropped by `max_resumable`, and nested children (an orchestrator subagent's own workers; that orchestrator resumes instead).
+- **Silent while it waits.** A stop that is promised an automatic resume sends the parent no completion. `delegate_task(action='list')` shows the child as `waiting_to_resume` with a note such as "waiting to resume at 14:05 (attempt 1 of 2); gives up at 19:40". In a batch where only some children wait, the completion lists the waiting ones with that same status, and the failed-delegations view does not count them as failed.
+- **One report at the end.** The parent hears once per child: the resumed run's own result, or ONE terminal failure when the scheduler gives up. It gives up when 2 automatic attempts are used, when `delegation.auto_resume_deadline_minutes` (default 360) has passed since the child's first stop, when the limit's reset is known to land after that deadline (it gives up at once), or when a permanent reason appears (for example its worktree pin was dropped). A child already promised a resume still gets its one failure when `auto_resume` is turned off while it waits, or when its record reaches `delegation.resumable_ttl_hours` first; `/stop`, a session end and `action='stop'` still cancel it while `auto_resume` is off. The failure carries the reason, the child's last summary, the tail of its transcript, and how to continue it by hand (`delegate_task(action='continue', subagent_id=..., message=...)`) or re-dispatch it. A crash during the last attempt reports that same give-up, not a generic "outcome unknown".
+- **Explicit cancel only.** Only these cancel a waiting resume (the record becomes `superseded`, or `stopped` for `stop`; it can still be continued by hand until its TTL):
+  - `delegate_task(action='stop', subagent_id=...)` on the waiting child: it never resumes and its worktree pin is released (the transcript stays);
+  - the parent continued the child itself;
+  - the parent conversation was stopped (`/stop`), reset (`/new`), closed, deleted, or no longer exists to receive the result.
+  Other work the parent starts, including new subagents in the same repository, does not cancel it. These decisions also win while a resume is starting: the scheduler claims the record and re-checks them in one `state.db` transaction, and checks again right before the child runs, so a stop, `/stop` or `/new` that lands meanwhile cancels it (the attempt is not counted). A child that is already running is stopped like any other, with `delegate_task(action='stop')`.
+- **No duplicate of a waiting child.** A spawn whose goal is exactly (ignoring surrounding whitespace) the goal of one of the parent's children that is waiting to resume is refused with a tool error naming that `subagent_id`, when it resumes, and the two ways forward: wait for it, or `delegate_task(action='stop', subagent_id=...)` first and then re-dispatch. In a batch only that task is refused; its siblings run. The guard is off when `auto_resume` is off, and it stops refusing once that child is past its deadline or out of attempts, even before the scheduler has delivered its give-up.
+- **Unconfirmed side effects.** The resume message tells the child: if its last tool call has no recorded result and it cannot establish whether that call ran, it must not repeat it and must finish with a result that starts with `BLOCKED:` naming that call.
+  A parent stopped by the same limit is simply woken by the resumed children's results (the usual unattended-wake limit applies).
+- **Bounded:** at most 2 automatic attempts per child, counted before each attempt runs, so a child whose resume crashes the gateway every time stops after two boots; the record says why. A resume that hits the limit again goes back to waiting with its attempt counted. Resumes stay within the profile's own `delegation.max_concurrent_children` (counting that profile's running background units only), wait while delegation spawning is paused, run on the parent conversation's own model route (its `/model` choice, channel override or launch policy), and children waiting on the same reset are started one per provider endpoint per pass (15 s apart) rather than all at once.
+- **Cost:** a resumed child spends tokens with nobody watching, and so does the parent turn its result starts. Leave it off where unattended spend is not wanted.
+
 ### From the TUI / gateway (session-facing)
 
 `steer_subagent(subagent_id, text)` in `tools/delegate_tool_registry.py` is the redirection-side mirror of `interrupt_subagent()`: it queues text into a live child through the same mechanism as [`/steer`](../../reference/slash-commands.md) — the text is appended to the child's last tool result at its next iteration boundary, the in-flight tool call is never cut, and the child sees it as an out-of-band user message. Programmatic hosts reach it through the session-scoped `subagent.steer` gateway RPC, which sits beside `subagent.interrupt`:
@@ -770,6 +811,10 @@ delegation:
   # worktree_isolation: false               # Give each child its own git worktree (see Worktree Isolation above)
   # max_spawn_depth: 1                      # Tree depth (floor 1, no ceiling, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3+ for deeper trees.
   # orchestrator_enabled: true              # Disable to force all children to leaf role.
+  # resumable_ttl_hours: 48                 # How long a stopped child stays continuable after a restart, worktree kept
+  # max_resumable: 32                       # Resumable children per profile whose worktree is kept (oldest unpinned first)
+  # auto_resume: false                      # Opt-in: the gateway resumes limit/restart-stopped children itself (spends tokens unattended)
+  # auto_resume_deadline_minutes: 360       # Give up (one failure to the parent) this long after a child's first stop
   model: "google/gemini-3-flash-preview"             # Optional provider/model override
   provider: "openrouter"                             # Optional built-in provider
   api_mode: anthropic_messages                       # optional; auto-detected from base_url for anthropic_messages endpoints

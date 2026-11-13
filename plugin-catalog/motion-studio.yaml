@@ -1,0 +1,26 @@
+name: motion-studio
+title: Motion Studio
+repo: https://github.com/gregoryhorn/motion-studio
+sha: 712ad80949709c97af7c4eca966ca8682c45a0fb
+version: "0.1.0"
+description: "Creation-first media studio for Hermes Desktop. Quick Create turns a chat request into sound effects, images, voice or video takes you can play, compare, keep and download; Production collects chosen takes and imported files into a project and exports them. Image, voice and video come from Hermes' own image_gen, tts and video_gen tools; sound effects generation is unavailable outside the author's pinned Stable Audio setup; imported sound effects remain supported for review and export. Disclosure — downloads finished media only from the provider URLs Hermes' image_gen/tts/video_gen tools return (x.ai, openai.com, oaiusercontent.com, fal.media, fal.run, deepinfra.com, krea.ai; no proxies, cookies or credentials, same-host redirects only); runs ffmpeg/ffprobe to check imported and generated media, nvidia-smi to report GPU use, and the author's pinned local audio engine, each with a minimal fixed environment (no inherited credentials or provider keys); reads Hermes' generator output cache read-only (secret and hidden files refused), checks only whether provider API keys are set through Hermes' scoped secret API, and reads installed Hermes provider source files to list available methods; stores projects and takes under the profile's plugin data directory; saved takes are kept, not deleted. No telemetry."
+maintainer: gregoryhorn
+tier: community
+category: desktop
+requires_hermes: ">=0.23.1"
+readme: true
+platforms: [linux, windows]
+known_issues:
+  - "Open Motion Studio from a chat in the motion-studio profile: the panel works with the focused chat. If it says the chat is not connected, click Connect."
+  - "Image, voice and video need the matching Hermes tool enabled with a provider. Paid or unknown-cost methods ask before running."
+  - "Sound effects generation is unavailable outside the author's pinned Stable Audio setup; this release cannot configure another user's wrapper. Imported sound effects remain supported. Music generation is not available yet."
+  - "Tested on Linux and Windows Hermes Desktop. macOS has not been tested."
+  - "Saved takes and projects cannot be deleted from the app yet."
+  - "Hermes' security scan rates the package caution because it runs media tools (ffmpeg/ffprobe) on file descriptors and includes subprocess and setup helpers. A catalog install at the reviewed pin accepts that rating without a scan prompt; an install from the bare Git URL asks for confirmation."
+capabilities:
+  provides_tools:
+    - motion_studio_creation
+    - motion_studio_production
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

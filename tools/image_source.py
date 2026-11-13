@@ -81,6 +81,12 @@ async def resolve_image_source(
     candidate = s[len("file://"):] if s.lower().startswith("file://") else s
     p = Path(os.path.expanduser(candidate))
     host_target = _permitted_host_read_target(p, ctx)
+    # Local backend only: under a sandbox a miss must still reach the in-container read, so the
+    # confinement boundary in this module's docstring holds.
+    if host_target is not None and not host_target.is_file() and _is_local_terminal_backend():
+        alt = _on_disk_spelling(p)
+        if alt is not None:
+            host_target = _permitted_host_read_target(alt, ctx)
     if host_target is not None and host_target.is_file():
         _guard_credential_read(host_target, s)
         # Videos are never downscaled and video_analyze refuses over 50 MB of base64, so the
@@ -173,6 +179,38 @@ async def _download_to_bytes(url: str) -> bytes:
         raise SourceUnsafe(str(exc), src=url, origin="http")
     finally:
         tmp.unlink(missing_ok=True)
+
+
+def _on_disk_spelling(p: Path) -> Optional[Path]:
+    """The one file beside ``p`` whose name differs from it only invisibly (NFC/NFD, a Unicode
+    space such as the U+202F macOS puts before AM/PM in screenshot names, a curly apostrophe).
+
+    A model retyping a name it was shown emits the plain spelling and can never see why it misses.
+    ``None`` when there is no such file or several (guessing between twins would read the wrong
+    one). The caller still applies its confinement and credential-read guard to the result.
+    """
+    from tools.file_operations_common import filename_match_key
+    target = filename_match_key(p.name)
+    try:
+        matches = [c for c in p.parent.iterdir()
+                   if c.name != p.name and filename_match_key(c.name) == target and c.is_file()]
+    except OSError:
+        return None
+    return matches[0] if len(matches) == 1 else None
+
+
+def local_source_spelling(src):
+    """``src``, or the on-disk spelling of a local path that misses only by an invisible character
+    (:func:`_on_disk_spelling`). URLs, ``data:`` and non-strings pass through. For callers that
+    open model-supplied paths themselves on the local backend (video, image/video generation)."""
+    if not isinstance(src, str) or not src.strip() or _SCHEME_RE.match(src.strip()) \
+            or src.strip().startswith("data:"):
+        return src
+    p = Path(os.path.expanduser(src.strip()))
+    if p.exists():
+        return src
+    alt = _on_disk_spelling(p)
+    return str(alt) if alt is not None else src
 
 
 def _is_local_terminal_backend() -> bool:

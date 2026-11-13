@@ -167,7 +167,10 @@ gateway:
     full_logs_hint: "Le haghaidh uaslódálacha logála iomlána, úsáid `hermes debug share` ón CLI."
     share_hint: "Roinn na naisc seo le foireann Hermes le haghaidh tacaíochta."
     report_label: "Tuairisc"
-    local_refused: "Coinníonn `/debug local` an tuarascáil ar an meaisín a ritheann Hermes, mar sin níl sé ar fáil ó chomhrá. Seol `/debug` chun an achoimre a uaslódáil."
+    local_refused: "Coinníonn `/debug local` an tuarascáil ar an meaisín a ritheann Hermes, mar sin níl sé ar fáil ó chomhrá. Seol `/debug upload` chun an achoimre a uaslódáil."
+    upload_hint: "Níor uaslódáladh aon rud. Seol `/debug upload` chun an achoimre a uaslódáil."
+    upload_hint_local: "Níor uaslódáladh aon rud. Seol `/debug upload` chun an achoimre a uaslódáil, nó `/debug local` chun í a fheiceáil anseo."
+    nous_refused: "Níor uaslódáladh aon rud. Níl uaslódálacha príobháideacha Nous ar fáil as seo: rith `hermes debug share --nous` i dteirminéal, nó úsáid Send diagnostics san aip deisce. Uaslódálann `/debug upload` an achoimre chuig greamán poiblí ina ionad sin."
   deny:
     stale: "❌ Ordú diúltaithe (bhí an cead imithe i léig)."
     no_pending: "Níl aon ordú ag fanacht le diúltú."
@@ -332,6 +335,7 @@ gateway:
     title_error_untitled: "\n⚠️ {error} — seisiún tosaithe gan teideal."
     title_empty_untitled: "\n⚠️ Tá an teideal folamh tar éis glanta — seisiún tosaithe gan teideal."
     tip: "\n✦ Leid: {tip}"
+    paused_left: "\n⚠️ Tá {count} teachtaireacht a sheol tú agus an comhrá roimhe ar sos fós sábháilte ar an gcomhrá roimhe, gan freagra. Chun iad a rith: /resume {session_id}, ansin {discard}."
   restart:
     in_progress: "⏳ Tá atosú gateway ar siúl cheana féin..."
     restarting: "♻ Ag atosú gateway. Mura gcuirfear in iúl duit laistigh de 60 soicind, atosaigh ón gconsól le `hermes gateway restart`."
@@ -646,8 +650,6 @@ gateway:
     media_delivery_failed_with_name: "⚠️ Níorbh fhéidir an ceangaltán {kind} a sheachadadh ({file_name})."
     delivery_failed_retry: "⚠️ Theip ar sheachadadh na teachtaireachta tar éis roinnt iarrachtaí. Bain triail eile as le do thoil — próiseáladh d'iarratas ach níorbh fhéidir an freagra a sheoladh."
     plain_fallback_prefix: "(Theip ar fhormáidiú an fhreagra, gnáth-théacs:)\n\n{content}"
-    turn_error_no_details: "níl aon sonraí ar fáil"
-    turn_error_detailed: "Ár leithscéal, tháinig earráid orm ({error_type}).\n{error_detail}\nBain triail eile as nó úsáid /reset chun seisiún úr a thosú."
     turn_error: "Ár leithscéal, tháinig earráid orm."
     context_injection_refused: "Diúltaíodh d'insteallta comhthéacs."
     no_home_channel: "📬 Níl aon chainéal baile socraithe do {platform}. Is é an cainéal baile an áit a seachadann Hermes torthaí tascanna cron agus teachtaireachtaí trasardáin.\n\nClóscríobh {sethome_cmd} chun an comhrá seo a dhéanamh mar chainéal baile, nó déan neamhaird de chun é a fhágáil ar lár."
@@ -746,6 +748,8 @@ gateway:
     reject_loop: "Tá an gníomhaire ag rith — úsáid /loop status / pause / stop i lár an reatha, nó /stop roimh lúb nua a shocrú."
     draining_maintenance: "⏳ Tá an gníomhaire seo ag draenáil le haghaidh gníomh cothabhála agus ní ghlacann sé le sealanna nua faoi láthair. Beidh sé ar ais i gceann nóiméid — seol arís go luath le do thoil."
     another_turn_running: "⏳ Tá seal eile fós ag rith ar an seisiún seo. Chun an traschríbhinn a chosaint, níor próiseáladh an teachtaireacht seo. Fan go gcríochnóidh an seal gníomhach, ansin seol arís í."
+    setup_timeout: "⏳ Chuaigh socrú an tseala i bhfostú gan aon ghníomhaíocht ón ngníomhaire agus cuireadh ar ceal é. Seol do theachtaireacht arís, le do thoil."
+    setup_waiting: "⏳ Tá an seal seo fós ag tosú ({minutes} nóim, gan ghníomhaíocht ón ngníomhaire fós). Tá do theachtaireacht sa scuaine. Úsáid /stop chun é agus gach rud sa scuaine a chur ar ceal."
     behavior_queue_short: "cuirtear i scuaine don chéad seal eile"
     behavior_queue_long: "Cuirfear teachtaireachtaí i scuaine don chéad seal eile fad a bhíonn Hermes gnóthach."
     behavior_steer_short: "stiúrtar isteach sa rith reatha (tar éis an chéad ghlao uirlise eile)"
@@ -979,6 +983,7 @@ platform:
     denied: "❌ Diúltaithe."
     approval_expired: "⌛ Tá an cead imithe in éag — níor ritheadh an t-ordú (chuaigh sé thar am cheana nó réitíodh é in áit eile)."
   shared:
+    response_as_file: "📎 Freagra fada: tá an téacs iomlán ceangailte."
     truncated_suffix: "\n...(giorraithe)"
     unknown: "anaithnid"
     approval_expired: "⌛ Tá an cead imithe in éag — níor ritheadh an t-ordú (chuaigh sé thar am cheana nó réitíodh é in áit eile)."
@@ -1169,8 +1174,6 @@ platform:
         unknown: "Scil anaithnid: `{name}`. Tosaigh ag clóscríobh le haghaidh moltaí uathchríochnaithe."
       auto_args_description: "Argóintí: {args_hint}"
       auto_description_fallback: "Rith /{name}"
-    limits:
-      response_truncated: "⚠️ **Freagra giorraithe** — sháraigh an freagra seo an teorainn seachadta ({max_messages} teachtaireacht). Níor seachadadh {dropped_chars} carachtar; tá an freagra iomlán i logaí an tseisiúin."
     forum:
       default_title: "Postáil Nua"
     voice:
@@ -1706,7 +1709,7 @@ slash:
   version:
     description: "Taispeáin leagan Hermes Agent"
   debug:
-    description: "Uaslódáil tuairisc dhífhabhtaithe (eolas córais + logaí) agus faigh naisc in-roinnte"
+    description: "Tuarascáil dhífhabhtaithe (eolas córais + logaí): taispeántar an fógra príobháideachta ar dtús; roinneann /debug upload naisc"
   quit:
     description: "Scoir den CLI (úsáid --delete chun stair an tseisiúin a bhaint freisin)"
 cli:

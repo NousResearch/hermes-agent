@@ -1,0 +1,18 @@
+name: timecapsule
+repo: https://github.com/brayedan/timecapsule
+sha: d16fc06fdd29feebf962a35cac54703c057b8f39
+description: "Sealed messages for later — seal a note so it cannot be read until its release condition is met (a date, N days of silence, or the sealer's explicit release), with a grace ladder and slow, announced deletion. Local-only, stdlib-only, no network. Disclosure — the seal is access control, not encryption: capsule text is stored in plaintext in store.json under the plugin data directory, so anything with file access (including the agent's own file tools) can read it, and manual release trusts the author name given by the caller."
+maintainer: brayedan
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+capabilities:
+  provides_tools:
+    - timecapsule_seal
+    - timecapsule_list
+    - timecapsule_open
+    - timecapsule_delete
+    - timecapsule_restore
+    - timecapsule_reseal
+    - timecapsule_status

@@ -146,3 +146,61 @@ def test_only_official_and_verified_entries_can_be_default():
                                           "description": "d", "maintainer": "m", "tier": "community",
                                           "default": True})
     assert any("default" in error for error in errors)
+
+
+def test_a_new_home_or_a_failed_pass_unsettles_the_revision(tmp_path, monkeypatch):
+    """@BearHuddleston's review patch on #154858."""
+    import subprocess
+
+    import hermes_cli.plugin_catalog
+    import pm.plugins_state
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    monkeypatch.setattr(default_plugins, "_identity", lambda: "rev-1")
+    live: list = [None]  # the live catalog is unreadable until the first pass
+    monkeypatch.setattr(hermes_cli.plugin_catalog, "fetch_live_catalog", lambda **kwargs: live[0])
+    entries = [_entry("accent-picker")]
+    monkeypatch.setattr(default_plugins, "default_entries", lambda: list(entries))
+    homes = [tmp_path / "home"]
+    monkeypatch.setattr(pm.plugins_state, "dependency_homes", lambda: list(homes))
+    online = [True]
+
+    def install_into(home, consent=None):
+        def install(name, ref=None):
+            if not online[0]:
+                raise OSError("fatal: unable to access 'https://github.com/'")
+            (home / "plugins" / name).mkdir(parents=True, exist_ok=True)
+            return {"ok": True}
+        return install
+    monkeypatch.setattr(lcm, "_install_into", install_into)
+    children: list = []
+    monkeypatch.setattr(subprocess, "Popen", lambda argv, **kwargs: children.append(argv))
+
+    # Offline: the in-tree default installs, but the pass stays owed until the live catalog is read.
+    assert default_plugins.install_and_record(wait=1.0)["owed"] == ["live catalog"]
+    assert default_plugins.step_install_default_plugins().get("owed")
+    live[0] = {"entries": [{"name": "accent-picker"}]}  # the published doc is read
+    default_plugins.install_and_record(wait=1.0)
+    assert default_plugins.step_install_default_plugins() == {"ok": True}  # settled for this revision
+    # A profile is created; its first boot runs before the detached install finishes.
+    homes.append(tmp_path / "work")
+    assert default_plugins.spawn_install(homes[-1]) and len(children) == 1
+    assert default_plugins.step_install_default_plugins().get("owed"), "the new profile's boot closed early"
+
+    default_plugins.install_and_record(wait=1.0)  # the child installs it: settled again
+    assert default_plugins.step_install_default_plugins() == {"ok": True}
+    entries.append(_entry("second"))  # a later foreground pass fails (an update's tail, offline)
+    online[0] = False
+    assert default_plugins.install_and_record(wait=1.0)["owed"] == ["second", "second"]
+    assert default_plugins.step_install_default_plugins().get("owed"), "a failed pass left the revision settled"
+
+
+def test_default_entries_keep_the_tier_and_platform_rules(monkeypatch):
+    import dataclasses
+
+    import hermes_cli.plugin_catalog as catalog
+    from hermes_platform.host.facts import os_family
+    elsewhere = "linux" if os_family() == "win32" else "windows"
+    entries = [_entry("here"), dataclasses.replace(_entry("merged"), tier="community"),
+               dataclasses.replace(_entry("elsewhere"), platforms=[elsewhere])]
+    monkeypatch.setattr(catalog, "load_catalog_live", lambda: entries)
+    assert [entry.name for entry in default_plugins.default_entries()] == ["here"]

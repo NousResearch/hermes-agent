@@ -233,7 +233,10 @@ def spawn_install(home: Optional[Path] = None) -> bool:
     from pm.environments import dependency_home_root
     from pm.paths import install_root
     root = Path(dependency_home_root())
-    if (home is not None and not fetch_allowed(home)) or _failed_recently(root, _BACKOFF):
+    if home is not None and not fetch_allowed(home):
+        return False
+    _state(root, "settled").unlink(missing_ok=True)  # unsettled until a pass installs it, so every boot re-checks
+    if _failed_recently(root, _BACKOFF):
         return False
     rerun = _state(root, "rerun")
     rerun.parent.mkdir(parents=True, exist_ok=True)
@@ -262,6 +265,11 @@ def _run_child() -> int:
         return 1 if install_and_record(say=logger.info, wait=1.0)["owed"] else 0
     except TimeoutError:
         return 0
+    except Exception:  # health: allow BLE001 -- a detached child has no stderr: log the cause and back off
+        from hermes_cli.memory_provider_migration import _note_failure
+        logger.exception("default plugin install failed")
+        _note_failure(root, _BACKOFF)
+        return 1
 
 
 def install_and_record(*, say: Callable[[str], None] = print, wait: float = 900.0) -> dict:

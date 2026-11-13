@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from gateway.session_policy import _ACTIVE_POLICY, SURFACES, LocalSessionPolicy
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_state import SessionDB
 from tools.session_search_tool import session_search
@@ -38,11 +39,16 @@ def two_profiles(tmp_path, monkeypatch):
     return root, eva
 
 
-def _as(home: Path, **kwargs) -> dict:
+def _as(home: Path, launched_from: str | None = None, **kwargs) -> dict:
+    """``launched_from``: the frozen launch policy's source of a canonical local session's turn."""
     token = set_hermes_home_override(home)
+    policy = _ACTIVE_POLICY.set(launched_from and LocalSessionPolicy(
+        source=launched_from, platform=SURFACES.get(launched_from, launched_from), cwd=str(home), model="m", toolsets=(),
+        config_json="{}", request_json="{}", terminal_json="{}"))
     try:
         return json.loads(session_search(**kwargs))
     finally:
+        _ACTIVE_POLICY.reset(policy)
         reset_hermes_home_override(token)
 
 
@@ -65,6 +71,19 @@ def test_secondary_profile_still_reads_itself(two_profiles):
         result = _as(eva, **kwargs)
         assert result["success"] is True, (kwargs, result)
         assert result["messages"][0]["content"] == "eva own marker"
+
+
+def test_operator_session_in_secondary_profile_keeps_cross_profile_reads(two_profiles):
+    # The operator's own Desktop/TUI session: the All-profiles sidebar drags @session:<profile>/<id>
+    # chips from any profile into any profile's composer.
+    _root, eva = two_profiles
+    for kwargs in ({"session_id": "default/s_owner"}, {"session_id": "s_owner", "profile": "default"}):
+        result = _as(eva, launched_from="gui", **kwargs)
+        assert result["success"] is True, (kwargs, result)
+        assert result["messages"][0]["content"] == "owner secret marker"
+    # An A2A peer's forwarded session is a canonical local session too, but not the operator's.
+    peer = _as(eva, launched_from="a2a", session_id="default/s_owner")
+    assert peer["success"] is False and "owner secret marker" not in json.dumps(peer)
 
 
 def test_default_profile_keeps_cross_profile_reads(two_profiles):

@@ -438,13 +438,17 @@ def _cross_profile_reads_confined() -> bool:
     on a multi-profile host, a routed turn) makes each secondary profile a tenant: its allowlisted
     users must not reach the root profile's transcripts by naming it (#87779). The root profile
     keeps cross-profile reads, which is how its ``@session:<profile>/<id>`` links resolve. A
-    standalone process for one profile has no such boundary. The caller is the active scope
-    (``get_hermes_home()``), never ``os.environ``, which holds the launch profile's home.
+    standalone process for one profile has no such boundary, and neither does the operator's own
+    CLI/TUI/Desktop/ACP session (its frozen launch policy), whose All-profiles sidebar offers
+    ``@session:`` chips from every profile; A2A peers, hosted rooms, cron and messaging stay confined.
+    The caller is the active scope (``get_hermes_home()``), never ``os.environ``, which holds the
+    launch profile's home.
     """
     from agent.secret_scope import serves_routed_profile
     from hermes_cli.profiles import get_profile_dir
     from hermes_constants import get_hermes_home, hermes_home_key
-    if not serves_routed_profile():
+    from tools.approval_context import is_local_interactive_session
+    if not serves_routed_profile() or is_local_interactive_session():
         return False
     return hermes_home_key(get_hermes_home()) != hermes_home_key(get_profile_dir("default"))
 

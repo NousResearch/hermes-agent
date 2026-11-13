@@ -1026,9 +1026,9 @@ The keyword mode supports standard FTS5 query syntax:
 
 ### Who can search what
 
-`session_search` reads the whole session store of the profile it runs in: every chat, from every platform and every user in that profile's allowlist. On a shared or family bot, anyone allowed to talk to it can ask the agent to find and read anyone else's conversations with it. Hermes does not separate users inside one profile (see `SECURITY.md` §2.6), so give each person who needs private history their own profile or instance.
+`session_search` reads the whole session store of the profile it runs in: every chat, from every platform and every user in that profile's allowlist. On a shared or family bot, anyone allowed to talk to it can ask the agent to find and read anyone else's conversations with it. Hermes does not separate users inside one profile (see `SECURITY.md` §2.6), and profiles on one host are not isolated from each other either: the default profile reads every profile's sessions (below), and an agent with terminal or code-execution tools can read any profile's files. Give each person who needs private history their own instance, under a separate OS user or container (`SECURITY.md` §2.2).
 
-`profile=` (and an `@session:<profile>/<id>` link) reads another profile's store. When one process serves several profiles (a multiplexed gateway, a dashboard or `hermes serve` backend on a host with more than one profile), only the **default** profile may do that; a call from any other profile that names a different profile is refused with an error. A process running a single profile on its own keeps cross-profile reads.
+`profile=` (and an `@session:<profile>/<id>` link) reads another profile's store. When one process serves several profiles (a multiplexed gateway, a dashboard or `hermes serve` backend on a host with more than one profile), only the **default** profile may do that, except in your own Desktop, TUI, CLI and editor (ACP) sessions; a call from any other profile that names a different profile is refused with an error. A process running a single profile on its own keeps cross-profile reads.
 
 ### When It's Used
 

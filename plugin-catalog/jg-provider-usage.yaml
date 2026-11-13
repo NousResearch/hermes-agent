@@ -1,21 +1,21 @@
 # Independent implementation; does not replace the existing provider-usage entry.
 name: jg-provider-usage
 repo: https://github.com/jerrygooch/hermes-provider-usage
-sha: "543afc7c3dc4ac27d601a3a84389032d12db1415"
-version: "0.10.0"
+sha: "61e45ed1250e1b60a621895a4818cd90825a5b4f"
+version: "0.10.6"
 maintainer: jerrygooch
 tier: community
 category: desktop
 requires_hermes: ">=0.23.1"
-description: "Provider usage in a Desktop status-bar chip, popover and full page: subscription windows, API balances, reset times and profile-scoped account state. Includes data-only JSON connectors with explicit destination approval, setup cards for Claude, Gemini and Z.ai, a running-agents footer with honest unknowns, and an active-account Codex banked-reset preview/confirmation. Stock Hermes 0.23.1 needs no core patch; xAI subscription credits and exact worker-account usage need optional host metadata and otherwise remain unavailable. Usage reads use Hermes account helpers or scoped API-key access and provider HTTPS endpoints; subscription tokens stay with Hermes. Custom definitions are HTTPS GET only, approved-host restricted, with no redirects or executable code. Confirming a Codex reset spends one banked reset; refresh and preview do not. No purchase, automatic redemption, telemetry or self-update. Screenshots and demo use real plugin components with clearly labeled synthetic data, not live accounts. Disclosure — reads your own usage/credit data with vendor client-identity headers (`User-Agent: codex-cli` to chatgpt.com for Codex reset credits; `x-xai-token-auth: xai-grok-cli` to cli-chat-proxy.grok.com for Grok billing); the usage page can read every local Hermes profile's provider usage through Hermes' profile scope; confirming a Codex reset in the page spends one banked reset; it reads state.db read-only for token totals and fetches DeepSeek's public pricing page every 12 hours."
+description: "Provider usage in a Desktop status-bar chip, popover and full page: subscription windows, API balances, reset times and profile-scoped account state. Signed-in OAuth accounts are listed even when the chat is on another provider. Includes data-only JSON connectors with explicit destination approval, setup cards for Claude, Gemini and Z.ai, a running-agents footer with honest unknowns, and an active-account Codex banked-reset preview/confirmation. Readers: Codex, OpenCode Go/Zen, DeepSeek, OpenRouter, Ollama Cloud, Nous, Claude subscription, Grok, Moonshot, Novita, DeepInfra, Fireworks and Arcee (the last four are fixture-tested against documented response shapes, not exercised against a funded account). Stock Hermes 0.23.1 needs no core patch; Grok reads through the host when it brokers xai-oauth, or through an opt-in compatibility setting that resolves the account through Hermes' own locked resolver rather than a token file. A Settings panel renders from an allowlisted per-profile JSON spec and refetches usage on save. Usage reads use Hermes account helpers or scoped API-key access and provider HTTPS endpoints; subscription tokens stay with Hermes. Custom definitions are HTTPS GET only, approved-host restricted, with no redirects or executable code. Confirming a Codex reset spends one banked reset; refresh and preview do not. No purchase, automatic redemption, telemetry or self-update. Screenshots and demo use real plugin components with clearly labeled synthetic data, not live accounts. Disclosure — reads your own usage/credit data with vendor client-identity headers (`User-Agent: codex-cli` to chatgpt.com for Codex reset credits; `x-xai-token-auth: xai-grok-cli` to cli-chat-proxy.grok.com for Grok billing), and with the compatibility setting enabled the xAI billing request carries the account's OAuth access token attached by Hermes' resolver; the usage page can read every local Hermes profile's provider usage through Hermes' profile scope; confirming a Codex reset in the page spends one banked reset; it reads state.db read-only for token totals and fetches DeepSeek's public pricing page every 12 hours."
 docs_url: https://github.com/jerrygooch/hermes-provider-usage#readme
-image: https://raw.githubusercontent.com/jerrygooch/hermes-provider-usage/543afc7c3dc4ac27d601a3a84389032d12db1415/assets/hackathon/infographic.png
+image: https://raw.githubusercontent.com/jerrygooch/hermes-provider-usage/61e45ed1250e1b60a621895a4818cd90825a5b4f/assets/hackathon/infographic.png
 screenshots:
-  - https://raw.githubusercontent.com/jerrygooch/hermes-provider-usage/543afc7c3dc4ac27d601a3a84389032d12db1415/assets/hackathon/screenshots/02-popover-current.png
-  - https://raw.githubusercontent.com/jerrygooch/hermes-provider-usage/543afc7c3dc4ac27d601a3a84389032d12db1415/assets/hackathon/screenshots/04-overview-multi-provider.png
-  - https://raw.githubusercontent.com/jerrygooch/hermes-provider-usage/543afc7c3dc4ac27d601a3a84389032d12db1415/assets/hackathon/screenshots/06-popular-connections.png
-  - https://raw.githubusercontent.com/jerrygooch/hermes-provider-usage/543afc7c3dc4ac27d601a3a84389032d12db1415/assets/hackathon/screenshots/08-catalog-trust.png
-  - https://raw.githubusercontent.com/jerrygooch/hermes-provider-usage/543afc7c3dc4ac27d601a3a84389032d12db1415/assets/hackathon/screenshots/12-reset-confirm.png
+  - https://raw.githubusercontent.com/jerrygooch/hermes-provider-usage/61e45ed1250e1b60a621895a4818cd90825a5b4f/assets/hackathon/screenshots/02-popover-current.png
+  - https://raw.githubusercontent.com/jerrygooch/hermes-provider-usage/61e45ed1250e1b60a621895a4818cd90825a5b4f/assets/hackathon/screenshots/04-overview-multi-provider.png
+  - https://raw.githubusercontent.com/jerrygooch/hermes-provider-usage/61e45ed1250e1b60a621895a4818cd90825a5b4f/assets/hackathon/screenshots/06-popular-connections.png
+  - https://raw.githubusercontent.com/jerrygooch/hermes-provider-usage/61e45ed1250e1b60a621895a4818cd90825a5b4f/assets/hackathon/screenshots/08-catalog-trust.png
+  - https://raw.githubusercontent.com/jerrygooch/hermes-provider-usage/61e45ed1250e1b60a621895a4818cd90825a5b4f/assets/hackathon/screenshots/12-reset-confirm.png
 capabilities:
   provides_tools: []
   provides_hooks: []

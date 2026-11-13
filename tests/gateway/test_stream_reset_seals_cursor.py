@@ -112,7 +112,7 @@ async def test_reset_while_the_final_edit_is_refused_sends_no_fallback_after_new
     await asyncio.wait_for(task, 5)
 
     # Only the first preview went out; the still-arriving last token is held out of it (#56039).
-    assert len(sends) == 1 and sends[0].endswith(CURSOR), sends
+    assert sends == ["the dead " + CURSOR], sends
     assert "whole answer" not in sends[0]
     assert consumer.final_response_sent is False
 

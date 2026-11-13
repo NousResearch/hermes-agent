@@ -186,6 +186,8 @@ def prune_staged_store(store_dir: Path, names: list[str]) -> None:
     """Prune this build's store, never the ambient user's tool store."""
     facts = Facts(store_dir / "facts.json", strict=True)
     facts.retain({package.name for package in walk(names)})
+    # No other checkout shares a build's store: no other install's pin is live here.
+    facts.drop_dead_history(lambda owner: False)
     keep = facts.entries_in_use()
     for entry in store_dir.iterdir():
         if entry.is_dir() and not entry.name.startswith(".") and entry.name not in keep:

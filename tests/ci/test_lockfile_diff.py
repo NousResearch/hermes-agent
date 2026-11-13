@@ -250,6 +250,14 @@ def test_pnpm_section_ends_at_a_top_level_key_pnpm_does_not_define():
     assert section_keys(empty, "importers") == ["."]
 
 
+def test_pnpm_section_keys_refuses_a_key_line_not_indented_two_spaces():
+    # ``ab@1`` one column short would otherwise read as the key ``b@1``.
+    from scripts.ci.pnpm_lock import section_keys
+
+    with pytest.raises(ValueError, match="unreadable packages line"):
+        section_keys(REPIN_HEAD.replace("\n  ms@2.1.3:", "\n ms@2.1.3:"), "packages")
+
+
 def test_pnpm_section_reads_an_explicit_key():
     # pnpm writes a key over 1024 characters (a long peer suffix on a snapshot) as
     # ``? key`` / ``: value``; the value's first line follows the ``: ``.

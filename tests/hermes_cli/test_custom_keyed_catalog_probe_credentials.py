@@ -88,6 +88,51 @@ def test_titling_fast_model_reads_the_declared_entrys_catalog(issue_config):
     assert seen == [f"Bearer {ROUTE_KEY}"]
 
 
+@pytest.mark.parametrize(("name", "provider", "expected", "probes"), [
+    ("litellm", "custom:litellm", "proxy-small-mini", [f"Bearer {ROUTE_KEY}"]),  # prefixed spelling of the entry
+    ("deepseek", "deepseek", "my-combo", []),  # entry named like a built-in: never the built-in's catalog
+])
+def test_titling_reads_the_owning_entry_by_its_own_name(
+        tmp_path, monkeypatch, catalog_server, name, provider, expected, probes):
+    from agent.auxiliary_client import _main_route_target
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    url, seen = catalog_server
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(yaml.safe_dump({
+        "model": {"default": "my-combo", "provider": provider, "base_url": url},
+        "providers": {name: {"name": f"my {name}", "base_url": url, "key_env": "HERMES_ROUTE_KEY"}},
+        "auxiliary": {"title_generation": {"prefer_fast_model": True}},
+    }), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_ROUTE_KEY", ROUTE_KEY)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-registry-key")
+    runtime = resolve_runtime_provider()
+    assert runtime["provider"] == "custom"
+
+    _provider, model, *_ = _main_route_target(runtime, "title_generation")
+
+    assert model == expected
+    assert seen == probes
+
+
+def test_titling_skips_the_named_entry_when_the_runtime_runs_on_another_url(issue_config):
+    """A ``--base-url`` override keeps ``requested_provider: litellm`` on a URL the entry does not
+    own; the entry's fast model would be sent to that URL, so titling stays on the main model."""
+    from agent.auxiliary_client import _main_route_target
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    _url, seen = issue_config
+    runtime = resolve_runtime_provider(requested="litellm", explicit_base_url="http://127.0.0.1:9/v1")
+    assert (runtime["provider"], runtime.get("requested_provider")) == ("custom", "litellm")
+
+    _provider, model, *_ = _main_route_target(runtime, "title_generation")
+
+    assert model == "my-combo"
+    assert seen == []
+
+
 def test_custom_catalog_probe_never_sends_the_ambient_openai_key(issue_config):
     """``provider_model_ids("custom")`` probes ``model.base_url``; the entry owning it supplies the
     key, and an OpenAI key is never a fallback for a third-party host (#91308)."""

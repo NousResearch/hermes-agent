@@ -74,6 +74,10 @@ def fast_catalog_provider(runtime: dict[str, Any], main_provider: str) -> str:
     if main_provider != "custom" or not requested or requested == "custom":
         return main_provider
     from agent.custom_entry_pool import custom_entry_for_endpoint, named_custom_entry
+    from hermes_cli.auth import is_known_auth_provider
     found = named_custom_entry(requested)
     owns = found is not None and custom_entry_for_endpoint(str(runtime.get("base_url") or ""), requested) == found
-    return requested if owns else main_provider
+    # The entry's ``providers:`` key (``custom:<name>`` spellings included), never a built-in's: a
+    # registry name would read that provider's catalog and send its fast model to this entry's URL.
+    key = str(found[1].get("provider_key") or "") if owns else ""
+    return key if key and not is_known_auth_provider(key) else main_provider

@@ -239,3 +239,26 @@ def test_an_empty_userconfig_reads_as_unset_for_install_children_too(bridge, mon
 
     assert env["npm_config_disturl"] == "https://hermes-file.invalid/node"
     assert [value for key, value in env.items() if key.upper() == "NPM_CONFIG_USERCONFIG"] == [str(bridge / "npmrc")]
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("lowercase_first", [False, True])
+def test_conflicting_userconfig_twins_reach_children_as_the_one_file_bridged(bridge, tmp_path, monkeypatch, lowercase_first):
+    """npm 12 reads the last non-empty twin in environ order and pnpm 12 only the lowercase one;
+    the children must get one variable, naming the file the bridge and PM's downloads read: the
+    user's non-empty lowercase choice, as pnpm and the desktop read it."""
+    from hermes_cli.source_build import source_build_env
+    from pm.index_config import npm_registry
+
+    (bridge / "npmrc").write_text("registry=https://hermes-file.invalid/\n", encoding="utf-8")
+    selected = tmp_path / "selected-npmrc"
+    selected.write_text("registry=https://selected.invalid/\n", encoding="utf-8")
+    twins = {"NPM_CONFIG_USERCONFIG": str(bridge / "npmrc"), "npm_config_userconfig": str(selected)}
+    for name in sorted(twins, key=lambda name: name.islower() != lowercase_first):
+        monkeypatch.setenv(name, twins[name])
+
+    env = source_build_env()
+
+    assert [value for key, value in env.items() if key.upper() == "NPM_CONFIG_USERCONFIG"] == [str(selected)]
+    assert env["npm_config_registry"] == "https://selected.invalid/"
+    assert npm_registry(dict(os.environ)) == "https://selected.invalid/"

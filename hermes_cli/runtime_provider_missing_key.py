@@ -85,9 +85,9 @@ def raise_if_declared_key_missing(requested_provider: Optional[str], runtime: di
     for another, which never reads that process's environment). A single-profile process keeps
     the placeholder plus ``_key_env_secret``'s warning: there the variable is read from the
     process environment too, and callers rely on the placeholder rather than an error.
-    A block without a declared key keeps the placeholder except on the official OpenAI API,
-    which always requires credentials. Only a placeholder the resolver SYNTHESIZED is refused:
-    a caller-supplied key
+    A block without a declared key keeps the placeholder (the keyless local-server configuration)
+    except on a registered provider's official hosted API host, which always requires a credential.
+    Only a placeholder the resolver SYNTHESIZED is refused: a caller-supplied key
     (even the literal ``no-key-required``, the same value a set key variable may hold) and a
     transport that never sends the key (``_KEYLESS_API_MODES``, judged on the final api_mode) pass.
     ``config`` is a frozen
@@ -98,15 +98,14 @@ def raise_if_declared_key_missing(requested_provider: Optional[str], runtime: di
         return
     if str(explicit_api_key or "").strip() or runtime.get("api_mode") in _KEYLESS_API_MODES:
         return
-    # The official OpenAI API requires auth; do not send its SDK placeholder to the wire.
-    from hermes_cli.providers import is_official_openai_host
-    if is_official_openai_host(str(runtime.get("base_url") or "")):
-        from hermes_cli.auth import AuthError
-        raise AuthError(
-            "No API key for the OpenAI endpoint; the request was not sent. "
-            + where_to_set_key("OPENAI_API_KEY"),
-            provider=str(requested_provider or "custom"), code="missing_api_key",
-        )
+    # An official hosted API (a registered provider's own host) always requires a credential:
+    # never send it the keyless-local placeholder (#154794). Local/LAN and unknown hosts keep it.
+    from hermes_cli.hosted_api_hosts import official_hosted_provider_for
+    # ``extra_headers`` can carry the credential itself (Authorization / x-goog-api-key), so an entry
+    # that sets any is left alone rather than guessed at.
+    if not runtime.get("extra_headers") and (
+            hosted := official_hosted_provider_for(str(runtime.get("base_url") or ""))) is not None:
+        raise_hosted_key_missing(requested_provider, str(runtime.get("base_url") or ""), hosted)
     if not serves_routed_profile():
         return
     label, key_env = _declared_custom_key(str(requested_provider or "").strip().lower(), runtime, model_cfg, config)
@@ -116,3 +115,18 @@ def raise_if_declared_key_missing(requested_provider: Optional[str], runtime: di
     raise AuthError(f"No API key for {label}: it reads {key_env}, which is not set for this profile, so the "
                     f"request was not sent. {where_to_set_key(key_env)}",
                     provider=str(requested_provider or "custom"), code="missing_api_key")
+
+
+def raise_hosted_key_missing(requested_provider: Optional[str], base_url: str, hosted: tuple) -> None:
+    """Typed ``missing_api_key`` refusal for a keyless custom route to an official hosted API."""
+    from hermes_cli.auth import AuthError
+    from utils import base_url_hostname
+    pid, name, key_envs = hosted
+    host = base_url_hostname(base_url)
+    # Bare custom reads these two from env for their own hosts; others need the provider's route.
+    direct = {"api.openai.com": "OPENAI_API_KEY", "openrouter.ai": "OPENROUTER_API_KEY"}.get(host)
+    hint = (where_to_set_key(direct) if direct else
+            f"Use `--provider {pid}`" + (f" with {key_envs[0]} set" if key_envs else "")
+            + ", or give this custom endpoint a key (api_key / key_env in config.yaml).")
+    raise AuthError(f"No API key configured for {host} ({name}'s hosted API requires one), so the request "
+                    f"was not sent. {hint}", provider=str(requested_provider or "custom"), code="missing_api_key")

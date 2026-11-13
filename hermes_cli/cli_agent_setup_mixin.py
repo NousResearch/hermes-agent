@@ -92,12 +92,15 @@ def _resume_counts(user_count: int, total: int) -> str:
 
 
 def _keyless_custom_base(base_url) -> bool:
-    """Custom/local endpoints (llama.cpp, ollama, vLLM) often need no auth; only a
-    non-OpenRouter base_url qualifies."""
+    """Custom/local endpoints (llama.cpp, ollama, vLLM) often need no auth; a registered
+    provider's official hosted API (OpenRouter, api.openai.com, Google AI Studio, ...) never
+    qualifies (#154794, #69237)."""
+    from hermes_cli.hosted_api_hosts import official_hosted_provider_for
     return bool(
         isinstance(base_url, str)
         and base_url
-        and not base_url_host_matches(base_url, "openrouter.ai"))
+        and not base_url_host_matches(base_url, "openrouter.ai")
+        and official_hosted_provider_for(base_url) is None)
 
 
 def _compression_descendant(session_db, session_id):

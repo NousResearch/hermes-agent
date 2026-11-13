@@ -4,7 +4,7 @@
 For each name in ``hermes_agent/compat/required_names.py`` whose module has moved (longest dotted
 prefix in ``hermes_agent/compat/moves.py``), write a file at the old path:
 
-- a shim (every kind but ``copy``). Imported, it installs the compat finder and becomes the moved
+- a shim (kinds ``package``, ``module``, ``by-path``). Imported, it installs the compat finder and becomes the moved
   module object. Loaded by path (``runpy.run_path``, ``spec_from_file_location``), it carries the
   moved module's names. Run as a script or with ``-m``, it runs the moved module as ``__main__``.
   When ``hermes_agent`` is not importable (a virtualenv that maps only the old top-level names) or
@@ -14,7 +14,9 @@ prefix in ``hermes_agent/compat/moves.py``), write a file at the old path:
   tree and relaunches, then forwards once more; a healthy tree never imports the bootstrap. Its body
   is one ``try`` statement, so a file cut short is a SyntaxError, never an empty module.
 - a byte copy of the moved file (kind ``copy``), for a file a release runs without the application
-  on the path.
+  on the path, or a data file it reads at the old path.
+- a marker (kind ``exists``), for a file a release only checks for. Loading it raises ImportError that
+  names the moved module, so an old process fails there instead of running moved code as old code.
 
 Nothing for kind ``hand``: that file is hand-written. Both modes report it while it is missing or
 carries the shim header; only ``--check`` fails on it, since a chunk adds it after this script writes.
@@ -85,6 +87,12 @@ TEMPLATE = '''try:  {header}
 finally:
     pass
 '''
+MARKER = '''try:  {header}
+    """``{old}`` moved to ``{new}``. A release checks that this file exists; nothing loads it."""
+    raise ImportError("{old} moved to {new} when this checkout was updated; restart Hermes to load it")
+finally:
+    pass
+'''
 
 
 def _old_module(name: str, kind: str) -> str:
@@ -115,6 +123,8 @@ def generated() -> dict[str, bytes]:
             path = Path(name)
         if kind == "copy":
             files[path.as_posix()] = source.read_bytes()
+        elif kind == "exists":
+            files[path.as_posix()] = MARKER.format(header=HEADER, old=old, new=new).encode()
         else:
             text = f"    # {REQUIRED_TEXT[name]}\n" if name in REQUIRED_TEXT else ""
             files[path.as_posix()] = TEMPLATE.format(header=HEADER, old=old, new=new, depth=len(path.parts) - 1,

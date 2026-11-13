@@ -9,7 +9,9 @@ their canaries. Kinds:
   under a package its updater loaded before (Python looks on the old package's ``__path__``), or
   first thing in a fresh process (a launcher's ``import hermes_bootstrap``).
 - ``by-path``: a release runs or loads the file by path.
-- ``exists``: a release checks that the file exists.
+- ``exists``: a release checks that the file exists and does not load it. The file is a marker that
+  raises ImportError when loaded: a process that started before the update must not get the moved
+  package through its old folder.
 - ``copy``: a release runs the file without the application on the path (``python -I -S``, or the
   file copied out alone), or fetches it from main by URL; the old path holds a byte copy of the moved file.
 - ``hand``: the old path holds hand-written code that must run before ``hermes_agent`` is
@@ -142,22 +144,78 @@ REQUIRED_NAMES: dict[str, str] = {
     "hermes_cli/update_serve_resume.py": "by-path",  # v0.22.7..v0.23.0: hermes_cli/_update_takeover.py:153@v0.23.0
     "scripts/docker_config_migrate.py": "by-path",  # v0.21.6..v0.23.0: docker/stage2-hook.sh:660@v0.23.0
     "tools/skills_sync.py": "by-path",  # v0.21.6..v0.23.0: docker/stage2-hook.sh:767
-    "plugins/platforms/bluebubbles/gateway_env.py": "exists",  # v0.22.7..v0.23.0: gateway/platform_env.py:196@v0.23.0
-    "plugins/platforms/dingtalk/gateway_env.py": "exists",  # v0.22.7..v0.23.0: gateway/platform_env.py:196@v0.23.0
-    "plugins/platforms/discord/gateway_env.py": "exists",  # v0.22.7..v0.23.0: gateway/platform_env.py:196@v0.23.0
-    "plugins/platforms/email/gateway_env.py": "exists",  # v0.22.7..v0.23.0: gateway/platform_env.py:196@v0.23.0
-    "plugins/platforms/feishu/gateway_env.py": "exists",  # v0.22.7..v0.23.0: gateway/platform_env.py:196@v0.23.0
-    "plugins/platforms/matrix/gateway_env.py": "exists",  # v0.22.7..v0.23.0: gateway/platform_env.py:196@v0.23.0
-    "plugins/platforms/mattermost/gateway_env.py": "exists",  # v0.22.7..v0.23.0: gateway/platform_env.py:196@v0.23.0
-    "plugins/platforms/qqbot/gateway_env.py": "exists",  # v0.22.7..v0.23.0: gateway/platform_env.py:196@v0.23.0
-    "plugins/platforms/signal/gateway_env.py": "exists",  # v0.22.7..v0.23.0: gateway/platform_env.py:196@v0.23.0
-    "plugins/platforms/slack/gateway_env.py": "exists",  # v0.22.7..v0.23.0: gateway/platform_env.py:196@v0.23.0
-    "plugins/platforms/sms/gateway_env.py": "exists",  # v0.22.7..v0.23.0: gateway/platform_env.py:196@v0.23.0
-    "plugins/platforms/telegram/gateway_env.py": "exists",  # v0.22.7..v0.23.0: gateway/platform_env.py:196@v0.23.0
-    "plugins/platforms/wecom/gateway_env.py": "exists",  # v0.22.7..v0.23.0: gateway/platform_env.py:196@v0.23.0
-    "plugins/platforms/weixin/gateway_env.py": "exists",  # v0.22.7..v0.23.0: gateway/platform_env.py:196@v0.23.0
-    "plugins/platforms/whatsapp/gateway_env.py": "exists",  # v0.22.7..v0.23.0: gateway/platform_env.py:196@v0.23.0
-    "plugins/platforms/whatsapp_cloud/gateway_env.py": "exists",  # v0.22.7..v0.23.0: gateway/platform_env.py:196@v0.23.0
+    # A release takes plugins/platforms/<name>/ for a bundled platform only when the folder holds __init__.py
+    # and plugin.yaml (Platform._scan_bundled_plugin_platforms), and reads the manifest's name. Only then does
+    # it load <name>/gateway_env.py by path (bundled_sibling). After the swap an updater that restarts gateways
+    # itself needs the scan to strip every platform's credentials from a served profile's environment.
+    "plugins/platforms/a2a/__init__.py": "exists",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
+    "plugins/platforms/bluebubbles/__init__.py": "exists",  # v0.22.3..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
+    "plugins/platforms/buzz/__init__.py": "exists",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
+    "plugins/platforms/dingtalk/__init__.py": "exists",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
+    "plugins/platforms/discord/__init__.py": "exists",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
+    "plugins/platforms/email/__init__.py": "exists",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
+    "plugins/platforms/feishu/__init__.py": "exists",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
+    "plugins/platforms/google_chat/__init__.py": "exists",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
+    "plugins/platforms/irc/__init__.py": "exists",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
+    "plugins/platforms/line/__init__.py": "exists",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
+    "plugins/platforms/matrix/__init__.py": "exists",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
+    "plugins/platforms/mattermost/__init__.py": "exists",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
+    "plugins/platforms/ntfy/__init__.py": "exists",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
+    "plugins/platforms/photon/__init__.py": "exists",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
+    "plugins/platforms/qqbot/__init__.py": "exists",  # v0.22.3..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
+    "plugins/platforms/raft/__init__.py": "exists",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
+    "plugins/platforms/signal/__init__.py": "exists",  # v0.22.3..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
+    "plugins/platforms/simplex/__init__.py": "exists",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
+    "plugins/platforms/slack/__init__.py": "exists",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
+    "plugins/platforms/sms/__init__.py": "exists",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
+    "plugins/platforms/teams/__init__.py": "exists",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
+    "plugins/platforms/telegram/__init__.py": "exists",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
+    "plugins/platforms/wecom/__init__.py": "exists",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
+    "plugins/platforms/weixin/__init__.py": "exists",  # v0.22.3..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
+    "plugins/platforms/whatsapp/__init__.py": "exists",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
+    "plugins/platforms/whatsapp_cloud/__init__.py": "exists",  # v0.22.3..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
+    "plugins/platforms/a2a/plugin.yaml": "copy",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
+    "plugins/platforms/bluebubbles/plugin.yaml": "copy",  # v0.22.3..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
+    "plugins/platforms/buzz/plugin.yaml": "copy",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
+    "plugins/platforms/dingtalk/plugin.yaml": "copy",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
+    "plugins/platforms/discord/plugin.yaml": "copy",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
+    "plugins/platforms/email/plugin.yaml": "copy",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
+    "plugins/platforms/feishu/plugin.yaml": "copy",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
+    "plugins/platforms/google_chat/plugin.yaml": "copy",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
+    "plugins/platforms/irc/plugin.yaml": "copy",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
+    "plugins/platforms/line/plugin.yaml": "copy",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
+    "plugins/platforms/matrix/plugin.yaml": "copy",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
+    "plugins/platforms/mattermost/plugin.yaml": "copy",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
+    "plugins/platforms/ntfy/plugin.yaml": "copy",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
+    "plugins/platforms/photon/plugin.yaml": "copy",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
+    "plugins/platforms/qqbot/plugin.yaml": "copy",  # v0.22.3..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
+    "plugins/platforms/raft/plugin.yaml": "copy",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
+    "plugins/platforms/signal/plugin.yaml": "copy",  # v0.22.3..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
+    "plugins/platforms/simplex/plugin.yaml": "copy",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
+    "plugins/platforms/slack/plugin.yaml": "copy",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
+    "plugins/platforms/sms/plugin.yaml": "copy",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
+    "plugins/platforms/teams/plugin.yaml": "copy",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
+    "plugins/platforms/telegram/plugin.yaml": "copy",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
+    "plugins/platforms/wecom/plugin.yaml": "copy",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
+    "plugins/platforms/weixin/plugin.yaml": "copy",  # v0.22.3..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
+    "plugins/platforms/whatsapp/plugin.yaml": "copy",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
+    "plugins/platforms/whatsapp_cloud/plugin.yaml": "copy",  # v0.22.3..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
+    "plugins/platforms/bluebubbles/gateway_env.py": "by-path",  # v0.22.3..rc.4-v0.23.2: gateway/platform_env.py:198@v0.23.1
+    "plugins/platforms/dingtalk/gateway_env.py": "by-path",  # v0.22.3..rc.4-v0.23.2: gateway/platform_env.py:198@v0.23.1
+    "plugins/platforms/discord/gateway_env.py": "by-path",  # v0.22.3..rc.4-v0.23.2: gateway/platform_env.py:198@v0.23.1
+    "plugins/platforms/email/gateway_env.py": "by-path",  # v0.22.3..rc.4-v0.23.2: gateway/platform_env.py:198@v0.23.1
+    "plugins/platforms/feishu/gateway_env.py": "by-path",  # v0.22.3..rc.4-v0.23.2: gateway/platform_env.py:198@v0.23.1
+    "plugins/platforms/matrix/gateway_env.py": "by-path",  # v0.22.3..rc.4-v0.23.2: gateway/platform_env.py:198@v0.23.1
+    "plugins/platforms/mattermost/gateway_env.py": "by-path",  # v0.22.3..rc.4-v0.23.2: gateway/platform_env.py:198@v0.23.1
+    "plugins/platforms/qqbot/gateway_env.py": "by-path",  # v0.22.3..rc.4-v0.23.2: gateway/platform_env.py:198@v0.23.1
+    "plugins/platforms/signal/gateway_env.py": "by-path",  # v0.22.3..rc.4-v0.23.2: gateway/platform_env.py:198@v0.23.1
+    "plugins/platforms/slack/gateway_env.py": "by-path",  # v0.22.3..rc.4-v0.23.2: gateway/platform_env.py:198@v0.23.1
+    "plugins/platforms/sms/gateway_env.py": "by-path",  # v0.22.3..rc.4-v0.23.2: gateway/platform_env.py:198@v0.23.1
+    "plugins/platforms/telegram/gateway_env.py": "by-path",  # v0.22.3..rc.4-v0.23.2: gateway/platform_env.py:198@v0.23.1
+    "plugins/platforms/wecom/gateway_env.py": "by-path",  # v0.22.3..rc.4-v0.23.2: gateway/platform_env.py:198@v0.23.1
+    "plugins/platforms/weixin/gateway_env.py": "by-path",  # v0.22.3..rc.4-v0.23.2: gateway/platform_env.py:198@v0.23.1
+    "plugins/platforms/whatsapp/gateway_env.py": "by-path",  # v0.22.3..rc.4-v0.23.2: gateway/platform_env.py:198@v0.23.1
+    "plugins/platforms/whatsapp_cloud/gateway_env.py": "by-path",  # v0.22.3..rc.4-v0.23.2: gateway/platform_env.py:198@v0.23.1
 }
 
 REQUIRED_TEXT: dict[str, str] = {

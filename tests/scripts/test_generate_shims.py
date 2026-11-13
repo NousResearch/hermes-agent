@@ -132,6 +132,35 @@ def test_copy_row_for_a_data_file_copies_that_file(repo):
     assert _generate(repo, "--check").returncode == 0
 
 
+def test_exists_row_writes_a_marker_that_refuses_to_load(repo):
+    # A release scans the old folder for __init__.py. The file must exist, and a process that started
+    # before the update must not get the moved package through it: it fails and names the new module.
+    _write(repo, {"hermes_agent/oldpkg/sub/__init__.py": "", "hermes_agent/oldpkg/sub/real.py": "VALUE = 7\n"})
+    names = repo / "hermes_agent/compat/required_names.py"
+    names.write_text(names.read_text().replace('"oldtop": "hand"}', '"oldtop": "hand", "oldpkg/sub/__init__.py": "exists"}'))
+    assert _generate(repo).returncode == 0
+    assert (repo / "oldpkg/sub/__init__.py").is_file() and not (repo / "oldpkg/sub/real.py").exists()
+    assert _generate(repo, "--check").returncode == 0
+    loaded = _run(repo, "-c", "import runpy; runpy.run_path('oldpkg/sub/__init__.py')")
+    assert loaded.returncode != 0 and "ImportError" in loaded.stderr and "hermes_agent.oldpkg.sub" in loaded.stderr
+    # The marker is not in the way of the old name: the import reaches the moved package.
+    old_name = _run(repo, "-c", "import oldpkg.sub.real as m; print(m.VALUE, 'hermes_agent' in m.__file__)")
+    assert old_name.stdout.split() == ["7", "True"], old_name.stderr
+
+
+def test_platform_folders_a_release_scans_keep_their_marker_and_manifest():
+    # Released code accepts plugins/platforms/<name>/ only with __init__.py and plugin.yaml, and only then
+    # loads <name>/gateway_env.py. A gateway_env.py row without the other two does nothing.
+    from hermes_agent.compat.required_names import REQUIRED_NAMES
+
+    folders = {name.rsplit("/", 1)[0] for name in REQUIRED_NAMES if name.startswith("plugins/platforms/")}
+    assert len(folders) >= 16
+    for folder in sorted(folders):
+        assert REQUIRED_NAMES.get(f"{folder}/__init__.py") == "exists", folder
+        assert REQUIRED_NAMES.get(f"{folder}/plugin.yaml") == "copy", folder
+        assert REQUIRED_NAMES.get(f"{folder}/gateway_env.py") in (None, "by-path"), folder
+
+
 def test_check_fails_on_drift_and_strays_but_not_on_ignored_output(repo):
     (repo / "oldpkg/build").mkdir()
     (repo / "oldpkg/build/out.js").write_text("")

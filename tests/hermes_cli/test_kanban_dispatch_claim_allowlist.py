@@ -115,11 +115,61 @@ def test_allowlist_config_read_failure_skips_all_cards(
     assert res.skipped_nonspawnable == [tid]
 
 
+@pytest.mark.parametrize("root, warm", [
+    ("[1, 2]\n", None),
+    ("[1, 2]\n", "effective"),
+    ("[]\n", "raw"),
+], ids=["cold", "cached", "raw_cache"])
+def test_non_mapping_config_root_does_not_widen_claims(
+    kanban_home, all_assignees_spawnable, root, warm, caplog,
+):
+    """A valid non-mapping YAML root must not become an absent dispatch
+    allowlist, even if a non-strict read cached it as an empty mapping
+    (``read_raw_config`` stores a falsy root such as ``[]`` as ``{}``)."""
+    from hermes_cli.config import read_raw_config
+    from hermes_cli.config_effective import load_user_config_effective
+
+    (kanban_home / "config.yaml").write_text(root, encoding="utf-8")
+    if warm:
+        {"effective": load_user_config_effective, "raw": read_raw_config}[warm]()
+    with kbc.connect() as conn, caplog.at_level("WARNING", logger="hermes_cli.kanban_db"):
+        tid = kb.create_task(conn, title="foreign card", assignee="default")
+        assert kbd.has_spawnable_ready(conn) is False
+        res = kbd.dispatch_once(conn, dry_run=True)
+    assert res.spawned == []
+    assert res.skipped_nonspawnable == [tid]
+    assert kbd.dispatch_profile_allowlist_summary().startswith("none (fail-closed")
+    assert any("root is not a mapping" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("section", [
+    "kanban: \"corrupt\"\n",
+    "kanban: [1, 2]\n",
+    "kanban: 7\n",
+], ids=["scalar_string", "list", "int"])
+def test_non_mapping_kanban_section_skips_all_cards(
+    kanban_home, all_assignees_spawnable, section, caplog,
+):
+    """A ``kanban`` section that parses into a non-mapping is present-but-unusable,
+    not absent: it must fail closed like an unreadable config (#113620) instead of
+    widening this home's claim scope to every existing profile (#147532)."""
+    (kanban_home / "config.yaml").write_text(section, encoding="utf-8")
+    with kbc.connect() as conn, caplog.at_level("WARNING", logger="hermes_cli.kanban_db"):
+        tid = kb.create_task(conn, title="foreign card", assignee="default")
+        assert kbd.has_spawnable_ready(conn) is False
+        res = kbd.dispatch_once(conn, dry_run=True)
+    assert res.spawned == []
+    assert res.skipped_nonspawnable == [tid]
+    assert any("cannot be resolved" in r.getMessage() for r in caplog.records)
+
+
 @pytest.mark.parametrize("config, expected", [
     ("", "any"),
     ("kanban:\n  dispatch_profiles: [researcher, sage]\n", "researcher, sage"),
     ("kanban:\n  dispatch_profiles: []\n", "none (fail-closed"),
-], ids=["absent", "listed", "empty_list"])
+    ("kanban: [1, 2]\n", "none (fail-closed"),
+    ("kanban:\n#  dispatch_profiles: [sage]\n", "any"),
+], ids=["absent", "listed", "empty_list", "non_mapping_section", "empty_section"])
 def test_diagnostics_reports_resolved_allowlist(kanban_home, capsys, config, expected):
     """`hermes kanban diagnostics` (text and --json) shows what this home may claim."""
     import argparse

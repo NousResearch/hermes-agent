@@ -132,8 +132,8 @@ values. Full (secret-redacted) logs are never sent to the public paste: use
 `hermes debug share --nous` to send them to private Nous storage instead.
 
 Pastes auto-delete after 6 hours. If paste.rs is unreachable the upload
-falls back to dpaste.com, which keeps it for the --expire window (default:
-1 day) and CANNOT be deleted with `hermes debug delete`.
+falls back to dpaste.com, which keeps it for the --expire window
+(default: 1 day) and CANNOT be deleted with `hermes debug delete`.
 
 Use --local to view everything on this machine without uploading.
 """

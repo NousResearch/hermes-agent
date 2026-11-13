@@ -126,7 +126,7 @@ async def test_gateway_debug_uploads_only_the_summary(pii_home):
                lambda report: uploaded.append(report) or "https://paste.rs/x"), \
             patch("hermes_cli.debug._schedule_auto_delete"), \
             patch("hermes_cli.debug._sweep_expired_pastes", return_value=(0, 0)):
-        await runner._handle_debug_command(MessageEvent(text="/debug", source=source))
+        await runner._handle_debug_command(MessageEvent(text="/debug upload", source=source))
 
     assert len(uploaded) == 1
     _assert_no_pii(uploaded[0])

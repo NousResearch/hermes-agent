@@ -16,6 +16,8 @@ import json
 import threading
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from tools.delegate_tool import (
     DELEGATE_TASK_SCHEMA,
     _run_single_child,
@@ -24,6 +26,7 @@ from tools.delegate_tool import (
 from tools.delegation_output_schema import (
     append_output_contract,
     build_retry_message,
+    coerce_output_schema,
     validate_output,
 )
 
@@ -382,3 +385,49 @@ class TestDelegateTaskDispatch:
         assert "OUTPUT CONTRACT" in (captured.get("context") or "")
         results = payload.get("results") or []
         assert results and results[0].get("schema_valid") is True
+
+
+# ---------------------------------------------------------------------------
+# References stay inside the (model-written) schema
+# ---------------------------------------------------------------------------
+
+
+class TestSchemaReferencesStayLocal:
+    @pytest.mark.parametrize("keyword", ["$ref", "$dynamicRef"])
+    def test_non_local_reference_rejected_at_dispatch(self, keyword):
+        schema, error = coerce_output_schema(
+            {"type": "object", "properties": {"city": {keyword: "https://example.com/city.json"}}}
+        )
+        assert schema is None
+        assert "#/$defs/" in error
+
+    def test_local_reference_still_validates(self):
+        schema, error = coerce_output_schema({
+            "type": "object",
+            "properties": {"city": {"$ref": "#/$defs/city"}},
+            "$defs": {"city": {"type": "string"}},
+            "required": ["city"],
+        })
+        assert error is None
+        assert validate_output('{"city": "Oslo"}', schema) == (True, [])
+        assert validate_output('{"city": 7}', schema)[0] is False
+
+    @pytest.mark.parametrize(("ref", "expected"), [
+        ("{url}/city.json", "unresolvable reference: http://127.0.0.1:"),
+        ("#/$defs/cty", "unresolvable reference: /$defs/cty"),
+        ("#/type", "could not be applied"),
+    ], ids=["remote", "dangling-local", "non-schema-target"])
+    def test_broken_reference_fails_validation_without_fetch(self, schema_server, ref, expected):
+        url, requests = schema_server
+        schema = {
+            "type": "object",
+            "properties": {"city": {"$ref": ref.format(url=url)}},
+            "$defs": {"city": {"type": "string"}},
+        }
+
+        ok, errors = validate_output('{"city": "Berlin"}', schema)
+
+        assert ok is False
+        assert expected in errors[0]
+        assert "properties" not in errors[0]  # the schema is not pasted back into the retry turn
+        assert requests == []

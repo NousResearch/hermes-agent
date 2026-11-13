@@ -8,6 +8,8 @@ depend on the registry being populated should use it explicitly or via
 ``@pytest.mark.usefixtures("web_registry_populated")``.
 """
 
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 
 import pytest
@@ -189,3 +191,28 @@ def disable_lazy_stt_install():
     """
     with patch("tools.transcription_tools._try_lazy_install_stt", return_value=False):
         yield
+
+
+@pytest.fixture
+def schema_server():
+    """Loopback server that records every request and serves a string schema."""
+    requests = []
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            requests.append(self.path)
+            body = b'{"type": "string"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{server.server_port}", requests
+    server.shutdown()
+    server.server_close()

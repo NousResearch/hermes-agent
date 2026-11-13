@@ -75,7 +75,11 @@ def _token_may_be_secret(context: str, token: str) -> bool:
     masked once a continuation is appended."""
     if any(lit in token for lit in _LITERALS) or _HEX_ID_TAIL_RE.search(token):
         return True
+    # A bare number may start ``1//0`` (#39654), but the refresh-token mask keeps ``1//0gL``
+    # visible, so showing the digits first leaks nothing and the frames stay prefix-stable.
     for i in range(max(0, len(token) - _LITERAL_MAX), len(token)):
+        if token[i:].isdigit():
+            continue
         if (not i or not token[i - 1].isalnum()) and any(lit.startswith(token[i:]) for lit in _LITERALS):
             return True
     base = redact_for_egress(context + token)

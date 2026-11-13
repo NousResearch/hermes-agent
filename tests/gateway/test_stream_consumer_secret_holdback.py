@@ -281,3 +281,14 @@ async def test_a_double_quoted_value_holding_an_apostrophe_is_held_to_its_closin
     adapter = _adapter()
     await _stream(adapter, *('Config: {"pass' + 'word": "' + value + '", "user": "bob"} done'))
     assert not _raw_runs([content for _op, _id, content in adapter.ops], value)
+
+
+@pytest.mark.asyncio
+async def test_a_google_refresh_token_streamed_char_by_char_is_never_shown_raw():
+    # A bare leading digit may settle (the mask keeps ``1//0gL`` visible); the token never does.
+    body = "gLx7z_P2mX9vLk4n-Rt8wYb1cDf6gHj3sA0qWeRtYuIoP"
+    frames = []
+    adapter = _draft_adapter(frames)
+    await _stream(adapter, "Refresh: ", *("1//0" + body), " done", transport="auto", chat_type="dm")
+    assert all(later.startswith(earlier) for earlier, later in pairwise(frames)), frames
+    assert not _raw_runs([*frames, *(content for _op, _id, content in adapter.ops)], body, width=5)

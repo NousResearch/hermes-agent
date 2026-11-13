@@ -604,6 +604,7 @@ gateway:
     disabled: "⚠️ このセッションの YOLO モードは **OFF** — 危険なコマンドには承認が必要です。"
     enabled: "⚡ このセッションの YOLO モードは **ON** — すべてのコマンドが自動承認されます。注意して使用してください。"
   shared:
+    fallback_model_suffix: " — 代替モデル、本来は `{primary}`"
     session_db_unavailable: "セッションデータベースが利用できません。"
     session_db_unavailable_prefix: "セッションデータベースが利用できません"
     session_not_found: "データベースにセッションが見つかりません。"

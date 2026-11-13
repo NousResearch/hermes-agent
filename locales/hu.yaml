@@ -607,6 +607,7 @@ gateway:
     disabled: "⚠️ YOLO mód **KI** ebben a munkamenetben — a veszélyes parancsok jóváhagyást igényelnek."
     enabled: "⚡ YOLO mód **BE** ebben a munkamenetben — minden parancs automatikusan jóváhagyva. Óvatosan használd."
   shared:
+    fallback_model_suffix: " — tartalék ehhez: `{primary}`"
     session_db_unavailable: "A munkamenet-adatbázis nem érhető el."
     session_db_unavailable_prefix: "A munkamenet-adatbázis nem érhető el"
     session_not_found: "A munkamenet nem található az adatbázisban."

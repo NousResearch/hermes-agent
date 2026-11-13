@@ -604,6 +604,7 @@ gateway:
     disabled: "⚠️ Mód YOLO **AS** don seisiún seo — beidh cead de dhíth d'orduithe contúirteacha."
     enabled: "⚡ Mód YOLO **AR** don seisiún seo — gach ordú ceadaithe go huathoibríoch. Úsáid go cúramach."
   shared:
+    fallback_model_suffix: " — cúltaca do `{primary}`"
     session_db_unavailable: "Níl bunachar sonraí na seisiún ar fáil."
     session_db_unavailable_prefix: "Níl bunachar sonraí na seisiún ar fáil"
     session_not_found: "Seisiún gan a aimsiú sa bhunachar sonraí."

@@ -604,6 +604,7 @@ gateway:
     disabled: "⚠️ وضع YOLO **مُعطّل** لهذه الجلسة — ستتطلّب الأوامر الخطيرة موافقة."
     enabled: "⚡ وضع YOLO **مُفعّل** لهذه الجلسة — كل الأوامر مُوافق عليها تلقائيًا. استخدمه بحذر."
   shared:
+    fallback_model_suffix: " — بديل عن `{primary}`"
     session_db_unavailable: "قاعدة بيانات الجلسات غير متاحة."
     session_db_unavailable_prefix: "قاعدة بيانات الجلسات غير متاحة"
     session_not_found: "لم يُعثر على الجلسة في قاعدة البيانات."

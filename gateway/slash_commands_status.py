@@ -140,6 +140,19 @@ def _status_model_route(
     return model_name, provider_name, context_used, context_total, {"provider": provider_name, **route}
 
 
+def _fallback_suffix(agent, shown_model: str) -> str:
+    """`` — fallback for `primary` `` when *agent* runs *shown_model* on a fallback route (#133993).
+
+    ``/model`` reports the configured/session route, so without the label a turn-scoped fallback
+    makes /status and /usage name a model the user never picked."""
+    if getattr(agent, "_fallback_activated", False) is not True:
+        return ""
+    primary = _clean_str((getattr(agent, "_primary_runtime", None) or {}).get("model"))
+    if not primary or primary == shown_model or _clean_str(getattr(agent, "model", "")) != shown_model:
+        return ""
+    return t("gateway.shared.fallback_model_suffix", primary=primary)
+
+
 def _context_compressor_lines(agent, ctx, used: int) -> list[str]:
     """/context full view: auto-compression threshold/headroom, compression count + last savings,
     and cumulative throughput (labelled as throughput, NOT context size)."""
@@ -208,7 +221,7 @@ def _usage_agent_stats_lines(agent) -> list[str]:
         lines += [t("gateway.usage.rate_limits", state=format_rate_limit_compact(rl_state)), ""]
     lines += [
         t("gateway.usage.header_session"),
-        t("gateway.usage.label_model", model=agent.model),
+        t("gateway.usage.label_model", model=agent.model) + _fallback_suffix(agent, _clean_str(agent.model)),
         t("gateway.usage.label_input_tokens", count=_fmt(_n(agent, "session_input_tokens"))),
         t("gateway.usage.label_output_tokens", count=_fmt(_n(agent, "session_output_tokens"))),
         t("gateway.usage.label_total", count=_fmt(agent.session_total_tokens)),
@@ -262,6 +275,14 @@ class GatewayStatusCommandsMixin:
         status_agent = agent if is_running else self._cached_agent_for(session_key)
         self._rehydrate_session_model_override(session_key)
         active_override = self._session_model_override(session_key) or {}
+        if (status_agent is None or status_agent is _AGENT_PENDING_SENTINEL) and not active_override.get("model"):
+            # Nothing resident and no /model pin: the next turn runs the channel/config default, so a
+            # SessionDB route recorded under an older config.yaml model is history, not the current model.
+            default_model, _ = await asyncio.to_thread(self._channel_default_route, source, None)
+            if default_model:
+                persisted_route = persisted_route if _clean_str(persisted_route.get("model")) == default_model else {}
+                session_row = session_row if _clean_str(session_row.get("model")) == default_model else {
+                    k: v for k, v in session_row.items() if k not in ("model", "billing_provider")}
         model_name, provider_name, context_used, context_total, route = _status_model_route(
             status_agent, active_override, persisted_route, session_row, session_entry
         )
@@ -284,10 +305,11 @@ class GatewayStatusCommandsMixin:
             lines.append(t("gateway.status.title", title=fields["title"]))
         lines += [t("gateway.status.created", timestamp=fields["created"]),
                   t("gateway.status.last_activity", timestamp=fields["last_activity"])]
+        fallback = _fallback_suffix(status_agent, fields["model"])
         if fields["model"] and fields["provider"]:
-            lines.append(t("gateway.status.model_provider", model=fields["model"], provider=fields["provider"]))
+            lines.append(t("gateway.status.model_provider", model=fields["model"], provider=fields["provider"]) + fallback)
         elif fields["model"]:
-            lines.append(t("gateway.status.model", model=fields["model"]))
+            lines.append(t("gateway.status.model", model=fields["model"]) + fallback)
         from agent.context_breakdown import context_display_source
         mark = "~" if context_display_source(getattr(status_agent, "context_compressor", None)) != "provider_usage" else ""
         if context_total:

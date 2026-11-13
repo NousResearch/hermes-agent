@@ -604,6 +604,7 @@ gateway:
     disabled: "⚠️ Bu oturumda YOLO modu **KAPALI** — tehlikeli komutlar onay gerektirecek."
     enabled: "⚡ Bu oturumda YOLO modu **AÇIK** — tüm komutlar otomatik onaylanır. Dikkatli kullanın."
   shared:
+    fallback_model_suffix: " — yedek, asıl model `{primary}`"
     session_db_unavailable: "Oturum veritabanı kullanılamıyor."
     session_db_unavailable_prefix: "Oturum veritabanı kullanılamıyor"
     session_not_found: "Oturum veritabanında bulunamadı."

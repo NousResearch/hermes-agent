@@ -1,6 +1,6 @@
 name: jev-curator
 repo: https://github.com/anpicasso/hermes-jev-curator
-sha: ed2f40d33743c315f3e9de9579841750a28f5b78
+sha: 4e8626c7d394a9cbef8594993ec4b208ffb3395f
 subdir: plugin
 description: >-
   TypeSafe Jev semantic governance for Hermes' native Curator: classifies
@@ -16,10 +16,9 @@ description: >-
 maintainer: anpicasso
 tier: community
 category: automation
-requires_hermes: ">=0.23.1"
-docs_url: https://github.com/anpicasso/hermes-jev-curator/blob/ed2f40d33743c315f3e9de9579841750a28f5b78/README.md
-image: https://raw.githubusercontent.com/anpicasso/hermes-jev-curator/ed2f40d33743c315f3e9de9579841750a28f5b78/docs/banner.png
-version: "0.1.1"
+requires_hermes: ">=0.21.2"
+docs_url: https://github.com/anpicasso/hermes-jev-curator/blob/4e8626c7d394a9cbef8594993ec4b208ffb3395f/README.md
+version: "0.1.0"
 platforms: []
 capabilities:
   provides_tools:

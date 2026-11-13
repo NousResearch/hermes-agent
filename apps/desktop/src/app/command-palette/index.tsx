@@ -440,6 +440,7 @@ const NON_CONFIG_SETTINGS: ReadonlyArray<{
       'instances',
       'ssh',
       'cloud',
+      'add gateway',
       'machine',
       'machines',
       'add machine',

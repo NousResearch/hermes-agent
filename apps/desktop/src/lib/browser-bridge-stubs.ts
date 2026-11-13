@@ -1,4 +1,5 @@
 import type { DesktopBootProgress, DesktopBootstrapState } from '@/global'
+import { shellCopy } from '@/lib/shell-copy'
 
 function noopUnsubscribe(): () => void {
   return () => undefined
@@ -32,6 +33,8 @@ function readyBootstrapState(): DesktopBootstrapState {
   }
 }
 
+const reconfiguration = () => shellCopy({ classic: 'Gateway reconfiguration', redesign: 'Machine reconfiguration' })
+
 function browserUnsupported(feature: string): Error {
   return new Error(`${feature} is not available in the browser-hosted Desktop`)
 }
@@ -40,7 +43,7 @@ function browserUnsupported(feature: string): Error {
 // answered with a fixed browser result, a refusal, or a no-op.
 export const BROWSER_BRIDGE_STUBS = {
   applyConnectionConfig: async () => {
-    throw browserUnsupported('Machine reconfiguration')
+    throw browserUnsupported(reconfiguration())
   },
   cancelBootstrap: async () => ({ cancelled: false, ok: true }),
   // Rendering an untrusted link must not contact its destination. PrettyLink
@@ -83,7 +86,7 @@ export const BROWSER_BRIDGE_STUBS = {
   probeConnectionConfig: async (remoteUrl: string) => ({
     authMode: 'unknown' as const,
     baseUrl: remoteUrl,
-    error: 'Machine reconfiguration is unavailable in browser-hosted Desktop',
+    error: `${reconfiguration()} is unavailable in browser-hosted Desktop`,
     providers: [],
     reachable: false,
     version: null
@@ -96,7 +99,7 @@ export const BROWSER_BRIDGE_STUBS = {
   repairBootstrap: async () => ({ ok: true }),
   resetBootstrap: async () => ({ ok: true }),
   saveConnectionConfig: async () => {
-    throw browserUnsupported('Machine reconfiguration')
+    throw browserUnsupported(reconfiguration())
   },
   sanitizeWorkspaceCwd: async (cwd?: null | string) => ({ cwd: cwd || '', sanitized: false }),
   sshConfigHosts: async () => ({ hosts: [] }),

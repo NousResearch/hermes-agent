@@ -48,6 +48,7 @@ import type { WorkspaceMode } from '@/contrib/types'
 import { deleteProfile, getLogs, getStatus, hermesApi, type HermesGateway } from '@/hermes'
 import { traceIdentityChange } from '@/lib/identity-trace'
 import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
+import { shellCopy } from '@/lib/shell-copy'
 import {
   $gateway,
   activeGatewayConnectionId,
@@ -554,6 +555,12 @@ async function awaitProfileActivation(
   // rejection. An explicit `activation.catch()` here was dead code - verified
   // by mutation: removing it changed no test outcome.
 }
+
+const routeGoneMessage = (profile: string) =>
+  shellCopy({
+    classic: `The ${profile} gateway is no longer available.`,
+    redesign: `The machine running ${profile} is no longer available.`
+  })
 
 export const host = {
   state: {
@@ -1110,7 +1117,7 @@ export const host = {
           // (explicit): a synthesized local route is never in getProfileRoutes,
           // so checking it would spuriously abort a local bot's hydration retry.
           if (explicitRoute && !(await pluginRouteStillRegistered(explicitRoute))) {
-            throw new Error(`The machine running ${targetProfile} is no longer available.`)
+            throw new Error(routeGoneMessage(targetProfile))
           }
 
           // Logged per attempt so a support bundle shows the retry happened at

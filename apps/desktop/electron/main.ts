@@ -570,6 +570,7 @@ import {
   SESSION_WINDOW_MIN_WIDTH
 } from './session-windows'
 import { ensureLoginShellPath } from './shell-path'
+import { adoptShellPreference, shellMessages } from './shell-wording'
 import { removeStaleSingletonLock } from './singleton-lock'
 import { createSourcePythonBackend, resolveSourceInstallationBackend, type SourceBackend } from './source-backend'
 import { resolveSourcePython } from './source-python'
@@ -672,7 +673,7 @@ import { createWakeIndicatorWindowController } from './wake-indicator-window'
 import { guardedWatch } from './watch-storm-breaker'
 import { windowAcceleratorAction } from './window-accelerator'
 import { enumerateWindowsFrontToBack, enumerationFailed, readWindowBelow } from './window-below'
-import { portalShellPreferred, type WindowChromeKind } from './window-chrome'
+import { type WindowChromeKind } from './window-chrome'
 import { createWindowChromeBands } from './window-chrome-bands'
 import { bindWindowChromeEvents } from './window-chrome-events'
 import { appliedPrimaryWindowRoute, WindowConnectionRouteRegistry } from './window-connection-route'
@@ -1404,7 +1405,7 @@ const HUD_WINDOW_TITLE = `${APP_NAME} HUD`
 // preferences read before the first window exists, so it is created at the right height.
 const windowChrome = createWindowChromeBands<BrowserWindow>({
   isMac: IS_MAC,
-  portal: portalShellPreferred(tryReadUiPreferences(uiPreferencesPath(uiPreferencesRoot(HERMES_HOME)))?.values),
+  portal: adoptShellPreference(tryReadUiPreferences(uiPreferencesPath(uiPreferencesRoot(HERMES_HOME)))?.values),
   relayout: win => {
     applyTitleBarOverlay(win, getTitleBarOverlayOptions(win))
     sendWindowStateChanged(undefined, win)
@@ -7648,9 +7649,7 @@ async function discoverCloudAgents(org?: string) {
   const portalBaseUrl = resolvePortalBaseUrl()
 
   if (!(await hasLivePortalSession())) {
-    const err = new Error(
-      'You are not signed in to Hermes Cloud. Open Settings → Machines, choose Hermes Cloud, and sign in.'
-    ) as any
+    const err = new Error(shellMessages.cloudNotSignedIn()) as any
 
     err.needsCloudLogin = true
     throw err
@@ -7699,9 +7698,7 @@ async function discoverCloudAgents(org?: string) {
       // A 401 means the portal session lapsed (and silent renewal could not
       // recover it) — surface it as a re-login, not a generic failure.
       if (error && error.statusCode === 401) {
-        const err = new Error(
-          'Your Hermes Cloud session has expired. Open Settings → Machines and sign in again.'
-        ) as any
+        const err = new Error(shellMessages.cloudSessionExpired()) as any
 
         err.needsCloudLogin = true
         err.cause = error
@@ -8941,10 +8938,7 @@ async function buildRemoteConnection(
   }
 
   if (!token) {
-    throw new Error(
-      'A remote Hermes machine is selected, but no session token is saved. ' +
-        'Open Settings → Machines and save a token, or switch back to Local.'
-    )
+    throw new Error(shellMessages.remoteTokenMissing())
   }
 
   const wsUrl = buildGatewayWsUrl(baseUrl, token)
@@ -16822,7 +16816,10 @@ ipcMain.on('hermes:logs:renderer-error', (_event, report) => {
 // Pre-paint payloads the preload reads synchronously: the local skin, and this
 // machine's shared UI preferences (#145213) — see local-skin.ts, ui-preferences.ts.
 registerLocalSkinIpc(ipcMain, HERMES_HOME, id => windowConnectionRoutes.get(id)?.profile, primaryProfileKey)
-registerMachineUiPreferences(HERMES_HOME, snapshot => windowChrome.applyPreferences(snapshot.values))
+registerMachineUiPreferences(HERMES_HOME, snapshot => {
+  adoptShellPreference(snapshot.values)
+  windowChrome.applyPreferences(snapshot.values)
+})
 // Another writer (the Webapp) changed the shared list: same teardown as a local save/remove.
 gatewayConnectionsStore.watch({
   onRegistry: (changes, { after, before }) => {

@@ -1,6 +1,8 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { atom } from 'nanostores'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $connection } from '@/store/session'
+import { providePortalPresentation } from '@/store/shell-presentation'
 import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
@@ -48,6 +50,11 @@ function installServedBridge(launchProfile = 'default') {
 
   return win.hermesDesktop!
 }
+
+// The refusals below are classic's wording (`main`'s); shell-copy.test.ts covers the redesign's.
+beforeEach(() => {
+  providePortalPresentation(atom(false))
+})
 
 afterEach(() => {
   delete win.__HERMES_DASHBOARD_PROFILE__
@@ -138,13 +145,11 @@ describe('profiles the serving gateway does not serve', () => {
     const desktop = installServedBridge()
     await desktop.getProfileRoutes?.(['solo'])
 
-    await expect(resolveDesktopGatewayWsUrl(desktop, await desktop.getConnection('solo'))).rejects.toMatchObject({
-      name: 'UnservedProfileError',
-      profile: 'solo'
-    })
+    const refusal = 'This gateway does not serve profile "solo", so this tab cannot open it.'
+    await expect(resolveDesktopGatewayWsUrl(desktop, await desktop.getConnection('solo'))).rejects.toThrow(refusal)
     await expect(
       resolveDesktopGatewayWsUrl(desktop, await desktop.getConnectionFor!({ connectionId: 'local', profile: 'solo' }))
-    ).rejects.toMatchObject({ name: 'UnservedProfileError', profile: 'solo' })
+    ).rejects.toThrow(refusal)
     expect(callsTo(fetchMock, '/api/webapp/socket-ticket')).toBe(0)
 
     // The tab's own socket and a served profile still mint their tickets.
@@ -165,14 +170,8 @@ describe('profiles the serving gateway does not serve', () => {
     // Served now, but the cached set predates that: the URL answers from the cache and fetches nothing.
     gateway.profiles = [...gateway.profiles, 'fresh']
     gateway.status = reports(['default', 'fresh'])
-    await expect(desktop.getGatewayWsUrl('fresh')).rejects.toMatchObject({
-      name: 'UnservedProfileError',
-      profile: 'fresh'
-    })
-    await expect(desktop.getGatewayWsUrl('solo')).rejects.toMatchObject({
-      name: 'UnservedProfileError',
-      profile: 'solo'
-    })
+    await expect(desktop.getGatewayWsUrl('fresh')).rejects.toThrow('does not serve profile "fresh"')
+    await expect(desktop.getGatewayWsUrl('solo')).rejects.toThrow('does not serve profile "solo"')
     expect(fetchMock).toHaveBeenCalledTimes(reads)
   })
 })

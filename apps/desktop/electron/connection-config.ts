@@ -37,6 +37,7 @@
 import { readStatusCode } from './api-transport'
 import { sharesHostBackend } from './host-backend-singleton'
 import { profileCollectionRoute, profileRouteSuffix } from './profile-routes'
+import { shellMessages } from './shell-wording'
 
 const AT_COOKIE_VARIANTS = ['__Host-hermes_session_at', '__Secure-hermes_session_at', 'hermes_session_at']
 const RT_COOKIE_VARIANTS = ['__Host-hermes_session_rt', '__Secure-hermes_session_rt', 'hermes_session_rt']
@@ -289,8 +290,7 @@ async function resolveTestWsUrl(baseUrl, authMode, token, deps: any = {}) {
       // bearer is named inside gatewayTicketFailure.
       throw gatewayTicketFailure(
         error,
-        'Reached the gateway over HTTP, but the OAuth session was rejected while minting a WebSocket ticket. ' +
-          'Open Settings → Machines and sign in again.',
+        shellMessages.ticketSessionRejected(),
         'Reached the gateway over HTTP, but could not mint a WebSocket ticket. Check the remote gateway connection and try again.'
       )
     }

@@ -17,6 +17,7 @@ import { createBrowserUiPreferences } from '@/lib/browser-ui-preferences'
 import { createBrowserUploadsBridge } from '@/lib/browser-uploads'
 import { announceWebappWindow, createBrowserWindowOpener, sessionWindowTarget } from '@/lib/browser-window'
 import { createBrowserZoom } from '@/lib/browser-zoom'
+import { shellCopy } from '@/lib/shell-copy'
 import { failDesktopBoot } from '@/store/boot'
 import { $connection } from '@/store/session'
 import { windowProfileOverride } from '@/store/windows'
@@ -186,7 +187,13 @@ export function installBrowserDesktopBridge(): boolean {
     openSessionWindow: async (sessionId, opts) => {
       // A window boots on this page's gateway, which does not hold another gateway's chats.
       if (opts?.connectionId && opts.connectionId !== LOCAL_CONNECTION_ID) {
-        return { error: 'A chat on another machine opens in this tab, not in a new window.', ok: false }
+        return {
+          error: shellCopy({
+            classic: 'A chat on another gateway opens in this tab, not in a new window.',
+            redesign: 'A chat on another machine opens in this tab, not in a new window.'
+          }),
+          ok: false
+        }
       }
 
       const target = sessionWindowTarget(window.location.href, sessionId, opts)

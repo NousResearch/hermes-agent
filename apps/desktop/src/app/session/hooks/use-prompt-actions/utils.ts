@@ -7,6 +7,7 @@ import { isReadFileErrorResult } from '@/lib/desktop-fs'
 import { type CommandsCatalogLike, filterDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
 import type { ErrorSurface } from '@/lib/error-surface'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
+import { shellCopy } from '@/lib/shell-copy'
 import type { ComposerAttachment } from '@/store/composer'
 
 import { registerRecoveredRuntime, singleFlightSessionResume, takeRecoveredRuntime } from './single-flight-resume'
@@ -574,7 +575,12 @@ export function friendlyRemoteAttachError(err: unknown, label: string): Error {
   const limitBytes = Number(message.match(/limit (\d+) bytes/)?.[1])
   const cap = Number.isFinite(limitBytes) && limitBytes > 0 ? ` (max ${Math.floor(limitBytes / (1024 * 1024))} MB)` : ''
 
-  return new Error(`${label} is too large to upload to the remote machine${cap}.`)
+  return new Error(
+    shellCopy({
+      classic: `${label} is too large to upload to the remote gateway${cap}.`,
+      redesign: `${label} is too large to upload to the remote machine${cap}.`
+    })
+  )
 }
 
 export function renderCommandsCatalog(catalog: CommandsCatalogLike, copy: Translations['desktop']): string {

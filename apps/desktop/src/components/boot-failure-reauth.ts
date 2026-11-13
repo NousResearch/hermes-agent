@@ -1,5 +1,6 @@
 import type { DesktopAuthProvider, DesktopConnectionConfig } from '@/global'
 import { deriveRemoteAuthProviderShape } from '@/lib/desktop-remote-auth'
+import { shellCopy } from '@/lib/shell-copy'
 
 // Pure helpers for the boot-failure overlay's remote-reauth branch. Kept out
 // of the .tsx so they can be unit-tested without a React/jsdom render (the
@@ -21,11 +22,13 @@ interface SignInCopy {
   withProvider: (provider: string) => string
 }
 
-const DEFAULT_SIGN_IN_COPY: SignInCopy = {
-  identityProvider: 'your identity provider',
-  remoteGateway: 'Sign in to remote machine',
+const DEFAULT_IDENTITY_PROVIDER = 'your identity provider'
+
+const defaultSignInCopy = (): SignInCopy => ({
+  identityProvider: DEFAULT_IDENTITY_PROVIDER,
+  remoteGateway: shellCopy({ classic: 'Sign in to remote gateway', redesign: 'Sign in to remote machine' }),
   withProvider: provider => `Sign in with ${provider}`
-}
+})
 
 // True when the app is pointed at a remote/cloud backend (either resolves to a
 // remote URL). Any boot failure in this shape is fixable from Settings →
@@ -154,13 +157,12 @@ export function deriveProviderShape(providers: DesktopAuthProvider[] | null | un
 }
 
 // Button copy for the remote sign-in action.
-export function signInLabel(reauth: RemoteReauth | null, copy: SignInCopy = DEFAULT_SIGN_IN_COPY): string {
+export function signInLabel(reauth: RemoteReauth | null, copy: SignInCopy = defaultSignInCopy()): string {
   if (reauth?.isPassword) {
     return copy.remoteGateway
   }
 
-  const provider =
-    reauth?.providerLabel === DEFAULT_SIGN_IN_COPY.identityProvider ? copy.identityProvider : reauth?.providerLabel
+  const provider = reauth?.providerLabel === DEFAULT_IDENTITY_PROVIDER ? copy.identityProvider : reauth?.providerLabel
 
   return copy.withProvider(provider ?? copy.identityProvider)
 }

@@ -1,4 +1,5 @@
 import { translateNow } from '@/i18n'
+import { shellCopy } from '@/lib/shell-copy'
 import type { CronJob } from '@/types/cron'
 
 // Status-pip color per cron job state. Single source for the sidebar section and
@@ -41,7 +42,7 @@ export function jobTitle(job: CronJob): string {
     truncateText(pick(job.prompt), 60) ||
     truncateText(pick(job.script), 60) ||
     job.id ||
-    translateNow('cron.count', 1)
+    shellCopy({ classic: 'Cron job', redesign: translateNow('cron.count', 1) })
   )
 }
 

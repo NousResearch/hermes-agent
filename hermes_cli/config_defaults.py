@@ -1990,9 +1990,7 @@ DEFAULT_CONFIG = {
             # Absolute cap on the embedded listing in tokens (chars/4), regardless of context size.
             # Range 200..60000.
             "listing_max_tokens": 4000,
-            # Tools replaced by the bridge by default. This list intentionally includes cold,
-            # event-triggered built-ins; an explicit list replaces it wholesale and [] keeps every
-            # tool eager. The runtime fallback in tools/tool_search.py derives from this value.
+            # Named tools to defer; [] clears the list, but MCP/plugin tools still defer automatically.
             "defer": [
                 "computer_use", "session_search", "image_generate",
                 "todo_list", "process_manage", "cronjob_manage", "browser_vault", "text_to_speech", "manage_connections",
@@ -2001,6 +1999,7 @@ DEFAULT_CONFIG = {
                 "show_tip", "desktop_project", "close_terminal",
                 "set_theme", "read_terminal", "read_window_below", "focus_pane",
             ],
+            "keep": [],  # Names/globs kept eager; overrides defer, empty means no change.
         },
         # Remote connector discovery/lifecycle through the Nous tool gateway.
         # The flag is the user's off switch; availability additionally requires

@@ -43,7 +43,7 @@ class TestConfigParsing:
 
     def test_defer_default_is_the_registered_list_and_a_user_list_replaces_it(self, caplog):
         """#116404: the curated deferral set lives in DEFAULT_CONFIG (so ``hermes config set``
-        recognizes the key); a user list replaces it wholesale, [] keeps every tool eager, and a
+        recognizes the key); a user list replaces it wholesale, [] clears it, and a
         scalar is warned about (naming the expected shape) before falling back to the default."""
         from hermes_cli.config_defaults import DEFAULT_CONFIG
         from tools.tool_search import ToolSearchConfig, _DEFAULT_DEFERRED_TOOLS
@@ -112,8 +112,7 @@ class TestClassification:
 
 
     def test_defer_override_restores_legacy_direct_gui(self):
-        """tools.tool_search.defer: [] restores the everything-eager legacy:
-        GUI tools alone no longer activate the bridge."""
+        """Clearing the named deferral list leaves these GUI tools eager."""
         from tools.registry import discover_builtin_tools
         from tools.tool_search import ToolSearchConfig, assemble_tool_defs
 
@@ -921,3 +920,135 @@ class TestDeferredCallSchemaProbe:
         }, calls)
 
         assert validate_deferred_call_args(name, {"payload": {"anything": True}}) is None
+
+# ---------------------------------------------------------------------------
+# keep: opt-in eager MCP/plugin tools
+# ---------------------------------------------------------------------------
+
+
+class TestKeepEagerTools:
+    """`tools.tool_search.keep` keeps named/globbed MCP tools in the visible array.
+
+    The default is empty, so the pre-keep behaviour must be bit-for-bit identical:
+    MCP tools stay deferrable unless a pattern matches.
+    """
+
+    @staticmethod
+    def _register(name: str, toolset: str = "mcp-obsidian-keep") -> str:
+        from tools.registry import registry
+
+        def _handler(args, task_id=None, **kw):
+            return json.dumps({"ok": True, "tool": name})
+
+        registry.register(name=name, handler=_handler, schema=_td(name, f"desc for {name}", {}),
+                          toolset=toolset)
+        return name
+
+    def test_exact_keep_makes_an_mcp_tool_eager(self):
+        from tools.tool_search import is_deferrable_tool_name
+
+        name = self._register("mcp__keep_probe__exact")
+        assert is_deferrable_tool_name(name) is True
+        assert is_deferrable_tool_name(name, None, frozenset({name})) is False
+
+    def test_glob_keep_matches(self):
+        from tools.tool_search import is_deferrable_tool_name
+
+        name = self._register("mcp__keep_probe__read_note")
+        assert is_deferrable_tool_name(name, None, frozenset({"mcp__keep_probe__*"})) is False
+        assert is_deferrable_tool_name(name, None, frozenset({"mcp__other__*"})) is True
+
+    def test_empty_keep_is_a_noop(self):
+        from tools.tool_search import ToolSearchConfig, is_deferrable_tool_name
+
+        name = self._register("mcp__keep_probe__noop")
+        assert is_deferrable_tool_name(name, None, frozenset()) is True
+        assert ToolSearchConfig.from_raw({}).effective_keep_tools == frozenset()
+        assert ToolSearchConfig.from_raw(None).effective_keep_tools == frozenset()
+
+    def test_config_from_raw_parses_keep_and_warns_on_scalar(self, caplog):
+        from tools.tool_search import ToolSearchConfig
+
+        assert ToolSearchConfig.from_raw({"keep": ["a", "b "]}).effective_keep_tools == {"a", "b"}
+        with caplog.at_level("WARNING", logger="tools.tool_search"):
+            assert ToolSearchConfig.from_raw({"keep": "mcp__x"}).effective_keep_tools == frozenset()
+        assert any(r.levelname == "WARNING" for r in caplog.records)
+
+    def test_all_deferrables_kept_disables_the_bridge(self):
+        from tools.tool_search import ToolSearchConfig, assemble_tool_defs
+
+        name = self._register("mcp__keep_probe__only")
+        defs = [_td(name, "desc")]
+        cfg = ToolSearchConfig.from_raw({"keep": [name]})
+        result = assemble_tool_defs(defs, config=cfg)
+        assert result.activated is False
+        assert [d["function"]["name"] for d in result.tool_defs] == [name]
+
+    def test_keep_routes_consistently(self, monkeypatch):
+        """A kept (eager) MCP tool must not be reachable through the bridge, and its
+        presence must not re-enter the search catalog."""
+        from tools import tool_search as ts
+
+        name = self._register("mcp__keep_probe__route")
+        cold = self._register("mcp__cold_probe__route")
+        cfg = ts.ToolSearchConfig.from_raw({"defer": [name], "keep": [name]})
+        monkeypatch.setattr(ts, "load_config_readonly", lambda: cfg)
+
+        deferrable = ts._deferrable_in([_td(name), _td(cold)], config=cfg)
+        assert [ts._fn(td)["name"] for td in deferrable] == [cold]
+        assert ts.is_deferrable_tool_name(name, cfg.effective_defer_tools, cfg.effective_keep_tools) is False
+
+        call = {"calls": [{"name": name, "arguments": {}}]}
+        resolved, _, error = ts.resolve_underlying_call(call, {name, cold})
+        assert resolved is None and error and "Call it directly" in error
+
+        call["calls"][0]["name"] = cold
+        assert ts.resolve_underlying_call(call, {name, cold})[0] == cold
+
+    def test_explicit_keep_controls_search_and_describe(self, monkeypatch):
+        """search/describe must honour the passed config, not the live one."""
+        from tools import tool_search as ts
+
+        name = self._register("mcp__keep_probe__config")
+        defs = [_td(name)]
+        cfg = ts.ToolSearchConfig.from_raw({"keep": [name]})
+        monkeypatch.setattr(ts, "load_config_readonly", lambda: ts.ToolSearchConfig.from_raw({}))
+
+        found = json.loads(ts.dispatch_tool_search({"queries": ["config"]},
+                                                   current_tool_defs=defs, config=cfg))
+        assert name not in found["tools"]
+
+        described = json.loads(ts.dispatch_tool_describe({"names": [name]},
+                                                         current_tool_defs=defs, config=cfg))
+        assert name not in described.get("tools", {}) and name in described.get("errors", {})
+
+    def test_keep_overrides_explicit_defer_for_core_and_plugin(self):
+        from tools import tool_search as ts
+
+        name = self._register("mcp__keep_probe__precedence")
+        defs = [_td("terminal"), _td(name)]
+        cfg = ts.ToolSearchConfig.from_raw({"defer": ["terminal", name],
+                                            "keep": ["terminal", "mcp__keep_probe__*"]})
+        result = ts.assemble_tool_defs(defs, config=cfg)
+        assert not result.activated
+        assert [ts._fn(td)["name"] for td in result.tool_defs] == ["terminal", name]
+
+    def test_empty_defer_still_defers_mcp_tools(self):
+        from tools import tool_search as ts
+
+        name = self._register("mcp__keep_probe__empty_defer")
+        cfg = ts.ToolSearchConfig.from_raw({"defer": []})
+        visible, deferred = ts.classify_tools([_td("terminal"), _td(name)],
+                                               cfg.effective_defer_tools, cfg.effective_keep_tools)
+        assert [ts._fn(td)["name"] for td in visible] == ["terminal"]
+        assert [ts._fn(td)["name"] for td in deferred] == [name]
+
+    def test_empty_keep_preserves_assembly_and_catalog(self):
+        from tools import tool_search as ts
+
+        name = self._register("mcp__keep_probe__default")
+        defs = [_td("terminal"), _td(name)]
+        implicit = ts.ToolSearchConfig.from_raw({})
+        explicit = ts.ToolSearchConfig.from_raw({"keep": []})
+        assert ts.assemble_tool_defs(defs, config=implicit) == ts.assemble_tool_defs(defs, config=explicit)
+        assert ts._deferrable_in(defs, config=implicit) == ts._deferrable_in(defs, config=explicit)

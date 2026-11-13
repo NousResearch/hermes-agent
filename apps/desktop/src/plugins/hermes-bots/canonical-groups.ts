@@ -213,6 +213,12 @@ function peerLabel(member: GroupMember) {
 
 const baseHandle = (member: GroupMember) => member.handle ?? member.route?.targetProfile ?? member.targetProfile ?? member.name
 
+/** `groups.create` refuses a longer display_name (gateway MAX_ACTOR_LABEL_CHARS). */
+const MAX_LOCAL_DISPLAY_NAME_CHARS = 200
+
+/** Code-point clamp: never split a surrogate pair when the Bot title is longer than the schema. */
+const clampLabel = (value: string) => Array.from(value).slice(0, MAX_LOCAL_DISPLAY_NAME_CHARS).join('')
+
 /** One member as `groups.create` takes it: a Bot here as its own profile, a pinned peer as the
  *  profile its gateway lends under its handle, or handle-connection when another member has that
  *  handle. */
@@ -222,8 +228,14 @@ function rosterEntry(member: GroupMember, members: GroupMember[], pin: Canonical
 
   if (!pin) {
     const profile = member.route?.targetProfile ?? member.targetProfile ?? member.name
-    // Saved on the gateway and read from any computer: "This device" would be wrong elsewhere.
-    const display = member.display_name || (mixed && profile === 'default' && base !== 'hermes' ? botLabel(member) : undefined)
+    // The name the person chose for this Bot is frozen into the descriptor: it is what the room
+    // remembers on every computer, and what a mention alias must be derived from. "This device"
+    // would be wrong elsewhere, so a generic default Bot still reads by its profile there.
+    // An explicit display_name is validated by the caller; a title copied into the descriptor is
+    // clamped to the gateway's 200-character schema (Unicode-safe) so create never rejects it.
+    const explicit = String(member.display_name || '').trim()
+    const chosen = explicit || clampLabel(String(member.title || '').trim())
+    const display = chosen || (mixed && profile === 'default' && base !== 'hermes' ? botLabel(member) : undefined)
 
     return { member_id: profile, profile, handle: base, target: { kind: 'local', profile },
       ...(display ? { display_name: display } : {}) }

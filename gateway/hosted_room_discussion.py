@@ -9,6 +9,7 @@ Callers must reconcile terminal driver rows into publication plans before asking
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
@@ -22,6 +23,7 @@ from gateway import hosted_room_router as router
 from gateway import hosted_rooms
 from gateway import hosted_rooms_common as common
 from gateway.hosted_room_context import scheduled_post_kind, validate_context
+from gateway.hosted_room_mentions import preferred_mention_tag, resolve_mention_tags
 from gateway.hosted_room_task_input import validate_task_input
 from gateway.hosted_rooms_common import compact_json
 
@@ -35,11 +37,12 @@ MAX_USER_TEXT_BYTES = 64 * 1024
 MAX_MEMBER_TEXT_BYTES = 64 * 1024
 _TRUNCATED_REPLY_NOTICE = "\n\n[Reply truncated. Ask the Bot to share the full result as a file.]"
 
+logger = logging.getLogger(__name__)
+
 Payload = Mapping[str, Any]
 DecisionStatus = Literal["idle", "task", "settled", "bounded", "route"]
 TerminalKind = Literal["settled", "failed", "cancelled", "deferred"]
 
-_MENTION_RE = re.compile(r"@([A-Za-z0-9][A-Za-z0-9._:-]*)", re.IGNORECASE)
 # Openers of Hermes' own control frames (agent.prompt_builder.CONTROL_FRAME_OPENERS: the steer marker, the
 # compaction handoff, runtime/system notes, background-process and prior-context frames). A member reply is
 # republished to every peer inside a role=user prompt, so a reply reproducing one of these reads as harness
@@ -346,20 +349,13 @@ def is_pass_text(value: Any) -> bool:
 def resolve_mentions(
     texts: Iterable[str], members: Sequence[DiscussionMember], *, default_all: bool = True
 ) -> tuple[DiscussionMember, ...]:
-    """Resolve member handles deterministically against the frozen roster."""
-    by_handle = {member.handle.casefold(): member for member in members}
-    mentioned: set[str] = set()
-    everyone = False
-    for text in texts:
-        for match in _MENTION_RE.finditer(str(text or "")):
-            handle = match.group(1).casefold()
-            if handle in {"all", "everyone"}:
-                everyone = True
-            elif handle in by_handle:
-                mentioned.add(handle)
-    if everyone or (default_all and not mentioned):
-        return tuple(members)
-    return tuple(member for member in members if member.handle.casefold() in mentioned)
+    """Resolve member handles deterministically against the frozen roster.
+
+    A member is addressed by its canonical handle or by a tag derived from its frozen
+    ``display_name`` (``gateway.hosted_room_mentions``); an alias two members share addresses
+    neither of them.
+    """
+    return resolve_mention_tags(texts, members, default_all=default_all).members
 
 
 def _unaddressed_member_mentions(
@@ -602,14 +598,21 @@ def _context_lines(context: Mapping[str, str] | None) -> list[str]:
     return [*lines, ""] if lines else []
 
 
+def _mention_label(member: DiscussionMember, members: Sequence[DiscussionMember]) -> str:
+    """``@handle`` plus the member's frozen friendly tag when it differs and resolves to it alone."""
+    tag = preferred_mention_tag(member, members)
+    return f"@{member.handle}" + (f" (also @{tag})" if tag and tag != member.handle.casefold() else "")
+
+
 def _build_prompt(
     *, room: DiscussionRoom, member: DiscussionMember, messages: Sequence[_ValidatedEvent], watermark: int,
     seen_through_seq: int, reply_required: bool = False, context: Mapping[str, str] | None = None,
     addressed_by_job: str | None = None, assigned_by: DiscussionMember | None = None, routed: bool = False) -> str:
     delta = [event for event in messages if watermark < event.seq <= seen_through_seq][- MAX_DISCUSSION_DELTA_LINES:]
-    peers = ", ".join(f"@{candidate.handle}" for candidate in room.members if candidate.member_id != member.member_id)
+    peers = ", ".join(_mention_label(candidate, room.members) for candidate in room.members
+                      if candidate.member_id != member.member_id)
     opening = [
-        f'[Discussion: "{room.name}"] You are @{member.handle}, one participant '
+        f'[Discussion: "{room.name}"] You are {_mention_label(member, room.members)}, one participant '
         f"with {peers or 'no other members'} and the user.", "", *_context_lines(context),
         "New messages in this thread since your last turn (oldest first):"]
     addressed = (f"- The room lead @{assigned_by.handle} gave the user's message to you." if assigned_by
@@ -773,7 +776,15 @@ def _first_round_responders(discussion: _ValidatedEvent, room: DiscussionRoom) -
     scheduled = scheduled_post_kind(discussion.actor)
     if scheduled == "notice":
         return ()
-    return resolve_mentions((str(discussion.payload["text"]),), room.members, default_all=scheduled is None)
+    resolved = resolve_mention_tags(
+        (str(discussion.payload["text"]),), room.members, default_all=scheduled is None)
+    if resolved.ambiguous:
+        # Two members froze the same friendly name: the tag addresses neither and the round stays
+        # quiet (no auto/lead fallback, no broadcast). This log is the only diagnostic: the room
+        # does not currently surface a notice to the user for an ambiguous tag.
+        logger.warning("hosted room %s: ambiguous member tag(s) %s addressed nobody",
+                       room.room_id, ", ".join(f"@{tag}" for tag in resolved.ambiguous))
+    return resolved.members
 
 
 @dataclass(frozen=True)

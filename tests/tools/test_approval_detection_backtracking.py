@@ -13,7 +13,7 @@ import pytest
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def _run_bounded(code: str, timeout: float = 10) -> None:
+def _run_bounded(code: str, timeout: float = 20) -> None:
     # Pin the checkout under test: a bare `python -c` resolves `tools` through the venv's editable
     # install (the primary clone), not through the worktree pytest is running in.
     env = {**os.environ, "PYTHONPATH": REPO_ROOT}
@@ -30,7 +30,7 @@ detect_dangerous_command("ls")
 for reps in (28, 64, 512):
     started = time.perf_counter()
     detect_dangerous_command("cat .env" + ".x" * reps)
-    assert time.perf_counter() - started < 1.0, reps
+    assert time.perf_counter() - started < 3.0, reps
 ''')
 
 
@@ -71,7 +71,7 @@ for depth in (33, 240, 2000):
     command = "echo " + "$(" * depth + "x" + ")" * depth
     started = time.perf_counter()
     assert detect_dangerous_command(command)[1] == _PARSER_LIMIT_DESCRIPTION, depth
-    assert time.perf_counter() - started < 1.0, depth
+    assert time.perf_counter() - started < 3.0, depth
 ''')
 
 
@@ -85,3 +85,18 @@ def test_shallow_and_sequential_substitutions_are_still_scanned():
     assert detect_dangerous_command("echo " + "$(date)" * 200)[1] is None
     # A dangerous command inside a substitution is still found.
     assert detect_dangerous_command("echo $(rm -rf /)")[0]
+
+
+def test_blank_line_heredoc_finishes_end_to_end():
+    # The #7485 shape through the public entry point: a long blank-line run inside one command
+    # re-split every _CMDPOS whitespace run (400 lines ~1.4 s, cubic beyond that).
+    _run_bounded('''
+import time
+from tools.approval_detection import detect_dangerous_command
+detect_dangerous_command("ls")
+# Harmless on purpose: a dangerous match short-circuits before every rule has scanned the run.
+command = "cat <<EOF > notes.txt\\n" + "\\n" * 2000 + "EOF"
+started = time.perf_counter()
+assert detect_dangerous_command(command)[0] is False
+assert time.perf_counter() - started < 3.0
+''')

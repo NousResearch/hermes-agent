@@ -1520,8 +1520,13 @@ def _session_info(agent, session: dict | None = None) -> dict:
         from tools.mcp_tool_discovery import get_mcp_status
         info["mcp_servers"] = get_mcp_status()
     with contextlib.suppress(Exception):
-        info["system_prompt"] = (
-            mirror.get("system_prompt") if "system_prompt" in mirror else getattr(agent, "_cached_system_prompt", "") or "")
+        # The transport type declares system_prompt optional, so omit the key
+        # instead of sending an empty string when there is no prompt to send.
+        _prompt = (
+            mirror.get("system_prompt") if "system_prompt" in mirror else getattr(agent, "_cached_system_prompt", "") or ""
+        )
+        if _prompt:
+            info["system_prompt"] = _prompt
     with contextlib.suppress(Exception):
         from hermes_cli.banner import get_update_result
         from hermes_cli.config import recommended_update_command

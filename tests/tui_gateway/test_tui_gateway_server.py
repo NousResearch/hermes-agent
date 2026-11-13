@@ -13099,6 +13099,26 @@ def test_session_info_includes_turn_started_at():
     assert server._session_info(agent, session)["turn_started_at"] is None
 
 
+def test_session_info_omits_empty_system_prompt():
+    """system_prompt is optional in the transport type, so an empty prompt must
+    not be sent as an empty string — the key is omitted instead."""
+    for cached in ("", None):
+        agent = types.SimpleNamespace(tools=[], model="", provider="", _cached_system_prompt=cached)
+        info = server._session_info(agent, {"session_key": "k", "history": []})
+        assert "system_prompt" not in info
+
+    # No attribute at all behaves the same way.
+    agent = types.SimpleNamespace(tools=[], model="", provider="")
+    info = server._session_info(agent, {"session_key": "k", "history": []})
+    assert "system_prompt" not in info
+
+
+def test_session_info_includes_non_empty_system_prompt():
+    agent = types.SimpleNamespace(tools=[], model="", provider="", _cached_system_prompt="You are helpful.")
+    info = server._session_info(agent, {"session_key": "k", "history": []})
+    assert info["system_prompt"] == "You are helpful."
+
+
 # ---------------------------------------------------------------------------
 # History-mutating commands must reject while session.running is True.
 # Without these guards, prompt.submit's post-run history write either

@@ -2529,3 +2529,51 @@ def test_processing_failure_skips_cross_mark_when_typing_removal_fails(fake_lark
     assert tracker.created == ["Typing"]
     assert tracker.deleted == ["r_typing"]
     assert adapter._pending_processing_reactions["om_msg"] == "r_typing"
+
+
+class TestFeishuThreadRequireMention(unittest.TestCase):
+    """A topic thread can drop the @-mention gate without opening the whole group."""
+
+    @staticmethod
+    def _adapter(extra: dict):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        with patch.dict(os.environ, {"FEISHU_APP_ID": "cli_x", "FEISHU_APP_SECRET": "s"}, clear=False):
+            return FeishuAdapter(PlatformConfig(extra=extra))
+
+    def test_topic_rule_wins_over_group_rule(self):
+        adapter = self._adapter(
+            {
+                "group_rules": {
+                    "oc_group": {"require_mention": True},
+                    "omt_topic": {"require_mention": False},
+                }
+            }
+        )
+        self.assertFalse(adapter._require_mention_for("oc_group", "omt_topic"))
+        # A topic without its own rule falls back to the group rule.
+        self.assertTrue(adapter._require_mention_for("oc_group", "omt_other"))
+
+    def test_group_thread_policy_applies_to_every_topic(self):
+        adapter = self._adapter({"group_rules": {"oc_group": {"thread_require_mention": False}}})
+        # Includes topics created after the config was written.
+        self.assertFalse(adapter._require_mention_for("oc_group", "omt_any"))
+        # The group's main chat stays gated.
+        self.assertTrue(adapter._require_mention_for("oc_group", ""))
+
+    def test_group_require_mention_still_covers_topics(self):
+        """Backwards compat: a group rule carrying only require_mention governs topics too."""
+        adapter = self._adapter({"group_rules": {"oc_group": {"require_mention": False}}})
+        self.assertFalse(adapter._require_mention_for("oc_group", "omt_any"))
+        self.assertFalse(adapter._require_mention_for("oc_group", ""))
+
+    def test_platform_thread_policy(self):
+        adapter = self._adapter({"thread_require_mention": False})
+        self.assertFalse(adapter._require_mention_for("oc_any", "omt_any"))
+        self.assertTrue(adapter._require_mention_for("oc_any", ""))
+
+    def test_unconfigured_group_inherits_global(self):
+        adapter = self._adapter({})
+        self.assertTrue(adapter._require_mention_for("oc_unknown", "omt_unknown"))
+        self.assertTrue(adapter._require_mention_for("oc_unknown", ""))

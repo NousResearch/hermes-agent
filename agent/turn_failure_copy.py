@@ -463,9 +463,32 @@ def oauth_relogin_command(provider: Any) -> str:
     if slug == "nous":
         return f"hermes {profile_cli_selector()}portal"
     if _login_owned_by_external_cli(slug):
-        # `auth add` refuses a plugin with no auth_handler; the model flow runs the vendor CLI's login.
-        return f"hermes {profile_cli_selector()}model"
+        # `auth add` refuses a plugin with no auth_handler. The plugin's own CLI login comes first:
+        # `hermes model` runs it too, but then saves the provider as the default.
+        from hermes_cli.auth_plugin_providers import plugin_profile
+
+        return declared_login_command(plugin_profile(slug)) or f"hermes {profile_cli_selector()}model"
     return f"hermes {profile_cli_selector()}auth add {slug} --type oauth"
+
+
+def declared_login_command(profile: Any) -> str:
+    """The shell command a plugin's ``setup_status()`` names as its CLI's own login, or "".
+
+    Only for a profile that overrides the hook: the base ``setup_status`` reports nothing, and an
+    override asks the CLI itself (``claude auth status`` is one short local call)."""
+    from providers.base import ProviderProfile
+
+    if profile is None or type(profile).setup_status is ProviderProfile.setup_status:
+        return ""
+    try:
+        login = (profile.setup_status() or {}).get("login_command")
+    except Exception:  # health: allow BLE001 -- plugin hook boundary: a broken setup_status must not break the hint
+        return ""
+    if not login:
+        return ""
+    import shlex
+
+    return shlex.join(str(part) for part in login) if isinstance(login, (list, tuple)) else str(login)
 
 
 def _login_owned_by_external_cli(slug: str) -> bool:

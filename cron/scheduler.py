@@ -1,6 +1,6 @@
 # health: allow FILE_LINES -- security fix for #82010: distinguish an explicitly-empty toolset allowlist (fail closed, nothing allowed) from an absent one (no restriction); the added lines are minimal fail-closed branches at this existing chokepoint. Also #141468: match the `mcp-<server>` toolset spelling so a narrow job's MCP allowlist is not widened into every enabled server — a minimal branch at the same chokepoint.
 """Cron job scheduler: tick() runs due jobs (gateway calls it every 60s from a background thread).
-A file lock (~/.hermes/cron/.tick.lock) keeps overlapping processes to one tick at a time.
+A file lock (<HERMES_HOME>/cron/.tick.lock, one per profile home) keeps overlapping processes to one tick at a time.
 """
 
 import atexit

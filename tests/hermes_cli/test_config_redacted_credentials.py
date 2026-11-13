@@ -62,7 +62,8 @@ def _masks():
 def test_human_passwords_are_not_masks():
     from hermes_cli.config_credential_values import is_redacted_credential_value
     for pw in ("Hello...World1", "a.b.c...defgh", "correct horse battery", "Bearer-token-2024!",
-               "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw", "${OPENAI_API_KEY}", REAL):
+               "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw", "${OPENAI_API_KEY}", REAL,
+               "MyRedactedPassword123!", "Unredacted2024", "redacted-pass-99"):
         assert not is_redacted_credential_value(pw), pw
 
 

@@ -19,6 +19,9 @@ from typing import Any, Callable, Iterator
 _ELLIPSIS_MASK_RE = re.compile(r"\S{0,8}(?:\.\.\.|…)(?:\S{4})?")
 _STARS_RE = re.compile(r"\*{3,}\S{0,4}")  # ``***``, ``sk-****WXYZ`` after the prefix strip
 _BARE_MASKS = frozenset({"[redacted]", "<redacted>", "(redacted)", "redacted"})
+# ``****redacted****`` and kin: the whole value is the word fenced by filler, so a real password
+# that merely contains the word (``MyRedactedPassword123!``) is not a mask.
+_FENCED_REDACTED_RE = re.compile(r"(?i)([*#=_-])\1+\s*redacted\s*\1+")
 _ENV_REF_RE = re.compile(r"\$\{[^}]+\}")
 # The redactor keeps context around the masked part: ``Bearer ***`` (auth header), ``123456789:***``
 # (Telegram bot id in file_read mode), ``xoxb-***`` (vendor prefix). Strip it before matching.
@@ -30,9 +33,8 @@ def _is_bare_mask(candidate: str) -> bool:
     lowered = candidate.lower()
     if lowered in _BARE_MASKS or lowered.startswith(("«redacted", "[redacted")):
         return True
-    if "redacted" in lowered and len(candidate) <= 40:  # ``****redacted****`` and kin
-        return True
-    return bool(_STARS_RE.fullmatch(candidate) or _ELLIPSIS_MASK_RE.fullmatch(candidate))
+    return bool(_FENCED_REDACTED_RE.fullmatch(candidate) or _STARS_RE.fullmatch(candidate)
+                or _ELLIPSIS_MASK_RE.fullmatch(candidate))
 
 
 def is_redacted_credential_value(value: Any) -> bool:

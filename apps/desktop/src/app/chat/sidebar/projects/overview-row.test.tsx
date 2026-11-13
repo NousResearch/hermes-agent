@@ -241,6 +241,13 @@ describe('expanded project archive lifecycle', () => {
       })
       view.rerender(renderProps())
       expect(screen.getByTestId('rows').textContent?.includes(five[4].id)).toBe(rollback)
+
+      if (!rollback) {
+        // A later explicit unarchive must re-admit this hydrated row even
+        // though projects.tree has already acknowledged and pruned its tombstone.
+        act(() => untombstoneSessions([five[4].id]))
+        expect(screen.getByTestId('rows').textContent).toContain(five[4].id)
+      }
     }
   )
 })

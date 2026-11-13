@@ -678,14 +678,40 @@ def _print_fetch_failure(c: Console, sources, identifier: str, meta=None, source
     return "rate_limited" if rate_limited else "auth_rejected" if rejected else "fetch_failed"
 
 
-def _scan_quarantined(c: Console, q_path: Path, bundle, meta, identifier: str):
+def _untrusted_scan_source(candidate: str, fallback: str = "") -> str:
+    """``candidate`` unless it names a reserved origin marker ("official", "agent-created", alias-prefixed
+    forms) that skills_guard elevates to builtin/agent-created trust. Identifiers are publisher-chosen (a
+    ClawHub slug ``official`` would install a dangerous skill as builtin), so they never carry that trust."""
+    from tools.skills_guard import _resolve_trust_level
+    for value in (candidate, fallback):
+        if value and _resolve_trust_level(value) not in {"builtin", "agent-created"}:
+            return value
+    return "community"
+
+
+def _is_official_adapter(matched_source) -> bool:
+    """Official provenance is the adapter that served the bytes, never a ``bundle.source`` string: the
+    hermes-index adapter copies ``source`` from its JSON rows onto GitHub-fetched bundles."""
+    from tools.skills_hub_official import OptionalSkillSource
+    return isinstance(matched_source, OptionalSkillSource)
+
+
+def _scan_source_for_install(bundle, meta, identifier: str, matched_source) -> str:
+    """Scanner trust identity for a resolved hub bundle; builtin trust only via ``_is_official_adapter``."""
+    if _is_official_adapter(matched_source):
+        return "official"
+    candidate = getattr(bundle, "identifier", "") or getattr(meta, "identifier", "") or identifier
+    source_id = getattr(matched_source, "source_id", None)
+    return _untrusted_scan_source(candidate, source_id() if callable(source_id) else "")
+
+
+def _scan_quarantined(c: Console, q_path: Path, bundle, meta, identifier: str, matched_source=None):
     """Run the cached security scan on the quarantined bundle and print the report."""
     from tools.skills_hub import HUB_DIR
     from tools.skills_hub_models import source_url_for_bundle
     from tools.skills_guard import scan_skill_cached, format_scan_report
     c.print("[bold]Running security scan...[/]")
-    scan_source = ("official" if bundle.source == "official"
-                   else bundle.identifier or getattr(meta, "identifier", "") or identifier)
+    scan_source = _scan_source_for_install(bundle, meta, identifier, matched_source)
     result, prov = scan_skill_cached(
         q_path, source=scan_source, source_url=source_url_for_bundle(bundle),
         cache_dir=HUB_DIR / "scan-cache")
@@ -711,10 +737,10 @@ _INSTALL_PANELS = {
         "Disclaimer", "yellow")}
 
 
-def _confirm_install(c: Console, bundle, category: str) -> bool:
+def _confirm_install(c: Console, bundle, category: str, official: bool) -> bool:
     """Source-appropriate disclaimer panel + `Install '<name>'?` prompt."""
     files_at = f"Files will be at: [cyan]{display_hermes_home()}/skills/{category + '/' if category else ''}{bundle.name}/[/]"
-    body, title, style = _INSTALL_PANELS["official" if bundle.source == "official" else "external"]
+    body, title, style = _INSTALL_PANELS["official" if official else "external"]
     c.print()
     c.print(Panel(body + files_at, title=title, border_style=style))
     return _confirm_or_cancel(c, f"[bold]Install '{bundle.name}'?[/]",
@@ -874,7 +900,8 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
         category = _prompt_for_category(c, _existing_categories())
     # Official skills can be nested ("official/mlops/training/trl-fine-tuning"): keep every
     # identifier segment between "official" and the final slug as the category path.
-    if bundle.source == "official" and not category:
+    official = _is_official_adapter(_matched_source)
+    if official and not category:
         category = "/".join(bundle.identifier.split("/")[1:-1])
 
     existing = HubLockFile().get_installed(bundle.name)
@@ -895,7 +922,7 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
         return bundle, failed, False
     c.print(f"[dim]Quarantined to {q_path.relative_to(q_path.parent.parent.parent)}[/]")
 
-    result = _scan_quarantined(c, q_path, bundle, meta, identifier)
+    result = _scan_quarantined(c, q_path, bundle, meta, identifier, _matched_source)
     allowed, _reason = should_allow_install(result, force=force)
     if not allowed:
         _install_blocked(c, bundle, _scan_block_message(result, identifier), result.verdict,
@@ -910,7 +937,7 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
         c.print(Panel("\n".join(metadata_lines), title="Upstream Metadata", border_style="blue"))
 
     # skip_confirm bypasses the prompt (TUI mode, where input() hangs).
-    if not force and not skip_confirm and not _confirm_install(c, bundle, category):
+    if not force and not skip_confirm and not _confirm_install(c, bundle, category, official):
         shutil.rmtree(q_path, ignore_errors=True)
         return bundle, None, None
 
@@ -1122,7 +1149,8 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
         if not skill_path.exists():
             c.print(f"[yellow]Warning:[/] {entry['name']} — path missing: {entry['install_path']}")
             continue
-        c.print(format_scan_report(scan_skill(skill_path, source=entry.get("identifier", entry["source"]))))
+        c.print(format_scan_report(scan_skill(skill_path, source=_untrusted_scan_source(
+            entry.get("identifier", ""), entry.get("source", "")))))
         if deep:
             c.print(format_ast_report(ast_scan_path(skill_path), skill_name=entry["name"]))
         c.print()

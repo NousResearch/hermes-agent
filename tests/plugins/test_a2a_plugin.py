@@ -1238,6 +1238,18 @@ class TestInboundRoundTrip:
             err = await asyncio.to_thread(_post_unauth)
             assert err["error"]["code"] == protocol.ERR_UNAUTHORIZED
 
+            # A non-ASCII byte in the token is a 401 too, not a dropped connection (#150028).
+            def _post_non_ascii():
+                try:
+                    _post_json(base + "/", _send_body("x"), {"Authorization": "Bearer top\x83secret"})
+                    raise AssertionError("expected 401")
+                except urllib.error.HTTPError as e:
+                    assert e.code == 401
+                    return json.loads(e.read().decode())
+
+            err = await asyncio.to_thread(_post_non_ascii)
+            assert err["error"]["code"] == protocol.ERR_UNAUTHORIZED
+
             # POST with the token succeeds.
             resp = await asyncio.to_thread(
                 _post_json, base + "/", _send_body("hello"),

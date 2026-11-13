@@ -99,7 +99,7 @@ def _first_session_started_at(home: Path | None = None) -> float | None:
     if not database.exists():
         return time.time()
     from hermes_cli.sqlite_safe_read import connect_tracked  # tracked: raw byte probes must see this reader
-    from hermes_state_holders import read_only_db_uri
+    from hermes_agent.hermes_state_holders import read_only_db_uri
 
     with contextlib.closing(
         connect_tracked(read_only_db_uri(database), uri=True, timeout=1, tracking_path=database)

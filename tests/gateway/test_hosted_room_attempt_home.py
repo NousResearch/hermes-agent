@@ -8,7 +8,7 @@ import pytest
 
 from gateway import hosted_room_driver as tasks, hosted_rooms, session_hosted_transport as transport
 from gateway.session_group_controls import _disband
-from hermes_state_runtime import list_session_admissions
+from hermes_agent.hermes_state_runtime import list_session_admissions
 from tests.gateway.test_session_hosted_transport import _SourceTask, _server
 
 

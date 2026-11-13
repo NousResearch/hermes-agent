@@ -7,7 +7,7 @@ from gateway.session import SessionSource, SessionStore
 
 
 def test_nonboundary_repoint_keeps_cwd_but_new_discards_it(tmp_path, monkeypatch):
-    import hermes_state
+    from hermes_agent import hermes_state
 
     def no_sqlite():
         raise RuntimeError("SQLite disabled in test")

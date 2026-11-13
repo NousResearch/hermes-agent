@@ -6,7 +6,7 @@ import sqlite3
 
 import pytest
 
-import hermes_state_wal
+from hermes_agent import hermes_state_wal
 import hermes_yaml as yaml
 
 
@@ -26,7 +26,7 @@ def _configure_mode(monkeypatch: pytest.MonkeyPatch, tmp_path, mode: object) -> 
 
 def _disable_vulnerable_gate(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "hermes_state_wal.is_sqlite_wal_reset_vulnerable",
+        "hermes_agent.hermes_state_wal.is_sqlite_wal_reset_vulnerable",
         lambda **kwargs: False,
     )
 
@@ -48,7 +48,7 @@ def test_wal_probe_unknown_never_emits_set_pragma(monkeypatch, tmp_path, caplog)
     and ``require_wal=True`` must raise instead of reporting an unverified "wal"."""
     import logging
 
-    from hermes_state_wal import WalUnsupportedError, apply_wal_with_fallback
+    from hermes_agent.hermes_state_wal import WalUnsupportedError, apply_wal_with_fallback
 
     _configure_mode(monkeypatch, tmp_path, "wal")
     _disable_vulnerable_gate(monkeypatch)
@@ -68,10 +68,10 @@ def test_wal_probe_unknown_never_emits_set_pragma(monkeypatch, tmp_path, caplog)
     sibling = sqlite3.connect(str(db_path))
     try:
         assert sibling.execute("PRAGMA journal_mode=WAL").fetchone()[0].lower() == "wal"
-        monkeypatch.setattr("hermes_state_wal._on_disk_journal_mode", lambda _conn: None)
+        monkeypatch.setattr("hermes_agent.hermes_state_wal._on_disk_journal_mode", lambda _conn: None)
         conn = sqlite3.connect(str(db_path), factory=_SpyConnection)
         try:
-            with caplog.at_level(logging.WARNING, logger="hermes_state_wal"):
+            with caplog.at_level(logging.WARNING, logger="hermes_agent.hermes_state_wal"):
                 assert apply_wal_with_fallback(conn, db_label="probe-unknown.db") == "wal"
             assert conn.pragmas == []  # nothing touched while ownership is unproven
             assert sibling.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
@@ -88,14 +88,14 @@ def test_wal_probe_unknown_never_emits_set_pragma(monkeypatch, tmp_path, caplog)
 
 
 def test_resolve_journal_mode_uses_real_database_config(monkeypatch, tmp_path):
-    from hermes_state_wal import resolve_journal_mode
+    from hermes_agent.hermes_state_wal import resolve_journal_mode
 
     _configure_mode(monkeypatch, tmp_path, "DELETE")
     assert resolve_journal_mode() == "delete"
 
 
 def test_new_nonsecret_hermes_env_override_is_not_exposed(monkeypatch, tmp_path):
-    from hermes_state_wal import resolve_journal_mode
+    from hermes_agent.hermes_state_wal import resolve_journal_mode
 
     _configure_mode(monkeypatch, tmp_path, "wal")
     monkeypatch.setenv("HERMES_JOURNAL_MODE", "delete")
@@ -104,7 +104,7 @@ def test_new_nonsecret_hermes_env_override_is_not_exposed(monkeypatch, tmp_path)
 
 @pytest.mark.parametrize("value", ["bogus", "truncate", None, 42, {"bad": "shape"}])
 def test_invalid_config_value_falls_back_to_wal(monkeypatch, tmp_path, value):
-    from hermes_state_wal import resolve_journal_mode
+    from hermes_agent.hermes_state_wal import resolve_journal_mode
 
     _configure_mode(monkeypatch, tmp_path, value)
     assert resolve_journal_mode() == "wal"
@@ -114,14 +114,14 @@ def test_invalid_config_value_falls_back_to_wal(monkeypatch, tmp_path, value):
 def test_malformed_database_section_falls_back_to_wal(
     monkeypatch, tmp_path, database
 ):
-    from hermes_state_wal import resolve_journal_mode
+    from hermes_agent.hermes_state_wal import resolve_journal_mode
 
     _write_config(monkeypatch, tmp_path, {"database": database})
     assert resolve_journal_mode() == "wal"
 
 
 def test_apply_wal_with_fallback_honors_delete_config(monkeypatch, tmp_path):
-    from hermes_state_wal import apply_wal_with_fallback
+    from hermes_agent.hermes_state_wal import apply_wal_with_fallback
 
     _configure_mode(monkeypatch, tmp_path, "delete")
     _disable_vulnerable_gate(monkeypatch)
@@ -134,7 +134,7 @@ def test_apply_wal_with_fallback_honors_delete_config(monkeypatch, tmp_path):
 
 
 def test_apply_wal_with_fallback_defaults_to_wal(monkeypatch, tmp_path):
-    from hermes_state_wal import apply_wal_with_fallback
+    from hermes_agent.hermes_state_wal import apply_wal_with_fallback
 
     _configure_mode(monkeypatch, tmp_path, "wal")
     _disable_vulnerable_gate(monkeypatch)
@@ -148,11 +148,11 @@ def test_apply_wal_with_fallback_defaults_to_wal(monkeypatch, tmp_path):
 
 def test_configured_delete_validates_vulnerable_sqlite_result(monkeypatch, tmp_path):
     """The safety gate must not report DELETE when SQLite returns MEMORY."""
-    from hermes_state_wal import apply_wal_with_fallback
+    from hermes_agent.hermes_state_wal import apply_wal_with_fallback
 
     _configure_mode(monkeypatch, tmp_path, "delete")
     monkeypatch.setattr(
-        "hermes_state_wal.is_sqlite_wal_reset_vulnerable",
+        "hermes_agent.hermes_state_wal.is_sqlite_wal_reset_vulnerable",
         lambda **kwargs: True,
     )
     conn = sqlite3.connect(":memory:")
@@ -168,7 +168,7 @@ def test_configured_delete_never_live_downgrades_existing_wal(monkeypatch, tmp_p
     """Keeping WAL is correct, but the operator must be told their configured
     delete had no effect (otherwise the DB silently stays WAL and the protection
     they configured never applies)."""
-    from hermes_state_wal import apply_wal_with_fallback
+    from hermes_agent.hermes_state_wal import apply_wal_with_fallback
 
     _configure_mode(monkeypatch, tmp_path, "delete")
     db_path = tmp_path / "existing-wal.db"
@@ -176,10 +176,10 @@ def test_configured_delete_never_live_downgrades_existing_wal(monkeypatch, tmp_p
     try:
         assert conn.execute("PRAGMA journal_mode=WAL").fetchone()[0].lower() == "wal"
         monkeypatch.setattr(
-            "hermes_state_wal.is_sqlite_wal_reset_vulnerable",
+            "hermes_agent.hermes_state_wal.is_sqlite_wal_reset_vulnerable",
             lambda **kwargs: True,
         )
-        with caplog.at_level("ERROR", logger="hermes_state"):
+        with caplog.at_level("ERROR", logger="hermes_agent.hermes_state"):
             assert apply_wal_with_fallback(conn, db_label="existing-wal.db") == "wal"
         assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
         assert any(
@@ -196,7 +196,7 @@ def test_configured_delete_overridden_warns_on_non_vulnerable_runtime_too(monkey
     3.51.3+ upgrade), the on-disk WAL + configured-delete case reaches the
     read-only probe path instead of the vulnerability path. That path used to
     return WAL with no signal at all; it must emit the same override warning."""
-    from hermes_state_wal import apply_wal_with_fallback
+    from hermes_agent.hermes_state_wal import apply_wal_with_fallback
 
     _configure_mode(monkeypatch, tmp_path, "delete")
     _disable_vulnerable_gate(monkeypatch)
@@ -204,7 +204,7 @@ def test_configured_delete_overridden_warns_on_non_vulnerable_runtime_too(monkey
     conn = sqlite3.connect(db_path)
     try:
         assert conn.execute("PRAGMA journal_mode=WAL").fetchone()[0].lower() == "wal"
-        with caplog.at_level("ERROR", logger="hermes_state"):
+        with caplog.at_level("ERROR", logger="hermes_agent.hermes_state"):
             assert apply_wal_with_fallback(conn, db_label="existing-wal.db") == "wal"
             assert apply_wal_with_fallback(conn, db_label="existing-wal.db") == "wal"
         assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
@@ -223,18 +223,18 @@ def test_configured_delete_overridden_warns_on_non_vulnerable_runtime_too(monkey
 def test_configured_delete_overridden_warning_fires_once_per_db(monkeypatch, tmp_path, caplog):
     """The override warning is deduped per process per db_label (same discipline
     as the WAL-fallback warning), so repeated connections don't flood the log."""
-    from hermes_state_wal import apply_wal_with_fallback
+    from hermes_agent.hermes_state_wal import apply_wal_with_fallback
 
     _configure_mode(monkeypatch, tmp_path, "delete")
     monkeypatch.setattr(
-        "hermes_state_wal.is_sqlite_wal_reset_vulnerable",
+        "hermes_agent.hermes_state_wal.is_sqlite_wal_reset_vulnerable",
         lambda **kwargs: True,
     )
     db_path = tmp_path / "existing-wal.db"
     conn = sqlite3.connect(db_path)
     try:
         conn.execute("PRAGMA journal_mode=WAL").fetchone()
-        with caplog.at_level("ERROR", logger="hermes_state"):
+        with caplog.at_level("ERROR", logger="hermes_agent.hermes_state"):
             assert apply_wal_with_fallback(conn, db_label="once.db") == "wal"
             assert apply_wal_with_fallback(conn, db_label="once.db") == "wal"
             assert apply_wal_with_fallback(conn, db_label="once.db") == "wal"
@@ -252,7 +252,7 @@ def test_configured_delete_with_require_wal_and_existing_wal_returns_wal(monkeyp
     existing-WAL probe branch returns "wal" unconditionally (require_wal only
     governs the WAL-refusal fallback paths), so the override warning fires and no
     WalUnsupportedError is raised."""
-    from hermes_state_wal import apply_wal_with_fallback
+    from hermes_agent.hermes_state_wal import apply_wal_with_fallback
 
     _configure_mode(monkeypatch, tmp_path, "delete")
     _disable_vulnerable_gate(monkeypatch)
@@ -260,7 +260,7 @@ def test_configured_delete_with_require_wal_and_existing_wal_returns_wal(monkeyp
     conn = sqlite3.connect(db_path)
     try:
         assert conn.execute("PRAGMA journal_mode=WAL").fetchone()[0].lower() == "wal"
-        with caplog.at_level("ERROR", logger="hermes_state"):
+        with caplog.at_level("ERROR", logger="hermes_agent.hermes_state"):
             result = apply_wal_with_fallback(
                 conn, db_label="existing-wal.db", require_wal=True
             )
@@ -284,7 +284,7 @@ def test_real_db_openers_honor_configured_delete(monkeypatch, tmp_path):
     from gateway.platforms.api_server import ResponseStore
     from hermes_cli import projects_db
     from hermes_cli import kanban_db_connect as kbc
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from plugins.platforms.discord.recovery import DiscordRecoveryStore
     from tools import async_delegation
 

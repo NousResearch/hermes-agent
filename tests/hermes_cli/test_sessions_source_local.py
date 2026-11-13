@@ -1,7 +1,7 @@
 """``hermes sessions list|browse|stats --source cli`` must see gateway rows stored as ``local``."""
 from argparse import Namespace
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def test_list_includes_a_compression_tip_whose_root_has_no_created_source(tmp_path, capsys):

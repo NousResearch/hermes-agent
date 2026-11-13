@@ -22,7 +22,7 @@ async def multiplex_probe(runner, authority, primary, state, mode, peer):
     from gateway.config import Platform
     from gateway.platforms.event import MessageEvent
     from gateway.profile_routing import ProfileRoute
-    from hermes_state_runtime import admit_session_input, list_session_admissions
+    from hermes_agent.hermes_state_runtime import admit_session_input, list_session_admissions
 
     transport = state / 'profiles' / 'transport'
     transport.mkdir(parents=True, exist_ok=True)

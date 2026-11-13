@@ -1191,8 +1191,8 @@ def test_create_tui_subscription_binds_to_live_session_after_compaction_fork(mon
     """#110068: the inherited HERMES_SESSION_KEY can name a session already superseded
     by a compaction fork. Auto-subscribe must bind to the live continuation tip resolved
     from the session store, not the stale key the process was launched with."""
-    import hermes_state
-    from hermes_state import SessionDB
+    from hermes_agent import hermes_state
+    from hermes_agent.hermes_state import SessionDB
     from tools import kanban_tools as kt
 
     stale, live = "20260912_231110_stale", "20260913_000649_live"
@@ -1228,7 +1228,7 @@ def test_live_tui_session_key_uses_profile_store(monkeypatch, tmp_path):
     """A named-profile session's lineage lives in profiles/<x>/state.db, not the default
     store: resolution must open THAT store."""
     from hermes_cli import profiles as profiles_mod
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from tools import kanban_tools as kt
 
     stale, live = "stale-teamx", "live-teamx"
@@ -1249,7 +1249,7 @@ def test_live_tui_session_key_uses_profile_store(monkeypatch, tmp_path):
 def test_live_tui_session_key_fails_open_to_original_key(monkeypatch):
     """Store unavailability must degrade to current behaviour (subscribe to the inherited
     key), never fail the kanban_create call."""
-    import hermes_state_registry as registry
+    import hermes_agent.hermes_state_registry as registry
     from tools import kanban_tools as kt
 
     def _boom(db_path=None):

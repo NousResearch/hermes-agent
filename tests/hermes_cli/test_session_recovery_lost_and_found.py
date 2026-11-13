@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from hermes_cli import session_recovery
 from hermes_cli import session_schema_history
 from hermes_cli.session_lost_and_found import (

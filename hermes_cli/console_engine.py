@@ -589,7 +589,7 @@ def _session_db(*, read_only: bool = True):
     reads attach ``read_only`` so they never add a writer connection beside it (#100896).
     Mutating commands pass ``read_only=False``.
     """
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     return closing(SessionDB(read_only=read_only))
 
 
@@ -597,7 +597,7 @@ def _sessions_list(_engine: HermesConsoleEngine, args: list[str]) -> str:
     ns = _parse("sessions list", args, (("--limit",), dict(type=int, default=20)))
     if ns.limit < 1 or ns.limit > 200:
         raise ConsoleCommandError("sessions list --limit must be between 1 and 200")
-    from hermes_state_sessions import INTERNAL_LISTING_SOURCES
+    from hermes_agent.hermes_state_sessions import INTERNAL_LISTING_SOURCES
     with _session_db() as db:
         sessions = db.list_sessions_rich(
             exclude_sources=list(INTERNAL_LISTING_SOURCES), limit=ns.limit, order_by_last_active=True)
@@ -606,7 +606,7 @@ def _sessions_list(_engine: HermesConsoleEngine, args: list[str]) -> str:
 
 def _sessions_stats(_engine: HermesConsoleEngine, args: list[str]) -> str:
     _expect_no_args(args, "sessions stats")
-    from hermes_state_sessions import INTERNAL_LISTING_SOURCES
+    from hermes_agent.hermes_state_sessions import INTERNAL_LISTING_SOURCES
     with _session_db() as db:
         total = db.session_count()
         listable = db.session_count(exclude_children=True, exclude_sources=list(INTERNAL_LISTING_SOURCES))
@@ -649,7 +649,7 @@ def _config_migrate(_engine: HermesConsoleEngine, args: list[str]) -> None:
 
 def _guard_exports(db, session_ids: list[str]) -> None:
     """Per-session export budget: only an individual runaway transcript trips it; 0 disables."""
-    from hermes_state import SessionExportTooLargeError
+    from hermes_agent.hermes_state import SessionExportTooLargeError
     try:
         db.assert_exports_safe(session_ids)
     except SessionExportTooLargeError as exc:
@@ -701,7 +701,7 @@ def _sessions_optimize(_engine: HermesConsoleEngine, args: list[str]) -> None:
     # accept would make this command refuse forever whenever a gateway is running.
     ns = _parse("sessions optimize", args, (("--force",), dict(action="store_true")))
     with _session_db(read_only=False) as db:
-        from hermes_state_holders import held_store_refusal
+        from hermes_agent.hermes_state_holders import held_store_refusal
         refusal = None if ns.force else held_store_refusal(
             db.db_path, command="optimize", force_hint="`sessions optimize --force`")
         if refusal:
@@ -714,8 +714,8 @@ def _sessions_repair(_engine: HermesConsoleEngine, args: list[str]) -> int | Non
     ns = _parse(
         "sessions repair", args, (("--check-only",), dict(action="store_true")),
         (("--no-backup",), dict(action="store_true")))
-    from hermes_state import DEFAULT_DB_PATH
-    from hermes_state_repair import HealthCheckUnavailable, _db_opens_cleanly, repair_state_db_schema
+    from hermes_agent.hermes_state import DEFAULT_DB_PATH
+    from hermes_agent.hermes_state_repair import HealthCheckUnavailable, _db_opens_cleanly, repair_state_db_schema
     db_path = DEFAULT_DB_PATH
     if not db_path.exists():
         print(f"No session database at {db_path} (nothing to repair).")

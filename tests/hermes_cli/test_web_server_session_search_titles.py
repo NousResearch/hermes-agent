@@ -21,7 +21,7 @@ import pytest
 
 import hermes_cli.web_server_sessions as _web_server_sessions
 import hermes_cli.web_routers.sessions as _rt_sessions
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 @pytest.fixture

@@ -9,7 +9,7 @@ def test_a_swept_bot_chat_generation_is_never_reissued(owner, tmp_path):
     from gateway.session_bot import _bot_chat_creation_id
     from gateway.session_controls import AuthorityConnection
     from gateway.session_local import create_local_session
-    from hermes_state_mutation_retirement import RETIRED_PREFIX, prune_retired_tombstones
+    from hermes_agent.hermes_state_mutation_retirement import RETIRED_PREFIX, prune_retired_tombstones
     owner.runner.adapters = {}
     actor = AuthorityConnection(owner, object(), {'user_id': 'human'}).actor
     request_id = _bot_chat_creation_id(owner, actor)

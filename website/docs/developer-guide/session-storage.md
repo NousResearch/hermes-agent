@@ -11,7 +11,7 @@ clients that admit input to its session authority over `/api/ws` (see
 workers write through that owner (`RuntimeSessionStore` RPC), never by opening
 `state.db` for transcript writes themselves.
 
-Source files: `hermes_state.py` (facade) plus the `hermes_state_*.py` siblings (schema, fts, search, compression, portability, gateway, ...)
+Source files: `hermes_agent/hermes_state.py` (facade) plus the `hermes_state_*.py` siblings (schema, fts, search, compression, portability, gateway, ...)
 
 ## Hermes home and profile isolation
 
@@ -167,7 +167,7 @@ Key design decisions:
 
 ### Sessions Table
 
-Abridged — see `SCHEMA_SQL` in `hermes_state_common.py` (applied by `hermes_state_schema.py`) for the full current column list
+Abridged — see `SCHEMA_SQL` in `hermes_agent/hermes_state_common.py` (applied by `hermes_agent/hermes_state_schema.py`) for the full current column list
 (which also includes gateway routing metadata such as `session_key`, `chat_id`,
 `chat_type`, `thread_id`, `display_name`, `origin_json`, `expiry_finalized`,
 workspace fields `cwd` / `git_branch` / `git_repo_root`, handoff and
@@ -285,7 +285,7 @@ The FTS5 table is kept in sync via three triggers that fire on INSERT, UPDATE,
 and DELETE of the `messages` table. The current triggers are gated on the
 `fts_rebuild_high_water` / `fts_rebuild_progress` markers in `state_meta` (so a
 background FTS rebuild can proceed without double-indexing) and cover all three
-indexed columns — see `SCHEMA_SQL` in `hermes_state_common.py` for the exact SQL.
+indexed columns — see `SCHEMA_SQL` in `hermes_agent/hermes_state_common.py` for the exact SQL.
 
 
 ## Dashboard browsing and owner maintenance
@@ -375,7 +375,7 @@ because every Hermes process has the DB open. Look for that line in
 `~/.hermes/logs/errors.log` next to the `database is locked` failure.
 
 Lock contention is recognised by SQLite result code (`SQLITE_BUSY` /
-`SQLITE_LOCKED`, `hermes_state_errors.is_sqlite_lock_error`), not by message
+`SQLITE_LOCKED`, `hermes_agent.hermes_state_errors.is_sqlite_lock_error`), not by message
 text. In rollback-journal (`delete`) mode a lock lost inside FTS5's table
 constructor arrives as `SQLITE_BUSY` with the text `vtable constructor failed:
 messages_fts`; it is treated like `database is locked`. Opening a writable
@@ -389,7 +389,7 @@ answers 503 (busy), not 500.
 ### Initialize
 
 ```python
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 db = SessionDB()                           # Default: ~/.hermes/state.db
 db = SessionDB(db_path=Path("~/.hermes/cache/scratch/test.db").expanduser())  # Custom path

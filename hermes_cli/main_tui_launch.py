@@ -85,7 +85,7 @@ def _print_tui_exit_summary(session_id: Optional[str], active_session_file: Opti
 
     db = None
     try:
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
         from hermes_cli.config import get_hermes_home
         db = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)
         session = db.get_session(target)

@@ -9,7 +9,7 @@ import subprocess
 
 from gateway.session_admission import admission_fingerprint
 from gateway.owner_identity import same_owner
-from hermes_state_runtime import RuntimeStoreError, _admission, _epoch, _secret_digest, _session
+from hermes_agent.hermes_state_runtime import RuntimeStoreError, _admission, _epoch, _secret_digest, _session
 
 # A venv launcher (uv's Windows python.exe, pip's exe shim) sits between the owner's
 # handle and the interpreter; the real worker is never further away than this.
@@ -86,7 +86,7 @@ def reserve_admission_worker(authority, *, admission_id, process, principal_id, 
         owner, generation = admission['target_session_id'], admission['generation']
         if _session(conn, owner)['runtime_generation'] != generation:
             raise RuntimeStoreError('stale_generation')
-        from hermes_state_local_lineage import local_physical_target
+        from hermes_agent.hermes_state_local_lineage import local_physical_target
         sid = local_physical_target(conn, owner)
         execution_id = 'admission-worker:' + admission_id
         if conn.execute('SELECT 1 FROM worker_executions WHERE execution_id=?', (execution_id,)).fetchone():
@@ -127,7 +127,7 @@ def lose_admission_worker(authority, row, scope):
         if worker is None or worker['generation'] != scope['generation'] or worker['owner_epoch'] != scope['epoch']:
             raise RuntimeStoreError('stale_generation')
         conn.execute("UPDATE worker_executions SET status='terminal' WHERE execution_id=?", (scope['execution_id'],))
-        from hermes_state_runtime_workers import compact_terminal_receipts
+        from hermes_agent.hermes_state_runtime_workers import compact_terminal_receipts
         compact_terminal_receipts(conn, scope['execution_id'])
         conn.execute("UPDATE session_admissions SET status='unknown' WHERE admission_id=?", (row['admission_id'],))
         conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (current['target_session_id'],))

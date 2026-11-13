@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 class TrackingConnection:
@@ -80,7 +80,7 @@ class TestTryWalCheckpointPassive:
         mock_conn.execute.side_effect = sqlite3.OperationalError("disk I/O error")
         db._conn = mock_conn
         try:
-            with caplog.at_level(logging.WARNING, logger="hermes_state"):
+            with caplog.at_level(logging.WARNING, logger="hermes_agent.hermes_state"):
                 db._try_wal_checkpoint()
         finally:
             db._conn = real_conn

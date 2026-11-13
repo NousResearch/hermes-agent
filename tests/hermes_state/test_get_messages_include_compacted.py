@@ -25,7 +25,7 @@ from agent.context_compressor import (
     _MERGED_SUMMARY_DELIMITER,
     _SUMMARY_END_MARKER,
 )
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 @pytest.fixture
@@ -216,7 +216,7 @@ class TestDisplayDedupe:
     ])
     def test_legacy_page_keeps_one_snapshot_during_rewind(self, tmp_path, monkeypatch, journal_mode):
         """WAL commits beside the snapshot; rollback journaling waits for its release."""
-        monkeypatch.setattr("hermes_state_wal.resolve_journal_mode", lambda: journal_mode)
+        monkeypatch.setattr("hermes_agent.hermes_state_wal.resolve_journal_mode", lambda: journal_mode)
         path = tmp_path / "snapshot.db"
         writer = SessionDB(path)
         assert writer._read_one("PRAGMA journal_mode")[0] == journal_mode

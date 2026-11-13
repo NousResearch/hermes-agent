@@ -15,7 +15,7 @@ import os
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 from gateway.session_ingress_media import capture_native_media, restore_native_media
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
 
@@ -273,7 +273,7 @@ def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_sourc
     # Only an exact persisted legacy retry retains its old fingerprint. New
     # ordinary admissions must bind homes too, including execution after restart.
     if provenance is not None and not getattr(runner.config, 'multiplex_profiles', False):
-        from hermes_state_runtime import list_session_admissions
+        from hermes_agent.hermes_state_runtime import list_session_admissions
         from gateway.session_authorities import active_authority
         authority = active_authority(runner)
         entry = runner.session_store.lookup_by_session_key(envelope['route'])

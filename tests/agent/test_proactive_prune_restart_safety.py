@@ -11,7 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from agent.context_compressor import _estimate_msg_budget_tokens
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 _REARM_KEY = "_proactive_prune_rearm_tokens"
 
@@ -418,7 +418,7 @@ def test_in_place_prune_leaves_unwritten_suffix_to_the_flush(tmp_path: Path) -> 
 
 
 def test_rewrite_pruned_rows_refuses_user_rows(tmp_path: Path) -> None:
-    from hermes_state_errors import PruneRowUnresolvedError
+    from hermes_agent.hermes_state_errors import PruneRowUnresolvedError
 
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "PRUNE_IN_PLACE_USER"
@@ -510,7 +510,7 @@ def test_an_assistant_tool_calls_rewrite_is_stale_with_and_without_a_snapshot(tm
     row-local writer through the loader-lens identity compare (which covers the arguments), and equally
     through the lease-less gate — aborting the whole prune, not just the row (#124102).
     """
-    from hermes_state_errors import PruneRowStaleError
+    from hermes_agent.hermes_state_errors import PruneRowStaleError
 
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "PRUNE_STALE_TOOL_CALLS"

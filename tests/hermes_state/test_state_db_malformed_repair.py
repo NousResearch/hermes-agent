@@ -22,11 +22,11 @@ from pathlib import Path
 
 import pytest
 
-import hermes_state
-import hermes_state_repair
-import hermes_state_wal
-from hermes_state import SessionDB, is_malformed_db_error
-from hermes_state_repair import repair_state_db_schema
+from hermes_agent import hermes_state
+from hermes_agent import hermes_state_repair
+from hermes_agent import hermes_state_wal
+from hermes_agent.hermes_state import SessionDB, is_malformed_db_error
+from hermes_agent.hermes_state_repair import repair_state_db_schema
 
 
 def _build_healthy_db(db_path: Path) -> str:
@@ -186,7 +186,7 @@ def _corrupt_fts_shadow_segments(db_path: Path) -> None:
 
 def test_fts_read_corruption_repaired_in_place(tmp_path):
     """``repair_state_db_schema`` rebuilds the FTS index so reads resume."""
-    from hermes_state_repair import _db_opens_cleanly
+    from hermes_agent.hermes_state_repair import _db_opens_cleanly
 
     db_path = tmp_path / "state.db"
     _build_healthy_db(db_path)
@@ -273,7 +273,7 @@ def _corrupt_fts_index_data(db_path: Path) -> None:
 
 def test_fts_write_corruption_detected_by_write_probe(tmp_path):
     """_db_opens_cleanly's rolled-back write probe flags FTS write corruption."""
-    from hermes_state_repair import _db_opens_cleanly
+    from hermes_agent.hermes_state_repair import _db_opens_cleanly
 
     db_path = tmp_path / "state.db"
     _build_healthy_db(db_path)
@@ -294,7 +294,7 @@ def test_fts_write_corruption_detected_by_write_probe(tmp_path):
 
 def test_fts_write_corruption_repaired_in_place(tmp_path):
     """repair_state_db_schema rebuilds the FTS index; reads + writes resume."""
-    from hermes_state_repair import _db_opens_cleanly
+    from hermes_agent.hermes_state_repair import _db_opens_cleanly
 
     db_path = tmp_path / "state.db"
     _build_healthy_db(db_path)
@@ -444,7 +444,7 @@ time.sleep({hold})
 def _lock_held_by_other_process(db_path: Path, hold_seconds: float = 30.0):
     """Hold the repair flock for *db_path* in a real child process."""
     script = _HOLD_LOCK_SCRIPT.format(
-        root=str(Path(hermes_state.__file__).parent),
+        root=str(Path(hermes_state.__file__).parents[1]),
         lock=str(db_path.with_name(db_path.name + ".repair.lock")),
         hold=hold_seconds,
     )
@@ -501,7 +501,7 @@ def test_repair_reports_success_when_the_holder_already_healed_the_db(
 _REPAIR_SCRIPT = """
 import sys, json
 sys.path.insert(0, {root!r})
-from hermes_state_repair import repair_state_db_schema
+from hermes_agent.hermes_state_repair import repair_state_db_schema
 print(json.dumps(repair_state_db_schema({db!r})), flush=True)
 """
 
@@ -510,7 +510,7 @@ def _release_header_probe_fds() -> None:
     """Close this process's cached header-probe fds (no SQLite connection is live, so no lock is at risk)."""
     import os
 
-    import hermes_state_dbfile
+    from hermes_agent import hermes_state_dbfile
     with hermes_state_dbfile._HEADER_PROBE_LOCK:
         for fd, _dev, _ino in hermes_state_dbfile._HEADER_PROBE_FDS.values():
             os.close(fd)
@@ -534,7 +534,7 @@ def test_two_processes_repairing_at_once_perform_surgery_once(tmp_path):
     _release_header_probe_fds()
 
     script = _REPAIR_SCRIPT.format(
-        root=str(Path(hermes_state.__file__).parent), db=str(db_path)
+        root=str(Path(hermes_state.__file__).parents[1]), db=str(db_path)
     )
     procs = [
         subprocess.Popen(
@@ -712,7 +712,7 @@ def test_repair_restores_configured_wal_after_surgery(
     assert _mode_of(db_path) == "delete"
     _corrupt_duplicate_fts(db_path)
 
-    with caplog.at_level(logging.WARNING, logger="hermes_state"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.hermes_state"):
         report = repair_state_db_schema(db_path)
 
     assert report["repaired"] is True
@@ -768,7 +768,7 @@ def test_repair_reports_mode_change_when_probe_succeeded(
         patch.object(
             hermes_state_repair, "_probe_journal_mode_for_repair", return_value="delete"
         ),
-        caplog.at_level(logging.WARNING, logger="hermes_state"),
+        caplog.at_level(logging.WARNING, logger="hermes_agent.hermes_state"),
     ):
         report = repair_state_db_schema(db_path)
 
@@ -801,7 +801,7 @@ def test_repair_restore_failure_is_nonfatal(
 
     with (
         patch.object(hermes_state_wal, "apply_wal_with_fallback", _refused),
-        caplog.at_level(logging.WARNING, logger="hermes_state"),
+        caplog.at_level(logging.WARNING, logger="hermes_agent.hermes_state"),
     ):
         report = repair_state_db_schema(db_path)
 

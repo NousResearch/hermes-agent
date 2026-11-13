@@ -42,7 +42,7 @@ async def test_stop_during_agent_construction_latches_so_the_turn_runs_no_tools(
     from gateway.session_authority import initialize_session_authority
     from gateway.session_results import execution_result
     from gateway.turn_context import TurnContext
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
 
     runner, adapter, sent = _owner(monkeypatch)
     authority = await initialize_session_authority(runner, profile_id='default', instance_id='owner')
@@ -100,7 +100,7 @@ async def test_idle_stop_and_new_cancel_the_queued_followup(monkeypatch, command
     from gateway.session_ingress import admit_message
     from gateway.session_ingress_context import native_callback
     from hermes_constants import get_hermes_home
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
 
     runner, adapter, _sent = _owner(monkeypatch)
     # The gap between turns: the slot is released and the drain has not claimed B yet.

@@ -203,7 +203,7 @@ class TestGuidanceNeverNamesLiveDb:
         assert ".recover" in explanation  # the warning still names the hazard
 
     def test_repair_budget_error_names_safe_lane(self, tmp_path: Path):
-        import hermes_state_repair as hermes_state  # helper lives in the split-out repair module
+        import hermes_agent.hermes_state_repair as hermes_state  # helper lives in the split-out repair module
 
         message = hermes_state._persistent_repair_exhausted_error(
             tmp_path / "state.db"

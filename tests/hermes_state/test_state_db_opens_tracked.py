@@ -95,7 +95,7 @@ def test_spillover_reference_scan_is_tracked(state_db, tracked):
 
 def test_doctor_session_count_and_damage_check_are_tracked(state_db, tracked):
     from hermes_cli.doctor_state import _session_count
-    from hermes_state_repair import state_db_has_structural_damage
+    from hermes_agent.hermes_state_repair import state_db_has_structural_damage
     assert _session_count(state_db) == 1
     state_db_has_structural_damage(state_db)
     assert tracked.count(_key(state_db)) >= 2
@@ -148,7 +148,7 @@ def test_restore_destination_connection_is_tracked(state_db, tracked, tmp_path):
 def test_set_journal_mode_switch_connection_is_tracked(state_db, tracked, monkeypatch):
     import argparse
     from hermes_cli.sessions_cmd_journal_mode import cmd_set_journal_mode
-    monkeypatch.setattr("hermes_state.DEFAULT_DB_PATH", state_db)
+    monkeypatch.setattr("hermes_agent.hermes_state.DEFAULT_DB_PATH", state_db)
     args = argparse.Namespace(sessions_action="set-journal-mode", mode="delete", db=None, force=True)
     assert cmd_set_journal_mode(args) == 0
     assert _key(state_db) in tracked

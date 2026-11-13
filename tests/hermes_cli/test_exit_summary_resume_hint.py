@@ -98,7 +98,7 @@ class TestTuiExitSummaryResumeHint:
     point from the classic CLI summary above and must carry the same ``-p`` flag (#125078)."""
 
     def test_tui_hints_include_profile_flag_for_named_profile(self, capsys):
-        with patch("hermes_state.SessionDB", _tui_session_db), patch(
+        with patch("hermes_agent.hermes_state.SessionDB", _tui_session_db), patch(
             "hermes_cli.profiles.get_active_profile_name", return_value="dev"
         ):
             _print_tui_exit_summary("20260524_000001_abc123")
@@ -107,7 +107,7 @@ class TestTuiExitSummaryResumeHint:
         assert 'hermes --tui -c "My TUI Session" -p dev' in out
 
     def test_tui_hints_no_profile_flag_on_default(self, capsys):
-        with patch("hermes_state.SessionDB", _tui_session_db), patch(
+        with patch("hermes_agent.hermes_state.SessionDB", _tui_session_db), patch(
             "hermes_cli.profiles.get_active_profile_name", return_value="default"
         ):
             _print_tui_exit_summary("20260524_000001_abc123")

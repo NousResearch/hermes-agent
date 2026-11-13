@@ -23,7 +23,7 @@ def multiplexed(tmp_path, monkeypatch):
     root.mkdir(mode=0o700)
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.setenv('HERMES_HOME', str(root))
-    import hermes_state
+    from hermes_agent import hermes_state
     monkeypatch.setattr(hermes_state, 'DEFAULT_DB_PATH', hermes_state._IMPORT_DEFAULT_DB_PATH)
     beta = root / 'profiles' / 'beta'
     beta.mkdir(parents=True, mode=0o700)
@@ -111,7 +111,7 @@ async def test_api_work_queued_before_the_park_is_recovered_by_the_rescan(multip
     from gateway.run_runtime import initialize_gateway_runtime
     from gateway.session_api import bind_api_session
     from gateway.session_authority import SessionAuthority
-    from hermes_state_runtime import admit_session_input
+    from hermes_agent.hermes_state_runtime import admit_session_input
     runner, beta = multiplexed
     api = SimpleNamespace(gateway_runner=runner)
     runner.adapters[Platform.API_SERVER] = api  # the launch API adapter is already published

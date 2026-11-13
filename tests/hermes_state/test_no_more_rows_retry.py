@@ -18,7 +18,7 @@ import sqlite3
 
 import pytest
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 @pytest.fixture

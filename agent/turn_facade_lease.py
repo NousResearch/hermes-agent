@@ -15,7 +15,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from hermes_state_pidns import holder_namespace_token
+from hermes_agent.hermes_state_pidns import holder_namespace_token
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("run_agent")
@@ -237,7 +237,7 @@ class DurableTurnLease:
         except Exception as exc:
             if self.stop.is_set():
                 return False
-            from hermes_state_errors import is_sqlite_lock_error
+            from hermes_agent.hermes_state_errors import is_sqlite_lock_error
 
             if is_sqlite_lock_error(exc):
                 # The scheduler will not try again until one interval from now. If that attempt

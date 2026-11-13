@@ -28,11 +28,11 @@ from pathlib import Path
 
 import pytest
 
-import hermes_state
-import hermes_state_repair
-import hermes_state_holders
-from hermes_state import SessionDB
-from hermes_state_repair import repair_state_db_schema
+from hermes_agent import hermes_state
+from hermes_agent import hermes_state_repair
+from hermes_agent import hermes_state_holders
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_repair import repair_state_db_schema
 
 
 def _make_wal_db(tmp_path: Path) -> Path:
@@ -64,7 +64,7 @@ def test_repair_refuses_while_another_connection_holds_the_db(tmp_path):
     """Surgery under concurrent writers is what spread the corruption.
 
     Gated on ``requires_wal``: repair admission
-    (``hermes_state_holders.live_writer_holds_db``) first scans for foreign
+    (``hermes_agent.hermes_state_holders.live_writer_holds_db``) first scans for foreign
     holders — deleted sidecar generations, uninspectable Hermes processes —
     and then probes SQLite with ``PRAGMA locking_mode=EXCLUSIVE`` +
     ``BEGIN IMMEDIATE``, which a concurrent connection makes fail with
@@ -268,6 +268,7 @@ def test_uninspectable_watched_identity_blocks_alias_before_sqlite(
         raise AssertionError(f"unexpected scan path: {path}")
 
     real_stat = hermes_state_holders.os.stat
+    denied: list[str] = []
 
     def _stat(path, *args, **kwargs):
         # ``os`` is shared: deny only the holder scan's own probe of the watched file, not
@@ -275,7 +276,8 @@ def test_uninspectable_watched_identity_blocks_alias_before_sqlite(
         # swallow the error and report the database missing).
         frame = sys._getframe(1)
         if (str(path) == str(db) and not args and not kwargs
-                and frame.f_globals.get("__name__") == "hermes_state_holders"):
+                and frame.f_globals.get("__name__") == hermes_state_holders.__name__):
+            denied.append(str(path))
             raise PermissionError(errno.EACCES, "watched identity denied", path)
         if path == "/proc/4242/fd/7":
             return real_stat(db)
@@ -296,6 +298,7 @@ def test_uninspectable_watched_identity_blocks_alias_before_sqlite(
 
     assert report["repaired"] is False
     assert "live writer" in (report["error"] or "").lower()
+    assert denied, "the watched-identity stat error was never injected"
 
 
 @pytest.mark.platforms("linux")

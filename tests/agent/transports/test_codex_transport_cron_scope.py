@@ -93,7 +93,7 @@ def test_cron_compression_rotation_resolves_admitted_scope(transport, execution_
     from types import SimpleNamespace
 
     from agent.prompt_cache_scope import resolve_prompt_cache_scope
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     root, rotated = "local-admitted-fire", "local-rotated-fire"
     execution_context(root, "job42", "fire-1")

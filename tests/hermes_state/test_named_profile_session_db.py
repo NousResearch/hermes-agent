@@ -25,8 +25,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import hermes_state
-from hermes_state import SessionDB
+from hermes_agent import hermes_state
+from hermes_agent.hermes_state import SessionDB
 
 
 @pytest.fixture
@@ -96,7 +96,7 @@ def test_open_profile_session_db_does_not_fallback_on_open_failure(homes, monkey
     def boom_db(**_kwargs):
         raise Boom("profile store unavailable")
 
-    monkeypatch.setattr("hermes_state.SessionDB", boom_db)
+    monkeypatch.setattr("hermes_agent.hermes_state.SessionDB", boom_db)
     with pytest.raises(RuntimeError, match="profile session store unavailable") as ei:
         server._open_profile_session_db(str(profile))
     assert isinstance(ei.value.__cause__, Boom)

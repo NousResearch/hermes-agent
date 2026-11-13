@@ -15,7 +15,7 @@ On a fresh gateway conversation the post-turn re-baseline
             append_to_transcript({"role": "session_meta", ...})
 
 ``append_to_transcript`` (no ``skip_db``) increments the session's
-``message_count`` unconditionally (hermes_state.append_message), so the
+``message_count`` unconditionally (hermes_agent.hermes_state.append_message), so the
 snapshot ends up exactly +1 below the live on-disk count.
 
 The cross-process coherence guard (#45966) compares the live count against
@@ -69,7 +69,7 @@ def _bootstrap(monkeypatch, tmp_path, db):
     # REAL SessionDB behind the async facade the gateway holds — the
     # production re-baseline does ``await self._session_db.get_session(...)``,
     # so it must be the AsyncSessionDB wrapper, not the raw sync DB.
-    from hermes_state import AsyncSessionDB
+    from hermes_agent.hermes_state import AsyncSessionDB
 
     runner._session_db = AsyncSessionDB(db)
     runner._recover_telegram_topic_thread_id = lambda _source: None
@@ -164,7 +164,7 @@ async def test_first_turn_session_meta_is_captured_by_rebaseline(
     session_meta append, leaving the snapshot one short; the cross-process
     guard then rebuilds the cached agent on turn 2 (prompt-cache churn).
     """
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / "sessions.db")
     db.create_session(SESSION_ID, source="telegram")

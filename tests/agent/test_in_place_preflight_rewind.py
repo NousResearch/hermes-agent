@@ -29,7 +29,7 @@ def _reply(content, prompt_tokens):
 
 @pytest.fixture
 def session(tmp_path, monkeypatch):
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from run_agent import AIAgent
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")

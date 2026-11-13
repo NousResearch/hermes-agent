@@ -10,7 +10,7 @@ def test_search_sessions_exposes_last_active_column(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
 
-    import hermes_state
+    from hermes_agent import hermes_state
 
     from pathlib import Path
 
@@ -56,7 +56,7 @@ def test_resolve_last_session_real_db_prefers_workspace(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
 
-    import hermes_state
+    from hermes_agent import hermes_state
     from pathlib import Path
 
     repo_a = tmp_path / "repo-a"
@@ -92,7 +92,7 @@ def test_resolve_last_session_cli_continues_a_oneshot(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
 
-    import hermes_state
+    from hermes_agent import hermes_state
     from pathlib import Path
 
     db = hermes_state.SessionDB(db_path=Path(tmp_path / "state.db"))

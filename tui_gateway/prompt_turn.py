@@ -939,7 +939,7 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
     # already delivered.
     if result.get("failure_reason") == "content_policy_blocked":
         from agent.turn_failure_copy import CONTENT_REFUSED_NOTICE
-        from hermes_state_rewind import retain_refused_turn_for_display
+        from hermes_agent.hermes_state_rewind import retain_refused_turn_for_display
         retain_refused_turn_for_display(
             getattr(agent, "_session_db", None), getattr(agent, "session_id", None),
             notice=CONTENT_REFUSED_NOTICE, boundary_row_id=result.get("refused_turn_boundary_row_id"))

@@ -25,7 +25,7 @@ class _Conn:
 def cli(tmp_path, monkeypatch):
     from hermes_cli import goals
     from hermes_cli.gateway_session_store import GatewaySessionStore
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     db = SessionDB(db_path=tmp_path / 'owner.db')
     monkeypatch.setattr(goals, '_get_session_db', lambda: db)  # the "gateway's" store
     conn = _Conn()

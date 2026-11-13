@@ -89,7 +89,7 @@ def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = Non
     """
     probes = (str(thread_id),) if thread_id is not None else ("1", "", str(chat_id))
     try:
-        from hermes_state_registry import acquire, release_or_close
+        from hermes_agent.hermes_state_registry import acquire, release_or_close
         db = acquire()
         try:
             finder = getattr(db, "find_session_by_origin", None)
@@ -147,7 +147,7 @@ def _append_to_sqlite(session_id: str, message: dict) -> None:
     Raises on failure: ``mirror_to_session`` reports ``False`` (and warns) only when the
     exception reaches it — swallowing it here made every failed write look mirrored (#10130).
     """
-    from hermes_state_registry import acquire, release_or_close
+    from hermes_agent.hermes_state_registry import acquire, release_or_close
 
     db = acquire()
     try:

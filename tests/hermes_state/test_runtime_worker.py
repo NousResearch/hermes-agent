@@ -1,8 +1,8 @@
 import pytest
 import sqlite3
 
-from hermes_state import SessionDB
-import hermes_state_runtime as rt
+from hermes_agent.hermes_state import SessionDB
+import hermes_agent.hermes_state_runtime as rt
 
 
 def setup_worker(tmp_path):
@@ -105,7 +105,7 @@ def test_worker_mutation_and_receipt_roll_back_together(tmp_path, content):
 
 @pytest.mark.parametrize('closed', [False, True])
 def test_worker_append_preserves_compression_write_guards(tmp_path, closed):
-    from hermes_state_errors import CompressionSessionClosedError
+    from hermes_agent.hermes_state_errors import CompressionSessionClosedError
 
     db, epoch, assignment = setup_worker(tmp_path)
     try:

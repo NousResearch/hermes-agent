@@ -23,7 +23,7 @@ async def _local_session(tmp_path, monkeypatch):
     from gateway.session import SessionStore
     from gateway.session_authority import initialize_session_authority
     from gateway.session_contract import SessionActor
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
     monkeypatch.setattr(run, '_load_gateway_config', dict)
     monkeypatch.setattr(session_local, 'local_session_info', lambda *a: {})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())

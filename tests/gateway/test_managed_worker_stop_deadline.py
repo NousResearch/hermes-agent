@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 # Harmless child: on Stop it keeps streaming valid deltas and never sends its result.
 CHATTY = """import json, sys, threading, time

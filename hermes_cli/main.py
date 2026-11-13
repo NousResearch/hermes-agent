@@ -1218,7 +1218,7 @@ def _session_db():
     callers fall through to their ``return None``."""
     db = None
     try:
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         db = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)
     except Exception:

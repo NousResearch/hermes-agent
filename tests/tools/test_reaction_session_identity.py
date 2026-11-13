@@ -5,7 +5,7 @@ import json
 import pytest
 
 from gateway.session_context import clear_session_vars, set_session_vars
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from tools import react_to_message_tool as reactions
 
 
@@ -23,7 +23,7 @@ def test_reaction_uses_durable_session_with_routing_key(tmp_path, monkeypatch, r
         foreign = db.latest_message_row_id("chat-b", role="user")
     emitted = []
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr("hermes_state.DEFAULT_DB_PATH", path)  # conftest pins this per test
+    monkeypatch.setattr("hermes_agent.hermes_state.DEFAULT_DB_PATH", path)  # conftest pins this per test
     monkeypatch.setattr(reactions.desktop_ui, "emit", lambda *args: emitted.append(args))
     tokens = set_session_vars(session_key=routing_key, session_id="chat-a")
     try:
@@ -57,7 +57,7 @@ def test_reaction_keeps_legacy_key_fallback_and_empty_session(tmp_path, monkeypa
         db.append_message("legacy", "user", "Legacy message")
         row = db.latest_message_row_id("legacy", role="user")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr("hermes_state.DEFAULT_DB_PATH", path)  # conftest pins this per test
+    monkeypatch.setattr("hermes_agent.hermes_state.DEFAULT_DB_PATH", path)  # conftest pins this per test
     emitted = []
     monkeypatch.setattr(reactions.desktop_ui, "emit", lambda *args: emitted.append(args))
     tokens = set_session_vars(session_key="legacy", session_id="missing")

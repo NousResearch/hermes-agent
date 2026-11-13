@@ -30,7 +30,7 @@ def test_tui_worktree_quit_removes_only_a_clean_idle_tree(tmp_path, monkeypatch,
     from hermes_cli import main_tui_launch
     from hermes_cli.worktree_ops import _setup_worktree
     from hermes_constants import get_hermes_home
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     repo = _repo(tmp_path)
     monkeypatch.chdir(repo)
@@ -84,7 +84,7 @@ def _quit_with(tmp_path, monkeypatch, prepare):
     from hermes_cli import main_tui_launch
     from hermes_cli.worktree_ops import _setup_worktree
     from hermes_constants import get_hermes_home
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     repo = _repo(tmp_path)
     monkeypatch.chdir(repo)

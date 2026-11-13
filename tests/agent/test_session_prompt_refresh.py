@@ -60,7 +60,7 @@ def profile(monkeypatch, tmp_path):
 
 
 def _agent(srv, home, session_id):
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from run_agent import AIAgent
 
     db = SessionDB(db_path=home / "state.db")
@@ -161,7 +161,7 @@ def test_the_verb_makes_the_next_turn_adopt_soul_skills_and_project_files_once(p
     assert after == refreshed and builds == []
     assert len(_user_texts(srv.main_requests()[-1])) == 4
 
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     with SessionDB(db_path=home / "state.db") as db:
         assert db.get_session("chat-a")["system_prompt"] == refreshed  # persisted for the next restore
 

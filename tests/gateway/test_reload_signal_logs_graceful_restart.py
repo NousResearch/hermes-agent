@@ -19,7 +19,7 @@ class _AbortedStartupRunner:
         # The unified bootstrap builds the session authority against the runner's real store
         # and stops it on every exit path (same shape as test_startup_restart_race.py).
         from gateway.session import SessionStore
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
         from hermes_constants import get_hermes_home
         self.session_store = SessionStore(get_hermes_home() / 'sessions', config)
         self._session_db = SessionDB(get_hermes_home() / 'state.db')

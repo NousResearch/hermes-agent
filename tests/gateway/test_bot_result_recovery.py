@@ -1,8 +1,8 @@
 """Bot receipts recover only their exact committed admission result."""
 from types import SimpleNamespace
 
-from hermes_state import SessionDB
-from hermes_state_runtime import (
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_runtime import (
     admit_session_input, begin_runtime_epoch, claim_session_input,
     recover_session_inputs,
 )
@@ -48,7 +48,7 @@ def test_cancelled_queued_admission_is_a_terminal_cancelled_receipt_not_ambiguou
     owner restart, recovery and the exact delivery retry both report ``cancelled`` (terminal),
     never ``ambiguous``; a rejected admission without a result blob is ``failed``."""
     import asyncio
-    from hermes_state_runtime import cancel_session_input, settle_session_input
+    from hermes_agent.hermes_state_runtime import cancel_session_input, settle_session_input
     from tools.bot_live_delivery import _locked, _read, _write
     from gateway.session_bot import recover_bot_deliveries
     path = tmp_path / 'state.db'
@@ -93,7 +93,7 @@ def test_a_turn_stopped_mid_run_is_a_cancelled_receipt_not_a_failure(tmp_path):
     """The sender's ``message_agent`` cancel stops the started turn (``prompt.cancel`` interrupts
     its generation): the turn settles ``interrupted`` with its result, and the sender's receipt is
     ``cancelled`` (no error, never retried), not ``failed: Bot Chat delivery failed``."""
-    from hermes_state_runtime import settle_session_input
+    from hermes_agent.hermes_state_runtime import settle_session_input
     from gateway.session_bot import _delivery_result
     db = SessionDB(tmp_path / 'state.db')
     try:

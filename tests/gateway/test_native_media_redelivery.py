@@ -35,7 +35,7 @@ async def test_redelivered_media_message_returns_its_receipt_and_changed_bytes_c
     from gateway.session_ingress_context import native_callback
     from gateway.session_ingress_media import _media_root, release_admission_media
     from hermes_constants import get_hermes_home
-    from hermes_state_runtime import (RuntimeStoreError, claim_session_input, list_session_admissions,
+    from hermes_agent.hermes_state_runtime import (RuntimeStoreError, claim_session_input, list_session_admissions,
                                       settle_session_input)
     from plugins.platforms.discord.adapter import DiscordAdapter
     monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)

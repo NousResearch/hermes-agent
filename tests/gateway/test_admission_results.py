@@ -1,8 +1,8 @@
 """Structured results are claim-owned and visible only after settlement."""
 import pytest
 
-from hermes_state import SessionDB
-from hermes_state_runtime import (
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_runtime import (
     RuntimeStoreError, admit_session_input, begin_runtime_epoch,
     claim_session_input, recover_session_inputs,
 )
@@ -70,7 +70,7 @@ async def test_a_turn_that_failed_before_running_settles_failed_on_every_surface
     from gateway.session import SessionSource
     from gateway.session_authority import LiveSession, SessionAuthority
     from gateway.session_contract import SessionActor, SessionRef, Submission
-    from hermes_state_runtime import get_session_admission
+    from hermes_agent.hermes_state_runtime import get_session_admission
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     db = SessionDB(tmp_path / 'state.db')
@@ -124,7 +124,7 @@ async def test_a_finite_prompt_answered_without_running_settles_failed(tmp_path,
     from gateway.session_contract import SessionActor, SessionRef, Submission
     from gateway.session_results import admission_result
     from hermes_cli.turn_exit import turn_exit_code
-    from hermes_state_runtime import get_session_admission
+    from hermes_agent.hermes_state_runtime import get_session_admission
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     db = SessionDB(tmp_path / 'state.db')

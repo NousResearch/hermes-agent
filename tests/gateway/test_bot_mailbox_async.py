@@ -87,7 +87,7 @@ async def test_receipt_read_straddling_the_settlement_commit_projects_the_reply(
     never a terminal ``failed`` receipt that no later wake re-reads."""
     from gateway import session_bot, session_results
     from gateway.session_contract import SessionRef
-    from hermes_state_runtime import claim_session_input, settle_session_input
+    from hermes_agent.hermes_state_runtime import claim_session_input, settle_session_input
     from tools.bot_live_delivery import read_delivery_result
     monkeypatch.setattr(bot.authority, '_schedule', lambda ref: None)
     key = 'f' * 32
@@ -114,7 +114,7 @@ async def test_receipt_read_straddling_the_settlement_commit_projects_the_reply(
 async def test_adopted_result_during_unknown_projection_is_not_lost(bot, monkeypatch):
     from gateway import session_bot
     from gateway.session_contract import SessionRef
-    from hermes_state_runtime import (begin_runtime_epoch, claim_session_input, recover_session_inputs,
+    from hermes_agent.hermes_state_runtime import (begin_runtime_epoch, claim_session_input, recover_session_inputs,
         register_worker_execution, adopt_worker_execution, settle_session_input)
     from tools.bot_live_delivery import read_delivery_result
     monkeypatch.setattr(bot.authority, '_schedule', lambda ref: None)

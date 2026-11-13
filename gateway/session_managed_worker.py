@@ -16,7 +16,7 @@ import time
 
 from agent.managed_worker import accept_result, encode_frame, read_frame
 from gateway.session_worker_reservation import owner_worker_subject, reserve_admission_worker
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 # The interpreter only imports psutil before it introduces itself; a child silent this long
 # is wedged (loader/stdio stall), not slow.

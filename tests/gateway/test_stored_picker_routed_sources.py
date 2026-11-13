@@ -32,7 +32,7 @@ async def _finished_cron_run(authority, db, tmp_path):
     """A cron fire through the owner's own path, then settled the way a finished run books it."""
     from cron import jobs
     from gateway import session_cron
-    from hermes_state_runtime import cancel_session_input
+    from hermes_agent.hermes_state_runtime import cancel_session_input
     with jobs.use_cron_store(tmp_path / 'cron'):
         job = jobs.create_job(prompt='report', schedule='every 1h', deliver='local', model='m')
         receipt = await session_cron.operation(authority, 'submit', {'job_id': job['id'], 'request_id': 'fire',

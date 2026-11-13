@@ -18,7 +18,7 @@ OVERRIDE = {"model": "nous/hermes-4", "provider": "nous"}
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    import hermes_state
+    from hermes_agent import hermes_state
 
     def _raise():
         raise RuntimeError("SQLite disabled in test")

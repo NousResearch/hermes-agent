@@ -7,7 +7,7 @@ import sqlite3
 
 import pytest
 
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 from tests.gateway import test_hosted_room_attempt_home_moves as _moves
 from tests.gateway.test_hosted_room_attempt_home_moves import _HOMES, _gone
 

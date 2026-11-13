@@ -69,7 +69,7 @@ def test_kanban_with_an_unclosed_quote_is_refused_by_name():
     """/kanban parses with shlex (hermes_cli/kanban.py ``run_slash``), so an unclosed quote can't run
     there either: the client gets ``invalid_params`` naming the argument, not an internal error."""
     from gateway.session_commands import command_verdict
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     try:
         verdict = command_verdict('kanban', "show it's")
     except RuntimeStoreError as exc:

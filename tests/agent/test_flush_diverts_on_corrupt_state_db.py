@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from hermes_state import SessionDB, StateDbCorruptError
+from hermes_agent.hermes_state import SessionDB, StateDbCorruptError
 from run_agent import AIAgent
 
 

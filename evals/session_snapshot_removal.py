@@ -13,7 +13,7 @@ home.mkdir(parents=True, exist_ok=True)
 from agent.agent_init import _init_session_state
 from agent.session_persistence import SessionPersistenceMixin
 from hermes_cli.cli_session_mixin import CLISessionMixin
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 with SessionDB(db_path=home / "state.db") as db:
     agent = SessionPersistenceMixin()

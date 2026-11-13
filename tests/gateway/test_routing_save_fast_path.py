@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import threading
 
-import hermes_state
+from hermes_agent import hermes_state
 from gateway.config import GatewayConfig, Platform
 from gateway.session import SessionSource, SessionStore
 

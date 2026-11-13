@@ -59,7 +59,7 @@ class TestAuxiliaryLedger:
 
     def test_aux_usage_is_a_separate_breakdown_and_main_keys_unchanged(self, tmp_path):
         from hermes_cli.oneshot import _auxiliary_usage, _attach_auxiliary_usage
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         db = SessionDB(tmp_path / "state.db")
         try:
@@ -96,7 +96,7 @@ class TestAuxiliaryLedger:
 
         from agent import title_generator
         from hermes_cli.oneshot import _attach_auxiliary_usage
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         db = SessionDB(tmp_path / "state.db")
         try:

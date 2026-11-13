@@ -8,7 +8,7 @@ import asyncio
 
 from cron import executions, jobs, scheduler
 from gateway import session_cron
-from hermes_state_runtime import claim_session_input, settle_session_input
+from hermes_agent.hermes_state_runtime import claim_session_input, settle_session_input
 from tests.cron.test_cron_recovery import _owner
 
 

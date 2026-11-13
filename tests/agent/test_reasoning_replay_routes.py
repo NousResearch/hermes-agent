@@ -96,7 +96,7 @@ def _recover(agent, body, sent):
 
 
 def test_named_field_rejection_strips_once_per_model_and_never_loops(tmp_path):
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / "state.db")
     db.create_session("s1", source="cli", model="z-ai/glm-5.3-flash:US")

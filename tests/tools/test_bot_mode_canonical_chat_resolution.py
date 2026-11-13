@@ -59,7 +59,7 @@ def home(tmp_path, monkeypatch):
     h.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(h))
 
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     handles = []
 
@@ -78,7 +78,7 @@ def home(tmp_path, monkeypatch):
 
 
 def _db(home):
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     return SessionDB(db_path=home / "state.db")
 
@@ -277,7 +277,7 @@ def _adopt_or_mint(home, sid, results, idx):
     """The adopt-before-mint creation algebra plugin.js runs, re-enacted in
     Python against the real SessionDB: lookup → create+claim → on conflict
     re-lookup and ADOPT. This is the #92692 racing-resolvers shape."""
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=home / "state.db")
     try:

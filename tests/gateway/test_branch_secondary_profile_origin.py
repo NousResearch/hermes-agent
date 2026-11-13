@@ -14,7 +14,7 @@ async def test_branch_restart_resume_keeps_source_and_route_for_default_and_seco
     from gateway.session_local import create_local_session
     from gateway.session_local_recovery import restore_local_session
     from gateway.session_mutations import mutate_session
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     root, homes = _reserve_homes(tmp_path, monkeypatch, names=('alpha',))

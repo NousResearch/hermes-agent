@@ -7,7 +7,7 @@ from aiohttp.test_utils import TestClient, TestServer
 @pytest.mark.asyncio
 async def test_runs_explicit_history_takes_precedence(api, owner, monkeypatch):
     from gateway.platforms import api_server_runs
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     async def no_execution(*args, **kwargs):
         pass
     monkeypatch.setattr(api_server_runs, '_execute_run', no_execution)
@@ -32,7 +32,7 @@ def test_terminal_failure_and_cancel_match_result_and_polling(api, owner, outcom
     from gateway.session_api_turn import admit_api_turn
     from gateway.session_results import finish_result, admission_result
     from gateway.platforms.api_server_authority_runs import run_projection
-    from hermes_state_runtime import claim_session_input
+    from hermes_agent.hermes_state_runtime import claim_session_input
     _, ref, row = admit_api_turn(api, session_id='result', active_run_id='run',
                                 user_message='x', conversation_history=[])
     row = claim_session_input(owner.db, epoch=owner.epoch, session_id=ref.session_id)
@@ -55,7 +55,7 @@ def test_polling_and_run_sse_share_one_terminal_mapping(api, owner, result):
     from gateway.platforms.api_server_runs import terminal_run_status
     from gateway.session_api_turn import admit_api_turn
     from gateway.session_results import admission_result, finish_result
-    from hermes_state_runtime import claim_session_input
+    from hermes_agent.hermes_state_runtime import claim_session_input
     _, ref, _ = admit_api_turn(api, session_id='unfinished', active_run_id='run_unfinished',
                                user_message='x', conversation_history=[])
     row = claim_session_input(owner.db, epoch=owner.epoch, session_id=ref.session_id)

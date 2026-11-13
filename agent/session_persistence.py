@@ -286,7 +286,7 @@ def sync_rewritten_tool_rows(agent, batch: list[dict], contents_before: list[Any
         return 0
     rows = [(_db_flush_row(agent, {**msg, "content": before}, False), _db_flush_row(agent, msg, False))
             for msg, before in changed]
-    from hermes_state_errors import PruneRowUnresolvedError, SessionTurnLeaseLostError
+    from hermes_agent.hermes_state_errors import PruneRowUnresolvedError, SessionTurnLeaseLostError
     try:
         with _persist_lock(agent):
             written = rewrite(
@@ -422,8 +422,8 @@ def _db_flush_failed(agent, e: Exception, batch_rows: list[dict[str, Any]], adop
     agent._db_flush_scan_prefix = None  # full re-scan next flush: an exception mid-loop leaves mixed dispositions
     # The only place the SQLite error is visible before it becomes a bare False — classify it so the turn-end
     # explanation names the real cause.
-    from hermes_state import StateDbCorruptError, StateDbReplacedError, classify_persistence_error, divert_session_transcript_jsonl
-    from hermes_state_errors import CompressionSessionClosedError
+    from hermes_agent.hermes_state import StateDbCorruptError, StateDbReplacedError, classify_persistence_error, divert_session_transcript_jsonl
+    from hermes_agent.hermes_state_errors import CompressionSessionClosedError
     agent._last_persistence_error_cause = classify_persistence_error(e)
     if agent._last_persistence_error_cause == "session_row_missing":
         # The session row was removed under this live agent (`hermes sessions delete`, the Desktop/web

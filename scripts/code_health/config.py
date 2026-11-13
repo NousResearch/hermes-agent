@@ -151,7 +151,7 @@ RULES: tuple[Rule, ...] = (
     Rule("HX011", "if/elif ladder on one name", "use a dict/table -> handler (`_SLASH_DISPATCH`"
          " is the shape)", "ast", exclude=()),
     # Session store: an fd the lock-safety registry cannot see (closing any raw fd on the file
-    # cancels the process's POSIX locks on it; see `_HEADER_PROBE_FDS` in hermes_state_dbfile.py).
+    # cancels the process's POSIX locks on it; see `_HEADER_PROBE_FDS` in hermes_agent/hermes_state_dbfile.py).
     Rule("HX015", "untracked sqlite3.connect on state.db", "open it with"
          " `hermes_cli.sqlite_safe_read.connect_tracked(..., tracking_path=<the db path>)`"
          " so `has_live_connection()` / `offline_file_access()` see the fd; a deliberately offline"

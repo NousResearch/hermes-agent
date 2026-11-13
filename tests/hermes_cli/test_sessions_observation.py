@@ -18,7 +18,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from contextlib import redirect_stdout
 import io, os
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from hermes_cli.sessions_cmd import cmd_sessions
 path = Path(os.environ['HERMES_HOME']) / 'state.db'
 if POPULATED:

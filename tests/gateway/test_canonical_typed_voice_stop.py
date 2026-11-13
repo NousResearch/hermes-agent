@@ -4,7 +4,7 @@ goes through the real ``AuthorityConnection.dispatch`` (contract parse, handler,
 import pytest
 
 from gateway import run_api
-from hermes_state_runtime import list_session_admissions
+from hermes_agent.hermes_state_runtime import list_session_admissions
 from tests.gateway.test_prompt_queued_controls import _call, _connection
 from tests.gateway.test_session_authority_cancel_settlement import _authority
 

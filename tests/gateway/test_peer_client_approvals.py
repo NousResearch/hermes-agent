@@ -11,7 +11,7 @@ from aiohttp.test_utils import TestServer
 from gateway.session_api_turn import admit_api_turn
 from gateway.session_controls import AuthorityConnection
 from gateway.session_hosted_service import CanonicalHostedRoomService
-from hermes_state_runtime import claim_session_input, settle_session_input
+from hermes_agent.hermes_state_runtime import claim_session_input, settle_session_input
 from tests.tui_gateway.test_hosted_room_two_gateway_peer import _target_app
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPError
 

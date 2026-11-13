@@ -120,8 +120,8 @@ def test_worker_store_persists_and_restores_the_tools_prefix_pin(tmp_path):
     agent reads it back from the same row (F26). Without the facade method the pin stays NULL
     and a config flip between turns silently forks the cached tools[] prefix."""
     from types import SimpleNamespace
-    from hermes_state import SessionDB
-    from hermes_state_runtime import begin_runtime_epoch, mutate_worker_execution, register_worker_execution
+    from hermes_agent.hermes_state import SessionDB
+    from hermes_agent.hermes_state_runtime import begin_runtime_epoch, mutate_worker_execution, register_worker_execution
     from tools.mcp_tool_agent import persist_agent_tool_names
     db = SessionDB(tmp_path / 'state.db')
     try:

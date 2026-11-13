@@ -246,7 +246,7 @@ async def test_no_new_messages_fallback_row_is_marked_for_internal_event(
 def test_marked_row_replays_cleanly_and_never_reaches_provider(tmp_path):
     """A marked row persists, resumes with role='user' + marker intact, and
     the provider-bound copy built by conversation_loop drops the marker."""
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(tmp_path / "state.db")
     sid = "sess-82888-replay"

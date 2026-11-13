@@ -23,7 +23,7 @@ async def test_only_the_viewers_own_turn_skips_the_whole_script_gate(tmp_path, m
     from gateway.session_contract import SessionActor, Submission
     from gateway.session_local import create_local_session
     from gateway.session_policy import _ACTIVE_POLICY, policy_for_source
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from tools import approval as A
     from tools import approval_context
 

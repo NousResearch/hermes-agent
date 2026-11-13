@@ -23,7 +23,7 @@ soft-deleted Undo/Rewind rows stay hidden.
 
 import pytest
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 @pytest.fixture
@@ -192,7 +192,7 @@ class TestResumeGuardBoundsWhatResumeLoads:
         assert db.get_resume_message_count(sid) >= len(display)
 
     def test_guard_rejects_a_lineage_over_the_limit(self, db):
-        from hermes_state import SessionResumeTooLargeError
+        from hermes_agent.hermes_state import SessionResumeTooLargeError
 
         sid = _compact_in_place(db, "chat", epochs=4)
 

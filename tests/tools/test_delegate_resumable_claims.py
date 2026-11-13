@@ -243,7 +243,7 @@ def test_claim_reclaims_a_row_whose_owner_died_after_boot_recovery(owner):
 def test_boot_recovery_holds_no_write_lock_while_it_probes_git(monkeypatch):
     import tools.delegate_tool_resumable as resumable
     from hermes_constants import get_hermes_home
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from tools.async_delegation import recover_abandoned_delegations
 
     db = get_hermes_home() / "state.db"
@@ -329,7 +329,7 @@ def test_a_continue_resumes_the_childs_newest_conversation_segment(stopped):
 def test_each_profiles_pins_obey_that_profiles_own_cap():
     import tools.delegate_tool_resumable as resumable
     from hermes_constants import get_hermes_home
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     default = get_hermes_home()
     work = default / "profiles" / "work"

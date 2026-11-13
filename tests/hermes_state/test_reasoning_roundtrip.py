@@ -10,7 +10,7 @@ and every isinstance(..., list) consumer silently drops them.
 """
 import pytest
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 REASONING_DETAILS = [

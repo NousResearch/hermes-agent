@@ -13,7 +13,7 @@ async def test_literal_alias_key_survives_owner_restart_and_stays_in_profile(tmp
     from gateway.run_turn_prepare import _resolve_policy_agent_runtime
     from gateway.session_mutation_model import prepare_model
     from gateway.session_policy import build_policy, restore_policy
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from hermes_cli import model_switch
     old_url, far_url = 'http://127.0.0.1:9/v1', 'http://127.0.0.3:9/v1'
     (tmp_path / 'config.yaml').write_text(

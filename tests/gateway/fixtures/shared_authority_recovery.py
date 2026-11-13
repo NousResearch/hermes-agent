@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 from gateway.platforms.event import MessageEvent
-from hermes_state_runtime import list_session_admissions
+from hermes_agent.hermes_state_runtime import list_session_admissions
 from tests.waiting import async_wait_until, wait_until
 
 
@@ -16,7 +16,7 @@ def rows(authority, sid):
 
 async def verify_envelope_guards(runner, source):
     from gateway.session_contract import SessionActor, Submission
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     authority = runner.session_authority
     ref = authority.register(source)
     before = rows(authority, ref.session_id)

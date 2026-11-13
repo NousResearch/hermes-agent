@@ -64,7 +64,7 @@ def _closed_by_user(authority, session_id):
     if refused_for_session((authority.profile_id, session_id)) or (
             pending is not None and pending.reason not in ORPHAN_REASONS):
         return True
-    from hermes_state_common import _RECOVERABLE_END_REASONS
+    from hermes_agent.hermes_state_common import _RECOVERABLE_END_REASONS
     row = authority.db.get_session(_physical_target(authority, session_id)) or {}
     return bool(row.get('ended_at')) and row.get('end_reason') not in _RECOVERABLE_END_REASONS
 

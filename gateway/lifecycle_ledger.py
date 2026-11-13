@@ -158,7 +158,7 @@ def detect_unclean_exit(home: Optional[Path] = None) -> Optional[dict[str, Any]]
     sentinel = _read_json(get_lifecycle_sentinel_path(home))
     if not sentinel or sentinel.get("phase") != "running":
         return None
-    from hermes_state_pidns import persistent_record_pidns_checkable
+    from hermes_agent.hermes_state_pidns import persistent_record_pidns_checkable
     if not persistent_record_pidns_checkable(sentinel.get("pidns")):
         # Written in another PID namespace, so its pid means nothing here (#123081). The home's
         # gateway.lock flock does: held by another process = that life is still running.
@@ -281,7 +281,7 @@ def _state_db_journal_mode(path: Path) -> Optional[str]:
     connection (no lock outlives it); ``None`` when undeterminable.  Never raises."""
     try:
         from hermes_cli.sqlite_safe_read import connect_tracked
-        from hermes_state_wal import _on_disk_journal_mode
+        from hermes_agent.hermes_state_wal import _on_disk_journal_mode
 
         with closing(connect_tracked(str(path), timeout=1.0, tracking_path=path)) as conn:
             return _on_disk_journal_mode(conn) or None
@@ -336,7 +336,7 @@ def record_startup(home: Optional[Path] = None, *, defer_integrity_check: bool =
     except Exception:
         logger.debug("Unclean-exit detection failed", exc_info=True)
     try:
-        from hermes_state_pidns import pid_namespace_id
+        from hermes_agent.hermes_state_pidns import pid_namespace_id
         claim: dict[str, Any] = {"phase": "running", "pid": os.getpid(), "pidns": pid_namespace_id(),
                                  "start_time": time.time(), "started_at": _now_iso()}
         # Process birth (psutil), distinct from ``start_time`` (the ledger claim, seconds later once

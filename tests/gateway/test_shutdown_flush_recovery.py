@@ -58,7 +58,7 @@ def make_store(tmp_path):
 @pytest.fixture
 def boot_db(monkeypatch):
     """Make boot recovery's default state.db the given handle."""
-    import hermes_state_registry
+    from hermes_agent import hermes_state_registry
 
     def use(db):
         monkeypatch.setattr(hermes_state_registry, "acquire", lambda: db)
@@ -278,7 +278,7 @@ def test_live_write_waits_while_held_back_files_still_fail_to_drain(flush_dir, m
 def test_a_poisoned_spool_row_does_not_stop_later_live_rows(flush_dir, tmp_path, make_store, boot_db):
     """A spooled field sqlite cannot bind used to fail on every replay. With live writes waiting
     behind the spool, the session then stopped persisting for good, across restarts too."""
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / "state.db")
     try:

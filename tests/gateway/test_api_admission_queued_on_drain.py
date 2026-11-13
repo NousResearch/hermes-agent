@@ -14,7 +14,7 @@ from gateway.platforms.api_server import _openai_error
 from gateway.platforms.api_server_authority_runs import store_error_response
 from gateway.session_api_turn import AdmissionQueued, observe_api_turn
 from gateway.session_contract import Submission
-from hermes_state_runtime import RuntimeStoreError, get_session_admission
+from hermes_agent.hermes_state_runtime import RuntimeStoreError, get_session_admission
 from tests.gateway.test_profile_retire_stops_turns import ACTOR, REF, _Agent, _authority
 from tests.waiting import async_wait_until
 

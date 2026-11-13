@@ -9,7 +9,7 @@ import pytest
 from gateway.session_authority import LiveSession
 from gateway.session_contract import SessionActor, SessionRef, Submission
 from gateway.session_results import admission_result, finish_result
-from hermes_state_runtime import (
+from hermes_agent.hermes_state_runtime import (
     RuntimeStoreError,
     admit_session_input,
     begin_runtime_epoch,

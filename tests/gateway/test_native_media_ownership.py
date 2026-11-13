@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 
 from gateway.session_ingress_media import _media_root, capture_native_media, release_admission_media
-from hermes_state import SessionDB
-from hermes_state_runtime import admit_session_input, begin_runtime_epoch, cancel_session_input
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_runtime import admit_session_input, begin_runtime_epoch, cancel_session_input
 
 PNG = b'\x89PNG\r\n\x1a\n' + b'\x00' * 8
 
@@ -26,7 +26,7 @@ def test_rejected_batch_publishes_nothing(tmp_path, monkeypatch):
     from gateway.platforms import base
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(base, 'get_inbound_media_max_bytes', lambda: 3 * 1024)
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     owned = Path(capture_native_media([_staged('owned.png', 512)])[0]['path'])
     with pytest.raises(RuntimeStoreError, match='invalid_params'):
         capture_native_media([_staged('owned.png', 512), _staged('a.png', 2 * 1024), _staged('b.png', 2 * 1024)])

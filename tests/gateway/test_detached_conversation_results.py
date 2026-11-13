@@ -119,7 +119,7 @@ async def test_a_secondary_profiles_old_conversation_gets_its_result_after_the_s
     started finishes after the runner's bounded source cache dropped A. Its key names the profile, so
     the event resolves A's live source and binds ``fitness``'s scope, unscoped as the drain starts,
     and the result is written into A in ``fitness``'s store."""
-    import hermes_state
+    from hermes_agent import hermes_state
     from gateway.config import GatewayConfig, Platform
     from gateway.run import GatewayRunner
     from gateway.session import SessionSource
@@ -127,7 +127,7 @@ async def test_a_secondary_profiles_old_conversation_gets_its_result_after_the_s
     from gateway.session_authority import LiveSession, initialize_session_authority
     from gateway.session_detached import detach
     from hermes_constants import get_hermes_home
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     root = tmp_path / 'hermes'
     profile = root / 'profiles' / 'fitness'
     profile.mkdir(parents=True)

@@ -26,7 +26,7 @@ def _close_late_session_db_result(future: concurrent.futures.Future) -> None:
     with contextlib.suppress(Exception):
         db = future.result()
         if db is not None:
-            from hermes_state_registry import release_or_close
+            from hermes_agent.hermes_state_registry import release_or_close
             release_or_close(db)
 
 

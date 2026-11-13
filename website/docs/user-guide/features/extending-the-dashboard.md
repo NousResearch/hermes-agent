@@ -766,7 +766,7 @@ Backend routes run inside the dashboard process, so they can import from the her
 
 ```python
 from fastapi import APIRouter
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from hermes_cli.config import load_config
 
 router = APIRouter()

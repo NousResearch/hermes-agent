@@ -106,7 +106,7 @@ def test_a_folded_rows_flush_removes_its_stored_stamp_and_keeps_a_reaction(tmp_p
     from types import SimpleNamespace
     from agent.agent_runtime_helpers import _merge_consecutive_users
     from agent.turn_context import _previous_user_message_text
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     db = SessionDB(db_path=tmp_path / "state.db")

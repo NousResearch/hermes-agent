@@ -10,7 +10,7 @@ import pytest
 
 from hermes_cli import onboarding_run, profiles
 from hermes_cli.config import read_user_config_raw
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 @pytest.fixture

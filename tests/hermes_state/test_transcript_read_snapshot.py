@@ -6,7 +6,7 @@ import threading
 
 import hermes_yaml as yaml
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def _count(db):

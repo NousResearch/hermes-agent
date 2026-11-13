@@ -11,7 +11,7 @@ from contextlib import contextmanager
 
 import pytest
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def _seed(db: SessionDB, count: int) -> None:

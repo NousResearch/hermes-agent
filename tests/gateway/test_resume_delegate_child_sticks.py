@@ -7,7 +7,7 @@ adopts it (drops the marker) and the route self-heal keeps it. Real ``SessionSto
 
 from gateway.config import GatewayConfig, Platform
 from gateway.session import SessionSource, SessionStore
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def test_a_resumed_delegate_child_keeps_the_route(tmp_path):

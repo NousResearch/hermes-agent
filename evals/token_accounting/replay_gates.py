@@ -192,7 +192,7 @@ def scenario(wire: _FakeChat, *, shape: str, real: int, chars: int, tmp: Path) -
     if shape == "gateway":
         return _run_turns(wire, lambda: _make_agent(wire.base_url), history, reload=True, real=real)
     # restore: turn 1 in one process/agent, persisted; fresh agent + reopened DB for the rest.
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     wire.requests.clear()
     wire.usage_script[:] = [real] * (TURNS + 2)

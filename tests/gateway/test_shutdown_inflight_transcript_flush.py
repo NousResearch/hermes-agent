@@ -119,7 +119,7 @@ class TestShutdownTranscriptSurvivesResumeE2E:
         # Isolated state.db.
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
 
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
         from run_agent import AIAgent
 
         db = SessionDB(db_path=tmp_path / "state.db")

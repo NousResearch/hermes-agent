@@ -11,7 +11,7 @@ import sqlite3
 
 import pytest
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 _READERS = {
     "sidebar": lambda db: db.list_sessions_rich(limit=2, order_by_last_active=True, include_pinned=True),

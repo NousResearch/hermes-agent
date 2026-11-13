@@ -469,7 +469,7 @@ def test_pin_restore_in_the_same_process_keeps_the_pinned_bridge_through_an_outa
     ``/model``, a fresh agent per turn) while its only deferrable tools are down: the bridge is
     synthesized, never registered, so the restore must carry it like the between-turns refresh does.
     Otherwise tools[] shrinks to the fresh build, the narrowed pin is persisted, and recovery keeps it."""
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from tools.mcp_tool_agent import persist_agent_tool_names, restore_agent_tool_prefix
 
     selection = ["mcp-probe-mail", "clarify"]

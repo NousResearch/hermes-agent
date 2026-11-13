@@ -10,7 +10,7 @@ def test_watermarked_compaction_preserves_foreign_tail_and_rejects_stale_holder(
     db.append_messages_batch('owned', [{'role': 'user', 'content': 'foreign tail', 'api_content': ' EXACT ',
                                        'display_metadata': {'_accepted_input_id': 'input-tail'}}])
     seq = store.journal['next_sequence']
-    from hermes_state_runtime import mutate_worker_execution
+    from hermes_agent.hermes_state_runtime import mutate_worker_execution
     with pytest.raises(Exception, match='lease'):
         mutate_worker_execution(db, **store.scope, sequence=seq, operation='compression.archive', payload={
             'messages': [{'role': 'assistant', 'content': 'bad'}], 'model_config_patch': None,

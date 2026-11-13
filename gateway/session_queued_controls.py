@@ -14,7 +14,7 @@ import asyncio
 from dataclasses import asdict
 from functools import partial
 
-from hermes_state_runtime import (
+from hermes_agent.hermes_state_runtime import (
     STEERING, RuntimeStoreError, check_replaced_input, find_session_admission, get_session_admission,
     replacement_binding, retire_replaced_input, revert_steer_input, steer_replayed, steer_session_input,
 )

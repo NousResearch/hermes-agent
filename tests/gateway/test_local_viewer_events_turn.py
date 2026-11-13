@@ -614,7 +614,7 @@ def test_subagent_roster_retains_running_child_after_fallback_evicts_parent():
         # Ancestry is walked backward from the live session on the real store, so an orphaned closed sibling under a compressed parent never hides the evicted parent's children.
         import tempfile
         from pathlib import Path
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
         with tempfile.TemporaryDirectory() as tmp:
             real_db = SessionDB(db_path=Path(tmp) / 'state.db')
             with real_db:

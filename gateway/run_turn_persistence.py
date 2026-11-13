@@ -48,7 +48,7 @@ logger = logging.getLogger("gateway.run")
 def _acp_launch(runner, source) -> bool:
     """An editor session: ACP shows no reasoning event yet, so its reply keeps the projected block."""
     from gateway.session_setting_commands import local_policy
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     try:
         return getattr(local_policy(runner, source), "source", None) == "acp"
     except RuntimeStoreError:  # a local route with no restored policy is not an editor launch
@@ -468,7 +468,7 @@ class GatewayTurnPersistenceMixin:
     def _hmwa_fresh_session_has_pending_input(self, session_entry) -> bool:
         """Whether the authority FIFO of the fresh session already holds an admitted input."""
         from gateway.session_authorities import active_authority
-        from hermes_state_runtime import list_session_admissions
+        from hermes_agent.hermes_state_runtime import list_session_admissions
         authority = active_authority(self)
         if authority is None or session_entry is None:
             return False

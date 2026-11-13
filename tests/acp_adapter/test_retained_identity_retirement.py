@@ -13,7 +13,7 @@ import pytest
 import pytest_asyncio
 
 from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
-from hermes_state_runtime import list_session_admissions
+from hermes_agent.hermes_state_runtime import list_session_admissions
 from tests.waiting import async_wait_until
 
 pytestmark = pytest.mark.usefixtures("authority_cwd_in_tmp")  # symbolic profile ids are relative homes

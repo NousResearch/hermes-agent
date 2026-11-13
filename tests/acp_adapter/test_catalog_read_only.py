@@ -2,7 +2,7 @@
 import sqlite3
 
 from hermes_agent.acp_adapter.session import SessionManager
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def test_empty_catalog_does_not_initialize_storage(tmp_path, monkeypatch):

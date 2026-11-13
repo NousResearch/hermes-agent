@@ -24,7 +24,7 @@ from hermes_constants import get_hermes_home, reset_hermes_home_override, set_he
 @pytest.fixture
 def multiplex_homes(tmp_path, monkeypatch):
     """A launch home plus a named ``work`` profile, as in test_multiplex_session_db_profile_scope."""
-    import hermes_state
+    from hermes_agent import hermes_state
 
     root = tmp_path / "hermes"
     profile = root / "profiles" / "work"

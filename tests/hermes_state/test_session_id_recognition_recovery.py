@@ -13,7 +13,7 @@ from datetime import datetime
 
 import pytest
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from hermes_cli.session_recovery import _quoted_columns, _table_columns
 from hermes_cli.session_lost_and_found import _is_session_id, map_lost_and_found_rows
 

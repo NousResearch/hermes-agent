@@ -21,7 +21,7 @@ import threading
 
 import pytest
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 @pytest.fixture
@@ -40,7 +40,7 @@ class TestAppendAfterClose:
         db.close()
         assert db._conn is None
 
-        with caplog.at_level(logging.WARNING, logger="hermes_state"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.hermes_state"):
             msg_id = db.append_message(
                 "s1", "assistant", content="flushed after teardown"
             )

@@ -26,7 +26,7 @@ import pytest
 
 from agent.session_persistence import SessionPersistenceMixin
 from agent.turn_context import _stamp_api_content_sidecar, compose_user_api_content
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from tests.agent.test_api_content_sidecar import _FakeAgent, _build
 
 

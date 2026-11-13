@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 import pytest_asyncio
 
-from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions
 
 CHAT = 'old-bot-chat'
 
@@ -25,7 +25,7 @@ async def held(tmp_path, monkeypatch):
     from hermes_cli import gateway_runtime
     from hermes_cli.active_sessions import release_active_session, try_acquire_active_session
     from hermes_cli.gateway_client import rpc_error
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from tools import bot_live_delivery, bot_mode_dm
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))

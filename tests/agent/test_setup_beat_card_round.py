@@ -15,7 +15,7 @@ from agent.agent_init import _CALLBACK_PARAMS
 from agent.onboarding_flow import Facts
 from agent.turn_empty_response import recover_empty_response
 from agent.turn_tool_round import stage_tool_call_message
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from run_agent import AIAgent
 from tests.agent.test_run_agent import _mock_response
 from tools.setup_beat_tool import SETUP_BEAT_SCHEMA

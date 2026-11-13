@@ -1,6 +1,6 @@
 import sys
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def test_sessions_export_md_writes_single_session(monkeypatch, tmp_path, capsys):

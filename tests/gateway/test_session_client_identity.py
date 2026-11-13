@@ -17,7 +17,7 @@ TERN = {'name': 'hermes-tern', 'version': '0.4.1+g1a2b'}
 def _create(owner, actor, home, request_id, source='tui', **extra):
     from gateway.session_local import create_local_session
     from gateway.session_policy import restore_policy
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
     ref = create_local_session(owner, actor, {'request_id': request_id, 'source': source, 'cwd': str(home),
                                               'toolsets': [], **extra})
     return ref, restore_policy(local_receipt(owner.db, ref.session_id)['policy'])
@@ -75,7 +75,7 @@ async def test_a_create_without_client_keeps_its_request_and_info_shape(tmp_path
     {'name': 'x', 'version': None}, {'name': 'x', 'version': 1}, {'name': 'x', 'version': 'caf\u00e9'},
 ])
 async def test_a_malformed_client_is_refused_as_invalid_params(tmp_path, monkeypatch, bad):
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     home = _home(tmp_path)
     owner, connection = await _owner(home, monkeypatch)
     try:
@@ -110,7 +110,7 @@ def test_the_client_label_changes_no_policy_decision(tmp_path, monkeypatch, sour
 async def test_an_exact_retry_must_repeat_the_same_client(tmp_path, monkeypatch):
     """The label is part of the exact-retry identity, like every other create field."""
     from gateway.session_local import create_local_session
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     home = _home(tmp_path)
     owner, connection = await _owner(home, monkeypatch)
     params = {'request_id': 'retry', 'source': 'tui', 'cwd': str(home), 'toolsets': [], 'client': dict(TERN)}
@@ -134,7 +134,7 @@ async def test_a_named_session_restores_after_restart(tmp_path, monkeypatch):
     from dataclasses import fields
     from gateway.session_local_recovery import restore_local_session
     from gateway.session_policy import LocalSessionPolicy, restore_policy
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
     home = _home(tmp_path)
     owner, connection = await _owner(home, monkeypatch)
     try:

@@ -80,7 +80,7 @@ def test_real_agent_keeps_one_split_and_marks_the_session_prompt_on_the_first_ca
     import os
     from pathlib import Path
 
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from run_agent import AIAgent
     from tests.agent.test_prompt_cache_prefix_contract import _prefix_breaks
     from tests.e2e.core.history._helpers import NO_BACKGROUND_REVIEW, OFFLINE_CONFIG

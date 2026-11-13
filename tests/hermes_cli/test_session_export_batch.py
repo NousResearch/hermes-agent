@@ -1,4 +1,4 @@
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def test_export_all_batches_message_reads_without_changing_export_rows(tmp_path, monkeypatch):

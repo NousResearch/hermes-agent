@@ -317,7 +317,7 @@ async def _two_turns(monkeypatch, config: dict, *, first_heartbeat: bool, restar
     import json
 
     import gateway.run as gateway_run
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from tools import async_delegation
 
     home = Path(os.environ["HERMES_HOME"])

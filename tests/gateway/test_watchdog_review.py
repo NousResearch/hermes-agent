@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent.session_activity import ActivityProvenance, build_activity_snapshot
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def _activity_snapshot(db, session_id):

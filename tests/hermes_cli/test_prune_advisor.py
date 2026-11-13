@@ -14,7 +14,7 @@ _Usage = namedtuple("_Usage", "total used free")
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     h = tmp_path / "home"
     h.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(h))
@@ -143,7 +143,7 @@ def test_estimate_weights_by_stored_bytes_not_message_count(tmp_path, monkeypatc
     overstates what pruning frees (and flips "will not fix this disk"). The estimate must track
     the bytes a real prune + VACUUM gives back."""
     import sqlite3
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     h = tmp_path / "skewed"
     h.mkdir()
     db = SessionDB(db_path=h / "state.db")

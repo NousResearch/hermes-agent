@@ -123,15 +123,15 @@ def _resurrect_recoverable_canonical(db, profile_path, session_id):
             return False
         tip_id = _try(lambda: db.get_compression_tip(session_id), None) or session_id
         tip = (_try(lambda: db.get_session(tip_id), None) or row) if tip_id != session_id else row
-        from hermes_state import SessionDB
-        from hermes_state_registry import acquire
+        from hermes_agent.hermes_state import SessionDB
+        from hermes_agent.hermes_state_registry import acquire
         if (tip.get("end_reason") or "") not in SessionDB.RECOVERABLE_END_REASONS:
             return False
         wdb = acquire(Path(profile_path) / "state.db")
         try:
             return bool(wdb.unarchive_recoverable_session(session_id))
         finally:
-            _best_effort(lambda: _lazy("hermes_state_registry", "release_or_close")(wdb))
+            _best_effort(lambda: _lazy("hermes_agent.hermes_state_registry", "release_or_close")(wdb))
     except Exception:
         return False
 
@@ -225,7 +225,7 @@ def _profile_session_fields(row, profile_path):
         db_path = Path(profile_path) / "state.db"
         db = None
         if _try(db_path.exists, False):
-            db = _try(lambda: _lazy("hermes_state", "SessionDB")(db_path=db_path, read_only=True), None)
+            db = _try(lambda: _lazy("hermes_agent.hermes_state", "SessionDB")(db_path=db_path, read_only=True), None)
         try:
             last, worker = _latest_profile_session_rows(db)
             # Resolved server-side on every listing so no client carries a session pointer.
@@ -550,7 +550,7 @@ def _profile_group_selection_context(profile_dir, target_model):
     """The largest measured context among this profile's affected group members."""
     from agent.usage_anchor import USAGE_ANCHOR_MODEL_CONFIG_KEY, persisted_anchor_tokens
     from hermes_cli.model_selection_guards import SelectionContext
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     path = profile_dir / "state.db"
     if not path.is_file():

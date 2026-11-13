@@ -80,13 +80,13 @@ def live_home(monkeypatch):
                 except Exception:
                     pass
 
-    import hermes_state
+    from hermes_agent import hermes_state
     from tui_gateway import server
 
     # The launch DB handle and the module-level home snapshot are import-time
     # caches — repoint both at the isolated home for the duration of the test
     # (see references: tui-gateway live WS harness, same trap). The hermetic
-    # conftest also re-pins hermes_state.DEFAULT_DB_PATH per test; pin it to
+    # conftest also re-pins hermes_agent.hermes_state.DEFAULT_DB_PATH per test; pin it to
     # THIS home so server._get_db() opens the same real state.db we seed.
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", home / "state.db")
     monkeypatch.setattr(server, "_db", None, raising=False)
@@ -115,7 +115,7 @@ def _seed_session_row(
     extra_config: dict | None = None,
 ) -> str:
     """Write a REAL session row + one message into the profile's state.db."""
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=home / "state.db")
     sid = uuid.uuid4().hex[:12]

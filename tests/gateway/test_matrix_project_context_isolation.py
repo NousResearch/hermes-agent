@@ -12,7 +12,7 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent
-from hermes_state import AsyncSessionDB
+from hermes_agent.hermes_state import AsyncSessionDB
 from gateway.session import (
     SessionContext,
     SessionEntry,

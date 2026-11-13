@@ -300,7 +300,7 @@ async def test_an_append_past_the_resume_guard_leaves_the_poller_on_a_fresh_read
     """With the guard at the lineage's size plus one, two appends take the rotated lineage past
     ``sessions.max_resume_messages`` and a fresh read shows the tip segment only. A poller caught up on
     the whole lineage (or one page into it) must end up holding what a fresh read shows."""
-    import hermes_state
+    from hermes_agent import hermes_state
     from gateway.session_authority import initialize_session_authority
 
     store, db, runner = _legacy_owner(tmp_path, monkeypatch)
@@ -328,7 +328,7 @@ async def test_an_append_past_the_resume_guard_leaves_the_poller_on_a_fresh_read
 async def test_a_newest_first_walk_restarts_when_the_lineage_crosses_the_resume_guard(tmp_path, monkeypatch):
     """A newest-first cursor names a slot of the read it came from: once two appends take the rotated
     lineage past the guard, the next page starts again from the newest (``reset``), as a fresh read does."""
-    import hermes_state
+    from hermes_agent import hermes_state
     from gateway.session_authority import initialize_session_authority
 
     store, db, runner = _legacy_owner(tmp_path, monkeypatch)
@@ -402,7 +402,7 @@ async def test_a_newest_first_walk_of_a_tip_restarts_when_a_compaction_rotates_i
     segment: once a compaction rotates the tip to a new segment, the next page starts again from the
     newest (``reset``) and the walk ends holding what a fresh walk holds. Without a rotation the walk
     pages on (control)."""
-    import hermes_state
+    from hermes_agent import hermes_state
     from gateway.session_authority import initialize_session_authority
 
     store, db, runner = _legacy_owner(tmp_path, monkeypatch)

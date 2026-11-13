@@ -1,4 +1,4 @@
-from hermes_state import AsyncSessionDB
+from hermes_agent.hermes_state import AsyncSessionDB
 """Regression tests for approval-state cleanup on session boundaries."""
 
 from datetime import datetime

@@ -21,7 +21,7 @@ def test_declared_key_is_durable_and_cannot_rebind(api, owner):
     # Explicit and chained selections never transfer their identity to a header.
     admit(ref.session_id, 'other', bind=False)
     assert api._declared_conversation_session('other') is None
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     with pytest.raises(RuntimeStoreError, match='admission_conflict'):
         admit(ref.session_id, 'other')
     assert api._declared_conversation_session('conversation') == ref.session_id
@@ -56,7 +56,7 @@ def test_api_author_is_admission_scoped_not_session_identity(api, owner):
     from gateway.session_api_turn import prepare_api_execution
     from gateway.run_turn_runner import TurnRunner
     from gateway.turn_context import TurnContext
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     author = {'id': 'bot:peer', 'name': 'Peer', 'is_bot': True}
     args = dict(session_id='author', request_id='one', user_message='hello', conversation_history=[], turn_author=author)
     _, ref, row = admit_api_turn(api, **args)
@@ -88,7 +88,7 @@ def test_api_author_is_admission_scoped_not_session_identity(api, owner):
 def test_persisted_owner_scope_is_private_strict_and_legacy_safe(api, owner):
     from gateway.platforms.api_server_authority_runs import run_projection
     from gateway.session_api_turn import owns_api_run, prepare_api_execution
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     scope = 'a' * 64
     authority, ref, row = admit_api_turn(
@@ -118,7 +118,7 @@ def test_compressed_api_conversation_keeps_its_root_queue_and_follows_the_tip(ap
     declared conversation (and a follower already queued behind the compressing turn) must keep
     admitting/executing on the root instead of failing ``admission_conflict``."""
     from gateway.session_api_turn import check_api_turn
-    from hermes_state_runtime import claim_session_input, list_session_admissions
+    from hermes_agent.hermes_state_runtime import claim_session_input, list_session_admissions
 
     def admit(request_id):
         return admit_api_turn(api, request_id=request_id, gateway_session_key='compressed',
@@ -152,7 +152,7 @@ async def test_a_turn_queued_with_browser_control_recovers_and_runs_without_it(a
     from gateway.session_api_turn import recover_api_turns
     from gateway.session_ingress import execute_admission
     from gateway.session_results import execution_result
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     _, ref, row = admit_api_turn(api, session_id='legacy-browser-control', request_id='queued-turn',
                                  user_message='hello', conversation_history=[])
     stored = json.loads(json.dumps(row['payload']))

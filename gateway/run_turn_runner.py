@@ -175,7 +175,7 @@ def _resolution_failure_reply(exc: Exception, platform: Platform) -> tuple[str, 
     from agent.error_classifier import FailoverReason
     from hermes_cli.auth import AuthError, is_rate_limited_auth_error
     from hermes_cli.runtime_provider_custom import LocalRuntimeUnavailableError
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     auth_permanent = FailoverReason.auth_permanent.value
     if isinstance(exc, LocalRuntimeUnavailableError):
         # The chosen model is configured; its local server is down. Not a credential verdict, so
@@ -1300,7 +1300,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         from gateway.session_policy import bind_turn_workspace, policy_for_source, policy_scope, refused_turn_result
         from gateway.session_api_turn import api_policy_scope
         from gateway.session_authorities import active_authority
-        from hermes_state_runtime import RuntimeStoreError
+        from hermes_agent.hermes_state_runtime import RuntimeStoreError
         policy = policy_for_source(self._runner, self._ctx.source)
         with ExitStack() as scope:
             try:

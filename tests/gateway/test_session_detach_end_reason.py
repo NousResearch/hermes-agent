@@ -16,7 +16,7 @@ async def test_detach_with_end_reason_ends_the_idle_local_row(tmp_path, monkeypa
     from gateway.session_authority import initialize_session_authority
     from gateway.session_controls import AuthorityConnection
     from gateway.session_local import create_local_session
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())

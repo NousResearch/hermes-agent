@@ -46,7 +46,7 @@ def options_backend(monkeypatch):
 
 
 def _agent(srv, home, session_id):
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from run_agent import AIAgent
 
     db = SessionDB(db_path=home / "state.db")

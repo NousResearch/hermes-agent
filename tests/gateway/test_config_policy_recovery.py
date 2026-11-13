@@ -8,7 +8,7 @@ import pytest
 
 def test_config_credentials_recover_only_exact_source(tmp_path, monkeypatch):
     from gateway.session_policy import build_policy, bind_launch_key
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     home = tmp_path / 'profile'
     home.mkdir()
     monkeypatch.setenv('HERMES_HOME', str(home))
@@ -74,7 +74,7 @@ def test_dropped_top_level_setting_does_not_wedge_the_session(tmp_path, monkeypa
     holds instead of failing every read of the chat with ``launch_credentials_unavailable``. A
     ROUTE credential that disappeared still refuses, and a settings-only read never needs either."""
     from gateway.session_policy import build_policy, bind_launch_key
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     home = tmp_path / 'profile'
     home.mkdir()
     monkeypatch.setenv('HERMES_HOME', str(home))
@@ -114,7 +114,7 @@ def test_an_unrelated_secret_edit_keeps_the_route_and_a_gone_route_key_is_named(
     session after a restart. Only the session's own route credential may refuse, and that refusal
     names the credential; the unrelated secret is simply no longer supplied, never swapped."""
     from gateway.session_policy import build_policy, bind_launch_key
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     home = tmp_path / 'profile'
     home.mkdir()
     monkeypatch.setenv('HERMES_HOME', str(home))
@@ -173,7 +173,7 @@ def _bound_session(tmp_path, monkeypatch, cfg):
 def test_an_unchanged_custom_providers_key_survives_a_restart(tmp_path, monkeypatch):
     """A route key saved under a list (``custom_providers[0].api_key``) is found again after a
     restart; it used to read as removed and refuse every turn of the session."""
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     cfg = {'model': {'provider': 'custom:local', 'default': 'm'},
            'custom_providers': [{'name': 'Local', 'base_url': 'http://127.0.0.1:1234/v1', 'api_key': 'cp-token'}]}
     policy, owner, config_path = _bound_session(tmp_path, monkeypatch, cfg)
@@ -191,7 +191,7 @@ def test_only_the_entry_the_runtime_selects_is_the_route(tmp_path, monkeypatch):
     """Two ``custom_providers`` entries share a name: the runtime routes through the FIRST, so
     rotating the unused second key leaves the session running (that key is simply not supplied);
     rotating the selected one refuses and names it."""
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     cfg = {'model': {'provider': 'custom:shared', 'default': 'm'},
            'custom_providers': [
                {'name': 'Shared', 'base_url': 'http://127.0.0.1:1111/v1', 'api_key': 'first-token'},
@@ -214,7 +214,7 @@ def test_only_the_entry_the_runtime_selects_is_the_route(tmp_path, monkeypatch):
 def test_a_custom_prefixed_providers_key_is_the_route(tmp_path, monkeypatch):
     """``providers['custom:foo']`` is what ``model.provider: custom:foo`` resolves to at runtime; a
     rotated key there refuses by name instead of being silently dropped."""
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     cfg = {'model': {'provider': 'custom:foo', 'default': 'm'},
            'providers': {'custom:foo': {'base_url': 'http://127.0.0.1:1234/v1', 'api_key': 'foo-token'}}}
     policy, owner, config_path = _bound_session(tmp_path, monkeypatch, cfg)
@@ -232,7 +232,7 @@ def test_a_bare_custom_key_selected_by_url_is_the_route(tmp_path, monkeypatch):
     ``custom_providers`` entry owning that URL. Rotating that key and recovering cold used to skip
     the frozen value as an unrelated secret, so the pool seeded the rotated key from live config;
     it now refuses by name, like a named route."""
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     url = 'http://127.0.0.1:1234/v1'
     cfg = {'model': {'provider': 'custom', 'base_url': url, 'default': 'm'},
            'custom_providers': [
@@ -358,7 +358,7 @@ def test_a_rotated_bare_custom_key_is_never_sent(tmp_path, monkeypatch, phase):
     that key is rotated in config.yaml, neither the running owner (warm: its in-process secret cache)
     nor a restarted one (cold) sends the rotated key: the credential pool seeds from the session's
     frozen config, never live config, and cold recovery refuses the changed route key by name."""
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     from tests.fakes.fake_llm_provider import FakeLLMServer
     with FakeLLMServer() as llm:
         cfg = {'model': {'provider': 'custom', 'default': 'primary-model', 'base_url': llm.base_url},

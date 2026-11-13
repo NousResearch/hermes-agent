@@ -8,7 +8,7 @@ import json
 import math
 import time
 
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 _TASK_KEYS = {'goal', 'goals', 'context', 'toolsets', 'role', 'model', 'is_batch', 'task_indexes'}
 _ROUTE = {'session_key': 'origin_session', 'parent_session_id': 'parent_session_id',
@@ -195,7 +195,7 @@ def persist_worker_delegation(db, *, epoch, execution_id, session_id, generation
     Gateway calls this ONLY after its ordinary worker claim verification. The
     verified process identity is deliberately separate from the operation payload.
     """
-    from hermes_state_runtime import apply_worker_receipt
+    from hermes_agent.hermes_state_runtime import apply_worker_receipt
     handlers = worker_delegation_handlers(execution_id, worker_pid, worker_birth)
     return apply_worker_receipt(db, epoch=epoch, execution_id=execution_id, session_id=session_id,
                                 generation=generation, sequence=sequence, operation=operation,

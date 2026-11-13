@@ -45,7 +45,7 @@ test.beforeAll(async () => {
     PYTHONPATH: repo, HERMES_SINGLE_QUERY_LINGER_SECONDS: '30' })
   for (const name of ['alpha', 'beta', 'gamma']) {
     const h = path.join(sandbox.hermesHome, 'profiles', name)
-    execFileSync(python, ['-c', 'import sys; from pathlib import Path; from hermes_state import SessionDB; d=SessionDB(db_path=Path(sys.argv[1])/"state.db"); d.create_session("matrix-"+sys.argv[2],"cli",cwd=sys.argv[3]); d.set_session_title("matrix-"+sys.argv[2],"Bot Chat"); d.close()', h, name, sandbox.root], { env, cwd: repo })
+    execFileSync(python, ['-c', 'import sys; from pathlib import Path; from hermes_agent.hermes_state import SessionDB; d=SessionDB(db_path=Path(sys.argv[1])/"state.db"); d.create_session("matrix-"+sys.argv[2],"cli",cwd=sys.argv[3]); d.set_session_title("matrix-"+sys.argv[2],"Bot Chat"); d.close()', h, name, sandbox.root], { env, cwd: repo })
   }
   const { app, page } = await launchDesktop(env)
   fixture = { app, page, sandbox, mock, mockUrl: mock.url, cleanup: async () => {

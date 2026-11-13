@@ -60,7 +60,7 @@ async def authority_route(monkeypatch, executed, hold=None):
 
 
 def admissions(runner, authority, source):
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
 
     owner = runner.session_store.peek_session_id(runner.session_store._generate_session_key(source))
     rows = list_session_admissions(authority.db, session_id=owner, pending_only=False)

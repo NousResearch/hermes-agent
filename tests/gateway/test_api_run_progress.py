@@ -1,7 +1,7 @@
 """The existing run status poll reports only its admission's live tool progress."""
 import pytest
 
-from hermes_state_runtime import claim_session_input, settle_session_input
+from hermes_agent.hermes_state_runtime import claim_session_input, settle_session_input
 from tests.gateway.test_api_unknown_resolution import _AUTH_HEADERS, _OTHER_AUTH_HEADERS, _runs_client
 
 

@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, SessionStore
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def test_observed_group_message_is_persisted_with_its_own_timestamp(tmp_path, caplog):

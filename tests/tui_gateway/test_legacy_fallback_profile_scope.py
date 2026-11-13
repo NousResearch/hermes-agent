@@ -24,7 +24,7 @@ def homes(tmp_path, monkeypatch):
 
 def test_profile_bound_ticket_reads_only_its_own_profile(homes, monkeypatch):
     from gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from tui_gateway.ws_legacy_fallback import dispatch_legacy, legacy_fallback_allowed
     server, launch, bee = homes
     with SessionDB(launch / 'state.db') as db:

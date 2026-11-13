@@ -10,7 +10,7 @@ def _agent(tmp_path, monkeypatch, ratio):
         f"agent:\n  budget_warning_ratio: {ratio}\n", encoding="utf-8"
     )
     from run_agent import AIAgent
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from model_tools import _clear_tool_defs_cache
     from tools.registry import invalidate_check_fn_cache
 

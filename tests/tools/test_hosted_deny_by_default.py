@@ -259,7 +259,7 @@ def test_the_memory_store_itself_never_touches_the_host_file_in_a_hosted_scope()
 
 def test_session_search_reads_no_host_history():
     from hermes_constants import get_hermes_home
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from tools.registry import registry
     db = SessionDB(get_hermes_home() / "state.db")
     db.create_session("private-host-history", source="cli")
@@ -273,7 +273,7 @@ def test_session_search_reads_no_host_history():
 
 
 def test_recall_never_opens_the_profile_state_db(monkeypatch):
-    import hermes_state_registry
+    from hermes_agent import hermes_state_registry
     from run_agent import AIAgent
     opened = []
     monkeypatch.setattr(hermes_state_registry, "acquire", lambda *a, **k: opened.append(1) or object())

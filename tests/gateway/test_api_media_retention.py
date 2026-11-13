@@ -11,7 +11,7 @@ from gateway.platforms import base
 from gateway.session_api_turn import admit_api_turn
 from gateway.session_hosted_attachments import submission_payload
 from gateway.session_ingress_media import _media_root, admit_attachments, release_admission_media, restore_native_media
-from hermes_state_runtime import RuntimeStoreError, admit_session_input, claim_session_input, settle_session_input
+from hermes_agent.hermes_state_runtime import RuntimeStoreError, admit_session_input, claim_session_input, settle_session_input
 
 PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=')
 

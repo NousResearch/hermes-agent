@@ -4,7 +4,7 @@ import hashlib
 import logging
 import uuid
 
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
 def request_binding(adapter, request, durable_key):
@@ -16,7 +16,7 @@ def request_binding(adapter, request, durable_key):
 
 def _request_admission_rows(db, request_id):
     """A lost derivative pointer cannot erase accepted identity on retirement."""
-    from hermes_state_terminal import terminal_api_admissions
+    from hermes_agent.hermes_state_terminal import terminal_api_admissions
     with db._read_ctx() as conn:
         rows = [dict(row) for row in conn.execute(
             "SELECT * FROM session_admissions WHERE principal_id='api' AND request_id=?", (request_id,))]
@@ -34,7 +34,7 @@ def _lookup_admission(authority, store, durable_key, request_id):
     loss between the authority commit and pointer commit is repaired from that exact request id.
     """
     from gateway.session_contract import SessionRef
-    from hermes_state_runtime import get_session_admission, _row
+    from hermes_agent.hermes_state_runtime import get_session_admission, _row
     admission_id = store.request_admission(durable_key[0])
     if admission_id:
         row = get_session_admission(authority.db, admission_id=admission_id)

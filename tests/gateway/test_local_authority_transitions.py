@@ -33,7 +33,7 @@ async def test_replayed_receipt_keeps_a_newer_turns_agent(tmp_path, monkeypatch,
     evict that turn's cached agent (the projection is fenced by execution generation)."""
     from gateway import session_mutations
     from gateway.session_policy import restore_policy
-    from hermes_state_runtime import admit_session_input, claim_session_input
+    from hermes_agent.hermes_state_runtime import admit_session_input, claim_session_input
     owner, connection, ref = await local_session(tmp_path, monkeypatch)
     async def prepare(authority, live, payload, prepared):
         old = restore_policy(prepared['snapshot']['receipt']['policy'])
@@ -72,7 +72,7 @@ async def test_replayed_receipt_keeps_a_newer_turns_agent(tmp_path, monkeypatch,
 async def test_session_busy_pause_keeps_the_notice_episode(tmp_path, monkeypatch):
     """A head blocked behind running work is the same pause episode: the "saved, will be answered"
     notice is not repeated for every message queued behind it."""
-    from hermes_state_runtime import admit_session_input, claim_session_input
+    from hermes_agent.hermes_state_runtime import admit_session_input, claim_session_input
     owner, connection, ref = await local_session(tmp_path, monkeypatch)
     live = owner.sessions[ref.session_id]
     try:

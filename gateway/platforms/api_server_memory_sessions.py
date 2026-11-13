@@ -75,7 +75,7 @@ class ApiServerMemorySessions:
             entry = self._entries.pop((home_key, session_id), None)
         if entry is None:
             return None
-        from hermes_state_mutation_retirement import RETRY_HORIZON_S
+        from hermes_agent.hermes_state_mutation_retirement import RETRY_HORIZON_S
         if time.time() - entry[3] > RETRY_HORIZON_S:
             self._shutdown_async(entry[0], entry[1])
             return None

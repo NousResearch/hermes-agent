@@ -5,7 +5,7 @@ import logging
 
 import pytest
 
-from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions
 
 pytest_plugins = ['tests.gateway.test_session_bot_retry']
 

@@ -5,8 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-import hermes_state_common
-from hermes_state import SessionDB
+from hermes_agent import hermes_state_common
+from hermes_agent.hermes_state import SessionDB
 
 
 _HOLD_ADMISSION_SCRIPT = """
@@ -14,7 +14,7 @@ import sys
 import time
 from pathlib import Path
 
-from hermes_state_common import fts_rebuild_admission
+from hermes_agent.hermes_state_common import fts_rebuild_admission
 
 with fts_rebuild_admission(Path(sys.argv[1]), timeout_seconds=0) as acquired:
     assert acquired

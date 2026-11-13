@@ -13,7 +13,7 @@ route, so it applies to the compression tip the next turn writes.
 """
 import asyncio
 
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 CHAT_PICKS = frozenset({'model', 'reasoning'})
 
@@ -75,8 +75,8 @@ async def apply_chat_pick(authority, ref, owner, live, params, *, principal_id):
     pick on a compressed chat with ``stale_generation``. The receipt is keyed on that mount too: an
     exact retry answers its stored receipt without re-applying the override, and the commit bumps the
     mount's revision, so a retry of an older pick refuses ``revision_conflict``."""
-    from hermes_state_mutation_chat_pick import chat_pick_key, commit_chat_pick, prepare_chat_pick
-    from hermes_state_mutations import validate_action
+    from hermes_agent.hermes_state_mutation_chat_pick import chat_pick_key, commit_chat_pick, prepare_chat_pick
+    from hermes_agent.hermes_state_mutations import validate_action
     operation, payload = params['operation'], params['payload']
     validate_action(operation, payload)
     key, digest = chat_pick_key(principal_id, owner.session_id, params)

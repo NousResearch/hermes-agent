@@ -15,7 +15,7 @@ async def reset_lineage(tmp_path, monkeypatch):
     from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
     from gateway.session_mutations import mutate_session
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
@@ -60,7 +60,7 @@ async def test_reset_lineage_lists_once_and_deleting_the_listed_row_deletes_it(r
 
 @pytest.mark.asyncio
 async def test_legacy_delete_of_either_segment_retires_the_whole_lineage(reset_lineage):
-    from hermes_state_local import POLICY_PREFIX
+    from hermes_agent.hermes_state_local import POLICY_PREFIX
     t = reset_lineage
     db = t.authority.db
     assert db.delete_session(t.s0, exclude_active_write_guards=True)

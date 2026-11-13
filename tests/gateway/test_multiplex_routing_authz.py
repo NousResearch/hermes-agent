@@ -133,7 +133,7 @@ def test_completion_preflight_runs_in_target_profile_scope(mux):
     """An async-delegation completion for a secondary session must be classified against THAT
     profile's state.db (the watcher runs unscoped, where the row does not exist → ``terminal``)."""
     from gateway import run as run_module
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db_home = mux.home / "profiles" / "team_b"
     SessionDB(db_path=db_home / "state.db").create_session(
@@ -163,7 +163,7 @@ def test_raw_api_server_child_notice_follows_the_served_profile_policy(
     from typing import cast
 
     from gateway import run as run_module
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     home = tmp_path / "home"
     served = home / "profiles" / "builder"

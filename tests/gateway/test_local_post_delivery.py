@@ -16,7 +16,7 @@ async def _owner(tmp_path, monkeypatch):
     from gateway.config import GatewayConfig
     from gateway.run import GatewayRunner
     from gateway.session_authority import initialize_session_authority
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
@@ -36,7 +36,7 @@ def _viewer():
 async def test_local_turn_runs_its_post_delivery_callbacks_after_settling(tmp_path, monkeypatch):
     from gateway.session_contract import Submission
     from gateway.session_local import create_local_session
-    from hermes_state_runtime import get_session_admission
+    from hermes_agent.hermes_state_runtime import get_session_admission
 
     runner, authority, db = await _owner(tmp_path, monkeypatch)
     fired = []

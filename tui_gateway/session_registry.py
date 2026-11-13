@@ -548,7 +548,7 @@ def _schedule_agent_build(sid: str, delay: float = 0.05) -> None:
 def _load_resume_transcript(db, stored_id: str, *, model_history_only: bool = False) -> tuple[list, list, list]:
     """(raw_history, display_history, ancestor_prefix) for a cold resume. The full lineage is materialized
     only while it fits sessions.max_resume_messages (the transcript is REST-paginated), else the tip alone."""
-    from hermes_state import SessionResumeTooLargeError
+    from hermes_agent.hermes_state import SessionResumeTooLargeError
     if model_history_only:
         raw_history = db.get_messages_as_conversation(
             stored_id, repair_alternation=True, include_row_ids=True)

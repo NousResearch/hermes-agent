@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 def test_siblings_send_one_system_prompt_and_get_their_context_in_the_user_turn():
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from run_agent import AIAgent
     from tests.e2e.core.history._helpers import NO_BACKGROUND_REVIEW, OFFLINE_CONFIG
     from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
@@ -41,7 +41,7 @@ def test_schema_correction_turn_carries_the_contract_even_after_a_compaction():
     and pastes the contract again, because a long first turn is compacted before the retry is sent."""
     import json
 
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from run_agent import AIAgent
     from tests.e2e.core.history._helpers import NO_BACKGROUND_REVIEW, OFFLINE_CONFIG
     from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall, write_hermes_home

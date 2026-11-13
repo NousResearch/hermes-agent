@@ -1864,14 +1864,14 @@ def _open_cron_session_db(job: dict):
         raise WorkerPersistenceError('worker_cron_registration_required')
     _session_db_timeout = _get_session_db_timeout()
     try:
-        from hermes_state_registry import acquire
+        from hermes_agent.hermes_state_registry import acquire
 
         def acquire_store():
             if owner is None:
                 return acquire()
             db = acquire(Path(owner[0].db.db_path))
             if db is not owner[0].db:
-                from hermes_state_registry import release_or_close
+                from hermes_agent.hermes_state_registry import release_or_close
                 release_or_close(db)
                 raise RuntimeError('cron requires the canonical owner store')
             return db
@@ -2085,7 +2085,7 @@ def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgen
         # Render every persistence-cause variant or cause-refined text slips through.
         _explainer_variants = []
         try:
-            from hermes_state_errors import PERSISTENCE_ERROR_CAUSES as _causes
+            from hermes_agent.hermes_state_errors import PERSISTENCE_ERROR_CAUSES as _causes
         except Exception:
             _causes = ("locked", "disk", "unknown")
         # The finalizer fills the model name into the explainer; render with the same name (and
@@ -2203,7 +2203,7 @@ def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_s
     except (Exception, KeyboardInterrupt) as e:
         logger.debug("Job '%s': failed to end session: %s", job_id, e)
     try:
-        from hermes_state_registry import release_or_close
+        from hermes_agent.hermes_state_registry import release_or_close
         release_or_close(_session_db)
     except (Exception, KeyboardInterrupt) as e:
         logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)

@@ -79,7 +79,7 @@ def test_a_delete_whose_flag_write_fails_keeps_the_chat_for_a_retry(db, ended, m
 
 
 def test_a_delete_refused_by_the_write_guard_leaves_the_flag_set(db, ended):
-    from hermes_state_errors import SessionActiveWriteGuardError
+    from hermes_agent.hermes_state_errors import SessionActiveWriteGuardError
 
     def guarded():
         raise SessionActiveWriteGuardError("active turn lease")

@@ -26,7 +26,7 @@ async def test_route_move_after_claim(monkeypatch, case):
     from gateway.session_contract import SessionActor, Submission
     from gateway.session_ingress import executing_admission
     from gateway.session_results import execution_result
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     from plugins.platforms.discord.adapter import DiscordAdapter
 
     monkeypatch.setenv('DISCORD_ALLOWED_USERS', '42')

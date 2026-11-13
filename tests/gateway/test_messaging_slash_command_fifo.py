@@ -100,7 +100,7 @@ async def _start_a(monkeypatch, mode=None, *, agent=True):
 
 
 def _rows(rig):
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     sid = rig.runner.session_store.peek_session_id(rig.key)
     return [row['request_id'] for row in list_session_admissions(rig.authority.db, session_id=sid, pending_only=False)]
 
@@ -152,7 +152,7 @@ async def test_idle_rewrite_waits_behind_a_queued_row(monkeypatch, command):
     from gateway.session_ingress_context import native_callback
     from gateway.session_results import execution_result
     from hermes_constants import get_hermes_home
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
 
     runner, adapter, _sent = _owner(monkeypatch)
     real_schedule = SessionAuthority._schedule
@@ -402,7 +402,7 @@ async def test_reset_during_an_idle_skill_rewrite_drops_it(monkeypatch, reset):
     gate.set()
     await asyncio.wait_for(task, 15)
     key = runner.session_store._generate_session_key(source)
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     rows = [row['request_id'] for row in list_session_admissions(
         authority.db, session_id=runner.session_store.peek_session_id(key), pending_only=False)]
     assert 'C' not in rows and 'C' not in [m for m, _ in order], (rows, order)

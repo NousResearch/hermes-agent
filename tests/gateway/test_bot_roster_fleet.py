@@ -170,7 +170,7 @@ async def test_no_row_shows_a_bot_chat_its_viewer_may_not_read(fleet):
 
 @pytest.mark.asyncio
 async def test_a_sibling_that_cannot_be_read_safely_leaves_only_its_own_row_bare(fleet, monkeypatch, caplog):
-    from hermes_state_errors import StateDbReplacedError
+    from hermes_agent.hermes_state_errors import StateDbReplacedError
     chats = await fleet.bot_chats()
 
     def replaced(*args, **kwargs):

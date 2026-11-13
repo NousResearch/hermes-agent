@@ -12,7 +12,7 @@ from gateway.run import GatewayRunner
 from gateway.session_authority import initialize_session_authority
 from gateway.session_envelope import restore_native, snapshot_native
 from gateway.session_results import execution_result
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 from tests.waiting import async_wait_until
 
 REPO = Path(__file__).resolve().parents[2]

@@ -14,7 +14,7 @@ import sqlite3
 
 import pytest
 
-from hermes_state_wal import is_sqlite_wal_reset_vulnerable
+from hermes_agent.hermes_state_wal import is_sqlite_wal_reset_vulnerable
 from tests.conftest import _wal_is_usable
 
 
@@ -57,21 +57,26 @@ def test_conftest_does_not_import_hermes_state_at_collection():
     real_import = builtins.__import__
     blocked: list[str] = []
 
-    def guard(name, *args, **kwargs):
-        if name == "hermes_state" or name.startswith("hermes_state."):
+    def _is_state(module):
+        module = module.removeprefix("hermes_agent.")
+        return module == "hermes_state" or module.startswith("hermes_state.")
+
+    def guard(name, globals=None, locals=None, fromlist=(), level=0):
+        targets = [name, *(f"{name}.{item}" for item in fromlist or ())]
+        if any(_is_state(target) for target in targets):
             blocked.append(name)
             raise AssertionError(
                 "conftest._wal_is_usable imported hermes_state — this caches "
                 "DEFAULT_DB_PATH from the real ~/.hermes during collection"
             )
-        return real_import(name, *args, **kwargs)
+        return real_import(name, globals, locals, fromlist, level)
 
-    saved = sys.modules.pop("hermes_state", None)
+    saved = sys.modules.pop("hermes_agent.hermes_state", None)
     builtins.__import__ = guard
     try:
         _wal_is_usable()  # must not raise
     finally:
         builtins.__import__ = real_import
         if saved is not None:
-            sys.modules["hermes_state"] = saved
+            sys.modules["hermes_agent.hermes_state"] = saved
     assert not blocked

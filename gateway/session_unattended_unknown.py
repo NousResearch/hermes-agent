@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 
-from hermes_state_keys import CRON_PRINCIPAL_ID
+from hermes_agent.hermes_state_keys import CRON_PRINCIPAL_ID
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ def settle_recovered_unattended(db, epoch) -> int:
     from agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE
     from gateway.session_ingress_media import release_admission_media
     from gateway.session_results import close_discarded_turn
-    from hermes_state_runtime import RuntimeStoreError, _row, resolve_unknown_session_input
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError, _row, resolve_unknown_session_input
     with db._read_ctx() as conn:
         rows = [_row(r) for r in conn.execute(
             "SELECT * FROM session_admissions WHERE status='unknown' ORDER BY seq").fetchall()]
@@ -71,7 +71,7 @@ async def settle_unattended_unknown(authority, ref) -> bool:
     import asyncio
 
     from agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE
-    from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions
     rows = await asyncio.to_thread(list_session_admissions, authority.db, session_id=ref.session_id)
     settled = False
     for row in _unattended_unknown(rows):

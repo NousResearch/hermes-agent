@@ -9,7 +9,7 @@ from websockets.asyncio.client import connect
 from websockets.exceptions import InvalidStatus
 
 from gateway.session_controls import AuthorityConnection
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from tests.gateway.fixtures.local_recovery_probe import child_env, daemon, rpc, websocket
 
 
@@ -118,7 +118,7 @@ def test_groups_list_pages_the_actor_visible_rooms(tmp_path):
     before the authorization filter (which returned empty/short pages ahead of visible rooms)."""
     from gateway import hosted_rooms as rooms
     from gateway.session_group_controls import _group
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     db_path = tmp_path / 'state.db'
     with SessionDB(db_path) as db:
         for index, name in enumerate(['f1', 'f2', 'm1', 'f3', 'm2', 'm3']):

@@ -547,8 +547,8 @@ def test_legacy_fallback_never_writes_an_authority_owned_session(monkeypatch, tm
     the authority holding a live session whose row is gone)."""
     from types import SimpleNamespace
     from gateway.session_authority import LiveSession, SessionAuthority
-    from hermes_state import SessionDB
-    from hermes_state_runtime import begin_runtime_epoch
+    from hermes_agent.hermes_state import SessionDB
+    from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 
     monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
     with SessionDB(db_path=tmp_path / "state.db") as db:

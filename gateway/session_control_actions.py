@@ -8,7 +8,7 @@ capability, local-source, admission and busy rules), answered with the owner's c
 import asyncio
 import logging
 
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
 

@@ -11,7 +11,7 @@ import json
 import logging
 
 from hermes_cli.plugins_dispatch import resolve_plugin_command_result
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
 

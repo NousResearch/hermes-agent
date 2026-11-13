@@ -664,7 +664,7 @@ def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
     """Pass 3: merge consecutive plain-text user messages (no user input lost)."""
     from agent.context_compressor import _DB_PERSISTED_MARKER, split_user_originated_turn
     from agent.conversation_compression_archive import MERGED_DURABLE_ROWS
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     def _plain_text(content: Any) -> bool:
         # never rewrite the persisted row around undecodable content
@@ -750,7 +750,7 @@ def _normalize_sentinel_encoded_content(messages: list[dict]) -> None:
     image-bearing turn is never merged as text (#125299). A multimodal turn can re-enter the working set
     as its ``\\x00json:[…]`` string (e.g. after a proactive prune re-inserts history, #124102). A body
     that no longer parses stays a sentinel string; ``_merge_consecutive_users`` refuses to weld it."""
-    from hermes_state import SessionDB  # lazy: the persistence layer owns the sentinel codec
+    from hermes_agent.hermes_state import SessionDB  # lazy: the persistence layer owns the sentinel codec
 
     for msg in messages:
         if not isinstance(msg, dict):

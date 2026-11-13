@@ -21,7 +21,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 SESSION_ID = "peer_dm_retry"
 DM = "disk status?"

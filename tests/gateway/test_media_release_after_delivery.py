@@ -7,7 +7,7 @@ import pytest
 
 from gateway import session_ingress, session_results, session_settlement_recovery as recovery
 from gateway.session_runtime_workers import mutation_tasks
-from hermes_state_runtime import get_session_admission
+from hermes_agent.hermes_state_runtime import get_session_admission
 from tests.gateway.test_session_authority_cancel_settlement import REF, _authority, _submit
 from tests.waiting import async_wait_until
 

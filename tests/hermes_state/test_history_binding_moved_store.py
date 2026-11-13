@@ -6,9 +6,9 @@ pin/archive/rename got ``permission_denied`` and the read-only mount ``not_found
 """
 import json
 
-import hermes_state_runtime as rt
-from hermes_state import SessionDB
-from hermes_state_mutation_binding import BINDING_PREFIX, bindings_agree, binding_names, import_history_control
+import hermes_agent.hermes_state_runtime as rt
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_mutation_binding import BINDING_PREFIX, bindings_agree, binding_names, import_history_control
 
 
 def _bound(profile, subject='owner'):

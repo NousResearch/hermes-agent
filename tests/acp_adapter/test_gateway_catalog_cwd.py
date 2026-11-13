@@ -1,6 +1,6 @@
 """Read-only ACP picker understands canonical column-backed cwd."""
 from hermes_agent.acp_adapter.catalog import catalog_sessions
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def test_catalog_prefers_canonical_cwd_without_rewriting_storage(tmp_path):

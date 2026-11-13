@@ -284,7 +284,7 @@ class TestStoredPromptReuse:
         rebuild keeps the pinned array and never persists its own surface's build over the pin."""
         from unittest.mock import patch as _patch
 
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
         from tools.mcp_tool_agent import tool_pin_version
 
         def _tool(name):
@@ -312,7 +312,7 @@ class TestStoredPromptReuse:
         """``hermes sessions recover`` from an older build deleted pin rows it did not know about,
         leaving ``tool_names`` a hash that resolves to itself. The next turn must pin what it sends,
         or every later surface hop re-derives tools[] for the rest of the session."""
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         tools = [{"type": "function", "function": {"name": "read_file", "description": "", "parameters": {}}}]
         with SessionDB(db_path=tmp_path / "state.db") as db:
@@ -580,7 +580,7 @@ class TestPerResponseSessionWritePath:
         self, tmp_path, caplog
     ):
         """Second turn of the SAME id restores — so nothing was dropped."""
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         session_id = "gc_run_room42_default_Worker_9a7e3b1c05d24e6fb83a1c7d9e0f2a4b"
         history = [{"role": "user", "content": "hi"}]
@@ -610,7 +610,7 @@ class TestPerResponseSessionWritePath:
 
 def test_null_stored_prompt_does_not_take_the_stale_probe_path(tmp_path):
     """A NULL system_prompt row already rebuilds. The capability probe must not gate it."""
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from agent.conversation_loop import _bot_chat_prompt_stale
 
     agent = SimpleNamespace(

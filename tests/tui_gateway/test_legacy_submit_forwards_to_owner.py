@@ -14,8 +14,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_state import SessionDB
-from hermes_state_runtime import (
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_runtime import (
     admit_session_input, begin_runtime_epoch, claim_session_input, list_session_admissions,
     recover_session_inputs, settle_session_input,
 )
@@ -349,7 +349,7 @@ def test_a_prompt_the_owner_cannot_queue_is_refused_with_why_and_when(monkeypatc
             monkeypatch.setattr(owner_forward, "connect_owner", refused)
         elif case == "owner_queue_full":
             # Sent, and refused by the owner's ledger inside its write: nothing was queued.
-            import hermes_state_runtime
+            from hermes_agent import hermes_state_runtime
             monkeypatch.setattr(hermes_state_runtime, "ADMISSION_QUEUE_MAX", 0)
         else:
             params.update(truncate_before_user_ordinal=0, confirm_truncate=True)

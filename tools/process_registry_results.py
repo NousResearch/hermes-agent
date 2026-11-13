@@ -77,7 +77,7 @@ def _owns_result(owner: str, parent: str | None) -> bool:
         return False
     if owner == parent:
         return True
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     # Pure lineage read on the hot path of every retained-result load; a writable open here
     # was one more writer handle per call inside the gateway (#100896).

@@ -41,7 +41,7 @@ def _startup(monkeypatch, tmp_path):
         def __init__(self, config):
             from gateway.session import SessionStore
             from hermes_constants import get_hermes_home
-            from hermes_state import SessionDB
+            from hermes_agent.hermes_state import SessionDB
             self.session_store = SessionStore(get_hermes_home() / "sessions", config)
             self._session_db = SessionDB(get_hermes_home() / "state.db")
             self.session_store._db = self._session_db

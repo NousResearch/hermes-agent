@@ -5,8 +5,8 @@ own gateway's restart interrupted reading as a failure, not a cancel."""
 import json
 from types import SimpleNamespace
 
-from hermes_state import SessionDB
-from hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input, settle_session_input
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input, settle_session_input
 from gateway.session_bot import _result
 from gateway.session_results import retain_result
 from tools import bot_mode_dm, bot_mode_dm_outcome

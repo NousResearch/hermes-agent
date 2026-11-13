@@ -20,7 +20,7 @@ async def probe(peer):
     from gateway.run import GatewayRunner
     from gateway.session_authority import initialize_session_authority
     from plugins.platforms.discord.adapter import DiscordAdapter
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
 
     class Guild:
         hook = None
@@ -116,7 +116,7 @@ async def probe(peer):
             (transport / '.env').write_text('DISCORD_ALLOWED_ROLES=999\n')
         guild.hook = revoke_policy
         from gateway.session_ingress_context import native_callback
-        from hermes_state_runtime import RuntimeStoreError
+        from hermes_agent.hermes_state_runtime import RuntimeStoreError
         ev = event('policy-revoked-during-fetch')
         with native_callback(runner, ev, transport, 'transport'):
             try:

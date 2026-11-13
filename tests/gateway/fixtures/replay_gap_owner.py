@@ -25,8 +25,8 @@ class Owner:
         from gateway.session_authority import LiveSession, SessionAuthority
         from gateway.session_contract import SessionRef
         from gateway.session_controls import AuthorityConnection
-        from hermes_state import SessionDB
-        from hermes_state_runtime import begin_runtime_epoch
+        from hermes_agent.hermes_state import SessionDB
+        from hermes_agent.hermes_state_runtime import begin_runtime_epoch
         self.loop, self.events, self.running = asyncio.get_running_loop(), asyncio.Queue(), threading.Event()
         self.pause, self.gaps, self.turns, self.ref = pause, [], [], SessionRef("owned", "s")
         self.running.set()
@@ -49,7 +49,7 @@ class Owner:
         return None
 
     async def rpc(self, method, _timeout=None, **params):
-        from hermes_state_runtime import admit_session_input, claim_session_input
+        from hermes_agent.hermes_state_runtime import admit_session_input, claim_session_input
         if method == "prompt.submit":
             admit_session_input(self.db, epoch=self.epoch, principal_id=self.conn.actor.subject, session_id="s",
                                 request_id=params.get("input_id") or params.get("submission_id"),

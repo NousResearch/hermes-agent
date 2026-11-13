@@ -12,7 +12,7 @@ Runs against a real SessionDB in a temp HERMES_HOME, on the trigram and LIKE
 routes.
 """
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 TWO_CHAR = "秃发"          # 2 CJK chars — below the trigram threshold, LIKE route
 FOUR_CHAR = "秃发应对"      # 4 CJK chars — trigram-eligible

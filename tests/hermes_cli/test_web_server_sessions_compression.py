@@ -19,7 +19,7 @@ class _SessionsCompressionEndpoints:
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
 
-        import hermes_state
+        from hermes_agent import hermes_state
         from hermes_constants import get_hermes_home
         from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
@@ -38,7 +38,7 @@ class TestSessionStatsCompressionChildren(_SessionsCompressionEndpoints):
         """Stats counts every physical row while the paired list collapses each
         chain to one row — total/active_store/archived were inflated by the
         hidden chain links and never matched the listed rows."""
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         db = SessionDB()
         try:
@@ -85,8 +85,8 @@ class TestDeleteSessionCompressionChain(_SessionsCompressionEndpoints):
         from gateway.session_authority import LiveSession, SessionAuthority
         from hermes_cli.web_server import app
         from hermes_constants import get_hermes_home
-        from hermes_state import SessionDB
-        from hermes_state_runtime import begin_runtime_epoch
+        from hermes_agent.hermes_state import SessionDB
+        from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 
         db = SessionDB()
         try:
@@ -124,7 +124,7 @@ class TestBulkDeleteCompressionChain(_SessionsCompressionEndpoints):
         chain — otherwise the root resurfaces as the previous link on the next
         reload and the user sees the delete "not work". ``deleted`` counts
         selected rows, and other lineages / standalone rows survive untouched."""
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         db = SessionDB()
         try:

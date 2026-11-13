@@ -10,8 +10,8 @@ import pytest
 
 from gateway.session_authority import LiveSession, SessionAuthority
 from gateway.session_contract import SessionActor, SessionRef, Submission
-from hermes_state import SessionDB
-from hermes_state_runtime import begin_runtime_epoch
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 
 ACTOR = SessionActor('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
 REF = SessionRef('owned', 's')

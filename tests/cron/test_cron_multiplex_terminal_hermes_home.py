@@ -70,7 +70,7 @@ def _fire(home: Path, job_id: str):
     """Run one job through the owner bridge for *home*'s authority."""
     from gateway.session_contract import SessionRef
     from gateway.session_cron import execute
-    from hermes_state_registry import acquire, release
+    from hermes_agent.hermes_state_registry import acquire, release
 
     job = {"id": job_id, "name": job_id, "schedule_display": "manual", "model": "test-model"}
     ref = SessionRef(home.name, f"cron-{job_id}")

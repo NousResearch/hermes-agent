@@ -8,7 +8,7 @@ import pytest
 
 
 def _seed(home, sid, tokens=(300, 60)):
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     db = SessionDB(db_path=home / 'state.db')
     db.create_session(sid, source='tui')
     db.append_message(sid, 'user', 'q')
@@ -67,7 +67,7 @@ def test_branch_child_epilogue_counts_the_branched_conversation(home, capsys):
     """Main's epilogue after /branch reported the conversation's tokens (it still named the parent);
     the canonical child is named, and its total includes the branch it was cut from."""
     import json
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from hermes_cli.main_tui_launch import _print_tui_exit_summary
     parent = 'local-' + '1' * 64
     child = 'local-' + '2' * 64

@@ -18,7 +18,7 @@ from pathlib import Path
 
 from gateway.session_busy_controls import authorize
 from gateway.session_tui_reads import context_breakdown
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
 def handlers(connection):
@@ -66,7 +66,7 @@ async def save_session(connection, ref, params):
 
     def write():
         from hermes_cli.session_export import load_save_snapshot, render_session_for_save
-        from hermes_state import SessionExportTooLargeError
+        from hermes_agent.hermes_state import SessionExportTooLargeError
         try:
             data = load_save_snapshot(authority.db, target, 'json')
         except SessionExportTooLargeError as exc:
@@ -103,7 +103,7 @@ async def export_session(connection, ref, params):
 
     def render():
         from hermes_cli.session_export import load_save_snapshot, render_session_for_save
-        from hermes_state import SessionExportTooLargeError
+        from hermes_agent.hermes_state import SessionExportTooLargeError
         try:
             data = load_save_snapshot(authority.db, target, fmt)
         except SessionExportTooLargeError as exc:
@@ -352,7 +352,7 @@ async def _rewind_last_turn(connection, ref, taken=None):
         return 0
     target = rows[users[-1]]['row_id']
     from gateway.session_mutations import mutate_session
-    from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
+    from hermes_agent.hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
     handle = authority._handle(ref)
     try:
         result = await mutate_session(authority, connection.actor, ref, {

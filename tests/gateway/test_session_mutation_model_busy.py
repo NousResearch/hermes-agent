@@ -16,7 +16,7 @@ def _owner(tmp_path, monkeypatch, handle):
     from gateway.session_controls import AuthorityConnection
     from gateway.session_local import create_local_session
     from hermes_cli import model_switch
-    import hermes_state_runtime as rt
+    import hermes_agent.hermes_state_runtime as rt
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {})
     monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(
         success=True, new_model=k['raw_input'], target_provider='custom', base_url='http://127.0.0.1:9/v1'))
@@ -45,7 +45,7 @@ def _running_model(authority, ref):
 @pytest.mark.asyncio
 async def test_model_pick_during_a_running_turn_applies_to_the_next_turn(tmp_path, monkeypatch):
     from gateway.session_contract import Submission
-    import hermes_state_runtime as rt
+    import hermes_agent.hermes_state_runtime as rt
     started, release = threading.Event(), asyncio.Event()
     seen = []
     state = {}
@@ -118,7 +118,7 @@ async def _mutate(owner, db, ref, rid, model, snap=None, *, call=1):
 
 async def _run_turn(authority, owner, db, ref, name):
     from gateway.session_contract import Submission
-    import hermes_state_runtime as rt
+    import hermes_agent.hermes_state_runtime as rt
     turn = await authority.submit(owner.actor, Submission(name, ref, {'text': name}, 'queue'))
     await async_wait_until(
         lambda: rt.get_session_admission(db, admission_id=turn.admission_id)['status'] == 'terminal',
@@ -333,7 +333,7 @@ async def test_a_deferred_pick_that_raises_is_refused_and_the_queue_keeps_draini
     from gateway.session_contract import Submission
     from gateway.session_deferred_pick import _PREFIX
     from hermes_cli import model_switch
-    import hermes_state_runtime as rt
+    import hermes_agent.hermes_state_runtime as rt
     started, release = threading.Event(), asyncio.Event()
     events, seen, state, raising = [], [], {}, threading.Event()
 
@@ -473,7 +473,7 @@ async def test_a_reasoning_command_raced_by_another_mutation_is_not_refused(tmp_
     next boundary like a busy session."""
     from gateway import session_mutations
     from gateway.session_policy import policy_for_source
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     async def handle(event):
         return 'ok'

@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_state_registry as registry
+import hermes_agent.hermes_state_registry as registry
 
 
 @pytest.fixture(autouse=True)
@@ -82,7 +82,7 @@ class TestInodeReplacement:
         # a catchable, typed error, never a use-after-close segfault or
         # "Cannot operate on a closed database".
         assert a._conn is not None, "retired generation closed while holders live"
-        from hermes_state import StateDbReplacedError
+        from hermes_agent.hermes_state import StateDbReplacedError
 
         with pytest.raises(StateDbReplacedError):
             a.create_session(
@@ -172,7 +172,7 @@ class TestInodeReplacement:
 
 
 def _make_session_db(path):
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     return SessionDB(db_path=Path(path))
 

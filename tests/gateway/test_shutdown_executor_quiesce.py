@@ -240,7 +240,7 @@ async def test_live_writer_outside_the_executor_skips_the_session_db_close(monke
     join above the close block never sees them; the close has to consult their counters too.
     The executor must still be sealed on this path (#101118).
     """
-    import hermes_state_registry
+    from hermes_agent import hermes_state_registry
 
     events = []
     gw = _FakeGateway(events)
@@ -266,7 +266,7 @@ async def test_cancelled_api_handler_worker_still_blocks_session_db_close(monkey
     close gate must consult it alongside the handler snapshot -- and must not close until the
     worker itself exits.
     """
-    import hermes_state_registry
+    from hermes_agent import hermes_state_registry
     from gateway.platforms import api_server_runs as api_runs
 
     events = []

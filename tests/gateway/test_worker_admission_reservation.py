@@ -9,8 +9,8 @@ from types import SimpleNamespace
 import psutil
 import pytest
 
-from hermes_state import SessionDB
-from hermes_state_runtime import (admit_session_input, begin_runtime_epoch, claim_session_input,
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_runtime import (admit_session_input, begin_runtime_epoch, claim_session_input,
                                   register_worker_execution, settle_session_input)
 
 
@@ -100,7 +100,7 @@ async def test_input_queued_behind_a_live_worker_is_released_then_runs_when_it_f
     from gateway.session_ingress import admit_message
     from gateway.session_worker import worker_request
     from gateway import session_finite
-    from hermes_state_runtime import get_session_admission
+    from hermes_agent.hermes_state_runtime import get_session_admission
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     db = SessionDB(tmp_path / 'state.db')

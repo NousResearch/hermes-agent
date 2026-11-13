@@ -8,13 +8,13 @@ the store under a live gateway would be a second writer, so it never does.
 import asyncio
 from pathlib import Path
 
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 _SCALARS = (type(None), bool, int, float, str)
 
 
 def _filters(raw):
-    from hermes_state_maintenance import _PRUNE_FILTER_NAMES
+    from hermes_agent.hermes_state_maintenance import _PRUNE_FILTER_NAMES
     if (not isinstance(raw, dict) or set(raw) - (_PRUNE_FILTER_NAMES | {'older_than_days'})
             or not all(isinstance(value, _SCALARS) for value in raw.values())):
         raise RuntimeStoreError('invalid_params')

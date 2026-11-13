@@ -40,8 +40,8 @@ def test_finished_worker_keeps_its_result_on_slow_or_nonzero_exit(tmp_path, monk
     from gateway.session_authority import LiveSession, SessionAuthority
     from gateway.session_contract import Submission
     from gateway.session_policy import build_policy
-    from hermes_state import SessionDB
-    from hermes_state_runtime import begin_runtime_epoch, claim_session_input
+    from hermes_agent.hermes_state import SessionDB
+    from hermes_agent.hermes_state_runtime import begin_runtime_epoch, claim_session_input
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     db = SessionDB(db_path=tmp_path / 'state.db')
@@ -68,7 +68,7 @@ def test_finished_worker_keeps_its_result_on_slow_or_nonzero_exit(tmp_path, monk
 
         def reserve_then_compress(authority, **kwargs):
             # A worker compression mid-turn: the transcript continues in a child session and the owner's
-            # execution row follows it in the same transaction (hermes_state_worker_compression.py).
+            # execution row follows it in the same transaction (hermes_agent/hermes_state_worker_compression.py).
             scope = reserve(authority, **kwargs)
             db.end_session('s', 'compression')
             db.create_session('s-c1', source='test', parent_session_id='s')

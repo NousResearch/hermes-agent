@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 from hermes_agent.acp_adapter import session as acp_session
 from hermes_agent.acp_adapter.session import SessionManager, SessionState
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def _mock_agent():

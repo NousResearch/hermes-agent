@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from hermes_state_runtime import mutate_worker_execution
+from hermes_agent.hermes_state_runtime import mutate_worker_execution
 
 
 def test_guard_rollback_and_streaks_are_durable_receipts(worker):

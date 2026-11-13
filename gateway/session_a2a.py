@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 
 from gateway.session_contract import SessionRef, Submission
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
 _forward_identity = ContextVar('a2a_forward_identity', default=None)
@@ -54,11 +54,11 @@ def storage_source(db, source, session_id, fallback):
         return fallback
     if not str(source.chat_id).startswith('local-'):
         # An adopted pre-authority row keeps its historical id as the route (session_local_migration).
-        from hermes_state_local_migration import LEGACY_PREFIX
+        from hermes_agent.hermes_state_local_migration import LEGACY_PREFIX
         with db._read_ctx() as conn:
             if conn.execute('SELECT 1 FROM state_meta WHERE key=?', (LEGACY_PREFIX + str(source.chat_id),)).fetchone() is None:
                 return fallback
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
     receipt = local_receipt(db, source.chat_id)
     if session_id not in receipt.get('lineage', [receipt['session_id']]):
         raise RuntimeStoreError('admission_conflict')
@@ -94,9 +94,9 @@ async def forward(connection, params):
     from gateway.session_local_recovery import local_identity, restore_local_session
     from gateway.session_local import stage_local_session
     from gateway.session_runtime_workers import tracked_write
-    from hermes_state_local import commit_local_session, local_receipt
-    from hermes_state_mutation_retirement import first_generation
-    from hermes_state_terminal import identity_key
+    from hermes_agent.hermes_state_local import commit_local_session, local_receipt
+    from hermes_agent.hermes_state_mutation_retirement import first_generation
+    from hermes_agent.hermes_state_terminal import identity_key
     # A context whose session the user deleted continues on its next generation (the deleted id
     # stays retired). An exact retry of an input the deleted session took stays on it and is
     # refused there, never run again.

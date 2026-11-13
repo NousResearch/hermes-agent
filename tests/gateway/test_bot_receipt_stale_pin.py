@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions
 from tests.gateway.test_bot_receipt_refusal import _refuse, _scan_warnings
 
 pytest_plugins = ['tests.gateway.test_session_bot_retry']

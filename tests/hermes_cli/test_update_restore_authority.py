@@ -92,7 +92,7 @@ def test_restore_refuses_live_authority_without_changing_data(tmp_path):
 def test_corrupt_epoch_refuses_profile_sweep_with_separate_recovery(tmp_path, monkeypatch, capsys):
     from hermes_cli import backup, update_cmd
     from hermes_cli.session_recovery import recover_session_database
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     homes = [tmp_path / 'default', tmp_path / 'sibling']
     originals = {}

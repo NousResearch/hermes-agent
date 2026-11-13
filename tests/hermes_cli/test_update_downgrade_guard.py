@@ -12,9 +12,9 @@ from unittest.mock import Mock
 
 import pytest
 
-import hermes_state_runtime as rt
+import hermes_agent.hermes_state_runtime as rt
 from hermes_cli import update_downgrade_guard as guard
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def _git(root, *args):
@@ -162,7 +162,7 @@ def test_a_runtime_target_whose_state_modules_moved_into_the_package_is_not_refu
 
 
 def test_the_runtime_schema_marker_is_still_in_this_trees_state_schema():
-    from hermes_state_common import SCHEMA_SQL
+    from hermes_agent.hermes_state_common import SCHEMA_SQL
 
     assert guard.defines_runtime([SCHEMA_SQL])
 

@@ -134,12 +134,12 @@ def test_fallback_timestamp_survives_delayed_sqlite_persistence(
     monkeypatch, tmp_path
 ):
     """The durable row records message creation, not the later DB flush."""
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     created_at = 1_781_976_577.25
     persisted_at = created_at + 600
     monkeypatch.setattr("agent.message_metadata.wall_time", lambda: created_at)
-    monkeypatch.setattr("hermes_state.time.time", lambda: persisted_at)
+    monkeypatch.setattr("hermes_agent.hermes_state.time.time", lambda: persisted_at)
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
 
     db = SessionDB(db_path=tmp_path / "state.db")
@@ -283,7 +283,7 @@ def test_empty_final_response_recovers_stream_buffer_into_blank_assistant_row(
     still holds the delivered text, that blank row is the durable transcript —
     Desktop reload shows nothing even though the user already saw the answer.
     """
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
 

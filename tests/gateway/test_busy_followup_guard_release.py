@@ -35,7 +35,7 @@ from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, SessionStore
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 class _Adapter(BasePlatformAdapter):

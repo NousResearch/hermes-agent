@@ -213,7 +213,7 @@ _STORE_STATUS_DETAIL_BY_CAUSE = {"deleted_wal": DELETED_WAL_DETAIL, "replaced": 
 def corrupt_store_status(db_path, exc) -> HTTPException:
     """The structured ``state_db_corrupt`` 503 for a malformed store, warning once per store per
     :data:`_CORRUPT_STORE_WARN_INTERVAL_S` (debug afterwards). Callers ``raise ... from exc``."""
-    from hermes_state_errors import classify_persistence_error
+    from hermes_agent.hermes_state_errors import classify_persistence_error
     key, now = str(db_path), time.monotonic()
     last = _corrupt_store_warned_at.get(key)
     detail = _STORE_STATUS_DETAIL_BY_CAUSE.get(classify_persistence_error(exc), CORRUPT_STORE_DETAIL)
@@ -231,7 +231,7 @@ def corrupt_store_as_status(db_path):
     """Map a corrupt-image ``sqlite3.DatabaseError`` or ``StateDbReplacedError`` from a state.db read to a 503 status
     payload, warning once per store per :data:`_CORRUPT_STORE_WARN_INTERVAL_S`.
     Busy/locked and every other error propagate unchanged."""
-    from hermes_state_errors import StateDbReplacedError, classify_persistence_error, is_malformed_db_error
+    from hermes_agent.hermes_state_errors import StateDbReplacedError, classify_persistence_error, is_malformed_db_error
 
     try:
         yield

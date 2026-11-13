@@ -19,7 +19,7 @@ def _owner(tmp_path, monkeypatch, handle):
     from gateway.session_authority import SessionAuthority
     from gateway.session_controls import AuthorityConnection
     from gateway.session_local import create_local_session
-    import hermes_state_runtime as rt
+    import hermes_agent.hermes_state_runtime as rt
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     db = store._db
@@ -65,7 +65,7 @@ async def test_session_reasoning_mutation_is_the_next_turns_reasoning(tmp_path, 
         assert after['runtime_generation'] == before['runtime_generation'] + 1
         assert after['system_prompt'] == frozen_prompt
         # Durable: a restarted owner restores the new level from the receipt.
-        from hermes_state_local import local_receipt
+        from hermes_agent.hermes_state_local import local_receipt
         assert json.loads(local_receipt(db, ref.session_id)['policy']['config_json'])['agent']['reasoning_effort'] == 'high'
         bad = await owner.dispatch(_mutation(db, ref, 'r2', 'reasoning', {'effort': 'hgih'}))
         assert bad['error']['data']['reason'] == 'invalid_params'
@@ -78,8 +78,8 @@ async def test_session_reasoning_mutation_is_the_next_turns_reasoning(tmp_path, 
 async def test_move_to_project_rehomes_the_policy_and_row_and_refuses_mid_turn(tmp_path, monkeypatch):
     from gateway.session_contract import Submission
     from gateway.session_policy import policy_for_source
-    from hermes_state_local import local_receipt
-    import hermes_state_runtime as rt
+    from hermes_agent.hermes_state_local import local_receipt
+    import hermes_agent.hermes_state_runtime as rt
     started, release, seen = asyncio.Event(), asyncio.Event(), []
 
     async def handle(event):

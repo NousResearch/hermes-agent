@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 import hermes_yaml as yaml
 import pytest
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from tests.waiting import wait_until
 from tools.process_registry import process_registry
 

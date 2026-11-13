@@ -1,6 +1,6 @@
 """Session export timing evidence."""
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def test_export_session_includes_text_free_timing_evidence(tmp_path):

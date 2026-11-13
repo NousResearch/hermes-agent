@@ -10,7 +10,7 @@ from gateway.run import GatewayRunner
 from gateway.session_authority import initialize_session_authority
 from gateway.session_envelope import prepare_native
 from gateway.session_ingress import admit_message
-from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions
 
 CHAT = '15551234567@s.whatsapp.net'
 

@@ -127,10 +127,10 @@ def _connect() -> sqlite3.Connection:
 
 def open_state_db(path: Path, db_label: str) -> sqlite3.Connection:
     """A short-lived writer connection to a profile's ``state.db`` that never resurrects a removed named profile
-    (#123265) and keeps the file and its sidecars owner-only (0600, as ``hermes_state.SessionDB`` does)."""
+    (#123265) and keeps the file and its sidecars owner-only (0600, as ``hermes_agent.hermes_state.SessionDB`` does)."""
     from hermes_cli.sqlite_util import open_db
     from hermes_constants import mkdir_under_hermes_home
-    from hermes_state import _secure_state_db_files
+    from hermes_agent.hermes_state import _secure_state_db_files
 
     mkdir_under_hermes_home(path.parent)
     _secure_state_db_files(path, create_main=True)
@@ -142,8 +142,8 @@ def open_state_db(path: Path, db_label: str) -> sqlite3.Connection:
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
-    from hermes_state_repair import apply_durability_barriers
-    from hermes_state_schema import reconcile_state_schema
+    from hermes_agent.hermes_state_repair import apply_durability_barriers
+    from hermes_agent.hermes_state_schema import reconcile_state_schema
     # Preserve the journal mode SessionDB configured on state.db: forcing WAL from
     # every short-lived connection collides with live transcript/FTS writers.
     apply_durability_barriers(conn)

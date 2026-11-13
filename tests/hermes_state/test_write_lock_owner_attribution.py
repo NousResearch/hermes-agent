@@ -15,7 +15,7 @@ import time
 
 import pytest
 
-from hermes_state_lockowners import parse_proc_locks, state_db_write_lock_holders
+from hermes_agent.hermes_state_lockowners import parse_proc_locks, state_db_write_lock_holders
 
 
 def test_parse_proc_locks_keeps_only_write_locks_on_our_inodes_and_decodes_the_wal_write_byte():
@@ -37,7 +37,7 @@ def test_parse_proc_locks_keeps_only_write_locks_on_our_inodes_and_decodes_the_w
 @pytest.mark.platforms("linux")
 def test_holder_skipped_by_one_proc_locks_pass_is_still_named(tmp_path, monkeypatch):
     """/proc/locks is served over several read()s, so churn elsewhere can skip an entry in one pass."""
-    import hermes_state_lockowners
+    from hermes_agent import hermes_state_lockowners
 
     db = tmp_path / "state.db"
     db.write_bytes(b"")

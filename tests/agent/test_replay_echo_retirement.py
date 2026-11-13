@@ -16,7 +16,7 @@ NEW_PLACEHOLDER = "[interrupt: no assistant output for this turn]"
 def _agent(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from run_agent import AIAgent
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     return AIAgent(session_db=SessionDB(db_path=tmp_path / "proof.db"),
                    model="test-model", provider="openai-compat", api_key="test",
                    base_url="http://127.0.0.1:1/v1", max_iterations=4,

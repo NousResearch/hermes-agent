@@ -416,7 +416,7 @@ class MicroCompactionMixin:
         session_db, session_id = getattr(self, "_session_db", None), getattr(self, "_session_id", "")
         if not session_db or not session_id:
             return True
-        from hermes_state_errors import HeldRowRewrittenError
+        from hermes_agent.hermes_state_errors import HeldRowRewrittenError
         try:
             # Micro-compaction is prefix + marker + suffix, not a contiguous tail. Identify the exact
             # byte-identical originals by their persistence marker; the state transaction resolves each

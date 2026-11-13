@@ -102,7 +102,7 @@ async def test_session_create_selects_the_posture_for_its_named_folder(project, 
     from gateway.session_authority import initialize_session_authority
     from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {**FOCUS, 'model': {'default': 'm'}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())

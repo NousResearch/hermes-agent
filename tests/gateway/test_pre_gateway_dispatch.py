@@ -166,7 +166,7 @@ async def test_rewritten_message_keeps_its_callback_provenance_and_is_admitted(m
     from gateway.session_authority import SessionAuthority, initialize_session_authority
     from gateway.session_ingress_context import capture_provenance, native_callback, register_transport_home
     from hermes_constants import get_hermes_home
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     from plugins.platforms.discord.adapter import DiscordAdapter
 
     async def rewrite(name, **_kwargs):

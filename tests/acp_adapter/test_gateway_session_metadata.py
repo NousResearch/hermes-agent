@@ -87,7 +87,7 @@ async def test_editor_commands_reply_and_turns_report_usage_and_title(daemon, tm
 @pytest.mark.platforms('linux')
 @pytest.mark.asyncio
 async def test_thread_main_in_process_acp_wrote_lists_and_loads(daemon, tmp_path):
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     home = daemon[0]
     # The row main's ``SessionManager.save_session`` wrote: source acp, no gateway route or policy.
     with SessionDB(db_path=home / 'state.db') as db:

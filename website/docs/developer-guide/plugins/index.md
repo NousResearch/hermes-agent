@@ -1656,7 +1656,7 @@ Every name in `hermes_cli.plugins.VALID_HOOKS` has at least one core fire site. 
 | `on_session_end` | `agent/turn_finalizer.py` `finalize_turn`; interrupted exits: `hermes_cli/cli_shutdown.py` `_invoke_interrupted_session_end`, `tui_gateway/session_lifecycle.py` `_finalize_session` |
 | `on_session_finalize` | `hermes_cli/lifecycle.py` `finalize_session`, called from `hermes_cli/cli_session_mixin.py` `CLISessionMixin._notify_session_boundary`, `hermes_cli/cli_shutdown.py` `_notify_session_finalize`, `tui_gateway/session_lifecycle.py` `_notify_session_boundary` and `gateway/run_shutdown_session_end.py` `GatewaySessionEndMixin._finalize_session_off_loop` |
 | `on_session_reset` | `hermes_cli/cli_session_mixin.py` `CLISessionMixin._notify_session_boundary`; `tui_gateway/session_registry.py` `_start_session_services`; `gateway/slash_commands_session.py` `GatewaySessionCommandsMixin._handle_reset_command`; `gateway/run_shutdown_session_end.py` `GatewaySessionEndMixin._reset_session_off_loop` |
-| `on_session_delete` | `hermes_state_common.py` `emit_session_deleted` |
+| `on_session_delete` | `hermes_agent/hermes_state_common.py` `emit_session_deleted` |
 | `on_session_open` | `gateway/session_open.py` `_Open._deliver` |
 | `on_skill_lifecycle` | `tools/skill_usage.py` `_emit_skill_lifecycle` |
 | `subagent_start` | `tools/delegate_tool.py` `_build_child_agent` |

@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_state_runtime import admit_session_input, claim_session_input
+from hermes_agent.hermes_state_runtime import admit_session_input, claim_session_input
 from tests.gateway.test_reaped_eviction_interrupts_run import _build_gateway, KEY
 from tests.gateway.test_session_authority_cancel_settlement import _authority, ACTOR, REF
 

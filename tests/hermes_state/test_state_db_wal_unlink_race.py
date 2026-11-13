@@ -11,9 +11,9 @@ import sqlite3
 
 import pytest
 
-import hermes_state
-import hermes_state_repair
-from hermes_state_repair import repair_state_db_schema
+from hermes_agent import hermes_state
+from hermes_agent import hermes_state_repair
+from hermes_agent.hermes_state_repair import repair_state_db_schema
 
 
 def _make_db(path):

@@ -11,8 +11,8 @@ from gateway import run, session_cron
 from gateway.config import GatewayConfig
 from gateway.session import SessionStore
 from gateway.session_authority import SessionAuthority
-from hermes_state import SessionDB
-from hermes_state_runtime import begin_runtime_epoch
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 
 
 def cron_owner(home, monkeypatch):

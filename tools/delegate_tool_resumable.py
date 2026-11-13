@@ -714,7 +714,7 @@ def _settings_of(home: Path) -> tuple[float, int]:
 def _read_pins(db: Path, now: float) -> Iterable[tuple[str, dict[str, Any]]]:
     import sqlite3
     from hermes_cli.sqlite_safe_read import connect_tracked
-    from hermes_state_holders import read_only_db_uri
+    from hermes_agent.hermes_state_holders import read_only_db_uri
     _ttl, cap = _settings_of(db.parent)
     try:
         conn = connect_tracked(read_only_db_uri(db), tracking_path=db, uri=True, timeout=2.0)

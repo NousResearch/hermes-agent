@@ -17,7 +17,7 @@ import uuid
 from functools import partial
 
 from gateway.session_contract import SessionRef
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +150,7 @@ async def _create_chat(connection):
     from gateway.session_local import stage_local_session
     from gateway.session_local_recovery import restore_local_session
     from gateway.session_runtime_workers import tracked_write
-    from hermes_state_local import commit_local_session
+    from hermes_agent.hermes_state_local import commit_local_session
     authority = connection.authority
     staged = stage_local_session(authority, connection.actor, {'source': 'gui', 'request_id': uuid.uuid4().hex},
                                  client_local=connection.native_owner,

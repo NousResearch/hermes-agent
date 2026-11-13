@@ -135,7 +135,7 @@ def test_spawn_resolves_claimed_task_policy(
     from gateway.session_contract import SessionActor
     from gateway.session_kanban import build_kanban_policy
     from hermes_cli import kanban_worker_client
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     profile = kanban_home / "profiles" / "elias"
     profile.mkdir(parents=True)

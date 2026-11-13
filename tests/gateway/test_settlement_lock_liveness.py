@@ -157,7 +157,7 @@ async def test_submit_claim_and_discard_behind_a_held_writer_leave_the_loop_free
     """Admission, the FIFO claim and Discard wait on a held writer in a worker thread, tracked so
     retirement joins them; the claim's execution stamp still lands with its commit."""
     from gateway.session_runtime_workers import mutation_tasks
-    from hermes_state_runtime import get_session_admission, recover_session_inputs, begin_runtime_epoch
+    from hermes_agent.hermes_state_runtime import get_session_admission, recover_session_inputs, begin_runtime_epoch
     db, authority = _authority(tmp_path, monkeypatch)
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
     live = authority.sessions['s']
@@ -210,7 +210,7 @@ async def test_input_admitted_while_an_idle_claim_is_in_flight_still_runs(tmp_pa
         assert await asyncio.to_thread(read_empty.wait, 5)
         # The API path's shape (admit_api_turn, then observe_api_turn's _schedule): it takes no
         # session mutation lock, so it can commit while the claim's transaction is in flight.
-        from hermes_state_runtime import admit_session_input
+        from hermes_agent.hermes_state_runtime import admit_session_input
         admit_session_input(db, epoch=authority.epoch, principal_id='api', session_id='s',
                             request_id='late', payload={'text': 'late'})
         authority._schedule(REF)

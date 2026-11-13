@@ -23,7 +23,7 @@ def test_recovery_is_request_only(tmp_path, monkeypatch, after_tool, parts, stre
     from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE, _EMPTY_TOOL_RESPONSE_NUDGE
     from agent.model_metadata import estimate_tokens_rough
     from agent.usage_anchor import anchored_context_tokens
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from run_agent import AIAgent
 
     reasoning = "I should look this up.\n<tool_call>\nlookup({})\n</tool_call>"

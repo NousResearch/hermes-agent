@@ -22,7 +22,7 @@ def _owner(home):
     from gateway.session import SessionStore
     from gateway.session_authority import SessionAuthority
     from gateway.session_controls import AuthorityConnection
-    import hermes_state_runtime as rt
+    import hermes_agent.hermes_state_runtime as rt
     store = SessionStore(home / 'sessions', GatewayConfig())
     db = store._db
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,

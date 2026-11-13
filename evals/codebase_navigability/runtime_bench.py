@@ -26,6 +26,11 @@ def warm_pyc():
 
 def med(xs): return round(statistics.median(xs), 4)
 
+def in_tree(name):
+    """A module's name in TREE: a tree from before the package move has it without the hermes_agent prefix."""
+    path = os.path.join(TREE, *name.split("."))
+    return name if os.path.isdir(path) or os.path.exists(path + ".py") else name.removeprefix("hermes_agent.")
+
 results = {"label": LABEL, "tree": TREE, "reps": REPS}
 
 # 0. bytecode on disk (after compileall) — proxy for "how much code gets loaded"
@@ -38,7 +43,7 @@ for dp, dns, fns in os.walk(TREE):
 results["pyc_files"] = pyc_n; results["pyc_bytes"] = pyc_bytes
 
 # 1. import-time probes: fresh interpreter, measure wall + module count + RSS
-IMPORT_TARGETS = ["run_agent", "cli", "hermes_cli.main", "gateway.run", "tools.registry", "hermes_state", "tui_gateway.server", "hermes_cli.web_server", "model_tools", "agent.prompt_builder"]
+IMPORT_TARGETS = ["run_agent", "cli", "hermes_cli.main", "gateway.run", "tools.registry", "hermes_agent.hermes_state", "tui_gateway.server", "hermes_cli.web_server", "model_tools", "agent.prompt_builder"]
 probe = r'''
 import sys, time, os, resource, json
 t0=time.perf_counter()
@@ -59,7 +64,7 @@ for tgt in IMPORT_TARGETS:
     rows = []
     for _ in range(REPS):
         _, r = run([], code=None) if False else (None, None)
-        r = subprocess.run([PY, "-c", probe, tgt], cwd=TREE, env=ENV, capture_output=True, text=True, timeout=300, check=False)
+        r = subprocess.run([PY, "-c", probe, in_tree(tgt)], cwd=TREE, env=ENV, capture_output=True, text=True, timeout=300, check=False)
         try: rows.append(json.loads([l for l in (r.stdout + "\n" + r.stderr).splitlines() if l.lstrip().startswith("{") and "\"dt\"" in l][-1].strip()))
         except Exception: rows.append({"dt": None, "mods": None, "rss_kb": None, "err": (r.stderr or r.stdout)[-300:]})
     ok = [x for x in rows if x["dt"] is not None and not x["err"]]
@@ -105,7 +110,9 @@ except Exception as e:
         out["prompt_builder_err"]=repr(e)[:120]+" cands="+",".join(cands)[:120]
     except Exception as e2: out["prompt_builder_err"]=repr(e2)[:160]
 try:
-    import hermes_state, tempfile, uuid
+    import tempfile, uuid
+    try: import hermes_agent.hermes_state as hermes_state
+    except ModuleNotFoundError: import hermes_state  # a tree from before the package move
     from pathlib import Path
     db=hermes_state.SessionDB(Path(tempfile.mkdtemp())/"s.db") if hasattr(hermes_state,"SessionDB") else None
     if db:

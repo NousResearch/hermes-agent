@@ -71,7 +71,7 @@ def target_predates_runtime(git_cmd, root: Path, target_ref: str, *,
 def _has_ledger_rows(db_path: Path) -> bool:
     if not db_path.is_file():
         return False
-    from hermes_state_holders import read_only_db_uri
+    from hermes_agent.hermes_state_holders import read_only_db_uri
     try:
         from hermes_cli.sqlite_safe_read import connect_tracked
 
@@ -85,7 +85,7 @@ def _has_ledger_rows(db_path: Path) -> bool:
 def _pre_runtime_snapshot(home: Path) -> str | None:
     """Newest quick snapshot of ``home`` holding a state.db from before the runtime ledger."""
     from hermes_cli.backup import _quick_snapshot_root
-    from hermes_state_holders import read_only_db_uri
+    from hermes_agent.hermes_state_holders import read_only_db_uri
     root = _quick_snapshot_root(home)
     for snap in sorted(root.iterdir(), reverse=True) if root.is_dir() else ():
         db = snap / "state.db"

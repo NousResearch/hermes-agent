@@ -1,14 +1,19 @@
 """A configured Discord username keeps exactly its current holder's access across reconnects.
 
 connect() resolves ``allow_from`` usernames to IDs on its first ``on_ready``; a fresh connection must
-resolve them again (the account may have renamed) (#154562).
+resolve them again (the account may have renamed), and in a single-profile gateway, where that
+resolution rewrites ``DISCORD_ALLOWED_USERS`` to numeric IDs, a later unrelated config.yaml save must
+not lock the resolved account out (#154562).
 """
+import os
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import hermes_yaml as yaml
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import Platform, PlatformConfig, load_gateway_config
 from tests.gateway.test_discord_connect import FakeBot, _member, discord_platform
 from plugins.platforms.discord.adapter import DiscordAdapter
 
@@ -36,6 +41,14 @@ def connectable(tmp_path, monkeypatch):
     return holder
 
 
+def _write(home, discord_cfg, stamp_offset):
+    path = home / "config.yaml"
+    path.write_text(yaml.safe_dump({"platforms": {"discord": {"enabled": True, "token": "test-token"}},
+                                    "discord": discord_cfg}), encoding="utf-8")
+    stamp = time.time_ns() - 10_000_000_000 + stamp_offset * 1_000_000  # distinct, settled mtimes
+    os.utime(path, ns=(stamp, stamp))
+
+
 @pytest.mark.asyncio
 async def test_a_fresh_connect_resolves_a_configured_username_again(connectable):
     """A username resolved on one connection must be resolved again on the next connect(): the account
@@ -55,3 +68,20 @@ async def test_a_fresh_connect_resolves_a_configured_username_again(connectable)
         await adapter.disconnect()
     assert verdicts == (True, False)
 
+
+@pytest.mark.asyncio
+async def test_a_single_profile_reconnect_then_an_unrelated_save_keeps_the_resolved_username(
+        connectable, tmp_path):
+    """Single profile: the first resolution rewrites DISCORD_ALLOWED_USERS to ``111``, so a second
+    connect() snapshots only numeric IDs. The configured ``alice`` must still map after a later save."""
+    _write(tmp_path, {"allow_from": ["alice"]}, 0)
+    adapter = DiscordAdapter(load_gateway_config().platforms[Platform.DISCORD])
+    try:
+        assert await adapter.connect() is True
+        assert adapter._is_allowed_user("111") is True
+        assert await adapter.connect() is True
+        _write(tmp_path, {"allow_from": ["alice"], "allowed_channels": ["555"]}, 1)  # an unrelated edit
+        verdict = adapter._is_allowed_user("111")
+    finally:
+        await adapter.disconnect()
+    assert verdict is True

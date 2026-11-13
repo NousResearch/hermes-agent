@@ -316,6 +316,12 @@ def yaml_env_setter(*, fallback: bool = False) -> Callable[[str, Any], None]:
     return set_env
 
 
+def bridge_owns_env(name: str) -> bool:
+    """True when ``os.environ[name]`` is this bridge's own value (YAML-derived, maybe canonicalized
+    by :func:`replace_bridged_env`), not an operator's."""
+    return _is_bridge_leftover(name, os.getenv(bridged_env_marker(name))) and not _supplied_by_operator(name)
+
+
 def replace_bridged_env(name: str, value: str) -> None:
     """Rewrite ``os.environ[name]`` (an adapter canonicalizing a list it reads, e.g. Discord usernames
     resolved to IDs) without turning a bridge-owned value into one that looks operator-set: the marker

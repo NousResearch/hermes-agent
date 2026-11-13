@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from gateway.platforms._shared import mark_live_gate_baseline, refresh_live_gate_extra
+from gateway.platforms._shared import bridge_owns_env, mark_live_gate_baseline, refresh_live_gate_extra
 
 # The ``extra`` keys the gate reads (``DiscordAdapter._gate_raw``): refreshed together so env and
 # extra never disagree about which config they came from.
@@ -32,7 +32,13 @@ class DiscordLiveGatesMixin:
         """connect()'s gate, inside the owning profile's scope. A fresh connection resolves usernames
         from the configured names again (an account can rename, another can take its name), so the
         username->ID map starts empty; only a repeated on_ready on one connection keeps it."""
+        from plugins.platforms.discord.adapter import _multiplex_active
         self._snapshot_gate_env()
+        # Single profile: a prior connection's resolution rewrote the bridged env to IDs; resolve the
+        # configured names (YAML ``allow_from``) again instead, or a later save drops their mapping.
+        configured = (getattr(self.config, "extra", None) or {}).get("allow_from")
+        if configured and not _multiplex_active() and bridge_owns_env("DISCORD_ALLOWED_USERS"):
+            self._gate_env_snapshot["DISCORD_ALLOWED_USERS"] = configured
         self._username_to_id = {}
         self._allowed_user_ids = self._get_allowed_users()
         self._allowed_role_ids = self._get_allowed_roles()  # ANY listed role grants access

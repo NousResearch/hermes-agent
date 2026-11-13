@@ -632,10 +632,12 @@ class BatchRunner:
         (azure-identity caches in-process, so each worker gets its own short-lived cache).
         """
         if callable(self.api_key) and not isinstance(self.api_key, str):
+            from agent.credential_source import credential_label
+
             worker_api_key = None
             print(
-                "ℹ️  Detected Entra ID bearer provider — workers will rebuild "
-                "credentials from config.yaml in each process.",
+                f"ℹ️  Detected a {credential_label(self.api_key)} bearer provider — workers will "
+                "rebuild credentials from config.yaml in each process.",
                 flush=True,
             )
         else:

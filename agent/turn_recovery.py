@@ -398,6 +398,10 @@ def _print_anthropic_401_diagnostics(agent: Any, key: Any) -> None:
                 f"   Auth method: {auth_method}",
                 f"   Token prefix: {key[:12]}..." if isinstance(key, str) and len(key) > 12 else "   Token: (empty or short)",
             )
+    if callable(key) and not isinstance(key, str):
+        # A callable key never came from ANTHROPIC_TOKEN / ANTHROPIC_API_KEY or `hermes auth`:
+        # pointing at those would send the user to credentials this provider does not read.
+        return
     _dhh = display_hermes_home()
     _plines(
         agent,

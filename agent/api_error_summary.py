@@ -248,10 +248,12 @@ class ApiErrorSummaryMixin:
         return ApiErrorSummaryMixin._decorate_xai_entitlement_error(f"{prefix}{raw[:500]}")
 
     def _mask_api_key_for_logs(self, key: Any) -> Optional[str]:
-        # Azure Foundry Entra ID bearer providers are callables — never invoke them in log
-        # paths; identify the auth surface instead.
+        # Callable bearer providers (Entra ID, key_cmd, Vertex/MiniMax OAuth) are never invoked in
+        # log paths; name the auth surface from the credential-source tag instead.
         if callable(key) and not isinstance(key, str):
-            return "<entra-id-bearer>"
+            from agent.credential_source import ENTRA_ID, credential_source
+
+            return f"<{credential_source(key) or ENTRA_ID}-bearer>"
         if not key:
             return None
         if len(key) <= 12:

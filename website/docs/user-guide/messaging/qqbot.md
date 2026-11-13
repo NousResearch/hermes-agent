@@ -91,11 +91,11 @@ platforms:
 
 ## Inline Approvals and Update Prompts
 
-QQ Bot supports inline keyboards in private C2C chats and group chats. Command approval prompts offer:
+QQ Bot supports inline keyboards in private C2C chats and group chats. Command approval prompts show only the choices that prompt allows:
 
-- **允许一次**: approve this operation once.
+- **允许一次**: approve this operation once. This button is omitted when the prompt only allows a denial.
 - **始终允许**: always approve this command pattern, when persistent approval is available. This button is omitted when the prompt only permits a one-time decision.
-- **拒绝**: deny the operation.
+- **拒绝**: deny the operation. This button is always shown.
 
 The buttons are mutually exclusive. QQ sends an `INTERACTION_CREATE` event when a button is clicked. Hermes acknowledges the interaction and checks that the clicking user matches the approval's session before applying the decision. An authorized click resolves the pending approval without requiring `/approve` or `/deny`.
 

@@ -79,6 +79,7 @@ WORK_ROOT="${HERMES_E2E_WORKROOT:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/hermes-bundled
 LOG_DIR="${HERMES_E2E_LOG_DIR:-$WORK_ROOT/logs}"
 HOME_SANDBOX="$WORK_ROOT/home"
 export HOME_SANDBOX
+RUNNER_HOME="$HOME"
 export HERMES_HOME="$HOME_SANDBOX/.hermes"
 export HOME="$HOME_SANDBOX"   # the app must see the ISOLATED home, not the runner's
 export HERMES_DESKTOP_USER_DATA_DIR="$WORK_ROOT/electron-user-data"
@@ -110,10 +111,19 @@ export E2E_ARCH="$ARCH"
 # scope, on success AND on failure paths (no watcher/server leak).
 SERVE_PID=""
 WATCHER_PID=""
+UPDATE_APP=""
 cleanup() {
+  local rc=$?
   if [ -n "$WATCHER_PID" ]; then kill "$WATCHER_PID" 2>/dev/null || true; fi
   if [ -n "$SERVE_PID" ]; then kill "$SERVE_PID" 2>/dev/null || true; fi
   if declare -F mock_stop >/dev/null 2>&1; then mock_stop 2>/dev/null || true; fi
+  if [ "$rc" -ne 0 ] && [ -n "$UPDATE_APP" ]; then
+    step "collecting update evidence after exit $rc"
+    bash "$ASSETS/mac-update-evidence.sh" --out "$LOG_DIR/update-evidence" \
+      --since "$LOG_DIR/update-started" --app "$UPDATE_APP" \
+      --home "$HOME_SANDBOX" --home "$RUNNER_HOME" \
+      --hermes-home "$HERMES_HOME" --user-data "$HERMES_DESKTOP_USER_DATA_DIR" 2>&1 | ts_prefix || true
+  fi
 }
 trap cleanup EXIT
 
@@ -236,6 +246,8 @@ phase_update() {
   [ -d "$old_app" ] || fail "installed app $old_app (from the install receipt) is gone"
   [ -x "$old_app_bin" ] || fail "installed executable $old_app_bin (from the install receipt) is gone"
   ok "update phase using the receipt's installed executable: $old_app_bin"
+  touch "$LOG_DIR/update-started"
+  UPDATE_APP="$old_app"
 
   local new_tag new_version new_commit new_identity new_team new_zip
   new_tag="$(manifest_side new tag)"; new_version="$(manifest_side new version)"

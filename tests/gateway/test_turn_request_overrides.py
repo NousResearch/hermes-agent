@@ -138,3 +138,80 @@ def test_session_override_absent_is_noop():
     model, out = runner._apply_session_model_override("nope", "keepme", rk)
     assert model == "keepme"
     assert out["request_overrides"] == PROVIDER_OVERRIDES
+
+
+def test_reused_agent_held_on_fallback_does_not_regain_primary_fast_speed():
+    """#122010: the turn route pins /fast for the PRIMARY route. A cached agent held on a local
+    fallback (primary still in 429 cooldown) must not get that ``speed`` back on the next turn:
+    the chat-completions transport passes it as a kwarg the OpenAI SDK rejects."""
+    from types import SimpleNamespace
+
+    from gateway.run_turn_runner import TurnRunner
+
+    turn_route = {"request_overrides": {"speed": "fast"}}
+    agent = SimpleNamespace(
+        service_tier="priority", model="Hermes-3-Llama-3.1-8B-4bit", provider="custom",
+        base_url="http://127.0.0.1:8080/v1", api_mode="chat_completions", request_overrides={},
+        _gateway_turn_request_overrides={"speed": "fast"}, _fallback_activated=True,
+        _primary_runtime={"request_overrides": {"speed": "fast"}},
+    )
+    TurnRunner._merge_turn_request_overrides(agent, turn_route)
+    assert "speed" not in agent.request_overrides
+
+    # On the primary route the turn's /fast value still applies.
+    agent.model, agent.provider, agent.base_url = "claude-opus-4-8", "anthropic", "https://api.anthropic.com"
+    agent.api_mode, agent._fallback_activated = "anthropic_messages", False
+    TurnRunner._merge_turn_request_overrides(agent, turn_route)
+    assert agent.request_overrides == {"speed": "fast"}
+
+
+def test_reused_agent_on_an_init_time_fallback_keeps_dropping_the_primary_tier():
+    """An init-time fallback stops reporting ``_fallback_activated`` once the first
+    ``restore_primary_runtime`` clears it, yet the agent stays on the fallback route. Every
+    later turn must still re-gate the primary's /fast tier away from it."""
+    from types import SimpleNamespace
+
+    from gateway.run_turn_runner import TurnRunner
+
+    turn_route = {"request_overrides": {"service_tier": "priority"}}
+    agent = SimpleNamespace(
+        service_tier="priority", model="deepseek/deepseek-v4-pro", provider="openrouter",
+        base_url="https://openrouter.ai/api/v1", api_mode="chat_completions", request_overrides={},
+        _gateway_turn_request_overrides={}, _fallback_activated=False, _primary_runtime={"request_overrides": {}},
+    )
+    for _turn in range(3):
+        TurnRunner._merge_turn_request_overrides(agent, turn_route)
+        assert "service_tier" not in agent.request_overrides
+
+
+def test_init_time_fallback_request_stays_free_of_the_primary_tier_every_turn():
+    """The same init-time fallback through a real agent: merge, restore and the built request
+    kwargs on turns 1-3 (turn 2 used to send the primary's ``service_tier`` to the fallback)."""
+    from unittest.mock import MagicMock, patch
+
+    from gateway.run_turn_runner import TurnRunner
+    from run_agent import AIAgent
+
+    fallback_client = MagicMock(base_url="https://openrouter.ai/api/v1", api_key="fallback-key-1234")
+    route = {"request_overrides": {"service_tier": "priority"}}
+    with (
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
+        patch("agent.context_compressor.get_model_context_length", return_value=200_000),
+        patch("agent.model_metadata.get_model_context_length", return_value=200_000),
+        patch("agent.auxiliary_client.resolve_provider_client",
+              side_effect=lambda provider, **_: (None, None) if provider == "openai"
+              else (fallback_client, "deepseek/deepseek-v4-pro")),
+    ):
+        agent = AIAgent(
+            model="gpt-6-sol", provider="openai", service_tier="priority", quiet_mode=True,
+            skip_context_files=True, skip_memory=True, request_overrides=dict(route["request_overrides"]),
+            fallback_model={"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
+        )
+        assert agent.model == "deepseek/deepseek-v4-pro"
+        for turn in (1, 2, 3):
+            TurnRunner._merge_turn_request_overrides(agent, route)
+            agent._restore_primary_runtime()
+            kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}], tools_for_api=[])
+            assert "service_tier" not in kwargs, f"turn {turn}"

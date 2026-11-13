@@ -123,6 +123,86 @@ class TestMinimaxApiMode:
         assert determine_api_mode("minimax") == "anthropic_messages"
 
 
+class TestMinimaxModelsUrl:
+    """The MiniMax catalog lives at ``/anthropic/v1/models``, not ``/anthropic/models``.
+
+    The profile's ``base_url`` is the inference base (``/anthropic``), and
+    ``ProviderProfile.fetch_models`` builds ``base_url + "/models"`` when
+    ``models_url`` is unset — which is a 404 on MiniMax. The picker then
+    served the stale curated list, so a model the vendor actually serves
+    (MiniMax-M3.1-Flash) never appeared. ``models_url`` exists for exactly
+    this case; these tests pin it so the discovery endpoint cannot silently
+    regress to the 404 again, and pin that INFERENCE is untouched.
+    """
+
+    def test_minimax_profiles_declare_the_v1_catalog_endpoint(self):
+        from providers import get_provider_profile
+
+        for slug, expected in (
+            ("minimax", "https://api.minimax.io/anthropic/v1/models"),
+            ("minimax-oauth", "https://api.minimax.io/anthropic/v1/models"),
+            ("minimax-cn", "https://api.minimaxi.com/anthropic/v1/models"),
+        ):
+            profile = get_provider_profile(slug)
+            assert profile is not None, f"no provider profile for {slug}"
+            assert profile.models_url == expected, (
+                f"{slug} discovery endpoint regressed: {profile.models_url!r} != {expected!r}"
+            )
+
+    def test_minimax_inference_base_is_unchanged(self):
+        """Discovery moves; inference must not. The Anthropic SDK appends
+        ``/v1/messages`` itself, so the inference base stays ``/anthropic``."""
+        from providers import get_provider_profile
+
+        for slug, expected in (
+            ("minimax", "https://api.minimax.io/anthropic"),
+            ("minimax-oauth", "https://api.minimax.io/anthropic"),
+            ("minimax-cn", "https://api.minimaxi.com/anthropic"),
+        ):
+            profile = get_provider_profile(slug)
+            assert profile is not None, f"no provider profile for {slug}"
+            assert profile.base_url == expected, (
+                f"{slug} inference base changed: {profile.base_url!r} != {expected!r}"
+            )
+
+    def test_fetch_models_uses_the_declared_catalog_endpoint(self):
+        """The catalog URL the profile will actually request."""
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("minimax")
+        assert profile is not None
+        requested = {}
+        def fake_open(req, *args, **kwargs):
+            requested["url"] = req.full_url
+            raise AssertionError("stop here")
+        # The import is function-local inside fetch_models, so the module attribute is
+        # what the name resolves against at call time.
+        with patch("hermes_cli.urllib_security.open_credentialed_url", fake_open):
+            try:
+                profile.fetch_models(api_key="mm-key-123", base_url=profile.base_url)
+            except AssertionError:
+                pass
+        assert requested.get("url") == "https://api.minimax.io/anthropic/v1/models"
+
+    def test_curated_catalog_advertises_m31(self):
+        """The curated floor must match the live catalog's flagship.
+
+        The curated list is what the picker serves when the live fetch degrades, so
+        leaving M3.1 out of it would hide the model again exactly when discovery
+        is failing.
+        """
+        from hermes_cli.models import static_catalog
+
+        for slug in ("minimax", "minimax-oauth", "minimax-cn"):
+            catalog = static_catalog(slug)
+            assert "MiniMax-M3.1-Flash" in catalog, (
+                f"{slug} curated catalog omits MiniMax-M3.1-Flash"
+            )
+            # Pre-existing entries must survive.
+            assert "MiniMax-M3" in catalog, f"{slug} curated catalog lost MiniMax-M3"
+            assert "MiniMax-M2.7" in catalog, f"{slug} curated catalog lost MiniMax-M2.7"
+
+
 
 
 

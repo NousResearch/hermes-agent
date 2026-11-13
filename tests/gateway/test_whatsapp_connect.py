@@ -16,6 +16,7 @@ import asyncio
 import signal
 import sys
 import types
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -168,8 +169,9 @@ class TestFileHandleClosedOnError:
         mock_fh = MagicMock()
         patches = _connect_patches(mock_proc, mock_fh)
 
-        with patches[0], patches[1], patches[2], patches[3], patches[4], \
-             patches[5], patches[6], patches[7], patches[8]:
+        with ExitStack() as stack:
+            for context in patches:
+                stack.enter_context(context)
             result = await adapter.connect()
 
         assert result is False

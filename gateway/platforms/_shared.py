@@ -213,6 +213,23 @@ class _YamlEnvLoad:
     # adapter (last good lists) and the runner (process env) never check different policies.
     prior: dict[str, tuple[Optional[str], Optional[str]]] = field(default_factory=dict)
     undo: list[Callable[[], None]] = field(default_factory=list)  # ownership state kept outside the env
+    before: dict[str, str] = field(default_factory=dict)  # bridge markers present when the load began
+    in_layer: bool = False
+    committed: bool = False
+
+    def retract_leftovers(self) -> None:
+        """Drop unchanged bridge-owned values this load's YAML no longer sets. Their priors are
+        recorded first, so a later failure in the same load restores them with its writes."""
+        self.committed = True
+        if self.failed:
+            return
+        for name, digest in self.before.items():
+            marker = bridged_env_marker(name)
+            if (name not in self.seen and os.getenv(marker) == digest
+                    and _is_bridge_leftover(name, digest) and not _supplied_by_operator(name)):
+                self.prior.setdefault(name, (os.getenv(name), digest))
+                os.environ.pop(name, None)
+                os.environ.pop(marker, None)
 
     def restore(self) -> None:
         for name, values in self.prior.items():
@@ -250,8 +267,12 @@ def abort_yaml_env_refresh() -> None:
 
 
 @contextlib.contextmanager
-def yaml_env_refresh():
-    """Retract only unchanged bridge-owned leftovers after one complete, successful YAML load."""
+def yaml_env_transaction():
+    """One load's rollback scope: everything bridged or retracted inside it is restored if it raises.
+
+    ``load_gateway_config`` holds it across typed construction and env overrides, so a load that fails
+    after the YAML layer publishes nothing; the retraction itself happens at the YAML layer's end
+    (:func:`yaml_env_refresh`), before anything reads the env it cleans."""
     if bridge_env_skipped():
         yield
         return
@@ -259,9 +280,9 @@ def yaml_env_refresh():
         if getattr(_YAML_ENV_LOAD, "current", None) is not None:
             yield  # A nested load participates in the outer load, never clears its partial writes.
             return
-        before = {key[len(BRIDGED_ENV_MARKER_PREFIX):]: value for key, value in os.environ.items()
-                  if key.startswith(BRIDGED_ENV_MARKER_PREFIX) and key != BRIDGED_ENV_MARKER_PREFIX}
-        load = _YamlEnvLoad()
+        load = _YamlEnvLoad(before={
+            key[len(BRIDGED_ENV_MARKER_PREFIX):]: value for key, value in os.environ.items()
+            if key.startswith(BRIDGED_ENV_MARKER_PREFIX) and key != BRIDGED_ENV_MARKER_PREFIX})
         _YAML_ENV_LOAD.current = load
         try:
             try:
@@ -269,15 +290,30 @@ def yaml_env_refresh():
             except BaseException:
                 load.restore()
                 raise
-            if not load.failed:
-                for name, digest in before.items():
-                    marker = bridged_env_marker(name)
-                    if (name not in load.seen and os.getenv(marker) == digest
-                            and _is_bridge_leftover(name, digest) and not _supplied_by_operator(name)):
-                        os.environ.pop(name, None)
-                        os.environ.pop(marker, None)
+            if not load.committed:
+                load.retract_leftovers()
         finally:
             del _YAML_ENV_LOAD.current
+
+
+@contextlib.contextmanager
+def yaml_env_refresh():
+    """The YAML layer: retract only unchanged bridge-owned leftovers after one complete, successful
+    overlay, before the caller builds a config from the env (env overrides read the same names)."""
+    if bridge_env_skipped():
+        yield
+        return
+    with yaml_env_transaction(), _YAML_ENV_LOCK:
+        load = _YAML_ENV_LOAD.current
+        if load.in_layer or load.committed:
+            yield  # a nested or later layer: only the transaction's first layer decides retraction
+            return
+        load.in_layer = True
+        try:
+            yield
+            load.retract_leftovers()
+        finally:
+            load.in_layer = False
 
 
 def record_yaml_env_prior(name: str, undo: Callable[[], None]) -> None:

@@ -16,7 +16,7 @@ Drive the desktop background-first; escalate on signal.
 |---|---|
 | Source | Bundled (installed by default) |
 | Path | `skills/autonomous-ai-agents/computer-use` |
-| Version | `2.2.0` |
+| Version | `2.3.0` |
 | Author | Francesco Bonacci (f-trycua), Hermes Agent |
 | License | MIT |
 | Platforms | macos, windows, linux |
@@ -216,7 +216,17 @@ Walk it in order:
    (it's a visible focus change) and is only appropriate when the user isn't
    actively working. Classic cases: Electron/Chromium consent dialogs (e.g.
    tldraw offline's "Run Script"), DirectInput games, raw-input canvases.
-5. **Keystrokes verified-lost on a KDE/Qt editor → use the app's own I/O.**
+5. **A control highlights but the view doesn't change → use the app's menu bar (macOS).**
+   Some SwiftUI/macOS controls (e.g. sidebar tab radio buttons) accept AXPress,
+   a pixel click and even a foreground click, yet only highlight without
+   switching the view; a foreground click can also land on the map/canvas
+   beneath. After the first verified no-op on a tab/segment control, stop
+   climbing and invoke the equivalent menu item through System Events:
+   `osascript -e 'tell application "System Events" to tell process "<App>" to click menu item "<Item>" of menu 1 of menu bar item "<Menu>" of menu bar 1'`
+   (list items first with `get name of every menu item of menu 1 of menu bar item N of menu bar 1`;
+   the process name can differ from the display name). It needs Accessibility
+   for osascript and does not steal focus. Then re-capture to confirm.
+6. **Keystrokes verified-lost on a KDE/Qt editor → use the app's own I/O.**
    Some Qt text components (KTextEditor: Kate, KWrite, KDevelop) discard
    SYNTHETIC X keystrokes entirely — foreground `type` reports ok
    ("Typed N characters into the focused widget", `effect:"unverifiable"`)
@@ -320,6 +330,13 @@ it. You rarely need to focus explicitly — passing `app=...` to
 `capture` will target that app's frontmost window and every following
 input action goes to that same window (input actions ignore `app=`).
 
+## Reading content: prefer the AX tree over screenshots
+
+Many apps expose row text in the accessibility tree (`AXStaticText` labels
+such as "&lt;name>, &lt;status> · &lt;time>"). Use `capture(mode="ax", app=…)` and read
+the labels as text instead of OCR-ing a screenshot with vision; it is faster
+and exact.
+
 ## Privacy — captures carry more than the app
 
 Even an app-scoped `som` or `ax` capture can include system UI such as the
@@ -327,6 +344,16 @@ macOS Apple menu, whose Recent Items lists recent file names and whose Log
 Out item shows the user's full name. Treat any capture, from any app, as
 possibly holding personal data: read only what the task needs, and don't
 repeat or save it beyond that.
+
+Apps that restore their last view (location sharing, Messages, Photos, Mail)
+may open on a pane holding private data the task did not ask for, such as
+another person's location or messages. Don't capture first to find out which
+pane it restored: before the first capture, switch to the needed pane
+unconditionally through the app's menu bar with the System Events `osascript`
+from the menu-bar rung above (e.g. `click menu item "Devices" of menu 1 of
+menu bar item "View" of menu bar 1` of the app's process), or the app's
+keyboard shortcut, then capture. If no menu route exists, capture with `mode="ax"` and read
+only what the task needs.
 
 Hermes saves capture files in its cache: screenshots at
 `~/.hermes/cache/images/computer_use_*` and element-tree spills at
@@ -373,6 +400,7 @@ in your conversation context.
 |---|---|
 | `cua-driver not installed` | Run `hermes computer-use install`, or `hermes tools` and enable Computer Use |
 | Captures consistently return empty / "no on-screen window" | On Linux: DISPLAY may not be set (X11) or you're on pure Wayland — ask the user to run `hermes computer-use doctor`. On Windows: you may be in Session 0 (SSH session) instead of the interactive desktop — see the cua-driver `WINDOWS.md` deep-dive |
+| macOS Screen Recording / Accessibility grant command times out and the app is absent from the Privacy list | The request never registered. Tell the user to grant it themselves: System Settings → Privacy & Security → the pane (Screen Recording or Accessibility), add the driver app (e.g. CuaDriver.app) with the + button (reveal the .app in Finder first), and toggle it on. Never click permission UI yourself. Afterwards verify with a real capture, since the status check can lag |
 | `code:"stale"` / "element_token is stale" | Indices belong to one snapshot. Re-`capture`, read the new indices, then act. Never reuse an index across a capture |
 | `code:"no_elements"` (Hermes), or the driver's "bare element_index is not accepted" / `snapshot_id_required` | The latest capture has no element list: it was `mode="vision"`, or nothing was captured since the target changed. Re-capture with `mode="som"` or `"ax"` and use the new indices, or click by window-local `coordinate=`. Don't pass `snapshot_id` (Hermes has no such argument). If it repeats right after a `som`/`ax` capture that listed the element, it is a wrapper defect: tell the user to run `hermes update` |
 | "window-local point … lies outside window … background delivery refused" | `coordinate=` was given in desktop coordinates. Subtract the window origin (bounds of `#0`) from the element bounds; see "Clicking by coordinate" |

@@ -2,6 +2,7 @@ import type * as React from 'react'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
+import { capabilityScoped } from '@/api/client'
 import { TitlebarIcon } from '@/app/shell/titlebar-icon'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { PageLoader } from '@/components/page-loader'
@@ -30,11 +31,12 @@ import {
   useLinkTitle
 } from '@/lib/external-link'
 import { FileImage, FileText, FolderOpen, Link2 } from '@/lib/icons'
-import { downloadGatewayMediaFile, isArtifactFilePath, isRemoteGateway } from '@/lib/media'
+import { downloadGatewayMediaFile, isArtifactFilePath } from '@/lib/media'
 import { normalize } from '@/lib/text'
 import { fmtDayTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
+import { $connection } from '@/store/session'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -136,10 +138,11 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     setRefreshing(true)
 
     try {
+      const connectionId = capabilityScoped().connectionId || $connection.get()?.connectionId
       const sessions = (await listAllProfileSessions(30, 1)).sessions
 
       const { artifacts: nextArtifacts, failures } = await loadArtifactsForSessions(sessions, (session, page) =>
-        getSessionMessages(session.id, session.profile, {
+        getSessionMessages(session.id, { connectionId, profile: session.profile }, {
           ...page,
           includeCompacted: true,
           order: 'oldest'
@@ -170,7 +173,11 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         })
       }
 
-      setArtifacts(nextArtifacts.sort((left, right) => right.timestamp - left.timestamp))
+      setArtifacts(
+        nextArtifacts
+          .map(artifact => ({ ...artifact, connectionId }))
+          .sort((left, right) => right.timestamp - left.timestamp)
+      )
     } catch (err) {
       notifyError(err, a.failedLoad)
       setArtifacts([])
@@ -283,8 +290,11 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         // URL. Fetch the bytes over the authenticated fs bridge instead.
         // Tilde/relative hrefs have no file URL form. Keep them gateway-owned:
         // expanding them on the client would target the wrong home or cwd.
-        if (isRemoteGateway() && isArtifactFilePath(artifact.value)) {
-          await downloadGatewayMediaFile(artifact.value, { sessionId: artifact.sessionId, profile: artifact.profile })
+        if (isArtifactFilePath(artifact.value)) {
+          await downloadGatewayMediaFile(artifact.value, {
+            sessionId: artifact.sessionId,
+            owner: { connectionId: artifact.connectionId, profile: artifact.profile }
+          })
 
           return
         }
@@ -481,7 +491,11 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
     let active = true
 
     setSrc('')
-    void artifactImageSrc(artifact.value)
+    void artifactImageSrc(
+      artifact.value,
+      { connectionId: artifact.connectionId, profile: artifact.profile },
+      artifact.sessionId
+    )
       .then(nextSrc => {
         if (active) {
           setSrc(nextSrc)
@@ -496,7 +510,15 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
     return () => {
       active = false
     }
-  }, [artifact.href, artifact.id, artifact.value, onImageError])
+  }, [
+    artifact.connectionId,
+    artifact.profile,
+    artifact.sessionId,
+    artifact.href,
+    artifact.id,
+    artifact.value,
+    onImageError
+  ])
 
   return (
     <article

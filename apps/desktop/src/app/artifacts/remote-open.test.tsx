@@ -66,6 +66,9 @@ it('keeps discovered file paths and originating session scope intact through rem
     </MemoryRouter>
   )
 
+  await screen.findByRole('button', { name: 'USER.md' })
+  $connection.set({ ...$connection.get()!, connectionId: 'other-connection', profile: 'other-profile' })
+
   for (const name of [
     'USER.md',
     'report.md',
@@ -92,10 +95,14 @@ it('keeps discovered file paths and originating session scope intact through rem
   )
   expect(screen.getByRole('link').getAttribute('href')).toBe('https://example.com/report.txt')
   expect(openExternal).not.toHaveBeenCalled()
-  expect(getSessionMessages).toHaveBeenCalledWith('artifact-session', 'origin-profile', {
-    includeCompacted: true,
-    limit: expect.any(Number),
-    offset: 0,
-    order: 'oldest'
-  })
+  expect(getSessionMessages).toHaveBeenCalledWith(
+    'artifact-session',
+    { connectionId: 'remote-fixture', profile: 'origin-profile' },
+    {
+      includeCompacted: true,
+      limit: expect.any(Number),
+      offset: 0,
+      order: 'oldest'
+    }
+  )
 })

@@ -312,6 +312,8 @@ If Desktop closes before an image message is acknowledged, reopen its original c
 
 The **Artifacts** view collects what your sessions generate — **images, files, and links** — into one searchable, browsable gallery. Open it from the sidebar, the command palette (**Artifacts — Browse generated outputs**), or a `nav.artifacts` shortcut you bind yourself. It indexes recent session outputs automatically; every artifact shows which session produced it with a jump back to that chat, and images and files open in a preview with download / open-in-browser / copy actions.
 
+Remote terminal file references keep their original paths in the conversation. Desktop requests their contents through the file transport when displaying an image, previewing a file, or downloading it; replies do not automatically archive attachments on the Hermes host. The Artifacts view indexes references from messages and tool results, not copies of the remote files. Reads use the backend's normal execution lifecycle, including any existing initialization, synchronization or recovery. Missing source files and unavailable environments fail normally. Existing SSH reads and Docker mount-path translation retain their normal behavior; there is no attachment-specific sandbox restoration or permanent attachment cache.
+
 ### Windows, tabs & panes
 
 The app is built for working on several things at once:

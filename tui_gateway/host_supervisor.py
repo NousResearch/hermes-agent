@@ -47,7 +47,7 @@ _LATE_CONTROL_MAX = 64
 # Host frames whose ``request_id`` resolves a pending/late control waiter.
 _CONTROL_REPLY_TYPES = frozenset({
     "control.ack", "control.error", "respond.ack", "respond.error", "interrupt.ack",
-    "reload_mcp.ack", "shutdown.ack"})
+    "reload_mcp.ack", "shutdown.ack", "terminal.file.ack", "terminal.file.error"})
 
 
 def append_log_record(path: str | Path, record: str) -> None:
@@ -277,6 +277,29 @@ class HostSupervisor:
         try:
             self._send_frame(frame)
             return q.get(timeout=timeout)
+        finally:
+            with self._lock:
+                self._pending_controls.pop(request_id, None)
+
+    def terminal_file(self, payload: dict, *, process) -> dict:
+        """Read-only private RPC. Never call start(), including after a host crash."""
+        request_id = uuid.uuid4().hex
+        frame = {**payload, "type": "terminal.file", "request_id": request_id}
+        # Pin send to this exact child. A replacement host cannot own this read.
+        with self._lock:
+            if self._proc is not process or self._closing or not self.is_running():
+                raise RuntimeError("compute host is not running")
+            q: queue.Queue[dict] = queue.Queue(maxsize=1)
+            self._pending_controls[request_id] = q
+            try:
+                self._send_frame(frame)
+            except Exception:
+                self._pending_controls.pop(request_id, None)
+                raise
+        try:
+            return q.get(timeout=60.0)
+        except queue.Empty as exc:
+            raise TimeoutError("terminal file read timed out") from exc
         finally:
             with self._lock:
                 self._pending_controls.pop(request_id, None)

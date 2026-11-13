@@ -133,11 +133,9 @@ function useOpenMediaFile(path: string) {
   const [openFailed, setOpenFailed] = useState(false)
 
   const open = () => {
-    if (window.hermesDesktop && isRemoteGateway()) {
+    if (window.hermesDesktop && !/^(?:https?|data|blob):/i.test(path) && (sessionId || isRemoteGateway())) {
       setOpenFailed(false)
-      void downloadGatewayMediaFile(path, sessionId ? { sessionId } : undefined).catch(() =>
-        setOpenFailed(true)
-      )
+      void downloadGatewayMediaFile(path, sessionId ? { sessionId } : undefined).catch(() => setOpenFailed(true))
     } else {
       openExternalLink(mediaExternalUrl(path))
     }

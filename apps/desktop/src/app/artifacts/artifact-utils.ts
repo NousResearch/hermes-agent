@@ -1,3 +1,4 @@
+import type { OwnerScope } from '@/api/client'
 import { mediaTagValues } from '@/lib/chat-messages/parts'
 import { isArtifactFilePath, mediaExternalUrl, mediaPathFromMarkdownHref, resolveMediaDisplaySrc } from '@/lib/media'
 import type { SessionInfo, SessionMessage, SessionMessagesResponse } from '@/types/hermes'
@@ -14,6 +15,7 @@ export interface ArtifactRecord {
   label: string
   sessionId: string
   profile?: string
+  connectionId?: string
   sessionTitle: string
   timestamp: number
 }
@@ -246,14 +248,14 @@ function artifactHref(value: string): string {
   return value
 }
 
-export async function artifactImageSrc(value: string): Promise<string> {
+export async function artifactImageSrc(value: string, owner?: OwnerScope, sessionId?: string): Promise<string> {
   // Delegate the whole local/remote ladder to the shared media resolver:
   // inline (http/data) stays as-is, remote gateway goes through the
   // authenticated fs bridge, local desktop through the Electron
   // readFileDataUrl, and bare non-path link values fall through untouched.
   // Reimplementing that ladder here would drift from resolveMediaDisplaySrc
   // and regress one of its legs (#83380).
-  return resolveMediaDisplaySrc(value)
+  return resolveMediaDisplaySrc(value, owner, sessionId)
 }
 
 function artifactLabel(value: string): string {

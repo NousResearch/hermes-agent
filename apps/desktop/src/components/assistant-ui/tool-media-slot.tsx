@@ -168,7 +168,7 @@ const ToolMediaLeaf: FC<{
       resolveUrl: () =>
         ['audio', 'video'].includes(mediaKind(path))
           ? resolveMediaPlaybackSrc(path, owner, sessionId ?? undefined)
-          : resolveMediaDisplaySrc(path, owner)
+          : resolveMediaDisplaySrc(path, owner, sessionId ?? undefined)
     }),
     [owner, path, sessionId]
   )

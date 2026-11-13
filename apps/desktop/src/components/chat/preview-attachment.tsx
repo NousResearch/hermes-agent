@@ -1,6 +1,8 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
+import { sessionFileOwnerScope } from '@/api/client'
+import { useComposerScope } from '@/app/chat/composer/scope'
 import { useSessionView } from '@/app/chat/session-view'
 import { useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
@@ -10,6 +12,7 @@ import { downloadGatewayMediaFile } from '@/lib/media'
 import { previewName } from '@/lib/preview-targets'
 import { notifyError } from '@/store/notifications'
 import { $previewTabSources, closePreviewForSource, openPreview } from '@/store/preview'
+import { $connection } from '@/store/session'
 
 /** What the Electron main process said about this target's LOCAL filesystem
  * state (#101683). `null` keeps the stock card — remote-backend targets keep
@@ -55,6 +58,23 @@ export function PreviewAttachment({ target }: { target: string }) {
   const storedId = useStore(view.$storedId)
   const runtimeId = useStore(view.$runtimeId)
   const sessionId = storedId || runtimeId || ''
+  const composer = useComposerScope()
+  const connection = useStore($connection)
+  const backendOwned = Boolean(sessionId)
+
+  const fileScope = {
+    sessionId,
+    backendOwned,
+    owner: {
+      connectionId: composer.connectionId || connection?.connectionId,
+      profile: composer.profile ?? connection?.profile,
+      ...sessionFileOwnerScope(sessionId, {
+        connectionId: composer.connectionId || undefined,
+        profile: composer.profile || undefined
+      })
+    }
+  }
+
   const openSources = useStore($previewTabSources)
   const [opening, setOpening] = useState(false)
   const [downloading, setDownloading] = useState(false)
@@ -92,7 +112,7 @@ export function PreviewAttachment({ target }: { target: string }) {
     let current = true
     setLocalTarget(null)
 
-    void classifyLocalTarget(target, cwd).then(state => {
+    void (backendOwned ? Promise.resolve(null) : classifyLocalTarget(target, cwd)).then(state => {
       if (current) {
         setLocalTarget(state)
       }
@@ -101,7 +121,7 @@ export function PreviewAttachment({ target }: { target: string }) {
     return () => {
       current = false
     }
-  }, [cwd, target])
+  }, [backendOwned, cwd, target])
 
   async function openInFileManager(path: string, directory: boolean) {
     if (opening) {
@@ -161,7 +181,7 @@ export function PreviewAttachment({ target }: { target: string }) {
     setOpening(true)
 
     try {
-      const preview = await normalizeOrLocalPreviewTarget(requestTarget, requestCwd || undefined, { sessionId })
+      const preview = await normalizeOrLocalPreviewTarget(requestTarget, requestCwd || undefined, fileScope)
 
       if (
         !mountedRef.current ||
@@ -206,7 +226,15 @@ export function PreviewAttachment({ target }: { target: string }) {
       // Works in both modes: the Electron main process fetches the bytes
       // through the session's backend connection (local gateway or remote)
       // and prompts for a save location.
-      const result = await downloadGatewayMediaFile(target, sessionId ? { sessionId } : undefined)
+      const result = await downloadGatewayMediaFile(
+        target,
+        sessionId
+          ? {
+              sessionId,
+              ...(fileScope.owner.connectionId || fileScope.owner.profile ? { owner: fileScope.owner } : {})
+            }
+          : undefined
+      )
 
       if (mountedRef.current && result.saved) {
         setDownloaded(true)

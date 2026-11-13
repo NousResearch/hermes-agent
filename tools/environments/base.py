@@ -678,6 +678,7 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
         without this the recovery is silent and the model keeps assuming the
         old workspace state (lobehub/lobehub#19329 class)."""
         self._recreated_notice_pending = True
+        self._hermes_file_read_token = uuid.uuid4().hex
 
     # --- Unified execute() ---
     def execute(

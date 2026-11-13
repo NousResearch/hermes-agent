@@ -9,6 +9,7 @@ A :class:`Transport` forwards a JSON-serialisable dict to its peer, so one dispa
 
 from __future__ import annotations
 
+import _thread
 from collections import deque
 from dataclasses import dataclass, field
 import contextlib
@@ -293,6 +294,7 @@ class FanoutTransport:
         size = len(encoded.encode("utf-8", errors="surrogatepass"))
         frame = json.loads(encoded)
         overflowed: list[Transport] = []
+        to_start: list[_FanoutPeer] = []
         with self._lock:
             for peer in list(self._peers):
                 if not peer.attached:
@@ -310,16 +312,22 @@ class FanoutTransport:
                             self._peers.append(peer)
                         if not peer.writing:
                             peer.writing = True
-                            threading.Thread(target=self._drain, args=(peer,),
-                                             name="tui-fanout", daemon=True).start()
+                            to_start.append(peer)
                     continue
                 peer.pending.append((frame, size))
                 peer.pending_bytes += size
                 if not peer.writing:
                     peer.writing = True
-                    threading.Thread(target=self._drain, args=(peer,),
-                                     name="tui-fanout", daemon=True).start()
+                    to_start.append(peer)
             remaining = any(peer.attached for peer in self._peers)
+        # Spawn drains outside the locks and without waiting for the thread: Thread.start()
+        # blocks until the new thread is running, and write() runs under SessionEvents.lock
+        # (publish, gateway/session_events.py), so a slow start there stalled
+        # session.events.since and every ticket reply on the gateway loop until the liveness
+        # watchdog exited 75 (#148517). Setting writing=True above still keeps the spawn-once
+        # invariant; _thread threads are never waited for at exit, like daemon=True before.
+        for peer in to_start:
+            _thread.start_new_thread(self._drain, (peer,))
         for transport in overflowed:
             self._signal_overflow_detach(transport)
         return remaining

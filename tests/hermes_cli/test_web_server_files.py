@@ -1073,13 +1073,14 @@ def test_managed_writes_refuse_a_credential_dir_behind_a_symlinked_parent(forced
 
 @pytest.mark.require_symlinks
 def test_managed_writes_refuse_a_link_chain_past_the_hop_bound(forced_files_client):
-    """A chain longer than the 40-hop bound cannot be fully checked, so it is refused."""
+    """A chain longer than the 40-hop bound cannot be fully checked, so it is refused; 41 links pins
+    the bound itself, not just "somewhere past 40"."""
     client, root = forced_files_client
     root.mkdir(parents=True, exist_ok=True)
     store = root / "plain-store"
     store.write_text("safe\n")
     previous = store
-    for i in range(45):
+    for i in range(41):
         link = root / f"hop{i}.txt"
         link.symlink_to(previous.name)
         previous = link

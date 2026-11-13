@@ -527,8 +527,9 @@ def _vet_containers(analysis: _Analysis, modules: list[_Module]) -> None:
     for module in modules:
         bindings = _bindings(module.tree)
         names = {name for name, _value in bindings}
-        module.rebound_ctors = _CONTAINER_CTORS if dynamic else _CONTAINER_CTORS & (names | written)
-        if dynamic or "*" in names:
+        star = dynamic or "*" in names
+        module.rebound_ctors = _CONTAINER_CTORS if star else _CONTAINER_CTORS & (names | written)
+        if star:
             continue
         analysis.rebound_ctors = module.rebound_ctors
         bad = {name for name, value in bindings if value is None or not analysis.is_container(value)}

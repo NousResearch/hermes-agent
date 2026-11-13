@@ -153,6 +153,18 @@ CASES = {
         "def make_recorder():\n"
         "    return Recorder()\n"
     )}, ["rec.bind(run_agent, ...) (__init__.py:5)"]),
+    "star_import_shadows_a_builtin_constructor": ((
+        "import run_agent\n"
+        "from .factory import *\n"
+        "def register(ctx):\n"
+        "    frozenset().bind(run_agent)\n"
+    ), {"factory.py": (
+        "class Recorder:\n"
+        "    def bind(self, target):\n"
+        "        setattr(target, 'hook', print)\n"
+        "def frozenset():\n"
+        "    return Recorder()\n"
+    )}, ["bind(run_agent, ...) (__init__.py:4)"]),
     "annotation_expression": ((
         "import run_agent\n"
         "def hook(x: setattr(run_agent, 'hook', print)):\n"

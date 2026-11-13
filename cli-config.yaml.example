@@ -562,6 +562,10 @@ terminal:
 # -----------------------------------------------------------------------------
 # Add sudo_password to any terminal config above to enable sudo commands.
 # The password is piped via `sudo -S`. Works with local, ssh, docker, etc.
+# It is sent to the backend that runs the command, where programs running in
+# that backend can read it: for ssh, docker, modal, daytona, vercel_sandbox and
+# plugin backends, use a password that is only valid there (or passwordless sudo
+# in the image), not this machine's. Hermes logs a one-time warning per backend.
 #
 # SECURITY WARNING: Password stored in plaintext!
 #

@@ -173,14 +173,30 @@ function requestOnTarget<T>(target: string, method: string, params: Record<strin
  *  with a toast. A cancel while profiles.create is still in flight is caught by
  *  that flight itself (the dialog's draftGenRef), since the draft is only
  *  recorded once the RPC returns (#141623). */
+/** Pins the Configure model action to the connection the bot was created on.
+ *  An unknown owner (legacy remote gateway) or a host without per-profile
+ *  routing keeps the unscoped row the active gateway resolves. */
+function creationOwnerFields(owner: string, remote: boolean): Partial<RosterRow> {
+  const scoped = owner && typeof host.requestProfile === 'function' ? { connectionId: owner, sourceScoped: true } : {}
+
+  return remote ? { ...scoped, remoteSource: true } : scoped
+}
+
+const pendingDiscards = new Map<string, Promise<unknown>>()
+
 function discardDraftProfile(draft: string, target: string) {
   const discard = target
     ? requestOnTarget(target, 'cli.exec', { argv: ['profile', 'delete', draft, '--yes'] })
     : deleteBot({ name: draft })
 
-  void Promise.resolve(discard)
+  const key = `${target}::${draft}`
+
+  const settled = Promise.resolve(discard)
     .then(() => host.notify({ kind: 'success', message: `Draft agent "${draft}" discarded` }))
     .catch(err => host.notifyError(err, `Could not clean up draft profile "${draft}"`))
+    .finally(() => pendingDiscards.get(key) === settled && pendingDiscards.delete(key))
+
+  pendingDiscards.set(key, settled)
 }
 
 /** The live Capabilities surface needs a real profile. Materialize it whenever
@@ -272,12 +288,12 @@ function useDraftProfile() {
     createdRef.current = flightRef.current = null
     setCreatedForCaps(null)
     // Completed setup belongs to the deleted draft, not its replacement.
-    setCaps(prev => prev && {
+    setCaps(prev => prev?.mcp.some(m => m.installedInDraft) ? {
       ...prev,
       mcp: prev.mcp.map(m => m.installedInDraft
         ? { ...m, installed: false, enabled: false, installedInDraft: false }
         : m)
-    })
+    } : prev)
 
     if (draft) {
       discardDraftProfile(draft, draftTargetRef.current)
@@ -293,7 +309,8 @@ function useDraftProfile() {
   )
 
   const renameDraft = (next: string, slug: string, setName: (name: string) => void) => {
-    if (botProfileIdentity(next, '').slug !== slug) {
+    // Only a draft (or its in-flight create) has setup to retire.
+    if ((createdRef.current || flightRef.current) && botProfileIdentity(next, '').slug !== slug) {
       discardDraft()
     }
 
@@ -531,11 +548,19 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
 
     const generation = draftGenRef.current
     const target = createTarget
-    const targetId = target || activeConnectionId || 'local'
+    // Unknown on a legacy remote gateway: never guess 'local' for it.
+    const targetId = target || activeConnectionId
     const machine = (connections || []).find(c => c.id === targetId)?.label
-    const warningTitle = `${slug} — ${machine ? `${machine} (${targetId})` : targetId}`
+    const warningTitle = targetId ? `${slug} — ${machine ? `${machine} (${targetId})` : targetId}` : slug
 
     const flight = singleFlight(flightRef, async () => {
+      // A same-named draft this dialog just discarded must finish deleting first.
+      await pendingDiscards.get(`${target}::${slug}`)
+
+      if (generation !== draftGenRef.current) {
+        return null
+      }
+
       const result = await requestForTarget<ProfilesCreateResult>('profiles.create', {
         name: slug,
         description: descriptionText,
@@ -683,15 +708,13 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
       // first so a bot whose machine has no usable credential lands as
       // "created, needs a model" instead of a doomed "No LLM provider" turn.
       // Only an explicit `ok: false` counts; older gateways proceed as before.
-      const generation = draftGenRef.current
+      // The profile is adopted now: unmounting while readiness runs must not
+      // drop its warnings, notice or chat.
+      const warning = draftWarningRef.current?.generation === draftGenRef.current ? draftWarningRef.current : null
 
       const readiness = await requestForTarget<{ error?: string; ok?: boolean }>('setup.runtime_check', {
         profile: slugCreated
       }).catch(() => null)
-
-      if (generation !== draftGenRef.current) {
-        return
-      }
 
       const needsModel = readiness?.ok === false
       const who = displayName({ name: slug, title: botTitle })
@@ -701,14 +724,10 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
         name: slugCreated,
         description: descriptionText,
         title: botTitle,
-        connectionId: draftOwnerRef.current,
-        sourceScoped: true,
-        ...(remoteTarget ? { remoteSource: true } : {})
+        ...creationOwnerFields(draftOwnerRef.current, remoteTarget)
       }
 
-      const warning = draftWarningRef.current
-
-      if (warning?.generation === draftGenRef.current) {
+      if (warning) {
         host.notify({ kind: 'warning', title: warning.title, message: warning.message, persistent: true })
         draftWarningRef.current = null
       }

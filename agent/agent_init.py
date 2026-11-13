@@ -1180,17 +1180,14 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
         # Memory is optional — don't break agent init
         with suppress(Exception):
             from tools.memory_tool import (
-                MemoryStore, get_builtin_memory_config, get_builtin_memory_store_flags,
+                MemoryStore, get_builtin_memory_config, resolve_builtin_memory_store_flags,
             )
             mem_config = get_builtin_memory_config(_agent_cfg)
-            agent._memory_enabled, agent._user_profile_enabled = get_builtin_memory_store_flags(
-                _agent_cfg
+            agent._memory_enabled, agent._user_profile_enabled = resolve_builtin_memory_store_flags(
+                _agent_cfg,
+                memory_agent_context=getattr(agent, "memory_agent_context", None),
+                memory_toolset_requested=_memory_toolset_requested,
             )
-            # A fork that holds the provider only for the checkpoint gate (memory_agent_context="subagent",
-            # skip_memory=False) keeps MEMORY.md/USER.md out of its prompt, as skip_memory=True did; a
-            # requested memory toolset still gets the store, exactly as with the gate off.
-            if getattr(agent, "memory_agent_context", None) == "subagent" and not _memory_toolset_requested:
-                agent._memory_enabled = agent._user_profile_enabled = False
             agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
             if agent._memory_enabled or agent._user_profile_enabled:
                 agent._memory_store = MemoryStore(

@@ -415,6 +415,102 @@ class TestGitWorktreeFilesNeverCleaned:
         assert dg.guess_category(nested) is None
 
 
+class TestNonGitSourceTreesNeverCleaned:
+    """Regression tests: a test/project tree that is NOT a Git checkout still owns its
+    ``test_*`` files.
+
+    Observed live in the realtorbot profile: ``scripts/tests/`` and ``workspaces/*/source/``
+    are plain directories with no ``.git`` anywhere on the chain, so ``_inside_git_worktree``
+    was False and the file was classified ``test`` and deleted at the next session end.
+    ``test_scraper_worker_health_watch.py`` was written, destroyed hours later by an unrelated
+    session ending, rewritten, and destroyed again; ``test_atlanta_new_listing_dns.py`` was
+    lost twice. A directory named ``tests/`` is a test tree whether or not git owns it.
+    """
+
+    def test_tests_dir_without_git_is_never_disposable(self, _isolate_env):
+        dg = _load_lib()
+        tests_dir = dg.get_hermes_home() / "scripts" / "tests"
+        tests_dir.mkdir(parents=True)
+        f = tests_dir / "test_scraper_worker_health_watch.py"
+        f.write_text("def test_x():\n    assert True\n")
+        assert dg._inside_git_worktree(f) is False, "precondition: no git on this chain"
+        assert dg.guess_category(f) is None
+        dg.save_tracked([{"path": str(f), "category": "test",
+                          "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
+        result = dg.quick()
+        assert f.exists(), "a regression test in a tests/ dir must never be auto-deleted"
+        assert result["deleted"] == 0
+        assert dg.load_tracked() == [], "the stale entry is dropped, not kept"
+
+    def test_project_manifest_marks_tree_as_source(self, _isolate_env):
+        """A project manifest below HERMES_HOME protects its test files even without tests/."""
+        dg = _load_lib()
+        proj = dg.get_hermes_home() / "workspaces" / "repro" / "source"
+        proj.mkdir(parents=True)
+        (proj / "pyproject.toml").write_text("[project]\nname='x'\n")
+        f = proj / "test_enrichment.py"
+        f.write_text("x")
+        assert dg.guess_category(f) is None
+
+    def test_vendored_site_packages_never_swept(self, _isolate_env):
+        """A vendored dependency's own suite (site-packages) is not session scratch."""
+        dg = _load_lib()
+        vend = dg.get_hermes_home() / "workflows" / "w" / ".venv" / "lib" / "site-packages" / "jsonschema" / "tests"
+        vend.mkdir(parents=True)
+        f = vend / "test_types.py"
+        f.write_text("x")
+        assert dg.guess_category(f) is None
+
+    def test_flat_test_with_source_sibling_is_kept(self, _isolate_env):
+        """``test_school_zone_geometry.py`` beside ``school_zone_geometry.py`` (no manifest,
+        no tests/ parent) is a test, not scratch."""
+        dg = _load_lib()
+        flat = dg.get_hermes_home() / "workspaces" / "repro" / "source"
+        flat.mkdir(parents=True)
+        (flat / "school_zone_geometry.py").write_text("x")
+        f = flat / "test_school_zone_geometry.py"
+        f.write_text("x")
+        assert dg.guess_category(f) is None
+
+    def test_executed_script_beside_pycache_is_kept(self, _isolate_env):
+        """A real unittest in a flat report/artifact dir, beside a __pycache__.
+
+        Observed live: ``sentinel/reports/<audit>/test_provider_scheduler.py`` — no
+        ``tests/`` parent, no manifest, no ``.py`` sibling, but a ``__pycache__`` proving it
+        was imported and run. Scratch is never compiled.
+        """
+        dg = _load_lib()
+        rep = dg.get_hermes_home() / "reports" / "provider-remediation-20260927T082325-0400"
+        rep.mkdir(parents=True)
+        (rep / "__pycache__").mkdir()
+        f = rep / "test_provider_scheduler.py"
+        f.write_text("import unittest\nclass T(unittest.TestCase):\n    def test_x(self): pass\n")
+        assert dg.guess_category(f) is None
+
+    def test_scratch_in_flat_dir_still_cleaned(self, _isolate_env):
+        """Control: a lone test_* file with no source sibling is still disposable scratch."""
+        dg = _load_lib()
+        scratch = dg.get_hermes_home() / "test_scratch.py"
+        scratch.write_text("x")
+        assert dg.guess_category(scratch) == "test"
+        dg.save_tracked([{"path": str(scratch), "category": "test",
+                          "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
+        assert dg.quick()["deleted"] == 1
+        assert not scratch.exists()
+
+    def test_session_end_hook_keeps_tests_dir_files(self, _isolate_env):
+        """End-to-end: the post_tool_call -> on_session_end path must not delete a test."""
+        plugin = _load_plugin_init()
+        dg = _load_lib()
+        f = dg.get_hermes_home() / "scripts" / "tests" / "test_kept.py"
+        f.parent.mkdir(parents=True)
+        f.write_text("x")
+        plugin._on_post_tool_call(tool_name="write_file", args={"path": str(f)},
+                                  result="ok", session_id="s1")
+        plugin._on_session_end(session_id="s1")
+        assert f.exists(), "session end must not delete a test in a tests/ directory"
+
+
 class TestStaleCronEntryMigration:
     """Regression tests for #37721 — stale cron-output entries in tracked.json."""
 

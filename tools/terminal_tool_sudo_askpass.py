@@ -125,8 +125,9 @@ _PROLOGUE_TEMPLATE = (
 
 
 # No ``\command``: the check must run whatever the command runs for the word, a shell function
-# or alias from the session snapshot included.
-_SUDO_CHECK = "  SUDO_ASKPASS=/bin/false {word} -A -V </dev/null >/dev/null 2>&1 &&\n"
+# or alias from the session snapshot included. The subshell still sees those, but an ``exec`` or
+# ``exit`` in a wrapper then ends only the check, never the command's own shell.
+_SUDO_CHECK = "  ( SUDO_ASKPASS=/bin/false {word} -A -V ) </dev/null >/dev/null 2>&1 &&\n"
 
 
 def build_prologue(count: int, timeout_token: str, background: bool = True,

@@ -40,7 +40,7 @@ from tools.tts_command_provider import (
     _get_command_tts_output_format, _is_command_tts_voice_compatible, _resolve_command_provider_config)
 from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
 from tools.tts_tool_delivery import (
-    _resolve_max_text_length, _build_audio_delivery_files, _convert_to_opus, _remove_quietly,
+    _section, _resolve_max_text_length, _build_audio_delivery_files, _convert_to_opus, _remove_quietly,
     _repair_ogg_container, _resolve_audio_delivery_profile, _split_text_for_tts)
 from tools.tts_tool_providers import (
     _generate_edge_tts, _generate_elevenlabs, _generate_gemini_tts, _generate_minimax_tts,
@@ -49,7 +49,8 @@ from tools.tts_tool_local import _generate_kittentts, _generate_neutts, _generat
 from tools.tts_tool_plugins import (
     _dispatch_to_plugin_provider, _plugin_provider_is_available,
     _plugin_provider_is_voice_compatible)
-from tools.tts_tool_openai import _generate_deepinfra_tts, _generate_openai_tts, _has_openai_audio_backend
+from tools.tts_tool_openai import (
+    _generate_deepinfra_tts, _generate_openai_tts, _has_openai_audio_backend, openai_voice_catalog)
 
 
 _PM_FEATURE_ALIASES = {"tts.edge": "edge-tts", "tts.elevenlabs": "tts-premium", "tts.mistral": "mistral"}
@@ -317,16 +318,14 @@ def elevenlabs_voice_selection_active(tts_config: Optional[dict[str, Any]] = Non
             and _resolve_command_provider_config("elevenlabs", tts_config) is None)
 
 
-def _apply_voice_override(tts_config: dict[str, Any], provider: str, voice_id: Optional[str]):
-    """Per-call ElevenLabs ``voice_id`` on a copy of the config -> ``(tts_config, error_json)``.
-    Ignored (logged) on any other provider: a schema cached before a provider switch may still
-    send it, and it must not fail the speech."""
-    voice_id = (voice_id or "").strip()
-    if not voice_id:
-        return tts_config, None
-    if provider != "elevenlabs" or not elevenlabs_voice_selection_active(tts_config):
-        logger.warning("Ignoring per-call TTS voice_id; tts.provider is %r", provider)
-        return tts_config, None
+def openai_voice_selection_active(tts_config: Optional[dict[str, Any]] = None) -> bool:
+    """Whether the model may pick the voice per call on OpenAI(-compatible) TTS: ``tts.openai.voice_selection``
+    is on (off by default) and openai is the configured provider. Gates the OpenAI ``voice_id`` enum."""
+    tts_config = _load_tts_config() if tts_config is None else tts_config
+    return _get_provider(tts_config) == "openai" and _section(tts_config, "openai").get("voice_selection") is True
+
+
+def _elevenlabs_voice_override(tts_config: dict[str, Any], voice_id: str):
     if not _ELEVENLABS_VOICE_ID_RE.match(voice_id):
         return tts_config, tool_error(
             f"Invalid ElevenLabs voice_id {voice_id!r}: use a voice_id returned by find_voices.",
@@ -334,6 +333,41 @@ def _apply_voice_override(tts_config: dict[str, Any], provider: str, voice_id: O
     section = dict(tts_config.get("elevenlabs") or {})
     section["voice_id"] = voice_id
     return {**tts_config, "elevenlabs": section}, None
+
+
+def _openai_voice_override(tts_config: dict[str, Any], voice_id: str):
+    """A name outside the catalog is an error listing the valid ones (case-insensitive match); an
+    unreachable catalog keeps the configured voice rather than failing the speech."""
+    section = dict(_section(tts_config, "openai"))
+    names = {name.lower(): name for name, _ in openai_voice_catalog(section)}
+    if not names:
+        logger.warning("TTS voice catalog unavailable; using the configured voice instead of %r", voice_id)
+        return tts_config, None
+    if voice_id.lower() not in names:
+        return tts_config, tool_error(
+            f"Unknown voice_id {voice_id!r}. Available voices: {', '.join(names.values())}.", success=False)
+    section["voice"] = names[voice_id.lower()]
+    return {**tts_config, "openai": section}, None
+
+
+_VOICE_OVERRIDES = {
+    "elevenlabs": (elevenlabs_voice_selection_active, _elevenlabs_voice_override),
+    "openai": (openai_voice_selection_active, _openai_voice_override),
+}
+
+
+def _apply_voice_override(tts_config: dict[str, Any], provider: str, voice_id: Optional[str]):
+    """Per-call ``voice_id`` on a copy of the config -> ``(tts_config, error_json)``.
+    Ignored (logged) when the configured provider does not offer voice selection: a schema cached
+    before a provider or config switch may still send it, and it must not fail the speech."""
+    voice_id = (voice_id or "").strip()
+    if not voice_id:
+        return tts_config, None
+    active, override = _VOICE_OVERRIDES.get(provider, (None, None))
+    if active is None or not active(tts_config):
+        logger.warning("Ignoring per-call TTS voice_id; voice selection is off for tts.provider %r", provider)
+        return tts_config, None
+    return override(tts_config, voice_id)
 
 
 def _find_voices(find: Any) -> str:
@@ -687,7 +721,10 @@ def _tts_schema_overrides() -> dict:
     would name the launch profile's home for everyone else (#95685)."""
     params = copy.deepcopy(TTS_SCHEMA["parameters"])
     params["properties"]["output_path"]["description"] = _output_path_description(display_hermes_home())
-    if not elevenlabs_voice_selection_active():
+    tts_config = _load_tts_config()
+    if openai_voice_selection_active(tts_config):
+        return _openai_voice_schema(params, _section(tts_config, "openai"))
+    if not elevenlabs_voice_selection_active(tts_config):
         return {"parameters": params}
     from tools.tts_elevenlabs_voices import FIND_VOICES_SCHEMA
     params["properties"]["voice_id"] = {
@@ -700,7 +737,25 @@ def _tts_schema_overrides() -> dict:
         _CONFIGURED_VOICE_SENTENCE, _ELEVENLABS_VOICE_SENTENCE)}
 
 
+def _openai_voice_schema(params: dict, oai_config: dict[str, Any]) -> dict:
+    """``voice_id`` as an enum of the OpenAI(-compatible) catalog; no catalog keeps the configured-voice surface."""
+    voices = openai_voice_catalog(oai_config)
+    if not voices:
+        return {"parameters": params}
+    listing = ", ".join(f"{name} ({language})" if language else name for name, language in voices)
+    default = oai_config.get("voice")
+    params["properties"]["voice_id"] = {
+        "type": "string",
+        "enum": [name for name, _ in voices],
+        "description": (f"Voice for this audio only. Available: {listing}. "
+                        + (f"Omit to use the configured voice ({default})." if default
+                           else "Omit to use the configured voice."))}
+    return {"parameters": params, "description": TTS_SCHEMA["description"].replace(
+        _CONFIGURED_VOICE_SENTENCE, _OPENAI_VOICE_SENTENCE)}
+
+
 _CONFIGURED_VOICE_SENTENCE = "Voice and provider are user-configured (built-in providers like edge/openai or custom command providers under tts.providers.<name>), not model-selected."
+_OPENAI_VOICE_SENTENCE = "The provider is user-configured; pick a voice per call with voice_id (e.g. one that matches the language of the text), or omit it for the configured voice."
 _ELEVENLABS_VOICE_SENTENCE = "The provider is user-configured (ElevenLabs); pick a voice per call with voice_id, found with find_voices (one character per voice, e.g. for game NPCs)."
 
 TTS_SCHEMA = {

@@ -4221,20 +4221,21 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         return getattr(runner, "_is_user_authorized", None)
 
     def _early_reject_unauthorized(
-            self, user_id: str, channel_id: str, is_dm: bool, *, thread_id: Optional[str] = None) -> bool:
+            self, user_id: str, channel_id: str, is_dm: bool, *,
+            thread_id: Optional[str] = None, is_bot: bool = False) -> bool:
         """True (logged) when the sender is definitively unauthorized. Injected profile-bound check
         first (works under multiplex, where the handler has no ``__self__``), then runner
         introspection. Unknown (None) is NOT a rejection. ``thread_id``: thread-scoped profile_routes."""
         chat_type = "dm" if is_dm else "group"
         decision = (
-            self._is_sender_authorized(user_id, chat_type, channel_id, thread_id=thread_id)
+            self._is_sender_authorized(user_id, chat_type, channel_id, is_bot=is_bot, thread_id=thread_id)
             if user_id and getattr(self, "_authorization_check", None) is not None
             else None)
         auth_fn = self._runner_auth_fn()
         if decision is None and user_id and callable(auth_fn):
             source = self.build_source(
                 chat_id=channel_id, chat_name="", chat_type=chat_type, user_id=user_id, user_name="",
-                thread_id=thread_id)
+                thread_id=thread_id, is_bot=is_bot)
             decision = bool(auth_fn(source))
         if decision is False:
             logger.warning(
@@ -4710,7 +4711,17 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         # Reject unauthorized users before the expensive lookups/downloads;
         # the runner's own auth check only runs after MessageEvent is built.
         thread_ts = self._session_thread_ts(event, ts, is_dm, assistant_meta)
-        if self._early_reject_unauthorized(user_id, channel_id, is_dm, thread_id=thread_ts):
+        # _drop_bot_sender already resolved bot-user posts without payload bot markers.
+        # Preserve that verdict at the early authorization seam: otherwise an allowed
+        # peer bot is checked as a human before MessageEvent.source.is_bot is set.
+        # Same probe condition as _drop_bot_sender, so normally a cache hit. The team key can
+        # differ when only the outer payload carries it; this then makes _peer_bot_drop's
+        # users.info lookup earlier instead of adding one.
+        sender_is_bot = self._event_declares_bot_sender(event) or bool(
+            user_id and not event.get("client_msg_id") and await self._resolve_user_is_bot(
+                user_id, chat_id=channel_id, team_id=team_id))
+        if self._early_reject_unauthorized(
+                user_id, channel_id, is_dm, thread_id=thread_ts, is_bot=sender_is_bot):
             return
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
         # Mentions may live only in Block Kit blocks.
@@ -4804,8 +4815,11 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             scope_id=str(team_id) if team_id else None,
             message_id=ts,
             # Workflow/app posts have user=None; flag them so the SLACK_ALLOW_BOTS bypass can
-            # authorize them. Same predicate as the drop gate (api_human_users stay human).
-            is_bot=self._event_declares_bot_sender(event))
+            # authorize them. Same predicates as the drop gates (api_human_users stay human): a peer
+            # bot known only via users.info (no bot_id/subtype) is a bot here too, or it would reach
+            # the gateway as a person and escape the bot loop guard. Cached by _peer_bot_drop.
+            is_bot=self._event_declares_bot_sender(event) or await self._resolve_user_is_bot(
+                user_id, chat_id=channel_id, team_id=team_id))
         source.shared_session = event.get("channel_type") == "mpim"  # a group DM keys "dm" but is shared
         from gateway.platforms.base import resolve_channel_skills
         # Remaining ``<@UID>`` are OTHER participants (own mention stripped

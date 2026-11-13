@@ -27,6 +27,7 @@ import { coarseElapsed } from '@/lib/time'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $sidebarRowMeta } from '@/store/layout'
+import { $minuteClock } from '@/store/minute-clock'
 import { normalizeProfileKey } from '@/store/profile'
 import { $projects } from '@/store/projects'
 import { $pullRequestsByBranch, sessionPrKey } from '@/store/pull-requests'
@@ -118,11 +119,18 @@ function disarmMarquee(event: React.PointerEvent<HTMLElement>) {
 const TAIL_HIDES = 'session-row-tail min-w-5 transition-opacity'
 const KEBAB_YIELDS = 'session-row-kebab'
 
-function formatAge(seconds: number, r: Translations['sidebar']['row']): string {
-  const { unit, value } = coarseElapsed(Date.now() - seconds * 1000)
+function formatAge(seconds: number, r: Translations['sidebar']['row'], nowMs: number): string {
+  const { unit, value } = coarseElapsed(nowMs - seconds * 1000)
 
   // Under a minute reads as "now" — the sidebar never shows a seconds tick.
   return unit === 'second' ? r.ageNow : `${value}${r[AGE_KEY[unit]]}`
+}
+
+// Through the shared clock, not Date.now(): the memo below bails on an idle
+// row, so an age read at render would freeze. The selector returns the label,
+// so a tick repaints only rows whose label changed.
+function useSessionAge(seconds: number, r: Translations['sidebar']['row']): string {
+  return useStoreSelector($minuteClock, nowMs => formatAge(seconds, r, nowMs))
 }
 
 function SidebarSessionRowImpl({
@@ -160,7 +168,7 @@ function SidebarSessionRowImpl({
   })
 
   const timestamp = session.last_active || session.started_at
-  const age = formatAge(timestamp, r)
+  const age = useSessionAge(timestamp, r)
   const timestampDate = new Date(timestamp * 1000)
   const absoluteAge = formatMessageTimestamp(timestampDate, t.assistant.thread)
   const handleLabel = `Reorder ${title}`

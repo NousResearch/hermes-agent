@@ -148,6 +148,8 @@ def _load_review_credentials_cfg() -> Optional[dict[str, Any]]:
         return None
 
     cfg = {k: str(review.get(k) or "").strip() for k in ("provider", "model", "base_url", "api_key", "api_mode")}
+    if "reasoning_effort" in review:
+        cfg["reasoning_effort"] = review["reasoning_effort"]
     if cfg["provider"].lower() == "auto":
         cfg["provider"] = ""
     if not (cfg["provider"] or cfg["model"] or cfg["base_url"]):

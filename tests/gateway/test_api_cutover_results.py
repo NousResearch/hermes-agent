@@ -20,7 +20,7 @@ async def test_runs_explicit_history_takes_precedence(api, owner, monkeypatch):
         assert response.status == 202, await response.text()
     row, = list_session_admissions(owner.db, session_id='history')
     assert row['payload']['api_turn_v1']['history'] == history
-    assert row['payload']['api_turn_v1']['settings']['session_history_delivery'] == ''
+    assert row['payload']['api_turn_v1']['settings']['session_history_delivery'] == '1'
 
 
 @pytest.mark.parametrize('outcome,result,expected', [

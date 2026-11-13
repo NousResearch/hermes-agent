@@ -842,6 +842,14 @@ def _codex_event_has_content(event: Any) -> bool:
     return False
 
 
+def _with_arguments(item: Any, arguments: str) -> Any:
+    """Copy of a Responses output item (raw dict or SDK model) carrying ``arguments``."""
+    if isinstance(item, dict):
+        return {**item, "arguments": arguments}
+    return item.model_copy(update={"arguments": arguments}) if hasattr(item, "model_copy") else SimpleNamespace(
+        **{**vars(item), "arguments": arguments})
+
+
 def _raise_stream_error(event: Any) -> None:
     """Raise ``_StreamErrorEvent`` from a ``type=error`` SSE frame. The spec puts code/message/param at the
     top level, but the SDK and several proxies nest them under ``error``; read top-level first, then the envelope."""
@@ -1042,7 +1050,11 @@ class _CodexResponseAssembler:
             announced_sequence, self.next_output_sequence = self.next_output_sequence, self.next_output_sequence + 1
         self.output_indexes.append(_event_field(event, "output_index", announced_index))
         self.output_sequences.append(announced_sequence)
-        # The done payload is authoritative for every pending alias of this call.
+        # The done payload is authoritative for every pending alias of this call, except empty arguments: some
+        # backends send the done item with arguments "" after streaming them, so keep what the deltas carried.
+        streamed_args = next((a for k in pending_keys if (a := self.pending_function_calls[k]["arguments"].strip())), "")
+        if streamed_args and not str(_event_field(done_item, "arguments", "") or "").strip():
+            self.output_items[-1] = _with_arguments(done_item, streamed_args)
         for pending_key in pending_keys:
             self.pending_function_calls.pop(pending_key, None)
         if _message_phase(done_item) == "commentary" and self.on_commentary_message is not None:

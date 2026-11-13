@@ -3,31 +3,7 @@ title: Hermes UI
 repo: https://github.com/Ilyassbm/hermes-ui
 sha: 209db04ae62c9c011e6ee3a5f98b9b204a493baf
 subdir: ""
-description: >-
-  A bespoke chat workspace for Hermes Desktop and the Webapp: it takes over the app's
-  home route and replaces it with a three-column page — a rail of bots (one row per
-  profile, each with its own conversations), the conversation itself with folded
-  reasoning and tool runs, and a right panel for files, previews and session detail.
-  Bots can answer with a structured block that the thread draws as rich components
-  (status cards, tables, checklists, approval prompts) instead of prose; slash commands,
-  per-bot models and a settings page come with it, and media blocks render images, audio
-  and video inline. Disclosure: reads the active profile through the public Desktop SDK
-  and the plugin's own backend routes — GET /bots reads each profile's state.db read-only
-  to show the last line each bot said, GET /usage reads subscription usage through
-  Hermes's own reader and, only when the calling profile has OPENCODE_GO_API_KEY (read
-  through agent.secret_scope under that profile, no environment fallback), calls
-  https://opencode.ai/zen/go/v1/usage with that key held server-side and never returned
-  to the page. The preview routes GET /file (UTF-8, 1 MiB) and GET /blob (base64, 8 MiB)
-  resolve the requested path and refuse anything outside the profile home and the user's
-  home directory, anything reached through a symlink that leaves those trees, everything
-  agent.file_safety.get_read_block_error refuses, and core's managed and credential files
-  wherever they sit (.env*, auth.json, auth.lock, config.yaml, credentials,
-  .git-credentials, webhook_subscriptions.json, .anthropic_oauth.json, google_*, *.pem,
-  *.key, id_*, and any .ssh/, .aws/, .gnupg/, secrets/, mcp-tokens/ or pairing/ component).
-  Imports agent.file_safety.get_read_block_error, as review asked; the validator lists it
-  as outside its public table. No shell, no telemetry, no self-updater, no third-party service beyond the
-  optional usage endpoint. The page never patches the app's DOM or prototype: it reads
-  the hash route, the sanctioned door, and uses SDK slots and routes.
+description: "A bespoke chat workspace for Hermes Desktop and the Webapp: it takes over the app's home route and replaces it with a three-column page — a rail of bots (one row per profile, each with its own conversations), the conversation itself with folded reasoning and tool runs, and a right panel for files, previews and session detail. Bots can answer with a structured block that the thread draws as rich components (status cards, tables, checklists, approval prompts) instead of prose; slash commands, per-bot models and a settings page come with it, and media blocks render images, audio and video inline. Disclosure — takes over the Desktop/Webapp home route by default: opening home or a session from the native sidebar redirects into Hermes UI (a palette command turns this off). Its side panel previews files that replies name (MEDIA: lines, attached-image paths) by reading them through the plugin's own backend routes, which accept any path under the profile home or the user's home directory except core-refused and credential files (.env*, auth.json, config.yaml, credentials, webhook_subscriptions.json, private keys, .ssh/.aws/.gnupg, secrets, mcp-tokens and pairing folders); previews stay on the device. The bots rail reads each profile's state.db read-only, and the usage meter calls https://opencode.ai/zen/go/v1/usage only when the active profile holds OPENCODE_GO_API_KEY, with the key kept server-side. No telemetry."
 maintainer: Ilyassbm
 tier: community
 category: desktop

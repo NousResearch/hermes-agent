@@ -1018,6 +1018,54 @@ function Confirm-StableUnreachable([string]$What) {
     Fail "$What$(Get-NativeDetail). Rerun the installer to retry, or pass -Channel main to install main's tip" git_fetch_failed
 }
 
+# A blobless clone's checkout lazy-fetches the files from the promisor remote; some networks and
+# GitHub edges refuse that request (HTTP 400, #153258) while an ordinary clone works. Re-clone the
+# one commit being installed without a filter into the same unpublished $Tree, and keep it only
+# when it resolves to the commit the partial clone named for the pin or release tag ($Target, or
+# '' for the branch tip). Returns whether $Tree now holds that checkout; removes it otherwise.
+function Receive-UnfilteredClone([string]$Tree, [string]$Target, [string[]]$Progress, [string[]]$LongPaths) {
+    $want = $null
+    if ($Target) {
+        $want = (Invoke-Native { git -C $Tree rev-parse --verify --quiet "$Target^{commit}" 2>$null })
+        if ($LASTEXITCODE -or -not $want) { return $false }
+        $want = "$want".Trim()
+    }
+    $what = if ($Target) { $Target } else { $Branch }
+    Write-Warn "checkout of the partial clone failed; downloading $what again without a filter"
+    Remove-Item -LiteralPath $Tree -Recurse -Force -ErrorAction SilentlyContinue
+    Invoke-Logged -MayFail "Cloning $RepoUrl ($Branch) without a filter" { git clone @Progress @LongPaths --depth 1 --no-checkout --branch $Branch $RepoUrl $Tree }
+    $ok = -not $LASTEXITCODE
+    # --depth implies --single-branch; keep the refspec a normal clone has so branch switches work.
+    if ($ok) { Invoke-Native { git -C $Tree config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*' }; $ok = -not $LASTEXITCODE }
+    $checkoutAt = $Target
+    if ($ok -and $Target -and $Commit) {
+        Invoke-Logged -MayFail "Fetching $Commit" { git -C $Tree fetch --depth 1 origin $want }
+        $ok = -not $LASTEXITCODE
+        $checkoutAt = $want
+    } elseif ($ok -and $Target) {
+        Invoke-Logged -MayFail "Fetching $Target" { git -C $Tree fetch --depth 1 origin "+refs/tags/${Target}:refs/tags/${Target}" }
+        $ok = -not $LASTEXITCODE
+    }
+    if ($ok) {
+        # Revalidate: the tag (or pin) must still name the commit the partial clone resolved.
+        $probe = if ($checkoutAt) { $checkoutAt } else { 'HEAD' }
+        $got = (Invoke-Native { git -C $Tree rev-parse --verify --quiet "$probe^{commit}" 2>$null })
+        $got = if ($LASTEXITCODE) { '' } else { "$got".Trim() }
+        if (-not $got -or ($want -and $got -cne $want)) {
+            Write-Warn "the unfiltered clone resolves $probe to $(if ($got) { $got } else { 'nothing' }), not $want; not publishing it"
+            $ok = $false
+        }
+    }
+    if ($ok) {
+        Invoke-Logged -MayFail "Checking out $what" {
+            if ($checkoutAt) { git -C $Tree checkout --force --detach $checkoutAt } else { git -C $Tree reset --hard HEAD }
+        }
+        $ok = -not $LASTEXITCODE
+    }
+    if (-not $ok) { Remove-Item -LiteralPath $Tree -Recurse -Force -ErrorAction SilentlyContinue }
+    return $ok
+}
+
 function Stage-Repository {
     $pinned = $false
     # Not $channel: variables are case-insensitive, and the helpers below read the -Channel
@@ -1275,6 +1323,11 @@ function Stage-Repository {
                     }
                     if (-not $LASTEXITCODE) { $materialized = $true; break }
                     if ($attempt -lt 2) { Start-Sleep -Seconds 5 }
+                }
+                if (-not $materialized) {
+                    $checkoutError = $script:NativeError
+                    $materialized = Receive-UnfilteredClone $tree $detachAt $progress $longPaths
+                    if (-not $materialized) { $script:NativeError = $checkoutError }
                 }
                 if (-not $materialized) {
                     $what = if ($Commit) { $Commit } else { "the cloned tree" }

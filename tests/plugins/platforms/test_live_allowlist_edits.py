@@ -216,3 +216,21 @@ def test_unchanged_config_costs_no_reload(_home, monkeypatch):
     for _ in range(50):
         assert _allowed(adapter, guild, member) is True
     assert calls == []
+
+
+def test_a_bot_message_follows_an_allow_bots_edit(_home, monkeypatch):
+    """Bot-authored messages skip _is_allowed_user; the gate must still refresh before allow_bots is read."""
+    from plugins.platforms.discord import adapter as discord_adapter
+
+    discord = SimpleNamespace(MessageType=SimpleNamespace(default=0, reply=19), DMChannel=type("DMChannel", (), {}))
+    monkeypatch.setattr(discord_adapter, "discord", discord)  # discord.py is an optional extra
+    _write(_home, {"allow_bots": "all"})
+    adapter, _guild, _member = _connected_discord()
+    adapter._client.user = SimpleNamespace(id=99, bot=True)
+    adapter._text_batch_delay_seconds = 0
+    _write(_home, {"allow_bots": "none"})
+    bot = SimpleNamespace(id=77, bot=True)
+    message = SimpleNamespace(id=5, author=bot, type=discord.MessageType.default, content="<@99> hi",
+                              mentions=[adapter._client.user], channel=SimpleNamespace(id=1), guild=None)
+    assert adapter._discord_message_admission(message, claim=False) == (False, False)
+    assert adapter._get_allow_bots() == "none"

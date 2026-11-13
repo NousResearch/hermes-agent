@@ -2123,6 +2123,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         session_key = gateway_session_key or session_id
         session_row_model = _clean_request_string(session_model)
         current_provider = _clean_request_string(runtime_kwargs.get("provider"))
+        # A named custom endpoint resolves to the bare class "custom"; its identity lives in
+        # requested_provider. Re-resolving the bare class lands on the default OpenRouter URL.
+        named_custom = _clean_request_string(runtime_kwargs.get("requested_provider"))
+        if (current_provider or "").lower() == "custom" and (named_custom or "").lower().startswith("custom:"):
+            current_provider = named_custom
         session_override = None if confirmed_runtime_lock else self._session_model_override_for(session_key)
         # Model-string precedence (override > session-persisted > global) is owned by
         # hermes_cli.model_switch.resolve_effective_model.

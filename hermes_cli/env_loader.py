@@ -61,6 +61,10 @@ _SECRET_SOURCE_RESTORE_BY_HOME: dict[str, dict[str, str]] = {}
 # cleared by a per-home ``reset_secret_source_cache``: it describes ``os.environ``, which a reset does not
 # touch, and the next pass needs it to revoke.
 _SECRET_SOURCE_WRITES_BY_HOME: dict[str, dict[str, tuple[str, str, str | None]]] = {}
+# Per home: YAML-bridge claims a source released when it supplied the name (applied OR skipped as equal)
+# — name → (source name, bridge marker digest). Revoking that source hands the value back to the bridge
+# while it is still the bridged value, or a later YAML tightening would read it as the operator's.
+_RELEASED_BRIDGE_CLAIMS_BY_HOME: dict[str, dict[str, tuple[str, str]]] = {}
 # HERMES_HOME paths already pulled external secrets for: load_hermes_dotenv() runs at import time from
 # several hot modules, so without this the Bitwarden status line prints 3-5x per startup and the config
 # re-parse + ASCII sweep re-run each time (Bitwarden's own cache only saves the network call).
@@ -307,6 +311,7 @@ def reset_secret_source_cache(hermes_home: str | os.PathLike | None = None) -> N
         _SECRET_SOURCE_VALUES_BY_HOME.clear()
         _SECRET_SOURCE_RESTORE_BY_HOME.clear()
         _SECRET_SOURCE_WRITES_BY_HOME.clear()
+        _RELEASED_BRIDGE_CLAIMS_BY_HOME.clear()
         return
     home_key = str(Path(hermes_home).resolve())
     _APPLIED_HOMES.discard(home_key)
@@ -905,7 +910,8 @@ def _revoke_secret_source_writes(home_path: Path, *, keep) -> None:
     write, or is removed when it had none."""
     home_key = str(Path(home_path).resolve())
     writes = _SECRET_SOURCE_WRITES_BY_HOME.get(home_key)
-    if not writes:
+    claims = _RELEASED_BRIDGE_CLAIMS_BY_HOME.get(home_key)
+    if not writes and not claims:
         return
     try:
         from agent.secret_scope import load_env_file
@@ -913,6 +919,27 @@ def _revoke_secret_source_writes(home_path: Path, *, keep) -> None:
         owned_by_dotenv = set(load_env_file(Path(home_path) / ".env")) | _MANAGED_DOTENV_KEYS
     except Exception:
         owned_by_dotenv = set(_MANAGED_DOTENV_KEYS)
+    _revoke_value_writes(home_key, writes or {}, keep, owned_by_dotenv)
+    _restore_bridge_claims(home_key, claims or {}, keep, owned_by_dotenv)
+
+
+def _restore_bridge_claims(home_key: str, claims: dict, keep, owned_by_dotenv: set) -> None:
+    """Give a revoked source's name back to the YAML bridge when it again holds the bridged value."""
+    from gateway.bridged_env import BRIDGED_ENV_MARKER_PREFIX, bridged_env_digest
+
+    kept = {name: claim for name, claim in claims.items() if keep(name, claim[0])}
+    for name, (_source, marker) in claims.items():
+        if name not in kept and name not in owned_by_dotenv and bridged_env_digest(os.environ.get(name)) == marker:
+            os.environ[BRIDGED_ENV_MARKER_PREFIX + name] = marker
+    if kept:
+        _RELEASED_BRIDGE_CLAIMS_BY_HOME[home_key] = kept
+    else:
+        _RELEASED_BRIDGE_CLAIMS_BY_HOME.pop(home_key, None)
+
+
+def _revoke_value_writes(home_key: str, writes: dict, keep, owned_by_dotenv: set) -> None:
+    if not writes:
+        return
     kept: dict[str, tuple[str, str, str | None]] = {}
     for name, (source, value, prior) in writes.items():
         if keep(name, source):
@@ -1080,6 +1107,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     # snapshot failed every default-profile turn for the process lifetime (#102041).
     values: dict[str, str] = {}
     supplied = _record_supplied_names(report)
+    _record_released_bridge_claims(home_key, report, supplied, environ_before)
     for name in supplied:
         if name in os.environ:
             values[name] = os.environ[name]
@@ -1103,6 +1131,21 @@ def _apply_external_secret_sources(home_path: Path) -> None:
             print(f"  {src.label}: {warn}", file=sys.stderr)
     for conflict in report.conflicts:
         print(f"  Secret sources: {conflict}", file=sys.stderr)
+
+
+def _record_released_bridge_claims(home_key: str, report, supplied: set[str], environ_before: dict) -> None:
+    """Remember each bridge-owned value (marker matched before this pass) a source now supplies."""
+    from gateway.bridged_env import BRIDGED_ENV_MARKER_PREFIX, bridged_env_digest
+
+    owner = {name: src.name for src in report.sources for name in src.skipped_existing}
+    owner.update({name: applied.source for name, applied in report.provenance.items()})
+    claims = _RELEASED_BRIDGE_CLAIMS_BY_HOME.setdefault(home_key, {})
+    for name in supplied:
+        marker = environ_before.get(BRIDGED_ENV_MARKER_PREFIX + name)
+        if marker and name in owner and bridged_env_digest(environ_before.get(name)) == marker:
+            claims[name] = (owner[name], marker)
+    if not claims:
+        _RELEASED_BRIDGE_CLAIMS_BY_HOME.pop(home_key, None)
 
 
 def _record_secret_source_writes(home_key: str, report, supplied: set[str], environ_before: dict) -> None:

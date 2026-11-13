@@ -30,7 +30,7 @@ import { randomUUID } from "node:crypto";
 const NOT_FOUND_RE = /not[\s_-]?found/i;
 /** Return a unique message id accepted by Spectrum's message-id parser. */
 export function createProbeMessageId() {
-  return randomUUID();
+  return `spc-msg-${randomUUID()}`;
 }
 
 /**

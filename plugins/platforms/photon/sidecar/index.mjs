@@ -238,29 +238,19 @@ function classifyStreamLog(text) {
 }
 
 // spectrum-ts routes its stream telemetry through @photon-ai/otel's
-// createLogger, which sends severity >= ERROR to console.error and
-// everything else (WARN/INFO) to console.log. The two lines we key off
-// land on *different* channels: `log.error("stream persistently failing")`
-// -> console.error, but `log.warn("stream interrupted; reconnecting")`
-// -> console.log. Patch both so the recovering/degraded counters see the
-// interrupt bursts, not just the terminal "persistently failing" line.
-const originalConsoleError = console.error.bind(console);
-console.error = (...args) => {
-  const text = args
-    .map((arg) => (arg && arg.stack ? arg.stack : String(arg)))
-    .join(" ");
-  classifyStreamLog(text);
-  originalConsoleError(...args);
-};
-
-const originalConsoleLog = console.log.bind(console);
-console.log = (...args) => {
-  const text = args
-    .map((arg) => (arg && arg.stack ? arg.stack : String(arg)))
-    .join(" ");
-  classifyStreamLog(text);
-  originalConsoleLog(...args);
-};
+// createLogger: ERROR uses console.error, WARN uses console.warn. Keep the
+// legacy console.log route too so interrupt bursts reach the same classifier
+// regardless of the SDK's telemetry version.
+for (const method of ["error", "warn", "log"]) {
+  const original = console[method].bind(console);
+  console[method] = (...args) => {
+    const text = args
+      .map((arg) => (arg && arg.stack ? arg.stack : String(arg)))
+      .join(" ");
+    classifyStreamLog(text);
+    original(...args);
+  };
+}
 
 // Upstream liveness probe (see `/probe` handler). A synthetic DM space id +
 // a unique-per-probe bogus message id drive a cheap unary read over the same

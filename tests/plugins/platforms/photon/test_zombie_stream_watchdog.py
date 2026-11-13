@@ -69,7 +69,7 @@ def test_probe_message_id_is_guid_shaped_and_unique() -> None:
         process.stdout.write(JSON.stringify({ first, second }));
         """
     )
-    guid_re = r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    guid_re = r"^spc-msg-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
     assert re.fullmatch(guid_re, out["first"])
     assert re.fullmatch(guid_re, out["second"])
     assert out["first"] != out["second"]
@@ -86,6 +86,7 @@ def test_probe_rejection_classification_is_strict() -> None:
           sdkNotFound: classifyProbeRejection({ code: "notFound", message: "missing" }),
           unavailable: classifyProbeRejection({ code: 14, message: "14 UNAVAILABLE: connect failed" }),
           deadline: classifyProbeRejection({ code: 4, message: "4 DEADLINE_EXCEEDED" }),
+          invalidId: classifyProbeRejection({ code: 3, message: "Expected message resource GUID" }),
           generic: classifyProbeRejection(new Error("socket hang up")),
           weird: classifyProbeRejection("string error"),
         };
@@ -97,7 +98,7 @@ def test_probe_rejection_classification_is_strict() -> None:
         assert out[name]["alive"] is True, name
         assert out[name]["inconclusive"] is False, name
     # Everything else: not alive AND explicitly inconclusive.
-    for name in ("unavailable", "deadline", "generic", "weird"):
+    for name in ("unavailable", "deadline", "invalidId", "generic", "weird"):
         assert out[name]["alive"] is False, name
         assert out[name]["inconclusive"] is True, name
 

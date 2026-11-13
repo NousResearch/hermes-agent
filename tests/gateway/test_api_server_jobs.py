@@ -276,6 +276,33 @@ class TestUpdateJob:
                 assert "__proto__" not in sanitized
 
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("patch_body", [
+        {"timezone": "Not/AZone"}, {"schedule": "bogus schedule"}, {"repeat": "often"}, {"name": 7},
+    ], ids=["timezone", "schedule", "repeat", "non-string-name"])
+    async def test_an_invalid_value_is_a_400_like_post_and_leaves_the_job(
+            self, adapter, tmp_path, monkeypatch, patch_body):
+        """PATCH rejects a bad value as POST does (400 ``{"error": ...}``), against the real store."""
+        from cron import jobs
+        monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
+        monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+        monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+        job = jobs.create_job(prompt="p", schedule="0 9 * * *", name="pre-market")
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(f"{_MOD}._cron_update", jobs.update_job), \
+                    patch(f"{_MOD}._cron_create", jobs.create_job):
+                resp = await cli.patch(f"/api/jobs/{job['id']}", json=patch_body)
+                assert resp.status == 400
+                assert set(await resp.json()) == {"error"}
+                if "timezone" in patch_body:
+                    created = await cli.post("/api/jobs", json={
+                        "name": "n", "schedule": "0 9 * * *", "prompt": "p", **patch_body})
+                    assert created.status == 400 and set(await created.json()) == {"error"}
+        assert jobs.get_job(job["id"])["schedule"] == job["schedule"]
+        assert jobs.get_job(job["id"]).get("timezone") == job.get("timezone")
+
+
 # ---------------------------------------------------------------------------
 # 13. test_delete_job
 # ---------------------------------------------------------------------------

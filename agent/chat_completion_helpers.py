@@ -2588,12 +2588,21 @@ class _BedrockStream:
                 chunk_adapter=lambda chunk: chunk, accept_chunk=_accept_event,
                 completed_response_predicate=lambda response: bool(getattr(response, "choices", None)),
                 metadata=_relay_stream_metadata(agent, "custom"), defer_logical_completion=True)
-            # A busy discovery lock is transient; delivery checks observers per delta.
+            # Preserve upstream spinner eligibility, while always delivering deltas to
+            # dynamically discovered hooks (including after a busy discovery lock).
+            try:
+                from agent.plugin_stream_hooks import has_reasoning_stream_observer_hooks
+                plugin_reasoning_observer = has_reasoning_stream_observer_hooks()
+            except Exception:
+                logger.debug("plugin reasoning stream observer check failed", exc_info=True)
+                plugin_reasoning_observer = False
+            wants_text = agent._has_stream_consumers()
+            wants_reasoning = agent.reasoning_callback or agent.stream_delta_callback or plugin_reasoning_observer
             try:
                 streamed_response = stream_converse_with_callbacks({"stream": stream},
-                    on_text_delta=self._after_first(agent._fire_stream_delta),
+                    on_text_delta=self._after_first(agent._fire_stream_delta) if wants_text else agent._fire_stream_delta,
                     on_tool_start=self._after_first(agent._fire_tool_gen_started),
-                    on_reasoning_delta=self._after_first(agent._fire_reasoning_delta),
+                    on_reasoning_delta=self._after_first(agent._fire_reasoning_delta) if wants_reasoning else agent._fire_reasoning_delta,
                     on_interrupt_check=lambda: agent._interrupt_requested, on_event=_stamp_event)
             except EmptyStreamError:
                 # IAM-denied fallback: no stream events, but converse() already completed.

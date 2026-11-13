@@ -1634,7 +1634,7 @@ def _split_env_string(payload: str) -> list[str] | None:
     return args
 
 
-def _env_split_payload(tokens: list[str]) -> str | None:
+def _env_split_payload(tokens: list[str], _depth: int = 0) -> str | None:
     from tools.approval_wrappers import _short_bundle
 
     index = 1
@@ -1659,9 +1659,17 @@ def _env_split_payload(tokens: list[str]) -> str | None:
             index += 1
         payload = attached if attached is not None else (tokens[index] if index < len(tokens) else "")
         args = _split_env_string(payload)
+        if args is None:
+            return None
+        rebuilt = args + tokens[index + 1:]
+        # env re-parses a split string that starts with options (`-S '-S reboot'`).
+        if rebuilt and rebuilt[0].startswith("-") and _depth < 8:
+            nested = _env_split_payload(["env", *rebuilt], _depth + 1)
+            if nested is not None:
+                return nested
         # Protect literal separators when reusing command-position detection;
         # only a real shell -c carrier may turn these argv bytes into code.
-        return shlex.join(args + tokens[index + 1:]) if args is not None else None
+        return shlex.join(rebuilt)
     return None
 
 

@@ -119,3 +119,25 @@ def test_picker_bare_custom_row_probes_with_the_entrys_key(issue_config):
             user_providers={}, custom_providers=[], refresh=True, probe_current_custom_provider=True)
 
     assert seen and set(seen) == {f"Bearer {ROUTE_KEY}"}
+
+
+@pytest.mark.parametrize(("base_url", "expected"), [
+    ("http://127.0.0.1:9/v1", ""),                      # third-party host: no OpenAI key (#91308)
+    ("https://api.openai.com/v1", OPENAI_KEY),          # the key's own host still gets it
+])
+def test_custom_probe_with_no_declared_entry_gates_the_openai_key_on_its_host(
+        tmp_path, monkeypatch, base_url, expected):
+    """A bare ``custom`` endpoint no ``providers:`` entry declares falls back to the host-gated env
+    keys only, so the ambient OpenAI key reaches api.openai.com and nothing else."""
+    from hermes_cli.auth_declared_providers import custom_catalog_probe_api_key
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(yaml.safe_dump({
+        "model": {"default": "m", "provider": "custom", "base_url": base_url}}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("OPENAI_API_KEY", OPENAI_KEY)
+    for var in ("OPENAI_BASE_URL", "CUSTOM_API_KEY", "OPENROUTER_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+
+    assert custom_catalog_probe_api_key({"provider": "custom", "base_url": base_url}, base_url) == expected

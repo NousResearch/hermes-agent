@@ -62,6 +62,15 @@ class TestSubscribe:
         secret = _load_subscriptions()["s"]["secret"]
         assert len(secret) > 20
 
+    @pytest.mark.parametrize("given", ["", "operator-supplied-hmac-secret-value"])
+    def test_output_never_contains_full_secret(self, capsys, given):
+        for _ in range(2):  # create, then update
+            webhook_command(_make_args(webhook_action="subscribe", name="s", secret=given))
+            out = capsys.readouterr().out
+            secret = _load_subscriptions()["s"]["secret"]
+            assert secret not in out
+            assert "webhook_subscriptions.json" in out
+
     def test_profile_binding_and_secret_survive_update(self, tmp_path, capsys):
         profile_dir = tmp_path / "profiles" / "compta"
         profile_dir.mkdir(parents=True)

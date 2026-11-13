@@ -10,6 +10,3 @@ removed:
 - name: or-picker
   reason: "Folded into openrouter-picker. Installing the provider alone left the picker broken. Install openrouter-picker."
   date: "2026-09-28"
-- name: kiwi
-  reason: "Renamed to kiwi-shopping in v1.3.0 (Kiwi Shopping / kiwi购物智能体). Install kiwi-shopping; this id is retired."
-  date: "2026-11-13"

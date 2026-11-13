@@ -43,6 +43,14 @@ Convert text to speech with eleven providers:
 | WhatsApp | Audio file attachment | MP3 |
 | CLI | Saved to `~/.hermes/audio_cache/` | MP3 |
 
+`voice_compatible` reports eligibility for the current platform's voice-delivery
+path, not confirmation that an upload or playback succeeded. On Photon, built-in
+provider MP3/WAV output can be voice-compatible because the sender validates and
+converts audio to AAC/M4A. The tool keeps its existing output format and long-form
+packing codec. It doesn't encode Opus just to mark Photon output as eligible.
+Command and plugin providers retain their explicit voice-compatibility opt-in.
+Generation, conversion and send failures remain errors at their respective stages.
+
 ### Configuration
 
 ```yaml

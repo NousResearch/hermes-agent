@@ -549,6 +549,11 @@ def text_to_speech_tool(
         delivery_base = base_path.with_suffix(Path(encoded_paths[0]).suffix)
         final_paths, combined_chunks = _build_audio_delivery_files(
             encoded_paths, str(delivery_base), delivery_profile, voice_compatible=voice_compatible)
+        # Photon validates/transcodes audio at send time. Change only public eligibility,
+        # after packing, so its MP3/WAV output never selects the internal Opus codec.
+        if platform == "photon" and provider in BUILTIN_TTS_PROVIDERS:
+            from gateway.platforms.base import should_send_media_as_audio
+            voice_compatible = all(should_send_media_as_audio(platform, Path(path).suffix) for path in final_paths)
         for path in final_paths:
             logger.info("TTS audio saved: %s (%s bytes, provider: %s)", path, f"{os.path.getsize(path):,}", provider)
         return json.dumps({

@@ -1747,6 +1747,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
             )
             return self._finalize_send_result(response, "send turn progress card failed")
         except Exception as exc:
+            logger.warning("[Feishu] Send turn progress card failed: %s", exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
     async def edit_turn_progress_card(self, chat_id: str, message_id: str, card: dict[str, Any], *, metadata=None) -> SendResult:
@@ -1762,6 +1763,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
                 result.message_id = message_id
             return result
         except Exception as exc:
+            logger.warning("[Feishu] Edit turn progress card %s failed: %s", message_id, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
     async def delete_message(self, chat_id: str, message_id: str) -> bool:
@@ -4002,11 +4004,11 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
 
     @staticmethod
     def _build_patch_message_body(*, content: str) -> Any:
-        return _sdk_build(PatchMessageRequestBody, content=content)
+        return _sdk_build(PatchMessageRequestBody, content=content)  # health: allow F821 -- bound with the other SDK names by _load_lark_oapi
 
     @staticmethod
     def _build_patch_message_request(message_id: str, request_body: Any) -> Any:
-        return _sdk_build(PatchMessageRequest, message_id=message_id, request_body=request_body)
+        return _sdk_build(PatchMessageRequest, message_id=message_id, request_body=request_body)  # health: allow F821 -- bound with the other SDK names by _load_lark_oapi
 
     @staticmethod
     def _build_delete_message_request(message_id: str) -> Any:

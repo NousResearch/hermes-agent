@@ -101,7 +101,14 @@ class GatewaySessionAgentMixin:
             return out
         with cache_lock:
             cached = cache.get(ctx.session_key)
-            if not (cached and cached[1] == sig):
+            if not cached:
+                return out
+            if cached[1] != sig:
+                # A rebuild replaces this entry below. Keep ownership of the old
+                # agent so the caller soft-releases it OFF lock, just as for a
+                # stale transcript. Overwriting it directly strands provider
+                # queue-writers (and their mem-sync executor) for process life.
+                out.evicted = self._pop_cached_agent_for_eviction()
                 return out
             # cached[2] = message_count at cache time (stale when a second process appended rows);
             # cached[3] = the session_id the snapshot was taken for.

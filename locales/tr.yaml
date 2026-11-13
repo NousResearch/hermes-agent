@@ -3574,6 +3574,7 @@ explainer:
     fts_index: "tur durduruldu çünkü oturum arama dizini (FTS5) bozuk ve ayrılamadı; bu nedenle bu mesaj kaydedilmedi. Mesaj deposunun kendisi hasarlı değil: kurtarma araçları çalıştırmayın ve yedek geri yüklemeyin. `hermes {profile_arg}doctor --fix` çalıştırın (veya Hermes'i yeniden başlatın; dizini açılışta onarır), sonra mesajınızı yeniden gönderin."
     disk: "Hermes bu konuşmayı diske kaydedemedi; mesajlarınızı kaybetmektense durdu. Disk büyük olasılıkla dolu: biraz yer açın (veya {home}/state.db dosyasının izinlerini düzeltin), sonra mesajınızı yeniden gönderin."
     default: "Hermes bu konuşmayı kaydedemedi; mesajlarınızı kaybetmektense durdu. Olası nedenler: sürücüde yer kalmamış ya da başka bir Hermes süreci veritabanını tutuyor. Diğer Hermes pencerelerini kapatın, depolamayı kontrol etmek için `hermes {profile_arg}doctor` çalıştırın, sonra mesajınızı yeniden gönderin."
+    receipt_transport: "Hermes bu mesajın kaydedildiğini doğrulayamadı: oturum deposu başka bir yazıcıyla meşguldü ve zamanında yanıt vermedi; bu yüzden mesaj KAYDEDİLMEDİ ve hiçbir şey kaybolmadı. Diğer tur bittikten sonra mesajınızı tekrar gönderin; hâlâ başarısız olursa depolamayı kontrol etmek için `hermes {profile_arg}doctor` çalıştırın."
   file_mutation:
     header: "⚠️ Dosya değişikliği doğrulayıcısı: yukarıdaki ifadeler aksini düşündürse bile bu turda {count} dosya düzenlemesi BAŞARISIZ oldu. Gerçekte neyin uygulandığını doğrulamak için `git status` veya `read_file` çalıştırın."
     entry: "  • `{path}` — [{tool}] {preview}"

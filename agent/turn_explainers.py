@@ -50,7 +50,7 @@ _EXIT_REASON_PREFIX_EXPLANATIONS = tuple(
 )
 
 # ``session_persistence_failed`` refined by the classified cause (lock contention ≠ disk full).
-_PERSISTENCE_CAUSES = frozenset({"compression", "compression_closed", "turn_lease", "session_row_missing", "locked", "replaced", "deleted_wal", "corrupt", "fts_index", "disk"})
+_PERSISTENCE_CAUSES = frozenset({"compression", "compression_closed", "turn_lease", "session_row_missing", "locked", "replaced", "deleted_wal", "corrupt", "fts_index", "disk", "receipt_transport"})
 
 
 def _persistence_explanation_key(cause: Optional[str]) -> str:

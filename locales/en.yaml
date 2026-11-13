@@ -3685,6 +3685,7 @@ explainer:
     fts_index: "the turn was stopped because the session search index (FTS5) is corrupt and could not be detached, so this message was not saved. The message store itself is not damaged: do not run recovery tools or restore a backup. Run `hermes {profile_arg}doctor --fix` (or restart Hermes, which repairs the index on open), then send your message again."
     disk: "Hermes couldn't save this conversation to disk, so it stopped rather than lose your messages. The disk is probably full: free some space (or fix the permissions on {home}/state.db), then send your message again."
     default: "Hermes couldn't save this conversation, so it stopped rather than lose your messages. Possible causes: the drive is out of room, or another Hermes process is holding the database. Close other Hermes windows, run `hermes {profile_arg}doctor` to check storage, then send your message again."
+    receipt_transport: "Hermes couldn't confirm this message was saved: the session store was busy with another writer and did not answer in time, so the message was NOT saved and nothing was lost. Send your message again after the other turn finishes; if it keeps failing, run `hermes {profile_arg}doctor` to check storage."
   file_mutation:
     header: "⚠️ File-mutation verifier: {count} file edit(s) FAILED this turn despite any wording above that may suggest otherwise. Run `git status` or `read_file` to confirm what actually landed."
     entry: "  • `{path}` — [{tool}] {preview}"

@@ -98,7 +98,7 @@ def is_disk_full_error(exc: BaseException | str | None) -> bool:
 # Every classify_persistence_error bucket; consumers enumerate this tuple.
 PERSISTENCE_ERROR_CAUSES = (
     "locked", "compression", "compression_closed", "turn_lease", "corrupt", "fts_index",
-    "replaced", "deleted_wal", "disk", "session_row_missing", "unknown",
+    "replaced", "deleted_wal", "disk", "session_row_missing", "receipt_transport", "unknown",
 )
 
 
@@ -287,6 +287,14 @@ _PERSISTENCE_CAUSE_BY_PHRASE = (
     (("locked", "busy"), "locked"),
     # A flush rejected by the session-row FK: the row was removed under a live agent (#123583).
     (("foreign key constraint failed",), "session_row_missing"),
+    # The receipt/transport layer (agent/runtime_session_store.py): a managed worker's write was
+    # never confirmed by the owning gateway. These tokens are the client's own failure strings,
+    # never SQLite text — the store may be perfectly healthy and the transcript is NOT on disk.
+    # The bucket must outrank the disk fallback below so a receipt timeout never reads as "free
+    # some disk space" or "another process is holding the database" (fleet incident: 511 GiB
+    # free, no lock error anywhere; the operator was sent hunting disk for hours).
+    (("worker_receipt_timeout", "pending_receipt", "outbox_full", "owner_unavailable"),
+     "receipt_transport"),
 )
 
 
@@ -299,7 +307,9 @@ def classify_persistence_error(exc_or_str) -> str:
     corruption to the FTS index (the transcript store is not damaged); "replaced" =
     main-file replacement; "deleted_wal" = a retired sidecar generation requiring
     capture inspection; "session_row_missing" = the session row was deleted under a
-    live agent (FK rejection; the flush recreates it)."""
+    live agent (FK rejection; the flush recreates it); "receipt_transport" = the
+    owning gateway never confirmed the write within the receipt budget (the store may
+    be healthy; the transcript is NOT on disk — re-send after the writer clears)."""
     if exc_or_str is None:
         return "unknown"
     # Lease refusals contain neither "locked" nor "busy": match by type first,

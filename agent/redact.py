@@ -820,9 +820,9 @@ def _is_basic_pair_password(password: str) -> bool:
 # Form-urlencoded body: only when the ENTIRE text is a k=v&k=v string.
 _FORM_BODY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*=[^&\s]*(?:&[A-Za-z_][A-Za-z0-9_.-]*=[^&\s]*)+$")
 
-# Control / zero-width characters that can split a token body (``sk-abc\x1bdef``,
-# ``ghp_abc\n123``) and escape the contiguous prefix regexes.
-_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f\u200b-\u200f\u2028-\u202f\u2060\ufeff]")
+# Control / invisible chars that can split a token body (``sk-abc\x1bdef``, ``ghp_abc\n123``) and escape the
+# contiguous prefix regexes: C0, DEL, line separators and every Unicode format (Cf) code point (renders as nothing).
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f\u00ad\u0600-\u0605\u061c\u06dd\u070f\u0890\u0891\u08e2\u180e\u200b-\u200f\u2028-\u202f\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb\U000110bd\U000110cd\U00013430-\U0001343f\U0001bca0-\U0001bca3\U0001d173-\U0001d17a\U000e0001\U000e0020-\U000e007f]")
 
 # Union of every _PREFIX_PATTERNS body class: a control-stripped match may only
 # span token-body or control chars. ``=`` is excluded so a KEY=value separator

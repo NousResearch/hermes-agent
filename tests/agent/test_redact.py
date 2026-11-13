@@ -324,6 +324,16 @@ class TestControlCharSplitTokens:
         tok = "ghp_abcdef1234567890ABCDEF1234567890abcdef"
         self._assert_split_masked(f"{tok[:10]}\u200b{tok[10:]}", tok)
 
+    def test_every_format_char_split_token_masks(self):
+        # Any Unicode format (Cf) code point renders as nothing, so each one can hide a key from the
+        # prefix regexes: soft hyphen, Mongolian vowel separator, BiDi isolate, astral TAG character.
+        import sys
+        import unicodedata
+        tok = "ghp_abcdef1234567890ABCDEF1234567890abcdef"
+        for cp in range(sys.maxunicode + 1):
+            if unicodedata.category(chr(cp)) == "Cf":
+                self._assert_split_masked(f"{tok[:10]}{chr(cp)}{tok[10:]}", tok)
+
     def test_complete_token_does_not_swallow_next_line(self):
         # A COMPLETE token at end-of-line followed by ordinary text must not
         # be joined across the newline — the ordinary prefix pass masks the

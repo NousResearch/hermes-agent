@@ -24,12 +24,14 @@ logger = logging.getLogger("tools.approval")
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("acknowledged", "authority", "cancelled", "card_deny_only", "data", "event", "expired", "observers",
-                 "owner", "reason", "result", "settle")
+    __slots__ = ("acknowledged", "authority", "background", "cancelled", "card_deny_only", "data", "event", "expired",
+                 "observers", "owner", "reason", "result", "settle", "wait_group")
 
     def __init__(self, data: dict):
         self.owner = None
+        self.background = False
         self.event = threading.Event()
+        self.wait_group = None
         self.data = dict(data)
         self.data.setdefault("request_id", uuid.uuid4().hex)
         # True: a card tap may only deny until a renderer proves its card shows the whole command (#62359).
@@ -192,6 +194,11 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     timeout_s = entry.data["timeout_s"] = _ctx._get_approval_timeout()
 
     def _enqueue() -> None:
+        # A retained chat transport renders without the parent's typing/stream. Capture
+        # that ownership now: releasing the lease later clears its callback.
+        entry.background = owner is not None and owner.callback is not None
+        if not entry.background:
+            entry.wait_group = _approval._gateway_wait_groups.get(session_key, session_key)
         register_prepared_approval(session_key, entry)
         _approval._gateway_queues.setdefault(session_key, []).append(entry)
 
@@ -223,6 +230,14 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         with _approval._lock:
             choice = entry.result
             queue = _approval._gateway_queues.get(session_key, [])
+            if entry in queue and state in ("timeout", "notify_failed"):
+                from tools.approval_queue import resolved_surface_is_idle
+                resume = _approval._gateway_before_wake_cbs.get(session_key)
+                if resume is not None and resolved_surface_is_idle(_approval._gateway_queues, session_key, [entry]):
+                    try:
+                        resume()
+                    except Exception:
+                        logger.debug("approval surface resume failed", exc_info=True)
             if entry in queue:
                 queue.remove(entry)
             if not queue:

@@ -24,6 +24,7 @@ from gateway.platforms.base_image_sniff import _looks_like_image
 from gateway.platforms.base_media_flags import pad_inline_flags
 from gateway.runtime_footer import footer_onto_photo_caption, send_footer_unless_captioned
 from gateway.platforms.session_model import _SessionModelSettingsMixin
+from tools.approval_queue import clear_idle_typing_pause
 from utils import normalize_proxy_url, unlink_files_older_than
 from agent.i18n import t
 from agent.retry_utils import jittered_backoff
@@ -3276,9 +3277,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
 
     async def _keep_typing(self, chat_id: str, interval: float = 2.0, metadata=None,
                            stop_event: asyncio.Event | None = None) -> None:
-        """Refresh the typing indicator every ``interval`` seconds until cancelled (platform typing
-        state expires after ~5s). Chats in ``_typing_paused`` are skipped (approval waits — Slack's
-        setStatus disables the compose box). Each ``send_typing`` is bounded by a sub-interval timeout."""
+        """Refresh typing until stopped; skip chat approval and thread silence pauses.
+        Each ``send_typing`` is bounded by a sub-interval timeout."""
         _send_typing_timeout = max(0.25, min(1.5, interval - 0.25))
         try:
             while True:
@@ -3309,7 +3309,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         finally:
             # A send_typing after an outer stop_typing() may have recreated the platform loop.
             await self._stop_typing_quietly(chat_id, metadata)
-            self._typing_paused.difference_update((chat_id, typing_pause_key(chat_id, metadata)))
+            clear_idle_typing_pause(self, chat_id, typing_pause_key(chat_id, metadata))
             # getattr-guard: tests build adapters via object.__new__ without _status_text.
             getattr(self, "_status_text", {}).pop(str(chat_id), None)
 
@@ -3329,7 +3329,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                     await asyncio.sleep(0)
                 await self._stop_typing_quietly(chat_id, metadata)
         finally:
-            self._typing_paused.difference_update((chat_id, typing_pause_key(chat_id, metadata)))
+            clear_idle_typing_pause(self, chat_id, typing_pause_key(chat_id, metadata))
 
     async def _stop_typing_quietly(self, chat_id: str, metadata=None) -> None:
         """Best-effort platform stop_typing; adapter errors are swallowed."""

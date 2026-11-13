@@ -275,8 +275,6 @@ class GatewaySlashCommandsMixin(
         proactive send, not the finalized reply stream). ``is not True``: mocks auto-create attrs."""
         source = event.source
         adapter = self._delivery_adapter_for(source)  # the receiving bot, not the default profile's
-        if adapter:
-            adapter.resume_typing_for_chat(source.chat_id)  # agent is about to continue
         if getattr(adapter, "SUPPORTS_NATIVE_STREAMING", False) is not True:
             return confirmation_text
         if adapter:
@@ -1235,8 +1233,11 @@ class GatewaySlashCommandsMixin(
             return stale
         choices = {_APPROVE_CHOICE_BY_ARG[a] for a in args if a in _APPROVE_CHOICE_BY_ARG}
         choice = "always" if "always" in choices else "session" if "session" in choices else "once"
+        adapter = self._delivery_adapter_for(event.source)
+        before_wake = (lambda: adapter.resume_typing_for_chat(event.source.chat_id)) if adapter else None
         # Exactly the approvals the sender was checked against, never "the oldest" again.
-        count = sum(resolve_gateway_approval(session_key, choice, request_id=rid) for rid in request_ids)
+        count = sum(resolve_gateway_approval(session_key, choice, request_id=rid, before_wake=before_wake)
+                    for rid in request_ids)
         if not count:
             return t("gateway.approve.no_pending")
         confirmation_text = t(f"gateway.approve.{choice}_{'plural' if count > 1 else 'singular'}", count=count)
@@ -1261,8 +1262,10 @@ class GatewaySlashCommandsMixin(
         if stale:
             return stale
         reason = (raw_args[len(tokens[0]):].strip() if resolve_all else raw_args)[:280].strip()
-        count = sum(resolve_gateway_approval(session_key, "deny", reason=reason or None, request_id=rid)
-                    for rid in request_ids)
+        adapter = self._delivery_adapter_for(event.source)
+        before_wake = (lambda: adapter.resume_typing_for_chat(event.source.chat_id)) if adapter else None
+        count = sum(resolve_gateway_approval(session_key, "deny", reason=reason or None, request_id=rid,
+                                             before_wake=before_wake) for rid in request_ids)
         if not count:
             return t("gateway.deny.no_pending")
         logger.info("User denied %d dangerous command(s) via /deny%s", count,

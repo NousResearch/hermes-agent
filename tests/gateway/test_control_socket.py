@@ -1,6 +1,7 @@
 """Tests for the gateway control socket (#92091 migration step 1)."""
 
 import asyncio
+import logging
 import errno
 import json
 import socket
@@ -124,6 +125,79 @@ def test_server_answers_identify_and_status(home: Path):
     ident, status = _run(scenario())
     assert ident == {"pid": 4242, "code_sha": "abc123", "protocol": 1}
     assert status == {"gateway_state": "running"}
+
+
+def test_old_server_does_not_unlink_replacement_socket_or_pointer(home: Path):
+    """A new owner may bind while the previous gateway is still draining."""
+    async def scenario():
+        old = GatewayControlServer(home)
+        assert await old.start()
+        socket_path = old._bind_path
+        pointer = old._pointer_file
+        if pointer is not None:
+            pointer.write_text(str(socket_path))
+        # Simulate the replacement owner swapping the pathname before old.stop().
+        socket_path.unlink()
+        replacement = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        replacement.bind(str(socket_path))
+        replacement_inode = socket_path.stat().st_ino
+        try:
+            if pointer is not None:
+                pointer.unlink()
+                pointer.write_text(str(socket_path))
+            await old.stop()
+            assert socket_path.stat().st_ino == replacement_inode
+            if pointer is not None:
+                assert pointer.exists()
+        finally:
+            replacement.close()
+            socket_path.unlink(missing_ok=True)
+    _run(scenario())
+
+
+def test_new_server_does_not_unlink_live_predecessor_socket(home: Path, caplog):
+    async def scenario():
+        old = GatewayControlServer(home, verb_handlers={"identify": lambda: {"pid": 101}})
+        new = GatewayControlServer(home)
+        assert await old.start()
+        socket_path = old._bind_path
+        original_inode = socket_path.stat().st_ino
+        try:
+            assert await new.start() is False
+            assert socket_path.stat().st_ino == original_inode
+            reader, writer = await asyncio.open_unix_connection(str(socket_path))
+            writer.write(b'{"verb":"identify"}\n')
+            await writer.drain()
+            response = await reader.readline()
+            writer.close()
+            await writer.wait_closed()
+            assert response  # predecessor still serves real connections
+        finally:
+            await new.stop()
+            await old.stop()
+    with caplog.at_level(logging.WARNING, logger="gateway.control_socket"):
+        _run(scenario())
+    assert "already has a live owner" in caplog.text
+    assert "failed to start" not in caplog.text  # refused cleanly, not via an exception
+
+
+def test_new_server_replaces_stale_socket(home: Path):
+    async def scenario():
+        stale_path, _ = resolve_server_socket_path(home)
+        stale_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        stale_path.parent.chmod(0o700)
+        stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        stale.bind(str(stale_path))
+        stale.close()  # socket path remains, but no process listens
+        stale_inode = stale_path.stat().st_ino
+        server = GatewayControlServer(home)
+        assert await server.start()
+        try:
+            assert stale_path.exists()
+            assert stale_path.stat().st_ino != stale_inode  # the stale socket was replaced
+        finally:
+            await server.stop()
+    _run(scenario())
 
 
 def test_unknown_verb_and_malformed_request(home: Path):

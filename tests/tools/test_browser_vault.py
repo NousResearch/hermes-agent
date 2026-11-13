@@ -32,6 +32,7 @@ from agent.vault_login_classifier import (
     build_fill_js,
     classify_login_control,
     select_password_fill,
+    classify_checkout_control,
 )
 from agent.vault_store import (
     VaultError,
@@ -830,3 +831,42 @@ class TestTwoFactor:
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval):
             out = json.loads(browser_vault_tool.browser_vault_enter_code(task_id="t"))
         assert out["error_type"] == "no_code_field"
+
+
+class TestCheckoutBareIdClassification:
+    """Regression: checkout controls whose only signals are bare ids + placeholders.
+
+    Real-world hosted card forms (e.g. iPay88) carry no name attribute, no
+    autocomplete and no label association — the inspection JS surfaces the
+    element id in ``name`` and the placeholder in ``label``. These must still
+    classify, and digit-suffixed csc variants (cvv2/cvc2) must match.
+    """
+
+    def _ctl(self, name, label, type_="text", idx=0):
+        return LoginControl(
+            autocomplete="", form_index=None, index=idx,
+            label=label, name=name, type=type_,
+        )
+
+    def test_bare_id_card_fields_classify(self):
+        cases = [
+            ("card-no", "1111 2222 3333 4444", "cc-number"),
+            ("card-name", "Please enter name", "cc-name"),
+            ("exp-date", "MM/YY", "cc-exp"),
+            ("cvv2", "3 or 4 digit code", "cc-csc"),
+        ]
+        for i, (name, label, want) in enumerate(cases):
+            r = classify_checkout_control(self._ctl(name, label, idx=i))
+            assert r is not None and r.token == want, (name, r and r.token, want)
+
+    def test_cvv_digit_suffixes_classify(self):
+        for name in ("cvv2", "cvc2"):
+            r = classify_checkout_control(self._ctl(name, ""))
+            assert r is not None and r.token == "cc-csc", name
+
+    def test_card_no_and_card_name_word_variants(self):
+        assert classify_checkout_control(self._ctl("x", "card no")).token == "cc-number"
+        assert classify_checkout_control(self._ctl("x", "card name")).token == "cc-name"
+
+    def test_non_card_control_stays_unclassified(self):
+        assert classify_checkout_control(self._ctl("query", "Search orders")) is None

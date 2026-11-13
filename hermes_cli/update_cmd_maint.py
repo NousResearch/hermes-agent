@@ -912,6 +912,11 @@ def _install_default_tools_after_update() -> None:
         return
     for name in default_packages(Lockfile(lockfile_path()).names()):
         if pm.installed_package(name) is not None:
+            # The entry found may be a row another checkout recorded: claim it, or that
+            # checkout's upgrade drops the row and `pm gc` deletes this one's tool. Claiming
+            # an installed tool downloads and re-hashes nothing.
+            with suppress(pm.InstallError, OSError):
+                pm.ensure(name, explicit=True, verify=False)
             continue
         print(f"\n→ Installing {name} (default tool; opt out with `hermes pm install --without {name}`)...")
         try:

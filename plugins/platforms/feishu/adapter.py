@@ -2015,7 +2015,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
             raw_chat_mode = str(getattr(data, "chat_mode", "") or "").strip().lower()
             info = {
                 "chat_id": chat_id, "name": str(getattr(data, "name", None) or chat_id),
-                "type": self._map_chat_type(raw_chat_type), "raw_type": raw_chat_type or None,
+                "type": self._map_chat_type(raw_chat_mode), "raw_type": raw_chat_type or None,
                 "raw_mode": raw_chat_mode or None,
             }
             self._chat_info_cache[chat_id] = info
@@ -3210,10 +3210,15 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
         return "dm" if event_chat_type == "p2p" else "group"
 
     def _cached_chat_type(self, chat_id: str) -> str:
-        """dm/group/forum for a card click, from the sync chat-info cache; "group" when unknown."""
+        """dm/group/forum for a card click, derived from the cache's raw_mode (conversation mode
+        p2p/group/topic — NOT raw_type, which is visibility private/public); "group" when unknown."""
         info = self._chat_info_cache.get(str(chat_id or "").strip()) or {}
-        resolved = str(info.get("type") or "").strip().lower()
-        return resolved if resolved in {"dm", "group", "forum"} else "group"
+        raw_mode = str(info.get("raw_mode") or "").strip().lower()
+        if raw_mode == "p2p":
+            return "dm"
+        if any(m in raw_mode for m in ("topic", "thread", "forum")):
+            return "forum"
+        return "group"
 
     async def _resolve_sender_profile(self, sender_id: Any, *, is_bot: bool = False) -> dict[str, Optional[str]]:
         """Map Feishu's ID tiers onto SessionSource: user_id (tenant) > open_id (app) as primary,

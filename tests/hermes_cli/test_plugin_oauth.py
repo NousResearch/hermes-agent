@@ -21,6 +21,7 @@ from urllib.request import urlopen
 import pytest
 
 from hermes_cli import auth_oauth_pkce_plugin as pkce
+from hermes_cli import auth as auth_module
 from hermes_cli import plugin_oauth
 from hermes_cli import plugin_provider_requests as ppr
 from hermes_cli.auth_constants import AuthError
@@ -232,10 +233,14 @@ def test_own_oauth_id_wins_over_a_core_provider_of_the_same_name(idp, api, monke
     allowed, _ = api
     plugin = _signed_in(idp)
 
-    def core_resolver(url):
+    def core_resolver():
         raise AssertionError("a core provider's credential must not answer the plugin's own oauth id")
 
-    monkeypatch.setitem(ppr._PROVIDERS, "google", (frozenset({allowed.origin}), core_resolver))
+    monkeypatch.setitem(auth_module.OAUTH_PROVIDER_FLOWS, "google", SimpleNamespace(resolve=core_resolver))
+    rows = dict(ppr._provider_registry())
+    rows["google"] = SimpleNamespace(auth_type="oauth_external", inference_base_url="https://api.google.test/v1")
+    monkeypatch.setattr(ppr, "_provider_registry", lambda: rows)
+    monkeypatch.setattr(ppr, "_origins", lambda provider: {allowed.origin})
     assert plugin.call("google", allowed.url).status == 200
     assert allowed.seen[0]["headers"]["Authorization"] == f"Bearer {_grant()['access_token']}"
 
@@ -494,7 +499,7 @@ def _reachable_text(exc: BaseException) -> str:
     return "\n".join(parts)
 
 
-def test_errors_raised_to_the_plugin_carry_no_token_refresh_token_or_secret(idp, api):
+def test_errors_raised_to_the_plugin_carry_no_token_refresh_token_or_secret(idp, api, monkeypatch):
     """A failed API call or refresh hands the plugin an exception; nothing in it may lead back to a credential."""
     allowed, _ = api
     plugin = _signed_in(idp)
@@ -513,20 +518,21 @@ def test_errors_raised_to_the_plugin_carry_no_token_refresh_token_or_secret(idp,
 
     import httpx  # a core resolver (Codex) whose own refresh POST fails raises httpx with that request attached
 
-    def resolver(url):
+    def resolver():
         httpx.post(f"http://127.0.0.1:{allowed.origin[2]}/token", data={"refresh_token": "rt-core-canary"}, timeout=2)
 
-    _ppr_providers = dict(ppr._PROVIDERS)
-    ppr._PROVIDERS["core-x"] = (frozenset({allowed.origin}), resolver)
-    try:
-        bare = _plugin("bare-core")
-        (_home() / "plugins" / "bare-core" / "plugin.yaml").write_text(json.dumps(
-            {"name": "bare-core", "version": "1", "requires_auth": ["core-x"]}), encoding="utf-8")
-        exc = _caught(lambda: bare.call("core-x", allowed.url + "/v1"))
-    finally:
-        ppr._PROVIDERS.clear()
-        ppr._PROVIDERS.update(_ppr_providers)
-    assert type(exc).__name__ == "ConnectError" and "rt-core-canary" not in _reachable_text(exc)
+    monkeypatch.setitem(auth_module.OAUTH_PROVIDER_FLOWS, "core-x", SimpleNamespace(resolve=resolver))
+    rows = dict(ppr._provider_registry())
+    rows["core-x"] = SimpleNamespace(auth_type="oauth_external", inference_base_url="https://api.core-x.test/v1")
+    monkeypatch.setattr(ppr, "_provider_registry", lambda: rows)
+    monkeypatch.setattr(ppr, "_origins", lambda provider: {allowed.origin})
+    bare = _plugin("bare-core")
+    (_home() / "plugins" / "bare-core" / "plugin.yaml").write_text(json.dumps(
+        {"name": "bare-core", "version": "1", "requires_auth": ["core-x"]}), encoding="utf-8")
+    exc = _caught(lambda: bare.call("core-x", allowed.url + "/v1"))
+    # A closed loopback port surfaces as ConnectError or ConnectTimeout depending on the OS; the
+    # property under test is that the rebuilt error exposes no refresh token either way.
+    assert isinstance(exc, httpx.HTTPError) and "rt-core-canary" not in _reachable_text(exc)
 
 
 def _caught(fn) -> BaseException:

@@ -118,8 +118,9 @@ export function singleFlight<T>(ref: { current: null | Promise<T> }, start: () =
 
 /** The clone source's capability catalog, staged before the profile exists. */
 interface CapabilityCatalog {
-  /** `installedInDraft`: the draft name whose setup installed the row. */
-  mcp: (CapabilityEntry & { installedInDraft?: string })[]
+  /** `installedInDraft` / `addedInDraft`: the draft name whose setup finished
+   *  the row, or only added its server (keys or sign-in still pending). */
+  mcp: (CapabilityEntry & { addedInDraft?: string; installedInDraft?: string })[]
   skills: CapabilityEntry[]
   source: string
   toolsets: CapabilityEntry[]
@@ -333,14 +334,16 @@ function useDraftProfile() {
   // its setup.
   const [setupGen, setSetupGen] = useState(0)
   const setupGenRef = useRef(0)
-  const keptSetupGenRef = useRef(-1)
+  // Every adopted bot keeps its own generation: a later bot never cuts off an
+  // earlier one's setup.
+  const keptSetupGensRef = useRef(new Set<number>())
 
   const retireSetup = () => {
     setupGenRef.current += 1
     setSetupGen(setupGenRef.current)
   }
 
-  const setupRetired = (gen: number) => () => setupGenRef.current !== gen && keptSetupGenRef.current !== gen
+  const setupRetired = (gen: number) => () => setupGenRef.current !== gen && !keptSetupGensRef.current.has(gen)
 
   const forget = () => {
     genRef.current += 1
@@ -354,10 +357,10 @@ function useDraftProfile() {
     const draft = createdRef.current
     forget()
     setCreatedForCaps(null)
-    setCaps(prev => prev?.mcp.some(m => m.installedInDraft) ? {
+    setCaps(prev => prev?.mcp.some(m => m.installedInDraft || m.addedInDraft) ? {
       ...prev,
-      mcp: prev.mcp.map(m => m.installedInDraft
-        ? { ...m, installed: false, enabled: false, installedInDraft: undefined }
+      mcp: prev.mcp.map(m => m.installedInDraft || m.addedInDraft
+        ? { ...m, installed: false, enabled: false, installedInDraft: undefined, addedInDraft: undefined }
         : m)
     } : prev)
 
@@ -447,7 +450,7 @@ function useDraftProfile() {
   /** The submitted draft becomes the bot: its setup keeps running, and its
    *  warnings (if still its own) are handed over exactly once. */
   const adoptDraft = () => {
-    keptSetupGenRef.current = setupGenRef.current
+    keptSetupGensRef.current.add(setupGenRef.current)
     const warning = warningRef.current?.generation === genRef.current ? warningRef.current : null
     warningRef.current = null
 
@@ -645,6 +648,9 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
       })
       .catch(() => setCapsFailed(true))
   }
+
+  const markMcp = (name: string, patch: Partial<CapabilityCatalog['mcp'][number]>) =>
+    setCaps(prev => prev && { ...prev, mcp: prev.mcp.map(x => (x.name === name ? { ...x, ...patch } : x)) })
 
   const toggleCap = (kind: 'mcp' | 'skills' | 'toolsets', name: string, enabled: boolean) => {
     setDirtyCaps(prev => ({
@@ -1216,32 +1222,15 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
                               {needsSetup ? (
                                 <McpSetupButton
                                   ensureProfile={ensureAgentCreated}
-                                  entry={m}
+                                  // A server this draft already added resumes at its keys.
+                                  entry={m.addedInDraft === slug ? { ...m, installed: true } : m}
                                   key={draft.setupGen}
+                                  onAdded={() => markMcp(m.name, { addedInDraft: slug })}
                                   onDone={() => {
                                     // Setup done: mark installed so the row's
                                     // checkbox un-disables, and enable it.
-                                    setCaps(prev =>
-                                      prev
-                                        ? {
-                                            ...prev,
-                                            mcp: prev.mcp.map(x =>
-                                              x.name === m.name
-                                                ? {
-                                                    ...x,
-                                                    installed: true,
-                                                    installedInDraft: slug,
-                                                    enabled: true
-                                                  }
-                                                : x
-                                            )
-                                          }
-                                        : prev
-                                    )
-                                    setDirtyCaps(prev => ({
-                                      ...prev,
-                                      mcp: true
-                                    }))
+                                    markMcp(m.name, { installed: true, installedInDraft: slug, enabled: true })
+                                    setDirtyCaps(prev => ({ ...prev, mcp: true }))
                                   }}
                                   // A renamed-away draft is not this name's profile.
                                   profile={draft.draftFor(slug)}

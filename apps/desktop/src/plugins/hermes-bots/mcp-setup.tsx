@@ -98,6 +98,8 @@ interface McpSetupButtonProps {
   ensureProfile?: () => Promise<null | string>
   entry: McpCatalogEntry
   onDone?: () => void
+  /** The catalog server now exists on the profile (before its keys/sign-in). */
+  onAdded?: () => void
   /** True once the owner retired this setup (New Bot rename/cancel). Unmounting
    *  alone does not stop key setup: an adopted draft keeps its setup. */
   retired?: () => boolean
@@ -110,7 +112,7 @@ interface McpSetupButtonProps {
   profile: McpSetupScope
 }
 
-export function McpSetupButton({ profile, entry, onDone, ensureProfile, retired }: McpSetupButtonProps) {
+export function McpSetupButton({ profile, entry, onDone, onAdded, ensureProfile, retired }: McpSetupButtonProps) {
   const { t } = useI18n()
   const b = useBots()
   // entry: { name, requires:[env keys], auth?, fromCatalog, installed }
@@ -126,6 +128,28 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile, retired 
   const oauthEpoch = useRef(0)
   const keyEpoch = useRef(0)
   const keysStale = (epoch: number) => keyEpoch.current !== epoch || Boolean(retired?.())
+  // Key setup that outlives its button (the bot was created mid-write) still
+  // reports its outcome, but only as a notice: its owner's state is gone.
+  const mounted = useRef(true)
+
+  // eslint-disable-next-line no-restricted-syntax -- mount flag for setup that outlives its button, not an atom mirror
+  useEffect(() => {
+    mounted.current = true
+
+    return () => {
+      mounted.current = false
+    }
+  }, [])
+
+  const failKeys = (message: string) => {
+    if (mounted.current) {
+      setPhase('error')
+      setMessage(message)
+    } else {
+      host.notify({ kind: 'error', title: entry.name, message, persistent: true })
+    }
+  }
+
   // Holds ONLY the profile this component created on demand. The live prop
   // wins wherever both exist, so there is nothing to mirror into the ref and
   // no render of lag between the parent supplying a profile and us using it.
@@ -208,6 +232,8 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile, retired 
 
         return
       }
+
+      onAdded?.()
     }
 
     setPhase(isOAuth ? 'oauth' : 'keys')
@@ -245,8 +271,7 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile, retired 
       }
 
       if (!r.ok) {
-        setPhase('error')
-        setMessage(r.error || b.tools.setKeyFailed(k))
+        failKeys(r.error || b.tools.setKeyFailed(k))
 
         return
       }
@@ -268,10 +293,13 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile, retired 
         kind: 'success',
         message: b.tools.configured(entry.name)
       })
-      onDone && onDone()
+
+      // A button that outlived its dialog has no rows left to mark.
+      if (mounted.current) {
+        onDone?.()
+      }
     } else {
-      setPhase('error')
-      setMessage((t.result && (t.result.error || (t.result.result && t.result.result.error))) || b.tools.testFailed)
+      failKeys((t.result && (t.result.error || (t.result.result && t.result.result.error))) || b.tools.testFailed)
     }
   }
 

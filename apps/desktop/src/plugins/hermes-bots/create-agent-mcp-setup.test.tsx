@@ -205,4 +205,88 @@ describe('retired staged MCP owners', () => {
     expect(mocks.request.mock.calls.filter(([method]) => method === 'mcp.servers.add')).toHaveLength(1)
     expect(mocks.deleteBot).not.toHaveBeenCalled()
   })
+
+  it('resumes an added server at its keys after a rename away and back', async () => {
+    await openSetup()
+    await screen.findByPlaceholderText('LINEAR_API_KEY')
+    expect(mocks.request.mock.calls.filter(([method]) => method === 'mcp.servers.add')).toHaveLength(1)
+    rename()
+    fireEvent.change(screen.getByPlaceholderText('inbox-triage'), { target: { value: 'inbox-triage' } })
+    fireEvent.click(await screen.findByRole('button', { name: /Set up/ }))
+    fireEvent.change(await screen.findByPlaceholderText('LINEAR_API_KEY'), { target: { value: 'resumed' } })
+    fireEvent.click(screen.getByRole('button', { name: /Save.*test/i }))
+    await waitFor(() => expect(mocks.request).toHaveBeenCalledWith('mcp.servers.test', { name: 'linear', profile: 'inbox-triage' }))
+    expect(mocks.request.mock.calls.filter(([method]) => method === 'mcp.servers.add')).toHaveLength(1)
+  })
+
+  it('reports a key setup that fails after the bot was created, without touching the next dialog', async () => {
+    const base = mocks.request.getMockImplementation()!
+    let finishTest!: () => void
+    mocks.request.mockImplementation((method: string, params?: unknown) => method === 'mcp.servers.test'
+      ? new Promise(resolve => { finishTest = () => resolve({ ok: false, error: 'bad key' }) })
+      : base(method, params))
+    await openSetup()
+    fireEvent.change(await screen.findByPlaceholderText('LINEAR_API_KEY'), { target: { value: 'bad' } })
+    fireEvent.click(screen.getByRole('button', { name: /Save.*test/i }))
+    await waitFor(() => expect(finishTest).toBeTypeOf('function'))
+    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
+    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith('inbox-triage', { kickoff: true }))
+    await act(async () => finishTest())
+    expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'error', title: 'linear', message: 'bad key', persistent: true }))
+  })
+
+  it('does not mark the reopened dialog when an adopted setup finishes later', async () => {
+    const base = mocks.request.getMockImplementation()!
+    let finishTest!: () => void
+    mocks.request.mockImplementation((method: string, params?: unknown) => method === 'mcp.servers.test'
+      ? new Promise(resolve => { finishTest = () => resolve({ ok: true }) })
+      : base(method, params))
+    await openSetup()
+    fireEvent.change(await screen.findByPlaceholderText('LINEAR_API_KEY'), { target: { value: 'slow' } })
+    fireEvent.click(screen.getByRole('button', { name: /Save.*test/i }))
+    await waitFor(() => expect(finishTest).toBeTypeOf('function'))
+    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
+    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith('inbox-triage', { kickoff: true }))
+    fireEvent.change(screen.getByPlaceholderText('inbox-triage'), { target: { value: 'inbox-triage' } })
+    fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'MCP' }))
+    await screen.findByRole('button', { name: /Set up/ })
+    await act(async () => finishTest())
+    expect(mocks.notify).toHaveBeenCalledWith({ kind: 'success', message: 'linear configured' })
+    expect(screen.getByRole('button', { name: /Set up/ })).toBeTruthy()
+    expect(screen.getByRole('checkbox', { name: /linear/ }).getAttribute('data-state')).toBe('unchecked')
+  })
+
+  it('lets an earlier bot finish its key setup after a second bot is created', async () => {
+    const base = mocks.request.getMockImplementation()!
+    let finishFirst!: () => void
+    mocks.request.mockImplementation((method: string, params?: unknown) => {
+      if (method === 'mcp.catalog') {
+        return Promise.resolve({ servers: [{ ...catalog, requires: ['LINEAR_API_KEY', 'SECOND_KEY'] }] })
+      }
+
+      const p = params as { env_var?: string; profile?: string }
+
+      if (method === 'mcp.servers.set_api_key' && p.profile === 'inbox-triage' && p.env_var === 'LINEAR_API_KEY') {
+        return new Promise(resolve => { finishFirst = () => resolve({ ok: true }) })
+      }
+
+      return base(method, params)
+    })
+    await openSetup()
+    fireEvent.change(await screen.findByPlaceholderText('LINEAR_API_KEY'), { target: { value: 'first' } })
+    fireEvent.change(screen.getByPlaceholderText('SECOND_KEY'), { target: { value: 'second' } })
+    fireEvent.click(screen.getByRole('button', { name: /Save.*test/i }))
+    await waitFor(() => expect(finishFirst).toBeTypeOf('function'))
+    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
+    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith('inbox-triage', { kickoff: true }))
+    fireEvent.change(screen.getByPlaceholderText('inbox-triage'), { target: { value: 'second-bot' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
+    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith('second-bot', { kickoff: true }))
+    await act(async () => finishFirst())
+    await waitFor(() => expect(mocks.request).toHaveBeenCalledWith('mcp.servers.test', { name: 'linear', profile: 'inbox-triage' }))
+    expect(mocks.request).toHaveBeenCalledWith('mcp.servers.set_api_key', {
+      name: 'linear', profile: 'inbox-triage', env_var: 'SECOND_KEY', value: 'second'
+    })
+  })
 })

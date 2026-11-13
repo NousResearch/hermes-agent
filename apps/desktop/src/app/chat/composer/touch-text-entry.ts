@@ -49,7 +49,14 @@ export function touchTapFocusHandlers() {
       const began = start
       start = null
 
-      if (!began || !touch || editor.getAttribute('contenteditable') === 'false' || document.activeElement === editor) {
+      // Another finger still down makes this a pinch or a two-finger gesture.
+      if (
+        !began ||
+        !touch ||
+        event.touches.length > 0 ||
+        editor.getAttribute('contenteditable') === 'false' ||
+        document.activeElement === editor
+      ) {
         return
       }
 
@@ -61,8 +68,10 @@ export function touchTapFocusHandlers() {
       placeCaretAt(editor, touch.clientX, touch.clientY)
     },
     // A scroll that comes back near its start before lifting is still a scroll.
+    // A second finger landing outside the editor never fires touchstart here,
+    // but every touchmove lists it.
     onTouchMove(event: ReactTouchEvent<HTMLElement>) {
-      const touch = event.touches[0]
+      const touch = event.touches.length === 1 ? event.touches[0] : undefined
 
       if (start && (!touch || !stillAt(start, touch))) {
         start = null

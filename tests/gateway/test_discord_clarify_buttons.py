@@ -294,3 +294,40 @@ class TestDiscordSendClarify:
         for label in choice_labels:
             assert "only_name_here" not in label, f"name leaked: {label!r}"
             assert "only_value_here" not in label, f"value leaked: {label!r}"
+
+
+@pytest.mark.asyncio
+async def test_many_long_choices_fit_content_and_render_literally():
+    """A dozen long options (#78115): the numbered list lands in content within Discord's
+    2000-char cap, keeps a line for every button, and escapes markdown so each option reads as typed."""
+    adapter = _make_adapter()
+    channel = MagicMock()
+    channel.send = AsyncMock(return_value=MagicMock(id=1))
+    adapter._client.get_channel = MagicMock(return_value=channel)
+    choices = [f"Option {i}: refactor the *auth* module and keep __init__ exports stable " + "x" * 40
+               for i in range(1, 13)]
+
+    result = await adapter.send_clarify(
+        chat_id="9001", question="Which plan?", choices=choices, clarify_id="cidL", session_key="sk-L")
+
+    assert result.success is True
+    content = channel.send.call_args.kwargs["content"]
+    assert len(content) <= 2000
+    assert "Which plan?" in content
+    assert r"1. Option 1: refactor the \*auth\*" in content and " *auth* " not in content
+    listed = [ln for ln in content.splitlines() if ln[:1].isdigit()]
+    assert [ln.split(". ", 1)[0] for ln in listed] == [str(n) for n in range(1, 13)]
+    # Options sharing a long opening still read differently once shortened (their ends survive).
+    same_start = ["Refactor the auth module, keep exports stable and migrate callers " * 4 + f"then ship to {env}"
+                  for env in ("staging", "canary", "prod", "nowhere")]
+    await adapter.send_clarify(
+        chat_id="9001", question="Rollout?", choices=same_start, clarify_id="cidS", session_key="sk-S")
+    content = channel.send.call_args.kwargs["content"]
+    assert all(f"ship to {env}" in content for env in ("staging", "canary", "prod", "nowhere"))
+    # ...and options sharing both a long opening and a long ending keep their differing middle.
+    same_ends = [same_start[0] + f" TARGET={env} " + same_start[0] for env in ("staging", "canary", "prod", "sandbox")]
+    await adapter.send_clarify(
+        chat_id="9001", question="Where?", choices=same_ends, clarify_id="cidM", session_key="sk-M")
+    content = channel.send.call_args.kwargs["content"]
+    assert len(content) <= 2000 and all(f"TARGET={env}" in content for env in ("staging", "canary", "prod", "sandbox"))
+

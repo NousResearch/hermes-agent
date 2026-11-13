@@ -149,10 +149,12 @@ def handed_off_ref(authority, session_id):
     authority mounts. Its title stays the conversation's, so ``/resume <title>`` and the Bots roster's
     registry lookup open it on that lane (#143286). None for any other row."""
     from gateway.session_contract import SessionRef
-    from hermes_state_local_migration import LEGACY_LOCAL_SOURCES
+    from hermes_state_local_migration import LEGACY_LOCAL_SOURCES, client_label
     ref = messaging_owner_ref(authority, SessionRef(authority.profile_id, session_id))
     row = authority.db.get_session(ref.session_id) or {}
-    if row.get('created_source') not in LEGACY_LOCAL_SOURCES or not mountable(authority, ref.session_id):
+    created = row.get('created_source')
+    # An adopted phone-app chat keeps the app's label as its created_source (bind_legacy_target).
+    if (created not in LEGACY_LOCAL_SOURCES and not client_label(created)) or not mountable(authority, ref.session_id):
         return None
     return ref
 
@@ -180,6 +182,14 @@ async def conversation_head(runner, session_id):
     if db is None:
         return authority, None, session_id
     return (authority, *await asyncio.to_thread(handoff_head, db, session_id))
+
+
+async def settled_handoff_db(runner, authority, session_id):
+    """Refuse the watcher's repoint while durable work still owns *session_id*
+    (``gateway.session_handoff.require_settled``), on the store ``conversation_head`` reads."""
+    from gateway.session_handoff import check_settled
+    db = authority.db if authority is not None else getattr(runner._session_db, '_db', runner._session_db)
+    await check_settled(db, session_id)
 
 
 def follow_hand_off(authority, source, route, owner, local_owner):

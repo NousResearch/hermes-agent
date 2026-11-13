@@ -33,6 +33,53 @@ PREVIEW_HTML = """<!doctype html><html><head><meta charset="utf-8">
 const frame = document.createElement('iframe');
 frame.referrerPolicy = 'no-referrer';
 frame.title = 'Preview content';
+const transferableTypes = [
+  'MessagePort', 'ReadableStream', 'WritableStream', 'TransformStream', 'ImageBitmap',
+  'OffscreenCanvas', 'VideoFrame', 'AudioData', 'ArrayBuffer', 'MediaStreamTrack', 'RTCDataChannel'
+].map(name => globalThis[name]).filter(type => typeof type === 'function');
+// An explicit stack: a deeply nested payload that cloning accepts must not
+// overflow the call stack. Children are pushed in reverse to keep their order.
+function transfersFor(event) {
+  const transfers = new Set(event.ports);
+  const seen = new Set();
+  const pending = [event.data];
+  while (pending.length) {
+    const value = pending.pop();
+    if (!value || typeof value !== 'object' || seen.has(value)) continue;
+    seen.add(value);
+    let children = [];
+    if (transferableTypes.some(type => value instanceof type)) {
+      transfers.add(value);
+    } else if (value instanceof Map) {
+      value.forEach((item, key) => children.push(key, item));
+    } else if (value instanceof Set) {
+      children = [...value];
+    } else if (value instanceof Error) {
+      children = [value.cause, value.errors];
+    } else if (Array.isArray(value) || Object.getPrototypeOf(value) === Object.prototype ||
+               Object.getPrototypeOf(value) === null) {
+      children = Object.values(value);
+    }
+    for (let index = children.length - 1; index >= 0; index--) pending.push(children[index]);
+  }
+  return [...transfers];
+}
+// A missing target (no guest frame yet) fails both posts, so its ports are closed.
+function relay(target, event) {
+  let transfers = [...event.ports];
+  try {
+    transfers = transfersFor(event);
+    target.postMessage(event.data, '*', transfers);
+  } catch {
+    try {
+      target.postMessage(event.data, '*');
+    } catch {
+      for (const value of transfers) {
+        if (typeof globalThis.MessagePort === 'function' && value instanceof MessagePort) value.close();
+      }
+    }
+  }
+}
 addEventListener('message', event => {
   if (event.source === parent && parent !== window &&
       event.origin === new URL(location.href).origin &&
@@ -44,9 +91,9 @@ addEventListener('message', event => {
     frame.srcdoc = event.data.html;
     document.body.append(frame);
   } else if (event.source === parent && event.origin === new URL(location.href).origin) {
-    frame.contentWindow?.postMessage(event.data, '*');
+    relay(frame.contentWindow, event);
   } else if (event.source === frame.contentWindow) {
-    parent.postMessage(event.data, '*');
+    relay(parent, event);
   }
 });
 </script></body></html>"""

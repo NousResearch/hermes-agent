@@ -1,0 +1,25 @@
+name: treasury-cash-forecast
+title: Treasury Cash Forecast
+repo: https://github.com/Prabhusekaran/hermes-treasury-cash-forecast
+sha: "bc36c28e6357095b435b678bae11e5acc089b7ca"
+version: "0.1.0"
+description: "A 12-month monthly direct cash-flow forecast for corporate treasury. Fill one template (Excel or CSV) with your past cash-flow statement, the future cash flows you already know and your what-if percentages. Recurring lines are projected by a statistical model (ETS by default; SARIMA and four simple baselines selectable), known lines come from your schedule, and a known amount can replace the model for single months. The base case and every scenario run together and come back as one Excel workbook: a summary, a cash-flow statement per scenario (12 actual months, then 12 forecast months) and a sheet showing where every figure comes from, reconciled every month to the cent: opening cash + net cash flow = closing cash. A fourth tool runs the same data through several models to show how much the answer depends on the method. All figures come from a tested engine (95 tests); the language model picks the tool and explains the result. Disclosure — no network calls, no credentials, no telemetry, no background process. Reads only the workbook or CSV folder you name and writes the template, the result workbook and audit files to the folder you name or next to your input. Installs two Python libraries, statsmodels and openpyxl, both with upper bounds. The optional Chronos-2 model is not installed by the plugin and is loaded from local files only, never downloaded. The bundled example company is synthetic."
+maintainer: "Prabhusekaran"
+tier: community
+category: tools
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/Prabhusekaran/hermes-treasury-cash-forecast/blob/bc36c28e6357095b435b678bae11e5acc089b7ca/README.md
+image: https://raw.githubusercontent.com/Prabhusekaran/hermes-treasury-cash-forecast/bc36c28e6357095b435b678bae11e5acc089b7ca/docs/cover.png
+platforms: []
+known_issues:
+  - "Restart Hermes after installing (the gateway, and the Desktop backend if you use the Desktop app) so the running process sees the two new libraries."
+  - "Tested on Linux. ETS and SARIMA are fitted numerically, so figures can differ by cents between machines; the simple baselines are identical everywhere."
+capabilities:
+  provides_tools:
+    - cash_forecast_template
+    - cash_forecast_validate
+    - cash_forecast_run
+    - cash_forecast_compare
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

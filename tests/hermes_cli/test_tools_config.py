@@ -55,6 +55,20 @@ def test_valid_platform_toolsets_no_runtime_warning(caplog):
     assert not any("#38798" in r.getMessage() for r in caplog.records)
 
 
+@pytest.mark.parametrize("platform", ["teams", "google_chat", "homeassistant"])
+def test_unloaded_plugin_platform_toolset_no_runtime_warning(caplog, platform):
+    """Bundled and catalog plugin-platform entries are valid before plugin loading."""
+    import hermes_cli.tools_config as _tc
+
+    _tc._warned_invalid_platform_toolsets.discard(platform)
+    config = {"platform_toolsets": {platform: [f"hermes-{platform}"]}}
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        _get_platform_tools(config, platform)
+
+    assert not any("#38798" in r.getMessage() for r in caplog.records)
+
+
 def test_partially_valid_platform_toolsets_no_runtime_warning(caplog):
     """When at least one configured toolset is valid, tools still resolve, so
     the runtime zero-tools warning must not fire (the migration-time check still
@@ -77,6 +91,34 @@ def test_null_platform_toolsets_fall_back_to_platform_default():
     )
 
     assert enabled == default_enabled
+
+
+def test_explicit_empty_platform_toolsets_merge_no_mcp_servers():
+    """An explicitly saved empty list means zero toolsets and no MCP merge."""
+    config = {
+        "mcp_servers": {"claudius": {"url": "http://x"}, "evil": {"url": "http://y"}},
+        "platform_toolsets": {"cli": []},
+    }
+
+    assert _get_platform_tools(config, "cli") == set()
+
+    config["platform_toolsets"]["cli"] = ["no_mcp"]
+    assert _get_platform_tools(config, "cli") == set()
+
+
+def test_explicit_empty_gateway_platform_toolsets_keep_mcp_controls():
+    """Only the explicit empty list is zero: an absent key still gets every enabled server, a named
+    server still narrows to itself, and a non-empty list still inherits the enabled servers."""
+    servers = {"alpha": {"url": "http://x"}, "beta": {"url": "http://y"}}
+
+    assert _get_platform_tools({"mcp_servers": servers, "platform_toolsets": {"email": []}}, "email") == set()
+    assert {"alpha", "beta"} <= _get_platform_tools({"mcp_servers": servers}, "email")
+    assert _get_platform_tools(
+        {"mcp_servers": servers, "platform_toolsets": {"email": ["terminal", "alpha"]}}, "email",
+    ) == {"terminal", "alpha"}
+    assert _get_platform_tools(
+        {"mcp_servers": servers, "platform_toolsets": {"email": ["terminal"]}}, "email",
+    ) == {"terminal", "alpha", "beta"}
 
 
 def test_scalar_platform_toolsets_fall_back_to_platform_default():

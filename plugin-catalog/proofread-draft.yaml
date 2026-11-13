@@ -1,0 +1,17 @@
+name: proofread-draft
+repo: https://github.com/Icarus-B4/hermes-official-plugins
+sha: 44bf943f2770a1336753f4a84d36a97a16c4b49c
+subdir: grammarly
+description: "Proofread Hermes Desktop drafts with your configured model and review suggestions before applying. Disclosure — on each click the current Desktop draft (up to 6,000 characters) is sent to the model configured for the proofread_draft auxiliary task; the draft only changes when you select Apply."
+maintainer: Icarus-B4
+tier: community
+category: desktop
+requires_hermes: ">=0.21.6"
+version: "0.1.4"
+known_issues:
+  - "Native live spellchecking is not available; proofreading runs only when explicitly requested."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

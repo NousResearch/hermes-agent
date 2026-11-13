@@ -224,6 +224,9 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     frontend = tmp_path / "web-product"
     frontend.mkdir()
     (frontend / "index.html").write_text("built web", encoding="utf-8")
+    webapp = tmp_path / "webapp-product"
+    webapp.mkdir()
+    (webapp / "index.html").write_text("built webapp", encoding="utf-8")
     with monkeypatch.context() as strict:
         def forbidden(*args, **kwargs):
             pytest.fail("strict finish entered dependency acquisition or a child process")
@@ -232,14 +235,16 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
         strict.setattr(pm, "prepare_tools", forbidden)
         strict.setattr(pm, "stage_tools", forbidden)
         strict.setattr(subprocess, "run", forbidden)
-        assert native.finish_native(prepared, {"web": frontend}) == 0
+        assert native.finish_native(prepared, {"web": frontend, "webapp": webapp}) == 0
         (output / "hermes-agent/install-stamp.json").write_text('{"variant":"bundled"}', encoding="utf-8")
         (output / "manifest.json").write_text('{"variant":"bundled"}', encoding="utf-8")
         launcher = output / ("bin/probe.exe" if os.name == "nt" else "bin/probe")
         launcher.rename(launcher.with_name("renamed-launcher"))
         (frontend / "index.html").write_text("store web", encoding="utf-8")
-        assert native.finish_native(prepared, {"web": frontend}) == 0
+        (webapp / "index.html").write_text("store webapp", encoding="utf-8")
+        assert native.finish_native(prepared, {"web": frontend, "webapp": webapp}) == 0
     assert (output / "hermes-agent/hermes_cli/web_dist/index.html").read_text() == "store web"
+    assert (output / "hermes-agent/apps/desktop/dist-webapp/index.html").read_text() == "store webapp"
     assert calls[0]["all_extras"] is True
     assert calls[0]["cache"] == tmp_path / "cache"
     assert (output / "hermes-agent/pyproject.toml").is_file()
@@ -386,6 +391,53 @@ def test_staged_cache_prunes_wheel_index_entries_outside_the_lock(tmp_path):
     assert not (cache / "sdists-v9" / "pypi" / "old-sdist-only").exists()
 
 
+def test_staged_cache_keeps_a_dotted_dist_the_lock_resolves(tmp_path):
+    """``ruamel.yaml`` and ``jaraco.classes`` keep the dot in their dist-info names, while
+    uv.lock lists them as ``ruamel-yaml``; the prune must compare normalized names or it
+    deletes the archive the shipped venv was installed from."""
+    lock = tmp_path / "repo"
+    lock.mkdir()
+    (lock / "uv.lock").write_text(
+        "[[package]]\n"
+        'name = "ruamel-yaml"\n'
+        'version = "0.18.16"\n'
+        'source = { registry = "https://pypi.org/simple" }\n',
+        encoding="utf-8",
+    )
+    cache = tmp_path / "cache"
+    bucket = cache / "archive-v0" / "bucket"
+    (bucket / "ruamel.yaml-0.18.16.dist-info").mkdir(parents=True)
+    index = cache / "wheels-v6" / "pypi" / "ruamel-yaml"
+    index.mkdir(parents=True)
+
+    assert native.prune_uv_cache_to_lock(cache, lock) == 0
+    assert bucket.is_dir()
+    assert index.is_dir()
+
+
+@pytest.mark.platforms("posix")
+def test_prune_drops_a_url_wheel_link_whose_archive_it_pruned(tmp_path):
+    """A URL, git or named-index wheel sits a hash directory deeper than ``pypi``. Once the
+    prune deletes its bucket, the link must go too: a payload that ships a link with no target
+    fails ``publish_prepared``. A link the lock still resolves stays."""
+    lock = tmp_path / "repo"
+    lock.mkdir()
+    (lock / "uv.lock").write_text('[[package]]\nname = "keep-me"\nversion = "1.0"\n', encoding="utf-8")
+    cache = tmp_path / "cache"
+    (cache / "archive-v0" / "gone" / "gone_dep-1.0.dist-info").mkdir(parents=True)
+    (cache / "archive-v0" / "kept" / "keep_me-1.0.dist-info").mkdir(parents=True)
+    url = cache / "wheels-v7" / "url" / "d87c3d39b3c6ef8c"
+    (url / "gone-dep").mkdir(parents=True)
+    (url / "keep-me").mkdir()
+    os.symlink("../../../../archive-v0/gone", url / "gone-dep" / "1.0-py3-none-any")
+    os.symlink("../../../../archive-v0/kept", url / "keep-me" / "1.0-py3-none-any")
+
+    native.prune_uv_cache_to_lock(cache, lock)
+
+    assert not (url / "gone-dep" / "1.0-py3-none-any").is_symlink(), "a dangling wheel link survived the prune"
+    assert (url / "keep-me" / "1.0-py3-none-any").resolve() == (cache / "archive-v0" / "kept").resolve()
+
+
 @pytest.mark.parametrize("pointer, shard", [("revision.http", ""), ("revision.rev", "build-settings")])
 def test_staged_cache_skips_build_inputs_before_copying(tmp_path, monkeypatch, pointer, shard):
     cache = tmp_path / "cache"
@@ -419,6 +471,28 @@ def test_staged_cache_skips_build_inputs_before_copying(tmp_path, monkeypatch, p
     assert all(not (shipped / relative).exists() for relative in waste)
     assert all((shipped / relative).read_bytes() == data for relative, data in kept.items())
     assert all((cache / relative).read_bytes() == data for relative, data in {**waste, **kept}.items())
+
+
+@pytest.mark.platforms("posix")
+def test_staged_cache_keeps_wheel_entries_as_links(tmp_path):
+    """uv stores each cached wheel as a relative link into ``archive-v0/``. Following it
+    shipped every unpacked wheel twice and handed the seed a directory where uv renames
+    its own link (#141891); the payload must carry the link itself."""
+    cache = tmp_path / "cache"
+    bucket = cache / "archive-v0" / "bucket"
+    (bucket / "pkg").mkdir(parents=True)
+    (bucket / "pkg" / "__init__.py").write_text("shipped = True\n", encoding="utf-8")
+    wheel = cache / "wheels-v6" / "pypi" / "pkg"
+    wheel.mkdir(parents=True)
+    os.symlink("../../../archive-v0/bucket", wheel / "1.0-py3-none-any")
+
+    shipped = tmp_path / "payload" / "uv-cache"
+    native.stage_uv_cache(cache, shipped)
+
+    link = shipped / "wheels-v6" / "pypi" / "pkg" / "1.0-py3-none-any"
+    assert link.is_symlink(), "staging followed the wheel link and copied the archive again"
+    assert os.readlink(link) == "../../../archive-v0/bucket"
+    assert (link / "pkg" / "__init__.py").read_text(encoding="utf-8") == "shipped = True\n"
 
 
 SELF_BUILD_BACKEND = '''import os, zipfile
@@ -535,6 +609,12 @@ def test_staged_cache_ships_full_wheel_set_and_rebuilds_offline(tmp_path):
         # or built: a per-install venv rebuild must not depend on network
         # reachability for any package the payload already shipped.
         assert any(shipped.rglob("wheel_proof*")), "downloadable wheels ship in the full cache"
+        # uv's wheel entries are links into archive-v0/ (POSIX); each ships as the same link.
+        for link in (path for path in cache.rglob("*") if path.is_symlink()):
+            copy = shipped / link.relative_to(cache)
+            assert copy.is_symlink() and os.readlink(copy) == os.readlink(link), copy
+        # The payload prunes its cache to the lock after staging; the rebuild below reads that.
+        native.prune_uv_cache_to_lock(shipped, project)
 
         # A fresh mutable venv rebuilds OFFLINE from the shipped cache alone.
         shutil.rmtree(cache, ignore_errors=True)

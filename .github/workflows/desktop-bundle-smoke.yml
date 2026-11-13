@@ -73,7 +73,7 @@ jobs:
         shell: bash
         run: |
           case "$TARGET" in
-            darwin/arm64/dmg|darwin/x64/dmg|darwin/arm64/zip|darwin/x64/zip|win32/arm64/msix|win32/x64/msix|win32/arm64/msixbundle|win32/x64/msixbundle) ;;
+            darwin/arm64/dmg|darwin/arm64/zip|win32/arm64/msix|win32/x64/msix|win32/arm64/msixbundle|win32/x64/msixbundle) ;;
             *) echo '::error::unsupported native smoke target'; exit 1 ;;
           esac
 
@@ -81,7 +81,7 @@ jobs:
     name: macOS install and chat
     needs: validate
     if: inputs.platform == 'darwin'
-    runs-on: ${{ inputs.arch == 'x64' && 'macos-15-intel' || 'macos-15' }}
+    runs-on: blacksmith-6vcpu-macos-15
     timeout-minutes: 30
     # Also constrains the recording action's nested cache to read-only.
     cache-mode: read
@@ -122,7 +122,7 @@ jobs:
       - name: Install locked chat driver dependencies
         id: dependencies
         shell: bash
-        run: npm ci --workspace tests-js --include-workspace-root --omit=dev --ignore-scripts --no-audit --no-fund
+        run: just js-install-tests
 
       - name: Fetch one exact downloadable artifact
         id: artifact
@@ -140,7 +140,7 @@ jobs:
             product=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["identity"]["artifactNamePascal"])' "$SMOKE_ROOT/request.json")
           fi
           case "$PLATFORM/$ARCH/$FORMAT" in
-            darwin/arm64/dmg|darwin/x64/dmg|darwin/arm64/zip|darwin/x64/zip)
+            darwin/arm64/dmg|darwin/arm64/zip)
               name="darwin-$ARCH"; pattern="$product-*-mac-$ARCH.$FORMAT" ;;
             win32/arm64/msix|win32/x64/msix)
               name="win32-$ARCH"; pattern="$product-*-win-$ARCH.msix" ;;
@@ -249,7 +249,7 @@ jobs:
     # before Playwright attaches (every x64 smoke there failed; the same commit's arm64 MSIX on a
     # GitHub-hosted runner chats), as the install/update GUI legs did (f1b290e7734).
     runs-on: ${{ inputs.arch == 'arm64' && 'windows-latest-32-arm-core' || 'windows-latest-32-core' }}
-    # windows-11-arm runners are much slower (npm ci alone runs 12+ minutes and
+    # windows-11-arm runners are much slower (the dependency install alone runs 12+ minutes and
     # the MSIX leg exceeds 30 total); x64 legs complete in ~14.
     timeout-minutes: 45
     cache-mode: read

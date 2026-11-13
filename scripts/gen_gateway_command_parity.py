@@ -30,7 +30,7 @@ NOT_A_LOCAL_READ = {
     "agents": "gateway-wide: lists every chat's running agents and the process's async jobs",
     "platform": "messaging adapters; `pause`/`resume` mutate them",
     "sessions": "messaging origin-scoped listing (`/sessions all` needs a messaging admin)",
-    "debug": "uploads logs to a public paste",
+    "debug": "`/debug upload` uploads logs to a public paste (bare `/debug` is the privacy notice)",
     "save": "the gateway handler writes its file on the gateway host; Desktop saves `session.export` text "
             "through its own dialog",
     "rollback": "restores filesystem checkpoints",

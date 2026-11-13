@@ -59,6 +59,19 @@ describe('a reply settled while a resume is in flight', () => {
     expect(liveTurnSettledDuringResume({ session_id: 'runtime-a' }, resumeStartedAtS, true)).toBe(true)
   })
 
+  // A cold resume unbinds the view until it answers. A complete landing then
+  // settles only the runtime's state; the view still shows the first chunk, so
+  // the resume must reconcile its post-barrier page instead of keeping it.
+  it('does not count a settle that landed while the view was unbound from that runtime', () => {
+    const resumeStartedAtS = Date.now() / 1000 - 1
+    const settledOffScreen = complete('runtime-c')
+    settledOffScreen.deps.activeSessionIdRef.current = null
+
+    handleMessageStreamEvent(settledOffScreen)
+
+    expect(liveTurnSettledDuringResume({ session_id: 'runtime-c' }, resumeStartedAtS, true)).toBe(false)
+  })
+
   it('does not outrank a resume that started after it, another session, or a cold open', () => {
     handleMessageStreamEvent(complete('runtime-b'))
     const laterResumeS = Date.now() / 1000 + 1

@@ -1,12 +1,12 @@
 """Regression for #36908: the repeated-compression warning must reach the
 TUI / gateway, not just CLI stdout.
 
-When a session is compressed >= 2 times, ``compress_context`` warns that
-accuracy may degrade. That warning used to go through ``_vprint`` (stdout
-only), so the Ink TUI / Telegram / Discord never saw it — unlike the two
-other compression warnings in the same module, which route through
-``_emit_status`` (and store ``_compression_warning`` for late-bound
-gateway replay). This pins the warning onto the gateway-aware channel.
+When a session is compressed at least ``compression.warn_after_compressions``
+times (default 2; 0 disables), ``compress_context`` warns that accuracy may
+degrade. That warning used to go through ``_vprint`` (stdout only), so the Ink
+TUI / Telegram / Discord never saw it. It now reaches ``status_callback`` as
+kind ``warn`` (and stores ``_compression_warning`` for late-bound gateway
+replay), and must not be reclassified as compaction progress.
 """
 
 from __future__ import annotations
@@ -56,31 +56,57 @@ def _build_agent_with_db(
     return agent
 
 
-def _run_compress(agent) -> list[str]:
-    emitted: list[str] = []
-    agent._emit_status = lambda message: emitted.append(message)
+def _run_compress(agent) -> list[tuple[str, object]]:
+    emitted: list[tuple[str, object]] = []
+    agent.status_callback = lambda kind, message=None: emitted.append((kind, message))
     messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
     agent._compress_context(messages, "sys", approx_tokens=120_000)
     return emitted
 
 
-def _has_repeated_compression_warning(emitted: list[str]) -> bool:
-    return any("compressed" in m.lower() and "times" in m.lower() for m in emitted)
+def _repeated_compression_warnings(emitted) -> list[tuple[str, object]]:
+    """The 'compressed N times' warning only.
+
+    Accepts ``(kind, message)`` pairs or a bare message. Compaction progress
+    mentions compression too, but it is a ``CompactionProgressText`` mark, not
+    this warning.
+    """
+    from agent.context_engine import CompactionProgressText
+    from agent.conversation_compression import compaction_status_kind
+
+    warnings: list[tuple[str, object]] = []
+    for item in emitted:
+        if isinstance(item, tuple) and len(item) == 2:
+            kind, message = item
+        else:
+            kind, message = "", item
+        if isinstance(message, CompactionProgressText):
+            continue
+        if compaction_status_kind(str(kind), message) == "compacting":
+            continue
+        text = str(message).lower()
+        if "compressed" in text and "times" in text:
+            warnings.append((str(kind), message))
+    return warnings
 
 
-def test_repeated_compression_warning_routed_through_emit_status(tmp_path: Path) -> None:
+def test_repeated_compression_warning_reaches_status_callback_as_warning(tmp_path: Path) -> None:
     db = SessionDB(db_path=tmp_path / "state.db")
     sid = "PARENT_36908"
     db.create_session(sid, source="cli")
 
-    # compression_count == 2 → the "compressed N times" warning should fire.
+    # compression_count == 2 → the default threshold fires exactly once.
     agent = _build_agent_with_db(db, sid, compression_count=2)
     emitted = _run_compress(agent)
 
-    # The warning reached the gateway-aware channel...
-    assert any("compressed 2 times" in m.lower() for m in emitted), (
-        f"repeated-compression warning not emitted via _emit_status: {emitted}"
-    )
+    from agent.conversation_compression import compaction_status_kind
+
+    # The warning reached the gateway-aware channel as a warning, never as compaction progress
+    # (it follows the done edge, where a "compacting" kind would open a compaction that never ends).
+    warned = _repeated_compression_warnings(emitted)
+    assert [k for k, _ in warned] == ["warn"], emitted
+    assert [compaction_status_kind(k, m) for k, m in warned] == ["warn"]
+    assert "compressed 2 times" in str(warned[0][1]).lower()
     # ...and was stored for late-bound gateway status_callback replay.
     assert "compressed 2 times" in (getattr(agent, "_compression_warning", "") or "").lower()
 
@@ -94,7 +120,7 @@ def test_no_warning_below_threshold(tmp_path: Path) -> None:
     agent = _build_agent_with_db(db, sid, compression_count=1)
     emitted = _run_compress(agent)
 
-    assert not _has_repeated_compression_warning(emitted)
+    assert _repeated_compression_warnings(emitted) == []
 
 
 def test_custom_warn_after_compressions_defers_warning(tmp_path: Path) -> None:
@@ -103,7 +129,7 @@ def test_custom_warn_after_compressions_defers_warning(tmp_path: Path) -> None:
     db.create_session(sid, source="cli")
 
     agent = _build_agent_with_db(db, sid, compression_count=4, warn_after_compressions=5)
-    assert not _has_repeated_compression_warning(_run_compress(agent))
+    assert _repeated_compression_warnings(_run_compress(agent)) == []
 
 
 def test_custom_warn_after_compressions_fires_at_threshold(tmp_path: Path) -> None:
@@ -114,7 +140,13 @@ def test_custom_warn_after_compressions_fires_at_threshold(tmp_path: Path) -> No
     agent = _build_agent_with_db(db, sid, compression_count=5, warn_after_compressions=5)
     emitted = _run_compress(agent)
 
-    assert any("compressed 5 times" in m.lower() for m in emitted)
+    from agent.conversation_compression import compaction_status_kind
+
+    warned = _repeated_compression_warnings(emitted)
+    assert [k for k, _ in warned] == ["warn"], emitted
+    assert [compaction_status_kind(k, m) for k, m in warned] == ["warn"]
+    assert "compressed 5 times" in str(warned[0][1]).lower()
+    assert "compressed 5 times" in (getattr(agent, "_compression_warning", "") or "").lower()
 
 
 def test_warn_after_compressions_zero_disables_warning(tmp_path: Path) -> None:
@@ -123,4 +155,4 @@ def test_warn_after_compressions_zero_disables_warning(tmp_path: Path) -> None:
     db.create_session(sid, source="cli")
 
     agent = _build_agent_with_db(db, sid, compression_count=99, warn_after_compressions=0)
-    assert not _has_repeated_compression_warning(_run_compress(agent))
+    assert _repeated_compression_warnings(_run_compress(agent)) == []

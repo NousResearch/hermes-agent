@@ -72,7 +72,7 @@ export function LanguageSwitcher({ collapsed = false, dropUp = false }: Language
         aria-haspopup="listbox"
         aria-expanded={open}
         className={cn(
-          "px-2 py-1 normal-case tracking-normal font-normal text-xs text-text-secondary hover:text-foreground",
+          "px-2 py-1.5 normal-case tracking-normal font-normal text-xs text-text-secondary hover:text-foreground",
           collapsed && "hover:bg-transparent",
         )}
       >

@@ -11,12 +11,13 @@ from pathlib import Path
 KEYS = frozenset({'fallback_model', 'ephemeral_system_prompt', 'prefill_messages'})
 
 
-def construct_inputs(authority, policy, chat_id):
-    """Owner side, per turn (off the owner loop: config reads)."""
+def construct_inputs(authority, policy, chat_id, source=None):
+    """Owner side, per turn (off the owner loop: config reads). *source* is the session's own, so
+    ``channel_overrides`` come from the profile serving it, as for the in-process turn."""
     from gateway.session_authorities import owner_scope
     with owner_scope(authority):
         return {'fallback_model': _fallback_chain(authority, policy),
-                'ephemeral_system_prompt': _ephemeral_prompt(authority, policy, chat_id),
+                'ephemeral_system_prompt': _ephemeral_prompt(authority, policy, chat_id, source),
                 'prefill_messages': session_prefill(authority, policy, chat_id)}
 
 
@@ -33,7 +34,7 @@ def _fallback_chain(authority, policy):
     return refresh() if refresh is not None else None
 
 
-def _ephemeral_prompt(authority, policy, chat_id):
+def _ephemeral_prompt(authority, policy, chat_id, source=None):
     """``TurnRunner``'s combined ephemeral prompt for a LOCAL turn (no platform context block):
     the gateway prompt (``agent.system_prompt`` / ``display.personality`` / channel override) plus
     the frozen ``-s`` skills blocks. API-time only, never part of the persisted system prefix.
@@ -43,7 +44,7 @@ def _ephemeral_prompt(authority, policy, chat_id):
     if not policy.ignore_user_config and resolve is not None:
         from gateway.config import Platform
         with policy.client_env_scope():
-            configured = resolve(Platform.LOCAL, chat_id or '')
+            configured = resolve(Platform.LOCAL, chat_id or '', source=source)
     return '\n\n'.join(p for p in (configured, policy.skills_prompt) if p) or None
 
 

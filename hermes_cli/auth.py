@@ -257,7 +257,7 @@ from hermes_cli.auth_plugin_providers import (
     canonical_registry_rows as _canonical_registry_rows, get_plugin_oauth_auth_status,
     registry_lookup as _registry_lookup, sync_plugin_provider_registry)
 
-sync_plugin_provider_registry()
+PROVIDER_REGISTRY.sync_before_first_read()  # not at import: listing providers reads config
 
 
 def get_anthropic_key() -> str:
@@ -2087,11 +2087,10 @@ def _external_process_spec(
         profile = None
     command_env_vars = tuple(getattr(profile, "process_command_env_vars", ()) or ())
     args_env_var = str(getattr(profile, "process_args_env_var", "") or "")
-    command = (next((v for v in (os.getenv(var, "").strip() for var in command_env_vars) if v), "")
-               or str(getattr(profile, "process_command", "") or ""))
+    from hermes_cli.auth_external_process import external_process_command, resolve_external_process_command
+    command = external_process_command(profile)
     raw_args = os.getenv(args_env_var, "").strip() if args_env_var else ""
     args = shlex.split(raw_args) if raw_args else list(getattr(profile, "process_args", ()) or [])
-    from hermes_cli.auth_external_process import resolve_external_process_command
     return command, args, base_url, resolve_external_process_command(command), command_env_vars
 
 

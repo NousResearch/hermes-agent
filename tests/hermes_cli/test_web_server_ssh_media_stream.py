@@ -122,6 +122,16 @@ def test_ssh_stream_answers_a_range_with_206(client, ssh, header, first, last):
     assert workspace.reads == [(CLIP, first, last - first + 1)]
 
 
+def test_ssh_stream_plays_a_clip_over_the_whole_file_read_cap(client, ssh, monkeypatch):
+    """A player source is served one Range at a time, so the cap guarding whole-file reads never
+    applies (a 2-minute 1080p recording is over 100 MiB)."""
+    monkeypatch.setattr(web_server, "_MANAGED_FILE_MAX_BYTES", 1)
+
+    partial = _stream(client, headers={"Range": "bytes=2-5"})
+
+    assert (partial.status_code, partial.content) == (206, BYTES[2:6])
+
+
 @pytest.mark.parametrize("header", ["bytes=16-", "bytes=99-120", "bytes=-0"])
 def test_ssh_stream_answers_an_unsatisfiable_range_with_416(client, ssh, header):
     _profile, workspace = ssh

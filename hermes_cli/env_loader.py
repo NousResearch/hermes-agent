@@ -29,6 +29,7 @@ _CREDENTIAL_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_KEY")
 _WARNED_KEYS: set[str] = set()          # credential names already given the non-ASCII warning
 _WARNED_UTF32_PATHS: set[str] = set()   # .env paths already given the UTF-32 refuse-to-mangle warning
 _SCOPED_SKIP_LOGGED: set[str] = set()   # routed profile homes whose multiplex dotenv skip was logged
+_WARNED_UNREADABLE_PATHS: set[str] = set()  # unreadable profile .env paths already given the warning
 
 # env-var name → source label ("bitwarden", …) for externally injected credentials; setup / `hermes
 # model` tell users WHERE a key came from when .env lacks it.
@@ -167,6 +168,21 @@ def managed_dotenv_keys() -> frozenset[str]:
     """KEY names the administrator-managed ``.env`` loaded (see ``_MANAGED_DOTENV_KEYS``). Policy for
     every profile: never stripped from a routed child, and re-applied over the routed scope."""
     return frozenset(_MANAGED_DOTENV_KEYS)
+
+
+def env_provenance() -> dict[str, list[str]]:
+    """Names only: which keys in ``os.environ`` this process's sources, dotenvs and managed ``.env`` put
+    there. A fresh interpreter handed this environ inherits the values but not where they came from, so
+    one that builds routed-child envs (the update's abort recovery) adopts this with ``adopt_env_provenance``."""
+    return {"source_supplied": list(source_supplied_names()), "dotenv_loaded": sorted(_LOADED_DOTENV_KEYS),
+            "managed": sorted(_MANAGED_DOTENV_KEYS)}
+
+
+def adopt_env_provenance(provenance: dict[str, list[str]]) -> None:
+    """Record the parent's ``env_provenance`` as this process's own (additive, like a load)."""
+    _SOURCE_SUPPLIED_NAMES.update(provenance.get("source_supplied", ()))
+    _LOADED_DOTENV_KEYS.update(provenance.get("dotenv_loaded", ()))
+    _MANAGED_DOTENV_KEYS.update(provenance.get("managed", ()))
 
 
 def get_secret_source_values(hermes_home: str | os.PathLike) -> dict[str, str]:
@@ -393,17 +409,21 @@ def _resolve_dotenv_assignments(
     return resolved
 
 
-def resolve_home_dotenv(home: Path) -> dict[str, str]:
+def resolve_home_dotenv(home: Path, *, lookup_env: dict[str, str] | None = None) -> dict[str, str]:
     """What ``load_hermes_dotenv`` would publish from *home*'s dotenv layers, read-only: the home's
     ``.env`` then the administrator-managed ``.env``, both with override and ``${VAR}`` expanded by the
     same rules against the process's own environment (this process's dotenv output peeled back), each
-    layer seeing the one before. External secret sources and the project ``.env`` are not included."""
+    layer seeing the one before. External secret sources and the project ``.env`` are not included.
+    *lookup_env* replaces that environment: another profile's file must not resolve against this one's."""
     from hermes_cli import managed_scope
 
     managed_dir = managed_scope.get_managed_dir()
     layers = [home / ".env", *([managed_dir / ".env"] if managed_dir is not None else [])]
-    with _DOTENV_LOCK:
-        lookup_env = _dotenv_lookup_env(None)
+    if lookup_env is not None:
+        lookup_env = dict(lookup_env)
+    else:
+        with _DOTENV_LOCK:
+            lookup_env = _dotenv_lookup_env(None)
     out: dict[str, str] = {}
     for path in layers:
         try:
@@ -618,6 +638,36 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
         pass  # best-effort — don't block gateway startup
 
 
+def dotenv_unreadable(path: Path) -> bool:
+    """True when *path* exists but this process may not read it."""
+    try:
+        with open(path, "rb"):
+            return False
+    except PermissionError:
+        return True
+    except OSError:  # missing, or a failure that is not a refusal
+        return False
+
+
+def _load_user_dotenv(path: Path, *, load_pass: int) -> bool:
+    """Load the profile ``.env``; False when it exists but cannot be read and managed scope pins
+    ``terminal.backend``. A sandbox launcher withholds the file, passes the keys it allows in as
+    environment and pins the backend. Without that pin the ``PermissionError`` propagates: the file may
+    be the only place the backend is set, and skipping it would run terminal commands on the host."""
+    try:
+        _load_dotenv_with_fallback(path, override=True, load_pass=load_pass)
+    except PermissionError:
+        from hermes_cli import managed_scope
+
+        if managed_scope.pinned_terminal_backend() is None:
+            raise
+        if str(path) not in _WARNED_UNREADABLE_PATHS:
+            _WARNED_UNREADABLE_PATHS.add(str(path))
+            logger.warning("Cannot read %s; managed scope pins terminal.backend, so it loads as absent", path)
+        return False
+    return True
+
+
 def load_hermes_dotenv(
     *,
     hermes_home: str | os.PathLike | None = None,
@@ -682,8 +732,7 @@ def load_hermes_dotenv(
     if project_env_path and project_env_path.exists():
         _sanitize_env_file_if_needed(project_env_path)
 
-    if user_env.exists():
-        _load_dotenv_with_fallback(user_env, override=True, load_pass=load_pass)
+    if user_env.exists() and _load_user_dotenv(user_env, load_pass=load_pass):
         loaded.append(user_env)
         _clear_known_keys_missing_from_dotenv(user_env)  # mirrors reload_env(): inherited keys must not leak
 
@@ -695,7 +744,7 @@ def load_hermes_dotenv(
         _load_dotenv_with_fallback(op_env, override=False, load_pass=load_pass)
 
     if project_env_path and project_env_path.exists():
-        _load_dotenv_with_fallback(project_env_path, override=not loaded, load_pass=load_pass)
+        _load_dotenv_with_fallback(project_env_path, override=not user_env.exists(), load_pass=load_pass)
         loaded.append(project_env_path)
 
     # The override=True loads above wrote the raw .env line (``__BITWARDEN_MANAGED__`` placeholder, stale

@@ -23,7 +23,8 @@ import {
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { sessionListFingerprint, sessionMessagesSignature } from '@/lib/session-signatures'
 import { latestSessionTodos, latestSessionTodoSnapshot } from '@/lib/todos'
-import { pendingSessionReplay, sharedPrimaryRoute } from '@/store/gateway'
+import { pendingSessionReplay } from '@/store/gateway'
+import { sharedPrimaryRoute } from '@/store/gateway-shared-route'
 import { $sidebarShowArchived } from '@/store/layout'
 import { $changeEventsAvailable, $cronChangeTick, $projectsChangeTick, $sessionsChangeTick } from '@/store/live-sync'
 import { $onBattery, batteryPollInterval } from '@/store/power'
@@ -34,6 +35,7 @@ import {
   $busy,
   $connection,
   $currentCwd,
+  $currentModelSource,
   $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
@@ -66,6 +68,8 @@ import {
 
 import type { ClientSessionState } from '../../types'
 import type { GatewayRequester } from '../types'
+
+import { useLiveWorkRoster } from './use-live-work-roster'
 
 interface ActiveTranscriptSession {
   ownerRoute?: SessionOwnerRoute
@@ -1068,6 +1072,7 @@ export function useBackgroundSync({
   requestGateway,
   updateSessionState
 }: BackgroundSyncParams): void {
+  useLiveWorkRoster()
   const changeEventsAvailable = useStore($changeEventsAvailable)
   const cronChangeTick = useStore($cronChangeTick)
   const activeTranscriptRefreshPendingRef = useRef<string | null>(null)
@@ -1613,4 +1618,23 @@ export function useBackgroundSync({
       void refreshHermesConfig()
     }
   }, [activeSessionId, freshDraftReady, gatewayState, refreshCurrentModel, refreshHermesConfig])
+
+  // A refused mid-turn pick hands new chats back to the default (deferred-pick.ts) while a draft may already
+  // be open: repaint that draft's pill with the default it now launches with.
+  useEffect(() => {
+    if (gatewayState !== 'open' || activeSessionId) {
+      return
+    }
+
+    let last = $currentModelSource.get()
+
+    return $currentModelSource.listen(next => {
+      const released = last === 'manual' && next === 'default'
+      last = next
+
+      if (released) {
+        void refreshCurrentModel()
+      }
+    })
+  }, [activeSessionId, gatewayState, refreshCurrentModel])
 }

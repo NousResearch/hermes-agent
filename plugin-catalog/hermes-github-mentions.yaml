@@ -1,0 +1,17 @@
+name: hermes-github-mentions
+title: GitHub Mentions
+repo: https://github.com/luantak/hermes-github-mentions
+sha: d8a88220a547180663fcec76a069c8fbbf63bff9
+description: "Run approved GitHub mentions as Hermes tasks and reply in the original thread. Polls GitHub's API in a gateway worker and sends signed local webhooks granting terminal, file, web, skills and todo tools. Optional Discord copies and read-only Hermes session progress tracking. Disclosure — polls the GitHub notifications API every 60 s or more as the bot account, and when a GitHub user on your allowed_authors list @mentions the bot in any repository the bot can see, starts an unattended Hermes agent turn with terminal, file, web, skills and todo tools on this computer through a signed local webhook route; the mention text and the repository content the agent reads are untrusted input, and the agent acts with the bot's classic `repo` token (the same GITHUB_TOKEN Hermes' GitHub tools use). Hermes' unattended approval mode (deny by default) still governs flagged commands. `hermes github-mentions routes --apply` edits this profile's config.yaml (adds webhook routes, enables the webhook platform on 127.0.0.1). Optional progress notices read Hermes' state.db read-only; optional Discord notices post through Hermes' own Discord adapter."
+maintainer: luantak
+tier: community
+category: platform
+requires_hermes: ">=0.22.5"
+version: "0.4.3"
+platforms: [linux, macos]
+docs_url: https://github.com/luantak/hermes-github-mentions/blob/d8a88220a547180663fcec76a069c8fbbf63bff9/README.md
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

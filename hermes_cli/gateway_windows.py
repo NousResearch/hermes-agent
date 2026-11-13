@@ -337,13 +337,13 @@ def _startup_staging_path() -> Path:
     return get_startup_entry_path().with_suffix(".tmp")
 
 
-def _stable_gateway_working_dir(project_root: Path) -> str:
-    """Stable cwd for detached/startup runs: anchor at HERMES_HOME when it exists (mirrors the POSIX
-    service invariant) so a moved checkout/worktree can't fail the ``cd`` step; else the checkout."""
+def _stable_gateway_working_dir(project_root: Path, home: Path | None = None) -> str:
+    """Stable cwd for detached/startup runs: anchor at ``home`` (default HERMES_HOME) when it exists (mirrors
+    the POSIX service invariant) so a moved checkout/worktree can't fail the ``cd`` step; else the checkout."""
     from hermes_cli.config import get_hermes_home
 
     try:
-        home = get_hermes_home()
+        home = home if home is not None else get_hermes_home()
         if home and Path(home).is_dir():
             return str(Path(home))
     except Exception:
@@ -370,7 +370,7 @@ def _launcher_settings(home: Path | None = None) -> tuple[str, str, str, str]:
     hermes_home = str(home if home is not None else _hermes_home())
     return (
         _preserve_hermes_home_path(get_python_path()),
-        _stable_gateway_working_dir(PROJECT_ROOT),
+        _stable_gateway_working_dir(PROJECT_ROOT, home),
         hermes_home,
         _profile_arg(hermes_home),
     )
@@ -467,19 +467,84 @@ def _build_startup_launcher(script_path: Path) -> str:
     return "\r\n".join(lines) + "\r\n"
 
 
+def _launcher_scripts() -> list[tuple[Path, str, str]]:
+    """``(path, content, encoding)`` for the gateway.cmd wrapper and the console-less .vbs launcher.
+
+    The .vbs is what the Scheduled Task and the Startup-folder fallback run through wscript.exe
+    (issue #45599 fix A); the .cmd stays as a generated helper/compatibility artifact.
+    """
+    return _render_launchers(_launcher_settings(), get_task_script_path())
+
+
+def _render_launchers(settings: tuple[str, str, str, str], script_path: Path) -> list[tuple[Path, str, str]]:
+    return [(script_path, _build_gateway_cmd_script(*settings), "utf-8"),
+            (script_path.with_suffix(".vbs"), _build_gateway_vbs_script(*settings), "utf-16")]
+
+
+def _write_launcher_scripts(scripts: list[tuple[Path, str, str]]) -> None:
+    for path, content, encoding in scripts:
+        tmp = path.with_suffix(".tmp") if encoding == "utf-8" else path.with_name(path.name + ".tmp")
+        _atomic_write(path, content, tmp, encoding=encoding)
+
+
 def _write_task_script() -> Path:
-    """Generate the gateway.cmd wrapper (kept as a compatibility artifact) and the console-less .vbs
-    launcher used by the Scheduled Task and Startup fallback. Return the .cmd path."""
+    """Generate the launcher scripts (``_launcher_scripts``); return the .cmd path."""
     _assert_windows()
-    settings = _launcher_settings()
-    script_path = get_task_script_path()
-    _atomic_write(script_path, _build_gateway_cmd_script(*settings), script_path.with_suffix(".tmp"))
-    # Also render the console-less .vbs launcher used by Scheduled Task and the Startup-folder fallback via
-    # wscript.exe (issue #45599 fix A). The .cmd wrapper stays as a generated helper/compatibility artifact.
-    vbs_path = script_path.with_suffix(".vbs")
-    _atomic_write(vbs_path, _build_gateway_vbs_script(*settings), vbs_path.with_name(vbs_path.name + ".tmp"),
-                  encoding="utf-16")
-    return script_path
+    scripts = _launcher_scripts()
+    _write_launcher_scripts(scripts)
+    return scripts[0][0]
+
+
+def refresh_dead_launcher(home: Path, task_name: str) -> bool:
+    """Re-render ``home``'s launcher when the interpreter it runs no longer exists; True if rewritten.
+
+    A Store update replaces the versioned payload folder that interpreter lived in, and a Store
+    install has no ``hermes update`` to re-render it, so the task and the Startup entry kept running a
+    dead launcher (#150448). Only a launcher this installer wrote for ``home`` is touched, and only
+    its files: the task and the Startup entry already point at them.
+    """
+    from hermes_cli.gateway_runtime_service_identity import _vbs_identity, launcher_text, read_definition
+
+    vbs = home / "gateway-service" / f"{_sanitize_filename(task_name)}.vbs"
+    try:
+        configured, argv = _vbs_identity(launcher_text(read_definition(vbs)))
+    except (OSError, ValueError):
+        return False
+    interpreter = Path(argv[0]) if argv else None
+    try:
+        if (interpreter is None or not interpreter.is_absolute() or interpreter.exists()
+                or os.path.normcase(str(Path(configured).resolve())) != os.path.normcase(str(home.resolve()))):
+            return False
+    except OSError:  # Path.exists() raises on access denied before Python 3.13: not provably dead
+        return False
+    rewritten = False
+    # One file at a time: the task and the Startup entry run the .vbs, so a broken .cmd helper must not
+    # hold its repair back, and no failure here may stop discovery from querying the task.
+    # The installed spelling, which the gate proved is ``home``: ensure passes a resolved, normcased home.
+    for path, content, encoding in _render_launchers(_launcher_settings(Path(configured)), vbs.with_suffix(".cmd")):
+        try:
+            if not path.exists() or path.read_bytes() != content.encode(encoding):
+                _write_launcher_scripts([(path, content, encoding)])
+                rewritten = True
+        except OSError:
+            logger.warning("Could not re-render the gateway launcher %s", path, exc_info=True)
+    if rewritten:
+        logger.info("Re-rendered the gateway launcher %s: its interpreter %s no longer exists", vbs, interpreter)
+    return rewritten
+
+
+def launcher_script_drift() -> list[str]:
+    """Names of the launcher scripts whose bytes differ from what this install generates."""
+    _assert_windows()
+    drift = []
+    for path, content, encoding in _launcher_scripts():
+        try:
+            current = path.read_bytes() == content.encode(encoding)
+        except OSError:
+            current = False
+        if not current:
+            drift.append(path.name)
+    return drift
 
 
 def _atomic_write(path: Path, content: str, tmp: Path, *, encoding: str = "utf-8") -> None:

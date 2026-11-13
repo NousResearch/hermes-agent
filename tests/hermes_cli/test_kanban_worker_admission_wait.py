@@ -11,6 +11,7 @@ import asyncio
 import json
 
 import pytest
+from websockets.protocol import State
 
 from hermes_cli import kanban_worker_client
 from hermes_cli.gateway_client import GatewayClient
@@ -18,6 +19,8 @@ from hermes_cli.gateway_client import GatewayClient
 
 class _Owner:
     """Answers ``kanban.run`` after a 120 s (scaled) board wait, then a terminal receipt."""
+
+    state = State.OPEN  # GatewayClient.rpc reads the socket state before it sends
 
     def __init__(self):
         self.inbox, self.sent = asyncio.Queue(), []

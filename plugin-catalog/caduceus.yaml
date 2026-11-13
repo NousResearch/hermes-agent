@@ -6,7 +6,7 @@ description: "Answers about your own health that cite your DNA, Apple Health tre
 maintainer: 100yenadmin
 tier: community
 category: tools
-requires_hermes: '>=0.23.0'
+requires_hermes: ">=0.23.0"
 image: https://raw.githubusercontent.com/electricsheephq/caduceus/6db63fe2cab9335d70b4ed3a523f37e6a79b13e2/docs/media/banner.jpg
 docs_url: https://github.com/electricsheephq/caduceus#readme
 version: "0.2.1"

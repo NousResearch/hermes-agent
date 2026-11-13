@@ -135,7 +135,7 @@ export function renderRosterContent({
               ? [
                   sortedGroupRows.length ? renderGroupChatSection() : null,
                   ...gatewaySections.sections.map(renderGatewaySection),
-                  ...renderEmptyUserSections(rosterRows)
+                  ...renderEmptyUserSections()
                 ].filter(Boolean)
               : renderUserSections(rosterRows)}
             {showHiddenSection ? (

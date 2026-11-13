@@ -7,6 +7,11 @@
  * nothing appeared (#155196). Such a section is drawn once, at the top level
  * below the gateway buckets, until a member seats it inside one.
  *
+ * Seated, it is still missing from every other gateway's bucket, which is
+ * where a bot of that gateway is listed and dragged from. So while a drag is
+ * in flight those buckets draw it too, empty, as the drop target that lets one
+ * section gather bots of several gateways.
+ *
  * The real Bots pane, with only its gateway transport mocked.
  */
 
@@ -159,6 +164,30 @@ function dragPayload() {
   }
 }
 
+/** The blocks drawn for section `name`, top to bottom: each one a drop target. */
+const sectionBlocks = (name: string) =>
+  headings(name).map(heading => heading.closest<HTMLElement>('[data-slot="bots-section"]')!)
+
+/** Start dragging `gateway`'s bot. The gesture is in flight until it is dropped. */
+function drag(gateway: Gateway) {
+  const dataTransfer = dragPayload()
+
+  fireEvent.dragStart(botRow(gateway)!, { dataTransfer })
+
+  return dataTransfer
+}
+
+function dropOn(target: Element, dataTransfer: ReturnType<typeof dragPayload>) {
+  fireEvent.dragOver(target, { dataTransfer })
+  fireEvent.drop(target, { dataTransfer })
+}
+
+/** The sections `gateway` was told, by profile write, to file its bot under. */
+const filedOn = (gateway: Gateway) =>
+  requestProfile.mock.calls
+    .filter(([route, method]) => route.connectionId === gateway.connectionId && method === 'profiles.configure')
+    .map(([, , params]) => params.ui_meta['hermes-bots'].sectionName)
+
 // Radix (Dialog, menus) calls these on open; jsdom doesn't implement them.
 beforeAll(() => {
   Element.prototype.scrollIntoView = vi.fn()
@@ -266,5 +295,60 @@ describe('a section with no member', () => {
 
     await pickFromSectionMenu('Team', 'Delete')
     await waitFor(() => expect(sections()).toEqual(['Customers 0']))
+  })
+})
+
+describe('a section with a member on one gateway only', () => {
+  /** Clients holds this device's bot, so only that gateway's bucket lists it.
+   *  Team holds nothing, so it is listed below the buckets. */
+  async function mountWithClientsOnThisDevice() {
+    await mountPane([THIS_DEVICE, VPS])
+    await createSection('Clients')
+    await waitFor(() => expect(sections()).toEqual(['Clients 0']))
+    await createSection('Team')
+    await waitFor(() => expect(sections()).toEqual(['Clients 0', 'Team 0']))
+    dropOn(sectionBlocks('Clients')[0]!, drag(THIS_DEVICE))
+    await waitFor(() => expect(sections()).toEqual(['Clients 1', 'Team 0']))
+  }
+
+  /** Clients under both gateways, each copy holding that gateway's own bot. */
+  async function expectClientsOnBothGateways() {
+    await waitFor(() => expect(sections()).toEqual(['Clients 1', 'Clients 1', 'Team 0']))
+
+    const [onThisDevice, onVps] = sectionBlocks('Clients')
+
+    expect(onThisDevice!.contains(botRow(THIS_DEVICE))).toBe(true)
+    expect(onVps!.contains(botRow(VPS))).toBe(true)
+    // Membership is a field of the bot's profile: its own gateway took the write.
+    await waitFor(() => expect(filedOn(VPS)).toEqual(['Clients']))
+  }
+
+  it('is offered in every gateway bucket during a drag, and takes a bot of another gateway there', async () => {
+    await mountWithClientsOnThisDevice()
+
+    const dataTransfer = drag(VPS)
+
+    // Not in the tick of `dragstart`: a block appearing above the row then
+    // moves it from under the pointer, and Chromium cancels such a drag.
+    expect(sections()).toEqual(['Clients 1', 'Team 0'])
+    // Right after: a second Clients, empty, between the VPS heading and the
+    // VPS bot, so inside that bucket. Team, with no member anywhere, is not
+    // repeated: its one block below the buckets is already the target.
+    await waitFor(() => expect(sections()).toEqual(['Clients 1', 'Clients 0', 'Team 0']))
+
+    const [, offered] = sectionBlocks('Clients')
+
+    expect(isBelow(offered!, headings(VPS.label)[0]!)).toBe(true)
+    expect(isBelow(botRow(VPS)!, offered!)).toBe(true)
+
+    dropOn(offered!, dataTransfer)
+    await expectClientsOnBothGateways()
+  })
+
+  it('takes a bot of another gateway dropped on the block that holds its member', async () => {
+    await mountWithClientsOnThisDevice()
+
+    dropOn(sectionBlocks('Clients')[0]!, drag(VPS))
+    await expectClientsOnBothGateways()
   })
 })

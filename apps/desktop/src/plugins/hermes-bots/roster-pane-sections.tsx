@@ -20,6 +20,9 @@ import {
 } from './user-sections'
 import { SectionDropZone, UserSectionHeader } from './user-sections-ui'
 
+/** A row user sections file: a bot, or a group chat. */
+type UserSectionRow = { bot: RosterRow; kind?: 'bot' } | RosterGroupRow
+
 interface RosterSectionRenderersProps {
   b: ReturnType<typeof useBots>
   userSections: ReturnType<typeof $botSections.get>
@@ -27,12 +30,16 @@ interface RosterSectionRenderersProps {
   allMeta: Record<string, BotMeta>
   groupRooms: Record<string, GroupChat>
   dragging: string | null
+  /** `dragging`, from the tick after its `dragstart` (useBotDragUnderway). */
+  dragUnderway: boolean
   rosterSectionCollapsed: (id: string) => boolean
   toggleRosterSection: (id: string) => void
   setSectionDialog: (value: SectionDialogState) => void
   renderBotRow: (bot: RosterRow, keyPrefix?: string) => ReactNode
   renderGroupRow: (row: RosterGroupRow) => ReactNode
   sortedGroupRows: RosterGroupRow[]
+  /** Every row the roster lists: what the gateway buckets hold between them. */
+  rosterRows: UserSectionRow[]
 }
 
 export function rosterSectionRenderers({
@@ -42,12 +49,14 @@ export function rosterSectionRenderers({
   allMeta,
   groupRooms,
   dragging,
+  dragUnderway,
   rosterSectionCollapsed,
   toggleRosterSection,
   setSectionDialog,
   renderBotRow,
   renderGroupRow,
-  sortedGroupRows
+  sortedGroupRows,
+  rosterRows
 }: RosterSectionRenderersProps) {
   const removeSection = (id: string) => {
     const name = userSections.find(section => section.id === id)?.name || ''
@@ -70,7 +79,12 @@ export function rosterSectionRenderers({
   // gateway); user sections group the rows INSIDE each connection bucket,
   // indented under it, and group the flat list when there is only one.
   // `keyPrefix` keeps row keys unique across the gateway buckets.
-  type UserSectionRow = { bot: RosterRow; kind?: 'bot' } | RosterGroupRow
+
+  // Where each named section stands across the whole roster. One with a row
+  // is seated: drawn inside every bucket that holds one of its rows. One
+  // without is drawn by no bucket (renderEmptyUserSections).
+  const namedBlocks = groupRowsBySection(rosterRows, userSections, allMeta, groupRooms).filter(block => block.id)
+  const seated = new Set(namedBlocks.filter(block => block.rows.length).map(block => block.id))
 
   // One section block: its heading, then its rows or the empty slot, as one
   // drop target. `keyPrefix` names the bucket it is drawn in; '' is the top
@@ -146,33 +160,30 @@ export function rosterSectionRenderers({
         // An empty Unassigned is not worth a heading; an empty NAMED section
         // is, because it is somewhere the user made and is about to drop into.
         // Inside a gateway bucket the same empty section would repeat under
-        // every connection, so a bucket draws only the sections it has rows
-        // for; a section with rows in no bucket is drawn once, below them all
-        // (renderEmptyUserSections).
-        .filter(block => block.rows.length || (block.id && !nested))
+        // every connection, so at rest a bucket draws only the sections it has
+        // rows for. While a drag is under way it also draws, empty, the ones
+        // seated in another bucket: that is how one section gathers bots of
+        // several gateways. Without the copy its only target is the block
+        // under another gateway's heading, which may be folded and is not
+        // where the dropped bot will show. A section with rows in no bucket is
+        // not repeated here: it already has its one block below them all.
+        .filter(block => block.rows.length || (block.id && (!nested || (dragUnderway && seated.has(block.id)))))
         .map(block => renderSectionBlock(block, keyPrefix))
     )
   }
 
-  // The named sections no gateway bucket drew: those without a row among
-  // `rows`, which is everything the buckets list. Each gets its one heading
-  // at the top level, so a section is on screen from the moment it is made
-  // (#155196) and takes a row dragged from any bucket; filing one seats the
-  // section inside that row's bucket, and it leaves this list.
+  // The named sections no gateway bucket draws: those without a row anywhere
+  // in the roster. Each gets its one heading at the top level, so a section is
+  // on screen from the moment it is made (#155196) and takes a row dragged
+  // from any bucket; filing one seats the section inside that row's bucket,
+  // and it leaves this list.
   //
-  // They are NOT repeated inside the buckets while a drag is in flight, as
-  // empty sections used to be. This block is already the drop target, so a
-  // copy per bucket would only show the same empty section several times;
-  // and hiding this one mid-drag to make room for those copies would pull the
-  // slot that reads "Drag bots here" from under the pointer. The list holds
-  // still under a drag: what is on screen at rest is what can be dropped on.
-  // A section seated in another gateway's bucket takes the drop there (filing
-  // does not ask which gateway the bot runs on), and the row menu files into
-  // any section regardless.
-  const renderEmptyUserSections = (rows: UserSectionRow[]) =>
-    groupRowsBySection(rows, userSections, allMeta, groupRooms)
-      .filter(block => block.id && !block.rows.length)
-      .map(block => renderSectionBlock(block))
+  // It is the only copy, drag or not. Repeated inside every bucket during a
+  // drag, as every empty section used to be, it would show the same empty
+  // section several times; and hidden mid-drag to make room for those copies,
+  // it would pull the slot that reads "Drag bots here" from under the pointer.
+  const renderEmptyUserSections = () =>
+    namedBlocks.filter(block => !block.rows.length).map(block => renderSectionBlock(block))
 
   const renderGatewaySection = (section: ResolvedRosterGatewaySection) => {
     const sectionId = `gateway:${section.id}`

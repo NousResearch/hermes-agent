@@ -20,8 +20,8 @@ from pathlib import Path
 import pytest
 
 
-import hermes_startup_watchdog as sw
-from hermes_startup_watchdog import (
+import hermes_agent.hermes_startup_watchdog as sw
+from hermes_agent.hermes_startup_watchdog import (
     SERVICE_RESTART_EXIT_CODE,
     StartupWatchdogHandle,
     arm_startup_watchdog,

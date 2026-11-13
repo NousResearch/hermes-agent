@@ -11,7 +11,7 @@ from hermes_state_common import (
     AUTO_VACUUM_MIN_FREELIST_RATIO, _id_chunks, _non_continuation_child_sql, _placeholders, _sql_session_last_active,
     escape_like as _escape_like, emit_session_deleted,
 )
-from hermes_startup_watchdog import report_startup_progress
+from hermes_agent.hermes_startup_watchdog import report_startup_progress
 
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")

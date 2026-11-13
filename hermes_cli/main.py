@@ -66,7 +66,7 @@ def _argv_is_gateway_run(argv: list) -> bool:
 
 if _argv_is_gateway_run(sys.argv[1:]):
     try:
-        from hermes_startup_watchdog import arm_startup_watchdog as _arm_sw
+        from hermes_agent.hermes_startup_watchdog import arm_startup_watchdog as _arm_sw
 
         _arm_sw()
         del _arm_sw

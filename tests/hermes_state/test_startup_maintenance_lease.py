@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import time
 
-import hermes_startup_watchdog as sw
+import hermes_agent.hermes_startup_watchdog as sw
 from hermes_state import SessionDB
 
 

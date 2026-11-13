@@ -41,6 +41,15 @@ def test_escape_split_remainder_before_newline_masks_and_next_line_survives():
         assert result.endswith(f"{eol}button [ref=e3]")
 
 
+@pytest.mark.parametrize("after", ["\x1b[0m", ""])
+def test_coloured_token_before_newline_masks_and_next_line_survives(after):
+    body = "a" * 24
+    result = _redact(f"\x1b[32msk-{body}{after}\nbutton [ref=e3]")
+    assert body[:12] not in result
+    assert result.startswith("\x1b[32msk-")
+    assert result.endswith(f"{after}\nbutton [ref=e3]")
+
+
 def test_complete_token_before_newline_does_not_swallow_next_line():
     tok = "ghp_" + "F" * 29
     result = _redact(f"{tok}\x1b[0m\nbutton [ref=e3]")

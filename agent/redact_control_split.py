@@ -70,14 +70,16 @@ def mask_control_split_tokens(text: str, mask_fn, prefix_re: re.Pattern) -> str:
         # A span crossing a LINE boundary whose fragment already self-matches is a complete token
         # followed by another line (``ghp_<tok>\nbutton`` must keep ``button``): never join across
         # it. Clip to the first line instead, and mask that when it is itself a token split by
-        # noise (``sk-<head>\x1b<mid>\n…`` must not leak <mid>); a clean first line is left to the
-        # ordinary prefix pass.
+        # noise (``sk-<head>\x1b<mid>\n…`` must not leak <mid>) or glued to stripped noise on its
+        # left (``\x1b[32msk-<tok>\n…``: the escape's last letter defeats the ordinary pass's
+        # lookbehind). A clean first line with a clean left edge is left to the ordinary pass.
         if ("\n" in span or "\r" in span) and prefix_re.search(span):
             line_end = bisect_left(orig_idx, start + min(i for i in (span.find("\n"), span.find("\r")) if i >= 0))
             body = body[:line_end - body_start]
             end = orig_idx[line_end - 1] + 1
             span = text[start:end]
-            if not any(noise[start:end]) or not prefix_re.fullmatch(body):
+            glued_left = start > 0 and noise[start - 1]
+            if not (glued_left or any(noise[start:end])) or not prefix_re.fullmatch(body):
                 continue
         if (all(noise[start + k] or c in _TOKEN_BODY_CHARS for k, c in enumerate(span))
                 and (end >= len(text) or text[end] != "=")):

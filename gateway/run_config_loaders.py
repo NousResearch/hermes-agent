@@ -106,6 +106,10 @@ def _effective_allow_silence(platform_config, source: SessionSource) -> Optional
     return value if isinstance(value, bool) else None
 
 
+# "" = an unclassified source: treated as a DM, where a question must get a visible answer.
+_DM_CHAT_TYPES = frozenset({"dm", "private", "direct", ""})
+
+
 class GatewayConfigLoadersMixin:
     """Config/env loaders (busy modes, reasoning, service tier, timeouts, fallback) for GatewayRunner."""
 
@@ -197,13 +201,15 @@ class GatewayConfigLoadersMixin:
         An explicit ``allow_silence`` (room or platform, true or false) decides. Only where it is
         unset everywhere does the warning policy apply: with warning notifications hidden for the
         turn's platform, the unexpected-silence notice is one of them, so a healthy marker-only
-        final stays silent instead.
+        final in a shared chat stays silent instead. Never in a DM: there the notice is the only
+        answer a direct question gets, and suppression predates this rule (legacy default).
         """
         from gateway.response_filters import silence_allowed
         if silence_allowed(display_kind, reply_expected):
             return True
         allow = self._room_allow_silence(source)
-        if allow is None and self._silence_notice_suppressed(source):
+        shared = str(getattr(source, "chat_type", "") or "").strip().lower() not in _DM_CHAT_TYPES
+        if allow is None and shared and self._silence_notice_suppressed(source):
             silent = silence_allowed(display_kind, reply_expected, allow_silence=True, agent_result=agent_result)
             if silent:
                 logger.info("silence marker kept silent: warning notifications are suppressed for %s chat=%s",

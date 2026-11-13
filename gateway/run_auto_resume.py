@@ -76,10 +76,14 @@ def _stand_in_parent(runner: Any, db: Any, record: dict[str, Any], source: Any, 
 def _continue_as_parent(runner: Any, db: Any, record: dict[str, Any], unit: dict[str, Any], route: dict[str, str],
                         message: str) -> dict[str, Any]:
     from gateway.session_authorities import active_authority
+    from gateway.session_local_recovery import restore_completion_route
     from gateway.session_policy import policy_for_source, policy_scope
     from tools.delegate_tool_auto_resume import STAND_IN_FAILED
     from tools.delegate_tool_continue import continue_subagent
     try:
+        # As a completion's delivery does: boot leaves an automatically ended local parent unrestored, and without
+        # its frozen policy the stand-in would run on the launch route.
+        restore_completion_route(runner, str(unit.get("origin_session") or ""))
         source = _session_source(runner, unit)
         policy = policy_for_source(runner, source)
     except Exception as exc:  # health: allow BLE001 -- OUR stand-in failed, not the child's route: a later tick retries

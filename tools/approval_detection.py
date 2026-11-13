@@ -6,6 +6,8 @@ prompting live here.
 
 import bisect
 import fnmatch
+import functools
+import itertools
 import logging
 import os
 import re
@@ -125,9 +127,13 @@ _MULTI_CALL_PREFIX = r'(?:(?:/?(?:[^\s/]+/)*)?(?:busybox|toybox)\b\s+)?'
 # reaches the same command word, so trying each would rescan the run once per newline.
 _CMDPOS = (
     r'(?:^|\n(?![^\S\n]*+\n)|`|\$\()' r'\s*+'  # start position, optional whitespace
+    r'(?:sudo\s++(?:-[^\s]++\s++)*+)?' r'(?:env\s++(?:\w+=\S*+\s++)*+)?'  # optional sudo with flags, env VAR=VAL pairs
+    r'(?:(?:exec|nohup|setsid|time)\s++)*+' r'\s*+'  # optional wrapper commands
     + _MULTI_CALL_PREFIX
+    # A path-spelled verb (/sbin/reboot, ./rm, C:/.../shutdown.exe) is still that verb. Other wrappers
+    # (nice, timeout, command ...) are peeled structurally by tools.approval_wrappers.
+    + r"(?:/?(?:[^\s/]+/)*)?"
 )
-_CMDPOS += r"(?:/?(?:[^\s/]+/)*)?"
 
 # Destructive-path matcher for the rm hardline rules: accept the path fully wrapped in a matching
 # quote pair (`rm -rf "/"`, `rm -rf "$HOME"`) OR bare with a terminator (whitespace, end, or
@@ -405,6 +411,23 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
     return (False, None)
 
 
+def _hardline_detection_variants(command: str, capped: list[str] | None = None):
+    """The shared detection variants plus the hardline-only command-position projections:
+    exec wrappers (nice, timeout, command, doas ...) peeled using the original quote state so the
+    verb lands on the _CMDPOS anchor, and literal command strings carried by env -S / su -c /
+    runuser -c / sh -c scanned as commands of their own. Kept out of the dangerous layer, whose
+    unanchored rules (pipe-to-shell sinks) would read a peeled `|| sudo bash` as `| bash`."""
+    from tools.approval_wrappers import carried_command_variants, strip_wrapper_prefixes
+
+    seen = set()
+    stripped = strip_wrapper_prefixes(_mask_quoted_newlines(command))
+    peeled = _normalize_command_for_detection(_mark_command_starts(stripped, marker=" \n"))
+    for variant in itertools.chain(_command_detection_variants(command, capped=capped), (peeled,), carried_command_variants(command)):
+        if variant not in seen:
+            seen.add(variant)
+            yield variant
+
+
 def detect_hardline_command(command: str) -> tuple:
     """Check hardline patterns (NEVER bypassable, even in YOLO) -> (is_hardline, description). The size
     and real-nesting limits refuse. A scan that runs out of its step budget refuses only when the
@@ -479,7 +502,7 @@ def _detect_hardline_command(command: str) -> tuple:
     if "whatif" in command.lower() and not whatif_preview_is_real(command):
         patterns = _HARDLINE_PATTERNS_NO_WHATIF
     capped: list[str] = []
-    for command_variant in _command_detection_variants(command, capped=capped):
+    for command_variant in _hardline_detection_variants(command, capped=capped):
         variant_lower = command_variant.lower()
         masked_lower: str | None = None
         for pattern_re, description, quote_masked in patterns:
@@ -1563,106 +1586,6 @@ def _mask_quoted_newlines_span(command: str, start: int, end: int) -> str:
     return "".join(out)
 
 
-_WRAPPER_WORDS = frozenset({
-    "sudo", "doas", "env", "exec", "nohup", "setsid", "time",
-    "command", "builtin", "nice", "ionice", "stdbuf", "timeout",
-})
-
-_WRAPPER_STR_OPERAND = {
-    "sudo": {"-u", "-g", "-h", "-p", "-U", "-D", "-R", "-T",
-             "--user", "--group", "--host", "--prompt", "--chdir",
-             "--role", "--type"},
-    "doas": {"-u"},
-    "env": {"-u", "-C", "-a", "-S",
-            "--unset", "--chdir", "--argv0", "--split-string"},
-    "exec": {"-a"},
-    "ionice": {"-c", "-p", "--class", "--pid"},
-    "stdbuf": {"-i", "-o", "-e", "--input", "--output", "--error"},
-    "timeout": {"-s", "-k", "--signal", "--kill-after"},
-}
-
-_WRAPPER_NUM_OPERAND = {
-    "sudo": {"-C", "--close-from"},
-    "nice": {"-n", "--adjustment"},
-    "ionice": {"-n", "--classdata"},
-}
-
-_WRAPPER_DURATION_RE = re.compile(r"[+-]?\d+(?:\.\d+)?[A-Za-z]*")
-
-def _wrapper_prefix_end(command: str, start: int) -> int:
-    """Offset where the real program after any leading wrappers begins."""
-    pos = start
-    seen_wrapper = False
-    while True:
-        ws, we, word = _read_shell_word(command, pos)
-        if ws == we:
-            return start  # prefix with no program: nothing executes
-        base = word.rsplit("/", 1)[-1].lower()
-        if base not in _WRAPPER_WORDS:
-            return ws if seen_wrapper else start
-        seen_wrapper = True
-        pos = we
-        while True:  # this wrapper's options / assignments / leading positional
-            ows, owe, oword = _read_shell_word(command, pos)
-            if ows == owe:
-                pos = owe
-                break
-            # Option matching is case-sensitive (`sudo -H` is a no-operand
-            # flag, `sudo -h host` takes an operand).
-            if oword == "--":
-                pos = owe
-                break
-            if oword.startswith("-") and oword != "-":
-                if "=" in oword:
-                    pos = owe  # --opt=value carries its own operand
-                    continue
-                str_opts = _WRAPPER_STR_OPERAND.get(base, ())
-                num_opts = _WRAPPER_NUM_OPERAND.get(base, ())
-                kind = None
-                if oword in str_opts:
-                    kind = "str"
-                elif oword in num_opts:
-                    kind = "num"
-                elif re.fullmatch(r"-[a-zA-Z]+", oword):
-                    # short bundle: the last letter owns the operand
-                    if ("-" + oword[-1]) in str_opts:
-                        kind = "str"
-                    elif ("-" + oword[-1]) in num_opts:
-                        kind = "num"
-                if kind is None:
-                    pos = owe  # no-operand flag
-                    continue
-                vws, vwe, value = _read_shell_word(command, owe)
-                if vws == vwe:
-                    pos = owe
-                    continue
-                if kind == "num" and not _WRAPPER_DURATION_RE.fullmatch(value):
-                    return start  # invalid operand: the wrapper errors here
-                pos = vwe
-                continue
-            if base == "env" and _ENV_ASSIGNMENT_RE.fullmatch(oword):
-                pos = owe
-                continue
-            if base == "timeout" and _WRAPPER_DURATION_RE.fullmatch(oword):
-                pos = owe  # leading duration positional
-                continue
-            break
-
-def _strip_wrapper_prefixes(command: str) -> str:
-    """Blank every leading wrapper chain so the real verb sits at the anchor."""
-    cuts = []
-    for start in _iter_shell_command_starts(command):
-        end = _wrapper_prefix_end(command, start)
-        if end > start:
-            cuts.append((start, end))
-    if not cuts:
-        return command
-    out = command
-    for s, e in reversed(cuts):
-        out = out[:s] + " " + out[e:]
-    return out
-
-
 def _iter_shell_command_word_spans(command: str):
     """Yield command-position words that may be executable names."""
     for pos in _iter_shell_command_starts(command):
@@ -1907,12 +1830,6 @@ def _command_detection_variants(command: str, eval_depth: int = 0, capped: list[
         if fresh(variant):
             yield variant
         pending = carry
-
-    # Strip only prefixes found using the original quote state.
-    stripped = _strip_wrapper_prefixes(_mask_quoted_newlines(command))
-    variant = _normalize_command_for_detection(_mark_command_starts(stripped, marker=" \n"))
-    if fresh(variant):
-        yield variant
 
 
 def _is_verification_artifact_cleanup(command: str) -> bool:

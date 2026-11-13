@@ -131,6 +131,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | Command | Description |
 |---------|-------------|
 | `/help` | Show available commands, grouped by category. Core commands are shown by default with skill commands collapsed to a one-line count; `/help skills` lists all skill commands, and `/help <text>` filters commands (and matching skills) by substring. |
+| `/! <command>` (a leading `!` in the composer) | **CLI only.** Run a shell command in this process: the session CWD, the terminal tool's environment filtering and its approval gate, and nothing added to the conversation history — no model turn is spent. Output is printed literally (so `!echo [/]` shows `[/]`, not a markup error) and a non-zero exit is always reported. Commands that read stdin see EOF; gateway/cron sessions always route `!` text to the agent. |
 | `/palette` | Open the fuzzy command palette (also **Ctrl+P**) — type to filter all commands + skills, ↑/↓ to move, Enter to insert the selected command into the composer (never auto-runs), Esc to cancel. Matching is ranked by command name first, so a short query stays precise. |
 | `/version` | Show Hermes Agent version, build, and environment info. |
 | `/whoami` | Show your slash command access level (admin / user). |

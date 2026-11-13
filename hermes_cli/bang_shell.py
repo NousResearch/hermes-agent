@@ -9,6 +9,7 @@ gateway/API/cron sessions have their own shells and no composer (:func:`bang_she
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 from contextlib import suppress
 from typing import Optional
@@ -18,6 +19,9 @@ USAGE_HINT = "Usage: !<command> — run a shell command without spending a model
 # Interactive convenience, not agent work: keep the ceiling well under the terminal tool's foreground
 # cap so an accidental `!sleep 999` cannot wedge the composer (the user can Ctrl+C anyway).
 DEFAULT_TIMEOUT = 120
+
+# `!cat big.log` must not pin megabytes of output in the composer's scrollback.
+MAX_OUTPUT_BYTES = 256 * 1024
 
 
 def is_bang_command(text: Optional[str]) -> bool:
@@ -97,8 +101,53 @@ def _bang_env() -> dict:
     return build_subprocess_env()
 
 
-def run_bang_command(command: str, *, cwd: Optional[str] = None, timeout: int = DEFAULT_TIMEOUT, writer=None) -> int:
-    """Execute *command*, streaming merged stdout/stderr through *writer* (default ``print``); return the exit code.
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """Kill *proc* **and** the children ``shell=True`` spawned.
+
+    ``proc.kill()`` reaches only the shell: ``!sleep 300 | cat`` keeps the pipe (and the
+    composer) alive. The child owns a session / process group, so signal the whole group.
+    """
+    with suppress(Exception):
+        if os.name == "posix":
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        else:  # CREATE_NEW_PROCESS_GROUP
+            proc.terminate()
+    with suppress(Exception):
+        proc.wait(timeout=5)
+        return
+    with suppress(Exception):
+        if os.name == "posix":
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    with suppress(Exception):
+        proc.kill()
+
+
+def _pump(proc: subprocess.Popen, emit, max_bytes: int) -> None:
+    """Stream merged stdout/stderr to *emit*, redacted, until EOF or *max_bytes*.
+
+    The cap bounds the *display*, not the command: once it trips, the caller still waits on
+    the deadline, so a chatty command cannot pin megabytes of scrollback either.
+    """
+    from agent.redact import redact_sensitive_text
+
+    stream = proc.stdout
+    if stream is None:
+        return
+    seen = 0
+    for raw in iter(stream.readline, ""):
+        size = len(raw.encode("utf-8", errors="replace"))
+        if seen + size > max_bytes:
+            emit(f"!: output truncated at {max_bytes // 1024} KiB — the command keeps running unseen")
+            with suppress(Exception):
+                stream.close()
+            return
+        seen += size
+        emit(redact_sensitive_text(raw, force=True).rstrip("\n"))
+
+
+def run_bang_command(command: str, *, cwd: Optional[str] = None, timeout: int = DEFAULT_TIMEOUT,
+                     writer=None, max_output_bytes: int = MAX_OUTPUT_BYTES) -> int:
+    """Execute *command*, streaming merged stdout/stderr through *writer*; return the exit code.
 
     Output exists only on the user's terminal — nothing is returned for insertion into history.
     """
@@ -113,25 +162,25 @@ def run_bang_command(command: str, *, cwd: Optional[str] = None, timeout: int = 
         creationflags = 0
     try:
         # shell=True is intentional (matches quick_commands): the human typed this, not the model.
+        # stdin is DEVNULL so an interactive `!cat` / `!git commit` fails fast instead of
+        # fighting prompt_toolkit for the tty until the deadline.
         proc = subprocess.Popen(
-            command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-            encoding="utf-8", errors="replace", cwd=run_cwd, env=_bang_env(),
-            creationflags=creationflags)
+            command, shell=True, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", cwd=run_cwd,
+            env=_bang_env(), creationflags=creationflags, start_new_session=(os.name == "posix"))
     except Exception as exc:
         emit(f"!: failed to run command: {exc}")
         return 127
     try:
-        if proc.stdout is not None:
-            for line in proc.stdout:
-                emit(line.rstrip("\n"))
+        _pump(proc, emit, max_output_bytes)
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        _kill_tree(proc)
         emit(f"!: command timed out after {timeout}s")
         return 124
     except KeyboardInterrupt:
         # Ctrl+C interrupts the command, not the Hermes session.
-        proc.kill()
+        _kill_tree(proc)
         emit("!: interrupted")
         return 130
     finally:

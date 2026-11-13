@@ -1086,6 +1086,7 @@ export function ChatBar({
   const {
     conversation,
     dictate,
+    dictateAndSend,
     endConversation,
     handleToggleAutoSpeak,
     startConversation,
@@ -1103,6 +1104,13 @@ export function ChatBar({
     onInterrupt: haltRun,
     onSubmit,
     onTranscribeAudio,
+    // Stop-and-send: park the transcript in the composer, then run it through
+    // the real submit engine (busy → steer/queue, parked cards, etc.) exactly
+    // as if the user had typed and pressed Send.
+    onTranscriptSubmit: text => {
+      insertText(text)
+      submitDraft()
+    },
     sessionId,
     target: scope.target
   })
@@ -1148,6 +1156,7 @@ export function ChatBar({
       hideModelPill={guidedChat}
       minimal={minimal || chatOnboardingSolo}
       onDictate={dictate}
+      onDictateAndSend={dictateAndSend}
       onQueue={() => {
         // Queueing clears the draft too, so the list over it closes with it.
         closeTrigger()

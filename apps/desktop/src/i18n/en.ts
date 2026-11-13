@@ -3361,6 +3361,7 @@ export const en: Translations = {
     endShort: 'End',
     stopDictation: 'Stop dictation',
     transcribingDictation: 'Transcribing dictation',
+    stopAndSend: 'Stop and send',
     voiceControls: 'Voice',
     voiceEngine: 'Voice chat engine',
     voiceEngineChained: 'Speech-to-text + Hermes voice',

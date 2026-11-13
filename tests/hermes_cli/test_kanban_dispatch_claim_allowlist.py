@@ -90,6 +90,7 @@ def test_profiles_import_failure_with_allowlist_claims_nothing(kanban_home, monk
         tid = kb.create_task(conn, title="foreign card", assignee="default")
         monkeypatch.setitem(sys.modules, "hermes_cli.profiles", None)
         assert kbd.has_spawnable_ready(conn) is False
+        assert kbd.dispatch_profile_allowlist_summary().startswith("none (fail-closed: profiles unavailable")
         res = kbd.dispatch_once(conn, dry_run=True)
     assert res.spawned == []
     assert res.skipped_nonspawnable == [tid]

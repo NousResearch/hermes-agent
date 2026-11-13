@@ -589,7 +589,11 @@ class _KanbanNotification:
     def build_wake_text(self) -> None:
         """Set ``wake_kinds`` / ``session_key`` / ``synth`` for the wake paths."""
         task, sub = self.task, self.sub
-        self.wake_kinds = {ev.kind for ev in self.d["events"] if ev.kind in _WAKE_KINDS} if self.wake_agent else set()
+        # Delivery uncertainty is itself a management event, even when the
+        # original status/unblocked event normally needs no owner turn.
+        uncertain = getattr(self, "status_uncertain", False)
+        self.wake_kinds = {ev.kind for ev in self.d["events"]
+                           if uncertain or ev.kind in _WAKE_KINDS} if self.wake_agent else set()
         self.wake_diagnostic = (not getattr(self, "status_uncertain", False) and
                                 all(diagnostic_event(ev) for ev in self.d["events"] if ev.kind in self.wake_kinds))
         if not self.wake_kinds:

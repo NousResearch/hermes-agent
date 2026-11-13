@@ -262,3 +262,23 @@ def test_uncertain_send_failed_wake_retries_admission_not_transport(monkeypatch,
     a.send = Transport.send.__get__(a)
     tick(runner(a))
     assert len(a.sent) == 2
+
+
+def test_uncertain_bookkeeping_events_wake_for_reconciliation(monkeypatch, tmp_path):
+    tid = setup(monkeypatch, tmp_path)
+    a = Transport()
+    a.send_error = True
+    wakes = []
+
+    async def wake(self):
+        wakes.append(self.synth)
+
+    monkeypatch.setattr(_KanbanNotification, "wake", wake)
+    for kind in ("status", "unblocked"):
+        emit(tid, kind, {"status": "ready"}, "ready")
+        for _ in range(12):
+            tick(runner(a))
+    assert len(a.sent) == 1 and len(wakes) == 2
+    assert all("reconcile_notify_status" in text and "Undelivered status" in text for text in wakes)
+    with kbc.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM task_comments WHERE author='kanban-notifier'").fetchone()[0] == 2

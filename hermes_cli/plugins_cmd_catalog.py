@@ -23,6 +23,7 @@ from hermes_cli.plugin_catalog import (
     find_removed, get_live_catalog_entry, load_catalog_live, match_removed, resolved_removed_entries,
     _NAME_RE, _normalize_repo,
 )
+from rich.markup import escape as _escape
 from pm.filesystem import is_junction
 
 logger = logging.getLogger(__name__)
@@ -813,6 +814,7 @@ def _render_entries(entries: list[PluginCatalogEntry], console) -> None:
     for e in sorted(entries, key=lambda e: (e.category, rank.get(e.tier, len(rank)), e.name)):
         tier = f"[{style.get(e.tier, 'magenta')}]{e.tier}[/{style.get(e.tier, 'magenta')}]"
         desc = e.description if len(e.description) <= 60 else e.description[:57] + "..."
+        desc = _escape(desc)
         name = e.name + (f"\n[yellow]needs Hermes {e.requires_hermes}[/yellow]" if catalog_hermes_error(e) else "")
         table.add_row(name, e.category, tier, desc, pin_label(e), _capability_counts(e))
     console.print()
@@ -849,7 +851,7 @@ def cmd_info(name: str) -> None:
     console.print()
     console.print(f"[bold]{entry.name}[/bold] [cyan]\\[{entry.tier}][/cyan]")
     if entry.description:
-        console.print(entry.description)
+        console.print(_escape(entry.description))
     console.print()
     rows = [("Repo", entry.repo), ("Subdir", entry.subdir), ("Version", entry.version), ("Pinned SHA", entry.sha),
             ("Image", entry.image),
@@ -857,15 +859,15 @@ def cmd_info(name: str) -> None:
             ("Platforms", ", ".join(entry.platforms)), ("Docs", entry.docs_url)]
     for label, value in rows:
         if value:
-            console.print(f"[dim]{label + ':':<12}[/dim] {value}")
+            console.print(f"[dim]{label + ':':<12}[/dim] {_escape(value)}")
     console.print()
     for label, items in (("Tools", caps.provides_tools), ("Hooks", caps.provides_hooks),
                          ("Middleware", caps.provides_middleware), ("Env vars", caps.requires_env)):
-        console.print(f"[dim]{label + ':':<12}[/dim] {', '.join(items) or '(none)'}")
+        console.print(f"[dim]{label + ':':<12}[/dim] {_escape(', '.join(items)) or '(none)'}")
     console.print()
     removed = find_removed(entry.name) or find_removed(entry.repo)
     if removed is not None:
-        console.print(f"[red bold]✗ REMOVED from catalog: {removed.reason or 'no reason recorded'}"
+        console.print(f"[red bold]✗ REMOVED from catalog: {_escape(removed.reason or 'no reason recorded')}"
                       f"{f' ({removed.date})' if removed.date else ''}[/red bold]")
         console.print()
     held = catalog_hermes_error(entry)

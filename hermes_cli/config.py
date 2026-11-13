@@ -2837,7 +2837,7 @@ _SCHEMA_DEFINED_DICT_KEYS = frozenset({
     # MCP server template / dynamic auth dicts
     "sessions", "checkpoints",
     # Plugin enable/disable lists + per-plugin entries; absent from DEFAULT_CONFIG.
-    "plugins"})
+    "plugins", "browser"})
 
 # Top-level keys that can be ANY user-supplied name.
 _DYNAMIC_TOP_LEVEL_KEYS = frozenset({

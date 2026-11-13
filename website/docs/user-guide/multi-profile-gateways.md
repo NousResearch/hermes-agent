@@ -593,7 +593,7 @@ both name a server `github` with their own token get two connections and each
 sees only its own tools; profiles whose `mcp_servers` entry is identical (same
 route *and* credentials, including mTLS `client_cert`/`client_key`) share one
 connection, and an owner's `/reload-mcp`
-re-registers the sharing profiles' tools without them reloading. `auth: oauth`
+re-registers the sharing profiles' tools without them reloading. A stdio child carries its profile's `HERMES_HOME`, so stdio entries share only when opted in (`shared: true` or `mcp.share_across_profiles: true`; see the MCP guide). `auth: oauth`
 servers are never shared across profiles: each profile holds its own token under
 its own `mcp-tokens/` and opens its own connection. Startup connects profiles one
 after another and, within a profile, at most `mcp.discovery_concurrency` servers at

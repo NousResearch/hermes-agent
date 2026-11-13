@@ -388,7 +388,8 @@ class MCPServerTransportMixin:
             raise ValueError(f"MCP server '{self.name}' has no 'command' in config")
         inputs, _ = _connect_inputs(self.name, config)
         # Hash the inputs this attempt spawns with, never a second resolution of them.
-        self._resolved_identity = _registration._identity_digest(inputs)
+        self._resolved_identity = _registration._identity_digest(
+            _registration._identity_inputs(config, inputs))
         command, safe_env, stdio_cwd = inputs
         # OSV malware preflight, then the cached-npx swap (ordering enforced there).
         command, args = await _core._preflight_stdio_command(self.name, command, config.get("args", []))

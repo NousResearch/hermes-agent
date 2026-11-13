@@ -484,6 +484,41 @@ def _identity_digest(resolved: list) -> str:
     return hashlib.sha256(json.dumps(resolved, sort_keys=True, default=str).encode()).hexdigest()
 
 
+def _share_across_profiles(config: dict) -> bool:
+    """Whether a stdio server's child may be shared across multiplexed profiles even though its
+    spawn env carries each profile's own ``HERMES_HOME``. Per-server ``shared`` wins; otherwise
+    ``mcp.share_across_profiles`` (default off: a child that reads ``HERMES_HOME`` must stay
+    per-profile). HTTP entries are unaffected (their identity never included the home)."""
+    if "url" in config:
+        return False
+    if "shared" in config:
+        return _parse_boolish(config.get("shared"), default=False)
+    try:
+        from hermes_cli.config import load_config
+        return _parse_boolish((load_config().get("mcp") or {}).get("share_across_profiles"),
+                              default=False)
+    except Exception:  # health: allow BLIND_EXCEPT -- a config read failure must only keep the child per-profile
+        logger.debug("mcp.share_across_profiles unreadable; keeping stdio servers per-profile",
+                     exc_info=True)
+        return False
+
+
+def _identity_inputs(config: dict, inputs: list) -> list:
+    """The part of a connection's resolved inputs that decides whether profiles may share it.
+    ``_build_safe_env`` pins each profile's own ``HERMES_HOME`` into every stdio child's env, so
+    two profiles with byte-identical entries never hashed alike and every profile spawned its own
+    copy (#18594 made the pin; the documented sharing of identical entries never applied to
+    stdio). A server that opts in (``shared: true`` / ``mcp.share_across_profiles``) declares it
+    does not depend on that value, so the injected home is left out of the digest; an explicit
+    ``env.HERMES_HOME`` in the entry still counts. The shared child keeps its owner's home."""
+    if "url" in config or not _share_across_profiles(config):
+        return inputs
+    command, env, cwd = inputs
+    if "HERMES_HOME" in (config.get("env") or {}):
+        return inputs
+    return [command, {k: v for k, v in (env or {}).items() if k != "HERMES_HOME"}, cwd]
+
+
 def _adopter_identity_digest(server_name: str, config: dict) -> str | None:
     """Digest of what a connection is opened with that the config does not show, resolved in the
     CURRENT profile's scope by the transport's own resolvers: a stdio child's executable (bare
@@ -505,7 +540,7 @@ def _adopter_identity_digest(server_name: str, config: dict) -> str | None:
         logger.warning("MCP server '%s': cannot resolve this profile's connection identity (%s); "
                        "not adopting another profile's connection", server_name, exc)
         return None
-    return _identity_digest(inputs)
+    return _identity_digest(_identity_inputs(config, inputs))
 
 
 def _same_server_route(server: Any, config: dict, *, cross_profile: bool = False,

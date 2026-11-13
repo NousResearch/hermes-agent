@@ -165,12 +165,14 @@ def _refuse_cross_endpoint_overwrite(env_name: str, value: str, base_url: str, o
 def known_endpoint_key_env(cfg: dict, base_url: str) -> str:
     """The Hermes-written ``key_env`` of a ``providers`` / ``custom_providers`` row already registered
     for ``base_url``, so a save for that endpoint updates the row's variable instead of forking a
-    second one. User-chosen names (``OPENAI_API_KEY``) are never reused: they may serve elsewhere."""
+    second one. User-chosen names (``OPENAI_API_KEY``) are never reused: they may serve elsewhere, and
+    neither is a name another endpoint also reads (an older release keyed rows by host:port only)."""
     wanted = _canonical_endpoint(base_url)
     for block in _credential_blocks(cfg):
         name = str(block.get("key_env") or "")
         if (name.startswith(("HERMES_CUSTOM_", "HERMES_PROVIDER_")) and _block_base_url(block)
-                and _canonical_endpoint(_block_base_url(block)) == wanted):
+                and _canonical_endpoint(_block_base_url(block)) == wanted
+                and not other_endpoint_reads(name, base_url)):  # a legacy host:port name two endpoints share
             return name
     return ""
 

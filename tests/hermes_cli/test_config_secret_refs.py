@@ -436,3 +436,52 @@ def test_config_set_on_hostless_rows_keeps_each_row_its_own_key(home):
 
     assert [row["api_key"] for row in load_config()["custom_providers"]] == ["KEY-ONE", "KEY-TWO"]
     assert "KEY-ONE" not in _config_text(home)
+
+
+_LEGACY_SHARED = "HERMES_CUSTOM_GW_EXAMPLE_8443_API_KEY"  # an older release keyed rows by host:port
+
+
+def _two_rows_on_one_legacy_variable(home):
+    (home / ".env").write_text(f"{_LEGACY_SHARED}=KEY-B\n", encoding="utf-8")
+    (home / "config.yaml").write_text(
+        "model:\n  provider: openrouter\n  default: x\ncustom_providers:\n"
+        f"- name: a\n  base_url: https://gw.example:8443/a/v1\n  key_env: {_LEGACY_SHARED}\n"
+        f"- name: b\n  base_url: https://gw.example:8443/b/v1\n  key_env: {_LEGACY_SHARED}\n", encoding="utf-8")
+
+
+def test_hermes_model_custom_flow_moves_an_endpoint_off_a_shared_legacy_variable(home, monkeypatch):
+    """Re-running ``hermes model`` for one of two endpoints an older release put on one variable
+    gives it its own variable instead of refusing (or re-keying the other endpoint)."""
+    from hermes_cli import model_setup_flows_custom as flow
+    from hermes_cli.config import load_config
+
+    _two_rows_on_one_legacy_variable(home)
+    answers = iter(["https://gw.example:8443/a/v1", "", "a"])
+    monkeypatch.setattr(flow, "line_input", lambda _prompt="": next(answers))
+    monkeypatch.setattr("hermes_cli.secret_prompt.masked_secret_prompt", lambda _prompt="": "KEY-A")
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "")
+    monkeypatch.setattr("hermes_cli.models.probe_api_models", lambda *a, **k: {"models": ["m"]})
+    monkeypatch.setattr("hermes_cli.main_provider_setup._prompt_custom_api_mode_selection",
+                        lambda *a, **k: None)
+
+    flow._model_flow_custom({})
+
+    cfg = load_config()
+    rows = {row["name"]: row for row in cfg["custom_providers"]}
+    assert cfg["model"]["api_key"] == "KEY-A" and rows["a"]["key_env"] != _LEGACY_SHARED
+    assert rows["b"]["key_env"] == _LEGACY_SHARED and f"{_LEGACY_SHARED}=KEY-B" in (home / ".env").read_text()
+
+
+def test_dashboard_main_save_moves_an_endpoint_off_a_shared_legacy_variable(home, monkeypatch):
+    from hermes_cli.config import load_config
+    from hermes_cli.web_server_config import _apply_model_assignment_sync
+
+    monkeypatch.setattr(
+        "hermes_cli.models_validate.validate_requested_model",
+        lambda *a, **k: {"accepted": True, "persist": True, "recognized": True, "message": None})
+    _two_rows_on_one_legacy_variable(home)
+
+    _apply_model_assignment_sync("main", "custom", "m", "", "https://gw.example:8443/a/v1", "KEY-A")
+
+    assert load_config()["model"]["api_key"] == "KEY-A"
+    assert f"{_LEGACY_SHARED}=KEY-B" in (home / ".env").read_text(encoding="utf-8")

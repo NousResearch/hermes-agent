@@ -298,6 +298,9 @@ def _is_shell_boundary_echo(segment: str) -> bool:
 
 def summarize_shell_command(command: str) -> str:
     """Compact shell wrapper/plumbing for display while preserving raw command elsewhere."""
+    # Script bodies are not shell compound commands; preserve their text before flattening.
+    if "\n" in command or "\r" in command:
+        return _oneline(command)
     original = _oneline(command)
     if not original:
         return ""

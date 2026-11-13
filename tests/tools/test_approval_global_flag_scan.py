@@ -73,7 +73,7 @@ def test_whitespace_runs_at_a_command_position_finish():
     _run('''
 from tools.approval_detection import DANGEROUS_PATTERNS_COMPILED, HARDLINE_PATTERNS_COMPILED, _CMDPOS
 rules = [entry[0] for entry in HARDLINE_PATTERNS_COMPILED + DANGEROUS_PATTERNS_COMPILED
-         if entry[0].pattern.startswith(_CMDPOS)]
+         if getattr(entry[0], "pattern", "").startswith(_CMDPOS)]
 mkfs = [rx for rx in rules if "mkfs" in rx.pattern]
 assert len(rules) > 10 and mkfs
 for run in ("\\n" * 24000, " \\n" * 12000, "\\t\\n" * 12000, "sudo" + " " * 24000, "env" + " " * 24000,

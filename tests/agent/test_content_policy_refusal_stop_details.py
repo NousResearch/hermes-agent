@@ -71,3 +71,23 @@ def test_refusal_log_caps_a_long_stop_details_explanation(caplog):
         )
     line = next(r.getMessage() for r in caplog.records if "native_stop_reason" in r.getMessage())
     assert "cyber" in line and "SENTINEL" not in line
+
+
+def test_native_thinking_refusal_prefers_structured_reason_over_summary():
+    """Regression for #142213: an interrupted thinking block is not the refusal reason."""
+    agent = _agent()
+    agent._extract_reasoning.side_effect = lambda normalized: normalized.reasoning
+    response = SimpleNamespace(
+        content=[SimpleNamespace(type="thinking", thinking="I'll outline the implementation.", signature="sig")],
+        stop_reason="refusal", usage=None, model="claude",
+        stop_details={"type": "refusal", "category": "cyber", "explanation": "Classifier stopped this reply."},
+    )
+    verdict = handle_content_policy_refusal(
+        agent, response, TurnRetryState(), thinking_spinner=None, messages=[], api_messages=[], api_kwargs={},
+        active_system_prompt=None, conversation_history=[], api_call_count=1, effective_task_id="t", turn_id="u",
+        api_request_id="r", api_start_time=0.0, retry_count=0, max_retries=0,
+    )
+    assert verdict.action == "return"
+    assert "Classifier stopped this reply." in verdict.result["error"]
+    assert "provider refusal category: cyber" in verdict.result["error"]
+    assert "I'll outline the implementation." not in verdict.result["error"]

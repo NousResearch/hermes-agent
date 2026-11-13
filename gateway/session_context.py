@@ -116,14 +116,16 @@ def set_current_session_id(session_id: str) -> None:
     already bound id (automatic compression rotation) notifies ``register_id_rebind_hook`` holders."""
     previous = _SESSION_ID.get()
     _SESSION_ID.set(session_id)
-    if previous is not _UNSET and previous and previous != session_id:
-        _notify_id_rebind(str(previous), session_id)
     try:
         from agent.delegation_context import is_delegated_child_context
         if is_delegated_child_context():
             return
     except Exception:
         pass
+    # A delegated agent inherits its parent's ContextVar during construction. Only the
+    # owning turn may rebind a live desktop route; children must not acquire that window.
+    if previous is not _UNSET and previous and previous != session_id:
+        _notify_id_rebind(str(previous), session_id)
     os.environ["HERMES_SESSION_ID"] = session_id
 
 

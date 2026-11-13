@@ -152,6 +152,27 @@ def test_a_released_turn_drops_every_route_the_rotation_left_behind(window):
     assert "failed: " in _emit("preview.open", {"url": "https://example.com/late"})
 
 
+def test_delegated_child_session_id_does_not_claim_parent_window(window):
+    """Delegated agent construction must not attach its id to the parent's live UI turn."""
+    from agent.delegation_context import delegated_child_context
+    from gateway.session_context import set_current_session_id
+
+    sinks = local_viewer_events.wire(window.turn, window.agent)
+    assert set(local_desktop_ui._turns) == {"phys"}
+
+    # AIAgent.__init__ sets the child's id under an inherited parent ContextVar.
+    with delegated_child_context():
+        set_current_session_id("delegate-child")
+        assert "delegate-child" not in local_desktop_ui._turns
+        assert "failed: no Hermes desktop window" in _emit(
+            "preview.open", {"url": "https://example.com/child"})
+
+    assert json.loads(_emit("preview.open", {"url": "https://example.com/parent"})) == {"success": True}
+    assert window.published[-1] == ("preview.open", {"url": "https://example.com/parent"})
+    local_viewer_events.restore(window.agent, sinks)
+    assert local_desktop_ui._turns == {}
+
+
 def test_the_connection_card_opens_and_updates_on_the_owning_session(window, monkeypatch):
     from tools.connectors import live
     from tools.connectors.contract import Actor, TargetState

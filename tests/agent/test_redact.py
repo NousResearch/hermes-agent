@@ -1962,3 +1962,25 @@ class TestPasswordOnlyConnStrings:
             t0 = time.perf_counter()
             redact_sensitive_text(text, force=True)
             assert time.perf_counter() - t0 < 0.5, unit
+
+
+class TestPhoneRedactionMode:
+    """E.164 phone pass: mask for logs, non-reusable sentinel for file reads.
+
+    The head/tail mask is itself a valid-looking E.164 literal; an agent
+    copying it from displayed file content back into a patch or write_file
+    lands the MASK ON DISK (issue #35519 class, phone variant).
+    """
+
+    PHONE = "+1" + "5551230001"  # concatenation: no literal token in-file
+
+    def test_file_read_phone_is_nonreusable_sentinel(self):
+        out = redact_sensitive_text('Target: "' + self.PHONE + '"', file_read=True)
+        assert self.PHONE[1:] not in out  # digit body gone
+        assert "\u00abredacted:phone:" in out
+        assert "****" not in out  # mask shape must NOT appear in sentinel mode
+
+    def test_log_mode_phone_stays_masked(self):
+        out = redact_sensitive_text("recipient " + self.PHONE + " pinged", force=True)
+        assert self.PHONE[2:] not in out  # body digits masked
+        assert "****" in out  # privacy mask shape preserved for logs

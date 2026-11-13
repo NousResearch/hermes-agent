@@ -230,6 +230,17 @@ function WorkspaceValue({ kind, path }: { kind: null | string | undefined; path:
   )
 }
 
+/** Collapsible block that keeps the untouched backend text next to a localized
+ *  explanation: translated copy never replaces diagnostic data. */
+function TechDetails({ label, raw }: { label: string; raw: string }) {
+  return (
+    <details className="text-[0.65rem] text-(--ui-text-tertiary)">
+      <summary className="cursor-pointer select-none">{label}</summary>
+      <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words font-mono leading-snug">{raw}</pre>
+    </details>
+  )
+}
+
 /** The dashboard's diagnostics panel: severity-toned, plain-English, with the
  *  backend's structured recovery actions as buttons. `reassign` is skipped —
  *  the Assignee control in the meta table IS that action, inline. */
@@ -264,15 +275,21 @@ function Diagnostics({
           action => action.kind === 'reclaim' || action.kind === 'unblock' || action.kind === 'cli_hint'
         )
 
+        const localTitle = k.diagTitle(diag.kind, diag.title, diag.count, diag.data ?? {})
+        const localDetail = k.diagExplain(diag.kind, diag.data ?? {})
+
         return (
           <Callout
             key={`${diag.kind}-${diag.last_seen_at}`}
-            title={`${diag.title}${diag.count > 1 ? ` ×${diag.count}` : ''}`}
+            title={`${localTitle || diag.title}${diag.count > 1 ? ` ×${diag.count}` : ''}`}
             tone={tone}
           >
             <p className="whitespace-pre-wrap text-[0.6875rem] leading-relaxed text-(--ui-text-secondary)">
-              {diag.detail}
+              {localDetail || diag.detail}
             </p>
+            {(localTitle || localDetail) && (
+              <TechDetails label={k.techDetails} raw={`${diag.title}\n\n${diag.detail}`} />
+            )}
             {actions.length > 0 && (
               <div className="flex flex-wrap gap-1.5">
                 {actions.map(action => (
@@ -776,7 +793,7 @@ function FeedTabs({
                 <li className="flex flex-col gap-0.5 text-[0.6875rem]" key={run.id}>
                   <div className="flex items-center gap-2">
                     <Badge size="xs" variant={failed ? 'destructive' : 'muted'}>
-                      {run.outcome ?? run.status}
+                      {k.runOutcome(run.outcome ?? run.status)}
                     </Badge>
                     {run.profile && <span className="text-(--ui-text-tertiary)">{run.profile}</span>}
                     {duration(run.started_at, run.ended_at) && (
@@ -793,9 +810,10 @@ function FeedTabs({
                         run.error ? 'text-destructive' : 'text-(--ui-text-quaternary)'
                       )}
                     >
-                      {run.error ?? run.summary}
+                      {(run.error && k.errorExplain(run.error)) || (run.error ?? run.summary)}
                     </p>
                   )}
+                  {run.error && k.errorExplain(run.error) && <TechDetails label={k.techDetails} raw={run.error} />}
                 </li>
               )
             })}
@@ -1118,7 +1136,7 @@ export function TaskDrawer({
                 {task.status === 'blocked' && task.block_kind && (
                   <MetaRow label={k.blockReason}>
                     <Tip label={k.blockKindTip(task.block_kind)}>
-                      <span className="cursor-help text-destructive">{task.block_kind}</span>
+                      <span className="cursor-help text-destructive">{k.blockKindName(task.block_kind)}</span>
                     </Tip>
                   </MetaRow>
                 )}
@@ -1134,9 +1152,18 @@ export function TaskDrawer({
                 )}
                 {task.last_failure_error && (
                   <MetaRow label={k.lastFailureError}>
-                    <span className="whitespace-pre-wrap font-mono text-[0.65rem] leading-snug text-(--ui-text-tertiary)">
-                      {task.last_failure_error}
-                    </span>
+                    {k.errorExplain(task.last_failure_error) ? (
+                      <div className="flex flex-col gap-1">
+                        <span className="text-[0.7rem] leading-snug text-(--ui-text-secondary)">
+                          {k.errorExplain(task.last_failure_error)}
+                        </span>
+                        <TechDetails label={k.techDetails} raw={task.last_failure_error} />
+                      </div>
+                    ) : (
+                      <span className="whitespace-pre-wrap font-mono text-[0.65rem] leading-snug text-(--ui-text-tertiary)">
+                        {task.last_failure_error}
+                      </span>
+                    )}
                   </MetaRow>
                 )}
                 {task.workspace_path && (

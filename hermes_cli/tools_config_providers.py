@@ -171,6 +171,21 @@ def _visible_providers(
     return visible
 
 
+def _free_managed_web_search_ready(config: dict) -> bool:
+    """True when the configured search route can use the entitlement-free Perplexity gateway."""
+    raw_web = config.get("web")
+    web = raw_web if isinstance(raw_web, dict) else {}
+    search = web.get("search_backend")
+    if not (isinstance(search, str) and search.strip()):
+        search = NOUS_MANAGED_PROVIDER if is_truthy_value(web.get("use_gateway"), default=False) else web.get("backend")
+    if not (isinstance(search, str) and search.strip().lower() == NOUS_MANAGED_PROVIDER):
+        return False
+
+    from tools.managed_tool_gateway import peek_nous_access_token, resolve_free_search_gateway
+
+    return resolve_free_search_gateway(token_reader=peek_nous_access_token) is not None
+
+
 def provider_readiness_status(provider: dict, config: dict, *, features=None, is_active: Optional[bool] = None) -> str:
     """Honest readiness state for a provider picker row.
     ``features`` avoids re-fetching portal state per row. ``is_active`` is the completed-setup fallback
@@ -193,7 +208,10 @@ def provider_readiness_status(provider: dict, config: dict, *, features=None, is
             category = MANAGED_FEATURE_COVERAGE_CATEGORY.get(managed_feature)
             entitled = bool(acct and acct.logged_in and (
                 acct.tool_gateway_entitled_for(category) if category else acct.tool_gateway_entitled))
-            if not entitled:
+            # Perplexity fast search is intentionally available to every usable Nous identity. The
+            # remaining managed web capability (extract) and every other feature stay entitlement-gated.
+            free_search = managed_feature == "web" and _free_managed_web_search_ready(config)
+            if not entitled and not free_search:
                 return "needs_auth"
         # Signed in and entitled — fall through: a managed row may still carry a local install hook.
 

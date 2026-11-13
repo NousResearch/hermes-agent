@@ -9,13 +9,13 @@ import pytest
 @pytest.mark.parametrize('compressed', [False, True], ids=['direct', 'compressed'])
 @pytest.mark.parametrize('missing_origin', [False, True], ids=['with-origin', 'null-origin'])
 async def test_completion_uses_logical_owner_after_route_restore(tmp_path, monkeypatch, platform, compressed, missing_origin):
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.platforms.event import MessageEvent
-    from gateway.run import GatewayRunner
-    from gateway.session import SessionEntry
-    from gateway.session_authority import SessionAuthority, initialize_session_authority
-    from gateway.session_automation import completion_admission
-    from gateway.session_ingress_context import native_callback
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import SessionEntry
+    from hermes_agent.gateway.session_authority import SessionAuthority, initialize_session_authority
+    from hermes_agent.gateway.session_automation import completion_admission
+    from hermes_agent.gateway.session_ingress_context import native_callback
     from hermes_constants import get_hermes_home
     from hermes_agent.hermes_state_runtime import list_session_admissions
     from plugins.platforms.discord.adapter import DiscordAdapter
@@ -79,8 +79,8 @@ async def test_completion_uses_logical_owner_after_route_restore(tmp_path, monke
 @pytest.mark.asyncio
 @pytest.mark.parametrize('compressed', [False, True], ids=['direct', 'compressed'])
 async def test_local_null_origin_never_acknowledges_the_wrong_owner(tmp_path, monkeypatch, compressed):
-    from gateway.session import SessionEntry
-    from gateway.session_automation import completion_admission
+    from hermes_agent.gateway.session import SessionEntry
+    from hermes_agent.gateway.session_automation import completion_admission
     from hermes_agent.hermes_state_runtime import list_session_admissions
     from tests.gateway.test_completion_admission import pending
     from tests.gateway.test_session_end_delegations import _local

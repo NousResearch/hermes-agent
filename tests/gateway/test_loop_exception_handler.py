@@ -4,7 +4,7 @@ Issues #31066 / #31110: unhandled ``telegram.error.TimedOut`` (or peer
 ``NetworkError`` / ``httpx`` connection error) propagating to the
 asyncio event loop killed the gateway process, taking down every
 profile attached to the same runner. The safety net installed in
-:func:`gateway.run.start_gateway` catches the transient crash class
+:func:`hermes_agent.gateway.run.start_gateway` catches the transient crash class
 and logs+swallows it; non-transient errors still surface.
 
 These tests pin the classifier and the loop handler so the safety net
@@ -17,7 +17,7 @@ import asyncio
 
 import pytest
 
-from gateway.run import (
+from hermes_agent.gateway.run import (
     _gateway_loop_exception_handler,
     _is_transient_network_error,
 )

@@ -18,7 +18,7 @@ _OPENING = [{'role': 'system', 'content': 'be brief'}, {'role': 'user', 'content
 
 def _execute(owner, calls):
     async def handle(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         calls.append(event.text)
         text = f'answer {len(calls)}'
         execution_result.get()['result'] = {'final_response': text, 'messages': []}
@@ -136,7 +136,7 @@ async def test_a_store_that_cannot_answer_the_lookup_returns_an_openai_error(api
     def unreadable(*_a, **_k):
         raise sqlite3.OperationalError('disk I/O error')
 
-    monkeypatch.setattr('gateway.session_api.implicit_api_session', unreadable)
+    monkeypatch.setattr('hermes_agent.gateway.session_api.implicit_api_session', unreadable)
     async with TestClient(TestServer(_app(api))) as client:
         response = await client.post('/v1/chat/completions',
                                      json={'model': 'hermes-agent', 'messages': _OPENING, 'stream': stream},

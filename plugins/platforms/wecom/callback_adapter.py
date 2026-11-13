@@ -31,10 +31,10 @@ except ImportError:
     httpx = None  # type: ignore[assignment]
     HTTPX_AVAILABLE = False
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms.helpers import MessageDeduplicator, send_chunks
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.platforms.helpers import MessageDeduplicator, send_chunks
 from plugins.platforms.wecom.wecom_crypto import WXBizMsgCrypt, WeComCryptoError
 
 logger = logging.getLogger(__name__)
@@ -129,7 +129,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         if not check_wecom_callback_requirements():
             logger.warning("[WecomCallback] aiohttp/httpx not installed")
             return False
-        from gateway.platforms.shared_ingress import bind_listener, shared_ingress_profile
+        from hermes_agent.gateway.platforms.shared_ingress import bind_listener, shared_ingress_profile
         if not shared_ingress_profile(self):
             try:  # quick port-in-use check
                 with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as sock:
@@ -141,7 +141,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
                 pass
         try:
             # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
-            from gateway.platforms._http_client_limits import platform_httpx_limits
+            from hermes_agent.gateway.platforms._http_client_limits import platform_httpx_limits
             self._http_client = httpx.AsyncClient(timeout=20.0, limits=platform_httpx_limits())
             # client_max_size → 413 before our handler / any signature work runs.
             self._app = web.Application(client_max_size=_MAX_BODY)

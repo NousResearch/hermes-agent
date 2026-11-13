@@ -5,8 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from gateway.config import Platform
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.session import SessionSource
 
 
 def _make_plugin_skill(home: Path, plugin_name: str, skill: str, body: str) -> None:
@@ -40,7 +40,7 @@ def _rewrite(event_text: str, tmp_path, monkeypatch, plugin_home):
     try:
         monkeypatch.setattr(sc, "_skill_commands_by_key", {})
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"):
-            from gateway.run_inbound import GatewayInboundMixin
+            from hermes_agent.gateway.run_inbound import GatewayInboundMixin
 
             def _unknown(self, command, source):
                 return f"Unknown command: /{command}"

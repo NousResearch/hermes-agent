@@ -15,19 +15,19 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.interrupt_compat import _accepts_keyword
 from agent.replay_cleanup import strip_stale_dangerous_confirmations
-from gateway.config import Platform
-from gateway.media_repair import repair_explicit_computer_use_media_paths
-from gateway.platforms.base import BasePlatformAdapter
-from gateway.session_api_turn import api_runtime_locked
-from gateway.turn_context import TurnContext
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.media_repair import repair_explicit_computer_use_media_paths
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.session_api_turn import api_runtime_locked
+from hermes_agent.gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
 from utils import is_truthy_value
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 
 class GatewaySessionAgentMixin:
@@ -42,7 +42,7 @@ class GatewaySessionAgentMixin:
     def _skip_context_files(self, platform_key) -> bool:
         """gateway.platforms.<plat>.skip_context_files: messaging platforms may opt out of
         filesystem-heavy context-file discovery (SOUL.md, AGENTS.md, .cursorrules)."""
-        from gateway.session_policy import policy_for_source
+        from hermes_agent.gateway.session_policy import policy_for_source
         policy = policy_for_source(self._runner, self._ctx.source)
         if policy:
             return policy.ignore_rules
@@ -89,7 +89,7 @@ class GatewaySessionAgentMixin:
         """Evict under the lock but DEFER release (release_clients can block on memory-provider /
         socket teardown while the idle sweeper waits on this lock). The turn rebuilds a fresh agent, so
         the caller does a SOFT release that keeps sandbox / browser / bg processes."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from hermes_agent.gateway.run import _AGENT_PENDING_SENTINEL
         evicted = self._runner._agent_cache.pop(self._ctx.session_key, None)
         agent = evicted[0] if isinstance(evicted, tuple) and evicted else None
         return agent if agent and agent is not _AGENT_PENDING_SENTINEL else None
@@ -150,13 +150,13 @@ class GatewaySessionAgentMixin:
 
     def _build_fresh_agent(self, turn_route, platform_key, combined_ephemeral, max_iterations,
                            reasoning_config, pr, skip_context_files):
-        from gateway.run import _checkpoint_agent_kwargs
+        from hermes_agent.gateway.run import _checkpoint_agent_kwargs
         ctx = self._ctx
         runner = self._runner
         src = ctx.source
-        from gateway.session_authorities import active_authority
-        from gateway.session_policy import policy_for_source
-        from gateway.session_worker_construct import session_prefill
+        from hermes_agent.gateway.session_authorities import active_authority
+        from hermes_agent.gateway.session_policy import policy_for_source
+        from hermes_agent.gateway.session_worker_construct import session_prefill
         policy = policy_for_source(runner, src)
         return ctx.AIAgent(
             model=turn_route["model"], **turn_route["runtime"], **_checkpoint_agent_kwargs(ctx.user_config),

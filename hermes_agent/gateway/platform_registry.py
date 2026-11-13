@@ -69,7 +69,7 @@ class PlatformEntry:
     #
     # Why two fields (#79812): when the ACTIVE installer was registered as
     # ``check_fn``, every status display pip-installed SDKs as a side effect
-    # (desktop boot-loop at 94%, see gateway/config.py enablement comments);
+    # (desktop boot-loop at 94%, see hermes_agent/gateway/config.py enablement comments);
     # when the PASSIVE probe was registered instead, ``create_adapter()``
     # returned None before ``connect()`` could lazy-install, so the deps
     # never installed at all (Teams deadlock).  Splitting the two roles makes
@@ -120,7 +120,7 @@ class PlatformEntry:
     # set it for a chat platform: any sender would reach the agent. Consumer: Home Assistant.
     trusted_inbound: bool = False
     # Built-in display defaults tier ("high" | "medium" | "low" | "minimal", see
-    # gateway/display_config.py) used below the user's display.* overrides; "" = global defaults.
+    # hermes_agent/gateway/display_config.py) used below the user's display.* overrides; "" = global defaults.
     display_tier: str = ""
     # --- prompt ---
     # Per-key display defaults layered over ``display_tier`` (e.g. Discord ``reasoning_style``);
@@ -175,7 +175,7 @@ class PlatformEntry:
     env_value_rules: dict = field(default_factory=dict)
     # --- env ---
     # Ordered ``step(GatewayConfig) -> None`` env->config bridge run by ``_apply_env_overrides`` for a
-    # platform with activation evidence (``gateway.platform_env.EnvCred`` / ``home_step`` /
+    # platform with activation evidence (``hermes_agent.gateway.platform_env.EnvCred`` / ``home_step`` /
     # ``reply_mode_step``); () = none. Unlike ``env_enablement_fn`` it runs whether or not deps are
     # importable and may set token / home channel / reply mode or force-disable.
     env_overrides: tuple = ()
@@ -188,7 +188,7 @@ def core_ships_platform(name: str) -> bool:
     """*name* is a platform core ships an adapter for: a static ``Platform`` member or a bundled
     ``plugins/platforms/`` plugin. A user plugin may replace such an adapter but never mark it
     ``trusted_inbound``: its senders are people, and that flag waives allowlists and pairing."""
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     value = str(name or "").strip().lower()
     return value in {Platform[member].value for member in Platform._member_names_} or (
         value in Platform._scan_bundled_plugin_platforms()[0])
@@ -221,7 +221,7 @@ class PlatformRegistry:
         # until ownership teardown can CAS-restore the displaced predecessor.
         self._consumed_loaders: dict[_LoadKey, _Loader] = {}
         # Manifest-declared env names per deferred platform (``requires_env``), recorded without
-        # importing the adapter so ``gateway.platform_activation`` can tell a configured platform
+        # importing the adapter so ``hermes_agent.gateway.platform_activation`` can tell a configured platform
         # from an unconfigured one. A hint only: a stale entry costs one extra import, never a miss.
         self._activation_env: dict[str, frozenset[str]] = {}
 
@@ -399,7 +399,7 @@ class PlatformRegistry:
 
         The gateway's config/env passes need each platform's hooks only for platforms the profile
         actually configures; importing every bundled adapter (~20 SDKs) just to read metadata cost
-        every cold start ~0.5 s. *wanted* is :func:`gateway.platform_activation.has_activation_evidence`
+        every cold start ~0.5 s. *wanted* is :func:`hermes_agent.gateway.platform_activation.has_activation_evidence`
         (or a test stub); entries that are already loaded are always returned."""
         self._resolve_all(wanted)
         with self._lock:

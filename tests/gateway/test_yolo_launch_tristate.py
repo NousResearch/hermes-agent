@@ -7,9 +7,9 @@ _RESTARTED_OWNER = '''
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from gateway.config import GatewayConfig
-from gateway.session import SessionStore
-from gateway.session_managed_worker import _session_yolo
+from hermes_agent.gateway.config import GatewayConfig
+from hermes_agent.gateway.session import SessionStore
+from hermes_agent.gateway.session_managed_worker import _session_yolo
 store = SessionStore(sessions_dir=Path(sys.argv[1]), config=GatewayConfig())
 store._db = None
 print('ENABLED', _session_yolo(SimpleNamespace(runner=SimpleNamespace(session_store=store)),
@@ -18,16 +18,16 @@ print('ENABLED', _session_yolo(SimpleNamespace(runner=SimpleNamespace(session_st
 
 
 def _store(tmp_path):
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
     store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
     store._db = None
     return store
 
 
 def test_untoggled_entry_keeps_launch_yolo_after_restart_but_explicit_off_stays_off(tmp_path):
-    from gateway.config import Platform
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session import SessionSource
     store = _store(tmp_path)
     # Branch/reset/migration/cron/new-session entries are written without a toggle.
     untouched = store.get_or_create_session(SessionSource(platform=Platform.LOCAL, chat_id='branched', user_id='h'))
@@ -45,10 +45,10 @@ def test_untoggled_entry_keeps_launch_yolo_after_restart_but_explicit_off_stays_
 
 def test_launch_yolo_reseeds_after_a_session_boundary(tmp_path):
     """``apply_launch_yolo``: seeded once per session boundary; /new clears the toggle, not the launch."""
-    import gateway.run as gateway_run
-    from gateway.config import Platform
-    from gateway.session import SessionSource
-    from gateway.session_managed_worker import _session_yolo
+    import hermes_agent.gateway.run as gateway_run
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session import SessionSource
+    from hermes_agent.gateway.session_managed_worker import _session_yolo
     from tools.approval import clear_session
     store = _store(tmp_path)
     entry = store.get_or_create_session(SessionSource(platform=Platform.LOCAL, chat_id='bnd', user_id='h'))

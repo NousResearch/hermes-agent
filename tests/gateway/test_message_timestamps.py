@@ -5,8 +5,8 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from gateway import message_timestamps
-from gateway.message_timestamps import (
+from hermes_agent.gateway import message_timestamps
+from hermes_agent.gateway.message_timestamps import (
     coerce_message_timestamp,
     format_message_timestamp,
     render_user_content_with_timestamp,
@@ -58,7 +58,7 @@ def test_early_embedded_local_time_preserves_instant(style, epoch):
 @pytest.mark.parametrize("style", ["human", "iso"])
 @pytest.mark.parametrize("enabled", [False, True])
 def test_early_embedded_local_time_replays_with_injection_on_or_off(style, enabled):
-    from gateway.run import _build_gateway_agent_history
+    from hermes_agent.gateway.run import _build_gateway_agent_history
 
     local = datetime.fromtimestamp(1.0, tz=UTC).astimezone()
     stamp = (safe_strftime(local, "%a %Y-%m-%d %H:%M:%S") if style == "human"
@@ -77,7 +77,7 @@ def test_early_embedded_local_time_replays_with_injection_on_or_off(style, enabl
 
 @pytest.mark.platforms("windows")
 def test_early_embedded_local_time_renders_in_observed_context():
-    from gateway.run import _build_gateway_agent_history
+    from hermes_agent.gateway.run import _build_gateway_agent_history
 
     local = datetime.fromtimestamp(1.0, tz=UTC).astimezone()
     content = f"[{local.replace(tzinfo=None).isoformat()}] hello"
@@ -136,7 +136,7 @@ def test_unsupported_embedded_time_keeps_metadata_fallback():
 @pytest.mark.parametrize("enabled", [False, True])
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows' pre-epoch range limit")
 def test_unsupported_embedded_time_does_not_abort_history(enabled):
-    from gateway.run import _build_gateway_agent_history
+    from hermes_agent.gateway.run import _build_gateway_agent_history
 
     content = "[Sun 1969-06-01 12:00:00] hello"
     history, _ = _build_gateway_agent_history(
@@ -185,7 +185,7 @@ def test_render_user_content_deduplicates_existing_timestamp_and_preserves_embed
 
 
 def test_build_history_injects_only_when_enabled():
-    from gateway.run import _build_gateway_agent_history
+    from hermes_agent.gateway.run import _build_gateway_agent_history
 
     history = [
         {"role": "user", "content": "hello", "timestamp": _epoch(2026, 4, 28, 13, 40, 53)},
@@ -205,7 +205,7 @@ def test_build_history_injects_only_when_enabled():
 
 
 def test_compaction_summary_replays_without_timestamp():
-    from gateway.run import _build_gateway_agent_history
+    from hermes_agent.gateway.run import _build_gateway_agent_history
 
     summary = {
         "role": "user",
@@ -218,7 +218,7 @@ def test_compaction_summary_replays_without_timestamp():
 
 
 def test_regular_user_message_still_replays_with_timestamp():
-    from gateway.run import _build_gateway_agent_history
+    from hermes_agent.gateway.run import _build_gateway_agent_history
 
     message = {"role": "user", "content": "what is next?", "timestamp": 1_000_000_000.0}
     history, _ = _build_gateway_agent_history([message], inject_timestamps=True)
@@ -233,9 +233,9 @@ def test_compactor_restatement_replays_unstamped_through_session_db(tmp_path):
     from unittest.mock import patch
 
     from agent.context_compressor import ContextCompressor, _INFLIGHT_TASK_REPLAY_HEADER
-    from gateway.config import GatewayConfig
-    from gateway.run import _build_gateway_agent_history
-    from gateway.session import SessionStore
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.run import _build_gateway_agent_history
+    from hermes_agent.gateway.session import SessionStore
     from hermes_agent.hermes_state import SessionDB
     from hermes_time import get_timezone
 
@@ -288,9 +288,9 @@ def test_compactor_restatement_replays_unstamped_through_session_db(tmp_path):
 def test_compaction_summary_stays_unstamped_across_real_prune(tmp_path):
     """A proactive prune re-persists the replayed view; the summary carrier must keep its flag through it."""
     from agent.context_compressor import ContextCompressor
-    from gateway.config import GatewayConfig
-    from gateway.run import _build_gateway_agent_history
-    from gateway.session import SessionStore
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.run import _build_gateway_agent_history
+    from hermes_agent.gateway.session import SessionStore
     from hermes_agent.hermes_state import SessionDB
 
     summary = {"role": "user", "content": "[CONTEXT COMPACTION — REFERENCE ONLY] retained summary",

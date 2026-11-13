@@ -30,7 +30,7 @@ def compress_request(payload):
 
 
 async def prepare_compress(authority, live, payload, prepared):
-    from gateway.session_policy import restore_policy, policy_scope
+    from hermes_agent.gateway.session_policy import restore_policy, policy_scope
     from agent.context_compressor import ContextCompressor
     from agent.agent_init import _parse_config_int
     from agent.model_metadata import estimate_request_tokens_rough
@@ -209,7 +209,7 @@ async def finish_compress_engine(authority, prepared, result):
     end a resident agent's boundary eviction gives, committed or not. An exact retry (no
     ``engine_owner``) notifies nothing."""
     from agent.conversation_compression import _notify_context_engine_compression_complete
-    from gateway.run import _async_profile_runtime_scope
+    from hermes_agent.gateway.run import _async_profile_runtime_scope
     owner = (prepared or {}).get('engine_owner')
     if owner is None or (result is None and not owner.owned):
         return
@@ -232,7 +232,7 @@ async def fire_post_compaction_hook(authority, prepared, result):
     """``post_compaction`` for a committed ``/compress``: this path summarizes outside the agent's
     ``compress_context``, so it fires here, after the commit, in the session's profile."""
     from agent.compaction_events import fire_post_compaction
-    from gateway.run import _async_profile_runtime_scope
+    from hermes_agent.gateway.run import _async_profile_runtime_scope
     target, previous = result['target_session_id'], result['previous_target_session_id']
     try:
         async with _async_profile_runtime_scope(Path(authority.profile_id)):

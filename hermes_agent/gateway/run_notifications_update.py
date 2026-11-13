@@ -1,8 +1,8 @@
 """``hermes update --gateway`` progress/completion notifications for GatewayRunner.
 
-Split out of ``gateway/run_notifications.py``; ``GatewayNotificationsMixin`` inherits it, so
-these stay bound onto ``GatewayRunner`` via the MRO. ``gateway.run`` internals are imported
-lazily inside method bodies (import cycle), so ``patch("gateway.run.X")`` keeps intercepting them.
+Split out of ``hermes_agent/gateway/run_notifications.py``; ``GatewayNotificationsMixin`` inherits it, so
+these stay bound onto ``GatewayRunner`` via the MRO. ``hermes_agent.gateway.run`` internals are imported
+lazily inside method bodies (import cycle), so ``patch("hermes_agent.gateway.run.X")`` keeps intercepting them.
 """
 
 from __future__ import annotations
@@ -17,11 +17,11 @@ from pathlib import Path
 from typing import Any, Optional
 
 from agent.i18n import t
-from gateway.config import Platform
-from gateway.run_shutdown import _log_suppressed
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.run_shutdown import _log_suppressed
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 # A failed /update leaves the previous version running; the full pip/git log stays on the host
 # (`hermes update` re-runs it in the terminal) and only a short tail is quoted in chat.
@@ -82,7 +82,7 @@ class GatewayUpdateNotificationsMixin:
             return live if live is not None else self.pinned_adapter
 
         def send_metadata(self):
-            from gateway.run import _non_conversational_metadata
+            from hermes_agent.gateway.run import _non_conversational_metadata
             return _non_conversational_metadata(self.metadata, platform=self.platform)
 
         async def send(self, text: str):
@@ -100,7 +100,7 @@ class GatewayUpdateNotificationsMixin:
 
     @classmethod
     def _update_paths(cls) -> GatewayUpdateNotificationsMixin._UpdatePaths:
-        from gateway.run import _hermes_home
+        from hermes_agent.gateway.run import _hermes_home
         return cls._UpdatePaths(
             pending=_hermes_home / ".update_pending.json",
             claimed=_hermes_home / ".update_pending.claimed.json", output=_hermes_home / ".update_output.txt",
@@ -116,7 +116,7 @@ class GatewayUpdateNotificationsMixin:
         profile = str(data.get("profile") or "").strip()
         if profile:
             return profile
-        from gateway.session import profile_from_session_key_namespace
+        from hermes_agent.gateway.session import profile_from_session_key_namespace
         parts = str(data.get("session_key") or "").split(":")
         if len(parts) >= 5 and parts[0] == "agent" and parts[1] not in ("main", ""):
             return profile_from_session_key_namespace(parts[1])
@@ -333,7 +333,7 @@ class GatewayUpdateNotificationsMixin:
 
         False while the update is still running (caller may retry); True after a definitive send/skip.
         """
-        from gateway.run import _non_conversational_metadata
+        from hermes_agent.gateway.run import _non_conversational_metadata
         paths = self._update_paths()
         if not paths.any_pending():
             return False

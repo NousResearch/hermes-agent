@@ -1,4 +1,4 @@
-"""Tests for the gateway delivery-obligation ledger (gateway/delivery_ledger.py).
+"""Tests for the gateway delivery-obligation ledger (hermes_agent/gateway/delivery_ledger.py).
 
 State machine, dead-owner claiming, attempts cap, stale cutoff, retention,
 id stability, and the startup redelivery sweep's contract:
@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway import delivery_ledger as dl
+from hermes_agent.gateway import delivery_ledger as dl
 
 
 @pytest.fixture(autouse=True)
@@ -389,8 +389,8 @@ class TestGatewayRedeliverySweep:
 
     @staticmethod
     def _runner(adapter=None):
-        from gateway.config import Platform
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.config import Platform
+        from hermes_agent.gateway.run import GatewayRunner
 
         runner = object.__new__(GatewayRunner)
         runner.adapters = {Platform.SLACK: adapter} if adapter else {}
@@ -431,7 +431,7 @@ class TestGatewayRedeliverySweep:
 
     @pytest.mark.asyncio
     async def test_startup_redelivery_uses_persisted_transport_owner(self):
-        from gateway.config import Platform
+        from hermes_agent.gateway.config import Platform
 
         _record(
             session_key="agent:routed-profile:slack:channel:C1",
@@ -539,7 +539,7 @@ class TestGatewayRedeliverySweep:
 
     @pytest.mark.asyncio
     async def test_runtime_failed_redelivery_clears_resume_before_send(self):
-        from gateway.config import Platform
+        from hermes_agent.gateway.config import Platform
 
         _record(platform="slack")
         dl.mark_failed("ob-1", "send_path_degraded")
@@ -560,7 +560,7 @@ class TestGatewayRedeliverySweep:
 
     @pytest.mark.asyncio
     async def test_runtime_profile_redelivery_uses_matching_bot_adapter(self):
-        from gateway.config import Platform
+        from hermes_agent.gateway.config import Platform
 
         _record(
             session_key="agent:reviewer:slack:channel:C1",
@@ -585,7 +585,7 @@ class TestGatewayRedeliverySweep:
 
     @pytest.mark.asyncio
     async def test_runtime_missing_adapter_releases_unsent_claim(self):
-        from gateway.config import Platform
+        from hermes_agent.gateway.config import Platform
 
         _record(platform="slack")
         dl.mark_failed("ob-1", "send_path_degraded")
@@ -600,7 +600,7 @@ class TestGatewayRedeliverySweep:
 
     @pytest.mark.asyncio
     async def test_runtime_clear_failure_does_not_send_or_lose_retry(self):
-        from gateway.config import Platform
+        from hermes_agent.gateway.config import Platform
 
         _record(platform="slack")
         dl.mark_failed("ob-1", "send_path_degraded")
@@ -726,7 +726,7 @@ class TestUnconnectedPlatformKeepsItsBudget:
 
     @staticmethod
     def _runner_without_slack():
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         runner = object.__new__(GatewayRunner)
         runner.adapters = {}  # slack failed to connect this boot
@@ -756,29 +756,29 @@ class TestUnconnectedPlatformKeepsItsBudget:
 
 class TestOwnerAlivePidProbe:
     """_owner_alive's no-start-time fallback must route through
-    gateway.status._pid_exists, never a raw ``os.kill(pid, 0)`` probe.
+    hermes_agent.gateway.status._pid_exists, never a raw ``os.kill(pid, 0)`` probe.
 
     On Windows ``os.kill(pid, 0)`` is NOT a no-op: CPython maps sig=0 to
     ``GenerateConsoleCtrlEvent(0, pid)`` (bpo-14484), so probing a LIVE pid
     whose start time psutil could not read would Ctrl+C its console group.
     Pattern per the windows-native-support reference: patch
-    ``gateway.status._pid_exists``, not ``os.kill``.
+    ``hermes_agent.gateway.status._pid_exists``, not ``os.kill``.
     """
 
     def _no_start_time(self, monkeypatch):
-        from gateway import status
+        from hermes_agent.gateway import status
 
         monkeypatch.setattr(status, "get_process_start_time", lambda pid: None)
 
     def test_alive_when_pid_exists(self, monkeypatch):
-        from gateway import status
+        from hermes_agent.gateway import status
 
         self._no_start_time(monkeypatch)
         monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
         assert dl._owner_alive(12345, 999) is True
 
     def test_dead_when_pid_gone(self, monkeypatch):
-        from gateway import status
+        from hermes_agent.gateway import status
 
         self._no_start_time(monkeypatch)
         monkeypatch.setattr(status, "_pid_exists", lambda pid: False)
@@ -786,8 +786,8 @@ class TestOwnerAlivePidProbe:
 
     def test_raw_os_kill_probe_never_used(self, monkeypatch):
         """Regression guard: the probe must not touch os.kill when
-        gateway.status._pid_exists is importable (i.e. always in-tree)."""
-        from gateway import status
+        hermes_agent.gateway.status._pid_exists is importable (i.e. always in-tree)."""
+        from hermes_agent.gateway import status
 
         self._no_start_time(monkeypatch)
         calls = []
@@ -799,7 +799,7 @@ class TestOwnerAlivePidProbe:
         assert calls == [4242]
 
     def test_probe_exception_means_dead(self, monkeypatch):
-        from gateway import status
+        from hermes_agent.gateway import status
 
         self._no_start_time(monkeypatch)
 

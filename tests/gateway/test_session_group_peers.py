@@ -13,14 +13,14 @@ import pytest_asyncio
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
-from gateway import hosted_room_links, hosted_rooms
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms import api_server_room_grants
-from gateway.platforms.api_server import APIServerAdapter
-from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
-from gateway.session_controls import AuthorityConnection
-from gateway.session_group_peers import room_link
-from gateway.session_hosted_service import CanonicalHostedRoomService
+from hermes_agent.gateway import hosted_room_links, hosted_rooms
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms import api_server_room_grants
+from hermes_agent.gateway.platforms.api_server import APIServerAdapter
+from hermes_agent.gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+from hermes_agent.gateway.session_controls import AuthorityConnection
+from hermes_agent.gateway.session_group_peers import room_link
+from hermes_agent.gateway.session_hosted_service import CanonicalHostedRoomService
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 from hermes_agent.tui_gateway.contracts import groups_bot_relay as contract
@@ -135,8 +135,8 @@ def test_room_link_is_enabled_only_when_this_gateway_can_host_a_member(gateway, 
 @pytest.mark.asyncio
 async def test_home_without_room_link_can_register_and_run_a_lent_member(gateway, monkeypatch, linked_peer, tmp_path):
     """The home owns the group chat without lending bots; a separate gateway lends its member."""
-    from gateway.platforms import api_server_runs
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.platforms import api_server_runs
+    from hermes_agent.gateway.run import _profile_runtime_scope
 
     async def complete(adapter, run, **kwargs):
         adapter._set_run_status(run.run_id, 'completed', output='peer reply', completed=True)
@@ -228,7 +228,7 @@ def test_peer_methods_enforce_operator_control_and_exact_params(gateway, monkeyp
 
 @pytest.mark.asyncio
 async def test_register_binds_only_the_pinned_peer_after_a_live_scoped_probe(gateway, monkeypatch, linked_peer):
-    from gateway.hosted_room_peer import (
+    from hermes_agent.gateway.hosted_room_peer import (
         catalog_mapping, decode_room_grant, gateway_room_grant_secret, issue_room_grant)
     _server, url, catalog, room = linked_peer
     invitation = await invite(gateway, room)
@@ -279,7 +279,7 @@ async def test_register_binds_only_the_pinned_peer_after_a_live_scoped_probe(gat
 @pytest.mark.asyncio
 async def test_an_invitation_can_keep_its_route_renewable_past_its_first_dispatch_lifetime(gateway, monkeypatch, linked_peer):
     """Renewal extends dispatch only within the operator's requested status horizon."""
-    from gateway.hosted_room_peer import decode_room_grant, gateway_room_grant_secret
+    from hermes_agent.gateway.hosted_room_peer import decode_room_grant, gateway_room_grant_secret
     from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
     _server, url, catalog, room = linked_peer
     assert 'peer_renewal_horizon' in (await call(gateway.owner, 'groups.capabilities'))['features']
@@ -341,7 +341,7 @@ async def test_disband_owes_a_renewable_invitation_until_its_status_horizon(gate
 
 @pytest.mark.asyncio
 async def test_reregistered_route_replays_accepted_work_as_the_same_target_run(gateway, monkeypatch, linked_peer):
-    from gateway.platforms import api_server_runs
+    from hermes_agent.gateway.platforms import api_server_runs
     from hermes_agent.tui_gateway.hosted_room_driver import HostedRoomBinding
     from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPError
     from hermes_agent.tui_gateway.hosted_room_peer_transport import build_member_dispatch
@@ -398,7 +398,7 @@ def _owed(db_path):
 @pytest.mark.parametrize('obligation', ['route', 'held', 'owed', 'expired', 'none'])
 @pytest.mark.parametrize('room_id', ['linked', ' linked '])
 def test_disband_without_a_service_requires_coordination_for_peer_routes(tmp_path, monkeypatch, obligation, room_id):
-    from gateway.hosted_room_peer import GatewayRoomCatalog, catalog_mapping
+    from hermes_agent.gateway.hosted_room_peer import GatewayRoomCatalog, catalog_mapping
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     with SessionDB(tmp_path / 'state.db') as db:
         authority = SimpleNamespace(profile_id=str(tmp_path), instance_id='owner', db=db, events={})
@@ -494,7 +494,7 @@ def test_an_owed_revoke_settles_on_unknown_or_revoked_and_is_dropped_at_its_gran
     """A member gateway's answer that the grant is unknown or already revoked settles the revoke; any
     other refusal keeps it owed, with backoff. Past the grant's own expiry it is dropped unsent: that
     gateway refuses the grant by then anyway."""
-    from gateway.hosted_room_peer import issue_room_grant, room_grant_hard_expiry
+    from hermes_agent.gateway.hosted_room_peer import issue_room_grant, room_grant_hard_expiry
     from hermes_agent.tui_gateway.hosted_room_driver import HostedRoomRuntime
     from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
     service, db, now = gateway.service, gateway.db.db_path, [time.time()]
@@ -633,8 +633,8 @@ async def test_disband_waits_for_a_registration_even_while_the_driver_stops(gate
 async def _deferred_unreceipted_peer_turn(gateway, monkeypatch, linked_peer):
     """A member's gateway admitted a turn, the reply was lost, the home restarted before it saved
     the receipt, and the turn was deferred while the member stayed unreachable."""
-    from gateway import hosted_room_driver as driver
-    from gateway.platforms import api_server_runs
+    from hermes_agent.gateway import hosted_room_driver as driver
+    from hermes_agent.gateway.platforms import api_server_runs
     from hermes_agent.tui_gateway.hosted_room_peer_transport import build_member_dispatch
 
     async def inert(adapter, run, **kwargs):
@@ -704,7 +704,7 @@ async def test_a_deferred_peer_turn_offers_retry_on_its_own_generation(gateway, 
 async def test_discard_keeps_a_deferred_peer_turn_while_its_member_is_down(gateway, monkeypatch, linked_peer):
     """Without a receipt nothing proves what the member's gateway did with the turn, so while it is
     unreachable Discard keeps the turn, as Disband does, and says why."""
-    from gateway import hosted_room_driver as driver
+    from hermes_agent.gateway import hosted_room_driver as driver
     server = linked_peer[0]
     service, db, identity = await _deferred_unreceipted_peer_turn(gateway, monkeypatch, linked_peer)
     await server.close()
@@ -721,7 +721,7 @@ async def test_discard_of_an_admitted_peer_turn_stops_its_run_before_disband(gat
     """The member's gateway admitted the turn (its run is queued there) and answers. Discard finds
     that run under the turn's own key and settles the turn only once the member confirms it stopped,
     so Disband never tombstones the room while the member's run still executes."""
-    from gateway import hosted_room_driver as driver
+    from hermes_agent.gateway import hosted_room_driver as driver
     _service, db, identity = await _deferred_unreceipted_peer_turn(gateway, monkeypatch, linked_peer)
     adapter = gateway.adapter
     run_id, = list(adapter._run_statuses)

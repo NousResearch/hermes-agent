@@ -8,9 +8,9 @@ import types
 import pytest
 
 import hermes_constants
-from gateway.config import GatewayConfig
-from gateway.run import GatewayRunner
-from gateway.status import flush_runtime_status, write_runtime_status
+from hermes_agent.gateway.config import GatewayConfig
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.status import flush_runtime_status, write_runtime_status
 from hermes_cli import gateway_migrate as gm
 from hermes_cli.gateway_multiplex_mode import SINGLE_PROFILE_REASON
 
@@ -36,7 +36,7 @@ def standalone_host(tmp_path, monkeypatch):
                          served_profiles=[])
     flush_runtime_status()
     yield runner, home
-    from gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.runtime_ownership import process_ownership
     for profile in (home / "profiles").iterdir():
         process_ownership.release(profile.resolve())
 
@@ -113,7 +113,7 @@ async def test_default_profiles_mcp_connections_survive_the_flip(standalone_host
         assert check()
         _mkprofile(home, "daily-news-bot")
         await runner.reconcile_served_profiles(reason="control-socket")
-        from gateway.run import _profile_runtime_scope
+        from hermes_agent.gateway.run import _profile_runtime_scope
         with _profile_runtime_scope(home):           # the re-wired primary handler's scope
             assert check(), "default profile's live MCP server vanished after the flip"
     finally:
@@ -125,7 +125,7 @@ async def test_default_profiles_mcp_connections_survive_the_flip(standalone_host
 
 def test_default_cron_fire_and_kanban_tick_after_the_flip_keep_env_injected_credentials(standalone_host):
     from hermes_agent.cron.scheduler import _fire_secret_scope
-    from gateway.kanban_watchers_dispatcher import _default_profile_secret_scope
+    from hermes_agent.gateway.kanban_watchers_dispatcher import _default_profile_secret_scope
     runner, home = standalone_host
     _mkprofile(home, "daily-news-bot")
     asyncio.run(runner.reconcile_served_profiles(reason="control-socket"))
@@ -150,7 +150,7 @@ async def test_concurrent_rescans_keep_the_new_profiles_reservation(standalone_h
     """A watcher tick and a creator's rescan both start the switch. The slower preflight resuming
     while the faster rescan is still serving the bot must not reset the reservation to just the
     default home (routing and cron would then miss a bot whose authority is live)."""
-    from gateway import run_profile_reconcile as rpr
+    from hermes_agent.gateway import run_profile_reconcile as rpr
     runner, home = standalone_host
     preflights = []
     housekeeping = runner._run_housekeeping_in_executor
@@ -185,7 +185,7 @@ async def test_concurrent_rescans_keep_the_new_profiles_reservation(standalone_h
 @pytest.mark.asyncio
 async def test_activation_rechecks_shutdown_after_the_preflight(standalone_host, monkeypatch):
     from agent.secret_scope import is_multiplex_active
-    from gateway import run_profile_reconcile as rpr
+    from hermes_agent.gateway import run_profile_reconcile as rpr
     runner, home = standalone_host
     monkeypatch.setattr(rpr, "_added_profile_blocker", lambda _launch: setattr(runner, "_running", False))
     _mkprofile(home, "daily-news-bot")
@@ -196,10 +196,10 @@ async def test_activation_rechecks_shutdown_after_the_preflight(standalone_host,
 async def _native_turn_across_activation(tmp_path, profile_home):
     """Drive a Desktop/TUI ``prompt.submit`` through ``AuthorityConnection.dispatch`` on a standalone
     owner and switch the process to multi-profile hosting while the turn is running."""
-    from gateway.config import GatewayConfig, Platform
-    from gateway.session import SessionSource, SessionStore
-    from gateway.session_authority import LiveSession, initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.config import GatewayConfig, Platform
+    from hermes_agent.gateway.session import SessionSource, SessionStore
+    from hermes_agent.gateway.session_authority import LiveSession, initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     from hermes_agent.tui_gateway.launch_profile_policy import activate_multi_profile_hosting
 
     started, release, seen = asyncio.Event(), asyncio.Event(), []
@@ -260,7 +260,7 @@ async def test_default_profiles_mcp_server_is_still_owned_after_the_flip(standal
     from tools.mcp_tool_lifecycle import shutdown_mcp_servers
     from tools.mcp_tool_registration import _register_server_tools
     from tools.registry import registry
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
     from hermes_constants import hermes_home_key
     runner, home = standalone_host
     cfg = {"url": "https://mcp.example/gh"}

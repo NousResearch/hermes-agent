@@ -14,7 +14,7 @@ several plain-await frames further up, so the guard passes and the cancel lands.
 health task died silently mid-handoff -- no log line, no retry -- and the
 platform stayed stranded until someone restarted the gateway by hand.
 
-PR #69112 hardened the shared dispatch path in `gateway/run.py` against a
+PR #69112 hardened the shared dispatch path in `hermes_agent/gateway/run.py` against a
 cancelled *caller*. These tests cover the Photon-specific self-cancellation one
 layer down, which that PR's scope could not reach.
 """
@@ -25,7 +25,7 @@ from typing import Any, Dict
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.photon.adapter import PhotonAdapter
 
 

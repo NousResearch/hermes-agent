@@ -6,10 +6,10 @@ from __future__ import annotations
 import logging
 
 from agent.i18n import t
-from gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 
-# Log-record parity with gateway/run.py and the origin module.
-logger = logging.getLogger("gateway.run")
+# Log-record parity with hermes_agent/gateway/run.py and the origin module.
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 
 def _quiet_bool(fn) -> bool:
@@ -42,7 +42,7 @@ class GatewayGoalCommandsMixin:
             # A local session's owner is its admin: slash.exec admitted this command only after
             # authorize_local_source and the session:control capability (T7). Messaging stays
             # explicit-admin-only.
-            from gateway.session_local import authorize_local_source
+            from hermes_agent.gateway.session_local import authorize_local_source
             if event.source is not None and authorize_local_source(self, event.source) is True:
                 return None
             if not self._resume_caller_is_admin(event.source):
@@ -83,7 +83,7 @@ class GatewayGoalCommandsMixin:
         the turn to the client as its ``send`` directive instead (the client submits it with its own
         input id).
         """
-        from gateway.session_command_sink import active_sink
+        from hermes_agent.gateway.session_command_sink import active_sink
         if (sink := active_sink()) is not None:
             sink.prompt = text
             if not kickoff:
@@ -190,15 +190,15 @@ class GatewayGoalCommandsMixin:
         if not snapshot and quick_key and quick_key not in self._running_agents:
             # A local session's conversation is its stored transcript, not the cached agent: /moa
             # (and its settle) drop that agent, so /refine reads the session itself (T7).
-            from gateway.session_refine import refine_local_session
+            from hermes_agent.gateway.session_refine import refine_local_session
             local = await refine_local_session(self, event.source, args)
             if local is not None:
                 return local
             # A released cached agent (idle TTL, pressure, /moa), or one holding no messages, is not
             # an empty conversation: refine the stored transcript.
-            from gateway.session_cold_review import stored_transcript
-            from gateway.session_transcript import TranscriptReadError
-            from gateway.slash_commands_status import history_unreadable
+            from hermes_agent.gateway.session_cold_review import stored_transcript
+            from hermes_agent.gateway.session_transcript import TranscriptReadError
+            from hermes_agent.gateway.slash_commands_status import history_unreadable
             try:
                 session_id, snapshot = await stored_transcript(self, quick_key)
             except TranscriptReadError:
@@ -210,7 +210,7 @@ class GatewayGoalCommandsMixin:
             return t("gateway.refine.empty")
         try:
             if agent is None:
-                from gateway.session_cold_review import start_cold_refine
+                from hermes_agent.gateway.session_cold_review import start_cold_refine
                 await start_cold_refine(self, event.source, quick_key, session_id, snapshot, args)
             else:
                 agent._spawn_background_review(
@@ -233,9 +233,9 @@ class GatewayGoalCommandsMixin:
         cold_session_id = None
         if agent is None and quick_key and quick_key not in self._running_agents:
             # The cached agent was evicted (idle TTL, pressure, /moa): review the stored transcript.
-            from gateway.session_cold_review import cold_review_history
-            from gateway.session_transcript import TranscriptReadError
-            from gateway.slash_commands_status import history_unreadable
+            from hermes_agent.gateway.session_cold_review import cold_review_history
+            from hermes_agent.gateway.session_transcript import TranscriptReadError
+            from hermes_agent.gateway.slash_commands_status import history_unreadable
             try:
                 cold_session_id, snapshot = await cold_review_history(self, event.source)
             except TranscriptReadError:
@@ -247,7 +247,7 @@ class GatewayGoalCommandsMixin:
 
         def _dispatch():
             from agent.review_engine import start_review
-            from gateway.session_cold_review import cold_review_parent
+            from hermes_agent.gateway.session_cold_review import cold_review_parent
             token = set_current_session_key(quick_key)
             try:
                 if cold_session_id is None:

@@ -11,7 +11,7 @@ from pathlib import Path
 import time
 
 # The owner's protocol name; session_contract is dependency-free (no config/plugins load).
-from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL as GATEWAY_WS_PROTOCOL
+from hermes_agent.gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL as GATEWAY_WS_PROTOCOL
 
 GATEWAY_WS_TICKET_PREFIX = "hermes-gateway-ticket."
 # Per-request answer budget. Owner verbs are admissions/reads that answer promptly; the one that
@@ -258,7 +258,7 @@ def private_control_query(home: Path, request: bytes, timeout: float = 5) -> byt
 
     The socket authenticates the peer (same user only), which is what lets a private verb answer."""
     if os.name == "nt":
-        from gateway.runtime_bootstrap_windows import query_runtime_control
+        from hermes_agent.gateway.runtime_bootstrap_windows import query_runtime_control
         return query_runtime_control(home, request, timeout)
     from hermes_cli.gateway_runtime_discovery import connect_private
     deadline = time.monotonic() + timeout

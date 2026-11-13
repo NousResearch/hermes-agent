@@ -2,7 +2,7 @@
 from types import SimpleNamespace
 
 from hermes_agent.cron import jobs, scheduler
-from gateway import session_cron
+from hermes_agent.gateway import session_cron
 
 
 def test_run_error_persists_redacted_cause_but_returns_summary(tmp_path, monkeypatch):

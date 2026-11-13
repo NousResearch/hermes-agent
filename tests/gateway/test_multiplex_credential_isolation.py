@@ -74,7 +74,7 @@ class TestProfilePathResolutionUnderMultiplexScope:
         return prof_a, prof_b
 
     def test_skills_dir_follows_multiplex_scope(self, tmp_path):
-        from gateway.run import _profile_runtime_scope
+        from hermes_agent.gateway.run import _profile_runtime_scope
         import tools.skills_hub as sh
 
         prof_a, prof_b = self._profiles(tmp_path)
@@ -98,7 +98,7 @@ def test_turn_scoped_dotenv_reload_does_not_pollute_process_env(tmp_path, monkey
     import os
 
     from agent.secret_scope import get_secret
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
     from hermes_cli.env_loader import load_hermes_dotenv
     from hermes_constants import get_hermes_home
 
@@ -214,7 +214,7 @@ def test_cold_profile_hydrates_external_source_without_global_env(
     from agent.secret_sources import registry
     from agent.secret_scope import get_secret
     from hermes_cli import env_loader
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
 
     profile = tmp_path / "profiles" / "secondary"
     sibling = tmp_path / "profiles" / "sibling"

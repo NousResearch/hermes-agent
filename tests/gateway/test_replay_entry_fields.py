@@ -1,4 +1,4 @@
-"""Tests for ``gateway.run._build_replay_entry``.
+"""Tests for ``hermes_agent.gateway.run._build_replay_entry``.
 
 The gateway rebuilds ``agent_history`` from the persisted transcript on every
 turn (unlike the CLI, which keeps the live in-memory message list).  When a
@@ -17,7 +17,7 @@ These tests pin the expanded whitelist so it doesn't regress.
 from __future__ import annotations
 
 
-from gateway.run import _build_replay_entry
+from hermes_agent.gateway.run import _build_replay_entry
 
 
 class TestBuildReplayEntry:
@@ -124,7 +124,7 @@ class TestReplayEntryApiContentSidecar:
 
 class TestGatewayHistoryBuildForwardsSidecar:
     def test_end_to_end_history_build_keeps_sidecar(self):
-        from gateway.run import _build_gateway_agent_history
+        from hermes_agent.gateway.run import _build_gateway_agent_history
 
         history = [
             {"role": "user", "content": "hi", "api_content": "hi\n\nCTX", "timestamp": 123.0},
@@ -138,7 +138,7 @@ class TestGatewayHistoryBuildForwardsSidecar:
 def test_gateway_history_keeps_sidecar_only_assistant_row():
     """A reasoning-only clean stop persists content="" with the promoted reply in ``api_content``
     (agent/turn_final_response.py); the gateway rebuild must replay it, not drop it (user->user)."""
-    from gateway.run import _build_gateway_agent_history
+    from hermes_agent.gateway.run import _build_gateway_agent_history
 
     history = [
         {"role": "user", "content": "2+2?"},
@@ -154,7 +154,7 @@ def test_gateway_history_keeps_sidecar_only_assistant_row():
 def test_replay_rebuilds_the_same_conversation_so_every_role_keeps_its_identity():
     """Gateway replay turns the stored transcript back into the SAME session's history for its next turn:
     user, assistant, tool-calling and tool rows all keep ``message_uid`` and the merge witness."""
-    from gateway.run import _build_gateway_agent_history
+    from hermes_agent.gateway.run import _build_gateway_agent_history
 
     call = {"id": "call_1", "type": "function", "function": {"name": "t", "arguments": "{}"}}
     history = [
@@ -172,7 +172,7 @@ def test_replay_rebuilds_the_same_conversation_so_every_role_keeps_its_identity(
 def test_a_plain_replay_row_does_not_carry_a_tool_call_uid_map_without_its_calls():
     """Repair can prune an assistant's unanswered tool_calls and leave its ``_tool_call_uids`` behind: the
     replayed plain row keeps its own uid but not a map naming calls it no longer carries."""
-    from gateway.run import _build_gateway_agent_history
+    from hermes_agent.gateway.run import _build_gateway_agent_history
 
     history = [
         {"role": "user", "content": "q", "message_uid": "1" * 32},

@@ -15,12 +15,12 @@ mislabeling a healthy run.
 import os
 from types import SimpleNamespace
 
-from gateway import session_cron
+from hermes_agent.gateway import session_cron
 
 import pytest
 
 import hermes_agent.cron.scheduler as cron_scheduler
-from gateway.session_context import reset_session_vars
+from hermes_agent.gateway.session_context import reset_session_vars
 
 
 class _FakeCronAgent:

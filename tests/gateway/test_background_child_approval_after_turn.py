@@ -16,14 +16,14 @@ from typing import Any
 
 import pytest
 
-# Module level on purpose: gateway.run's import side effects stat the checkout's git dir, which the
+# Module level on purpose: hermes_agent.gateway.run's import side effects stat the checkout's git dir, which the
 # fixture-scoped home-I/O guard would refuse inside a test.
-import gateway.run as gateway_run
-from gateway.config import Platform
-from gateway.platforms.base import SendResult
-from gateway.run_turn_runner import TurnRunner
-from gateway.session import SessionSource
-from gateway.turn_context import TurnContext
+import hermes_agent.gateway.run as gateway_run
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.base import SendResult
+from hermes_agent.gateway.run_turn_runner import TurnRunner
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.turn_context import TurnContext
 from tools import approval, async_delegation as ad
 
 SESSION = "agent:main:telegram:dm:111"
@@ -82,7 +82,7 @@ def gate(monkeypatch):
     monkeypatch.setattr(approval.approval_context, "_get_approval_mode", lambda: "manual")
     monkeypatch.setattr(approval.approval_context, "_get_approval_timeout", lambda: 10)
     monkeypatch.setattr(approval, "_presence", lambda cb=None: (None, False, True, False))
-    monkeypatch.setattr("gateway.platforms.base_exec_approval.approval_timeout_seconds", lambda: 10)
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base_exec_approval.approval_timeout_seconds", lambda: 10)
     ad._reset_for_tests()
     yield
     ad.interrupt_all()

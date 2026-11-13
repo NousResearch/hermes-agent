@@ -47,7 +47,7 @@ def test_init_cached_agent_for_turn_does_not_touch_max_iterations():
     The gateway refreshes max_iterations explicitly right after calling this
     helper; if the helper ever reset it, that refresh would be undone.
     """
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     agent = _make_cached_agent(90)
     GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=0)
@@ -63,7 +63,7 @@ def test_init_cached_agent_for_turn_does_not_touch_max_iterations():
 
 def test_init_cached_agent_preserves_max_iterations_on_interrupt_depth():
     """Interrupt-recursive turns must also leave max_iterations alone."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     agent = _make_cached_agent(200)
     GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=1)

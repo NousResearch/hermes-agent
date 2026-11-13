@@ -12,7 +12,7 @@ Hermes 提供三种协议，供外部程序驱动 agent——IDE 插件、自定
 |----------|-----------|----------|------------|
 | **ACP** | JSON-RPC over stdio | 已支持 [Agent Client Protocol](https://github.com/zed-industries/agent-client-protocol) 的 IDE 客户端（VS Code、Zed、JetBrains） | `hermes_agent/acp_adapter/` |
 | **TUI gateway** | JSON-RPC over stdio（或 WebSocket） | 需要精细控制会话、slash 命令、审批及流式事件的自定义宿主 | `hermes_agent/tui_gateway/server.py` |
-| **API server** | HTTP + Server-Sent Events | 兼容 OpenAI 的前端（Open WebUI、LobeChat、LibreChat……）及语言无关的 Web 客户端 | `gateway/platforms/api_server.py` |
+| **API server** | HTTP + Server-Sent Events | 兼容 OpenAI 的前端（Open WebUI、LobeChat、LibreChat……）及语言无关的 Web 客户端 | `hermes_agent/gateway/platforms/api_server.py` |
 
 三种协议均驱动同一个 `AIAgent` 核心，区别仅在于线路格式和所暴露的功能集。
 
@@ -78,7 +78,7 @@ Pi-mono RPC 规范（[issue #360](https://github.com/NousResearch/hermes-agent/i
 
 ## 兼容 OpenAI 的 API Server
 
-`gateway/platforms/api_server.py` 通过 HTTP 暴露 Hermes，供任何已支持 OpenAI 格式的客户端使用。适用于需要 Web 前端、curl 驱动的 CI 运行器或非 Python 消费端的场景。
+`hermes_agent/gateway/platforms/api_server.py` 通过 HTTP 暴露 Hermes，供任何已支持 OpenAI 格式的客户端使用。适用于需要 Web 前端、curl 驱动的 CI 运行器或非 Python 消费端的场景。
 
 端点：
 

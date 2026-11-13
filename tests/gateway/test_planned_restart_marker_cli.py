@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from gateway import run as gateway_run
+from hermes_agent.gateway import run as gateway_run
 
 MARKER = ".restart_pending.json"
 
@@ -24,7 +24,7 @@ def hermes_home(tmp_path, monkeypatch):
 
 def test_writer_stamps_the_marker_the_boot_pass_reads(hermes_home):
     """Writer and reader must agree on path and payload; a rename on either side fails here."""
-    from gateway.restart_notice import write_planned_restart_marker
+    from hermes_agent.gateway.restart_notice import write_planned_restart_marker
 
     assert gateway_run._planned_restart_notification_pending() is False
 

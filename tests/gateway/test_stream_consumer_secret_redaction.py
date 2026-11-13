@@ -11,8 +11,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.platforms.base import BasePlatformAdapter
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from tests.waiting import async_wait_until
 
 _KEY = "sk-proj-" + "Q7mZ2xW9rT4kL8vB3nH6pD1sF5gJ0cY"

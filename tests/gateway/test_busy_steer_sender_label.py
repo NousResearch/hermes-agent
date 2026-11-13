@@ -10,10 +10,10 @@ import json
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.platforms.event import MessageEvent
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource
 
 
 class _Receiver:
@@ -28,7 +28,7 @@ class _Receiver:
 
 
 async def _inject(route, source, tmp_path, monkeypatch):
-    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    monkeypatch.setattr("hermes_agent.gateway.run._hermes_home", tmp_path)
     runner = GatewayRunner(config=GatewayConfig(group_sessions_per_user=False))
     event = MessageEvent(text="/steer check the logs" if route == "explicit" else "check the logs",
                          source=source, message_id="m2")

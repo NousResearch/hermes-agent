@@ -3,7 +3,7 @@
 On a relay-fronted instance the shared bot is the only way to reach Telegram, Discord and Slack;
 these routes let the user link their chat account to it from the instance (#141546). Codes are
 minted by the running gateway, which alone holds the per-gateway relay secret, through its
-``relay-link`` control-socket verb (``gateway/relay/link.py``).
+``relay-link`` control-socket verb (``hermes_agent/gateway/relay/link.py``).
 """
 
 import asyncio
@@ -18,8 +18,8 @@ _NOT_READY = frozenset({"relay_not_provisioned", "connector_unreachable", "conne
 
 
 def _ask_gateway(params: dict[str, Any]) -> dict[str, Any]:
-    from gateway.control_socket import query_gateway_control
-    from gateway.relay.link import CONTROL_TIMEOUT_S
+    from hermes_agent.gateway.control_socket import query_gateway_control
+    from hermes_agent.gateway.relay.link import CONTROL_TIMEOUT_S
     from hermes_constants import get_process_hermes_home
 
     answer = query_gateway_control(get_process_hermes_home(), "relay-link", params=params,

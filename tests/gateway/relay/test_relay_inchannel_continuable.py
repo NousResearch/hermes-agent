@@ -19,7 +19,7 @@ lane. Three gaps, each pinned here:
 from types import SimpleNamespace
 
 
-from gateway.relay.descriptor import CapabilityDescriptor
+from hermes_agent.gateway.relay.descriptor import CapabilityDescriptor
 from hermes_agent.cron.scheduler_delivery import _resolve_cron_surface_mode
 
 
@@ -70,8 +70,8 @@ class TestDescriptorCapabilityBit:
 
 class TestRelayAdapterCapabilityMapping:
     def _adapter(self, descriptor):
-        from gateway.config import PlatformConfig
-        from gateway.relay.adapter import RelayAdapter
+        from hermes_agent.gateway.config import PlatformConfig
+        from hermes_agent.gateway.relay.adapter import RelayAdapter
 
         config = PlatformConfig(enabled=True, extra={})
         return RelayAdapter(config, descriptor)
@@ -99,8 +99,8 @@ class TestPerPlatformCapability:
             return self._by_platform.get(platform)
 
     def _adapter(self, primary, by_platform):
-        from gateway.config import PlatformConfig
-        from gateway.relay.adapter import RelayAdapter
+        from hermes_agent.gateway.config import PlatformConfig
+        from hermes_agent.gateway.relay.adapter import RelayAdapter
 
         config = PlatformConfig(enabled=True, extra={})
         return RelayAdapter(config, primary, transport=self._Transport(by_platform))

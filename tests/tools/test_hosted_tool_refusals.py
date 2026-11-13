@@ -113,7 +113,7 @@ def test_an_mcp_stdio_server_is_not_started_on_the_host(no_spawn):
 
 
 def test_media_delivery_never_attaches_a_host_file(tmp_path):
-    from gateway.platforms.base import validate_media_delivery_path
+    from hermes_agent.gateway.platforms.base import validate_media_delivery_path
 
     planted = tmp_path / "report.png"
     planted.write_bytes(b"x")

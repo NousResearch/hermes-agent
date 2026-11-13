@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 CURSOR = " ▉"
 
@@ -252,7 +252,7 @@ class _TelegramFloodDeleteAdapter(_SlotAdapter):
     def __init__(self, refuse: str):
         from unittest.mock import AsyncMock, MagicMock
 
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.telegram.adapter import TelegramAdapter
         super().__init__(refuse)
         self.telegram = TelegramAdapter(PlatformConfig(enabled=True, token="***"))

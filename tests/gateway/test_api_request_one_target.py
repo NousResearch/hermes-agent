@@ -11,7 +11,7 @@ async def test_same_chat_key_on_another_session_is_refused_not_rerun(api, owner)
     calls = []
 
     async def handle(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         calls.append(event.text)
         execution_result.get()['result'] = {'final_response': 'ok', 'messages': []}
         return 'ok'

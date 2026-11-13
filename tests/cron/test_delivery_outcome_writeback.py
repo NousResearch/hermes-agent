@@ -9,7 +9,7 @@ bookkeeping write.
 import pytest
 
 from hermes_agent.cron import executions, jobs, scheduler
-from gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 
 
 @pytest.mark.parametrize("drain_timing", ["after_run", "before_bookkeeping"])
@@ -18,7 +18,7 @@ def test_drained_delivery_outcome_is_written_back(tmp_path, monkeypatch, transpo
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     config = GatewayConfig()
     config.platforms[Platform.TELEGRAM] = PlatformConfig(enabled=True)
-    monkeypatch.setattr("gateway.config.load_gateway_config", lambda: config)
+    monkeypatch.setattr("hermes_agent.gateway.config.load_gateway_config", lambda: config)
     sent = []
 
     async def send(platform, pconfig, chat_id, text, **kwargs):

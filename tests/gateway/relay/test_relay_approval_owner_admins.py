@@ -9,14 +9,14 @@ import json
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 
 
 @pytest.fixture
 def relay(tmp_path, monkeypatch):
-    from gateway.relay.adapter import RelayAdapter
-    from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.relay.adapter import RelayAdapter
+    from hermes_agent.gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+    from hermes_agent.gateway.run import GatewayRunner
     from hermes_cli.profiles import get_profile_dir
     from hermes_constants import get_hermes_home
     from tools import approval
@@ -45,7 +45,7 @@ def relay(tmp_path, monkeypatch):
 
 
 def _pending(adapter, platform, key):
-    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
     from tools import approval
     from tools.approval_gateway_wait import _ApprovalEntry
 
@@ -61,7 +61,7 @@ def _pending(adapter, platform, key):
 
 
 async def _answer(adapter, platform, actor, prompt_id):
-    from gateway.relay.ws_transport import PassthroughForward, _event_from_wire
+    from hermes_agent.gateway.relay.ws_transport import PassthroughForward, _event_from_wire
 
     if platform == "telegram":
         await adapter._on_inbound(_event_from_wire({

@@ -3,7 +3,7 @@
 
 from types import SimpleNamespace
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 
 def test_register_declares_the_former_core_wiring(monkeypatch):

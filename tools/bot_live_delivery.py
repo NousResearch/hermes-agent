@@ -1,6 +1,6 @@
 """Canonical Bot Chat transport and durable legacy delivery receipts.
 
-Only gateway/session_bot.py admits execution. Old claimed/terminal records remain
+Only hermes_agent/gateway/session_bot.py admits execution. Old claimed/terminal records remain
 inspectable; the legacy UI claim consumer is retired. No authority means refusal.
 Receipt storage derives from FalconOrtiz's live-owner mailbox (#101564).
 """
@@ -75,7 +75,7 @@ def authority_delivery(home, params):
 
 def authority_settle(home, params):
     """The same authority's ``bot_relay.settle``: the delivery id settled as never sent, or its
-    existing receipt (``gateway/session_bot.py:_settle``)."""
+    existing receipt (``hermes_agent/gateway/session_bot.py:_settle``)."""
     return _authority_rpc(home, 'bot_relay.settle', params)
 
 

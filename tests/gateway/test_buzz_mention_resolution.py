@@ -44,7 +44,7 @@ def _clean_env(monkeypatch, tmp_path):
 
 
 def _make_adapter(extra=None):
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
 
     cfg = PlatformConfig(enabled=True, extra={"relay_url": "https://test.relay", **(extra or {})})
     adapter = BuzzAdapter(cfg)

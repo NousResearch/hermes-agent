@@ -44,7 +44,7 @@ def test_standalone_payload_keeps_safe_formatting():
 
 
 def _adapter_html(message):
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
     from plugins.platforms.matrix.adapter import MatrixAdapter
 
     adapter = MatrixAdapter(PlatformConfig(

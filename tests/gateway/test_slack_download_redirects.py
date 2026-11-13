@@ -19,7 +19,7 @@ if "slack_bolt" not in sys.modules:
 if "aiohttp" not in sys.modules:
     sys.modules.setdefault("aiohttp", MagicMock())
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.slack.adapter import SlackAdapter
 
 

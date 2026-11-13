@@ -10,12 +10,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import run_runtime
-from gateway.config import Platform
+from hermes_agent.gateway import run_runtime
+from hermes_agent.gateway.config import Platform
 
 
 def _runtime(tmp_path, monkeypatch, failing):
-    from gateway.session_authorities import SessionAuthorities
+    from hermes_agent.gateway.session_authorities import SessionAuthorities
     launch = (tmp_path / "root").resolve()
     homes = {n: (tmp_path / "profiles" / n).resolve() for n in ("beta", "gamma")}
     for home in (launch, *homes.values()):
@@ -48,15 +48,15 @@ def _runtime(tmp_path, monkeypatch, failing):
     async def fake_api(runner_):
         return SimpleNamespace(api_origin="http://127.0.0.1:1")
 
-    monkeypatch.setattr("gateway.run_api.start_gateway_api", fake_api)
-    monkeypatch.setattr("gateway.session_bot.recover_bot_deliveries", recover_bot)
-    monkeypatch.setattr("gateway.session_cron.unbind_owner", lambda authority: None)
+    monkeypatch.setattr("hermes_agent.gateway.run_api.start_gateway_api", fake_api)
+    monkeypatch.setattr("hermes_agent.gateway.session_bot.recover_bot_deliveries", recover_bot)
+    monkeypatch.setattr("hermes_agent.gateway.session_cron.unbind_owner", lambda authority: None)
     monkeypatch.setattr(run_runtime, "_record_parked_profiles", lambda value: parked.update(value))
     return runner, launch, homes, recovered, parked
 
 
 def test_a_secondary_whose_recovery_fails_is_parked_and_the_rest_start(tmp_path, monkeypatch):
-    from gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.runtime_ownership import process_ownership
     runner, launch, homes, recovered, parked = _runtime(tmp_path, monkeypatch, failing=tmp_path / "profiles" / "beta")
     process_ownership.reserve([homes["beta"]])
     try:
@@ -78,9 +78,9 @@ def test_a_secondary_whose_retirement_times_out_keeps_its_lock_but_is_never_star
     """A writer that outlives Stop keeps the profile's lock and retiring authority (shutdown still
     settles it), but nothing later in boot may serve it: no adapters, no served status, no cron
     ticks, no native-session recovery, no hosted-room service."""
-    from gateway.run import GatewayRunner, _cron_tick_profile_homes
-    from gateway.runtime_ownership import process_ownership
-    from gateway.session_authorities import all_authorities
+    from hermes_agent.gateway.run import GatewayRunner, _cron_tick_profile_homes
+    from hermes_agent.gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.session_authorities import all_authorities
     runner, launch, homes, _recovered, parked = _runtime(
         tmp_path, monkeypatch, failing=tmp_path / "profiles" / "beta")
     beta = runner.session_authorities.for_home(homes["beta"])
@@ -88,7 +88,7 @@ def test_a_secondary_whose_retirement_times_out_keeps_its_lock_but_is_never_star
     async def writer_outlives_stop(authority, timeout):
         raise TimeoutError("Profile workers did not stop; ownership retained")
 
-    monkeypatch.setattr("gateway.session_runtime_workers.join_authority_work", writer_outlives_stop)
+    monkeypatch.setattr("hermes_agent.gateway.session_runtime_workers.join_authority_work", writer_outlives_stop)
     process_ownership.reserve([homes["beta"]])
     try:
         asyncio.run(run_runtime.start_gateway_runtime_api(runner))
@@ -112,8 +112,8 @@ def test_a_secondary_whose_retirement_times_out_keeps_its_lock_but_is_never_star
         host._start_one_profile_adapters = start_one
         host._restore_secondary_completion_ledgers = lambda profile_homes: None
         monkeypatch.setattr("hermes_cli.profiles.profiles_to_serve", lambda *a, **k: [])
-        monkeypatch.setattr("gateway.status.publish_runtime_status", lambda **kw: published.update(kw))
-        monkeypatch.setattr("gateway.pairing.PairingStore", lambda profile: SimpleNamespace(profile=profile))
+        monkeypatch.setattr("hermes_agent.gateway.status.publish_runtime_status", lambda **kw: published.update(kw))
+        monkeypatch.setattr("hermes_agent.gateway.pairing.PairingStore", lambda profile: SimpleNamespace(profile=profile))
         asyncio.run(host._start_secondary_profile_adapters())
         assert started == ["gamma"]
         assert published["served_profiles"] == ["default", "gamma"]
@@ -128,10 +128,10 @@ def test_a_secondary_whose_retirement_times_out_keeps_its_lock_but_is_never_star
         async def no_webhooks(authority):
             return None
 
-        monkeypatch.setattr("gateway.session_hosted_service._ensure_hosted_service", ensure_hosted)
-        monkeypatch.setattr("gateway.session_local_recovery.recover_local_sessions",
+        monkeypatch.setattr("hermes_agent.gateway.session_hosted_service._ensure_hosted_service", ensure_hosted)
+        monkeypatch.setattr("hermes_agent.gateway.session_local_recovery.recover_local_sessions",
                             lambda authority, schedule=False: local.append(authority.profile_id))
-        monkeypatch.setattr("gateway.platforms.webhook_ingress.recover_webhook_finalizations", no_webhooks)
+        monkeypatch.setattr("hermes_agent.gateway.platforms.webhook_ingress.recover_webhook_finalizations", no_webhooks)
         asyncio.run(run_runtime.recover_gateway_native_sessions(runner))
         assert str(homes["beta"]) not in local
         assert str(homes["beta"]) not in hosted
@@ -159,8 +159,8 @@ def test_a_secondary_whose_retirement_times_out_keeps_its_lock_but_is_never_star
                 unreadable()
             api_read.append(db)
 
-        monkeypatch.setattr("gateway.session_ingress_media.collect_unheld_api_images", collect)
-        monkeypatch.setattr("gateway.session_api_media.compact_settled_api_payloads", lambda db: None)
+        monkeypatch.setattr("hermes_agent.gateway.session_ingress_media.collect_unheld_api_images", collect)
+        monkeypatch.setattr("hermes_agent.gateway.session_api_media.compact_settled_api_payloads", lambda db: None)
         host._sync_voice_mode_state_to_adapter = host._bind_voice_input_callback = lambda adapter: None
         api_adapter = SimpleNamespace(gateway_runner=runner)
         try:
@@ -172,7 +172,7 @@ def test_a_secondary_whose_retirement_times_out_keeps_its_lock_but_is_never_star
 
         # Auto-resume fails closed on the retained store: the entry is held back, never resumed.
         fresh_checks = []
-        monkeypatch.setattr("gateway.run._is_fresh_gateway_interruption",
+        monkeypatch.setattr("hermes_agent.gateway.run._is_fresh_gateway_interruption",
                             lambda *a, **k: fresh_checks.append(a) or False)
         host.session_authorities = runner.session_authorities
         for authority in all_authorities(runner):

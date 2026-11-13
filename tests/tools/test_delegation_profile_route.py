@@ -366,7 +366,7 @@ def test_profile_child_uses_the_target_profiles_persistent_container(two_profile
     """Persistent Docker keys its container by profile: a child routed to ``coder`` inside a launch-profile
     session runs in coder's container (coder's image, mounts, env), while the session's delivery identity
     (HERMES_SESSION_PROFILE, read by notifications) stays the parent's."""
-    from gateway.session_context import clear_session_vars, get_session_env, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, get_session_env, set_session_vars
     from tools import terminal_tool
     from tools.delegate_tool_routes import delegated_profile_scope
 
@@ -385,7 +385,7 @@ def test_routed_child_in_a_room_turn_is_gated_by_its_own_stricter_approval_mode(
     """A Group Chat member turn (room policy ``smart``) delegating to ``coder`` (``approvals.mode: manual``):
     the child's dangerous command is gated at ``manual`` inside its profile scope, while the member's own
     turn keeps the room's ``smart``."""
-    from gateway.hosted_room_execution_policy import (
+    from hermes_agent.gateway.hosted_room_execution_policy import (
         RoomExecutionPolicy, bind_room_execution_policy, execution_policy_mapping, reset_room_execution_policy)
     from tools import approval_context
     from tools.delegate_tool_child_run import _ChildRun
@@ -422,7 +422,7 @@ def test_routed_child_in_a_room_turn_is_gated_by_its_own_stricter_approval_mode(
 
 def test_room_members_session_grant_cannot_preapprove_a_profile_routed_child(two_profiles, monkeypatch):
     """A 'session' grant on the member's terminal must not authorize a different profile's terminal."""
-    from gateway.hosted_room_execution_policy import (
+    from hermes_agent.gateway.hosted_room_execution_policy import (
         RoomExecutionPolicy, bind_room_execution_policy, execution_policy_mapping, reset_room_execution_policy)
     from tools import approval, approval_context
     from tools.approval_context import reset_current_session_key, set_current_session_key
@@ -507,7 +507,7 @@ def test_routed_childs_session_grant_stays_in_its_profile_and_ends_with_the_sess
 def test_child_routed_back_to_the_launch_profile_uses_the_launch_profiles_container(two_profiles):
     """A ``coder`` chat on a default-launched gateway (its turn bound to coder, HERMES_SESSION_PROFILE=coder) routing
     a child to ``default`` runs that child in default's persistent container, not the parent chat's."""
-    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
     from tools import terminal_tool
     from tools.delegate_tool_routes import delegated_profile_scope
 

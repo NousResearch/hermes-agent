@@ -49,13 +49,13 @@ class ModelPeer(BaseHTTPRequestHandler):
 
 async def probe(peer, target):
     import websockets
-    from gateway.config import Platform, PlatformConfig
-    from gateway.platforms.base import BasePlatformAdapter, SendResult
-    from gateway.run import GatewayRunner
-    from gateway.session import SessionSource
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.config import Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import SessionSource
+    from hermes_agent.gateway.session_authority import initialize_session_authority
     from hermes_cli import web_server
-    from gateway.run_api import start_gateway_api, stop_gateway_api
+    from hermes_agent.gateway.run_api import start_gateway_api, stop_gateway_api
     from tools.approval import list_gateway_approvals, resolve_gateway_approval
     from hermes_agent.hermes_state_runtime import list_session_admissions
     from run_agent import AIAgent

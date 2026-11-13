@@ -14,10 +14,10 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer, TestClient
 
 from agent import secret_scope
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.api_server import APIServerAdapter
-from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
-from gateway.session_group_peers import dispatch_target, room_link
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.api_server import APIServerAdapter
+from hermes_agent.gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+from hermes_agent.gateway.session_group_peers import dispatch_target, room_link
 from hermes_agent.hermes_state import SessionDB
 from tests.waiting import async_wait_until
 
@@ -42,7 +42,7 @@ class _Authorities:
 @pytest.fixture
 def lender(tmp_path, monkeypatch):
     """A multiplexed lender: default + profiles/helper, each with its own config, .env and state.db."""
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
     root = tmp_path / 'hermes'
     helper = root / 'profiles' / 'helper'
     helper.mkdir(parents=True)
@@ -93,7 +93,7 @@ def _app(adapter):
 
 
 def test_a_named_profile_is_lent_through_its_own_mirror_and_mints_its_own_grants(lender, monkeypatch):
-    from gateway.hosted_room_peer import decode_room_grant, gateway_room_grant_secret
+    from hermes_agent.gateway.hosted_room_peer import decode_room_grant, gateway_room_grant_secret
     monkeypatch.setenv('HERMES_ROOM_LINK_URL', 'https://lender.example.test/hermes/')
     link = lender.link(lender.helper)
     assert link['enabled'] is True and link['profile'] == 'helper', link
@@ -130,7 +130,7 @@ def test_a_single_profile_gateway_never_advertises_the_root_gateways_listener(le
 
 @pytest.mark.asyncio
 async def test_a_granted_run_executes_in_the_lent_profile_and_its_grant_answers_nowhere_else(lender, monkeypatch):
-    from gateway.hosted_room_peer import PROTOCOL_VERSION
+    from hermes_agent.gateway.hosted_room_peer import PROTOCOL_VERSION
     from hermes_constants import get_hermes_home
     from hermes_cli.config import load_config
     seen = []

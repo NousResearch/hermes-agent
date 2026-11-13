@@ -4,14 +4,14 @@
 a fresh ``get_process_start_time`` reading: the delivery ledger, API-server durable runs and the
 async-delegation ledger did the same exact-equality test and reconciled a live owner to
 dead/unknown under the same ~1 s same-host drift. All of them now share
-``gateway.status.start_time_fingerprints_match``.
+``hermes_agent.gateway.status.start_time_fingerprints_match``.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from gateway import status
+from hermes_agent.gateway import status
 
 RECORDED = 178864182760
 
@@ -23,13 +23,13 @@ def _live_pid_with_drift(monkeypatch):
 
 
 def _delivery_ledger_alive() -> bool:
-    from gateway import delivery_ledger
+    from hermes_agent.gateway import delivery_ledger
 
     return delivery_ledger._owner_alive(4242, RECORDED)
 
 
 def _api_server_run_alive() -> bool:
-    from gateway.platforms import api_server_runs
+    from hermes_agent.gateway.platforms import api_server_runs
 
     return api_server_runs._owner_alive(4242, RECORDED)
 

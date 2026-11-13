@@ -13,7 +13,7 @@ _API_KEY = 'idempotency-after-delete-key'
 
 def _execute(owner, calls):
     async def handle(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         calls.append(event.text)
         text = 'answer ' + event.text
         execution_result.get()['result'] = {'final_response': text, 'messages': []}
@@ -111,7 +111,7 @@ def test_only_a_client_key_pays_for_the_tombstone_scan(api, owner, monkeypatch):
     fresh id (or a server-minted run id) never matches one, so the admission's write transaction
     skips the tombstone scan for it."""
     from hermes_agent import hermes_state_terminal
-    from gateway.session_api_turn import admit_api_turn
+    from hermes_agent.gateway.session_api_turn import admit_api_turn
     real = hermes_state_terminal.terminal_api_admissions
     scanned = []
     monkeypatch.setattr(hermes_state_terminal, 'terminal_api_admissions',

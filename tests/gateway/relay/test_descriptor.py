@@ -1,6 +1,6 @@
 """Tests for the experimental CapabilityDescriptor (relay Phase 0, Task 0.2)."""
 
-from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+from hermes_agent.gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
 
 
 def _telegram_descriptor(**overrides) -> CapabilityDescriptor:

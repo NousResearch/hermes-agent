@@ -465,7 +465,7 @@ class TestWaitForGatewayExit:
 
         monkeypatch.setattr("time.monotonic", fake_monotonic)
         monkeypatch.setattr("time.sleep", lambda _: None)
-        monkeypatch.setattr("gateway.status.get_running_pid", mock_get_running_pid)
+        monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", mock_get_running_pid)
         monkeypatch.setattr(gateway, "terminate_pid", mock_terminate)
 
         gateway._wait_for_gateway_exit(timeout=10.0, force_after=5.0)
@@ -533,7 +533,7 @@ class TestRestartWaitsForApiServerPort:
     def test_wait_targets_the_configured_api_server_port_only_when_enabled(self, monkeypatch):
         import socket
 
-        from gateway.config import GatewayConfig, Platform, PlatformConfig
+        from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 
         listener = socket.socket()
         listener.bind(("127.0.0.1", 0))
@@ -558,7 +558,7 @@ class TestStopProfileGateway:
     def owned_process_home(self, monkeypatch):
         # These signal/reaping tests simulate an independently owned process.
         # Ambiguous/shared ownership is exercised by the lifecycle regressions.
-        from gateway import host_attach
+        from hermes_agent.gateway import host_attach
         from hermes_cli import dashboard_procs
         monkeypatch.setattr(host_attach, '_probe_host_gateway', lambda wait: None)
         monkeypatch.setattr(dashboard_procs, '_hermes_home_for_pid', lambda pid, **kw: str(gateway.get_hermes_home()))
@@ -569,7 +569,7 @@ class TestStopProfileGateway:
 
         pid = 12345
         calls = []
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda: pid)
+        monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda: pid)
         monkeypatch.setattr(gateway_windows, "_windows_stop_drain_timeout", lambda: 7.0)
         monkeypatch.setattr(
             gateway_windows,
@@ -582,8 +582,8 @@ class TestStopProfileGateway:
             lambda pids: calls.append(("force", pids)),
         )
         monkeypatch.setattr(gateway.os, "kill", lambda *_: calls.append(("kill",)))
-        monkeypatch.setattr("gateway.status._pid_exists", lambda target: False)
-        monkeypatch.setattr("gateway.status.remove_pid_file", lambda: None)
+        monkeypatch.setattr("hermes_agent.gateway.status._pid_exists", lambda target: False)
+        monkeypatch.setattr("hermes_agent.gateway.status.remove_pid_file", lambda: None)
         monkeypatch.setattr(gateway, "_reap_unsupervised_gateway_orphans", lambda **_: False)
 
         assert gateway.stop_profile_gateway() is True
@@ -596,9 +596,9 @@ class TestStopProfileGateway:
 
         pid = 12345
         calls = []
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda: pid)
+        monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda: pid)
         monkeypatch.setattr(gateway_windows, "_windows_stop_drain_timeout", lambda: 7.0)
-        monkeypatch.setattr("gateway.status.get_process_start_time", lambda target: 100)
+        monkeypatch.setattr("hermes_agent.gateway.status.get_process_start_time", lambda target: 100)
         monkeypatch.setattr(
             gateway_windows,
             "_drain_gateway_pid",
@@ -610,8 +610,8 @@ class TestStopProfileGateway:
             lambda pids: calls.append(("force", pids)),
         )
         monkeypatch.setattr(gateway.os, "kill", lambda *_: calls.append(("kill",)))
-        monkeypatch.setattr("gateway.status._pid_exists", lambda target: False)
-        monkeypatch.setattr("gateway.status.remove_pid_file", lambda: None)
+        monkeypatch.setattr("hermes_agent.gateway.status._pid_exists", lambda target: False)
+        monkeypatch.setattr("hermes_agent.gateway.status.remove_pid_file", lambda: None)
         monkeypatch.setattr(gateway, "_reap_unsupervised_gateway_orphans", lambda **_: False)
 
         assert gateway.stop_profile_gateway() is True
@@ -623,7 +623,7 @@ class TestStopProfileGateway:
         a PID recycled during the wait shows a different start time, so ``terminate_pid``'s mismatch
         refusal fires instead of killing an unrelated process. Reading it at kill time is a vacuous
         self-comparison."""
-        from gateway import status
+        from hermes_agent.gateway import status
         from hermes_cli import gateway_windows
 
         pid = 4242
@@ -658,9 +658,9 @@ class TestStopProfileGateway:
     def test_stop_profile_gateway_keeps_pid_file_when_process_still_running(self, monkeypatch):
         calls = {"kill": 0, "alive_probes": 0, "remove": 0, "reap_calls": 0}
 
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 12345)
+        monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda: 12345)
         # Post-#21561: the stop loop sends one SIGTERM via ``os.kill`` then
-        # polls liveness via ``gateway.status._pid_exists`` (safe on
+        # polls liveness via ``hermes_agent.gateway.status._pid_exists`` (safe on
         # Windows — bpo-14484). Instrument both seams separately.
         monkeypatch.setattr(
             gateway.os,
@@ -668,12 +668,12 @@ class TestStopProfileGateway:
             lambda pid, sig: calls.__setitem__("kill", calls["kill"] + 1),
         )
         monkeypatch.setattr(
-            "gateway.status._pid_exists",
+            "hermes_agent.gateway.status._pid_exists",
             lambda pid: calls.__setitem__("alive_probes", calls["alive_probes"] + 1) or True,
         )
         monkeypatch.setattr("time.sleep", lambda _: None)
         monkeypatch.setattr(
-            "gateway.status.remove_pid_file",
+            "hermes_agent.gateway.status.remove_pid_file",
             lambda: calls.__setitem__("remove", calls["remove"] + 1),
         )
         # Mock the orphan reap so it doesn't scan for real gateway processes
@@ -695,11 +695,11 @@ class TestStopProfileGateway:
         killed_pid = 99999
         reap_extra_excludes = []
 
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda: killed_pid)
+        monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda: killed_pid)
         monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: None)
-        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
+        monkeypatch.setattr("hermes_agent.gateway.status._pid_exists", lambda pid: False)
         monkeypatch.setattr("time.sleep", lambda _: None)
-        monkeypatch.setattr("gateway.status.remove_pid_file", lambda: None)
+        monkeypatch.setattr("hermes_agent.gateway.status.remove_pid_file", lambda: None)
 
         def fake_reap(extra_exclude=None):
             if extra_exclude:
@@ -735,7 +735,7 @@ class TestReapUnsupervisedGatewayOrphansMacOS:
             gateway, "_get_service_pids", lambda all_profiles=False: {launchd_pid}
         )
         # No pidfile-recorded gateway in this scenario.
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+        monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda: None)
 
         # find_gateway_pids returns the launchd PID plus a real orphan.
         # The reaper should only kill the orphan, not the launchd PID.
@@ -748,8 +748,8 @@ class TestReapUnsupervisedGatewayOrphansMacOS:
 
         killed_pids = []
         monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: killed_pids.append((pid, sig)))
-        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
-        monkeypatch.setattr("gateway.status.write_planned_stop_marker", lambda pid: None)
+        monkeypatch.setattr("hermes_agent.gateway.status._pid_exists", lambda pid: False)
+        monkeypatch.setattr("hermes_agent.gateway.status.write_planned_stop_marker", lambda pid: None)
         monkeypatch.setattr("time.sleep", lambda _: None)
         monkeypatch.setattr("time.monotonic", lambda: 1.0)
 
@@ -798,7 +798,7 @@ class TestReapUnsupervisedGatewayOrphansWindows:
 
         # get_running_pid() returns the recorded healthy gateway PID.
         monkeypatch.setattr(
-            "gateway.status.get_running_pid", lambda cleanup_stale=True: recorded_pid
+            "hermes_agent.gateway.status.get_running_pid", lambda cleanup_stale=True: recorded_pid
         )
 
         # find_gateway_pids returns the recorded PID, its bootstrap parent
@@ -816,8 +816,8 @@ class TestReapUnsupervisedGatewayOrphansWindows:
         killed_pids = []
         marked_pids = []
         monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: killed_pids.append((pid, sig)))
-        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
-        monkeypatch.setattr("gateway.status.write_planned_stop_marker", marked_pids.append)
+        monkeypatch.setattr("hermes_agent.gateway.status._pid_exists", lambda pid: False)
+        monkeypatch.setattr("hermes_agent.gateway.status.write_planned_stop_marker", marked_pids.append)
         monkeypatch.setattr("time.sleep", lambda _: None)
         monkeypatch.setattr("time.monotonic", lambda: 1.0)
 
@@ -849,10 +849,10 @@ class TestReapUnsupervisedGatewayOrphansWindows:
 
         # The raw record is present on disk; the validated probe rejects it.
         monkeypatch.setattr(
-            "gateway.status._read_pid_record", lambda *a, **k: {"pid": recorded_pid}
+            "hermes_agent.gateway.status._read_pid_record", lambda *a, **k: {"pid": recorded_pid}
         )
         monkeypatch.setattr(
-            "gateway.status._read_gateway_lock_record", lambda *a, **k: None
+            "hermes_agent.gateway.status._read_gateway_lock_record", lambda *a, **k: None
         )
         probe_kwargs = []
 
@@ -860,7 +860,7 @@ class TestReapUnsupervisedGatewayOrphansWindows:
             probe_kwargs.append(cleanup_stale)
 
         monkeypatch.setattr(
-            "gateway.status.get_running_pid", failing_validation
+            "hermes_agent.gateway.status.get_running_pid", failing_validation
         )
         monkeypatch.setattr(
             gateway,
@@ -907,17 +907,17 @@ class TestReaperStartupGrace:
             return ages[pid]
 
         monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda cleanup_stale=True: None)
+        monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda cleanup_stale=True: None)
         monkeypatch.setattr(
             gateway, "find_gateway_pids",
             lambda exclude_pids=None: [p for p in (booting, unknown, stale) if p not in (exclude_pids or set())],
         )
         monkeypatch.setattr("hermes_cli.dashboard_procs._process_age_seconds", _age)
         monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: None)
-        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
+        monkeypatch.setattr("hermes_agent.gateway.status._pid_exists", lambda pid: False)
         monkeypatch.setattr("time.sleep", lambda _: None)
         marked = []
-        monkeypatch.setattr("gateway.status.write_planned_stop_marker", marked.append)
+        monkeypatch.setattr("hermes_agent.gateway.status.write_planned_stop_marker", marked.append)
 
         assert gateway._reap_unsupervised_gateway_orphans(min_age_s=180.0) is True
         assert marked == [stale]

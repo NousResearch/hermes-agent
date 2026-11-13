@@ -150,7 +150,7 @@ def _handoff_completions(sub_text: str, sub_lower: str):
     if completed:
         return
     try:
-        from gateway.config import load_gateway_config
+        from hermes_agent.gateway.config import load_gateway_config
         gw = load_gateway_config()
         platforms = gw.get_connected_platforms()
     except Exception:

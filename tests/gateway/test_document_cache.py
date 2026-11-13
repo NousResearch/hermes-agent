@@ -1,5 +1,5 @@
 """
-Tests for document cache utilities in gateway/platforms/base.py.
+Tests for document cache utilities in hermes_agent/gateway/platforms/base.py.
 
 Covers: get_document_cache_dir, cache_document_from_bytes,
         cleanup_document_cache, SUPPORTED_DOCUMENT_TYPES.
@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway.platforms.base import (
+from hermes_agent.gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
     cache_document_from_bytes,
     cleanup_document_cache,
@@ -26,10 +26,10 @@ from gateway.platforms.base import (
 def _redirect_cache(tmp_path, monkeypatch):
     """Point the module-level DOCUMENT_CACHE_DIR to a fresh tmp_path."""
     monkeypatch.setattr(
-        "gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache"
+        "hermes_agent.gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache"
     )
     monkeypatch.setattr(
-        "gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path / "audio_cache"
+        "hermes_agent.gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path / "audio_cache"
     )
 
 
@@ -106,7 +106,7 @@ _PNG_1PX = bytes.fromhex(
 
 class TestCacheMediaBytes:
     def test_pdf_routes_to_document(self):
-        from gateway.platforms.base import cache_media_bytes
+        from hermes_agent.gateway.platforms.base import cache_media_bytes
         result = cache_media_bytes(b"%PDF-1.4 body", filename="report.pdf", mime_type="application/pdf")
         assert result is not None
         assert result.kind == "document"
@@ -116,7 +116,7 @@ class TestCacheMediaBytes:
         assert "report.pdf" in result.context_note()
 
     def test_png_routes_to_image(self):
-        from gateway.platforms.base import cache_media_bytes
+        from hermes_agent.gateway.platforms.base import cache_media_bytes
         result = cache_media_bytes(_PNG_1PX, filename="photo.png", mime_type="image/png")
         assert result is not None
         assert result.kind == "image"
@@ -129,7 +129,7 @@ class TestCacheMediaBytes:
 
         Authorization to message the agent is the gate, not the file extension.
         """
-        from gateway.platforms.base import cache_media_bytes
+        from hermes_agent.gateway.platforms.base import cache_media_bytes
         result = cache_media_bytes(b"MZ", filename="program.exe", mime_type="application/x-msdownload")
         assert result is not None
         assert result.kind == "document"

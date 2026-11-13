@@ -192,7 +192,7 @@ def _collect_gateway_runtimes(plan: UpdatePlan, profile_homes: list, seen: set[i
     mapped gateways no status record covers."""
     supervisor = _supervisor_classifier()
     with _probe("Gateway-state inventory"):
-        from gateway.status import live_gateway_pid_for_home, read_runtime_status
+        from hermes_agent.gateway.status import live_gateway_pid_for_home, read_runtime_status
         from hermes_cli.update_receipt import _socket_identity
 
         for profile, home in profile_homes:
@@ -202,7 +202,7 @@ def _collect_gateway_runtimes(plan: UpdatePlan, profile_homes: list, seen: set[i
                 if pid in seen:
                     continue  # one multiplex gateway answers identify for several homes — one record per process
                 seen.add(pid)
-                from gateway.control_socket import launch_supervisor
+                from hermes_agent.gateway.control_socket import launch_supervisor
 
                 # The protocol's "none" (manual or desktop) is no answer: classify it outside-in.
                 declared = launch_supervisor(record)

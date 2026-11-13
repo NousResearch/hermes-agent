@@ -18,10 +18,10 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import PlatformConfig
-from gateway.platforms.api_server import APIServerAdapter, cors_middleware
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.api_server import APIServerAdapter, cors_middleware
 
-_MOD = "gateway.platforms.api_server"
+_MOD = "hermes_agent.gateway.platforms.api_server"
 
 
 # ---------------------------------------------------------------------------

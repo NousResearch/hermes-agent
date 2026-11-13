@@ -375,7 +375,7 @@ def _bot_relay_outbox_sig():
 
 def _room_rows_sig(conn, _mtime) -> dict:
     """Per live room in one store: what ``groups.log`` and ``groups.state`` read from it."""
-    from gateway.hosted_room_driver import room_change_rows
+    from hermes_agent.gateway.hosted_room_driver import room_change_rows
     return room_change_rows(conn), False
 
 
@@ -389,7 +389,7 @@ def _groups_sig() -> dict:
     member progress (``live_progress``: tool, live confirmation, progress), signed once. Key ``""`` is
     process-wide (a worker started or stopped). Cron, the CLI and other gateways append to
     these stores from their own processes, so the files are the shared signal."""
-    from gateway.hosted_rooms import default_db_path
+    from hermes_agent.gateway.hosted_rooms import default_db_path
     from hermes_agent.tui_gateway.hosted_room_service import live_room_services
     services = live_room_services()
     stores = {Path(path).resolve(): None for path in (

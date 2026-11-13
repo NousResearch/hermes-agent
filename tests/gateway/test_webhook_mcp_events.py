@@ -14,8 +14,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import PlatformConfig
-from gateway.platforms.webhook import WebhookAdapter
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.webhook import WebhookAdapter
 
 SECRET = "whsec_" + base64.b64encode(b"k" * 32).decode()
 ROUTE = "mcp-ambush-0123456789ab"
@@ -114,7 +114,7 @@ async def test_gap_remembers_the_fresh_cursor(home):
 async def test_subscription_state_changes_do_not_strand_an_admitted_run(home):
     # The durable admission pins a digest of the route config, and the reply leg refuses a route
     # that changed since. The cursor and the grant change all the time, so they must live outside it.
-    from gateway.platforms.webhook_delivery import retained_destination
+    from hermes_agent.gateway.platforms.webhook_delivery import retained_destination
     from tools import mcp_tool_events as events
     routes = _routes(home)
     routes[ROUTE].update(deliver="telegram", deliver_extra={"chat_id": "42"})

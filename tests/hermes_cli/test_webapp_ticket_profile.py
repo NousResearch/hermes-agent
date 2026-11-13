@@ -17,8 +17,8 @@ _TOKEN = "b" * 43
 
 @pytest.fixture
 def two_profiles(monkeypatch, tmp_path):
-    from gateway.session_authorities import SessionAuthorities
-    from gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_authorities import SessionAuthorities
+    from hermes_agent.gateway.session_authority import SessionAuthority
     from hermes_cli import web_server as server
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import begin_runtime_epoch

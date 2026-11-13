@@ -1,5 +1,5 @@
 """Invariant: the LLM transport (``agent/process_bootstrap``) and the platform adapters
-(``gateway/platforms/base``) answer "is this host in NO_PROXY" with the same matcher, so a
+(``hermes_agent/gateway/platforms/base``) answer "is this host in NO_PROXY" with the same matcher, so a
 corporate ``NO_PROXY=10.0.0.0/8`` bypasses the proxy for a self-hosted ``10.x`` model endpoint
 exactly as it does for Telegram/Discord/Slack.
 """
@@ -8,7 +8,7 @@ import pytest
 
 from agent.process_bootstrap import _get_proxy_for_base_url
 from agent.proxy_bypass import should_bypass_proxy
-from gateway.platforms.base import is_host_excluded_by_no_proxy, resolve_proxy_url
+from hermes_agent.gateway.platforms.base import is_host_excluded_by_no_proxy, resolve_proxy_url
 
 _PROXY_KEYS = ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy",
                "NO_PROXY", "no_proxy")
@@ -19,8 +19,8 @@ def proxy_env(monkeypatch):
     for key in _PROXY_KEYS:
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("HTTPS_PROXY", "http://proxy.corp:3128")
-    monkeypatch.setattr("gateway.platforms.base.gateway_trust_env", lambda: True)
-    monkeypatch.setattr("gateway.platforms.base._detect_macos_system_proxy", lambda: None)
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base.gateway_trust_env", lambda: True)
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base._detect_macos_system_proxy", lambda: None)
     return monkeypatch
 
 

@@ -17,13 +17,13 @@ from pathlib import Path
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
-from gateway.run_runtime import initialize_gateway_runtime
-from gateway.runtime_ownership import process_ownership
-from gateway.session import SessionSource
-from gateway.session_ingress_context import register_transport_home
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.run_runtime import initialize_gateway_runtime
+from hermes_agent.gateway.runtime_ownership import process_ownership
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.session_ingress_context import register_transport_home
 from tests.waiting import async_wait_until
 
 
@@ -55,7 +55,7 @@ async def _start(runner, root):
     adapter = _Adapter()
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._is_user_authorized_for_source = lambda *a, **k: True
-    from gateway.session_authorities import active_authority
+    from hermes_agent.gateway.session_authorities import active_authority
     return runner, active_authority(runner), adapter
 
 

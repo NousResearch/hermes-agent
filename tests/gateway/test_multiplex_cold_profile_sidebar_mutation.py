@@ -34,7 +34,7 @@ from tests.gateway.test_normal_runtime_boot import control
 
 @contextmanager
 def multiplex_daemon(tmp_path, profiles=('warm', 'cold'), env=None):
-    """One ``gateway.run`` serving default + *profiles*; yields (root, descriptor, env). *env* adds to the
+    """One ``hermes_agent.gateway.run`` serving default + *profiles*; yields (root, descriptor, env). *env* adds to the
     gateway's environment (``HERMES_DASHBOARD_SESSION_TOKEN``: a host-scoped bearer for ``/api/ws``)."""
     extra_env = dict(env or {})
     home, user = tmp_path / 'state', tmp_path / 'user'
@@ -55,7 +55,7 @@ def multiplex_daemon(tmp_path, profiles=('warm', 'cold'), env=None):
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
                PYTHONUNBUFFERED='1', **extra_env)
     with (tmp_path / 'gateway.log').open('w+') as log:
-        process = subprocess.Popen([sys.executable, '-m', 'gateway.run'], cwd=root, env=env,
+        process = subprocess.Popen([sys.executable, '-m', 'hermes_agent.gateway.run'], cwd=root, env=env,
                                    stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
         try:
             deadline = time.monotonic() + 60

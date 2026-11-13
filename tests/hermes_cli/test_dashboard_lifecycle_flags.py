@@ -45,7 +45,7 @@ class TestDashboardStatus:
             (12347, "hermes serve --host 100.94.65.93 --port 9119"),
         ]
         with patch("hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=processes), \
-             patch("gateway.status._pid_exists", return_value=True), \
+             patch("hermes_agent.gateway.status._pid_exists", return_value=True), \
              patch("hermes_cli.main_dashboard._dashboard_listening", return_value=True), \
              pytest.raises(SystemExit) as exc:
             cmd_dashboard(_ns(status=True))
@@ -73,7 +73,7 @@ class TestDashboardStatus:
                 (pid, "/usr/local/bin/hermes serve --host 127.0.0.1 --port 0 --ssh-isolated")])
             monkeypatch.setattr(process_identity, "ledger_entries", lambda: [
                 {"pid": pid, "purpose": "serve", "host": "127.0.0.1", "port": real_port}])
-            monkeypatch.setattr("gateway.status._pid_exists", lambda p: p == pid)
+            monkeypatch.setattr("hermes_agent.gateway.status._pid_exists", lambda p: p == pid)
 
             assert _find_stale_dashboard_pids() == [pid]
             with pytest.raises(SystemExit) as exc:

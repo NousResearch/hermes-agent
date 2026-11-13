@@ -1,6 +1,6 @@
 """Clarify tool: structured multiple-choice / open-ended questions to the user.
 Schema, validation and a thin dispatcher; the UI lives in a platform-provided
-callback (cli.py, gateway/run.py, tui_gateway)."""
+callback (cli.py, hermes_agent/gateway/run.py, tui_gateway)."""
 
 import json
 from typing import Callable, Dict, List, Optional

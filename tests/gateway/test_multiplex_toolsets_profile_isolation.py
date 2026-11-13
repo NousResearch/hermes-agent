@@ -23,8 +23,8 @@ aiohttp = pytest.importorskip("aiohttp")
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import GatewayConfig, PlatformConfig
-from gateway.platforms.api_server import (
+from hermes_agent.gateway.config import GatewayConfig, PlatformConfig
+from hermes_agent.gateway.platforms.api_server import (
     APIServerAdapter,
 )
 
@@ -170,7 +170,7 @@ class TestWebhookMultiplexOffPrefixFailsClosed:
     """Same bug class in the webhook adapter's prefix resolver."""
 
     def _adapter(self, multiplex: bool):
-        from gateway.platforms.webhook import WebhookAdapter, _PROFILE_REJECTED
+        from hermes_agent.gateway.platforms.webhook import WebhookAdapter, _PROFILE_REJECTED
 
         class _Runner:
             config = GatewayConfig(multiplex_profiles=multiplex)

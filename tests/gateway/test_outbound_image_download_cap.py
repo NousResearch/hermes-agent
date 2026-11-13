@@ -11,8 +11,8 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.platforms.base import SendResult
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.base import SendResult
 
 CAP = 64 * 1024
 HUGE = CAP * 512  # 32 MiB: far more than socket buffers absorb once the client stops reading

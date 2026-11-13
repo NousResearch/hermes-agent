@@ -21,9 +21,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionEntry, SessionSource, build_session_key
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionEntry, SessionSource, build_session_key
 
 
 def _make_source() -> SessionSource:
@@ -43,7 +43,7 @@ def _make_event(text: str) -> MessageEvent:
 def _make_runner_with_cached_agent(close_fn):
     """Build a bare GatewayRunner with a cached agent whose close() runs
     ``close_fn`` (used to simulate slow / blocking teardown)."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
@@ -160,7 +160,7 @@ async def test_reset_completes_when_cleanup_raises(caplog):
 
     runner._cleanup_agent_resources = boom_cleanup
 
-    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.run"):
         result = await asyncio.wait_for(
             runner._handle_reset_command(_make_event("/new")), timeout=3
         )
@@ -177,7 +177,7 @@ async def test_reset_completes_when_cleanup_raises(caplog):
 async def test_reset_completes_when_cleanup_times_out(caplog):
     """#35994: if cleanup exceeds the bounded timeout, the reset still completes
     (graceful degradation) and the timeout warning fires."""
-    import gateway.slash_commands as _sc
+    import hermes_agent.gateway.slash_commands as _sc
 
     # Force the wait_for to time out immediately, closing the offloaded awaitable
     # so no worker thread dangles past the test.
@@ -188,7 +188,7 @@ async def test_reset_completes_when_cleanup_times_out(caplog):
 
     runner = _make_runner_with_cached_agent(lambda: None)
 
-    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.run"):
         with patch.object(_sc.asyncio, "wait_for", _instant_timeout):
             result = await runner._handle_reset_command(_make_event("/new"))
 

@@ -16,8 +16,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import hosted_rooms
-from gateway.hosted_room_attachments import HostedRoomAttachmentStore
+from hermes_agent.gateway import hosted_rooms
+from hermes_agent.gateway.hosted_room_attachments import HostedRoomAttachmentStore
 from tests.tui_gateway.test_hosted_room_attachment_routes import (
     _admit,
     _legacy_runtime,
@@ -40,7 +40,7 @@ def _assert_not_available(error: dict, method: str) -> None:
 
 
 def test_unknown_method_is_named_unavailable_on_both_routes(tmp_path, monkeypatch):
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     from hermes_agent.hermes_state import SessionDB
 
     _assert_not_available(srv.handle_request(

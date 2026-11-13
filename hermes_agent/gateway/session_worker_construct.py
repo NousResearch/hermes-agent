@@ -14,7 +14,7 @@ KEYS = frozenset({'fallback_model', 'ephemeral_system_prompt', 'prefill_messages
 def construct_inputs(authority, policy, chat_id, source=None):
     """Owner side, per turn (off the owner loop: config reads). *source* is the session's own, so
     ``channel_overrides`` come from the profile serving it, as for the in-process turn."""
-    from gateway.session_authorities import owner_scope
+    from hermes_agent.gateway.session_authorities import owner_scope
     with owner_scope(authority):
         return {'fallback_model': _fallback_chain(authority, policy),
                 'ephemeral_system_prompt': _ephemeral_prompt(authority, policy, chat_id, source),
@@ -42,7 +42,7 @@ def _ephemeral_prompt(authority, policy, chat_id, source=None):
     configured = None
     resolve = getattr(authority.runner, '_get_system_prompt_for_channel', None)
     if not policy.ignore_user_config and resolve is not None:
-        from gateway.config import Platform
+        from hermes_agent.gateway.config import Platform
         with policy.client_env_scope():
             configured = resolve(Platform.LOCAL, chat_id or '', source=source)
     return '\n\n'.join(p for p in (configured, policy.skills_prompt) if p) or None

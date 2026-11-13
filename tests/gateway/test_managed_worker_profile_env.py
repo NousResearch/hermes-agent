@@ -9,7 +9,7 @@ def test_secondary_worker_env_drops_launch_terminal_policy_and_env_settings(tmp_
     """Same contract as the cron and kanban dispatchers: a worker for served profile X gets the
     env a standalone ``hermes -p X`` gateway would build — X's HERMES_HOME and X's ``.env`` over a
     base without the launch profile's ``TERMINAL_*`` policy or launch-only ``.env`` settings."""
-    from gateway.session_managed_worker import _worker_env
+    from hermes_agent.gateway.session_managed_worker import _worker_env
     root = tmp_path / '.hermes'
     beta = root / 'profiles' / 'beta'
     beta.mkdir(parents=True)
@@ -34,9 +34,9 @@ def test_launch_scrub_runs_before_the_turn_context_is_injected(tmp_path, monkeyp
     """The launch residue strip runs on the RAW environ, before ``build_subprocess_env`` bridges this
     turn's own session context: a launch ``.env`` that names ``HERMES_SESSION_ID`` must not erase the
     id derived for the secondary's turn (#109338 ordering)."""
-    from gateway.run import _profile_runtime_scope
-    from gateway.session_context import scoped_current_session_id
-    from gateway.session_managed_worker import _worker_env
+    from hermes_agent.gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.session_context import scoped_current_session_id
+    from hermes_agent.gateway.session_managed_worker import _worker_env
     root = tmp_path / '.hermes'
     beta = root / 'profiles' / 'beta'
     beta.mkdir(parents=True)

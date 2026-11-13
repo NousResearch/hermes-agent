@@ -3,9 +3,9 @@ import json
 
 import pytest
 
-from gateway.session_api_turn import _settled_api_result
-from gateway.session_bot import _admission_outcome
-from gateway.session_results import _redacted, admission_result, finish_result, retain_result
+from hermes_agent.gateway.session_api_turn import _settled_api_result
+from hermes_agent.gateway.session_bot import _admission_outcome
+from hermes_agent.gateway.session_results import _redacted, admission_result, finish_result, retain_result
 from hermes_agent.hermes_state_runtime import _json, admit_session_input, claim_session_input, mutate_runtime_session
 from hermes_agent.hermes_state_terminal import RESULT_PREFIX, compact_result, encode_result, load_result
 
@@ -120,7 +120,7 @@ def test_a_deleted_session_keeps_the_exact_retry_reply(owner):
 
 def test_every_raw_result_row_read_goes_through_the_decoder(owner, monkeypatch):
     """Delivery after settlement (finish_result) and retirement read stored rows too."""
-    import gateway.session_results
+    import hermes_agent.gateway.session_results
     from hermes_agent import hermes_state_terminal
     seen = []
 
@@ -128,7 +128,7 @@ def test_every_raw_result_row_read_goes_through_the_decoder(owner, monkeypatch):
         seen.append(text)
         return load_result(text)
     monkeypatch.setattr(hermes_state_terminal, 'load_result', spy)
-    monkeypatch.setattr(gateway.session_results, 'load_result', spy)
+    monkeypatch.setattr(hermes_agent.gateway.session_results, 'load_result', spy)
     owner.db.create_session('gone', source='api_server')
     row, _expected = _turn(owner, 'gone', 1, [])
     assert finish_result(owner.db, epoch=owner.epoch, row=row, response='other', outcome='completed')[1] == REPLY

@@ -1,6 +1,6 @@
 """Home-channel half of the shutdown notice for GatewayRunner.
 
-Split out of ``gateway/run_shutdown.py``; bound onto ``GatewayRunner`` via ``GatewayShutdownMixin``.
+Split out of ``hermes_agent/gateway/run_shutdown.py``; bound onto ``GatewayRunner`` via ``GatewayShutdownMixin``.
 The broadcast is the one lifecycle message nobody asked for, so it is the one that must stay quiet when
 a stop is not an outage (a ``--replace`` takeover) and when stops repeat in a loop, and the one that owes
 a "Gateway online" on the next boot once it was delivered.
@@ -12,7 +12,7 @@ import logging
 from contextlib import nullcontext
 from typing import Optional
 
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 # Outcome of this stop's home-channel broadcast, read by ``_stop_persist_exit_state``.
 HOME_NOTICE_SENT = "sent"
@@ -27,7 +27,7 @@ def settle_home_online_notice_debt(runner) -> None:
     stamps nothing, so the next boot stayed silent after a delivered goodbye. A loop-muted broadcast
     owes nothing, and drops a marker the CLI already stamped, so the loop stays quiet on both ends.
     """
-    from gateway.restart_notice import planned_restart_marker_path, write_planned_restart_marker
+    from hermes_agent.gateway.restart_notice import planned_restart_marker_path, write_planned_restart_marker
     outcome = getattr(runner, "_home_shutdown_notice", None)
     if outcome == HOME_NOTICE_MUTED:
         # Best-effort like the write: an undeletable marker costs one extra notice, never the stop.
@@ -39,7 +39,7 @@ def settle_home_online_notice_debt(runner) -> None:
         write_planned_restart_marker()
     if outcome == HOME_NOTICE_SENT and getattr(runner, "_home_notice_loop_checked", False):
         # The loop cap counts goodbyes users saw, not stops that tried (a cycle with no adapter up).
-        from gateway import restart_loop_guard as rlg
+        from hermes_agent.gateway import restart_loop_guard as rlg
         rlg.record_notice_delivered()
     runner._home_notice_loop_checked = False
 
@@ -47,7 +47,7 @@ def settle_home_online_notice_debt(runner) -> None:
 class GatewayHomeShutdownNoticeMixin:
     """Broadcast "shutting down" to every served profile's home channel, loop- and takeover-aware."""
 
-    # Set by the signal handler when SIGTERM is a planned ``--replace`` takeover (gateway/run_bootstrap.py).
+    # Set by the signal handler when SIGTERM is a planned ``--replace`` takeover (hermes_agent/gateway/run_bootstrap.py).
     _planned_takeover_shutdown: bool = False
     _home_shutdown_notice: Optional[str] = None
     _home_notice_loop_checked: bool = False  # this stop was linked into the notice chain
@@ -58,7 +58,7 @@ class GatewayHomeShutdownNoticeMixin:
         A supervisor that keeps killing the gateway (a stuck post-update helper, two services fighting
         over one home) otherwise posts one notice per cycle into the home chat, thousands overnight. The
         chain and its limits are the restart-loop breaker's (``gateway.restart_loop_guard``)."""
-        from gateway import restart_loop_guard as rlg
+        from hermes_agent.gateway import restart_loop_guard as rlg
         max_restarts, window, max_gap = self._restart_loop_guard_config()
         self._home_notice_loop_checked = True
         return rlg.notice_loop_tripped(max_restarts, window, max_gap_seconds=max_gap)
@@ -72,9 +72,9 @@ class GatewayHomeShutdownNoticeMixin:
             return "planned --replace takeover"
         # A quiet drain (routine fleet auto-update) suppresses ONLY the home-channel broadcast; per-session
         # pings stay. Current-epoch marker only; a failing check fails toward the louder behaviour.
-        from gateway.run_shutdown import _log_suppressed
+        from hermes_agent.gateway.run_shutdown import _log_suppressed
         with _log_suppressed(logging.DEBUG, "drain_notification_suppressed check failed: %s"):
-            from gateway.drain_control import drain_notification_suppressed
+            from hermes_agent.gateway.drain_control import drain_notification_suppressed
             if drain_notification_suppressed():
                 return "drain marker (suppress_notification=true)"
         with _log_suppressed(logging.DEBUG, "Lifecycle notice loop check failed: %s"):
@@ -85,7 +85,7 @@ class GatewayHomeShutdownNoticeMixin:
 
     def _home_got_active_session_notice(self, delivered: set) -> bool:
         """True when the active-session pass already told a home chat (a task was running there)."""
-        from gateway.run_shutdown import _delivery_target_key
+        from hermes_agent.gateway.run_shutdown import _delivery_target_key
         return any(
             _delivery_target_key(platform.value, cfg.home_channel.chat_id, cfg.home_channel.thread_id,
                                  profile=profile) in delivered
@@ -104,9 +104,9 @@ class GatewayHomeShutdownNoticeMixin:
         silent (#118233). ``list(...)`` snapshots the adapter maps: adapter.send() can hit a fatal path
         (_handle_fatal) that pops the adapter -> "dictionary changed size during iteration".
         """
-        from gateway.run import _async_profile_runtime_scope
-        from gateway.run_shutdown import _delivery_target_key
-        from gateway.warning_notifications import present_notification
+        from hermes_agent.gateway.run import _async_profile_runtime_scope
+        from hermes_agent.gateway.run_shutdown import _delivery_target_key
+        from hermes_agent.gateway.warning_notifications import present_notification
 
         if self._home_got_active_session_notice(delivered):
             self._home_shutdown_notice = HOME_NOTICE_SENT

@@ -184,7 +184,7 @@ def test_disabled_collection_writes_nothing(marks):
 
 
 def test_dead_or_stale_marker_is_abandoned_at_the_next_start_and_live_waits(marks):
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway.status import get_process_start_time
 
     directory = setup_metrics.markers_dir(marks.home)
     directory.mkdir(parents=True)

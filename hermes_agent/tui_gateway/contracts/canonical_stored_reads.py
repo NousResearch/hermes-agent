@@ -1,4 +1,4 @@
-"""``session.transcript``: a stored conversation read without attaching (``gateway/session_stored_reads.py``).
+"""``session.transcript``: a stored conversation read without attaching (``hermes_agent/gateway/session_stored_reads.py``).
 
 A picker previews a conversation before it opens it: ``session.resume`` would subscribe the caller's
 pane, and ``session.events.since`` replays only what an attached viewer missed. A poller follows a

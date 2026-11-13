@@ -22,7 +22,7 @@ from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
+from hermes_agent.gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
 from hermes_constants import get_hermes_home, get_process_hermes_home
 from utils import atomic_json_write
 
@@ -163,13 +163,13 @@ def _mark_exited_quietly(exit_code: int, reason: str) -> None:
     seeing ``running`` for a process the watchdog killed — #113372). The runtime-status write goes
     LAST: it is the record housekeeping refreshes, so nothing may overwrite it after we stamp it."""
     with contextlib.suppress(Exception):
-        from gateway.lifecycle_ledger import mark_exited
+        from hermes_agent.gateway.lifecycle_ledger import mark_exited
         mark_exited(exit_code, reason=reason)
     with contextlib.suppress(Exception):  # os._exit skips atexit: stamp the exit-metrics marker now
         from hermes_cli.observability.shared_metrics_process import stamp_exit
         stamp_exit("watchdog")
     with contextlib.suppress(Exception):
-        from gateway.status import write_runtime_status
+        from hermes_agent.gateway.status import write_runtime_status
         # Only the supervisor-restart code asserts a restart; other codes leave the recorded
         # operator intent (a restart-drain that wedged is still a requested restart) untouched.
         restart = {"restart_requested": True} if exit_code == GATEWAY_SERVICE_RESTART_EXIT_CODE else {}
@@ -219,7 +219,7 @@ def write_loop_heartbeat(
     if start_time is not None:
         payload["start_time"] = float(start_time)
     with contextlib.suppress(Exception):  # after an unclean death this is the last memory record
-        from gateway.lifecycle_ledger import sample_memory
+        from hermes_agent.gateway.lifecycle_ledger import sample_memory
         if mem := sample_memory():
             payload["mem"] = mem
     if extra:
@@ -298,7 +298,7 @@ def arm_shutdown_watchdog(
             # Mirror _exit_after_graceful_shutdown: release PID file + runtime lock BEFORE the log drain
             # (locks must never be stranded), then drain the async log queue so the logger.critical above
             # actually reaches the file before os._exit bypasses atexit. (#66892)
-            from gateway.status import remove_pid_file, release_gateway_runtime_lock
+            from hermes_agent.gateway.status import remove_pid_file, release_gateway_runtime_lock
             remove_pid_file()
             release_gateway_runtime_lock()
         with contextlib.suppress(Exception):
@@ -358,7 +358,7 @@ async def loop_heartbeat_forever(
     # The witness exposes only a scheduling ping, not control/auth operations. Reuse its
     # loopback transport when AF_UNIX is unavailable or the encoded address will not fit;
     # consumers already discover this port in the heartbeat, independent of their TMPDIR.
-    from gateway.control_socket import _fits_sun_path
+    from hermes_agent.gateway.control_socket import _fits_sun_path
     tick_server = tick_socket_path = tick_tcp_port = None
     try:
         unix_path = get_loop_tick_socket_path(home) if os.name == "posix" else None

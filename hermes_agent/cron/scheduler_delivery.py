@@ -16,7 +16,7 @@ import threading
 from dataclasses import dataclass
 from typing import Any, List, Optional
 
-from gateway.inbound_reply_context import record_cron_delivery, recording_cron_delivery
+from hermes_agent.gateway.inbound_reply_context import record_cron_delivery, recording_cron_delivery
 
 
 # Log-record parity with the origin module.
@@ -206,7 +206,7 @@ def _maybe_mirror_cron_delivery(
     if not text:
         return
     try:
-        from gateway.mirror import mirror_to_session
+        from hermes_agent.gateway.mirror import mirror_to_session
         # USER role + labelled prefix, NOT assistant: an assistant-role mirror lands
         # assistant→assistant and breaks strict alternation; consecutive user turns merge safely.
         # The brief is not the agent speaking; an assistant-role mirror lands as assistant→assistant after
@@ -271,9 +271,9 @@ def _seed_cron_session(
     """Create the session row (so the mirror has a target) and mirror the brief as a USER turn.
     The seeded key must equal the reply's ``build_session_key``: chat_type, user_id, thread_id and
     scope_id (Slack team id) are all part of it, so callers pass exactly what the reply carries."""
-    from gateway.config import Platform
-    from gateway.session import SessionSource
-    from gateway.mirror import mirror_to_session
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session import SessionSource
+    from hermes_agent.gateway.mirror import mirror_to_session
     seeded_session_id: Optional[str] = None
     session_store = getattr(adapter, "_session_store", None)
     if session_store is not None:
@@ -396,7 +396,7 @@ def _plugin_cron_env_var(platform_name: str) -> str:
     with contextlib.suppress(Exception):
         from hermes_cli.plugins import discover_plugins
         discover_plugins()  # idempotent
-        from gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.platform_registry import platform_registry
         entry = platform_registry.get(platform_name.lower())
         if entry and entry.cron_deliver_env_var:
             return entry.cron_deliver_env_var
@@ -419,7 +419,7 @@ def _get_config_home_channel(platform_name: str):
     The ``<PLATFORM>_HOME_CHANNEL`` env var is only a best-effort mirror; relay-fronted platforms
     may exist solely in config.yaml, so reading only the env mirror would drop their delivery."""
     try:
-        from gateway.config import load_gateway_config, Platform
+        from hermes_agent.gateway.config import load_gateway_config, Platform
         return load_gateway_config().get_home_channel(Platform(platform_name.lower()))
     except Exception:
         logger.debug(
@@ -504,7 +504,7 @@ def _iter_home_target_platforms():
     with contextlib.suppress(Exception):
         from hermes_cli.plugins import discover_plugins
         discover_plugins()  # idempotent
-        from gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.platform_registry import platform_registry
         named = [e.name for e in platform_registry.plugin_entries() if e.cron_deliver_env_var]
         yield from (n for n in _HOME_TARGET_PRIORITY if n in named)
         yield from (n for n in named if n not in _HOME_TARGET_PRIORITY)  # registry order, as before
@@ -517,7 +517,7 @@ def _relay_fronted_delivery_platforms(connected: set) -> set:
     if "relay" not in connected:
         return set()
     try:
-        from gateway.relay import relay_fronted_platforms
+        from hermes_agent.gateway.relay import relay_fronted_platforms
         return relay_fronted_platforms()
     except Exception:
         logger.debug("relay fronted-platform lookup failed", exc_info=True)
@@ -531,7 +531,7 @@ def cron_delivery_targets() -> list[dict]:
     prepend the implicit ``local`` option themselves."""
     targets: list[dict] = []
     try:
-        from gateway.config import load_gateway_config
+        from hermes_agent.gateway.config import load_gateway_config
         connected = {p.value for p in load_gateway_config().get_connected_platforms()}
         connected |= _relay_fronted_delivery_platforms(connected)
     except Exception:
@@ -738,7 +738,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *,
     try:
         source_home = get_hermes_home().resolve()
         home = (get_profile_dir(profile) if profile else source_home).resolve()
-        from gateway.warning_notifications import warning_notifications_enabled
+        from hermes_agent.gateway.warning_notifications import warning_notifications_enabled
         from hermes_cli.config_effective import load_user_config_effective
         suppress_notification = for_failure and not warning_notifications_enabled(
             BOT_CHAT_POLICY_PLATFORM, load_user_config_effective(home / "config.yaml"))
@@ -1095,7 +1095,7 @@ def _resolve_target_transport(
     """Resolve ``(transport, pconfig, runtime_adapter, target_adapters)`` for one target, or
     ``(None, error)`` when it cannot be served (relay-fronted with no live transport, or not
     configured/enabled)."""
-    from gateway.delivery import DeliveryTransport, resolve_delivery_transport
+    from hermes_agent.gateway.delivery import DeliveryTransport, resolve_delivery_transport
     target_adapters = adapters
     transport = None
     if isinstance(adapters, _preflight.SharedRouteAdapters):
@@ -1110,7 +1110,7 @@ def _resolve_target_transport(
             # neither its absence nor ``enabled: false`` may veto the shared transport; only its
             # non-credential settings (continuable surface, reply mode) are kept (#89302, #103701).
             from dataclasses import replace
-            from gateway.config import PlatformConfig
+            from hermes_agent.gateway.config import PlatformConfig
             own = config.platforms.get(platform)
             transport = DeliveryTransport(
                 shared, replace(own, enabled=True) if own is not None else PlatformConfig(enabled=True),
@@ -1123,7 +1123,7 @@ def _resolve_target_transport(
     else:
         # Relay-fronted platforms have NO standalone fallback (the connector owns the credential),
         # so surface that instead of the native configured/enabled gate, which misdiagnoses them.
-        from gateway.relay import relay_fronted_platforms
+        from hermes_agent.gateway.relay import relay_fronted_platforms
         if platform_name in relay_fronted_platforms():
             return None, (
                 f"platform '{platform_name}' is relay-fronted and has no "
@@ -1140,7 +1140,7 @@ def _resolve_target_transport(
         # ``platforms.<p>`` block is the same shape — the owning process already authorized the
         # adapter; "no config" is not "disabled" (#89302).
         if pconfig is None:
-            from gateway.config import PlatformConfig
+            from hermes_agent.gateway.config import PlatformConfig
             pconfig = PlatformConfig(enabled=True)
     elif not pconfig or not pconfig.enabled:
         return None, f"platform '{platform_name}' not configured/enabled"
@@ -1163,8 +1163,8 @@ def _inchannel_surface_supported(runtime_adapter, platform_name: str) -> bool:
 
 def _named_dm_topic(t: _TargetDelivery) -> Optional[str]:
     """The topic NAME of a ``telegram:<positive chat id>:<topic name>`` target, else None."""
-    from gateway.config import Platform
-    from gateway.delivery import _looks_like_int, looks_like_telegram_private_chat_id
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.delivery import _looks_like_int, looks_like_telegram_private_chat_id
     if (t.platform == Platform.TELEGRAM and t.thread_id is not None
             and looks_like_telegram_private_chat_id(str(t.chat_id)) and not _looks_like_int(str(t.thread_id))):
         return str(t.thread_id)
@@ -1176,8 +1176,8 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
     and media agree. ``telegram:<positive_chat_id>:<numeric_thread_id>`` is ambiguous (private
     forum topic vs channel DM topic need OPPOSITE routing) — see ``_is_channel_dm_topic``.
     ``thread_id`` rides in ``route_metadata`` to bypass the router's private-chat anchor rule."""
-    from gateway.config import Platform
-    from gateway.delivery import _looks_like_int, looks_like_telegram_private_chat_id
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.delivery import _looks_like_int, looks_like_telegram_private_chat_id
     job = t.job
     thread_id = t.thread_id
     is_ambiguous_telegram_topic = (
@@ -1199,7 +1199,7 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
     else:
         # Forum-style topic or non-topic target: message_thread_id.
         # Put thread_id in *route_metadata* (not just the DeliveryTarget) deliberately — the
-        # DeliveryRouter's private-chat topic detection (gateway/delivery.py) demands a reply anchor when
+        # DeliveryRouter's private-chat topic detection (hermes_agent/gateway/delivery.py) demands a reply anchor when
         # thread_id is absent from metadata; cron deliveries have no inbound reply anchor, so the metadata
         # key bypasses that check and lets the adapter route via a plain message_thread_id. See #52060.
         route_thread_id = str(thread_id) if thread_id is not None else None
@@ -1229,7 +1229,7 @@ def _live_send_text(
     """Schedule the text send on the gateway loop; returns ``(adapter_ok, timed_out, message_id)``.
     Re-raises a real send error so the caller falls through to standalone."""
     from agent.async_utils import safe_schedule_threadsafe
-    from gateway.delivery import DeliveryRouter, DeliveryTarget, PartialDeliveryError
+    from hermes_agent.gateway.delivery import DeliveryRouter, DeliveryTarget, PartialDeliveryError
     job = t.job
     router = DeliveryRouter(t.config, t.target_adapters)
     route_target = DeliveryTarget(
@@ -1337,7 +1337,7 @@ def _resolve_named_dm_topic(t: _TargetDelivery, topic_name: str, metadata: dict,
     adapter, so after a text send this is the id that send used), writing it to ``t.thread_id``
     (mirroring/seeding key on the numeric id) and ``metadata``. False = media dropped, never General."""
     from agent.async_utils import safe_schedule_threadsafe
-    from gateway.delivery import _ensure_named_dm_topic
+    from hermes_agent.gateway.delivery import _ensure_named_dm_topic
     future = safe_schedule_threadsafe(
         _ensure_named_dm_topic(t.runtime_adapter, str(t.chat_id), topic_name, refresh=refresh), t.loop)
     try:
@@ -1513,7 +1513,7 @@ def _deliver_standalone(
         logger.error("Job '%s': %s", job["id"], err)
         # A sender's failure dict may follow a delivered (or partly delivered) payload: only the
         # contract's NONE (``gateway.platforms._shared.delivery_state``) makes a replay safe.
-        from gateway.platforms._shared import NONE, PARTIAL, delivery_state
+        from hermes_agent.gateway.platforms._shared import NONE, PARTIAL, delivery_state
         state = delivery_state(result)
         t.standalone_in_flight = t.standalone_in_flight or state != NONE
         partial = state == PARTIAL
@@ -1559,7 +1559,7 @@ def _prepare_target_delivery(
 ) -> Optional[_TargetDelivery]:
     """Per-target prologue of ``_deliver_result``: origin/mirror/in_channel gates, transport
     resolution, continuable-thread open. None (error noted in ``delivery_errors``) if unservable."""
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     platform_name = target["platform"]
     chat_id = target["chat_id"]
     thread_id = target.get("thread_id")
@@ -1719,7 +1719,7 @@ def _deliver_result(
         job["last_delivery_queued"] = refreshed.get("last_delivery_queued")
         return error
 
-    from gateway.config import load_gateway_config
+    from hermes_agent.gateway.config import load_gateway_config
 
     # Wrap with header/footer unless cron.wrap_response: false.
     wrap_response = True
@@ -1745,10 +1745,10 @@ def _deliver_result(
     else:
         delivery_content = content
 
-    from gateway.platforms.base import BasePlatformAdapter
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter
     # Bridge media-policy config into the env vars the path validator reads. The gateway does this
     # at boot; standalone runs (`hermes cron run`) did not, silently dropping files. Idempotent.
-    from gateway.media_policy import apply_media_policy_env
+    from hermes_agent.gateway.media_policy import apply_media_policy_env
     apply_media_policy_env(user_cfg)
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
     # Redact at this single chokepoint, BEFORE the live-adapter / standalone send lanes below.
@@ -1793,7 +1793,7 @@ def _deliver_result(
     for target in targets:
         # A failure notice for a platform that hides warning notifications is a suppressed
         # disposition, not a send; requested (non-failure) results are never gated.
-        from gateway.warning_notifications import warning_notifications_enabled
+        from hermes_agent.gateway.warning_notifications import warning_notifications_enabled
         if (for_failure and target["platform"] != BOT_CHAT_PLATFORM
                 and not warning_notifications_enabled(target["platform"], user_cfg)):
             suppressed_targets += 1
@@ -1819,7 +1819,7 @@ def _deliver_result(
             reached += not room_error
             continue
         if target["platform"] == "local":
-            from gateway.session_cron import deliver_to_local_chat
+            from hermes_agent.gateway.session_cron import deliver_to_local_chat
             from hermes_constants import get_hermes_home
             local_error = deliver_to_local_chat(get_hermes_home(), target["chat_id"],
                                                 cleaned_delivery_content, diagnostic=for_failure)

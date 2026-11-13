@@ -47,8 +47,8 @@ def _connection(authority, subject):
 
 @pytest.mark.asyncio
 async def test_worker_adopts_an_automation_admission_as_the_owner_user(reserved):
-    from gateway.session_worker import worker_request
-    from gateway.session_worker_reservation import owner_worker_subject, reserve_admission_worker
+    from hermes_agent.gateway.session_worker import worker_request
+    from hermes_agent.gateway.session_worker_reservation import owner_worker_subject, reserve_admission_worker
     authority, admitted, process = reserved
     scope = reserve_admission_worker(authority, admission_id=admitted['admission_id'], process=process,
                                      principal_id=AUTOMATION, hello=_hello(process),
@@ -60,8 +60,8 @@ async def test_worker_adopts_an_automation_admission_as_the_owner_user(reserved)
 
 @pytest.mark.asyncio
 async def test_the_claim_still_refuses_any_other_subject(reserved):
-    from gateway.session_worker import worker_request
-    from gateway.session_worker_reservation import owner_worker_subject, reserve_admission_worker
+    from hermes_agent.gateway.session_worker import worker_request
+    from hermes_agent.gateway.session_worker_reservation import owner_worker_subject, reserve_admission_worker
     authority, admitted, process = reserved
     scope = reserve_admission_worker(authority, admission_id=admitted['admission_id'], process=process,
                                      principal_id=AUTOMATION, hello=_hello(process),

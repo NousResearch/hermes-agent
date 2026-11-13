@@ -3,7 +3,7 @@ import asyncio
 
 import pytest
 
-from gateway.session_contract import Submission
+from hermes_agent.gateway.session_contract import Submission
 from hermes_agent.hermes_state_runtime import RuntimeStoreError, get_session_admission
 from tests.gateway.test_session_authority_cancel_settlement import _authority, ACTOR, REF
 
@@ -11,7 +11,7 @@ from tests.gateway.test_session_authority_cancel_settlement import _authority, A
 @pytest.mark.asyncio
 @pytest.mark.parametrize('retry_recovery_write', [False, True])
 async def test_failed_commit_retains_result_and_releases_fifo_for_explicit_discard(tmp_path, monkeypatch, retry_recovery_write):
-    from gateway import session_results
+    from hermes_agent.gateway import session_results
     db, authority = _authority(tmp_path, monkeypatch)
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
     calls = []
@@ -22,9 +22,9 @@ async def test_failed_commit_retains_result_and_releases_fifo_for_explicit_disca
         owner.pending_results[row['admission_id']] = {
             'result': {'final_response': row['request_id'] + ' done', 'completed': True}, 'usage': {}}
         return row['request_id'] + ' done'
-    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    monkeypatch.setattr('hermes_agent.gateway.session_finite.execute_finite_admission', execute)
     original = session_results.finish_result
-    from gateway import session_settlement_recovery as recovery
+    from hermes_agent.gateway import session_settlement_recovery as recovery
     # Settlement retries a transient failure a bounded number of times; storage that stays down
     # across every attempt is what leaves the claim as recoverable uncertainty.
     monkeypatch.setattr(recovery, '_SETTLE_RETRY_DELAYS_S', (0.01, 0.01), raising=False)
@@ -32,7 +32,7 @@ async def test_failed_commit_retains_result_and_releases_fifo_for_explicit_disca
         raise OSError('settlement storage unavailable')
     monkeypatch.setattr(session_results, 'finish_result', unavailable)
     if retry_recovery_write:
-        from gateway import session_settlement_recovery
+        from hermes_agent.gateway import session_settlement_recovery
         mark = session_settlement_recovery._mark_unknown
         def unavailable_once(*args):
             monkeypatch.setattr(session_settlement_recovery, '_mark_unknown', mark)
@@ -56,7 +56,7 @@ async def test_failed_commit_retains_result_and_releases_fifo_for_explicit_disca
         assert head.admission_id not in authority.pending_results
         # The answer was produced in this owner; only its receipt write failed. Resolution
         # commits that exact result instead of discarding it, and viewers get its completion.
-        from gateway.session_results import admission_result
+        from hermes_agent.gateway.session_results import admission_result
         resolved = get_session_admission(db, admission_id=head.admission_id)
         assert (resolved['status'], resolved['outcome']) == ('terminal', 'completed')
         assert admission_result(db, head.admission_id)['result']['final_response'] == 'head done'
@@ -69,7 +69,7 @@ async def test_failed_commit_retains_result_and_releases_fifo_for_explicit_disca
 
 @pytest.mark.asyncio
 async def test_commit_then_error_publishes_the_exact_committed_result(tmp_path, monkeypatch):
-    from gateway import session_results
+    from hermes_agent.gateway import session_results
     db, authority = _authority(tmp_path, monkeypatch)
     frames = []
     authority.sessions['s'].event_stream.observers.add(frames.append)
@@ -77,7 +77,7 @@ async def test_commit_then_error_publishes_the_exact_committed_result(tmp_path, 
         owner.pending_results[row['admission_id']] = {
             'result': {'final_response': 'done', 'completed': True, 'response_reused': True}, 'usage': {}}
         return 'done'
-    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    monkeypatch.setattr('hermes_agent.gateway.session_finite.execute_finite_admission', execute)
     original = session_results.finish_result
     def fail_after_commit(*args, **kwargs):
         monkeypatch.setattr(session_results, 'finish_result', original)
@@ -98,8 +98,8 @@ async def test_commit_then_error_publishes_the_exact_committed_result(tmp_path, 
 async def test_transient_settlement_failure_commits_the_completed_result(tmp_path, monkeypatch):
     """One locked/full write must not turn a finished answer into an ``unknown`` turn whose result
     lives only in memory: settlement retries, commits the exact result once, and the FIFO moves on."""
-    from gateway import session_results
-    from gateway import session_settlement_recovery as recovery
+    from hermes_agent.gateway import session_results
+    from hermes_agent.gateway import session_settlement_recovery as recovery
     db, authority = _authority(tmp_path, monkeypatch)
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
     monkeypatch.setattr(recovery, '_SETTLE_RETRY_DELAYS_S', (0.01, 0.01), raising=False)
@@ -110,7 +110,7 @@ async def test_transient_settlement_failure_commits_the_completed_result(tmp_pat
         owner.pending_results[row['admission_id']] = {
             'result': {'final_response': row['request_id'] + ' done', 'completed': True}, 'usage': {}}
         return row['request_id'] + ' done'
-    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    monkeypatch.setattr('hermes_agent.gateway.session_finite.execute_finite_admission', execute)
     original = session_results.finish_result
     def fail_once(*args, **kwargs):
         monkeypatch.setattr(session_results, 'finish_result', original)
@@ -137,12 +137,12 @@ async def test_recovered_native_reply_is_sent_only_after_its_outcome_commits(tmp
     """A recovered turn with no live delivery waiter is answered by the drain itself. The platform
     send must follow the terminal commit: if settlement cannot commit, the admission is fenced
     unknown and the user is never told an answer the FIFO lost. Inference runs exactly once."""
-    from gateway import session_ingress, session_results
-    from gateway import session_settlement_recovery as recovery
-    from gateway.config import Platform
-    from gateway.session import SessionSource
-    from gateway.session_authority import LiveSession
-    from gateway.session_contract import SessionActor, SessionRef
+    from hermes_agent.gateway import session_ingress, session_results
+    from hermes_agent.gateway import session_settlement_recovery as recovery
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session import SessionSource
+    from hermes_agent.gateway.session_authority import LiveSession
+    from hermes_agent.gateway.session_contract import SessionActor, SessionRef
     from tests.gateway.test_prompt_attachments import _authority as _store_authority
 
     calls, sent = [], []

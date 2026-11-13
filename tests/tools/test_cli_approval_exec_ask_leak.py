@@ -1,7 +1,7 @@
 """Regression: interactive CLI must not lose the Dangerous Command panel.
 
 When ``HERMES_EXEC_ASK`` leaks into a classic CLI process (historically via
-``import gateway.run`` setting the flag at module import), the ask/gateway
+``import hermes_agent.gateway.run`` setting the flag at module import), the ask/gateway
 branch used to return ``pending_approval`` immediately with no notify
 listener and skip the CLI approval callback. Users saw tools "auto-block"
 with no Approve/Deny UI.
@@ -232,7 +232,7 @@ os.environ.pop("HERMES_EXEC_ASK", None)
 sys.path.insert(0, {str(REPO_ROOT)!r})
 # Avoid starting the gateway; only import the module for _gateway_runner_ref
 # style side imports.
-import gateway.run  # noqa: F401
+import hermes_agent.gateway.run  # noqa: F401
 print("EXEC_ASK=" + repr(os.environ.get("HERMES_EXEC_ASK")))
 """
         hermes_home = tmp_path / "import-test-home"

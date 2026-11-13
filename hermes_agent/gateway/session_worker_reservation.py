@@ -7,8 +7,8 @@ import os
 import secrets
 import subprocess
 
-from gateway.session_admission import admission_fingerprint
-from gateway.owner_identity import same_owner
+from hermes_agent.gateway.session_admission import admission_fingerprint
+from hermes_agent.gateway.owner_identity import same_owner
 from hermes_agent.hermes_state_runtime import RuntimeStoreError, _admission, _epoch, _secret_digest, _session
 
 # A venv launcher (uv's Windows python.exe, pip's exe shim) sits between the owner's
@@ -55,7 +55,7 @@ def owner_worker_subject():
     """The subject a managed worker's adoption ticket carries: the owner's own OS identity. The
     control channel mints a worker ticket only for a same-user peer (``uid:<n>`` / ``sid:<sid>``)."""
     if os.name == 'nt':
-        from gateway.runtime_bootstrap_windows import _process_sid
+        from hermes_agent.gateway.runtime_bootstrap_windows import _process_sid
         return 'sid:' + _process_sid(os.getpid())
     return f'uid:{os.getuid()}'  # windows-footgun: ok — POSIX branch
 

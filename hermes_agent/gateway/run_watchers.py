@@ -1,7 +1,7 @@
 """Session housekeeping / stall / catalog-refresh watcher loops, bound onto ``GatewayRunner`` via the MRO.
 
-``gateway.run`` internals are imported lazily inside method bodies (import cycle), so
-``patch("gateway.run.X")`` keeps intercepting them at call time.
+``hermes_agent.gateway.run`` internals are imported lazily inside method bodies (import cycle), so
+``patch("hermes_agent.gateway.run.X")`` keeps intercepting them at call time.
 """
 
 from __future__ import annotations
@@ -13,8 +13,8 @@ import time
 from collections import Counter
 from typing import Any, Dict, Optional
 
-from gateway.run_auto_resume import GatewayAutoResumeMixin
-from gateway.session_stall import (
+from hermes_agent.gateway.run_auto_resume import GatewayAutoResumeMixin
+from hermes_agent.gateway.session_stall import (
     format_session_stall_notification,
     resolve_session_idle_seconds_from_activity,
     should_clear_session_stall_notification,
@@ -22,7 +22,7 @@ from gateway.session_stall import (
 )
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 _SESSION_STORE_PRUNE_INTERVAL = 3600.0  # once per hour
 
@@ -78,7 +78,7 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
 
     def _session_stall_timeout_seconds(self) -> float:
         """Return configured stall timeout (seconds); 0 disables the watchdog."""
-        from gateway.run import _float_env
+        from hermes_agent.gateway.run import _float_env
         return _float_env("HERMES_SESSION_STALL_TIMEOUT", 300)
 
     def _session_activity_for_stall(self, session_key: str) -> Optional[dict]:
@@ -86,7 +86,7 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
 
         See #72039.
         """
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from hermes_agent.gateway.run import _AGENT_PENDING_SENTINEL
         agent = (getattr(self, "_running_agents", None) or {}).get(session_key)
         if agent is None or agent is _AGENT_PENDING_SENTINEL:
             return None
@@ -150,7 +150,7 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
                                     notified_map: dict) -> bool:
         """Log one stall episode and deliver the notice. True only when sent (latched);
         undeliverable (no chat_id) latches without sending; send failures never latch."""
-        from gateway.run import _STALL_NOTIFY_SEND_TIMEOUT_SECONDS
+        from hermes_agent.gateway.run import _STALL_NOTIFY_SEND_TIMEOUT_SECONDS
         logger.warning(
             "Session stall detected: session=%s idle=%.0fs (timeout=%.0fs, ~%d min); pending "
             "inbound present | last_activity=%s | provenance=%s (agent.session_stall_timeout)",
@@ -181,8 +181,8 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
                         "fresh_idle=%s", session_key, still_pending, fresh_idle)
             notified_map.pop(session_key, None)  # re-arm so a FUTURE genuine stall notifies again
             return False
-        from gateway.warning_notifications import present_notification
-        from gateway.run import _async_profile_runtime_scope
+        from hermes_agent.gateway.warning_notifications import present_notification
+        from hermes_agent.gateway.run import _async_profile_runtime_scope
         try:
             metadata = self._thread_metadata_for_source(source)
             notice = format_session_stall_notification(idle_seconds)

@@ -3,7 +3,7 @@
 
 def test_gateway_checkpoint_config_reaches_real_agent(tmp_path, monkeypatch):
     """Raw gateway YAML must configure the real agent checkpoint manager."""
-    from gateway import run as gateway_run
+    from hermes_agent.gateway import run as gateway_run
     from run_agent import AIAgent
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

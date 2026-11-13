@@ -23,8 +23,8 @@ import logging
 import re
 from typing import Any, Optional, Sequence
 
-from gateway.platforms.base import SendResult
-from gateway.platforms.helpers import TABLE_SEPARATOR_RE
+from hermes_agent.gateway.platforms.base import SendResult
+from hermes_agent.gateway.platforms.helpers import TABLE_SEPARATOR_RE
 from plugins.platforms.telegram.rich_markdown import closes_fence, fence_opener
 
 logger = logging.getLogger(__name__)
@@ -412,7 +412,7 @@ def _fitting_parts(adapter: Any, content: str) -> Optional[list[str]]:
 
 def _legacy_chunks(adapter: Any, text: str) -> list[str]:
     """*text* as the MarkdownV2 chunks ``send()``'s legacy path sends."""
-    from gateway.platforms.base import utf16_len
+    from hermes_agent.gateway.platforms.base import utf16_len
     from plugins.platforms.telegram.adapter import _separate_chunk_indicator_from_fence
     chunks = adapter.truncate_message(adapter.format_message(text), adapter.MAX_MESSAGE_LENGTH, len_fn=utf16_len)
     if len(chunks) > 1:
@@ -433,7 +433,7 @@ async def _send_legacy_tail(
     delivered = tuple(str(r.message_id) for r in sent if r.message_id is not None)
     chunks = tuple(_legacy_chunks(adapter, _BLOCK_SEPARATOR.join(rest)))
     if whole is not None:  # recount: the landed parts plus this tail may pass the reply's message cap
-        from gateway.platforms.helpers import hand_off_split
+        from hermes_agent.gateway.platforms.helpers import hand_off_split
         if as_file := await hand_off_split(adapter, chat_id, whole, len(chunks), delivered, metadata=metadata):
             return as_file
     pending = SendResult(success=False, raw_response={

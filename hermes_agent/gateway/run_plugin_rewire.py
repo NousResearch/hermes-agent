@@ -62,7 +62,7 @@ class GatewayPluginRewireMixin:
             adapters = dict((getattr(self, "_profile_adapters", None) or {}).get(profile_name) or {})
         if not adapters:
             return 0
-        from gateway.run import _profile_runtime_scope
+        from hermes_agent.gateway.run import _profile_runtime_scope
         scope = (_profile_runtime_scope(profile_home, hydrate_secrets=False)
                  if profile_home is not None else contextlib.nullcontext())
         count = 0
@@ -91,7 +91,7 @@ def reload_plugins_verb(runner: Any, loop: asyncio.AbstractEventLoop) -> Callabl
         from hermes_constants import get_hermes_home, hermes_home_key
         from hermes_cli.plugins import discover_plugins, get_plugin_manager
         from hermes_cli.plugins_activation import activation_summaries, dependency_blocked_summaries
-        from gateway.run import _profile_runtime_scope
+        from hermes_agent.gateway.run import _profile_runtime_scope
         params = params or {}
         gateway_home = Path(get_hermes_home())
         requested = Path(str(params.get("home") or gateway_home)).expanduser()
@@ -135,8 +135,8 @@ def _reconcile_plugin_mcp_servers(runner: Any, home: Path) -> None:
     this, the housekeeping reconcile connected them up to a minute later, and every session started in
     that window came up without the plugin's tools. Runs under the same profile scope that chore binds,
     on its own thread so a slow server delays the answer by at most ``_MCP_CONNECT_WAIT_S``."""
-    from gateway.run import _profile_runtime_scope
-    from gateway.run_turn import GatewayTurnMixin
+    from hermes_agent.gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run_turn import GatewayTurnMixin
 
     multiplex = bool(getattr(getattr(runner, "config", None), "multiplex_profiles", False))
 

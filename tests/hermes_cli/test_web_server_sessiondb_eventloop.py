@@ -120,9 +120,9 @@ def test_session_rename_runs_writer_open_and_update_off_event_loop(monkeypatch, 
     authority's SQLite transaction runs off the event loop thread."""
     from types import SimpleNamespace
 
-    import gateway.session_mutations as _mutations
-    from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import SessionActor
+    import hermes_agent.gateway.session_mutations as _mutations
+    from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_agent.gateway.session_contract import SessionActor
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 

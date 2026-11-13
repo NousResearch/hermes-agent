@@ -465,7 +465,7 @@ def setup_agent_settings(config: dict):
     if max_iter is None:
         print_warning("Invalid number, keeping current value")
     elif max_iter > 0:
-        # config.yaml only; gateway/run.py derives HERMES_MAX_ITERATIONS from agent.max_turns.
+        # config.yaml only; hermes_agent/gateway/run.py derives HERMES_MAX_ITERATIONS from agent.max_turns.
         config.setdefault("agent", {})["max_turns"] = max_iter
         config.pop("max_turns", None)
         remove_env_value("HERMES_MAX_ITERATIONS")

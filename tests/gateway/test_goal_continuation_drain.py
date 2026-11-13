@@ -21,10 +21,10 @@ import asyncio
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource, build_session_key
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.session import SessionSource, build_session_key
 
 
 class _DrainProbeAdapter(BasePlatformAdapter):
@@ -156,15 +156,15 @@ async def test_runner_goal_hook_enqueues_into_the_key_the_adapter_drains(hermes_
     from datetime import datetime
     import uuid
 
-    from gateway.run import GatewayRunner
-    from gateway.session import SessionEntry
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import SessionEntry
     from hermes_cli.goals import GoalManager
 
     src = _slack_thread_source()
     adapter_key = build_session_key(src)
 
     runner = object.__new__(GatewayRunner)
-    from gateway.config import GatewayConfig
+    from hermes_agent.gateway.config import GatewayConfig
 
     runner.config = GatewayConfig(
         platforms={Platform.SLACK: PlatformConfig(enabled=True, token="x")},

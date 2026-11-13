@@ -2,7 +2,7 @@
 
 from typing import Callable, Optional
 
-from gateway.platforms.helpers import (
+from hermes_agent.gateway.platforms.helpers import (
     fence_state_after, table_header_to_repeat, table_rollback_point, table_row_start)
 
 
@@ -42,7 +42,7 @@ def chunk_markdown_message(content: str, max_length: int = 4096,
     chunk; splits retreat out of inline code spans and Markdown links; a pipe table moves whole
     to the next chunk when it fits, else splits between rows and repeats its header. Multi-chunk
     output gets ``(1/3)`` indicators."""
-    from gateway.platforms.base import _custom_unit_to_cp  # base imports this module lazily
+    from hermes_agent.gateway.platforms.base import _custom_unit_to_cp  # base imports this module lazily
     _len = len_fn or len
     if _len(content) <= max_length:
         return [content]

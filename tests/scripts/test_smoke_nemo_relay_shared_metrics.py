@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway import status
+from hermes_agent.gateway import status
 from hermes_cli.observability import shared_metrics_contract as contract
 from hermes_cli.observability.shared_metrics import SharedMetricsStore
 from hermes_cli.observability.shared_metrics_update import update_receipt_fields

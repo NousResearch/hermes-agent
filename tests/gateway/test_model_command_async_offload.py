@@ -7,10 +7,10 @@ import threading
 
 import pytest
 
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource
 
 
 # --------------------------------------------------------------------------- #
@@ -38,7 +38,7 @@ def _make_event():
 def _isolated_config(tmp_path, monkeypatch):
     """Point the handler at an empty isolated home so config loading is cheap
     and deterministic (no real provider creds / network)."""
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()

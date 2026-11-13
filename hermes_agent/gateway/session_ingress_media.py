@@ -102,7 +102,7 @@ def native_inputs_store():
     """The store's path as the profile names it, unresolved. The one value ``make_user_dir`` gets:
     ``resolve()`` erases a link planted below the Hermes home (``cache/documents`` -> elsewhere),
     and an elevated grant on the resolved path would land outside the home with no home fence."""
-    from gateway.platforms.base import get_document_cache_dir
+    from hermes_agent.gateway.platforms.base import get_document_cache_dir
     return get_document_cache_dir() / 'native-inputs'
 
 
@@ -149,7 +149,7 @@ def admit_attachments(attachments, *, admitted=None):
                    or not isinstance(item['path'], str) or item['mime'] not in _ATTACHMENT_MIMES
                    for item in attachments)):
         raise RuntimeStoreError('invalid_params')
-    from gateway.platforms.base import get_image_cache_dir
+    from hermes_agent.gateway.platforms.base import get_image_cache_dir
     staging = get_image_cache_dir().resolve()
     paths = [Path(item['path']) for item in attachments]
     if any(not path.is_absolute() or path.resolve().parent != staging for path in paths):
@@ -272,7 +272,7 @@ def _open_regular(path):
 
 
 def capture_native_media(paths):
-    from gateway.platforms.base import get_inbound_media_max_bytes, validate_inbound_media_size
+    from hermes_agent.gateway.platforms.base import get_inbound_media_max_bytes, validate_inbound_media_size
     references = []
     limit = max(0, get_inbound_media_max_bytes())
     # ``gateway.max_inbound_media_bytes`` bounds the whole admission, not each file: with
@@ -310,7 +310,7 @@ def capture_native_media(paths):
 
 
 def _capture_file(path, limit, total, references, staged):
-    from gateway.platforms.base import validate_inbound_media_size
+    from hermes_agent.gateway.platforms.base import validate_inbound_media_size
     try:
         source = _open_regular(path)
     except (OSError, ValueError) as exc:
@@ -346,7 +346,7 @@ def _capture_file(path, limit, total, references, staged):
 
 def validate_media_batch_size(sizes):
     """Preflight validated manifest sizes before materializing any batch member."""
-    from gateway.platforms.base import get_inbound_media_max_bytes, validate_inbound_media_size
+    from hermes_agent.gateway.platforms.base import get_inbound_media_max_bytes, validate_inbound_media_size
     try:
         validate_inbound_media_size(sum(sizes), max_bytes=max(0, get_inbound_media_max_bytes()))
     except ValueError as exc:
@@ -444,7 +444,7 @@ def release_admission_media(db, admission_id):
     api_turn = row['payload'].get('api_turn_v1', {})
     if api_turn.get('media') or isinstance(api_turn.get('history'), list):
         # Settled: inline base64 of committed images and the client history are redundant row weight.
-        from gateway.session_api_media import compact_settled_api_payloads
+        from hermes_agent.gateway.session_api_media import compact_settled_api_payloads
         compact_settled_api_payloads(db, admission_id)
     # Native and hosted inputs are named in the prompt the transcript keeps ("It is saved at: <path>"),
     # so they are history context like an API image: they go once no live row and no transcript row

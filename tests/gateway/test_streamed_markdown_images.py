@@ -13,12 +13,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import Platform
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
-from gateway.stream_consumer import GatewayStreamConsumer
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer
 
 
 def _event():
@@ -100,7 +100,7 @@ async def test_url_image_and_media_file_share_one_batch(tmp_path, monkeypatch):
     media_file.parent.mkdir(parents=True, exist_ok=True)
     media_file.write_bytes(b"media")
     monkeypatch.setattr(
-        "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+        "hermes_agent.gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
         (root,),
     )
     resolved = media_file.resolve()
@@ -156,7 +156,7 @@ async def _stream_frames(deltas):
     import asyncio
     from unittest.mock import MagicMock
 
-    from gateway.stream_consumer import StreamConsumerConfig
+    from hermes_agent.gateway.stream_consumer import StreamConsumerConfig
     from tests.waiting import async_wait_until
 
     adapter = MagicMock()

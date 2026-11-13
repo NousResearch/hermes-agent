@@ -52,7 +52,7 @@ def register(ctx):
 @pytest.mark.platforms("any")  # the host is a child process: its env/home resolution is per-OS
 @pytest.mark.parametrize("isolation", ["host", "in_process"])
 def test_plugin_rpc_and_session_events_in_either_isolation_mode(tmp_path, monkeypatch, isolation):
-    from gateway import run_api
+    from hermes_agent.gateway import run_api
     from hermes_cli.plugins_dispatch import resolve_plugin_command_result
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
@@ -155,9 +155,9 @@ def test_hosted_session_event_is_sent_only_as_the_live_plugin_running_it(tmp_pat
     same host too), get False and publish nothing."""
     from types import SimpleNamespace
 
-    from gateway import run_api
-    from gateway.config import Platform
-    from gateway.session_authorities import SessionAuthorities
+    from hermes_agent.gateway import run_api
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session_authorities import SessionAuthorities
     from hermes_cli.plugins_dispatch import resolve_plugin_command_result
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from tests.gateway.test_session_plugin_rpc import _live

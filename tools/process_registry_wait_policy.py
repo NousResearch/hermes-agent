@@ -37,7 +37,7 @@ _STOP_NOTE = (
 
 def _effective_config() -> dict:
     """The profile's effective user config (managed overlay, ``${VAR}`` expansion): the same reader the
-    completion consumers use (``gateway.run._load_gateway_config``, ``hermes_agent.tui_gateway.server._load_cfg``), so
+    completion consumers use (``hermes_agent.gateway.run._load_gateway_config``, ``hermes_agent.tui_gateway.server._load_cfg``), so
     an admin-managed or env-expanded value decides promotion exactly as it decides delivery."""
     from hermes_cli.config_effective import load_user_config_effective
     return load_user_config_effective()
@@ -77,8 +77,8 @@ def _can_deliver_completion() -> bool:
     Finite turns (non-interactive ``hermes chat -q`` / ``-z``, as ``delegate_task`` decides inline execution) end
     the run when the turn ends, so a promised notice would never arrive."""
     from agent.delegation_context import is_delegated_child_context
-    from gateway.session_context import async_delivery_supported, get_session_env
-    from gateway.session_finite import finite_turn_required
+    from hermes_agent.gateway.session_context import async_delivery_supported, get_session_env
+    from hermes_agent.gateway.session_finite import finite_turn_required
     finite = finite_turn_required()
     if finite is True or (finite is None and get_session_env("HERMES_SINGLE_QUERY_SESSION") == "1"):
         return False
@@ -88,7 +88,7 @@ def _can_deliver_completion() -> bool:
     # gateway also honours the HERMES_BACKGROUND_NOTIFICATIONS override; either one saying off is off.
     from hermes_cli.config import cfg_get
     try:
-        from gateway.platforms._shared import platform_gate_env
+        from hermes_agent.gateway.platforms._shared import platform_gate_env
         modes = (platform_gate_env("HERMES_BACKGROUND_NOTIFICATIONS"),
                  cfg_get(_effective_config(), "display", "background_process_notifications"))
     except Exception:
@@ -103,7 +103,7 @@ def _caller_receives_completion(session) -> bool:
     process stays with its owner) and ``should_surface_notification`` (a subagent-owned process is
     suppressed unless handed off or ``delegation.surface_child_process_notifications`` is on). Fails
     closed: an unbound caller cannot prove ownership of a keyed process."""
-    from gateway.session_context import get_session_env
+    from hermes_agent.gateway.session_context import get_session_env
     from tools.environments.sandbox_scope import producer_fields
     from tools.process_registry import ProcessRegistry
     from tools.process_registry_notifications import should_surface_notification
@@ -136,7 +136,7 @@ def _promote(registry, session) -> None:
     whenever the flag is set. The messaging gateway delivers only through a per-process watcher, so a
     process started silently also needs the chat routing stamped and a watcher armed."""
     from tools.terminal_tool_background import _register_completion_watcher, _stamp_gateway_routing
-    from gateway.session_context import get_session_env
+    from hermes_agent.gateway.session_context import get_session_env
     if not session.watcher_platform:
         _stamp_gateway_routing(session, get_session_env)
     # watcher_interval is set only by _register_completion_watcher: 0 means no watcher yet.

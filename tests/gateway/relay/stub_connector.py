@@ -14,9 +14,9 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from gateway.platforms.event import MessageEvent
-from gateway.relay.descriptor import CapabilityDescriptor
-from gateway.relay.transport import InboundHandler
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.relay.descriptor import CapabilityDescriptor
+from hermes_agent.gateway.relay.transport import InboundHandler
 
 
 class StubConnector:

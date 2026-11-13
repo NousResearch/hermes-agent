@@ -1,6 +1,6 @@
-"""Voice-channel / auto-TTS methods for GatewayRunner (split out of ``gateway/run.py``; bound via
-the MRO). ``gateway.run`` internals are imported lazily inside method bodies (import cycle), so
-``patch("gateway.run.X")`` keeps intercepting them at call time."""
+"""Voice-channel / auto-TTS methods for GatewayRunner (split out of ``hermes_agent/gateway/run.py``; bound via
+the MRO). ``hermes_agent.gateway.run`` internals are imported lazily inside method bodies (import cycle), so
+``patch("hermes_agent.gateway.run.X")`` keeps intercepting them at call time."""
 
 from __future__ import annotations
 
@@ -19,12 +19,12 @@ from types import SimpleNamespace
 from typing import Dict, List, Optional
 
 from agent.i18n import t
-from gateway.config import Platform
-from gateway.platforms.base import build_auto_tts_output_path
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.base import build_auto_tts_output_path
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.session import SessionSource
 
-logger = logging.getLogger("gateway.run")  # log-record parity with the origin module
+logger = logging.getLogger("hermes_agent.gateway.run")  # log-record parity with the origin module
 
 # Adapter-side per-chat auto-TTS override sets (``/voice off`` vs explicit ``/voice on``/``tts``).
 _OFF_SET, _ON_SET = "_auto_tts_disabled_chats", "_auto_tts_enabled_chats"
@@ -351,10 +351,10 @@ class GatewayVoiceMixin:
         source = self._voice_input_source(adapter, guild_id, user_id, text_ch_id)
         # The cached source still carries the previous speaker's identity (per-sender routes,
         # #106019): drop the pin so the seam re-resolves for THIS speaker.
-        from gateway.session_identity import clear_identity
+        from hermes_agent.gateway.session_identity import clear_identity
         clear_identity(source)
         if self._canonicalize(source, transport_profile=getattr(adapter, "_owner_profile", None)) is None:
-            from gateway.parked_route_refusal import drop_rejected_route
+            from hermes_agent.gateway.parked_route_refusal import drop_rejected_route
             drop_rejected_route(adapter, source)  # a parked target is refused in the voice text channel
             return
         # Validate the session owner against the current allowlist before auto-resuming. A session created
@@ -442,7 +442,7 @@ class GatewayVoiceMixin:
         start = next((i for i, m in reversed(list(enumerate(agent_messages)))
                       if m.get("role") == "user"), 0)
         # Resolved through the tool_call bridge: a deferred text_to_speech is recorded under it.
-        from gateway.media_repair import tool_name_by_call_id
+        from hermes_agent.gateway.media_repair import tool_name_by_call_id
         if "text_to_speech" in tool_name_by_call_id(agent_messages[start:]).values():
             return False
         # Dedup: base adapter auto-TTS already handles voice input (play_tts plays in VC when

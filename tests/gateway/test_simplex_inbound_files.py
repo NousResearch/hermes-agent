@@ -5,7 +5,7 @@ only the daemon WebSocket write is stubbed.
 """
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 
 OWNER, STRANGER = 4, 9
 
@@ -24,14 +24,14 @@ def _chat_item(contact_id, *, file_id, file_name, msg_type="file", text="hi"):
 
 @pytest.fixture
 def simplex(tmp_path, monkeypatch):
-    from gateway.pairing import PairingStore
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.pairing import PairingStore
+    from hermes_agent.gateway.run import GatewayRunner
     from plugins.platforms.simplex.adapter import SimplexAdapter
 
     for key in ("GATEWAY_ALLOWED_USERS", "GATEWAY_ALLOW_ALL_USERS", "SIMPLEX_ALLOW_ALL_USERS"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("SIMPLEX_ALLOWED_USERS", str(OWNER))
-    monkeypatch.setattr("gateway.pairing.PAIRING_DIR", tmp_path / "pairing")
+    monkeypatch.setattr("hermes_agent.gateway.pairing.PAIRING_DIR", tmp_path / "pairing")
 
     platform = Platform("simplex")
     adapter = SimplexAdapter(PlatformConfig(enabled=True, extra={"ws_url": "ws://127.0.0.1:1"}))

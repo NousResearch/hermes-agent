@@ -17,9 +17,9 @@ storage and read keys are identical.
 import threading
 from unittest.mock import MagicMock
 
-import gateway.run as gateway_run
-from gateway.config import Platform
-from gateway.session import SessionSource, build_session_key
+import hermes_agent.gateway.run as gateway_run
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.session import SessionSource, build_session_key
 
 
 def _make_runner(recovered_thread_id=None):

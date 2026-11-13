@@ -21,7 +21,7 @@ OLD = {'old': {'command': 'old-mcp'}}
 
 
 def _home(monkeypatch):
-    from gateway import run
+    from hermes_agent.gateway import run
     from hermes_constants import get_hermes_home
     home = get_hermes_home()
     home.mkdir(parents=True, exist_ok=True)
@@ -34,7 +34,7 @@ def _reloadable(authority, monkeypatch):
     """reload.mcp's owner side, with the profile's servers already reconciled."""
     authority.runner.config = SimpleNamespace(multiplex_profiles=False)
     authority.runner._mcp_reload_refresh_cached_agents = lambda multiplex, profile: None
-    monkeypatch.setattr('gateway.session_authorities.served_profile_name', lambda profile_id: 'default')
+    monkeypatch.setattr('hermes_agent.gateway.session_authorities.served_profile_name', lambda profile_id: 'default')
     monkeypatch.setattr('tools.mcp_tool_discovery.reconcile_mcp_servers_with_config',
                         lambda: {'removed': [], 'added': ['fixt'], 'pending': []})
     monkeypatch.setattr('tools.mcp_tool_discovery.mcp_servers_not_connected', list)
@@ -43,10 +43,10 @@ def _reloadable(authority, monkeypatch):
 
 def _worker_frame(authority, sid, monkeypatch):
     """The managed-worker bootstrap a turn admitted now would get."""
-    from gateway import session_managed_worker as smw
-    from gateway.session_contract import SessionRef
-    from gateway.session_policy import policy_for_source
-    monkeypatch.setattr('gateway.session_worker_construct.construct_inputs', lambda *args: {})
+    from hermes_agent.gateway import session_managed_worker as smw
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_policy import policy_for_source
+    monkeypatch.setattr('hermes_agent.gateway.session_worker_construct.construct_inputs', lambda *args: {})
     policy = policy_for_source(authority.runner, authority.sessions[sid].source)
     scope = {'profile_id': authority.profile_id, 'session_id': sid, 'execution_id': 'x', 'generation': 1,
              'pid': os.getpid(), 'birth': 0, 'secret': 's', 'epoch': 1}
@@ -72,7 +72,7 @@ def _generation(store, sid):
 async def test_a_new_mcp_server_reaches_a_session_only_through_a_committed_generation(tmp_path, monkeypatch):
     from hermes_agent.hermes_state_local import local_receipt
     home = _home(monkeypatch)
-    monkeypatch.setattr('gateway.session_policy.launch_key', lambda authority, policy: None)
+    monkeypatch.setattr('hermes_agent.gateway.session_policy.launch_key', lambda authority, policy: None)
     store, authority = await _owner_authority(home)
     _reloadable(authority, monkeypatch)
     owner, later = _connect(authority), _connect(authority)
@@ -90,7 +90,7 @@ async def test_a_new_mcp_server_reaches_a_session_only_through_a_committed_gener
         servers, toolsets = _worker_servers(_worker_frame(authority, sid, monkeypatch), monkeypatch)
         assert {'terminal', 'old', 'fixt'} <= toolsets and 'dormant' not in toolsets
         assert servers['fixt']['command'] == 'fixt-mcp' and servers['fixt']['env'] == {'FIXT_TOKEN': 'sekret'}
-        from gateway.session_policy import policy_for_source
+        from hermes_agent.gateway.session_policy import policy_for_source
         assert 'fixt' in policy_for_source(authority.runner, authority.sessions[sid].source).toolsets  # in process
         assert 'sekret' not in json.dumps(local_receipt(store._db, sid))  # the private value stays private
         # Another session of the profile is not changed implicitly...
@@ -112,7 +112,7 @@ async def test_resume_hands_a_worker_the_definition_of_every_server_it_names(tmp
     """A server added after creation reaches a managed worker with its definition and private values, not
     just its name (discovery filters the bound config's servers by the toolsets)."""
     home = _home(monkeypatch)
-    monkeypatch.setattr('gateway.session_policy.launch_key', lambda authority, policy: None)
+    monkeypatch.setattr('hermes_agent.gateway.session_policy.launch_key', lambda authority, policy: None)
     store, authority = await _owner_authority(home)
     owner, later = _connect(authority), _connect(authority)
     try:
@@ -131,14 +131,14 @@ async def test_resume_hands_a_worker_the_definition_of_every_server_it_names(tmp
 
 @pytest.mark.asyncio
 async def test_reload_never_changes_a_running_or_queued_turns_servers(tmp_path, monkeypatch):
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import SessionRef, Submission
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionRef, Submission
+    from hermes_agent.gateway.session_policy import policy_for_source
     import hermes_agent.hermes_state_runtime as rt
     home = _home(monkeypatch)
-    monkeypatch.setattr('gateway.session_policy.launch_key', lambda authority, policy: None)
+    monkeypatch.setattr('hermes_agent.gateway.session_policy.launch_key', lambda authority, policy: None)
     store = SessionStore(home / 'sessions', GatewayConfig())
     started, release = asyncio.Event(), asyncio.Event()
 
@@ -179,11 +179,11 @@ async def test_an_admission_queued_during_a_reload_commit_keeps_the_old_servers(
     from hermes_agent.hermes_state_local import local_receipt
     from tests.gateway.test_session_resume_config_refresh import admit_during_refresh, hold_refresh_commit
     home = _home(monkeypatch)
-    monkeypatch.setattr('gateway.session_policy.launch_key', lambda authority, policy: None)
+    monkeypatch.setattr('hermes_agent.gateway.session_policy.launch_key', lambda authority, policy: None)
     seen = []
 
     async def handle(event):
-        from gateway.session_policy import policy_for_source
+        from hermes_agent.gateway.session_policy import policy_for_source
         seen.append('fixt' in policy_for_source(authority.runner, event.source).toolsets)
         return 'ok'
     store, authority = await _owner_authority(home)
@@ -217,11 +217,11 @@ async def test_a_rotated_mcp_secret_commits_a_generation_with_the_new_value(tmp_
     """An edit that only rotates a server's ``env`` token leaves the redacted config as it was. The refresh
     compares the private values' fingerprints too: ``reload.mcp`` and a resume (also after an owner restart)
     commit it, and the next turn's worker gets the new token, which never reaches state.db."""
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_authority import initialize_session_authority
     from hermes_agent.hermes_state_local import local_receipt
     home = _home(monkeypatch)
     (home / 'config.yaml').write_text(ADDED)
-    monkeypatch.setattr('gateway.session_policy.launch_key', lambda authority, policy: None)
+    monkeypatch.setattr('hermes_agent.gateway.session_policy.launch_key', lambda authority, policy: None)
     store, authority = await _owner_authority(home)
     _reloadable(authority, monkeypatch)
     owner = _connect(authority)
@@ -265,11 +265,11 @@ async def test_a_server_that_fails_to_start_is_unavailable_on_every_reload(tmp_p
     from tools.mcp_tool_scope import _server_key
     home = _home(monkeypatch)
     (home / 'config.yaml').write_text(CONFIG.replace('mcp_servers: {old: {command: old-mcp}}\n', ''))
-    monkeypatch.setattr('gateway.session_policy.launch_key', lambda authority, policy: None)
+    monkeypatch.setattr('hermes_agent.gateway.session_policy.launch_key', lambda authority, policy: None)
     store, authority = await _owner_authority(home)
     authority.runner.config = SimpleNamespace(multiplex_profiles=False)
     authority.runner._mcp_reload_refresh_cached_agents = lambda multiplex, profile: None
-    monkeypatch.setattr('gateway.session_authorities.served_profile_name', lambda profile_id: 'default')
+    monkeypatch.setattr('hermes_agent.gateway.session_authorities.served_profile_name', lambda profile_id: 'default')
     owner = _connect(authority)
     try:
         sid = (await _call(owner, 'session.create', request_id='p', source='cli', cwd=str(tmp_path)))['session_id']
@@ -297,7 +297,7 @@ async def test_a_server_disabled_after_the_chat_picked_it_stops_on_resume_and_on
     resume (and, for another chat, ``reload.mcp``) commits a generation without it whose definition is the
     disabled one, so neither the session nor a managed worker starts it, and reload does not list it."""
     home = _home(monkeypatch)
-    monkeypatch.setattr('gateway.session_policy.launch_key', lambda authority, policy: None)
+    monkeypatch.setattr('hermes_agent.gateway.session_policy.launch_key', lambda authority, policy: None)
     store, authority = await _owner_authority(home)
     _reloadable(authority, monkeypatch)
     owner, later = _connect(authority), _connect(authority)
@@ -314,7 +314,7 @@ async def test_a_server_disabled_after_the_chat_picked_it_stops_on_resume_and_on
             servers, toolsets = _worker_servers(frame, monkeypatch)
             assert 'terminal' in toolsets and 'old' not in toolsets and 'old' not in servers, (toolsets, servers)
             assert json.loads(frame['policy']['config_json'])['mcp_servers']['old']['enabled'] is False
-            from gateway.session_policy import policy_for_source
+            from hermes_agent.gateway.session_policy import policy_for_source
             assert 'old' not in policy_for_source(authority.runner, authority.sessions[sid].source).toolsets
             assert _generation(store, sid) == generations[sid] + 1
     finally:
@@ -360,10 +360,10 @@ TWO = CONFIG.replace('{old: {command: old-mcp}}', '{old: {command: old-mcp}, oth
 async def test_a_pick_whose_only_server_is_gone_selects_no_server_not_every_enabled_one(tmp_path, monkeypatch):
     """A launch pick that names one server is an allowlist: once config disables or removes that server, a
     resume or ``reload.mcp`` leaves the chat with no MCP server, never with the other enabled ones."""
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_policy import policy_for_source
     home = _home(monkeypatch)
     (home / 'config.yaml').write_text(TWO)
-    monkeypatch.setattr('gateway.session_policy.launch_key', lambda authority, policy: None)
+    monkeypatch.setattr('hermes_agent.gateway.session_policy.launch_key', lambda authority, policy: None)
     store, authority = await _owner_authority(home)
     _reloadable(authority, monkeypatch)
     owner, later = _connect(authority), _connect(authority)
@@ -395,13 +395,13 @@ async def test_a_pick_whose_only_server_is_gone_selects_no_server_not_every_enab
 async def test_a_removed_pick_keeps_later_refreshes_following_config_after_a_restart(tmp_path, monkeypatch):
     """A server config removed stays known as one of the pick's servers: after an owner restart, disabling
     another picked server still reaches the chat (the removed name no longer fails the pick's validation)."""
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_policy import policy_for_source
     from tests.gateway.test_session_resume_config_refresh import _runner
     both = CONFIG.replace('{old: {command: old-mcp}}', '{old: {command: old-mcp}, keep: {command: keep-mcp}}')
     home = _home(monkeypatch)
     (home / 'config.yaml').write_text(both)
-    monkeypatch.setattr('gateway.session_policy.launch_key', lambda authority, policy: None)
+    monkeypatch.setattr('hermes_agent.gateway.session_policy.launch_key', lambda authority, policy: None)
     store, authority = await _owner_authority(home)
     owner = _connect(authority)
     viewer = None
@@ -447,7 +447,7 @@ def test_reload_counts_only_changes_that_took_effect(monkeypatch):
     """reconcile's ``added`` names the servers it ATTEMPTED and ``pending`` unfinished teardowns: neither is an
     applied change. Only a server that registered (live or lazy), a completed removal or a committed session
     generation turns an unavailable server into partial success."""
-    from gateway import session_ancillary
+    from hermes_agent.gateway import session_ancillary
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     refreshed = []
     runner = SimpleNamespace(config=SimpleNamespace(multiplex_profiles=False),
@@ -458,7 +458,7 @@ def test_reload_counts_only_changes_that_took_effect(monkeypatch):
     monkeypatch.setattr('tools.mcp_tool_discovery.reconcile_mcp_servers_with_config', lambda: dict(reconciled))
     monkeypatch.setattr('tools.mcp_tool_discovery.mcp_servers_not_connected', lambda: list(not_connected))
     monkeypatch.setattr('tools.mcp_tool_discovery.mcp_servers_ready', lambda: ['fixt'])
-    monkeypatch.setattr('gateway.session_authorities.served_profile_name', lambda profile_id: 'default')
+    monkeypatch.setattr('hermes_agent.gateway.session_authorities.served_profile_name', lambda profile_id: 'default')
 
     def reload(**outcome):
         reconciled.update({'removed': [], 'added': [], 'pending': [], **outcome})
@@ -499,7 +499,7 @@ async def test_reload_reports_the_servers_the_calling_chat_selects(tmp_path, mon
     """A server connected for the profile is not one this chat runs: ``session_servers`` names the calling
     session's committed selection, so a chat created with ``no_mcp`` reports none of them."""
     home = _home(monkeypatch)
-    monkeypatch.setattr('gateway.session_policy.launch_key', lambda authority, policy: None)
+    monkeypatch.setattr('hermes_agent.gateway.session_policy.launch_key', lambda authority, policy: None)
     store, authority = await _owner_authority(home)
     _reloadable(authority, monkeypatch)
     owner = _connect(authority)

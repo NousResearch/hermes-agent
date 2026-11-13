@@ -16,7 +16,7 @@ import pytest
 
 from agent import secret_scope
 from agent.secret_scope import UnscopedSecretError, get_secret
-from gateway.run_adapters import UNRESOLVED_PROFILE_HOME, GatewayAdapterLifecycleMixin
+from hermes_agent.gateway.run_adapters import UNRESOLVED_PROFILE_HOME, GatewayAdapterLifecycleMixin
 from hermes_agent.tui_gateway import launch_profile_policy
 
 POISON = "LAUNCHSCOPE_TEST_KEY"

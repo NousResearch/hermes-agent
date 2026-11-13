@@ -5,8 +5,8 @@ import os
 from pathlib import Path
 import tempfile
 
-from gateway.hosted_room_attachments import HostedRoomAttachmentStore, MAX_ATTACHMENT_BYTES
-from gateway.session_ingress_media import HOSTED_DOCUMENT_LINE
+from hermes_agent.gateway.hosted_room_attachments import HostedRoomAttachmentStore, MAX_ATTACHMENT_BYTES
+from hermes_agent.gateway.session_ingress_media import HOSTED_DOCUMENT_LINE
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
@@ -56,7 +56,7 @@ def read_download(service, room_id, params):
 
 
 def append_user_event(service, *, room_id, event_id, payload, gateway_id, epoch):
-    from gateway import hosted_rooms
+    from hermes_agent.gateway import hosted_rooms
     store = HostedRoomAttachmentStore(service.db_path)
     manifest = payload.get('attachments', [])
     transitioned = []
@@ -86,8 +86,8 @@ def prepare_before_submit(prepare):
     A failure here started no work, so neither route may let the driver book it as uncertain
     execution: a refusal no retry can change settles the turn as failed (``refused_before_submit``)
     and anything else is proven not admitted, so the driver requeues it with backoff."""
-    from gateway.hosted_room_attachments import AttachmentError
-    from gateway.hosted_room_driver import DriverValidationError
+    from hermes_agent.gateway.hosted_room_attachments import AttachmentError
+    from hermes_agent.gateway.hosted_room_driver import DriverValidationError
     try:
         return prepare()
     except Exception as exc:
@@ -112,8 +112,8 @@ def bound_submission_payload(db_path, *, room_id, member_id, prompt, attachments
     owner-local staging paths. Shared by both routes, so a file reaches a member identically."""
     if not attachments:
         return {'text': prompt}
-    from gateway.hosted_room_driver import validate_bound_task_manifest
-    from gateway.session_ingress_media import capture_native_media, restore_native_media, validate_media_batch_size
+    from hermes_agent.gateway.hosted_room_driver import validate_bound_task_manifest
+    from hermes_agent.gateway.session_ingress_media import capture_native_media, restore_native_media, validate_media_batch_size
     manifest = validate_bound_task_manifest(attachments)
     # Each bound file is captured on its own, so the admission-wide cap is enforced here,
     # before any member is materialized.
@@ -144,8 +144,8 @@ def bound_submission_payload(db_path, *, room_id, member_id, prompt, attachments
             reference = capture_native_media([path])[0]
         references.append(reference)
     paths = restore_native_media(references)
-    from gateway.session_ingress_media import _ATTACHMENT_MIMES
-    from gateway.platforms.base import get_image_cache_dir
+    from hermes_agent.gateway.session_ingress_media import _ATTACHMENT_MIMES
+    from hermes_agent.gateway.platforms.base import get_image_cache_dir
     import hashlib
     images, documents = [], []
     for path, item in zip(paths, manifest):
@@ -177,7 +177,7 @@ def bound_submission_payload(db_path, *, room_id, member_id, prompt, attachments
 
 
 def committed_submission_payload(rpc, prompt, attachments=None):
-    from gateway.session_ingress_media import admit_attachments
+    from hermes_agent.gateway.session_ingress_media import admit_attachments
     payload = submission_payload(rpc, prompt, attachments)
     return {'text': payload['text'], **admit_attachments(payload.get('attachments'))}
 
@@ -189,9 +189,9 @@ def _attested_inputs(attachments, digests):
     under their digest-named staging copy), so the destination path of every input is a
     pure function of manifest and digest; nothing is transferred to compute it.
     """
-    from gateway.hosted_room_driver import validate_bound_task_manifest
-    from gateway.hosted_room_attachments import _SHA256_RE
-    from gateway.session_ingress_media import _ATTACHMENT_MIMES, _media_root
+    from hermes_agent.gateway.hosted_room_driver import validate_bound_task_manifest
+    from hermes_agent.gateway.hosted_room_attachments import _SHA256_RE
+    from hermes_agent.gateway.session_ingress_media import _ATTACHMENT_MIMES, _media_root
     manifest = validate_bound_task_manifest(attachments)
     if (not isinstance(digests, list) or len(digests) != len(manifest)
             or any(not isinstance(d, str) or _SHA256_RE.fullmatch(d) is None for d in digests)):
@@ -216,7 +216,7 @@ def attested_submission_payload(prompt, attachments, digests):
     """
     if not attachments:
         return {'text': prompt}
-    from gateway.session_ingress_media import _ATTACHMENT_MIMES
+    from hermes_agent.gateway.session_ingress_media import _ATTACHMENT_MIMES
     documents, media, media_types = [], [], []
     for item, reference in _attested_inputs(attachments, digests):
         if item['mime'] in _ATTACHMENT_MIMES:
@@ -239,6 +239,6 @@ def verify_attested_documents(attachments, digests):
     """
     if not attachments:
         return
-    from gateway.session_ingress_media import _ATTACHMENT_MIMES, restore_native_media
+    from hermes_agent.gateway.session_ingress_media import _ATTACHMENT_MIMES, restore_native_media
     restore_native_media([reference for item, reference in _attested_inputs(attachments, digests)
                           if item['mime'] not in _ATTACHMENT_MIMES])

@@ -11,7 +11,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 
 def _build_adapter(extra=None):

@@ -17,8 +17,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import ChannelOverride, GatewayConfig, Platform, PlatformConfig
-from gateway.session import SessionEntry, SessionSource, build_session_key
+from hermes_agent.gateway.config import ChannelOverride, GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.session import SessionEntry, SessionSource, build_session_key
 
 
 # ---------------------------------------------------------------------------
@@ -38,7 +38,7 @@ def _make_source() -> SessionSource:
 
 def _make_runner():
     """Create a minimal GatewayRunner with stubbed internals."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
@@ -173,9 +173,9 @@ class TestFallbackEvictionHonorsChannelOverrides:
         monkeypatch, source, agent_model, *, global_model="default/model", channel_model="chan/model",
         session_model=None, session_provider="nous", **agent_attrs,
     ):
-        from gateway.turn_context import TurnContext
+        from hermes_agent.gateway.turn_context import TurnContext
 
-        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda *a, **k: global_model)
+        monkeypatch.setattr("hermes_agent.gateway.run._resolve_gateway_model", lambda *a, **k: global_model)
         runner = _make_runner()
         runner.config.platforms[Platform.TELEGRAM].channel_overrides = {"c1": ChannelOverride(model=channel_model)}
         if session_model:
@@ -305,8 +305,8 @@ class TestOneTurnNeverPersisted:
     def _runner_with_store(tmp_path, monkeypatch):
         import hermes_yaml as _yaml
 
-        import gateway.run as gateway_run
-        from gateway.run import GatewayRunner
+        import hermes_agent.gateway.run as gateway_run
+        from hermes_agent.gateway.run import GatewayRunner
         from hermes_cli.model_switch import ModelSwitchResult
 
         hermes_home = tmp_path / ".hermes"
@@ -352,7 +352,7 @@ class TestOneTurnNeverPersisted:
 
     @staticmethod
     def _event(text):
-        from gateway.platforms.event import MessageEvent, MessageType
+        from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 
         return MessageEvent(
             text=text,

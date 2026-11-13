@@ -3,7 +3,7 @@
 Proves the gateway can act on a shared-identity capability (e.g. a Discord
 interaction follow-up token) WITHOUT ever holding the credential: it names the
 session it is in plus the capability ``kind``, and the connector resolves the
-real value from its vault and egresses. See gateway/relay/transport.py
+real value from its vault and egresses. See hermes_agent/gateway/relay/transport.py
 (send_follow_up) and website/docs/developer-guide/relay-connector-contract.md §4.
 
 The gateway side is what's exercised here (against the stub connector); the
@@ -19,9 +19,9 @@ from __future__ import annotations
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.relay.adapter import RelayAdapter
-from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.relay.adapter import RelayAdapter
+from hermes_agent.gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
 
 from tests.gateway.relay.stub_connector import StubConnector
 

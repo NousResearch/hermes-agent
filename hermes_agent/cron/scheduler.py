@@ -166,9 +166,9 @@ def _failure_streak_nudge(job: dict) -> str:
 
 def _detect_gateway_code_skew() -> tuple[str, str] | None:
     """Boot-vs-disk revision skew for THIS process, or None. Test seam over
-    ``gateway.code_skew.detect_code_skew``; a broken import must never take delivery down."""
+    ``hermes_agent.gateway.code_skew.detect_code_skew``; a broken import must never take delivery down."""
     try:
-        from gateway.code_skew import detect_code_skew
+        from hermes_agent.gateway.code_skew import detect_code_skew
 
         return detect_code_skew()
     except Exception:
@@ -178,7 +178,7 @@ def _detect_gateway_code_skew() -> tuple[str, str] | None:
 def _current_gateway_code_sha() -> str | None:
     """Full revision currently on disk; kept separate from display-shortened skew labels."""
     try:
-        from gateway.code_skew import current_code_sha
+        from hermes_agent.gateway.code_skew import current_code_sha
 
         return current_code_sha()
     except Exception:
@@ -563,14 +563,14 @@ def _cron_failure_marker_error(text: str) -> Optional[str]:
 def _is_cron_silence_response(text: str) -> bool:
     """True when a cron final response should suppress delivery: ``[SILENT]`` (or SILENT /
     NO_REPLY / NO REPLY) as the whole response OR its own first/last line — NOT mid-sentence.
-    Shares the webhook-lane matcher in :mod:`gateway.response_filters` so the two cannot drift.
+    Shares the webhook-lane matcher in :mod:`hermes_agent.gateway.response_filters` so the two cannot drift.
 
     Recognizes the bracketed ``[SILENT]`` sentinel (whole-response, first line, or last line) plus the
     bracketless ``SILENT`` / ``NO_REPLY`` / ``NO REPLY`` variants the model emits when it drops the brackets
     (#51438, #46917). Whitespace-trimmed and case-insensitive. A token buried mid-sentence is treated as
     real content and delivered.
     """
-    from gateway.response_filters import is_autonomous_silence_response
+    from hermes_agent.gateway.response_filters import is_autonomous_silence_response
 
     return is_autonomous_silence_response(text)
 
@@ -1848,14 +1848,14 @@ def _open_cron_session_db(job: dict):
     errors. Only the legacy non-owner helper path may return no session store.
     """
     # Initialize the SQLite session store so cron job messages are persisted and discoverable via
-    # session_search (same pattern as gateway/run.py) — only now, after every early-return path (wake-gate,
+    # session_search (same pattern as hermes_agent/gateway/run.py) — only now, after every early-return path (wake-gate,
     # prompt validation, drift skip) has passed, so a gated run never opens state.db just to abandon the
     # handle (#96290). Bounded with its own timeout (separate from HERMES_CRON_TIMEOUT, which only watches
     # the agent's run_conversation below): SessionDB.__init__ opens/migrates state.db synchronously and has
     # no timeout of its own against a wedged sqlite3.connect (e.g. a stale flock left by a crashed sibling
     # process). An unbounded hang here would wedge the job's worker thread, so the init is bounded and a
     # timeout proceeds without a session store instead of blocking the run forever.
-    from gateway.session_cron import current_execution
+    from hermes_agent.gateway.session_cron import current_execution
     owner = current_execution()
     from agent.runtime_session_store import WorkerPersistenceError, is_worker_process
     if owner is None and is_worker_process():
@@ -2073,7 +2073,7 @@ def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgen
     final_response = result.get("final_response", "") or ""
     # Repair model-mangled computer_use media paths before delivery (fail-open, as in gateway).
     if final_response:
-        from gateway.media_repair import repair_explicit_computer_use_media_paths
+        from hermes_agent.gateway.media_repair import repair_explicit_computer_use_media_paths
 
         final_response = repair_explicit_computer_use_media_paths(
             final_response, result.get("messages", []))
@@ -2335,7 +2335,7 @@ class _CronRunScope:
     """
 
     def __init__(self, job: dict, job_id: str, execution_id: Optional[str]):
-        from gateway.session_context import set_session_vars, _VAR_MAP
+        from hermes_agent.gateway.session_context import set_session_vars, _VAR_MAP
         from tools.terminal_tool import record_session_cwd
 
         self._var_map = _VAR_MAP
@@ -2385,7 +2385,7 @@ class _CronRunScope:
         self._spend_token = bind_run(self.task_id)
 
     def exit(self) -> None:
-        from gateway.session_context import clear_session_vars
+        from hermes_agent.gateway.session_context import clear_session_vars
         from tools.terminal_tool import clear_session_cwd
 
         clear_session_cwd(self.task_id)
@@ -2406,7 +2406,7 @@ def _reload_dotenv_and_publish_delivery_target(job: dict) -> None:
     # Reset the secret-source cache FIRST or a Bitwarden/BSM-backed secret is never re-resolved
     # (only the placeholder reloads -> 401s).
     from hermes_cli.env_loader import load_hermes_dotenv, reset_secret_source_cache
-    from gateway.session_context import _VAR_MAP
+    from hermes_agent.gateway.session_context import _VAR_MAP
 
     reset_secret_source_cache(_get_hermes_home())
     load_hermes_dotenv(hermes_home=_get_hermes_home())
@@ -2556,7 +2556,7 @@ def run_job(
     ``extra_prompt``: optional per-run context from ``cronjob(action='run', prompt=...)`` (#57331). Appended
     to the stored prompt for this fire only — never persisted to the job definition.
     """
-    from gateway.session_cron import current_execution
+    from hermes_agent.gateway.session_cron import current_execution
     owner_execution = current_execution()
     if owner_execution is not None and owner_execution[2:] != (job['id'], execution_id):
         owner_execution = None
@@ -3202,7 +3202,7 @@ def _install_fire_secret_scope() -> tuple[contextvars.Token, Optional[contextvar
     included, and return the tokens ``_reset_fire_secret_scope`` needs.
 
     Hydrate the profile's external secret sources BEFORE freezing the scope — the order
-    gateway/run.py and the external cron worker already use: ``build_profile_secret_scope`` only
+    hermes_agent/gateway/run.py and the external cron worker already use: ``build_profile_secret_scope`` only
     READS the per-home source map, so a scope frozen first would carry no vault-backed value.
 
     For a fire routed to a profile other than the process's own (``routed_profile_fire`` on the
@@ -3321,7 +3321,7 @@ def _run_one_job_body(
             return True
 
         # Bind the firing profile's COMPLETE terminal policy for this fire — agent build, run, delivery
-        # and bookkeeping (gateway/run.py _profile_runtime_scope does the same per turn) — else the
+        # and bookkeeping (hermes_agent/gateway/run.py _profile_runtime_scope does the same per turn) — else the
         # ticker reads process-global TERMINAL_* env another profile pinned (#68559, #98581). A
         # malformed policy installs a refusal scope: terminal execution raises instead.
         from tools.terminal_scope import (
@@ -3893,7 +3893,7 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
         # hooks + ``hooks.outbound``) was never registered and cron sessions silently lost it
         # (#131764). Same helper the gateway uses per profile; it must run inside the secret scope
         # because ``secret_env`` targets resolve through ``get_secret`` (raises unscoped under multiplex).
-        from gateway.run_startup import GatewayStartupMixin
+        from hermes_agent.gateway.run_startup import GatewayStartupMixin
 
         GatewayStartupMixin._register_config_hooks(
             "Cron external worker: config hook registration failed", level=logging.WARNING)

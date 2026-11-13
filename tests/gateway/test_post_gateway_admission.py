@@ -9,10 +9,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent
-from gateway.run import _profile_runtime_scope
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.run import _profile_runtime_scope
+from hermes_agent.gateway.session import SessionSource
 from hermes_constants import get_hermes_home
 
 HOOK = "post_gateway_admission"
@@ -28,7 +28,7 @@ def _register(callback) -> None:
 
 
 def _runner(*, multiplex=False):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
@@ -128,8 +128,8 @@ async def test_consumer_fires_in_the_routed_profile_scope_only(tmp_path):
 async def test_under_an_authority_the_hook_fires_once_at_ingress_never_at_execution(monkeypatch):
     """A consumed message is never committed, and an admitted row's execution (first run or
     restart replay) never offers the same message to the plugin again."""
-    import gateway.session_authorities as authorities
-    import gateway.session_ingress as ingress
+    import hermes_agent.gateway.session_authorities as authorities
+    import hermes_agent.gateway.session_ingress as ingress
 
     fired = []
     _register(lambda **kwargs: fired.append(kwargs["text"]) or (
@@ -169,7 +169,7 @@ async def test_webhook_deliveries_fire_the_hook_once_per_admission_never_on_a_pr
     from aiohttp import web
     from aiohttp.test_utils import TestClient, TestServer
 
-    from gateway.platforms.webhook import WebhookAdapter
+    from hermes_agent.gateway.platforms.webhook import WebhookAdapter
     from tests.gateway.fixtures.webhook_route_authority import mount_authority
 
     fired = []

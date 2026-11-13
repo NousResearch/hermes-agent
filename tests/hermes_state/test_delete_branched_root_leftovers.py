@@ -7,7 +7,7 @@ import time
 import pytest
 
 import hermes_agent.hermes_state_runtime as rt
-from gateway.session_results import retain_result
+from hermes_agent.gateway.session_results import retain_result
 from hermes_agent.hermes_state import SessionDB
 
 

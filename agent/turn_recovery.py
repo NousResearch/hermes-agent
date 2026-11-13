@@ -57,7 +57,7 @@ def _vlines(agent: Any, *lines: str) -> None:
 
 def _plines(agent: Any, *lines: str) -> None:
     """``print`` each line prefixed with ``agent.log_prefix``."""
-    from gateway.warning_notifications import render_notification
+    from hermes_agent.gateway.warning_notifications import render_notification
     render_notification(
         lambda: [print(f"{agent.log_prefix}{line}") for line in lines],
         platform=getattr(agent, "_notification_platform", getattr(agent, "platform", "cli")),
@@ -1048,7 +1048,7 @@ def nonretryable_client_error_result(
     agent._flush_status_buffer()
     # Summarize once: Cloudflare/proxy HTML pages and raw provider bodies must be
     # collapsed here or they leak verbatim via the ``error`` field.
-    from gateway.warning_notifications import TerminalFailureText  # the chat filter drops its copy
+    from hermes_agent.gateway.warning_notifications import TerminalFailureText  # the chat filter drops its copy
     _nonretryable_summary = agent._summarize_api_error(api_error)
     _plabel = provider_label_for(provider)
     _label = _NONRETRYABLE_LABELS.get(classified.reason, f"{_plabel} rejected the request and retrying won't help")
@@ -1196,7 +1196,7 @@ def max_retries_exhausted_result(
         _print_billing_or_entitlement_guidance,
     )
 
-    from gateway.warning_notifications import TerminalFailureText  # the chat filter drops its copy
+    from hermes_agent.gateway.warning_notifications import TerminalFailureText  # the chat filter drops its copy
     agent._flush_status_buffer()
     _final_summary = agent._summarize_api_error(api_error)
     _billing_guidance = ""

@@ -40,8 +40,8 @@ class SourceMeter:
 
     def __init__(self, monkeypatch):
         import hashlib
-        from gateway import session_hosted_transport as transport
-        from gateway.hosted_room_attachments import HostedRoomAttachmentStore
+        from hermes_agent.gateway import session_hosted_transport as transport
+        from hermes_agent.gateway.hosted_room_attachments import HostedRoomAttachmentStore
         self.round_trips = self.read = self.hashed = 0
         self.local = threading.local()
         meter = self
@@ -103,9 +103,9 @@ class SourceMeter:
 
 
 def _mux(monkeypatch):
-    from gateway.control_socket import GatewayControlServer
-    from gateway.run_runtime import initialize_gateway_runtime
-    from gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.control_socket import GatewayControlServer
+    from hermes_agent.gateway.run_runtime import initialize_gateway_runtime
+    from hermes_agent.gateway.runtime_ownership import process_ownership
     from tests.gateway.test_session_authorities_multiplex import _reserve_homes, _runner
     case_root = Path(tempfile.mkdtemp(prefix='case-', dir=TMP))
     root, homes = _reserve_homes(case_root, monkeypatch)
@@ -134,12 +134,12 @@ def _mux(monkeypatch):
 
 
 def run_case(size_bytes, monkeypatch):
-    from gateway import hosted_rooms
-    from gateway import hosted_room_driver as tasks
-    from gateway.hosted_room_attachments import HostedRoomAttachmentStore
-    from gateway.session_authorities import owner_scope
-    from gateway.session_hosted_service import CanonicalHostedRoomService
-    from gateway.session_hosted_transport import (
+    from hermes_agent.gateway import hosted_rooms
+    from hermes_agent.gateway import hosted_room_driver as tasks
+    from hermes_agent.gateway.hosted_room_attachments import HostedRoomAttachmentStore
+    from hermes_agent.gateway.session_authorities import owner_scope
+    from hermes_agent.gateway.session_hosted_service import CanonicalHostedRoomService
+    from hermes_agent.gateway.session_hosted_transport import (
         HostedRoomOwnerRPC, check_remote_hosted_admission, install_hosted_transport)
     from hermes_agent.hermes_state_runtime import list_session_admissions
 
@@ -204,7 +204,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--mb', default='5,15', help='comma-separated attachment sizes in MB (decimal)')
     args = parser.parse_args()
-    from gateway.session_hosted_transport import _CHUNK_BYTES
+    from hermes_agent.gateway.session_hosted_transport import _CHUNK_BYTES
     report = {'chunk_bytes': _CHUNK_BYTES, 'cases': []}
     for mb in (int(v) for v in args.mb.split(',')):
         size = mb * 1_000_000

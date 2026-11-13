@@ -8,7 +8,7 @@ that's a behavioral regression, not a test to update casually.
 
 import pytest
 
-from gateway.platforms.media_cache import (
+from hermes_agent.gateway.platforms.media_cache import (
     cache_media_bytes,
     ext_for_mime,
     mime_for_ext,
@@ -43,14 +43,14 @@ class TestCacheMediaBytes:
 
     def test_image_dispatch(self, monkeypatch, tmp_path):
         monkeypatch.setattr(
-            "gateway.platforms.base.get_image_cache_dir", lambda: tmp_path
+            "hermes_agent.gateway.platforms.base.get_image_cache_dir", lambda: tmp_path
         )
         path = cache_media_bytes(self.PNG, "image/png")
         assert path.endswith(".png")
 
     def test_document_dispatch_uses_filename_hint(self, monkeypatch, tmp_path):
         monkeypatch.setattr(
-            "gateway.platforms.base.get_document_cache_dir", lambda: tmp_path
+            "hermes_agent.gateway.platforms.base.get_document_cache_dir", lambda: tmp_path
         )
         path = cache_media_bytes(b"%PDF-1.4", "application/pdf",
                                  filename_hint="report.pdf")

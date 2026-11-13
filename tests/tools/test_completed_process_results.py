@@ -65,7 +65,7 @@ def test_background_notification_history_replay_is_not_new_delivery():
 
 def test_retained_result_lookup_does_not_initialize_session_store(tmp_path, monkeypatch):
     from hermes_agent import hermes_state
-    from gateway.session_context import scoped_current_session_id
+    from hermes_agent.gateway.session_context import scoped_current_session_id
     from tools import process_registry_results as receipts
 
     db_path = tmp_path / "state.db"
@@ -263,7 +263,7 @@ def test_receipts_are_bounded_redacted_and_session_scoped(tmp_path, monkeypatch)
     monkeypatch.setattr(redact, "_REDACT_ENABLED", False)
     monkeypatch.setattr(receipts, "MAX_RETAINED_RESULTS", 2)
     secret = "sk-" + "aB2cD3eF4gH5iJ6kL7mN8pQ9rS0tU1vW2xY3zA4bC5dE6fG7"
-    from gateway.session_context import scoped_current_session_id
+    from hermes_agent.gateway.session_context import scoped_current_session_id
     from tools.process_registry_results import load_completed_results
     monkeypatch.setenv("HERMES_SESSION_ID", "owner-session")
     sessions = []

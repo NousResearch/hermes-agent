@@ -109,7 +109,7 @@ def _check_dispatcher_presence(hermes_home: Optional[Path] = None) -> tuple[bool
     keep the existing process-level behavior.
     """
     try:
-        from gateway.status import resolve_gateway_liveness  # type: ignore
+        from hermes_agent.gateway.status import resolve_gateway_liveness  # type: ignore
 
         # Same ladder as the dashboard status endpoints so PID-file-less / cross-container gateways
         # aren't misreported; use_cache=False because this one-shot probe must see the state now.
@@ -1160,7 +1160,7 @@ def _caller_identity_for_target(platform: str, chat_id: str, thread_id, user_id,
     never stamped with the caller's identity."""
     if user_id or user_id_alt:  # an explicit recipient is never paired with the caller's other id
         return user_id, user_id_alt
-    from gateway.session_context import get_session_env
+    from hermes_agent.gateway.session_context import get_session_env
     if (str(get_session_env("HERMES_SESSION_PLATFORM", "")).lower() != str(platform or "").lower()
             or str(get_session_env("HERMES_SESSION_CHAT_ID", "")) != str(chat_id or "")
             or str(get_session_env("HERMES_SESSION_THREAD_ID", "")) != str(thread_id or "")):

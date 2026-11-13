@@ -1,5 +1,5 @@
 """SessionStore transcript I/O: SQLite append with a per-session retry queue, compression-reroute
-following, FTS corruption recovery, rewrite/rewind/load. Mixin split out of ``gateway/session.py``;
+following, FTS corruption recovery, rewrite/rewind/load. Mixin split out of ``hermes_agent/gateway/session.py``;
 bound onto ``SessionStore`` via the MRO."""
 
 from __future__ import annotations
@@ -13,10 +13,10 @@ from agent.turn_context import extract_api_content_sidecar
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 if TYPE_CHECKING:
-    from gateway.session import SessionEntry
+    from hermes_agent.gateway.session import SessionEntry
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("gateway.session")
+logger = logging.getLogger("hermes_agent.gateway.session")
 
 
 class TranscriptReadError(RuntimeError):
@@ -31,7 +31,7 @@ def _spool_dropped(session_id: str, message: dict[str, Any]):
     """Spool one evicted/undeliverable message to disk (same machinery as the shutdown flush, so it
     is replayed after DB recovery); path or None."""
     try:
-        from gateway.shutdown_flush import spool_dropped_transcript_message
+        from hermes_agent.gateway.shutdown_flush import spool_dropped_transcript_message
         return spool_dropped_transcript_message(session_id, message)
     except Exception:
         return None
@@ -61,7 +61,7 @@ def _bindable_text(value: Any) -> Any:
 
 def transcript_append_kwargs(session_id: str, message: dict[str, Any], *, fallback_ts: Any = None) -> dict[str, Any]:
     """``SessionDB.append_message`` kwargs for one transcript row. The live writer and the restart
-    replay of the transcript spool (gateway/shutdown_flush.py) both build rows here, so a replayed
+    replay of the transcript spool (hermes_agent/gateway/shutdown_flush.py) both build rows here, so a replayed
     message lands as the row the live drain would have written. Fields are listed rather than
     splatted: a spooled message is arbitrary JSON from disk, and an unexpected key would raise and
     abort the replay. *fallback_ts* applies only to a message with no timestamp at all, because a
@@ -415,7 +415,7 @@ class SessionTranscriptMixin:
                 raise
 
         try:
-            from gateway.shutdown_flush import drain_transcript_spool
+            from hermes_agent.gateway.shutdown_flush import drain_transcript_spool
             # Inside an outage the append that follows logs/escalates the same failure; the
             # replay attempt is only the order-preserving probe, so its failure stays at DEBUG.
             with self._transcript_retry_lock:
@@ -560,7 +560,7 @@ class SessionTranscriptMixin:
                 # active-only replace is behaviorally identical to the full replace — and when archived rows
                 # DO exist they survive. An existence probe here (has_archived_messages) would fail OPEN
                 # into the destructive replace on any DB error and can race a concurrent archive_and_compact
-                # — the same probe failure mode #80216's /retry fix (gateway/slash_commands.py) deliberately
+                # — the same probe failure mode #80216's /retry fix (hermes_agent/gateway/slash_commands.py) deliberately
                 # avoids.
                 db.replace_messages(
                     session_id, messages, active_only=active_only,

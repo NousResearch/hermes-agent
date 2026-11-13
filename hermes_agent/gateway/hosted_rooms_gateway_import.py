@@ -48,7 +48,7 @@ _OWNER = "gateway.hosted.owner.v1:"
 
 def handoff_gateway_id() -> str:
     """The authority a standalone room is fenced to once the gateway store holds it."""
-    from gateway.hosted_rooms import local_authority_gateway_id
+    from hermes_agent.gateway.hosted_rooms import local_authority_gateway_id
     return f"{local_authority_gateway_id()}:gateway-store"
 
 
@@ -60,8 +60,8 @@ def source_for(target_db: Path) -> Path | None:
 
 
 def _fence_source(source: Path, local_id: str, handoff_id: str) -> int:
-    from gateway.hosted_room_replicas import demote_room
-    from gateway.hosted_rooms import list_rooms, MAX_ROOM_LIST_LIMIT
+    from hermes_agent.gateway.hosted_room_replicas import demote_room
+    from hermes_agent.gateway.hosted_rooms import list_rooms, MAX_ROOM_LIST_LIMIT
     fenced, offset = 0, 0
     while True:
         page = list_rooms(source, limit=MAX_ROOM_LIST_LIMIT, offset=offset)
@@ -77,7 +77,7 @@ def _fence_source(source: Path, local_id: str, handoff_id: str) -> int:
 
 def _fenced_ids(source: Path, handoff_id: str) -> set[str]:
     """Fenced live rooms not yet recorded as handed over."""
-    from gateway.hosted_rooms import _transaction
+    from hermes_agent.gateway.hosted_rooms import _transaction
     with _transaction(source, immediate=True) as conn:
         _ensure_handoff_table(conn)
         return {str(row[0]) for row in conn.execute(
@@ -90,7 +90,7 @@ def _ensure_handoff_table(conn) -> None:
 
 
 def _record_handoff(source: Path, room_ids: set[str], now: float) -> None:
-    from gateway.hosted_rooms import _transaction
+    from hermes_agent.gateway.hosted_rooms import _transaction
     with _transaction(source, immediate=True) as conn:
         _ensure_handoff_table(conn)
         conn.executemany(f"INSERT OR IGNORE INTO {HANDOFF_TABLE} (room_id, handed_at) VALUES (?, ?)",
@@ -100,14 +100,14 @@ def _record_handoff(source: Path, room_ids: set[str], now: float) -> None:
 def handed_room_ids(source: Path) -> set[str]:
     """Every room ``source`` handed to the gateway store (recorded or still only fenced)."""
     from contextlib import closing
-    from gateway.hosted_rooms import _read_connection
+    from hermes_agent.gateway.hosted_rooms import _read_connection
     with closing(_read_connection(source)) as conn:
         return {str(row[0]) for row in conn.execute(
             "SELECT room_id FROM hosted_rooms WHERE authority_gateway_id=?", (handoff_gateway_id(),))}
 
 
 def _claim(conn, room_id: str, local_id: str, handoff_id: str, owner: str, now: float) -> None:
-    from gateway.hosted_room_replicas import _append_control_event, _control_event
+    from hermes_agent.gateway.hosted_room_replicas import _append_control_event, _control_event
     row = conn.execute("SELECT authority_epoch, next_seq FROM hosted_rooms WHERE room_id=?", (room_id,)).fetchone()
     epoch = int(row["authority_epoch"]) + 1
     _append_control_event(conn, room_id, int(row["next_seq"]), epoch, _control_event("claimed", epoch, {
@@ -125,10 +125,10 @@ def import_standalone_rooms(target_db: Path, *, runtime_epoch: int | None = None
     leaves both stores as they were and is retried on the next start.
     """
     import sqlite3
-    from gateway.hosted_rooms import HostedRoomError, _transaction, local_authority_gateway_id
-    from gateway.hosted_rooms_common import clock
-    from gateway.hosted_rooms_legacy_import import _copy_rows
-    from gateway.owner_identity import host_owner_subject
+    from hermes_agent.gateway.hosted_rooms import HostedRoomError, _transaction, local_authority_gateway_id
+    from hermes_agent.gateway.hosted_rooms_common import clock
+    from hermes_agent.gateway.hosted_rooms_legacy_import import _copy_rows
+    from hermes_agent.gateway.owner_identity import host_owner_subject
     from hermes_agent.hermes_state_runtime import RuntimeStoreError, _epoch
 
     source = source_for(target_db)
@@ -177,7 +177,7 @@ def import_after_ready(authorities) -> None:
         target, epoch = Path(authority.db.db_path), authority.epoch
 
         def run(target=target, epoch=epoch, service=service, authority=authority):
-            from gateway.session_authorities import owner_scope
+            from hermes_agent.gateway.session_authorities import owner_scope
             with owner_scope(authority):  # a new thread holds the launch profile's scope otherwise
                 if import_standalone_rooms(target, runtime_epoch=epoch):
                     service.wakeup()

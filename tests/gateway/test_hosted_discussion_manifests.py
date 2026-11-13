@@ -3,10 +3,10 @@ from copy import deepcopy
 
 import pytest
 
-from gateway import hosted_room_discussion as discussion
-from gateway import hosted_room_driver as driver
-from gateway import hosted_rooms
-from gateway.hosted_room_attachments import HostedRoomAttachmentStore
+from hermes_agent.gateway import hosted_room_discussion as discussion
+from hermes_agent.gateway import hosted_room_driver as driver
+from hermes_agent.gateway import hosted_rooms
+from hermes_agent.gateway.hosted_room_attachments import HostedRoomAttachmentStore
 
 
 ROOM = {"room_id": "room", "name": "Files", "authority_gateway_id": "gw", "authority_epoch": 1,

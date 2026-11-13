@@ -5,9 +5,9 @@ message on that thread before the round settles, the settled status for the OLD
 discussion must not close the thread the newer message just reopened: the newer
 message would be silently dropped (the room shows idle and nobody answers).
 """
-from gateway import hosted_rooms as rooms
-from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint
-from gateway.hosted_room_router import paused_discussion
+from hermes_agent.gateway import hosted_rooms as rooms
+from hermes_agent.gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint
+from hermes_agent.gateway.hosted_room_router import paused_discussion
 
 
 def _append(db, event_id, kind, payload, actor="user"):

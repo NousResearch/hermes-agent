@@ -3,7 +3,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from gateway.runtime_ownership import ProfileOwnership
+from hermes_agent.gateway.runtime_ownership import ProfileOwnership
 from hermes_cli.web_routers.sessions import manage_router
 from hermes_agent.hermes_state import SessionDB
 

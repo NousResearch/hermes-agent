@@ -36,7 +36,7 @@ def text_fallback_coro(adapter, **send_kwargs):
     """The base numbered-text ``send_clarify`` as a fresh coroutine, or ``None`` when the adapter has
     no native override — its ``send_clarify`` already IS the text path, so retrying it would only
     repeat the failure."""
-    from gateway.platforms.base import BasePlatformAdapter
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
     if not isinstance(adapter, BasePlatformAdapter) \
             or type(adapter).send_clarify is BasePlatformAdapter.send_clarify:
@@ -77,7 +77,7 @@ def _abort_for_outcome(outcome: str, *, session_key: str, clarify_mod) -> Option
 
 def _clarify_send_disposition(fut, *, session_key: str, clarify_mod) -> Optional[str]:
     """Decide whether a clarify prompt send aborts the wait; returns the abort sentinel or ``None``."""
-    from gateway.run import _approval_send_outcome
+    from hermes_agent.gateway.run import _approval_send_outcome
 
     return _abort_for_outcome(
         _approval_send_outcome(fut, timeout=SEND_ACK_WINDOW), session_key=session_key, clarify_mod=clarify_mod)
@@ -95,7 +95,7 @@ def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_m
 
     Returns ``(response, answered)``. ``answered`` is the only signal that a user reply arrived;
     callers must not infer it from the text (a real answer may start with '[' like a sentinel)."""
-    from gateway.run import _approval_send_outcome
+    from hermes_agent.gateway.run import _approval_send_outcome
 
     outcome = _approval_send_outcome(fut, timeout=SEND_ACK_WINDOW)
     if outcome == "failed" and _withdrawn(fut):
@@ -156,7 +156,7 @@ class _LateFailureWatch:
 
     @staticmethod
     def _outcome(fut) -> str:
-        from gateway.run import _approval_send_outcome
+        from hermes_agent.gateway.run import _approval_send_outcome
         return _approval_send_outcome(fut, timeout=0)
 
     def _on_card_done(self, fut) -> None:
@@ -207,7 +207,7 @@ def _withdrawn(fut) -> bool:
 
 
 def withdrawn_result():
-    from gateway.platforms.base import SendResult
+    from hermes_agent.gateway.platforms.base import SendResult
     return SendResult(success=False, error="clarify prompt withdrawn before posting",
                       raw_response={WITHDRAWN: True})
 
@@ -230,8 +230,8 @@ def clarify_context_sink(runner) -> Optional[Callable[..., None]]:
     wrote in the same message as a ``clarify`` call is what the user is asked to decide on, so it is
     sent before the card. The agent calls this on its own thread before the clarify tool runs, and it
     waits for the send, so the card can never land above its explanation."""
-    from gateway.bot_peer_notices import automatic_notices_allowed
-    from gateway.run_turn_progress import local_viewer_turn
+    from hermes_agent.gateway.bot_peer_notices import automatic_notices_allowed
+    from hermes_agent.gateway.run_turn_progress import local_viewer_turn
     if local_viewer_turn(runner):  # a local viewer renders the transcript itself; its adapter sends nothing
         return None
     ctx = runner._ctx
@@ -241,7 +241,7 @@ def clarify_context_sink(runner) -> Optional[Callable[..., None]]:
         if (already_streamed or adapter is None or not str(text or "").strip() or not ctx._run_still_current()
                 or not automatic_notices_allowed(ctx.source)):
             return
-        from gateway.run import _interim_metadata
+        from hermes_agent.gateway.run import _interim_metadata
         fut = runner._schedule(
             adapter.send(ctx._status_chat_id, text, metadata=_interim_metadata(ctx._status_thread_metadata)),
             "clarify context send failed to schedule")

@@ -1,6 +1,6 @@
 """The owner retries a transiently failed Bot DM delivery exactly once, never unknown execution.
 
-``gateway/session_bot.py`` admits a Bot Chat delivery into the authority FIFO. When that admission
+``hermes_agent/gateway/session_bot.py`` admits a Bot Chat delivery into the authority FIFO. When that admission
 SETTLES ``failed`` with a committed result whose error classifies transient
 (``tools.bot_failure_reasons.result_retry_action``), one retry is admitted under the derived
 identity ``bot:<id>:retry``; the delivery's receipt follows it. A repeated ``deliver`` of the same
@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 import pytest_asyncio
 
-from gateway.session_contract import SessionActor
+from hermes_agent.gateway.session_contract import SessionActor
 from hermes_agent.hermes_state_runtime import list_session_admissions
 
 KEY = 'c' * 32
@@ -21,12 +21,12 @@ KEY = 'c' * 32
 
 @pytest_asyncio.fixture
 async def bot(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_local import create_local_session
-    from gateway.session_local_title import title_new_session
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_local_title import title_new_session
     from hermes_agent.hermes_state import SessionDB
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
@@ -51,7 +51,7 @@ async def bot(tmp_path, monkeypatch):
             'result': {'final_response': '', 'messages': [], 'failed': True, 'error': error}, 'usage': {}}
         return ''
 
-    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    monkeypatch.setattr('hermes_agent.gateway.session_finite.execute_finite_admission', execute)
     try:
         yield SimpleNamespace(authority=authority, chat=chat.session_id, errors=errors, home=tmp_path,
                               connection=SimpleNamespace(authority=authority, actor=owner))
@@ -77,7 +77,7 @@ async def _settle_quietly(bot):
 
 
 async def _settled(bot, count):
-    from gateway.session_bot import _result
+    from hermes_agent.gateway.session_bot import _result
     from tools.bot_live_delivery import read_delivery_result
     for _ in range(200):
         await asyncio.sleep(0.02)
@@ -90,7 +90,7 @@ async def _settled(bot, count):
 
 @pytest.mark.asyncio
 async def test_transient_failure_retries_exactly_once_and_the_receipt_follows_the_retry(bot):
-    from gateway.session_bot import deliver, recover_bot_deliveries
+    from hermes_agent.gateway.session_bot import deliver, recover_bot_deliveries
     params = dict(id=KEY, profile='default', message='ping')
     bot.errors[:] = ['Error code: 429 - rate limit exceeded']
     first = await deliver(bot.connection, params)
@@ -108,7 +108,7 @@ async def test_transient_failure_retries_exactly_once_and_the_receipt_follows_th
 
 @pytest.mark.asyncio
 async def test_retry_that_fails_again_and_non_transient_failures_are_never_replayed(bot):
-    from gateway.session_bot import deliver, recover_bot_deliveries
+    from hermes_agent.gateway.session_bot import deliver, recover_bot_deliveries
     # The retry itself fails transiently: the sender sees that failure, no second retry.
     bot.errors[:] = ['HTTP 503 server error', 'HTTP 503 server error']
     await deliver(bot.connection, dict(id=KEY, profile='default', message='ping'))
@@ -131,7 +131,7 @@ async def test_retry_that_fails_again_and_non_transient_failures_are_never_repla
     await recover_bot_deliveries(bot.authority)
     await _settle_quietly(bot)
     assert [r['request_id'] for r in _admissions(bot)][2:] == ['bot:' + other]
-    from gateway.session_bot import _result
+    from hermes_agent.gateway.session_bot import _result
     from tools.bot_live_delivery import read_delivery_result
     auth = _result(bot.authority, (await asyncio.to_thread(read_delivery_result, bot.home, other)))
     assert (auth['status'], auth['reason']) == ('failed', 'provider_auth_or_access'), auth
@@ -143,7 +143,7 @@ async def test_context_overflow_retries_once_unless_the_failed_dm_is_still_an_op
     compaction does the compress). The owner retry keeps that for an overflow that left no open DM
     row, and refuses (recorded, typed) when the DM is still the durable tail: the owner execution has
     no adoption seam, and a second copy would merge into the unanswered one."""
-    from gateway.session_bot import deliver
+    from hermes_agent.gateway.session_bot import deliver
     from tools.bot_live_delivery import read_delivery_result
     bot.errors[:] = ["This model's maximum context length is 200000 tokens"]
     await deliver(bot.connection, dict(id=KEY, profile='default', message='ping'))
@@ -167,12 +167,12 @@ async def test_context_overflow_retries_once_unless_the_failed_dm_is_still_an_op
 async def test_peer_dm_waiter_follows_the_retry_admission_to_its_answer(bot):
     """``hermes peer dm`` waits on the delivery, not on the original admission id: once that
     fails transiently its future never fires again, and the answer is the retry's."""
-    from gateway.platforms.api_server_bot_chat import await_peer_receipt
-    from gateway import session_bot
-    from gateway.session_bot import deliver
+    from hermes_agent.gateway.platforms.api_server_bot_chat import await_peer_receipt
+    from hermes_agent.gateway import session_bot
+    from hermes_agent.gateway.session_bot import deliver
     from tests.waiting import async_wait_until
     gate = asyncio.Event()
-    import gateway.session_finite as finite
+    import hermes_agent.gateway.session_finite as finite
     execute = finite.execute_finite_admission
     wait_admission, followed = session_bot.peer_wait_admission, []
 
@@ -215,9 +215,9 @@ async def test_receipt_file_stays_pending_while_a_draining_owner_leaves_the_retr
     """Senders wait on the published receipt file, not an authority RPC. An original that failed
     transiently while the owner drains is interim there (``claimed``), never the final ``failed``:
     the restarted owner's recovery admits the one retry and the same wait gets its answer."""
-    from gateway.session_bot import deliver, recover_bot_deliveries
+    from hermes_agent.gateway.session_bot import deliver, recover_bot_deliveries
     from tools.bot_live_delivery import await_delivery_async
-    import gateway.session_finite as finite
+    import hermes_agent.gateway.session_finite as finite
     started, gate = asyncio.Event(), asyncio.Event()
     execute = finite.execute_finite_admission
 
@@ -259,7 +259,7 @@ async def test_mailbox_file_lock_held_elsewhere_never_stalls_the_owner_loop(bot)
     import sys
     import threading
     import time
-    from gateway.session_bot import deliver
+    from hermes_agent.gateway.session_bot import deliver
     from hermes_cli.active_sessions import _FileLock
     from tools.bot_live_delivery import _locked, _root
     with _locked(bot.home):

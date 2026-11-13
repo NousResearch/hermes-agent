@@ -26,11 +26,11 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.relay.adapter import RelayAdapter
-from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.relay.adapter import RelayAdapter
+from hermes_agent.gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+from hermes_agent.gateway.session import SessionSource
 
 from tests.gateway.relay.stub_connector import StubConnector
 
@@ -80,7 +80,7 @@ async def _push(stub: StubConnector, platform: Platform, chat_id: str) -> None:
 
 
 def _make_transport():
-    from gateway.relay.ws_transport import WebSocketRelayTransport
+    from hermes_agent.gateway.relay.ws_transport import WebSocketRelayTransport
 
     return WebSocketRelayTransport(
         "wss://connector.example/relay",
@@ -113,7 +113,7 @@ async def test_transport_descriptor_map_resets_on_redial(monkeypatch):
     async def _fake_send(payload):
         sent.append(payload)
 
-    import gateway.relay.ws_transport as wst
+    import hermes_agent.gateway.relay.ws_transport as wst
 
     monkeypatch.setattr(wst, "websockets", type("M", (), {"connect": staticmethod(_fake_connect)}))
     monkeypatch.setattr(t, "_send", _fake_send)

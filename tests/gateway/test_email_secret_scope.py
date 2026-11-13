@@ -35,7 +35,7 @@ class TestEmailAdapterSecretScope(unittest.TestCase):
     def test_adapter_uses_scoped_credentials_not_environ(self):
         """When a secret scope is installed, the adapter must read from it,
         not from os.environ which may hold another profile's values."""
-        from gateway.config import PlatformConfig, Platform
+        from hermes_agent.gateway.config import PlatformConfig, Platform
         from plugins.platforms.email.adapter import EmailAdapter
 
         scoped = {
@@ -65,7 +65,7 @@ class TestEmailAdapterSecretScope(unittest.TestCase):
     def test_adapter_falls_back_to_environ_without_scope(self):
         """Without a secret scope (single-profile mode), the adapter reads
         from os.environ — backward-compatible with legacy behavior."""
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.email.adapter import EmailAdapter
 
         cfg = PlatformConfig(enabled=True)
@@ -108,7 +108,7 @@ class TestEmailAdapterSecretScope(unittest.TestCase):
         """If a key is absent from the scope but present in os.environ,
         the adapter must NOT fall through to os.environ (which would leak
         the default profile's value)."""
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.email.adapter import EmailAdapter
 
         scoped = {
@@ -150,7 +150,7 @@ class TestEmailAdapterSecretScope(unittest.TestCase):
         token = ss.set_secret_scope(scoped)
         try:
             # The dispatch gate must match the scoped list, not the environ one.
-            from gateway.config import PlatformConfig
+            from hermes_agent.gateway.config import PlatformConfig
             from plugins.platforms.email.adapter import EmailAdapter
             adapter = EmailAdapter(PlatformConfig(enabled=True))
             authenticated = {"sender_authenticated": True}
@@ -190,7 +190,7 @@ class TestEmailAdapterUnscopedUnderMultiplex(unittest.TestCase):
     def test_default_profile_constructs_unscoped_under_multiplex(self):
         """Multiplex ON + no scope: construction must not raise and must
         read the default profile's own environ values."""
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.email.adapter import EmailAdapter
 
         ss.set_multiplex_active(True)
@@ -218,7 +218,7 @@ class TestEmailAdapterUnscopedUnderMultiplex(unittest.TestCase):
         """The env_int variants (EMAIL_IMAP_PORT / EMAIL_SMTP_PORT /
         EMAIL_POLL_INTERVAL) and EMAIL_TRUST_FROM_HEADER must resolve from
         the installed scope, not from the primary profile's environ."""
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.email.adapter import EmailAdapter
 
         scoped = {

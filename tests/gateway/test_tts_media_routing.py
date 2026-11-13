@@ -16,11 +16,11 @@ from urllib.parse import quote, unquote
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource, build_session_key
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource, build_session_key
 
 
 class _MediaRoutingAdapter(BasePlatformAdapter):
@@ -61,7 +61,7 @@ def _allowed_media_path(tmp_path, monkeypatch, name):
     media_file.parent.mkdir(parents=True, exist_ok=True)
     media_file.write_bytes(b"media")
     monkeypatch.setattr(
-        "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+        "hermes_agent.gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
         (root,),
     )
     return media_file.resolve()
@@ -107,7 +107,7 @@ async def test_streaming_delivery_blocks_media_path_outside_allowed_roots(tmp_pa
     secret = tmp_path / "outside.pdf"
     secret.write_bytes(b"%PDF secret")
     monkeypatch.setattr(
-        "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+        "hermes_agent.gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
         (allowed_root,),
     )
     # This test exercises the strict-allowlist path; force strict mode on
@@ -528,7 +528,7 @@ async def test_queued_resend_branch_delivers_media_and_preserves_protected_examp
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
     adapter = _QueuedMediaCaptureAdapter()
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     runner = object.__new__(gateway_run.GatewayRunner)
     runner.adapters = {adapter.platform: adapter}
     runner._voice_mode = {}

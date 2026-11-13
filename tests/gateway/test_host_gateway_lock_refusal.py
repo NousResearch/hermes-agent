@@ -16,7 +16,7 @@ from hermes_constants import get_hermes_home
 @pytest.fixture
 def host_lock_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "gateway-locks"))
-    from gateway import host_rendezvous as hr
+    from hermes_agent.gateway import host_rendezvous as hr
     hr._lock_handles.clear()
     yield tmp_path
     hr._lock_handles.clear()
@@ -40,9 +40,9 @@ def _hold_host_lock_from_another_description(hr):
 def test_second_host_gateway_is_refused_with_75_naming_the_owner_and_the_migrate_command(
     host_lock_dir, capsys,
 ):
-    from gateway import host_rendezvous as hr
-    from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE, GATEWAY_SERVICE_RESTART_EXIT_CODE
-    from gateway.run import _claim_host_gateway_role
+    from hermes_agent.gateway import host_rendezvous as hr
+    from hermes_agent.gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE, GATEWAY_SERVICE_RESTART_EXIT_CODE
+    from hermes_agent.gateway.run import _claim_host_gateway_role
     from hermes_cli.gateway_migrate import MIGRATE_COMMAND
 
     hr.publish_record(hr.ROLE_GATEWAY, profiles=("default", "coder"), home=str(get_hermes_home()))
@@ -70,8 +70,8 @@ def test_force_still_starts_a_second_gateway_and_an_unusable_lock_dir_is_not_a_r
     """The two non-refusals: the operator's explicit escape hatch, and a lock dir we cannot open
     (EROFS/EACCES is not evidence of a second gateway, and refusing there takes a healthy
     single-gateway host down)."""
-    from gateway import host_rendezvous as hr
-    from gateway.run import _claim_host_gateway_role
+    from hermes_agent.gateway import host_rendezvous as hr
+    from hermes_agent.gateway.run import _claim_host_gateway_role
 
     hr.publish_record(hr.ROLE_GATEWAY, profiles=(), home=str(get_hermes_home()))
     handle = _hold_host_lock_from_another_description(hr)
@@ -103,8 +103,8 @@ def test_an_unmigrated_standalone_fleet_starts_beside_the_owner_instead_of_spinn
     """
     import logging
 
-    from gateway import host_rendezvous as hr
-    from gateway.run import _claim_host_gateway_role
+    from hermes_agent.gateway import host_rendezvous as hr
+    from hermes_agent.gateway.run import _claim_host_gateway_role
 
     hr.publish_record(hr.ROLE_GATEWAY, profiles=("default",), home=str(get_hermes_home()))
     owner = hr.read_record(hr.ROLE_GATEWAY, include_stale=True)
@@ -112,12 +112,12 @@ def test_an_unmigrated_standalone_fleet_starts_beside_the_owner_instead_of_spinn
     # The owner answers the rescan the way a STANDALONE gateway does: "I do not multiplex."
     # Stubbed at the wire answer every tree has, so a tree without the carve-out fails on the
     # OUTCOME (SystemExit 75) rather than on a missing symbol.
-    from gateway.host_attach import HostGateway
+    from hermes_agent.gateway.host_attach import HostGateway
     standalone_owner = HostGateway(pid=owner.pid + 1, home=host_lock_dir, profiles=("default",),
                                    served_known=True, standalone=True)  # another process
-    monkeypatch.setattr("gateway.host_attach.host_gateway",
+    monkeypatch.setattr("hermes_agent.gateway.host_attach.host_gateway",
                         lambda **kw: standalone_owner)
-    monkeypatch.setattr("gateway.host_attach.request_serve_profile",
+    monkeypatch.setattr("hermes_agent.gateway.host_attach.request_serve_profile",
                         lambda profile, owner=None: standalone_owner)
 
     handle = _hold_host_lock_from_another_description(hr)
@@ -137,9 +137,9 @@ def test_an_unmigrated_standalone_fleet_starts_beside_the_owner_instead_of_spinn
 def test_a_multiplexing_owner_is_still_refused(host_lock_dir, monkeypatch):
     """The carve-out is scoped to an unmigrated fleet: losing the race to a MULTIPLEXER is still
     the second-gateway shape, and an owner we cannot interrogate is treated as one."""
-    from gateway import host_rendezvous as hr
-    from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
-    from gateway.run import _claim_host_gateway_role
+    from hermes_agent.gateway import host_rendezvous as hr
+    from hermes_agent.gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
+    from hermes_agent.gateway.run import _claim_host_gateway_role
 
     hr.publish_record(hr.ROLE_GATEWAY, profiles=("default", "coder"), home=str(get_hermes_home()))
     owner = hr.read_record(hr.ROLE_GATEWAY, include_stale=True)
@@ -147,11 +147,11 @@ def test_a_multiplexing_owner_is_still_refused(host_lock_dir, monkeypatch):
     # Another process holds the record (our own pid would short-circuit _owner_is_standalone before
     # the wire is asked), and it never answers the rescan: an owner we cannot interrogate is a
     # multiplexer.
-    from gateway.host_attach import HostGateway
+    from hermes_agent.gateway.host_attach import HostGateway
     silent_owner = HostGateway(pid=owner.pid + 1, home=host_lock_dir, profiles=(),
                                served_known=False)
-    monkeypatch.setattr("gateway.host_attach.host_gateway", lambda **kw: silent_owner)
-    monkeypatch.setattr("gateway.host_attach.request_serve_profile",
+    monkeypatch.setattr("hermes_agent.gateway.host_attach.host_gateway", lambda **kw: silent_owner)
+    monkeypatch.setattr("hermes_agent.gateway.host_attach.request_serve_profile",
                         lambda profile, owner=None: None)  # owner never answers
     handle = _hold_host_lock_from_another_description(hr)
     try:
@@ -167,9 +167,9 @@ def test_standalone_lock_loss_uses_profile_discovery_when_host_probe_is_empty(
     host_lock_dir, monkeypatch
 ):
     """A transiently unavailable owner channel must not erase standalone coexistence."""
-    from gateway import host_rendezvous as hr
-    from gateway.host_attach import HostAttachDecision, START
-    from gateway.run import _claim_host_gateway_role
+    from hermes_agent.gateway import host_rendezvous as hr
+    from hermes_agent.gateway.host_attach import HostAttachDecision, START
+    from hermes_agent.gateway.run import _claim_host_gateway_role
 
     calls = []
 
@@ -177,9 +177,9 @@ def test_standalone_lock_loss_uses_profile_discovery_when_host_probe_is_empty(
         calls.append(owner)
         return HostAttachDecision(START, "")
 
-    monkeypatch.setattr("gateway.host_attach.standalone_attach_decision", standalone_decision)
+    monkeypatch.setattr("hermes_agent.gateway.host_attach.standalone_attach_decision", standalone_decision)
     monkeypatch.setattr("hermes_cli.profiles.profile_is_standalone", lambda home: True)
-    monkeypatch.setattr("gateway.host_attach.host_gateway", lambda **kw: None)
+    monkeypatch.setattr("hermes_agent.gateway.host_attach.host_gateway", lambda **kw: None)
     handle = _hold_host_lock_from_another_description(hr)
     try:
         _claim_host_gateway_role()
@@ -200,11 +200,11 @@ async def test_a_replace_unit_that_replaced_nothing_is_still_refused_when_it_los
     tokens: each --replace token handoff SIGTERMs the current holder."""
     from unittest.mock import AsyncMock
 
-    from gateway import host_rendezvous as hr
-    from gateway import status
-    from gateway.config import GatewayConfig
-    from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
-    from gateway.run import start_gateway
+    from hermes_agent.gateway import host_rendezvous as hr
+    from hermes_agent.gateway import status
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
+    from hermes_agent.gateway.run import start_gateway
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     (tmp_path / "home").mkdir()
@@ -220,16 +220,16 @@ async def test_a_replace_unit_that_replaced_nothing_is_still_refused_when_it_los
         async def stop(self):
             return None
 
-    monkeypatch.setattr("gateway.run._host_attach_or_none", AsyncMock(return_value=None))
-    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+    monkeypatch.setattr("hermes_agent.gateway.run._host_attach_or_none", AsyncMock(return_value=None))
+    monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda: None)
     monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
     monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
     monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
-    monkeypatch.setattr("gateway.run.GatewayRunner", _RunnerMustNotStart)
+    monkeypatch.setattr("hermes_agent.gateway.run.GatewayRunner", _RunnerMustNotStart)
     # The lock holder is a multiplexer: the standalone start-beside carve-out must not rescue a
     # --replace unit. Patched where _claim_host_gateway_role reads it; the request_serve_profile
     # patch this used to carry was unreachable (_owner_is_standalone short-circuits on our own pid).
-    monkeypatch.setattr("gateway.run._owner_is_standalone", lambda: False)
+    monkeypatch.setattr("hermes_agent.gateway.run._owner_is_standalone", lambda: False)
 
     hr.publish_record(hr.ROLE_GATEWAY, profiles=("default",), home=str(get_hermes_home()))
     handle = _hold_host_lock_from_another_description(hr)

@@ -24,7 +24,7 @@ def test_canonical_poll_reads_owner_projection_without_handshake(tmp_path, monke
 
 @pytest.mark.asyncio
 async def test_admission_wait_releases_file_lock_and_concurrent_deliver_keeps_loop_live(bot, monkeypatch):
-    from gateway.session_bot import deliver
+    from hermes_agent.gateway.session_bot import deliver
     from tools.bot_live_delivery import _locked
     entered, release, ticked = asyncio.Event(), asyncio.Event(), asyncio.Event()
     original = bot.authority.admit_automation
@@ -59,8 +59,8 @@ async def test_admission_wait_releases_file_lock_and_concurrent_deliver_keeps_lo
 
 @pytest.mark.asyncio
 async def test_paused_receipt_rearms_on_resume_without_polling_rpc(bot, monkeypatch):
-    from gateway.session_bot import deliver
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_bot import deliver
+    from hermes_agent.gateway.session_contract import SessionRef
     from tools.bot_live_delivery import read_delivery_result
     schedule = bot.authority._schedule
     monkeypatch.setattr(bot.authority, '_schedule', lambda ref: None)
@@ -85,8 +85,8 @@ async def test_receipt_read_straddling_the_settlement_commit_projects_the_reply(
     """The drain settles from a worker thread while a receipt refresh reads the admission on the
     loop: a commit landing between the row read and the result read is still a settled reply,
     never a terminal ``failed`` receipt that no later wake re-reads."""
-    from gateway import session_bot, session_results
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway import session_bot, session_results
+    from hermes_agent.gateway.session_contract import SessionRef
     from hermes_agent.hermes_state_runtime import claim_session_input, settle_session_input
     from tools.bot_live_delivery import read_delivery_result
     monkeypatch.setattr(bot.authority, '_schedule', lambda ref: None)
@@ -112,8 +112,8 @@ async def test_receipt_read_straddling_the_settlement_commit_projects_the_reply(
 
 @pytest.mark.asyncio
 async def test_adopted_result_during_unknown_projection_is_not_lost(bot, monkeypatch):
-    from gateway import session_bot
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway import session_bot
+    from hermes_agent.gateway.session_contract import SessionRef
     from hermes_agent.hermes_state_runtime import (begin_runtime_epoch, claim_session_input, recover_session_inputs,
         register_worker_execution, adopt_worker_execution, settle_session_input)
     from tools.bot_live_delivery import read_delivery_result
@@ -159,9 +159,9 @@ async def test_adopted_result_during_unknown_projection_is_not_lost(bot, monkeyp
 
 @pytest.mark.asyncio
 async def test_drain_defers_retry_without_publishing_interim_failure(bot, monkeypatch):
-    from gateway.session_bot import deliver, recover_bot_deliveries
+    from hermes_agent.gateway.session_bot import deliver, recover_bot_deliveries
     from tools.bot_live_delivery import read_delivery_result
-    import gateway.session_finite as finite
+    import hermes_agent.gateway.session_finite as finite
     execute = finite.execute_finite_admission
     async def drain_after_failure(authority, ref, row):
         result = await execute(authority, ref, row)
@@ -178,7 +178,7 @@ async def test_drain_defers_retry_without_publishing_interim_failure(bot, monkey
     from tests.gateway.test_session_bot_retry import _settle_quietly
     await _settle_quietly(bot)
     assert (await asyncio.to_thread(read_delivery_result, bot.home, key))['status'] == 'claimed'
-    from gateway import session_bot
+    from hermes_agent.gateway import session_bot
     read = session_bot.read_receipt
     async def drain_during_read(home, key):
         result = await read(home, key)

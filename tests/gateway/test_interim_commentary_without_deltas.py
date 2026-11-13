@@ -19,9 +19,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import stream_consumer as stream_consumer_mod
-from gateway.config import Platform
-from gateway.run_turn_runner import TurnRunner
+from hermes_agent.gateway import stream_consumer as stream_consumer_mod
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.run_turn_runner import TurnRunner
 
 
 class _FakeConsumer:
@@ -79,9 +79,9 @@ def _turn_runner(*, streaming_enabled: bool, supports_editing: bool) -> TurnRunn
 def _fake_consumer(monkeypatch):
     _FakeConsumer.instances = []
     monkeypatch.setattr(stream_consumer_mod, "GatewayStreamConsumer", _FakeConsumer)
-    monkeypatch.setattr("gateway.run_turn_runner.stream_held", lambda: False)
+    monkeypatch.setattr("hermes_agent.gateway.run_turn_runner.stream_held", lambda: False)
     monkeypatch.setattr(
-        "gateway.run_turn_runner._finite_viewer_turn", lambda: False
+        "hermes_agent.gateway.run_turn_runner._finite_viewer_turn", lambda: False
     )
     return _FakeConsumer
 

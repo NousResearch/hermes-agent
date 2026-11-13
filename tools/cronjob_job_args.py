@@ -59,7 +59,7 @@ def _first_fire_within_thread_horizon(
 def _origin_from_env(
     schedule: str | dict[str, Any] | None = None,
 ) -> Optional[dict[str, str]]:
-    from gateway.session_context import async_delivery_supported, get_session_env
+    from hermes_agent.gateway.session_context import async_delivery_supported, get_session_env
     origin_platform = get_session_env("HERMES_SESSION_PLATFORM")
     origin_chat_id = get_session_env("HERMES_SESSION_CHAT_ID")
     if not (origin_platform and origin_chat_id):
@@ -127,7 +127,7 @@ def _local_delivery_notice(job: dict[str, Any], user_deliver: Optional[str]) -> 
         if targets:
             # _origin_from_env() dropped a non-push origin (api_server) and the job rerouted to a
             # home channel: tell the creating client where the report goes (#69304).
-            from gateway.session_context import async_delivery_supported, get_session_env
+            from hermes_agent.gateway.session_context import async_delivery_supported, get_session_env
             fallback = [t for t in targets if t.get("_resolved_from") == "origin_fallback"]
             if fallback and get_session_env("HERMES_SESSION_PLATFORM") and not async_delivery_supported():
                 return ("Note: this stateless HTTP API session cannot receive cron delivery, so this "
@@ -288,7 +288,7 @@ def _resolve_cron_context_deliver(deliver: Optional[str]) -> Optional[str]:
     Cron sessions: ``origin`` (or omitted) becomes the creating run's ``platform:chat_id[:thread]``
     from HERMES_CRON_AUTO_DELIVER_*, or ``local`` when it has no concrete target; other
     elements pass through. Otherwise the scheduler would guess a home channel."""
-    from gateway.session_context import get_session_env
+    from hermes_agent.gateway.session_context import get_session_env
     from utils import is_truthy_value
     if not is_truthy_value(get_session_env("HERMES_CRON_SESSION", "")):
         return deliver

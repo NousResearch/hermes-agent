@@ -15,10 +15,10 @@ from tests.waiting import async_wait_until
 
 
 async def _owner(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
@@ -37,7 +37,7 @@ async def _owner(tmp_path, monkeypatch):
 
 
 def _viewer(authority):
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     return AuthorityConnection(authority, SimpleNamespace(write=lambda frame: None), {'user_id': 'owner'})
 
 
@@ -49,7 +49,7 @@ async def _attach(authority, sid):
 
 
 def _create(authority, text='earlier turn'):
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_local import create_local_session
     ref = create_local_session(authority, _viewer(authority).actor, {
         'request_id': text, 'source': 'gui', 'cwd': str(Path(authority.db.db_path).parent), 'model': 'm',
         'toolsets': []})
@@ -59,7 +59,7 @@ def _create(authority, text='earlier turn'):
 
 def _capture_timers(monkeypatch):
     """The grace timer's (delay, callback), fired by the test instead of after a real wait."""
-    import gateway.session_viewer_close as viewer_close
+    import hermes_agent.gateway.session_viewer_close as viewer_close
     armed = []
 
     def call_later(loop, delay, callback):
@@ -71,18 +71,18 @@ def _capture_timers(monkeypatch):
 
 def _stale_rows(monkeypatch):
     """Every restored row already idle past the legacy TTL, so the startup arm uses the plain grace."""
-    import gateway.session_viewer_close as viewer_close
+    import hermes_agent.gateway.session_viewer_close as viewer_close
     monkeypatch.setattr(viewer_close, 'STARTUP_IDLE_S', 0.0, raising=False)
 
 
 def _stored_close(db, sid):
-    from gateway.session_viewer_close import CLOSE_PREFIX
+    from hermes_agent.gateway.session_viewer_close import CLOSE_PREFIX
     return db.get_meta(CLOSE_PREFIX + sid)
 
 
 @pytest.mark.asyncio
 async def test_a_dropped_viewer_ends_the_session_after_its_turn_settles(tmp_path, monkeypatch):
-    import gateway.session_finite as finite
+    import hermes_agent.gateway.session_finite as finite
     import tools.async_delegation as delegation
     from hermes_agent.hermes_state_runtime import admit_session_input, list_session_admissions
 
@@ -159,7 +159,7 @@ async def test_an_orphan_end_leaves_an_unknown_turn_for_its_user(tmp_path, monke
     viewer, _ = await _attach(authority, sid)
     await viewer.close()
     armed[-1][1]()
-    from gateway.session_runtime_workers import mutation_tasks
+    from hermes_agent.gateway.session_runtime_workers import mutation_tasks
     await asyncio.gather(*mutation_tasks(authority))  # the close is stored and its settle has run
     assert _stored_close(authority.db, sid) is not None
     assert get_session_admission(authority.db, admission_id=row['admission_id'])['status'] == 'unknown'
@@ -217,7 +217,7 @@ async def test_work_finishing_after_close_and_restart_is_noted_on_the_ended_sess
 @pytest.mark.asyncio
 @pytest.mark.parametrize('viewer_returns', [False, True])
 async def test_a_session_open_when_the_gateway_stopped_ends_after_boot(tmp_path, monkeypatch, viewer_returns):
-    from gateway.session_local_recovery import recover_local_sessions
+    from hermes_agent.gateway.session_local_recovery import recover_local_sessions
 
     armed = _capture_timers(monkeypatch)
     _stale_rows(monkeypatch)
@@ -242,8 +242,8 @@ async def test_a_session_open_when_the_gateway_stopped_ends_after_boot(tmp_path,
 @pytest.mark.asyncio
 async def test_a_session_active_before_the_restart_is_kept_for_its_idle_classic_cli(tmp_path, monkeypatch):
     """An idle classic CLI redials only on its next call: boot must not end its session in minutes."""
-    from gateway.session_local_recovery import recover_local_sessions
-    from gateway.session_viewer_close import STARTUP_IDLE_S
+    from hermes_agent.gateway.session_local_recovery import recover_local_sessions
+    from hermes_agent.gateway.session_viewer_close import STARTUP_IDLE_S
 
     armed = _capture_timers(monkeypatch)
     first, _ = await _owner(tmp_path, monkeypatch)
@@ -266,7 +266,7 @@ def test_the_startup_idle_probe_does_not_nest_its_read_context(tmp_path, monkeyp
     Re-entry fails here instead of wedging the runner on that deadlock.
     """
     from contextlib import contextmanager
-    from gateway.session_viewer_close import _idle_s
+    from hermes_agent.gateway.session_viewer_close import _idle_s
     from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / 'state.db')
@@ -300,7 +300,7 @@ def test_the_startup_idle_probe_does_not_nest_its_read_context(tmp_path, monkeyp
      'sessions:\n  orphan_end_grace_s: 60\n', [60.0], [60.0]),
 ])
 async def test_the_legacy_reap_opt_outs_hold_until_the_new_key_is_set(tmp_path, monkeypatch, config, startup, detach):
-    from gateway.session_local_recovery import recover_local_sessions
+    from hermes_agent.gateway.session_local_recovery import recover_local_sessions
 
     armed = _capture_timers(monkeypatch)
     _stale_rows(monkeypatch)
@@ -319,8 +319,8 @@ async def test_the_legacy_reap_opt_outs_hold_until_the_new_key_is_set(tmp_path, 
 
 @pytest.mark.asyncio
 async def test_a_session_left_with_queued_input_ends_after_boot_once_it_drains(tmp_path, monkeypatch):
-    import gateway.session_finite as finite
-    from gateway.session_local_recovery import recover_local_sessions
+    import hermes_agent.gateway.session_finite as finite
+    from hermes_agent.gateway.session_local_recovery import recover_local_sessions
     from hermes_agent.hermes_state_runtime import admit_session_input, list_session_admissions
 
     armed = _capture_timers(monkeypatch)

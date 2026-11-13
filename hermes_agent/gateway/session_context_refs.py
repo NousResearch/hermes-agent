@@ -10,7 +10,7 @@ import os
 from contextlib import suppress
 from functools import partial
 
-from gateway.config import Platform
+from hermes_agent.gateway.config import Platform
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ async def expand_references(text, *, cwd, context_length, plugins=True):
 
 
 def _inbound_cwd(runner, source):
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_policy import policy_for_source
     try:
         from tools.terminal_scope import terminal_env
     except ImportError:
@@ -62,7 +62,7 @@ async def turn_references(runner, event, source, session_key, text):
     execution, and the returned text, the stored user row, is ``text`` with the same attached
     context, as a typed turn stores it: later turns still read the content. A refused local turn
     leaves its refusal on ``event`` for the prepare step to answer with."""
-    from gateway.session_cli_turn import cli_turn, rebind_api_text
+    from hermes_agent.gateway.session_cli_turn import cli_turn, rebind_api_text
     api_text = cli_turn(event.message_id).get('api_text')
     target = text if api_text is None else api_text
     if "@" not in target:

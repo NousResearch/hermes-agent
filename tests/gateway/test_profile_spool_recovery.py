@@ -14,10 +14,10 @@ from unittest.mock import patch
 import pytest
 
 import agent.secret_scope as ss
-from gateway.config import GatewayConfig
-from gateway.platforms.base import Platform, SessionSource
-from gateway.session import SessionEntry, SessionStore
-from gateway.shutdown_flush import recover_gateway_pending, spool_dropped_transcript_message
+from hermes_agent.gateway.config import GatewayConfig
+from hermes_agent.gateway.platforms.base import Platform, SessionSource
+from hermes_agent.gateway.session import SessionEntry, SessionStore
+from hermes_agent.gateway.shutdown_flush import recover_gateway_pending, spool_dropped_transcript_message
 from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
 
@@ -61,7 +61,7 @@ def _spool_under(home, sid: str, text: str) -> None:
 
 def test_boot_recovery_replays_a_routed_profiles_spooled_backlog(multiplex_homes):
     root, profile = multiplex_homes
-    with patch("gateway.session.SessionStore._ensure_loaded"):
+    with patch("hermes_agent.gateway.session.SessionStore._ensure_loaded"):
         store = SessionStore(sessions_dir=root / "sessions", config=GatewayConfig(multiplex_profiles=True))
     store._loaded = True
 

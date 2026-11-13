@@ -160,7 +160,7 @@ def _rebuild_webapp(checkout, dist):
 async def _native_session_list(runner, origin) -> bool:
     from websockets.asyncio.client import connect
 
-    from gateway.runtime_bootstrap import TicketStore
+    from hermes_agent.gateway.runtime_bootstrap import TicketStore
     from tests.gateway.fixtures.local_recovery_probe import rpc
 
     authority = runner.session_authority
@@ -205,11 +205,11 @@ def _redirect_uri(host_header: str):
 async def probe(spec):
     import httpx
 
-    from gateway.control_socket import GatewayControlServer
-    from gateway.run import GatewayRunner
-    from gateway.run_api import stop_gateway_api
-    from gateway.run_runtime import start_gateway_runtime_api
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.control_socket import GatewayControlServer
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.run_api import stop_gateway_api
+    from hermes_agent.gateway.run_runtime import start_gateway_runtime_api
+    from hermes_agent.gateway.session_authority import initialize_session_authority
     import hermes_cli.webapp
 
     home = Path(os.environ["HERMES_HOME"])
@@ -236,7 +236,7 @@ async def probe(spec):
         # Another process that bound the port with SO_REUSEADDR and starts listening while the
         # gateway mounts the dashboard (Linux lets both bind until one listens); or a client that
         # connects then.
-        from gateway.run_api import GatewayDashboardMount
+        from hermes_agent.gateway.run_api import GatewayDashboardMount
 
         if spec.get("rival_listens_during_mount"):
             rival = socket.socket()

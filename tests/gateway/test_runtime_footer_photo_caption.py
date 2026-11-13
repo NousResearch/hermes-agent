@@ -9,10 +9,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType, SessionSource
-from gateway.runtime_footer import FooteredReply
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType, SessionSource
+from hermes_agent.gateway.runtime_footer import FooteredReply
 from tests.gateway.test_run_progress_topics import _make_runner
 
 FOOTER = "model-x · 29%"
@@ -98,7 +98,7 @@ async def _streamed_turn(adapter, response, footer):
 async def test_streamed_photo_reply_sends_no_trailing_footer_message(tmp_path, monkeypatch):
     photo = _photo(tmp_path, monkeypatch)
     adapter = _Adapter()
-    monkeypatch.setattr("gateway.platforms.base.BasePlatformAdapter.filter_media_delivery_paths",
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base.BasePlatformAdapter.filter_media_delivery_paths",
                         staticmethod(lambda files, **_k: files))
 
     await _streamed_turn(adapter, f"Here it is\nMEDIA:{photo}", FOOTER)

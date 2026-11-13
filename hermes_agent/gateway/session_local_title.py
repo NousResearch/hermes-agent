@@ -28,13 +28,13 @@ def resolve_titled_session(authority, actor, name, *, missing_ok=False):
         if missing_ok:
             return None
         raise RuntimeStoreError('not_found')
-    from gateway.session_route_recovery import handed_off_ref
+    from hermes_agent.gateway.session_route_recovery import handed_off_ref
     moved = handed_off_ref(authority, tip['id'])
     try:
         if moved is not None:
             authority.authorize(actor, moved, 'session:read')
             return moved
-        from gateway.session_local_migration import resolve_local_target
+        from hermes_agent.gateway.session_local_migration import resolve_local_target
         ref = resolve_local_target(authority, actor, tip['id'])
     except RuntimeStoreError as exc:
         if exc.reason == 'permission_denied':
@@ -53,7 +53,7 @@ def resolve_latest_session(authority, actor, family, workspace=None):
     families = {'cli': sorted(CLI_FAMILY_SOURCES), 'tui': ['tui']}
     if family not in families or (workspace is not None and (not isinstance(workspace, str) or not workspace)):
         raise RuntimeStoreError('invalid_params')
-    from gateway.session_local_migration import resolve_local_target
+    from hermes_agent.gateway.session_local_migration import resolve_local_target
     # The owner's own rows are stored ``local``, with the family in ``created_source``.
     sources = [*families[family], 'local']
     for scope in ([workspace] if workspace else []) + [None]:

@@ -7,7 +7,7 @@ defaults to the triggering message and emits ``message.reaction`` for live paint
 import contextlib
 import json
 
-from gateway.session_context import get_session_env
+from hermes_agent.gateway.session_context import get_session_env
 from tools import desktop_ui
 from tools.registry import registry, tool_error
 

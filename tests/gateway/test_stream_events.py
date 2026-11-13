@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from gateway.stream_dispatch import GatewayEventDispatcher
-from gateway.stream_events import (
+from hermes_agent.gateway.stream_dispatch import GatewayEventDispatcher
+from hermes_agent.gateway.stream_events import (
     Commentary,
     GatewayNotice,
     LongToolHint,
@@ -26,7 +26,7 @@ from gateway.stream_events import (
 def _base_adapter():
     """A real BasePlatformAdapter instance (abstractmethods cleared) so we
     exercise the genuine default render hooks, not a mock."""
-    from gateway.platforms.base import BasePlatformAdapter
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
     Concrete = type("Concrete", (BasePlatformAdapter,), {})
     Concrete.__abstractmethods__ = frozenset()

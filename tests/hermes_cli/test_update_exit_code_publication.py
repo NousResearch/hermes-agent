@@ -1,6 +1,6 @@
 """Every writer of ``.update_exit_code`` publishes it atomically.
 
-The gateway /update watcher (gateway/run_notifications_update.py) polls ``.update_exit_code``
+The gateway /update watcher (hermes_agent/gateway/run_notifications_update.py) polls ``.update_exit_code``
 every 2 s from the gateway process and reads ``int(text or "1")``. A writer that truncates the
 file in place left it empty for an instant; a poll landing there read exit 1, told the user the
 update failed although it succeeded, and cleared the markers so no correction followed.

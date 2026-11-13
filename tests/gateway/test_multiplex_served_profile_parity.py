@@ -13,9 +13,9 @@ from types import SimpleNamespace
 import pytest
 
 from agent.secret_scope import set_multiplex_active
-from gateway.config import Platform, PlatformConfig
-from gateway.run import GatewayRunner, _profile_runtime_scope
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.run import GatewayRunner, _profile_runtime_scope
+from hermes_agent.gateway.session import SessionSource
 from hermes_constants import get_hermes_home
 
 

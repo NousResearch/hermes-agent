@@ -10,7 +10,7 @@ class TestMediaTagCleanup:
 
         The fix adds `\\[` to the lookahead character class in MEDIA_TAG_CLEANUP_RE.
         """
-        from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
+        from hermes_agent.gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
 
         # Issue case: [[as_document]] glued directly to .xlsx
         text = "Готово. MEDIA:/home/hermes/report.xlsx[[as_document]]"
@@ -41,7 +41,7 @@ class TestMediaTagCjkTerminators:
     ASCII-only lookahead silently dropped the attachment."""
 
     def test_full_width_suffixes_terminate_the_path(self):
-        from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
+        from hermes_agent.gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
 
         cases = [
             "MEDIA:D:/workspace/out/report.pdf（782.6 KB）",
@@ -61,7 +61,7 @@ class TestMediaTagCjkTerminators:
             assert m.group("path").endswith(".pdf"), (text, m.group("path"))
 
     def test_real_chinese_cron_delivery_line(self):
-        from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
+        from hermes_agent.gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
 
         text = (
             "## 交付物\n\n- **PDF 早报**："
@@ -72,7 +72,7 @@ class TestMediaTagCjkTerminators:
         assert m.group("path") == "D:/workspace/zaobao/output/早报_2026-08-16.pdf"
 
     def test_ascii_terminators_still_work(self):
-        from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
+        from hermes_agent.gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
 
         for text in (
             "MEDIA:/tmp/report.pdf",
@@ -84,13 +84,13 @@ class TestMediaTagCjkTerminators:
 
     def test_adjacent_tags_still_split(self):
         """#68773 guard: the widened class must not let tags glue together."""
-        from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
+        from hermes_agent.gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
 
         found = MEDIA_TAG_CLEANUP_RE.findall("MEDIA:/a.pngMEDIA:/b.png")
         assert list(found) == ["/a.png", "/b.png"]
 
     def test_extensionless_variant_accepts_full_width_colon(self):
-        from gateway.platforms.base import MEDIA_EXTENSIONLESS_TAG_RE
+        from hermes_agent.gateway.platforms.base import MEDIA_EXTENSIONLESS_TAG_RE
 
         m = MEDIA_EXTENSIONLESS_TAG_RE.search("MEDIA:/tmp/Caddyfile：内容")
         assert m is not None and m.group("path") == "/tmp/Caddyfile"

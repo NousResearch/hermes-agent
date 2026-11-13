@@ -32,7 +32,7 @@ CHANNEL = "ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd"
 
 
 def _make_adapter(extra=None):
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
 
     cfg = PlatformConfig(enabled=True, extra={"relay_url": "https://test.relay", **(extra or {})})
     adapter = BuzzAdapter(cfg)

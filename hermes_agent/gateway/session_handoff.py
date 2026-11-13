@@ -9,7 +9,7 @@ home channel) is that profile's, the one the watcher delivers through. SQLite ru
 import asyncio
 from functools import partial
 
-from gateway.session_busy_controls import authorize
+from hermes_agent.gateway.session_busy_controls import authorize
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
@@ -38,7 +38,7 @@ def _destination(platform_name):
     """The home channel the watcher will deliver to, by the CLI's own rule (relay-fronted platforms
     included): an unconfigured platform or a missing home channel would otherwise sit ``pending``
     until the client gives up."""
-    from gateway.handoff_target import HandoffTargetError, resolve_handoff_home
+    from hermes_agent.gateway.handoff_target import HandoffTargetError, resolve_handoff_home
     try:
         return resolve_handoff_home(platform_name)
     except HandoffTargetError as exc:

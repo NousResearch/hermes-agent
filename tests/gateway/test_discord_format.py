@@ -86,7 +86,7 @@ class TestDiscordToolPreviewFormatting:
         )
 
     def test_structured_tool_event_uses_clickable_truncated_url(self):
-        from gateway.stream_events import ToolCallChunk
+        from hermes_agent.gateway.stream_events import ToolCallChunk
 
         adapter = _make_discord_adapter()
         url = "https://hermes-agent.nousresearch.com/docs/gateway/discord/tool-progress"

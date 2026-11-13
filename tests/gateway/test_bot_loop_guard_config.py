@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from gateway.bot_loop_guard import BotLoopGuard, load_settings
+from hermes_agent.gateway.bot_loop_guard import BotLoopGuard, load_settings
 
 
 @pytest.fixture

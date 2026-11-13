@@ -99,7 +99,7 @@ def build_exec_approval_view(discord, base, *, unauthorized):
                 unauth_msg=unauthorized(),
             ):
                 return
-            from gateway.approval_actor import approval_refusal, refusal_text
+            from hermes_agent.gateway.approval_actor import approval_refusal, refusal_text
             # Admins of the approval's own chat scope (``extra``), as ``/approve``: never the DM-only
             # ``admin_user_ids``, which stays this view's own require_admin click gate.
             if requester := approval_refusal(self.session_key, getattr(interaction.user, "id", ""),

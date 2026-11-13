@@ -1,7 +1,7 @@
 """Feishu/Lark env -> gateway config bridge (``PlatformEntry.env_overrides``)."""
 
-from gateway.config import Platform
-from gateway.platform_env import EnvCred
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platform_env import EnvCred
 
 ENV_ENABLE_CREDENTIALS = ("FEISHU_APP_ID", "FEISHU_APP_SECRET")
 ENV_OVERRIDES = (

@@ -10,8 +10,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 from tests.gateway.test_gateway_silence_tokens import _event, _runner, _source
 from tests.waiting import async_wait_until
 

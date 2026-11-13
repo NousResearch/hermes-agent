@@ -4,8 +4,8 @@ The `target` tool parameter is free-form (`'platform:chat_id'`), so before
 this guard a model could name ANY chat id and the gateway would emit an
 outbound relay frame for it — authenticating the sender while never
 authorizing the destination. These tests drive the REAL `send_message_tool`
-entrypoint through the REAL production wiring (`gateway.relay.egress`,
-`gateway.channel_directory`, `gateway.relay.relay_fronted_platforms`) against
+entrypoint through the REAL production wiring (`hermes_agent.gateway.relay.egress`,
+`hermes_agent.gateway.channel_directory`, `hermes_agent.gateway.relay.relay_fronted_platforms`) against
 a temp HERMES_HOME; nothing under test is constructed by the test itself.
 """
 
@@ -15,7 +15,7 @@ import json
 
 import pytest
 
-from gateway.config import Platform
+from hermes_agent.gateway.config import Platform
 from tools.send_message_tool import send_message_tool
 
 ATTESTED_CHAT = "111111111111111111"
@@ -28,13 +28,13 @@ def relay_env(tmp_path, monkeypatch):
     """A gateway whose ONLY reachable Discord destinations are attested.
 
     Mirrors the production shape: `GATEWAY_RELAY_PLATFORMS` is the deploy
-    stamp `gateway.relay.relay_fronted_platforms()` reads, the channel
+    stamp `hermes_agent.gateway.relay.relay_fronted_platforms()` reads, the channel
     directory json is the file `channel_directory.load_directory()` reads, and
     no live native adapter exists in this process (so the relay owns egress
-    for `discord`, exactly as `gateway/delivery.resolve_delivery_transport`
+    for `discord`, exactly as `hermes_agent/gateway/delivery.resolve_delivery_transport`
     decides it).
     """
-    import gateway.channel_directory as cd
+    import hermes_agent.gateway.channel_directory as cd
 
     monkeypatch.setenv("GATEWAY_RELAY_URL", "wss://connector.example/relay")
     monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "discord")
@@ -78,12 +78,12 @@ def _send(target: str, sent):
         sent.append(chat_id)
         return {"success": True, "message_id": "m1"}
 
-    with patch("gateway.config.load_gateway_config", return_value=config), patch(
+    with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), patch(
         "tools.interrupt.is_interrupted", return_value=False
     ), patch("model_tools._run_async", side_effect=lambda c: asyncio.run(c)), patch(
         "tools.send_message_tool._send_to_platform", side_effect=_record
     ), patch(
-        "gateway.mirror.mirror_to_session", return_value=False
+        "hermes_agent.gateway.mirror.mirror_to_session", return_value=False
     ):
         return json.loads(
             send_message_tool(
@@ -127,7 +127,7 @@ def test_home_channel_is_attested(relay_env):
 
 def test_session_origin_chat_is_attested(relay_env, monkeypatch):
     """A chat this gateway actually holds a session in is reachable."""
-    import gateway.channel_directory as cd
+    import hermes_agent.gateway.channel_directory as cd
 
     monkeypatch.setattr(
         cd,
@@ -163,16 +163,16 @@ def test_live_native_adapter_takes_precedence_over_the_relay_guard(
 ):
     """A platform served by a live NATIVE adapter here is not a relay egress.
 
-    Same precedence `gateway/delivery.resolve_delivery_transport` applies: a
+    Same precedence `hermes_agent/gateway/delivery.resolve_delivery_transport` applies: a
     concrete native adapter always wins over the relay, so this guard must not
     fire for it.
     """
     from types import SimpleNamespace
 
-    import gateway.run
+    import hermes_agent.gateway.run
 
     runner = SimpleNamespace(adapters={Platform.DISCORD: object()})
-    monkeypatch.setattr(gateway.run, "_gateway_runner_ref", lambda: runner)
+    monkeypatch.setattr(hermes_agent.gateway.run, "_gateway_runner_ref", lambda: runner)
     sent: list[str] = []
     result = _send(f"discord:{ARBITRARY_CHAT}", sent)
 
@@ -218,7 +218,7 @@ SLACK_USER = "U01234567AB"
 @pytest.fixture
 def slack_relay_env(tmp_path, monkeypatch):
     """A relay-fronted Slack gateway whose attested destination is a DM id."""
-    import gateway.channel_directory as cd
+    import hermes_agent.gateway.channel_directory as cd
 
     monkeypatch.setenv("GATEWAY_RELAY_URL", "wss://connector.example/relay")
     monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "slack")
@@ -267,14 +267,14 @@ def _send_slack(target: str, sent, *, resolves_to: str | None = SLACK_DM):
         # resolver returns — the opened DM channel id.
         return (resolves_to, None)
 
-    with patch("gateway.config.load_gateway_config", return_value=config), patch(
+    with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), patch(
         "tools.interrupt.is_interrupted", return_value=False
     ), patch("model_tools._run_async", side_effect=lambda c: asyncio.run(c)), patch(
         "tools.send_message_tool._send_to_platform", side_effect=_record
     ), patch(
         "tools.send_message_tool._resolve_slack_user_target", side_effect=_resolve
     ), patch(
-        "gateway.mirror.mirror_to_session", return_value=False
+        "hermes_agent.gateway.mirror.mirror_to_session", return_value=False
     ):
         return json.loads(
             send_message_tool({"action": "send", "target": target, "message": "hello"})
@@ -331,7 +331,7 @@ def test_slack_user_target_resolving_to_unattested_dm_is_refused(slack_relay_env
 
 def test_guard_fault_refuses_rather_than_authorizing(relay_env, monkeypatch):
     """A guard that cannot answer must refuse, and must not egress."""
-    import gateway.relay.egress as eg
+    import hermes_agent.gateway.relay.egress as eg
     from tools import send_message_tool as smt
 
     def _boom(*_a, **_k):
@@ -386,7 +386,7 @@ def test_route_discovery_fault_refuses_rather_than_authorizing(relay_env, monkey
     guard entirely. Review injected a discovery fault and watched an
     unattested target get authorized.
     """
-    import gateway.relay as gr
+    import hermes_agent.gateway.relay as gr
     from tools.send_message_tool import _authorize_relay_target
 
     def boom():
@@ -405,7 +405,7 @@ def test_missing_relay_module_still_authorizes(relay_env, monkeypatch):
     everything in CLI/cron contexts", which is the outage the original broad
     except was there to avoid.
     """
-    import gateway.relay as gr
+    import hermes_agent.gateway.relay as gr
     from tools.send_message_tool import _authorize_relay_target
 
     monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: set())
@@ -439,8 +439,8 @@ def test_relay_fronted_matching_is_case_insensitive(relay_env, monkeypatch, conf
     returned configured names verbatim, so a platform configured as "Discord"
     missed the membership test and looked native — skipping the guard entirely.
     """
-    import gateway.relay as gr
-    import gateway.relay.egress as eg
+    import hermes_agent.gateway.relay as gr
+    import hermes_agent.gateway.relay.egress as eg
 
     monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: {configured})
     monkeypatch.setattr(eg, "attested_relay_targets", lambda p: set())
@@ -463,8 +463,8 @@ def test_requested_platform_name_is_also_normalised(relay_env, monkeypatch, requ
     future entry point that does not pre-normalise. Both functions are public
     within the package and must not assume a lowercased argument.
     """
-    import gateway.relay as gr
-    import gateway.relay.egress as eg
+    import hermes_agent.gateway.relay as gr
+    import hermes_agent.gateway.relay.egress as eg
 
     monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: {"discord"})
     monkeypatch.setattr(eg, "attested_relay_targets", lambda p: set())
@@ -483,8 +483,8 @@ def test_mixed_case_request_still_reaches_attested_targets(relay_env, monkeypatc
     for legitimate traffic rather than a bypass. Both directions matter, so the
     lookup name is asserted, not just the routing decision.
     """
-    import gateway.relay as gr
-    import gateway.relay.egress as eg
+    import hermes_agent.gateway.relay as gr
+    import hermes_agent.gateway.relay.egress as eg
 
     seen = []
 
@@ -509,7 +509,7 @@ def test_attested_lookup_normalises_before_querying_the_sources(relay_env, monke
 
     Asserted against the real function with only its leaf sources stubbed.
     """
-    import gateway.relay.egress as eg
+    import hermes_agent.gateway.relay.egress as eg
 
     monkeypatch.setattr(eg, "_home_channel_id", lambda n: None)
     monkeypatch.setattr(eg, "_directory_ids", lambda n: {"999"} if n == "discord" else set())
@@ -520,8 +520,8 @@ def test_attested_lookup_normalises_before_querying_the_sources(relay_env, monke
 
 def test_attested_target_still_allowed_when_config_case_differs(relay_env, monkeypatch):
     """Control: normalizing must not start refusing legitimate traffic."""
-    import gateway.relay as gr
-    import gateway.relay.egress as eg
+    import hermes_agent.gateway.relay as gr
+    import hermes_agent.gateway.relay.egress as eg
 
     monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: {"Discord"})
     monkeypatch.setattr(eg, "attested_relay_targets", lambda p: {"999"})
@@ -602,9 +602,9 @@ def test_session_attestation_does_not_invent_a_matrix_room_prefix(monkeypatch):
     (`!room:server.org`), so the split attested a bare `!room` that no session
     ever used — the guard vouching for a destination on its own invention.
     """
-    import gateway.channel_directory as cd
-    import gateway.relay as gr
-    import gateway.relay.egress as eg
+    import hermes_agent.gateway.channel_directory as cd
+    import hermes_agent.gateway.relay as gr
+    import hermes_agent.gateway.relay.egress as eg
 
     monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: {"matrix"})
     # A Matrix room with NO thread: the colon is part of the address itself.
@@ -626,9 +626,9 @@ def test_session_attestation_still_recovers_a_slack_thread_parent(monkeypatch):
     Slack session ids are genuinely `chat:thread` and the connector authorizes
     the CHAT, so failing to recover the parent would refuse legitimate replies.
     """
-    import gateway.channel_directory as cd
-    import gateway.relay as gr
-    import gateway.relay.egress as eg
+    import hermes_agent.gateway.channel_directory as cd
+    import hermes_agent.gateway.relay as gr
+    import hermes_agent.gateway.relay.egress as eg
 
     monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: {"slack"})
     # A genuinely thread-qualified entry carries thread_id separately, which is
@@ -643,14 +643,14 @@ def test_session_attestation_still_recovers_a_slack_thread_parent(monkeypatch):
 
 
 def test_egress_module_own_import_boundary_fails_closed(monkeypatch):
-    """Round 4, non-blocking finding: `gateway/relay/egress.py` has its OWN
-    import boundary (`_relay_fronted` -> `from gateway.relay import ...`), and
+    """Round 4, non-blocking finding: `hermes_agent/gateway/relay/egress.py` has its OWN
+    import boundary (`_relay_fronted` -> `from hermes_agent.gateway.relay import ...`), and
     the existing nested-ImportError test intercepts the EARLIER import in
     tools/send_message_tool.py, so this one was never exercised.
     """
     import builtins
 
-    import gateway.relay.egress as eg
+    import hermes_agent.gateway.relay.egress as eg
 
     real_import = builtins.__import__
 
@@ -671,9 +671,9 @@ def test_matrix_thread_parent_is_recovered_without_splitting_the_room_id(monkeyp
     `!room:server.org:$thread`. Splitting on the FIRST colon yields `!room`
     (invented); using the structured `thread_id` yields the real room.
     """
-    import gateway.channel_directory as cd
-    import gateway.relay as gr
-    import gateway.relay.egress as eg
+    import hermes_agent.gateway.channel_directory as cd
+    import hermes_agent.gateway.relay as gr
+    import hermes_agent.gateway.relay.egress as eg
 
     monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: {"matrix"})
     monkeypatch.setattr(
@@ -699,8 +699,8 @@ def test_disabled_native_adapter_is_not_treated_as_native(monkeypatch):
     """
     from types import SimpleNamespace
 
-    import gateway.relay.egress as eg
-    from gateway.config import Platform
+    import hermes_agent.gateway.relay.egress as eg
+    from hermes_agent.gateway.config import Platform
 
     monkeypatch.setattr(
         eg,
@@ -708,7 +708,7 @@ def test_disabled_native_adapter_is_not_treated_as_native(monkeypatch):
         lambda: SimpleNamespace(adapters={Platform.DISCORD: object()}),
         raising=False,
     )
-    import gateway.run as gr_run
+    import hermes_agent.gateway.run as gr_run
 
     monkeypatch.setattr(gr_run, "_gateway_runner_ref", eg._gateway_runner_ref, raising=False)
     monkeypatch.setattr(
@@ -719,7 +719,7 @@ def test_disabled_native_adapter_is_not_treated_as_native(monkeypatch):
         ),
         raising=False,
     )
-    import gateway.config as gc
+    import hermes_agent.gateway.config as gc
 
     monkeypatch.setattr(
         gc,
@@ -735,10 +735,10 @@ def test_enabled_native_adapter_is_still_native(monkeypatch):
     """Control: an ENABLED native adapter must keep bypassing the relay guard."""
     from types import SimpleNamespace
 
-    import gateway.config as gc
-    import gateway.relay.egress as eg
-    import gateway.run as gr_run
-    from gateway.config import Platform
+    import hermes_agent.gateway.config as gc
+    import hermes_agent.gateway.relay.egress as eg
+    import hermes_agent.gateway.run as gr_run
+    from hermes_agent.gateway.config import Platform
 
     ref = lambda: SimpleNamespace(adapters={Platform.DISCORD: object()})
     monkeypatch.setattr(gr_run, "_gateway_runner_ref", ref, raising=False)
@@ -758,8 +758,8 @@ def test_arbitrary_thread_under_an_attested_parent_is_refused(relay_env, monkeyp
     `POST /channels/{thread_id}/messages` — so an attested parent channel must
     not vouch for a caller-supplied thread the gateway has never seen.
     """
-    import gateway.relay as gr
-    import gateway.relay.egress as eg
+    import hermes_agent.gateway.relay as gr
+    import hermes_agent.gateway.relay.egress as eg
 
     monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: {"discord"})
     monkeypatch.setattr(eg, "attested_relay_targets", lambda p: {"111"})
@@ -775,8 +775,8 @@ def test_attested_thread_is_allowed(relay_env, monkeypatch):
     bound form is what `_session_entry_id` actually records, so nothing
     legitimate is lost.
     """
-    import gateway.relay as gr
-    import gateway.relay.egress as eg
+    import hermes_agent.gateway.relay as gr
+    import hermes_agent.gateway.relay.egress as eg
 
     monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: {"discord"})
     monkeypatch.setattr(eg, "attested_relay_targets", lambda p: {"111", "111:999"})
@@ -791,8 +791,8 @@ def test_unrelated_attested_chat_does_not_vouch_for_a_thread(relay_env, monkeypa
     though no session ever existed in that thread. `7` is a sibling CHAT, not
     a thread of `-100A`.
     """
-    import gateway.relay as gr
-    import gateway.relay.egress as eg
+    import hermes_agent.gateway.relay as gr
+    import hermes_agent.gateway.relay.egress as eg
 
     monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: {"discord"})
     monkeypatch.setattr(eg, "attested_relay_targets", lambda p: {"-100A", "7"})
@@ -802,8 +802,8 @@ def test_unrelated_attested_chat_does_not_vouch_for_a_thread(relay_env, monkeypa
 
 def test_a_thread_attested_under_another_parent_is_refused(relay_env, monkeypatch):
     """`B:55` must not authorize thread 55 under parent A."""
-    import gateway.relay as gr
-    import gateway.relay.egress as eg
+    import hermes_agent.gateway.relay as gr
+    import hermes_agent.gateway.relay.egress as eg
 
     monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: {"discord"})
     monkeypatch.setattr(
@@ -829,7 +829,7 @@ def test_tool_guard_forwards_the_thread_id(monkeypatch):
     def fake_authorize(platform_name, chat_id, thread_id=None):
         seen["args"] = (platform_name, chat_id, thread_id)
 
-    import gateway.relay.egress as eg
+    import hermes_agent.gateway.relay.egress as eg
 
     monkeypatch.setattr(eg, "authorize_relay_target", fake_authorize)
     smt._authorize_relay_target("discord", "111", "999")
@@ -846,11 +846,11 @@ def test_config_read_fault_refuses_rather_than_assuming_native(monkeypatch):
     """
     from types import SimpleNamespace
 
-    import gateway.config as gc
-    import gateway.relay as gr
-    import gateway.relay.egress as eg
-    import gateway.run as gr_run
-    from gateway.config import Platform
+    import hermes_agent.gateway.config as gc
+    import hermes_agent.gateway.relay as gr
+    import hermes_agent.gateway.relay.egress as eg
+    import hermes_agent.gateway.run as gr_run
+    from hermes_agent.gateway.config import Platform
 
     monkeypatch.setattr(
         gr_run,
@@ -872,11 +872,11 @@ def test_healthy_config_with_enabled_native_still_bypasses_the_guard(monkeypatch
     """Control: the guard must not start refusing native platforms."""
     from types import SimpleNamespace
 
-    import gateway.config as gc
-    import gateway.relay as gr
-    import gateway.relay.egress as eg
-    import gateway.run as gr_run
-    from gateway.config import Platform
+    import hermes_agent.gateway.config as gc
+    import hermes_agent.gateway.relay as gr
+    import hermes_agent.gateway.relay.egress as eg
+    import hermes_agent.gateway.run as gr_run
+    from hermes_agent.gateway.config import Platform
 
     monkeypatch.setattr(
         gr_run,
@@ -907,10 +907,10 @@ def test_guard_uses_the_live_adapter_not_stale_env_discovery(monkeypatch):
     """
     from types import SimpleNamespace
 
-    import gateway.relay as gr
-    import gateway.relay.egress as eg
-    import gateway.run as gr_run
-    from gateway.config import Platform
+    import hermes_agent.gateway.relay as gr
+    import hermes_agent.gateway.relay.egress as eg
+    import hermes_agent.gateway.run as gr_run
+    from hermes_agent.gateway.config import Platform
 
     class _LiveRelay:
         def fronts_platform(self, p):
@@ -932,9 +932,9 @@ def test_guard_uses_the_live_adapter_not_stale_env_discovery(monkeypatch):
 
 def test_guard_falls_back_to_config_when_no_live_adapter(monkeypatch):
     """Control: with no live runner (CLI/cron) the config path must still work."""
-    import gateway.relay as gr
-    import gateway.relay.egress as eg
-    import gateway.run as gr_run
+    import hermes_agent.gateway.relay as gr
+    import hermes_agent.gateway.relay.egress as eg
+    import hermes_agent.gateway.run as gr_run
 
     monkeypatch.setattr(gr_run, "_gateway_runner_ref", lambda: None, raising=False)
     monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: {"discord"})
@@ -956,10 +956,10 @@ def test_a_live_adapter_that_cannot_answer_is_a_fault_not_an_absence(monkeypatch
     """
     from types import SimpleNamespace
 
-    import gateway.relay as gr
-    import gateway.relay.egress as eg
-    import gateway.run as gr_run
-    from gateway.config import Platform
+    import hermes_agent.gateway.relay as gr
+    import hermes_agent.gateway.relay.egress as eg
+    import hermes_agent.gateway.run as gr_run
+    from hermes_agent.gateway.config import Platform
 
     class Exploding:
         def fronts_platform(self, platform):
@@ -996,9 +996,9 @@ def test_a_missing_relay_adapter_is_still_an_absence(monkeypatch):
     """
     from types import SimpleNamespace
 
-    import gateway.relay as gr
-    import gateway.relay.egress as eg
-    import gateway.run as gr_run
+    import hermes_agent.gateway.relay as gr
+    import hermes_agent.gateway.relay.egress as eg
+    import hermes_agent.gateway.run as gr_run
 
     monkeypatch.setattr(
         gr_run, "_gateway_runner_ref", lambda: SimpleNamespace(adapters={}), raising=False
@@ -1028,10 +1028,10 @@ def test_a_raising_fronts_platform_attribute_is_a_fault_not_an_absence(monkeypat
     """
     from types import SimpleNamespace
 
-    import gateway.relay as gr
-    import gateway.relay.egress as eg
-    import gateway.run as gr_run
-    from gateway.config import Platform
+    import hermes_agent.gateway.relay as gr
+    import hermes_agent.gateway.relay.egress as eg
+    import hermes_agent.gateway.run as gr_run
+    from hermes_agent.gateway.config import Platform
 
     class RaisingAttr:
         @property
@@ -1061,10 +1061,10 @@ def test_an_adapter_without_fronts_platform_is_a_fault(monkeypatch):
     """
     from types import SimpleNamespace
 
-    import gateway.relay as gr
-    import gateway.relay.egress as eg
-    import gateway.run as gr_run
-    from gateway.config import Platform
+    import hermes_agent.gateway.relay as gr
+    import hermes_agent.gateway.relay.egress as eg
+    import hermes_agent.gateway.run as gr_run
+    from hermes_agent.gateway.config import Platform
 
     monkeypatch.setattr(
         gr_run,
@@ -1092,10 +1092,10 @@ def test_an_adapter_registry_that_cannot_be_read_is_a_fault(monkeypatch):
     below are grouped with the other fault cases rather than patching a sixth
     boundary.
     """
-    import gateway.relay as gr
-    import gateway.relay.egress as eg
-    import gateway.run as gr_run
-    from gateway.config import Platform
+    import hermes_agent.gateway.relay as gr
+    import hermes_agent.gateway.relay.egress as eg
+    import hermes_agent.gateway.run as gr_run
+    from hermes_agent.gateway.config import Platform
 
     class HostileRegistry(dict):
         def get(self, key, default=None):
@@ -1117,9 +1117,9 @@ def test_an_adapter_registry_that_cannot_be_read_is_a_fault(monkeypatch):
 
 def test_an_unreadable_adapters_attribute_is_a_fault(monkeypatch):
     """`.adapters` may itself be a property that raises."""
-    import gateway.relay as gr
-    import gateway.relay.egress as eg
-    import gateway.run as gr_run
+    import hermes_agent.gateway.relay as gr
+    import hermes_agent.gateway.relay.egress as eg
+    import hermes_agent.gateway.run as gr_run
 
     class Hostile:
         @property
@@ -1142,10 +1142,10 @@ def test_a_runner_with_no_relay_key_is_still_an_absence(monkeypatch):
     """
     from types import SimpleNamespace
 
-    import gateway.relay as gr
-    import gateway.relay.egress as eg
-    import gateway.run as gr_run
-    from gateway.config import Platform
+    import hermes_agent.gateway.relay as gr
+    import hermes_agent.gateway.relay.egress as eg
+    import hermes_agent.gateway.run as gr_run
+    from hermes_agent.gateway.config import Platform
 
     monkeypatch.setattr(
         gr_run,
@@ -1170,10 +1170,10 @@ def test_a_healthy_live_adapter_is_unaffected_by_the_fault_handling(monkeypatch)
     """
     from types import SimpleNamespace
 
-    import gateway.relay as gr
-    import gateway.relay.egress as eg
-    import gateway.run as gr_run
-    from gateway.config import Platform
+    import hermes_agent.gateway.relay as gr
+    import hermes_agent.gateway.relay.egress as eg
+    import hermes_agent.gateway.run as gr_run
+    from hermes_agent.gateway.config import Platform
 
     class Healthy:
         def fronts_platform(self, platform):
@@ -1199,7 +1199,7 @@ def test_a_broken_gateway_import_inside_the_live_probe_is_a_fault(monkeypatch):
     """A nested ImportError in the live probe must not degrade to the config path.
 
     Found by spot-check, not by the reviewer. `_live_relay_fronted` imports
-    `gateway.config` and `gateway.run` inside its own try; before this, ANY
+    `hermes_agent.gateway.config` and `hermes_agent.gateway.run` inside its own try; before this, ANY
     ImportError there returned None, which means "no live adapter — use the
     config snapshot". So a broken installation plus an empty snapshot
     authorized an unattested destination. Probed with a healthy-adapter
@@ -1213,8 +1213,8 @@ def test_a_broken_gateway_import_inside_the_live_probe_is_a_fault(monkeypatch):
     """
     import builtins
 
-    import gateway.relay as gr
-    import gateway.relay.egress as eg
+    import hermes_agent.gateway.relay as gr
+    import hermes_agent.gateway.relay.egress as eg
 
     monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: set())
     monkeypatch.setattr(eg, "attested_relay_targets", lambda p: {"123"})
@@ -1241,7 +1241,7 @@ def test_a_genuinely_absent_gateway_package_is_still_an_absence(monkeypatch):
     """
     import builtins
 
-    import gateway.relay.egress as eg
+    import hermes_agent.gateway.relay.egress as eg
 
     real_import = builtins.__import__
 
@@ -1267,8 +1267,8 @@ def test_handle_exemption_withdrawn_when_a_native_token_exists(monkeypatch):
     refused while `@unattested_public` was DELIVERED with the gateway's own
     credential.
     """
-    import gateway.relay as gr
-    import gateway.relay.egress as eg
+    import hermes_agent.gateway.relay as gr
+    import hermes_agent.gateway.relay.egress as eg
 
     monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: {"telegram"})
     monkeypatch.setattr(eg, "attested_relay_targets", lambda p: {"123"})
@@ -1286,8 +1286,8 @@ def test_handle_exemption_survives_when_only_the_connector_can_send(monkeypatch)
     Relay-only is the configuration the exemption exists for: the connector
     holds the token and resolves the handle, so it authorizes the destination.
     """
-    import gateway.relay as gr
-    import gateway.relay.egress as eg
+    import hermes_agent.gateway.relay as gr
+    import hermes_agent.gateway.relay.egress as eg
 
     monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: {"telegram"})
     monkeypatch.setattr(eg, "attested_relay_targets", lambda p: {"123"})
@@ -1301,13 +1301,13 @@ def test_handle_exemption_survives_when_only_the_connector_can_send(monkeypatch)
 def test_native_credential_probe_fault_withdraws_the_exemption(monkeypatch):
     """A fault must not GRANT an exemption — the safe direction is to withdraw
     it and fall back to the ordinary attestation check."""
-    import gateway.relay as gr
-    import gateway.relay.egress as eg
+    import hermes_agent.gateway.relay as gr
+    import hermes_agent.gateway.relay.egress as eg
 
     monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: {"telegram"})
     monkeypatch.setattr(eg, "attested_relay_targets", lambda p: {"123"})
 
-    import gateway.config as gcfg
+    import hermes_agent.gateway.config as gcfg
 
     def _boom(*a, **kw):
         raise RuntimeError("config unreadable")
@@ -1327,8 +1327,8 @@ def test_dispatch_snapshot_token_withdraws_the_exemption(monkeypatch):
     where the authorization snapshot had no token but the retained dispatch
     snapshot did produced a native send to an unattested handle.
     """
-    import gateway.relay as gr
-    import gateway.relay.egress as eg
+    import hermes_agent.gateway.relay as gr
+    import hermes_agent.gateway.relay.egress as eg
 
     monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: {"telegram"})
     monkeypatch.setattr(eg, "attested_relay_targets", lambda p: {"123"})
@@ -1358,7 +1358,7 @@ def test_tool_guard_forwards_the_dispatch_token(monkeypatch):
     def _spy(platform_name, chat_id, thread_id=None, *, native_token=smt._TOKEN_UNSET):
         seen["native_token"] = native_token
 
-    monkeypatch.setattr("gateway.relay.egress.authorize_relay_target", _spy)
+    monkeypatch.setattr("hermes_agent.gateway.relay.egress.authorize_relay_target", _spy)
     smt._authorize_relay_target("telegram", "@x", None, native_token="123:tok")
     assert seen["native_token"] == "123:tok"
 
@@ -1372,7 +1372,7 @@ def test_a_caller_that_omits_the_snapshot_does_not_get_the_exemption(monkeypatch
     def _spy(platform_name, chat_id, thread_id=None, **kwargs):
         seen["kwargs"] = kwargs
 
-    monkeypatch.setattr("gateway.relay.egress.authorize_relay_target", _spy)
+    monkeypatch.setattr("hermes_agent.gateway.relay.egress.authorize_relay_target", _spy)
     smt._authorize_relay_target("telegram", "@x")
     # No native_token forwarded at all -> the guard runs its own probe.
     assert "native_token" not in seen["kwargs"]
@@ -1397,7 +1397,7 @@ def test_tool_guard_forwards_thread_id(monkeypatch):
         # Refuse, so the send stops here and the test asserts only the wiring.
         return "refused-for-test"
 
-    from gateway.config import Platform, PlatformConfig
+    from hermes_agent.gateway.config import Platform, PlatformConfig
 
     monkeypatch.setattr(smt, "_authorize_relay_target", _spy)
     monkeypatch.setattr(

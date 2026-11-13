@@ -170,7 +170,7 @@ def test_canonical_delete_retires_the_spill_for_collection(_home):
         rt.mutate_runtime_session(db, epoch=epoch, principal_id="human", session_id="s_web", request_id="del",
                                   expected_revision=0, expected_generation=0, operation="delete", payload={})
         assert spill.exists()  # the transaction only records the candidate
-        collect_retired_media(db)  # gateway/session_mutations.py runs this after every delete
+        collect_retired_media(db)  # hermes_agent/gateway/session_mutations.py runs this after every delete
         assert not spill.exists()
     finally:
         db.close()

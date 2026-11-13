@@ -1,4 +1,4 @@
-"""The intake / delivery transport matrix (#88715 phase 4; gateway/AGENTS.md § Profile scope).
+"""The intake / delivery transport matrix (#88715 phase 4; hermes_agent/gateway/AGENTS.md § Profile scope).
 
 Real ``GatewayRunner`` resolvers against a temp ``HERMES_HOME`` with three served profiles:
 ``default`` (shared bot), ``ops`` (satellite routed through the shared bot) and ``team_b`` (its own
@@ -12,12 +12,12 @@ from unittest.mock import patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.pairing import PairingStore
-from gateway.platforms.base import BasePlatformAdapter
-from gateway.profile_routing import parse_profile_routes
-from gateway.session import SessionSource
-from gateway.session_identity import resolve_identity
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.pairing import PairingStore
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.profile_routing import parse_profile_routes
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.session_identity import resolve_identity
 
 
 class _Stub(BasePlatformAdapter):
@@ -36,7 +36,7 @@ def _stub(platform, runner, label):
 
 
 def _runner(*, multiplex, routes=()):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(multiplex_profiles=multiplex)
@@ -158,8 +158,8 @@ def test_restored_rows_fail_closed_on_intake_and_deliver_only_via_a_unique_owner
 
 def test_inferred_primary_transport_does_not_hide_a_secondary_local_session_policy(mux):
     """A LOCAL source belongs to its session authority, not the inferred primary transport (#139060)."""
-    from gateway.session_local import LocalSessionAdapter
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_local import LocalSessionAdapter
+    from hermes_agent.gateway.session_policy import policy_for_source
 
     runner = mux.runner
     primary_authority = SimpleNamespace(sessions={})
@@ -186,7 +186,7 @@ def test_restored_completion_injects_through_the_pinned_receiving_bot(mux):
     """A detached completion (async delegation, watch) for a restored row injects through the bot its
     routing entry persisted, as ``_delivery_adapter_for`` answers: the inverse row (team_b's bot ->
     default) never through the default bot, and nothing while team_b's bot is down (#139726)."""
-    from gateway.session_identity import restore_identity
+    from hermes_agent.gateway.session_identity import restore_identity
 
     r = mux.runner
     restored = SessionSource(platform=Platform.TELEGRAM, chat_id="999", chat_type="dm", user_id="999")
@@ -202,7 +202,7 @@ async def test_secondary_bot_route_runs_in_the_routed_runtime_scope(mux):
     """A ``bot_profile`` route's event runs under its runtime profile's scope, as a shared-bot route
     does: that runtime's authority admits the turn, so a later completion wake finds the committed
     turn on the same ledger (#139726). The bot's own traffic keeps the bot profile's scope."""
-    from gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.platforms.event import MessageEvent
     from hermes_constants import get_hermes_home
 
     r = mux.runner
@@ -223,7 +223,7 @@ def test_inbound_turn_records_the_receiving_bot_on_a_route_saved_without_one(mux
     """A route saved before ``transport_profile`` existed (or carried over by /reset, /new) is NULL, so
     after a restart its completions have no bot to answer through. The next inbound turn records the
     bot that received it; an inferred identity (no transport evidence) never fills it with a guess."""
-    from gateway.session import SessionStore
+    from hermes_agent.gateway.session import SessionStore
 
     def store():
         return SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig(multiplex_profiles=True))

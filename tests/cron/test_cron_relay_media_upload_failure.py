@@ -19,9 +19,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gateway import relay
-from gateway.config import Platform, PlatformConfig
-from gateway.platform_registry import platform_registry
+from hermes_agent.gateway import relay
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platform_registry import platform_registry
 from tests.gateway.relay.fake_connector import FakeConnector, proxy_403
 
 CHAT = "C0REPORTS"
@@ -35,9 +35,9 @@ def live_relay(monkeypatch):
               "GATEWAY_RELAY_BOT_IDS", "GATEWAY_RELAY_IDP_TOKEN_URL"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "slack")
-    monkeypatch.setattr("gateway.run._load_gateway_config", dict, raising=False)
+    monkeypatch.setattr("hermes_agent.gateway.run._load_gateway_config", dict, raising=False)
     monkeypatch.setattr("hermes_cli.auth.resolve_nous_access_token", lambda: "nas-token")
-    monkeypatch.setattr("gateway.relay.media._UPLOAD_RETRY_DELAYS_S", (0.0, 0.0), raising=False)
+    monkeypatch.setattr("hermes_agent.gateway.relay.media._UPLOAD_RETRY_DELAYS_S", (0.0, 0.0), raising=False)
 
     loop = asyncio.new_event_loop()
     thread = threading.Thread(target=loop.run_forever, daemon=True)
@@ -78,7 +78,7 @@ def _drain(job, content, adapter, loop, execution_id):
     from hermes_agent.cron.delivery_queue import enqueue, get_status
 
     enqueue(execution_id, job, content)
-    with patch("gateway.config.load_gateway_config", return_value=_gateway_config()), \
+    with patch("hermes_agent.gateway.config.load_gateway_config", return_value=_gateway_config()), \
          patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
          patch("hermes_agent.cron.scheduler_delivery._maybe_mirror_cron_delivery", lambda *a, **k: None):
         assert scheduler.drain_delivery_queue({Platform.RELAY: adapter}, loop) == 1
@@ -130,7 +130,7 @@ def test_inline_run_records_delivery_failed_not_ok(live_relay, tmp_path):
     connector.media_script = [proxy_403()] * 3
     job = create_job("Post the Q3 report", "every 1d", name="Q3 report", deliver="origin",
                      origin={"platform": "slack", "chat_id": CHAT})
-    with patch("gateway.config.load_gateway_config", return_value=_gateway_config()), \
+    with patch("hermes_agent.gateway.config.load_gateway_config", return_value=_gateway_config()), \
          patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
          patch("hermes_agent.cron.scheduler_delivery._maybe_mirror_cron_delivery", lambda *a, **k: None):
         error = _deliver_result(job, f"Q3 numbers are in.\n\nMEDIA:{pdf}",

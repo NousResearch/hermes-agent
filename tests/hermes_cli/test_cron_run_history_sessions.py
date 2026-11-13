@@ -4,7 +4,7 @@ A unified-runtime fire is a healthy ``source='cron'`` session under a runtime-mi
 id. Run history used to find it only by the legacy ``cron_{job_id}_{timestamp}`` id, so the run
 degraded to an inert ``cron_output`` doc row (no transcript, no usage, double-represented) and
 session detail could not say whether the scheduler still owned it. These drive the real producer
-(``gateway/session_cron.py``) over SQLite, the real execution ledger and output docs, and read
+(``hermes_agent/gateway/session_cron.py``) over SQLite, the real execution ledger and output docs, and read
 through the real routes in a temp default profile.
 """
 from datetime import timedelta

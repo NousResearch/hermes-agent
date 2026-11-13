@@ -2,10 +2,10 @@
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource
 
 
 class _Adapter(BasePlatformAdapter):
@@ -24,7 +24,7 @@ class _Adapter(BasePlatformAdapter):
 
 @pytest.fixture
 def settings_env(tmp_path, monkeypatch):
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -103,7 +103,7 @@ def test_partial_override_falls_back_to_defaults(settings_env):
 
 def test_persisted_override_is_shown_before_the_first_turn_after_restart(settings_env, monkeypatch):
     from hermes_agent import hermes_state
-    from gateway.session import SessionStore
+    from hermes_agent.gateway.session import SessionStore
 
     def _no_sqlite():
         raise RuntimeError("SQLite disabled in test")
@@ -157,7 +157,7 @@ def test_endpoint_excludes_url_credentials(settings_env, base_url, expected):
 
 
 def test_channel_and_session_precedence(settings_env):
-    from gateway.config import ChannelOverride
+    from hermes_agent.gateway.config import ChannelOverride
 
     adapter, runner, source, home = settings_env
     (home / "config.yaml").write_text("model:\n  default: global-model\n  provider: global-provider\n")
@@ -177,7 +177,7 @@ def test_channel_and_session_precedence(settings_env):
     ("channel-model", None),
 ])
 def test_channel_model_and_provider_defaults_are_independent(settings_env, model, provider):
-    from gateway.config import ChannelOverride
+    from hermes_agent.gateway.config import ChannelOverride
 
     adapter, runner, source, home = settings_env
     (home / "config.yaml").write_text(
@@ -198,7 +198,7 @@ def test_channel_model_and_provider_defaults_are_independent(settings_env, model
 
 
 def test_pinned_profile_config_and_source_are_isolated(settings_env):
-    from gateway.session_identity import RoutingIdentity
+    from hermes_agent.gateway.session_identity import RoutingIdentity
 
     adapter, runner, source, home = settings_env
     secondary = home / "secondary"
@@ -220,7 +220,7 @@ def test_pinned_profile_config_and_source_are_isolated(settings_env):
 
 
 def test_read_does_not_allocate_or_rehydrate_or_resolve_credentials(settings_env, monkeypatch):
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     adapter, runner, source, _ = settings_env
 

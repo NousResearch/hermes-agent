@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, TypedDict
 from urllib.parse import urlsplit, urlunsplit
 
 if TYPE_CHECKING:
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.session import SessionSource
 
 
 class SessionModelSettings(TypedDict):
@@ -123,8 +123,8 @@ class _SessionModelSettingsMixin:
         if runner is None:
             yield None
             return
-        from gateway.run import _hermes_home, _load_gateway_config, _profile_runtime_scope
-        from gateway.session_identity import identity_of
+        from hermes_agent.gateway.run import _hermes_home, _load_gateway_config, _profile_runtime_scope
+        from hermes_agent.gateway.session_identity import identity_of
 
         source = copy(source)
         self._canonicalize(source)

@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway import hosted_rooms
+from hermes_agent.gateway import hosted_rooms
 from tests.tui_gateway.test_hosted_room_driver_runtime import (
     BINDING,
     PROFILE,

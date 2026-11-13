@@ -12,9 +12,9 @@ import json
 import logging
 import re
 
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.session import SessionSource
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +113,7 @@ class RelayDiscordInteractionMixin:
                     src = event.source
                     src.chat_name, src.chat_topic = await self._discord_chat_labels_for(
                         str(src.scope_id or ""), src.chat_id)
-                    from gateway.session_ingress_context import relay_passthrough_event
+                    from hermes_agent.gateway.session_ingress_context import relay_passthrough_event
                     with relay_passthrough_event(self._transport, forward, event):
                         await self.handle_message(event)
                     return
@@ -125,8 +125,8 @@ class RelayDiscordInteractionMixin:
             logger.warning("relay passthrough_forward handling failed", exc_info=True)
 
     def _interaction_admitted(self, event) -> bool:
-        from gateway.approval_actor import runner_answer_policy
-        from gateway.relay.admitted_authors import interaction_admitted
+        from hermes_agent.gateway.approval_actor import runner_answer_policy
+        from hermes_agent.gateway.relay.admitted_authors import interaction_admitted
 
         # Identity first, as for a prompt press: the admin lookup reads the bot-owning profile's policy.
         self._canonicalize(event.source)

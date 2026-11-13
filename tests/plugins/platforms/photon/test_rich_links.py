@@ -12,8 +12,8 @@ from typing import Any, Dict, List, Tuple
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 from plugins.platforms.photon import adapter as photon_adapter
 from plugins.platforms.photon.adapter import PhotonAdapter
 

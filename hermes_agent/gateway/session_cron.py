@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 import threading
 
-from gateway.session_contract import SessionActor, SessionRef
+from hermes_agent.gateway.session_contract import SessionActor, SessionRef
 from hermes_agent.hermes_state_keys import CRON_PRINCIPAL_ID, cron_request_id
 from hermes_agent.hermes_state_runtime import RuntimeStoreError, admit_session_input, get_session_admission
 
@@ -39,15 +39,15 @@ def owner_for_home(home):
 
 
 async def _admit_local_delivery(authority, chat_id, text, metadata):
-    from gateway.config import Platform
-    from gateway.session_authorities import owner_scope
-    from gateway.session_automation import admit_route_wake
-    from gateway.session_local_recovery import local_adapter_map, restore_local_session
-    from gateway.session_route_recovery import mountable, restore_routed_session
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session_authorities import owner_scope
+    from hermes_agent.gateway.session_automation import admit_route_wake
+    from hermes_agent.gateway.session_local_recovery import local_adapter_map, restore_local_session
+    from hermes_agent.gateway.session_route_recovery import mountable, restore_routed_session
     with owner_scope(authority):
         live = authority.sessions.get(chat_id)
         if live is None and mountable(authority, chat_id):
-            # A messaging conversation a reminder set from the app names (gateway/session_detached.py),
+            # A messaging conversation a reminder set from the app names (hermes_agent/gateway/session_detached.py),
             # not mounted (a restart): it mounts off the chat, or on it when the chat names it again.
             restore_routed_session(authority, chat_id)
         elif live is None or live.source is None or live.source.platform == Platform.LOCAL:
@@ -103,13 +103,13 @@ def _actor(authority, actor):
 
 def _create(authority, actor, params):
     from hermes_agent.cron.jobs import get_job
-    from gateway.session_local_recovery import local_identity, restore_local_session
-    from gateway.session_policy import build_policy, bind_launch_key
-    from gateway.run import _load_gateway_config
+    from hermes_agent.gateway.session_local_recovery import local_identity, restore_local_session
+    from hermes_agent.gateway.session_policy import build_policy, bind_launch_key
+    from hermes_agent.gateway.run import _load_gateway_config
     from hermes_agent.cron.scheduler import _load_cron_job_config
-    from gateway.config import Platform
-    from gateway.session import SessionSource, SessionEntry
-    from gateway.session_lifecycle import _now
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session import SessionSource, SessionEntry
+    from hermes_agent.gateway.session_lifecycle import _now
 
     if set(params) != {'job_id', 'request_id', 'extra_prompt'}:
         raise RuntimeStoreError('invalid_params')
@@ -138,7 +138,7 @@ def _create(authority, actor, params):
     policy = replace(policy, source='cron', platform='cron', model=_load_cron_job_config(job, jid, job.get('name') or jid).model,
                      request_json=json.dumps({'cron_job': job, 'extra_prompt': extra, 'request_id': request_id}))
     policy = bind_launch_key(authority, sid, policy, None, config_secrets=private)
-    from gateway.session_local_recovery import local_source
+    from hermes_agent.gateway.session_local_recovery import local_source
     source = local_source(authority, sid, actor.subject)
     route = authority.runner.session_store._generate_session_key(source)
     now = _now()
@@ -160,13 +160,13 @@ RUN_JOB_FLAGS = ('_model_unreachable', '_quota_hold_seconds')
 
 async def operation(authority, name, params, actor=None):
     actor = _actor(authority, actor)
-    from gateway.session_authorities import require_serving
+    from hermes_agent.gateway.session_authorities import require_serving
     require_serving(authority)  # released ownership: nothing here is ours to touch
     # Only new work is fenced by a drain. ``recover``/``status``/``cancel`` observe or stop work
     # already admitted, which the drain is waiting for: refusing them makes the firer give up
     # (CronExecutionUnknown pauses the job) on every restart that overlaps a cron run.
     if name == 'recover':
-        from gateway.session_local_recovery import local_identity
+        from hermes_agent.gateway.session_local_recovery import local_identity
         if (set(params) != {'job_id', 'request_id', 'extra_prompt'}
                 or any(not isinstance(params[k], str) or not params[k] for k in ('job_id', 'request_id'))
                 or (params['extra_prompt'] is not None and not isinstance(params['extra_prompt'], str))):
@@ -175,15 +175,15 @@ async def operation(authority, name, params, actor=None):
         sid = local_identity(authority.profile_id, actor.subject, request_id)
         from hermes_agent.hermes_state_runtime import list_session_admissions
         rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
-        from gateway.owner_identity import same_owner
+        from hermes_agent.gateway.owner_identity import same_owner
         row = next((r for r in rows if r['request_id'] == request_id and same_owner(r['principal_id'], actor.subject)), None)
         if row is None:
             return {'status': 'missing', 'result': None}
         state = await operation(authority, 'status', {'session_id': sid, 'admission_id': row['admission_id']}, actor)
-        from gateway.session_local_recovery import restore_local_session
+        from hermes_agent.gateway.session_local_recovery import restore_local_session
         restore_local_session(authority, sid)
-        from gateway.config import Platform
-        from gateway.session_local_recovery import local_adapter_map
+        from hermes_agent.gateway.config import Platform
+        from hermes_agent.gateway.session_local_recovery import local_adapter_map
         policy = local_adapter_map(authority)[Platform.LOCAL].policies[sid]
         frozen = json.loads(policy.request_json)
         if frozen['extra_prompt'] != params['extra_prompt']:
@@ -194,15 +194,15 @@ async def operation(authority, name, params, actor=None):
         return state
     if name == 'submit':
         authority._require_admission_open()
-        from gateway.session_authorities import owner_scope
+        from hermes_agent.gateway.session_authorities import owner_scope
         # The job id, jobs file and gateway config belong to the OWNING profile.
         with owner_scope(authority):
             ref, request_id = _create(authority, actor, params)
         from functools import partial
-        from gateway.session_runtime_workers import tracked_write
+        from hermes_agent.gateway.session_runtime_workers import tracked_write
         if isinstance(ref, dict):
             # The creation commit waits on the writer off the owner loop, like session.create (N50).
-            from gateway.session_local_recovery import restore_local_session
+            from hermes_agent.gateway.session_local_recovery import restore_local_session
             from hermes_agent.hermes_state_local import commit_local_session
             await tracked_write(authority, partial(commit_local_session, authority.db, epoch=authority.epoch, receipt=ref))
             ref = restore_local_session(authority, ref['session_id'])
@@ -217,7 +217,7 @@ async def operation(authority, name, params, actor=None):
     ref = SessionRef(authority.profile_id, params['session_id'])
     authority.authorize(actor, ref, 'session:submit')
     row = get_session_admission(authority.db, admission_id=params['admission_id'])
-    from gateway.owner_identity import same_owner
+    from hermes_agent.gateway.owner_identity import same_owner
     if row is None or row['target_session_id'] != ref.session_id or not same_owner(row['principal_id'], actor.subject):
         raise RuntimeStoreError('permission_denied')
     if name == 'cancel':
@@ -230,7 +230,7 @@ async def operation(authority, name, params, actor=None):
         return {'ok': True}
     result, flags = None, {}
     if row['status'] == 'terminal':
-        from gateway.session_results import admission_result
+        from hermes_agent.gateway.session_results import admission_result
         saved = admission_result(authority.db, row['admission_id'])
         result = saved['result'].get('cron_result') if saved else None
         flags = (saved['result'].get('cron_job_flags') or {}) if saved else {}
@@ -275,7 +275,7 @@ def _run_identified(run_job, job, execution_id, **kwargs):
 
 async def execute(authority, ref, row, policy):
     from hermes_agent.cron.scheduler import run_job
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
     data = json.loads(policy.request_json)
     if (row['payload'] != {'text': data['extra_prompt'] or ''}
             or row['request_id'] != data['request_id']

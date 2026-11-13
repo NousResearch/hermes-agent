@@ -49,7 +49,7 @@ def notification_kwargs(mode: str, notify: bool | None) -> dict:
 def _standalone_adapter(bot, extra: dict):
     """An unconnected ``TelegramAdapter`` over the standalone ``bot`` (no polling, no lock), so an
     out-of-process send reuses the gateway's gates, routing and fallbacks verbatim."""
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
     from plugins.platforms.telegram.adapter import TelegramAdapter
     adapter = TelegramAdapter(PlatformConfig(enabled=True, extra=dict(extra or {})))
     adapter._bot = bot
@@ -68,7 +68,7 @@ async def send_rich_standalone(bot, extra: dict, chat_id, content: str, *, threa
     sends legacy MarkdownV2; otherwise the adapter's ``SendResult`` (``sent_as_file`` when a message
     past the split cap went out as one file). A transient failure is returned, not resent as legacy,
     because the rich request may have landed."""
-    from gateway.platforms.helpers import send_long_reply_as_file
+    from hermes_agent.gateway.platforms.helpers import send_long_reply_as_file
     from plugins.platforms.telegram.rich_parts import send_rich_parts
     adapter, metadata = _standalone_adapter(bot, extra), _metadata(thread_id, notify)
     # Past MAX_SPLIT_MESSAGES the whole message goes out as one file, as the gateway's own send does (#152012).

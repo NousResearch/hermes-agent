@@ -27,11 +27,11 @@ from __future__ import annotations
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.relay.adapter import RelayAdapter
-from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.relay.adapter import RelayAdapter
+from hermes_agent.gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+from hermes_agent.gateway.session import SessionSource
 
 from tests.gateway.relay.stub_connector import StubConnector
 
@@ -362,7 +362,7 @@ def test_top_level_dm_gets_session_thread_stamp():
 
 
 def test_two_top_level_messages_key_distinct_sessions():
-    from gateway.session import build_session_key
+    from hermes_agent.gateway.session import build_session_key
     adapter, _ = _wire("D1", "dm")
     e1 = _inbound_event(message_id="1700.0100")
     e2 = _inbound_event(message_id="1700.0200")
@@ -415,7 +415,7 @@ def test_nested_relay_slack_config_subset_wins():
 # tests pin the boundary in BOTH modes so the coupling is load-bearing.
 # ---------------------------------------------------------------------------
 def test_run_py_suppresses_self_anchor_in_flat_mode():
-    from gateway.run import _resolve_progress_thread_id
+    from hermes_agent.gateway.run import _resolve_progress_thread_id
 
     # Flat mode + synthetic self-anchor (thread_id == own message id) => None:
     # prompt/progress metadata arrives at the adapter with NO thread anchor.
@@ -435,7 +435,7 @@ def test_run_py_suppresses_self_anchor_in_flat_mode():
 
 
 def test_run_py_keeps_self_anchor_in_thread_mode():
-    from gateway.run import _resolve_progress_thread_id
+    from hermes_agent.gateway.run import _resolve_progress_thread_id
 
     # Thread-per-message mode: the first-turn self-anchor IS the thread root
     # and must flow through to the adapter unchanged.

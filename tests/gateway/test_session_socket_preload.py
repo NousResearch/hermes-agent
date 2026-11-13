@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import run_api
+from hermes_agent.gateway import run_api
 
 
 @pytest.fixture
@@ -86,8 +86,8 @@ def _attach_scope(ticket):
 async def _attach_while_loading(tmp_path, monkeypatch, *, during_load, purpose='interactive'):
     """Attach over the real ``/api/ws`` admission with a redeemed ticket; ``during_load(runner)`` runs
     while the handler fetch is pending. Returns (whether the handler ran, the ASGI messages sent)."""
-    from gateway.run_api import GatewayRuntimeAPI
-    from gateway.runtime_bootstrap import TicketStore
+    from hermes_agent.gateway.run_api import GatewayRuntimeAPI
+    from hermes_agent.gateway.runtime_bootstrap import TicketStore
     from hermes_cli import web_server as web
     from hermes_cli import web_server_chat
 
@@ -121,7 +121,7 @@ async def _attach_while_loading(tmp_path, monkeypatch, *, during_load, purpose='
 async def test_an_attach_counts_as_a_client_while_its_handler_is_still_loading(tmp_path, monkeypatch):
     """The ticket is redeemed before the handler fetch yields: an idle check in that gap must still
     see this client, or an idle-exit gateway shuts down under its first connection."""
-    from gateway import run_idle_exit
+    from hermes_agent.gateway import run_idle_exit
     seen = []
     handled, _ = await _attach_while_loading(
         tmp_path, monkeypatch, during_load=lambda runner: seen.append(run_idle_exit._client_busy(runner, window=0.0)))

@@ -4,19 +4,19 @@ import asyncio
 
 import pytest
 
-from gateway.session_contract import Submission
+from hermes_agent.gateway.session_contract import Submission
 from hermes_agent.hermes_state_runtime import RuntimeStoreError, get_session_admission
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('live_waiter', [True, False])
 async def test_discard_of_a_captured_answer_delivers_it_once(tmp_path, monkeypatch, live_waiter):
-    from gateway import session_ingress, session_results
-    from gateway import session_settlement_recovery as recovery
-    from gateway.config import Platform
-    from gateway.session import SessionSource
-    from gateway.session_authority import LiveSession
-    from gateway.session_contract import SessionActor, SessionRef
+    from hermes_agent.gateway import session_ingress, session_results
+    from hermes_agent.gateway import session_settlement_recovery as recovery
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session import SessionSource
+    from hermes_agent.gateway.session_authority import LiveSession
+    from hermes_agent.gateway.session_contract import SessionActor, SessionRef
     from tests.gateway.test_prompt_attachments import _authority as _store_authority
 
     calls, sent = [], []

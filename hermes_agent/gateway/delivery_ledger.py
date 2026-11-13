@@ -21,7 +21,7 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 
-from gateway.dead_targets import classify_dead_error
+from hermes_agent.gateway.dead_targets import classify_dead_error
 from hermes_cli.sqlite_util import add_column_if_missing
 from hermes_constants import get_process_hermes_home
 
@@ -216,7 +216,7 @@ def _transaction():
 
 def _start_time(pid: int) -> Optional[int]:
     try:
-        from gateway.status import get_process_start_time  # lazy: tests monkeypatch gateway.status
+        from hermes_agent.gateway.status import get_process_start_time  # lazy: tests monkeypatch hermes_agent.gateway.status
         return get_process_start_time(pid)
     except Exception:
         return None
@@ -241,7 +241,7 @@ def _owner_alive(pid: Any, started_at: Any) -> bool:
         # ``os.kill(pid, 0)`` is NOT a no-op (bpo-14484: it maps to ``GenerateConsoleCtrlEvent(0, pid)`` and could
         # Ctrl+C the gateway's own console group). ``_pid_exists`` keeps EPERM-means-alive (pid owned by another user).
         try:
-            from gateway.status import _pid_exists
+            from hermes_agent.gateway.status import _pid_exists
         except Exception:
             if os.name == "nt":
                 return False  # never fall back to a raw sig-0 probe on Windows
@@ -255,7 +255,7 @@ def _owner_alive(pid: Any, started_at: Any) -> bool:
         except Exception:
             return False
     try:
-        from gateway.status import start_time_fingerprints_match
+        from hermes_agent.gateway.status import start_time_fingerprints_match
         return started_at is None or start_time_fingerprints_match(started_at, current_start)
     except (TypeError, ValueError):
         return True

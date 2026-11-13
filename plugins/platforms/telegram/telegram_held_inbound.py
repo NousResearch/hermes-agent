@@ -7,8 +7,8 @@ import logging
 import weakref
 from typing import Optional
 
-from gateway.platforms.event import MessageEvent
-from gateway.platforms.helpers import cancel_task
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.platforms.helpers import cancel_task
 
 logger = logging.getLogger("plugins.platforms.telegram.adapter")
 

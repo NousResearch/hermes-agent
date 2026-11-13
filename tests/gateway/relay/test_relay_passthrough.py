@@ -17,10 +17,10 @@ import json
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.relay.adapter import RelayAdapter
-from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
-from gateway.relay.ws_transport import PassthroughForward, _passthrough_from_wire
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.relay.adapter import RelayAdapter
+from hermes_agent.gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+from hermes_agent.gateway.relay.ws_transport import PassthroughForward, _passthrough_from_wire
 
 from tests.gateway.relay.stub_connector import StubConnector
 
@@ -29,7 +29,7 @@ from tests.gateway.relay.stub_connector import StubConnector
 def _interaction_senders_admitted(monkeypatch):
     """These tests cover how a Discord interaction is decoded and routed, so its sender counts as
     admitted; admission itself: test_relay_discord_command_answer_authority.py."""
-    from gateway.relay import admitted_authors
+    from hermes_agent.gateway.relay import admitted_authors
 
     monkeypatch.setattr(admitted_authors, "interaction_admitted", lambda *_args, **_kwargs: True)
 

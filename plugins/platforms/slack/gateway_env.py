@@ -1,7 +1,7 @@
 """Slack env -> gateway config bridge (``PlatformEntry.env_overrides``)."""
 
-from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
-from gateway.platform_env import EnvCred, getenv
+from hermes_agent.gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+from hermes_agent.gateway.platform_env import EnvCred, getenv
 
 
 def _home(config: GatewayConfig) -> None:

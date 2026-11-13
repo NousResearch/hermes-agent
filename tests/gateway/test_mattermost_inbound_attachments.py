@@ -12,21 +12,21 @@ import pytest
 import pytest_asyncio
 from aiohttp import web
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 
 OWNER, STRANGER = "owner_user", "stranger_user"
 
 
 @pytest_asyncio.fixture
 async def mattermost(tmp_path, monkeypatch):
-    from gateway.pairing import PairingStore
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.pairing import PairingStore
+    from hermes_agent.gateway.run import GatewayRunner
     from plugins.platforms.mattermost.adapter import MattermostAdapter
 
     for key in ("GATEWAY_ALLOWED_USERS", "GATEWAY_ALLOW_ALL_USERS", "MATTERMOST_ALLOW_ALL_USERS"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("MATTERMOST_ALLOWED_USERS", OWNER)
-    monkeypatch.setattr("gateway.pairing.PAIRING_DIR", tmp_path / "pairing")
+    monkeypatch.setattr("hermes_agent.gateway.pairing.PAIRING_DIR", tmp_path / "pairing")
 
     sizes, hits = {}, []
 
@@ -111,7 +111,7 @@ async def test_bot_admitted_by_allow_bots_keeps_its_attachments(mattermost, monk
 
 @pytest.mark.asyncio
 async def test_attachment_body_is_read_under_inbound_media_cap(mattermost):
-    from gateway.platforms.base import get_document_cache_dir, get_inbound_media_max_bytes
+    from hermes_agent.gateway.platforms.base import get_document_cache_dir, get_inbound_media_max_bytes
 
     Path(os.environ["HERMES_HOME"], "config.yaml").write_text("gateway:\n  max_inbound_media_bytes: 1048576\n")
     cap = get_inbound_media_max_bytes()

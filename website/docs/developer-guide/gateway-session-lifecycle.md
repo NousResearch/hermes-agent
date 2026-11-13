@@ -6,7 +6,7 @@ description: "SessionSource, SessionEntry, SessionStore, session-key rules and m
 # Session Lifecycle
 
 > **Audience:** Gateway developers and maintainers
-> **Source files:** `gateway/session.py` (~1200 lines + `session_*.py` siblings), `gateway/run.py` (~5500 lines facade + `run_*.py` phases), `gateway/config.py`
+> **Source files:** `hermes_agent/gateway/session.py` (~1200 lines + `session_*.py` siblings), `hermes_agent/gateway/run.py` (~5500 lines facade + `run_*.py` phases), `hermes_agent/gateway/config.py`
 > **Last updated:** 2026-06-16
 
 ## Overview
@@ -17,9 +17,9 @@ how they survive gateway restarts, and how messages queue during concurrent oper
 
 The session system lives primarily in two modules:
 
-- `gateway/session.py` — Data model (`SessionSource`, `SessionEntry`, `SessionContext`),
+- `hermes_agent/gateway/session.py` — Data model (`SessionSource`, `SessionEntry`, `SessionContext`),
   key generation (`build_session_key`), and the main store (`SessionStore`).
-- `gateway/run.py` — Gateway runner (`GatewayRunner`) facade that wires sessions into the message
+- `hermes_agent/gateway/run.py` — Gateway runner (`GatewayRunner`) facade that wires sessions into the message
   processing pipeline; the phases live in `run_*.py` siblings: session housekeeping
   (`run_watchers.py`), agent caching (`run_agent_cache.py`), restart recovery
   (`session_recovery.py`), and message queuing (`run_busy.py`).
@@ -597,7 +597,7 @@ Three classes of session are never shed:
 `memory_high_mb: auto` derives the budget from the cgroup limit the gateway runs under
 (`memory.high`, then `memory.max`, then cgroup v1), falling back to total RAM when
 uncapped. Set a number to pin it, or `0`/`off` to disable the pass entirely. Helpers
-live in `gateway/agent_cache_pressure.py`.
+live in `hermes_agent/gateway/agent_cache_pressure.py`.
 
 ### Cache Lifecycle
 

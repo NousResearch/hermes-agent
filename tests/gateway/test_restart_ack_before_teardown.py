@@ -8,15 +8,15 @@ import asyncio
 
 import pytest
 
-from gateway.platforms.base import SendResult
-from gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.platforms.base import SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 
 
 def _idle_restart(monkeypatch, tmp_path, send):
-    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
-    monkeypatch.setattr("gateway.restart.is_container_restart_context", lambda: False)
-    monkeypatch.setattr("gateway.restart.is_gateway_supervisor_process", lambda: False)
+    monkeypatch.setattr("hermes_agent.gateway.run._hermes_home", tmp_path)
+    monkeypatch.setattr("hermes_agent.gateway.restart.is_container_restart_context", lambda: False)
+    monkeypatch.setattr("hermes_agent.gateway.restart.is_gateway_supervisor_process", lambda: False)
     runner, adapter = make_restart_runner()
     monkeypatch.setattr(adapter, "send", send)
     order = []
@@ -78,9 +78,9 @@ async def test_local_restart_returns_its_ack(monkeypatch, tmp_path):
     """A LOCAL session (``hermes chat -q "/restart"``) shows the handler's RETURNED reply; its
     adapter's send is a no-op, so an early send there would leave the ack nowhere."""
     from types import SimpleNamespace
-    from gateway.config import Platform
-    from gateway.session import SessionSource
-    from gateway.session_local import LocalSessionAdapter
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session import SessionSource
+    from hermes_agent.gateway.session_local import LocalSessionAdapter
 
     async def send(chat_id, content, **kwargs):
         return SendResult(success=True, message_id="ack")

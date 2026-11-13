@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway import hosted_room_driver as driver, hosted_rooms
+from hermes_agent.gateway import hosted_room_driver as driver, hosted_rooms
 from tests.tui_gateway.test_hosted_room_served_elsewhere_stop import _OtherDaemon
 from tests.tui_gateway.test_hosted_room_service import _FakeRPC, _server
 from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService

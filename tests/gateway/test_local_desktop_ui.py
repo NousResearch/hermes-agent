@@ -10,8 +10,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import local_desktop_ui, local_viewer_events, session_server_requests
-from gateway.session_context import clear_session_vars, set_session_vars
+from hermes_agent.gateway import local_desktop_ui, local_viewer_events, session_server_requests
+from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
 from tools import desktop_ui
 from tools.process_registry import process_registry
 

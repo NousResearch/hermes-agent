@@ -21,8 +21,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform
-from gateway.restart import (
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.restart import (
     CRON_DRAIN_CLEANUP_RESERVE_S,
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT,
     parse_cron_drain_timeout,

@@ -15,9 +15,9 @@ def test_local_hosted_member_revoked_during_preparation_is_not_admitted(hosted_o
     from pathlib import Path
     import time
 
-    from gateway import hosted_room_driver as tasks, session_hosted_attachments
-    from gateway.hosted_rooms import create_room, local_authority_gateway_id
-    from gateway.session_hosted_service import CanonicalHostedRoomService
+    from hermes_agent.gateway import hosted_room_driver as tasks, session_hosted_attachments
+    from hermes_agent.gateway.hosted_rooms import create_room, local_authority_gateway_id
+    from hermes_agent.gateway.session_hosted_service import CanonicalHostedRoomService
     from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions
     from hermes_agent.tui_gateway.hosted_room_driver import HostedRoomBinding
 
@@ -91,8 +91,8 @@ def test_local_hosted_member_revoked_during_preparation_is_not_admitted(hosted_o
 
 
 def test_room_binding_exact_retry_terminal_history_and_unknown(hosted_owner):
-    from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
-    from gateway.hosted_room_driver import TaskIdentity
+    from hermes_agent.gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+    from hermes_agent.gateway.hosted_room_driver import TaskIdentity
     from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions, claim_session_input, settle_session_input, begin_runtime_epoch, recover_session_inputs
     authority, loop, principal, _ = hosted_owner
     allowed = [True]
@@ -143,8 +143,8 @@ def test_room_binding_exact_retry_terminal_history_and_unknown(hosted_owner):
 
 
 def test_controls_are_exact_current_admission_and_loop_safe(hosted_owner):
-    from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
-    from gateway.hosted_room_driver import TaskIdentity
+    from hermes_agent.gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+    from hermes_agent.gateway.hosted_room_driver import TaskIdentity
     from hermes_agent.hermes_state_runtime import RuntimeStoreError, claim_session_input
     authority, loop, principal, agent = hosted_owner
     rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='member', profile='default', principal=principal, authorize=lambda *args: True)
@@ -179,10 +179,10 @@ def test_controls_are_exact_current_admission_and_loop_safe(hosted_owner):
 
 
 def test_terminal_callback_follows_canonical_drain_without_polling(hosted_owner, monkeypatch):
-    from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
-    from gateway.session_authority import SessionAuthority
-    from gateway.hosted_room_driver import TaskIdentity
-    from gateway import session_finite
+    from hermes_agent.gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+    from hermes_agent.gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.hosted_room_driver import TaskIdentity
+    from hermes_agent.gateway import session_finite
     from hermes_agent.hermes_state_runtime import list_session_admissions
     authority, loop, principal, _ = hosted_owner
     rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='member', profile='default', principal=principal, authorize=lambda *args: True)
@@ -208,8 +208,8 @@ def test_terminal_callback_follows_canonical_drain_without_polling(hosted_owner,
 
 
 def test_unknown_info_is_inactive_with_hosted_not_canonical_generation(hosted_owner):
-    from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
-    from gateway.hosted_room_driver import TaskIdentity
+    from hermes_agent.gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+    from hermes_agent.gateway.hosted_room_driver import TaskIdentity
     from hermes_agent.hermes_state_runtime import claim_session_input, begin_runtime_epoch, recover_session_inputs
     authority, loop, principal, _ = hosted_owner
     rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='member', profile='default', principal=principal, authorize=lambda *args: True)
@@ -228,8 +228,8 @@ def test_unknown_info_is_inactive_with_hosted_not_canonical_generation(hosted_ow
 
 
 def test_discard_requires_exact_owned_unknown_tuple_without_replay(hosted_owner, monkeypatch):
-    from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
-    from gateway.hosted_room_driver import TaskIdentity
+    from hermes_agent.gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+    from hermes_agent.gateway.hosted_room_driver import TaskIdentity
     from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions, claim_session_input, begin_runtime_epoch, recover_session_inputs
     authority, loop, principal, _ = hosted_owner
     allowed = [True]
@@ -284,8 +284,8 @@ def test_queued_cancellation_is_a_cancelled_receipt_not_storage_unavailable(host
     """A queued task that is stopped never ran, so it has no execution result; history/info
     must project it as cancelled instead of failing the whole room read. A completed row with
     a missing result is still storage corruption."""
-    from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
-    from gateway.hosted_room_driver import TaskIdentity
+    from hermes_agent.gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+    from hermes_agent.gateway.hosted_room_driver import TaskIdentity
     from hermes_agent.hermes_state_runtime import RuntimeStoreError, claim_session_input, settle_session_input
     authority, loop, principal, _ = hosted_owner
     rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='member', profile='default', principal=principal, authorize=lambda *args: True)
@@ -312,10 +312,10 @@ def test_room_member_turns_cannot_block_on_an_unanswerable_clarify(hosted_owner,
     member turn that called clarify would block for clarify_timeout with its question never
     shown. The frozen member policy must exclude the tool even when the profile's toolsets
     (here the hermes-cli bundle) include it; the member asks in its room reply instead."""
-    from gateway import run
-    from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
-    from gateway.session_local_recovery import local_adapter_map
-    from gateway.config import Platform
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+    from hermes_agent.gateway.session_local_recovery import local_adapter_map
+    from hermes_agent.gateway.config import Platform
     from agent.skill_utils import parse_config_string_list
     from model_tools import get_tool_definitions
 
@@ -337,10 +337,10 @@ def test_room_member_turns_cannot_block_on_an_unanswerable_clarify(hosted_owner,
 def test_history_read_during_a_room_session_delete_is_not_found(hosted_owner, monkeypatch):
     """A delete whose commit lands while the history read is off the loop, before its retirement runs,
     answers ``not_found``: the read waits for the delete's mutation lock before it uses the entry."""
-    from gateway import session_local_recovery, session_mutations
-    from gateway.session_contract import SessionRef
-    from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
-    from gateway.session_mutations import mutate_session
+    from hermes_agent.gateway import session_local_recovery, session_mutations
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+    from hermes_agent.gateway.session_mutations import mutate_session
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     authority, loop, principal, _ = hosted_owner
     rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='member', profile='default',

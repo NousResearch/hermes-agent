@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from agent.secret_scope import set_multiplex_active
-from gateway.config import Platform, PlatformConfig, load_gateway_config
+from hermes_agent.gateway.config import Platform, PlatformConfig, load_gateway_config
 from hermes_cli import config as cli_config
 from hermes_cli.plugins import discover_plugins
 
@@ -29,7 +29,7 @@ def secondary(tmp_path, monkeypatch):
 
 
 def _load_in_scope(home):
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
     set_multiplex_active(True)
     with _profile_runtime_scope(home, prepared_secret_scope={}):
         return load_gateway_config()

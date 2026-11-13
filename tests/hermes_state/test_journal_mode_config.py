@@ -280,8 +280,8 @@ def test_real_db_openers_honor_configured_delete(monkeypatch, tmp_path):
 
     from agent import verification_evidence
     from hermes_agent.cron import executions
-    from gateway import delivery_ledger
-    from gateway.platforms.api_server import ResponseStore
+    from hermes_agent.gateway import delivery_ledger
+    from hermes_agent.gateway.platforms.api_server import ResponseStore
     from hermes_cli import projects_db
     from hermes_cli import kanban_db_connect as kbc
     from hermes_agent.hermes_state import SessionDB

@@ -11,8 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import run_runtime
-from gateway.session_db_recovery import RecoverableHandleCache
+from hermes_agent.gateway import run_runtime
+from hermes_agent.gateway.session_db_recovery import RecoverableHandleCache
 
 
 class _Registry:

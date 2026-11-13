@@ -1,4 +1,4 @@
-"""Cross-adapter helpers shared by gateway/platforms/* and plugins/platforms/*.
+"""Cross-adapter helpers shared by hermes_agent/gateway/platforms/* and plugins/platforms/*.
 
 Kept dependency-light (stdlib + ``agent.secret_scope``) so every adapter can
 import it at module top level without cycles.

@@ -71,13 +71,13 @@ class _Open:
         finally:
             reset_hermes_home_override(token)
         if self.opened is not None and not unused:
-            from gateway.session_commands import _on_own_thread
+            from hermes_agent.gateway.session_commands import _on_own_thread
             await _on_own_thread(lambda: self._deliver(*self.opened))
 
     def _deliver(self, policy, route):
-        from gateway.run import _profile_runtime_scope
-        from gateway.session_context import scoped_session_key
-        from gateway.session_policy import SURFACES
+        from hermes_agent.gateway.run import _profile_runtime_scope
+        from hermes_agent.gateway.session_context import scoped_session_key
+        from hermes_agent.gateway.session_policy import SURFACES
         from hermes_cli.lifecycle import has_hook, invoke_hook
         from hermes_cli.plugins import _resolve_hook_callback_timeout
         sid = self.ref.session_id

@@ -11,7 +11,7 @@ the past, the entry is treated as expired and the message is allowed through.
 
 import time
 
-from gateway.platforms.helpers import MessageDeduplicator
+from hermes_agent.gateway.platforms.helpers import MessageDeduplicator
 
 
 class TestMessageDeduplicatorTTL:

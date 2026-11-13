@@ -24,7 +24,7 @@ def _status(bot, key):
 @pytest.mark.asyncio
 async def test_a_ticket_queued_after_an_unresolved_pin_waits_for_it(bot, monkeypatch):
     """Recovery inside the grace window admits nothing behind the pin; past it the order holds."""
-    from gateway.session_bot import recover_bot_deliveries
+    from hermes_agent.gateway.session_bot import recover_bot_deliveries
     bot.authority._schedule = lambda ref: None
     path = _legacy(bot, KEY, 1, 'first')
     _legacy(bot, OTHER, 2, 'second')
@@ -42,7 +42,7 @@ async def test_a_ticket_queued_after_an_unresolved_pin_waits_for_it(bot, monkeyp
 
 @pytest.mark.asyncio
 async def test_a_ticket_queued_before_an_unresolved_pin_is_still_admitted(bot):
-    from gateway.session_bot import recover_bot_deliveries
+    from hermes_agent.gateway.session_bot import recover_bot_deliveries
     bot.authority._schedule = lambda ref: None
     _legacy(bot, KEY, 1, 'first')
     _pin(bot, OTHER, id=OTHER, created_at=2, sequence=2, owner=dict(
@@ -55,7 +55,7 @@ async def test_a_ticket_queued_before_an_unresolved_pin_is_still_admitted(bot):
 
 @pytest.mark.asyncio
 async def test_a_pin_whose_admission_committed_does_not_hold_the_queue(bot, monkeypatch):
-    from gateway.session_bot import recover_bot_deliveries
+    from hermes_agent.gateway.session_bot import recover_bot_deliveries
     bot.authority._schedule = lambda ref: None
     real, failing = type(bot.authority).admit_automation, [True]
     async def committed_then_refused(self, *args):
@@ -77,7 +77,7 @@ async def test_a_pin_whose_admission_committed_does_not_hold_the_queue(bot, monk
 @pytest.mark.asyncio
 async def test_an_owner_state_refusal_mid_pass_stops_the_pass(bot, monkeypatch):
     """The refused ticket becomes the barrier: nothing after it runs until it is requeued."""
-    from gateway.session_bot import recover_bot_deliveries
+    from hermes_agent.gateway.session_bot import recover_bot_deliveries
     bot.authority._schedule = lambda ref: None
     real, refusing = type(bot.authority).admit_automation, [True]
     async def full_for_other(self, adapter, event, identity):
@@ -103,7 +103,7 @@ async def test_an_owner_state_refusal_mid_pass_stops_the_pass(bot, monkeypatch):
 @pytest.mark.asyncio
 async def test_a_delivery_waits_behind_an_unresolved_legacy_pin(bot, monkeypatch):
     """The delivery-triggered ``_migrate`` holds the same barrier as owner recovery."""
-    from gateway.session_bot import deliver, recover_bot_deliveries
+    from hermes_agent.gateway.session_bot import deliver, recover_bot_deliveries
     bot.authority._schedule = lambda ref: None
     _legacy(bot, KEY, 1, 'first')
     _legacy(bot, OTHER, 2, 'second')

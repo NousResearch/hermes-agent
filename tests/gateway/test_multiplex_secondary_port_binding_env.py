@@ -26,8 +26,8 @@ def multiplex_root(tmp_path, monkeypatch):
 
 
 def _api_server(home):
-    from gateway.config import Platform, load_gateway_config
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.config import Platform, load_gateway_config
+    from hermes_agent.gateway.run import _profile_runtime_scope
     with _profile_runtime_scope(home):
         return load_gateway_config().platforms.get(Platform.API_SERVER)
 
@@ -55,7 +55,7 @@ def test_default_profile_api_server_key_still_enables_listener(multiplex_root):
 )
 def test_profile_match_is_token_equality_not_substring(tmp_path, cmdline, expected):
     """``-p ops`` must never claim (or let ``gateway stop`` SIGTERM) an ``-p ops-2`` gateway."""
-    from gateway.status import _command_line_belongs_to_profile
+    from hermes_agent.gateway.status import _command_line_belongs_to_profile
     assert _command_line_belongs_to_profile(cmdline, tmp_path / "profiles" / "ops") is expected
 
 
@@ -69,7 +69,7 @@ def test_named_gateway_is_never_the_default_profile_process(tmp_path, cmdline, m
     the default-home identity check nor the default profile's process-table fallback (what a
     ``gateway stop`` with no pid file kills) may claim it -- ``--profile=ops`` used to pass both."""
     import hermes_cli.gateway as gw
-    from gateway.status import _command_line_belongs_to_profile
+    from hermes_agent.gateway.status import _command_line_belongs_to_profile
     assert _command_line_belongs_to_profile(cmdline, tmp_path) is False
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(gw, "_iter_proc_cmdlines", lambda exclude: iter([(424242, cmdline)]))

@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.telegram import adapter as tg
 from plugins.platforms.telegram import standalone
 from plugins.platforms.telegram import telegram_media_budget as budget

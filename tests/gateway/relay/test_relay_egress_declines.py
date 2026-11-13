@@ -27,10 +27,10 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.relay.adapter import RelayAdapter
-from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
-from gateway.relay.egress import (
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.relay.adapter import RelayAdapter
+from hermes_agent.gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+from hermes_agent.gateway.relay.egress import (
     EGRESS_DECLINE_CODE,
     decline_error,
     is_egress_decline,
@@ -286,13 +286,13 @@ def test_cosmetic_lane_degrades_but_logs_the_decline_at_warning(
 ):
     """These return bool/None by contract; a refusal must not vanish silently."""
     adapter, _connector = relay
-    with caplog.at_level(logging.WARNING, logger="gateway.relay.egress"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.relay.egress"):
         assert asyncio.run(call(adapter)) == expected
 
     declines = [
         r
         for r in caplog.records
-        if r.name == "gateway.relay.egress" and "DECLINED" in r.getMessage()
+        if r.name == "hermes_agent.gateway.relay.egress" and "DECLINED" in r.getMessage()
     ]
     assert len(declines) == 1
     assert DECLINE_TEXT in declines[0].getMessage()
@@ -311,8 +311,8 @@ def test_thread_qualified_session_id_attests_the_bare_chat():
     whose session origin is `-100999:77` cannot send to `-100999` — the chat it
     is demonstrably already talking in.
     """
-    import gateway.channel_directory as cd
-    import gateway.relay.egress as eg
+    import hermes_agent.gateway.channel_directory as cd
+    import hermes_agent.gateway.relay.egress as eg
 
     original = cd._build_from_sessions
     try:
@@ -337,8 +337,8 @@ def test_relay_plane_attests_the_union_of_fronted_platforms():
     generic plane refuses chats the agent is already in — the exact failure the
     docstring warns about.
     """
-    import gateway.channel_directory as cd
-    import gateway.relay.egress as eg
+    import hermes_agent.gateway.channel_directory as cd
+    import hermes_agent.gateway.relay.egress as eg
 
     orig_dir = cd.load_directory
     orig_env = os.environ.get("GATEWAY_RELAY_PLATFORMS")
@@ -381,14 +381,14 @@ def test_relay_plane_attests_the_union_of_fronted_platforms():
 
 
 def _relay_env(monkeypatch, platform="telegram", directory=None):
-    import gateway.channel_directory as cd
+    import hermes_agent.gateway.channel_directory as cd
 
     monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", platform)
     monkeypatch.setattr(
         cd, "load_directory", lambda: {"platforms": {platform: directory or []}}
     )
     monkeypatch.setattr(cd, "_build_from_sessions", lambda _p: [])
-    import gateway.relay.egress as eg
+    import hermes_agent.gateway.relay.egress as eg
 
     monkeypatch.setattr(eg, "_home_channel_id", lambda _p: None)
     monkeypatch.setattr(eg, "_has_live_native_adapter", lambda _p: False)
@@ -505,7 +505,7 @@ def test_code_only_prompt_decline_reaches_the_caller_as_a_decline(code_only_rela
     degrades to "failed" — the cue that triggers the text fallback into the
     chat the connector just refused.
     """
-    from gateway.run import _approval_send_outcome
+    from hermes_agent.gateway.run import _approval_send_outcome
 
     adapter, connector = code_only_relay
     result = asyncio.run(
@@ -630,8 +630,8 @@ def test_declined_INITIAL_draft_is_not_retried_as_a_plain_send():
     through to `_first_send`. Measured through the real adapter + real
     StreamTransportMixin: ops were ['draft', 'send'].
     """
-    from gateway.platforms.base import SendResult
-    from gateway.stream_consumer_transport import StreamTransportMixin
+    from hermes_agent.gateway.platforms.base import SendResult
+    from hermes_agent.gateway.stream_consumer_transport import StreamTransportMixin
 
     adapter, connector = _code_only_adapter()
 
@@ -706,9 +706,9 @@ def test_declined_stream_edit_does_not_send_the_unseen_tail():
         remove the _send_fallback_final early return
             -> AssertionError: the unseen tail reached the wire: ['send']
     """
-    from gateway.platforms.base import SendResult
-    from gateway.stream_consumer_fallback import StreamFallbackMixin
-    from gateway.stream_consumer_transport import StreamTransportMixin
+    from hermes_agent.gateway.platforms.base import SendResult
+    from hermes_agent.gateway.stream_consumer_fallback import StreamFallbackMixin
+    from hermes_agent.gateway.stream_consumer_transport import StreamTransportMixin
 
     adapter, connector = _code_only_adapter()
 
@@ -816,8 +816,8 @@ def test_declined_send_accepts_both_wire_shapes():
 
     Measured before the fix: text-only decline -> six-site False, two-site True.
     """
-    from gateway.platforms.base import SendResult
-    from gateway.relay.egress import declined_send
+    from hermes_agent.gateway.platforms.base import SendResult
+    from hermes_agent.gateway.relay.egress import declined_send
 
     # Structured body.
     assert declined_send(
@@ -852,8 +852,8 @@ def test_declined_draft_frame_is_terminal_for_the_run():
     of the six that used to read `raw_response` only, so before the shared
     classifier it missed exactly this reply.
     """
-    from gateway.platforms.base import SendResult
-    from gateway.stream_consumer_transport import StreamTransportMixin
+    from hermes_agent.gateway.platforms.base import SendResult
+    from hermes_agent.gateway.stream_consumer_transport import StreamTransportMixin
 
     class _Adapter:
         def __init__(self, result):
@@ -904,7 +904,7 @@ def test_ambiguous_draft_result_never_reads_as_a_decline():
     happens to carry the decline marker ("... egress declined: ack lost") read
     as a DEFINITE refusal.
     """
-    from gateway.relay.egress import declined_send
+    from hermes_agent.gateway.relay.egress import declined_send
 
     descriptor = CapabilityDescriptor(
         contract_version=CONTRACT_VERSION,
@@ -946,8 +946,8 @@ def test_declined_send_ignores_ack_lost_text_without_a_structured_body():
     The text-only branch cannot see `ambiguous`, so any error text saying the
     ack was lost is a transport outcome — never authorization.
     """
-    from gateway.platforms.base import SendResult
-    from gateway.relay.egress import declined_send
+    from hermes_agent.gateway.platforms.base import SendResult
+    from hermes_agent.gateway.relay.egress import declined_send
 
     assert not declined_send(
         SendResult(success=False, error="discord egress declined: ack lost")

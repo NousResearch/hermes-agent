@@ -21,7 +21,7 @@ follows the mapping (a moved profile's next reads go to its new home).
 import json
 from pathlib import Path
 
-from gateway.hosted_rooms import RoomStopPendingError
+from hermes_agent.gateway.hosted_rooms import RoomStopPendingError
 
 _HOMES = 'gateway.hosted.member_homes.v1:'
 
@@ -159,7 +159,7 @@ def legacy_stop_homes(db, room_id, member_id, task_id=None):
     """Homes whose Stop reads attest accepts for a stopping or deferred turn of *member_id*
     admitted before attempt homes were recorded (``task_id``, when the read names one, must be
     such a turn): any home the member was served from may hold it."""
-    from gateway.hosted_room_driver import list_tasks
+    from hermes_agent.gateway.hosted_room_driver import list_tasks
     from hermes_agent.tui_gateway.hosted_room_service import task_member_id
     if not any(task_member_id(t) == member_id and task_id in (None, t['identity'].task_id)
                and stopping_attempt_home(db, room_id, member_id, t) is None
@@ -171,7 +171,7 @@ def legacy_stop_homes(db, room_id, member_id, task_id=None):
 def _legacy_home_released(service, room_id, member, home, task):
     """Ask one older home whether its room session holds nothing; one that holds this turn is sent
     its Stop, and the turn is kept until a later read finds it gone. Unreachable keeps it."""
-    from gateway.session_hosted_transport import HostedRoomOwnerRPC
+    from hermes_agent.gateway.session_hosted_transport import HostedRoomOwnerRPC
     from hermes_agent.tui_gateway.hosted_room_driver import room_session_title
     profile = task['payload']['target_profile']
     rpc = HostedRoomOwnerRPC(home=home, source_home=service.authority.profile_id, room_id=room_id,

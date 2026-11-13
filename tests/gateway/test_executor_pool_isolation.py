@@ -23,7 +23,7 @@ import time
 
 import pytest
 
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.run import GatewayRunner
 
 
 def _runner(cleanup=None, *, cleanup_timeout=0.5):

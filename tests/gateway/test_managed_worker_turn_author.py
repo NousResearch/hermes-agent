@@ -7,16 +7,16 @@ import pytest
 
 
 def _policy(tmp_path):
-    from gateway.session_local import _bypass_policy
+    from hermes_agent.gateway.session_local import _bypass_policy
     return _bypass_policy({'cwd': str(tmp_path), 'model': 'safe-fixture', 'provider': 'custom',
                            'base_url': 'http://127.0.0.1:9/v1', 'ignore_user_config': True}, private_secrets={})
 
 
 def test_bootstrap_frame_carries_the_admitted_author(tmp_path, monkeypatch):
-    from gateway import session_managed_worker as smw
+    from hermes_agent.gateway import session_managed_worker as smw
     from agent.managed_worker import validate_bootstrap
 
-    monkeypatch.setattr('gateway.session_policy.launch_key', lambda authority, policy: None)
+    monkeypatch.setattr('hermes_agent.gateway.session_policy.launch_key', lambda authority, policy: None)
     live = SimpleNamespace(source=SimpleNamespace(user_id='u', chat_id='c'), route='route')
     authority = SimpleNamespace(sessions={'sid': live}, runner=None, profile_id=str(tmp_path))
     ref = SimpleNamespace(session_id='sid')
@@ -37,7 +37,7 @@ def test_bootstrap_frame_carries_the_admitted_author(tmp_path, monkeypatch):
 
 
 def test_worker_turn_passes_the_author_to_run_conversation():
-    from gateway.session_kanban import run_worker_turns
+    from hermes_agent.gateway.session_kanban import run_worker_turns
 
     seen = []
     agent = SimpleNamespace(run_conversation=lambda text, **kw: seen.append((text, kw)) or {'final_response': 'ok'})

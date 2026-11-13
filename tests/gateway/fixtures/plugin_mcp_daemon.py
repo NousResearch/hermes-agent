@@ -28,4 +28,4 @@ class _Server:
 
 _ensure_mcp_loop()
 mcp_tool._servers['probe-mcp'] = _Server()
-runpy.run_module('gateway.run', run_name='__main__')
+runpy.run_module('hermes_agent.gateway.run', run_name='__main__')

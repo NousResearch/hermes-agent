@@ -16,11 +16,11 @@ def _write_profile(home, model):
 
 
 def test_switched_room_member_is_not_evicted_as_a_fallback(tmp_path, monkeypatch):
-    from gateway import session_policy
-    from gateway.config import GatewayConfig, Platform
-    from gateway.run import GatewayRunner
-    from gateway.session import SessionSource
-    from gateway.turn_context import TurnContext
+    from hermes_agent.gateway import session_policy
+    from hermes_agent.gateway.config import GatewayConfig, Platform
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import SessionSource
+    from hermes_agent.gateway.turn_context import TurnContext
 
     frozen = {'model': {'provider': 'custom', 'base_url': 'http://127.0.0.1:9/v1', 'default': 'old-model'}}
     policy = replace(session_policy.build_policy({'source': 'gui', 'cwd': str(tmp_path), 'model': 'old-model'}, frozen),

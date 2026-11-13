@@ -44,7 +44,7 @@ def host_gateway_note() -> str:
     gateway per profile; the truth is one shared process serving N profiles, and stopping it stops
     every one of them."""
     try:
-        from gateway.host_topology import host_gateway_topology
+        from hermes_agent.gateway.host_topology import host_gateway_topology
         topology = host_gateway_topology()
     except Exception:
         return ""

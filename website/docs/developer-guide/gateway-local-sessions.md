@@ -103,7 +103,7 @@ listener keeps working.
 ## Deliberately limited compatibility
 
 - `source` accepts `cli` (default), `tui`, `gui`, `acp`, `tool` and `oneshot`
-  (`gateway.session_policy.SURFACES`). They select the agent platforms `cli`, `tui`,
+  (`hermes_agent.gateway.session_policy.SURFACES`). They select the agent platforms `cli`, `tui`,
   `desktop`, `acp`, `cli` and `cli`; `tool` (third-party integrations) and `oneshot`
   (finite `chat -q` / `-z` runs) keep their own stored label so human pickers hide them.
   The native local routing identity remains server-owned `Platform.LOCAL`; source never
@@ -145,14 +145,14 @@ listener keeps working.
   Both scopes take `workspace`: only conversations whose first row is in that folder, by
   `hermes -c`'s rule (`hermes_agent.hermes_state_sessions.workspace_key`): the row's git repo root equals it, or
   (no root recorded) its cwd is the folder or under it. Pass the caller's repo root (else its cwd).
-  With `picker: true` each row also carries what a picker shows (`gateway/session_picker_fields.py`):
+  With `picker: true` each row also carries what a picker shows (`hermes_agent/gateway/session_picker_fields.py`):
   `cwd` and `workspace` from the same first row the filter reads, and from the conversation's current
   segment (the compression tip, as the stored listing projects it) `preview` (the first prompt
   there), `last_reply` (its newest reply, shortened as `preview` is; a pure compaction handoff is no
   reply, a carrier shows the reply it wraps), `git_branch`, `last_active_at` and `pinned`. Off by
   default, so the 1.5 s live-list poll pays nothing; on, a page is one batched store read.
 - `session.transcript({session_id, subagent_id?, cursor?, limit?, order?, inline_images?})` reads a
-  conversation without attaching to it (`gateway/session_stored_reads.py`). It is authorized as
+  conversation without attaching to it (`hermes_agent/gateway/session_stored_reads.py`). It is authorized as
   `session.resume`'s read (`SessionAuthority.authorize`, `session:read`: profile, owner or operator).
   Like `session.info` that check publishes the conversation's route entry in `authority.sessions`
   when it is not there; it builds no agent, subscribes nobody, and an ended local conversation stays
@@ -163,7 +163,7 @@ listener keeps working.
   above) in `runtime.describe.capabilities`.
   It returns `{session_id, rows, next_cursor, reset}`: display rows across the compression lineage
   (live and compaction-archived, each logical message once), oldest first within a page. Every row
-  carries `row_kind` (`gateway/session_transcript_rows.py`): `"message"` is `session.resume`'s
+  carries `row_kind` (`hermes_agent/gateway/session_transcript_rows.py`): `"message"` is `session.resume`'s
   `display_messages` row; `"compaction"` is a compaction handoff at its position, with `role:
   "system"`, `text` the summary a reader sees (without the preamble, end marker, re-quoted user
   messages, recovery footer and ranking line written for the model), `compacted_messages` (the count
@@ -202,7 +202,7 @@ listener keeps working.
   of that current segment also holds the segment: once a compaction rotates it to a new one, the next
   reply is `reset: true` from the newest page.
   With `subagent_id` it reads a delegated child of `session_id` instead
-  (`gateway/session_transcript_subagent.py`); the reply adds `subagent_id`, `available`, `running`
+  (`hermes_agent/gateway/session_transcript_subagent.py`); the reply adds `subagent_id`, `available`, `running`
   and `child_session_id`. The session must be live on this owner (else `not_found`) and readable by
   the caller. A running child must be in the parent's live roster (the `subagent.list` rule, nested
   children included). A finished child is found through the `_subagent_id` stamped on its row at

@@ -118,9 +118,9 @@ def _route_store(monkeypatch, mutate):
 @pytest.fixture
 def gateway(tmp_path, monkeypatch):
     """A gateway owner over a temp state.db that the importer's ``session.mutate`` calls reach."""
-    from gateway.session_authority import SessionAuthority
-    from gateway.session_contract import SessionActor, SessionRef
-    from gateway.session_mutations import mutate_session
+    from hermes_agent.gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_contract import SessionActor, SessionRef
+    from hermes_agent.gateway.session_mutations import mutate_session
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 
@@ -317,12 +317,12 @@ def test_import_is_written_by_the_gateway_not_this_process(tmp_path, gateway, mo
 @pytest.mark.asyncio
 async def test_imported_chat_resumes_writable_as_cli(tmp_path, monkeypatch):
     """``hermes --resume @claude`` continues the import as an ordinary CLI session, not a read-only mount."""
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import SessionRef
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     monkeypatch.setattr(run, "_load_gateway_config", lambda: {"model": {"default": "m1", "provider": "openrouter"}})
     store = SessionStore(tmp_path / "sessions", GatewayConfig())
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,

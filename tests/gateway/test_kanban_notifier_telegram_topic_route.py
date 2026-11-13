@@ -9,10 +9,10 @@ forever (#148953). Only the route that names the topic's own group may claim it.
 import asyncio
 from pathlib import Path
 
-from gateway.config import GatewayConfig, Platform
-from gateway.kanban_watchers_notifier import _KanbanNotification, _notifier_collect
-from gateway.profile_routing import parse_profile_routes
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.kanban_watchers_notifier import _KanbanNotification, _notifier_collect
+from hermes_agent.gateway.profile_routing import parse_profile_routes
+from hermes_agent.gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb, kanban_db_connect as kbc, kanban_db_notify as kbn
 
 GROUP_A = "-1001111111111"

@@ -177,9 +177,9 @@ modelo de autorización, pero las reglas a continuación se aplican uniformement
   de mensajería se distribuyen como plugins empaquetados en
   `plugins/platforms/<name>/` (Telegram, Discord, Slack, email, SMS, etc.).
   Los tipos base compartidos y un conjunto menor de adaptadores
-  legacy/directos viven en `gateway/platforms/` (`base.py`, Signal, servidor
+  legacy/directos viven en `hermes_agent/gateway/platforms/` (`base.py`, Signal, servidor
   API, webhooks, …), con descubrimiento y carga diferida vía
-  `gateway/platform_registry.py`.
+  `hermes_agent/gateway/platform_registry.py`.
 - **Superficies HTTP expuestas en red.** El adaptador del servidor API, el
   plugin del dashboard, los endpoints HTTP del plugin kanban, y cualquier
   otro plugin que vincule un socket de escucha.

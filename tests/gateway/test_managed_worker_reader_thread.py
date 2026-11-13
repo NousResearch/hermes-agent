@@ -30,7 +30,7 @@ def _spawn(code):
 
 @pytest.mark.platforms("linux")
 def test_parked_worker_reads_leave_the_default_executor_free():
-    from gateway.session_managed_worker import ManagedWorker
+    from hermes_agent.gateway.session_managed_worker import ManagedWorker
     workers = [ManagedWorker(_spawn(SILENT)) for _ in range(4)]
 
     async def scenario():
@@ -56,7 +56,7 @@ def test_parked_worker_reads_leave_the_default_executor_free():
 
 @pytest.mark.platforms("linux")
 def test_a_frame_arriving_after_a_cancelled_read_is_not_lost():
-    from gateway.session_managed_worker import ManagedWorker
+    from hermes_agent.gateway.session_managed_worker import ManagedWorker
     worker = ManagedWorker(_spawn('import sys\nsys.stdin.buffer.readline()\n'
                                   'sys.stdout.buffer.write(b\'{"type":"delta","text":"kept"}\\n\'); sys.stdout.flush()\n'
                                   'sys.stdin.buffer.read()'))

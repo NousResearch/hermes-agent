@@ -2,7 +2,7 @@
 move runs in the new folder even when the session had ``cd``-ed before it."""
 import pytest
 
-from gateway.session_terminal_cwd import persist_turn_cwd, restore_turn_cwd
+from hermes_agent.gateway.session_terminal_cwd import persist_turn_cwd, restore_turn_cwd
 from tests.gateway.test_session_resume_config_refresh import (
     _Backend, _call, _connect, _home, _mutate, _owner_authority, _policy, _terminal)
 
@@ -47,10 +47,10 @@ async def test_a_refresh_whose_cwd_save_fails_still_publishes_its_committed_poli
     not leave the live policy behind the committed one: restore refuses that pair, and a retry finds
     nothing moved and never publishes."""
     import json
-    from gateway.session_contract import SessionRef
-    from gateway.session_local_recovery import restore_local_session
-    from gateway.session_policy import restore_policy
-    from gateway.session_policy_refresh import commit_refresh
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_local_recovery import restore_local_session
+    from hermes_agent.gateway.session_policy import restore_policy
+    from hermes_agent.gateway.session_policy_refresh import commit_refresh
     from hermes_agent.hermes_state_local import local_receipt
     from tests.gateway.test_session_resume_config_refresh import AFTER
     home = _home(monkeypatch)

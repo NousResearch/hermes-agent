@@ -11,7 +11,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from gateway.hosted_rooms_common import identifier
+from hermes_agent.gateway.hosted_rooms_common import identifier
 
 MAX_AUTHORITY_SPANS = 1024
 #: Committed authority transfers, each the first event of its span. ``authority.claimed`` is the new

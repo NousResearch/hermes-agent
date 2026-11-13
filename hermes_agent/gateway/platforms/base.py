@@ -19,11 +19,11 @@ import uuid
 import weakref
 from abc import ABC, abstractmethod
 from hermes_dir_acl import make_user_dir, unusable_dir_remedy
-from gateway.platforms.base_log_safety import describe_proxy_error, env_proxy_for_redaction, safe_proxy_url_for_log, safe_url_for_log
-from gateway.platforms.base_image_sniff import _looks_like_image
-from gateway.platforms.base_media_flags import pad_inline_flags
-from gateway.runtime_footer import footer_onto_photo_caption, send_footer_unless_captioned
-from gateway.platforms.session_model import _SessionModelSettingsMixin
+from hermes_agent.gateway.platforms.base_log_safety import describe_proxy_error, env_proxy_for_redaction, safe_proxy_url_for_log, safe_url_for_log
+from hermes_agent.gateway.platforms.base_image_sniff import _looks_like_image
+from hermes_agent.gateway.platforms.base_media_flags import pad_inline_flags
+from hermes_agent.gateway.runtime_footer import footer_onto_photo_caption, send_footer_unless_captioned
+from hermes_agent.gateway.platforms.session_model import _SessionModelSettingsMixin
 from utils import normalize_proxy_url, unlink_files_older_than
 from agent.i18n import t
 from agent.retry_utils import jittered_backoff
@@ -350,7 +350,7 @@ def resolve_proxy_url(
     value is the same profile's, so a secondary keeps its configured route without any env
     bridge (#108440). The generic ``HTTPS_PROXY``/``HTTP_PROXY``/``ALL_PROXY`` fallback stays a raw
     process-env read — those are OS/system-level network settings, not a per-profile Hermes concept."""
-    from gateway.platforms._shared import get_scoped_secret as _get_scoped_proxy_var
+    from hermes_agent.gateway.platforms._shared import get_scoped_secret as _get_scoped_proxy_var
     value = (_get_scoped_proxy_var(platform_env_var, "") or "").strip() if platform_env_var else ""
     if not value:
         value = str(configured or "").strip()
@@ -433,23 +433,23 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable
 
 if (_checkout_root := str(Path(__file__).resolve().parents[2])) not in sys.path:
     sys.path.append(_checkout_root)  # append, never prepend: never shadow same-named installed packages
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import fence_state_after, reply_file_off, try_reply_file, typing_metadata_for_turn, typing_pause_key
-from gateway.platforms.base_post_delivery import run_post_delivery_callback
-from gateway.platforms.base_delivery_ledger import (
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.helpers import fence_state_after, reply_file_off, try_reply_file, typing_metadata_for_turn, typing_pause_key
+from hermes_agent.gateway.platforms.base_post_delivery import run_post_delivery_callback
+from hermes_agent.gateway.platforms.base_delivery_ledger import (
     finalize_final_obligation, ledger_attempted, ledger_bracket, record_final_obligation)
-from gateway.platforms.base_exec_approval import (
+from hermes_agent.gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
     ea_reason_label_text, ea_smart_deny_line_text, exec_approval_cmd_budget, format_approval_deadline_line,
     card_shows_whole_command, render_exec_approval)
-from gateway.platforms.base_streaming_tts import (
+from hermes_agent.gateway.platforms.base_streaming_tts import (
     AudioFormat, StreamingTTSHandle, streaming_tts_should_skip_whole_file, streaming_tts_turn_key)
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
-from gateway.warning_notifications import diagnostic_wake_muted
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from hermes_agent.gateway.warning_notifications import diagnostic_wake_muted
 from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
 from hermes_cli.home_data_layout import SECRET_CACHE_STORES
-from gateway.session import SessionSource, build_session_key
-from gateway.session_transcript import TranscriptReadError
+from hermes_agent.gateway.session import SessionSource, build_session_key
+from hermes_agent.gateway.session_transcript import TranscriptReadError
 from hermes_constants import CONNECTOR_DOWNLOADS_SUBDIR, get_default_hermes_root, get_hermes_dir, get_hermes_home
 from agent.provider_media import GENERATED_SUBDIR, MEDIA_CACHE_MAX_AGE_HOURS
 
@@ -844,7 +844,7 @@ def _kanban_attachment_roots() -> list[Path]:
 
 def _media_delivery_allowed_roots() -> list[Path]:
     """Return roots from which model-emitted local media may be delivered."""
-    from gateway.media_policy import media_delivery_allow_dirs
+    from hermes_agent.gateway.media_policy import media_delivery_allow_dirs
     operator_roots = (
         root for chunk in media_delivery_allow_dirs().split(os.pathsep)
         for raw_root in chunk.split(",")
@@ -855,7 +855,7 @@ def _media_delivery_allowed_roots() -> list[Path]:
 
 def _media_delivery_recency_seconds() -> float:
     """Recency window (seconds) for trusting fresh files; 0 = pure-allowlist mode."""
-    from gateway.media_policy import media_delivery_trust_recent, media_delivery_trust_recent_seconds
+    from hermes_agent.gateway.media_policy import media_delivery_trust_recent, media_delivery_trust_recent_seconds
     if not media_delivery_trust_recent():
         return 0.0
     custom = media_delivery_trust_recent_seconds().strip()
@@ -1013,7 +1013,7 @@ def _translate_docker_container_media_path(
     with contextlib.suppress(Exception):
         from tools.terminal_tool import _ensure_terminal_env_bridged
         _ensure_terminal_env_bridged()
-    from gateway.platforms.docker_media_paths import (
+    from hermes_agent.gateway.platforms.docker_media_paths import (
         _default_docker_workspace_host_roots, _docker_persistent_sandbox_roots,
     )
     mounts = [*_parse_docker_volume_mounts(), *_cache_dir_container_mounts()]
@@ -1077,7 +1077,7 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
         if resolved_root is not None and _path_is_within(resolved, resolved_root):
             return str(resolved)
     # Non-strict (default): anything not denylisted (/etc, /proc, ~/.ssh, Hermes-root secrets).
-    from gateway.media_policy import media_delivery_strict
+    from hermes_agent.gateway.media_policy import media_delivery_strict
     if not media_delivery_strict():
         return None if _path_under_denied_prefix(resolved) else str(resolved)
     # Strict: recency trust for fresh files (pandoc -o /tmp/x.pdf); denylist still applies.
@@ -1107,7 +1107,7 @@ def _validated_delivery_path(raw_path, session_key: str, label: str,
     raw = str(raw_path)
     safe_path = validate_media_delivery_path(raw, session_key=session_key)
     if not safe_path:
-        from gateway.media_fetch import fetch_remote_media
+        from hermes_agent.gateway.media_fetch import fetch_remote_media
         safe_path = fetch_remote_media(raw)
     if not safe_path:
         # Say WHY: a path that does not exist on the host is the common case (a model hallucinated or
@@ -1169,7 +1169,7 @@ SUPPORTED_IMAGE_DOCUMENT_TYPES = {
 # can actually deliver, so an unknown-extension path survives in the body instead of vanishing. Covers
 # images (inline), video (inline where supported), audio (voice/audio), documents/spreadsheets/presentations
 # (send_document), archives, and rendered web output. The dispatch partition (image vs video vs document)
-# lives in ``gateway/run.py``. ---------------------------------------------------------------------------
+# lives in ``hermes_agent/gateway/run.py``. ---------------------------------------------------------------------------
 MEDIA_DELIVERY_EXTS: tuple[str, ...] = (
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".svg",  # images (embed inline)
     ".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp",  # video (embed inline where supported)
@@ -1847,7 +1847,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
     # ``hermes gateway migrate`` can tell "URL changes" from "this profile would be skipped" as new
     # HTTP-inbound adapters gain the prefix.
     serves_profile_prefix: bool = False
-    # Back-reference to the running ``GatewayRunner`` (set by gateway/run.py); ``build_source``
+    # Back-reference to the running ``GatewayRunner`` (set by hermes_agent/gateway/run.py); ``build_source``
     # resolves the inbound profile via ``runner._profile_name_for_source``.
     gateway_runner = None  # type: ignore[assignment]
 
@@ -1903,7 +1903,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         # Owning multiplex profile (None on primary); see _session_key_profile.
         self._owner_profile: Optional[str] = None
         # Set by the runner on a secondary's port-binding adapter: serve via the default profile's
-        # shared listener (/p/<profile>/...) instead of binding a port (gateway/platforms/shared_ingress.py).
+        # shared listener (/p/<profile>/...) instead of binding a port (hermes_agent/gateway/platforms/shared_ingress.py).
         self._shared_listener_profile: Optional[str] = None
         # Registered by GatewayRunner (see set_authorization_check).
         self._authorization_check: Optional[Callable[[str, Optional[str], Optional[str]], bool]] = None
@@ -1988,7 +1988,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
     def render_message_event(self, event: Any, sink: Any) -> None:
         """Render a MessageChunk / MessageStop / Commentary onto the sink (a
         GatewayStreamConsumer), mapping 1:1 onto its existing primitives."""
-        from gateway.stream_events import MessageChunk, MessageStop, Commentary
+        from hermes_agent.gateway.stream_events import MessageChunk, MessageStop, Commentary
         if isinstance(event, MessageChunk) and event.text:
             sink.on_delta(event.text)
         elif isinstance(event, MessageStop) and not event.final:
@@ -2001,7 +2001,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         """Rendered chrome for a ToolCallChunk, or None to eat it (adapters without editing/rich
         text override to None). ``mode``: tool-progress mode ("all"/"new"/"verbose");
         ``preview_max_len`` mirrors ``tool_preview_length`` (0 = no cap in verbose)."""
-        from gateway.stream_events import ToolCallChunk
+        from hermes_agent.gateway.stream_events import ToolCallChunk
         if not isinstance(event, ToolCallChunk):
             return None
         from agent.display import get_tool_emoji, prepare_tool_preview, verbose_tool_args_text
@@ -2096,7 +2096,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
     def _write_runtime_status_safe(self, context: str, **kwargs) -> None:
         """Publish runtime status; log preparation failures without disrupting the adapter."""
         try:
-            from gateway.status import publish_runtime_status
+            from hermes_agent.gateway.status import publish_runtime_status
             # Multiplexed adapters share the status file; the runner stamps
             # ``<profile>:<platform>``.
             platform_key = getattr(self, "_runtime_status_platform_key", None) or self.platform.value
@@ -2140,8 +2140,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         """Acquire a scoped lock for this adapter; True on success. A live cross-HERMES_HOME
         holder is replaced only when the runner armed this adapter for its initial
         ``--replace`` connect (the status module validates ownership and terminates)."""
-        from gateway.status import acquire_scoped_lock, scoped_lock_owner_label, take_over_scoped_lock_holder
-        from gateway.status_lock_dir import ScopedLockDirUnusable
+        from hermes_agent.gateway.status import acquire_scoped_lock, scoped_lock_owner_label, take_over_scoped_lock_holder
+        from hermes_agent.gateway.status_lock_dir import ScopedLockDirUnusable
         self._platform_lock_scope, self._platform_lock_identity = scope, identity
         lock_meta = {"platform": self.platform.value}
         try:
@@ -2194,7 +2194,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         identity = getattr(self, '_platform_lock_identity', None)
         if not identity:
             return
-        from gateway.status_scoped_locks import release_scoped_lock
+        from hermes_agent.gateway.status_scoped_locks import release_scoped_lock
         release_scoped_lock(self._platform_lock_scope, identity)
         self._platform_lock_identity = None
 
@@ -2287,7 +2287,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             logger.debug("topic recovery hook failed", exc_info=True)
             return
         try:
-            from gateway.session_identity import replace_source
+            from hermes_agent.gateway.session_identity import replace_source
             event.source = replace_source(source, thread_id=str(recovered))  # keeps the pinned identity
         except Exception:
             logger.debug("topic recovery rewrite failed", exc_info=True)
@@ -2359,7 +2359,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         no runner seam exists (hand-built adapters, restored sources: the legacy readers stay)."""
         if source is None:
             return None
-        from gateway.session_identity import canonical_identity, identity_of
+        from hermes_agent.gateway.session_identity import canonical_identity, identity_of
         identity = identity_of(source)
         if identity is not None:
             return identity
@@ -2384,7 +2384,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             return False
         if getattr(source, "profile_route_rejected", False) is not True:
             return False
-        from gateway.parked_route_refusal import drop_rejected_route
+        from hermes_agent.gateway.parked_route_refusal import drop_rejected_route
         drop_rejected_route(self, source)  # one WARNING; a parked target is also refused to the sender
         return True
 
@@ -2394,7 +2394,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         ``agent:main:`` lane. Order: pinned ``RoutingIdentity`` → ``source.profile`` →
         ``_owner_profile`` → session-store resolver; getattr-guarded (object.__new__ in tests),
         type-checked (no MagicMock in the key)."""
-        from gateway.session_identity import identity_of
+        from hermes_agent.gateway.session_identity import identity_of
         identity = identity_of(source)
         if identity is not None:
             return identity.session_key_profile
@@ -2571,7 +2571,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                 history.remove(last_reply)
         if not history:
             return None
-        from gateway.run import _collect_history_media_paths  # lazy: gateway.run imports us
+        from hermes_agent.gateway.run import _collect_history_media_paths  # lazy: hermes_agent.gateway.run imports us
         return _collect_history_media_paths(history)
 
     async def _bounded_history_media_paths_for_session(self, session_key: str) -> Optional[set]:
@@ -3025,7 +3025,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
 
     def warning_notifications_enabled(self, logical_platform=None, *, chat_id=None, metadata=None) -> bool:
         """Presentation policy under the caller's owning profile; old plugins inherit it."""
-        from gateway.warning_notifications import warning_notifications_enabled
+        from hermes_agent.gateway.warning_notifications import warning_notifications_enabled
         return warning_notifications_enabled(logical_platform or self.platform)
 
     def prepare_tts_text(self, text: str) -> str:
@@ -3246,7 +3246,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         """Bare local file paths (absolute, ``~/`` or drive-letter) with deliverable extensions ->
         ``(expanded_paths, cleaned_text)``. Candidates must exist on disk (URLs / hallucinated paths
         ignored); paths inside fenced or inline code are skipped so code samples are never
-        mutilated. Dispatch by type lives in ``gateway/run.py``."""
+        mutilated. Dispatch by type lives in ``hermes_agent/gateway/run.py``."""
         ext_part = '|'.join(e.lstrip('.') for e in MEDIA_DELIVERY_EXTS)
         # Lookbehind rejects URL/relative matches (https://…/img.png, ./foo.png).
         # (?<![/:\w.]) prevents matching inside URLs (e.g. https://…/img.png) and relative paths (./foo.png)
@@ -3789,7 +3789,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         state = self._text_debounce_store().pop(session_key, None)
         if state is not None:
             state.cancel_timer()
-        from gateway.session_ingress_burst import discard_busy_burst
+        from hermes_agent.gateway.session_ingress_burst import discard_busy_burst
         discard_busy_burst(self, session_key)
 
     # ── Session task + guard ownership helpers: paired with the _session_tasks owner map so
@@ -3811,7 +3811,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
 
     def _heal_stale_session_lock(self, session_key: str) -> bool:
         """Clear a stale session lock (split-brain: guard held, nothing processing); True if healed."""
-        from gateway.platforms.base_session_command import command_in_flight  # it settles its own guard
+        from hermes_agent.gateway.platforms.base_session_command import command_in_flight  # it settles its own guard
         if ((guard := self._active_sessions.get(session_key)) is None
                 or not self._session_task_is_stale(session_key) or command_in_flight(guard)):
             return False
@@ -3891,7 +3891,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
 
     async def _dispatch_active_session_command(self, event: MessageEvent, session_key: str, cmd: str) -> None:
         """/stop, /new, /reset on a busy session: cancel only on the runner's verdict (#136759)."""
-        from gateway.platforms.base_session_command import dispatch_active_session_command
+        from hermes_agent.gateway.platforms.base_session_command import dispatch_active_session_command
         await dispatch_active_session_command(self, event, session_key, cmd)
 
     async def handle_message(self, event: MessageEvent) -> None:
@@ -3924,7 +3924,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             logger.warning("Dropping internally routed event: expected session=%s derived=%s",
                            expected_session_key, session_key)
             return
-        from gateway.session_ingress_burst import burst_gate
+        from hermes_agent.gateway.session_ingress_burst import burst_gate
         behind_burst = await burst_gate(self, event, session_key)  # a serial reader's command waits too
         # On-entry self-heal: clear a guard whose owner task already exited.
         if session_key in self._active_sessions:
@@ -3962,7 +3962,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         commands / clarify replies dispatch inline, everything else is queued."""
         # The shared runtime's durable FIFO replaces the adapter's busy-message slot.
         if self._shared_runtime_owns_input(event):
-            from gateway.session_ingress_burst import dispatch_busy_burst
+            from hermes_agent.gateway.session_ingress_burst import dispatch_busy_burst
             await dispatch_busy_burst(self, event, session_key)  # main's photo/text burst merge
             return
         # Bypass commands run inline (queued, /new would leak as user text and /approve, /deny deadlock on
@@ -4068,7 +4068,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                                    ) -> tuple[list[str], Optional[str]]:
         """``(existing_paths, requested_path)``, synthesized in ``source``'s profile scope (the turn's
         scope is gone post-handler); platform-aware path built HERE (HERMES_SESSION_PLATFORM is cleared)."""
-        from gateway.platforms.base_auto_tts import synthesize_auto_tts
+        from hermes_agent.gateway.platforms.base_auto_tts import synthesize_auto_tts
         return await synthesize_auto_tts(self, text_content, source, build_auto_tts_output_path)
 
     def _wants_auto_tts(self, event: MessageEvent, session_key: str, interrupt_event: asyncio.Event,
@@ -4303,7 +4303,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             if not is_ephemeral_response:
                 local_files, text_content = self.extract_local_files(text_content)
                 local_files = self.filter_local_delivery_paths(local_files, session_key=session_key)
-            from gateway.platforms.docker_media_paths import hand_back_unreadable_media
+            from hermes_agent.gateway.platforms.docker_media_paths import hand_back_unreadable_media
             await hand_back_unreadable_media([p for p, _ in media_files] + local_files)
         history = (await self._bounded_history_media_paths_for_session(session_key)
                    if local_files else None)
@@ -4370,7 +4370,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             if result is not None:
                 delivery_attempted = True
                 delivery_succeeded = delivery_succeeded or bool(getattr(result, "success", False))
-        from gateway.platforms.base_session_command import guard_under_commands  # the guard it was scheduled under
+        from hermes_agent.gateway.platforms.base_session_command import guard_under_commands  # the guard it was scheduled under
         interrupt_event = guard_under_commands(self._active_sessions.get(session_key)) or asyncio.Event()
         self._active_sessions.setdefault(session_key, interrupt_event)  # an in-flight command keeps its own
         _thread_metadata = _thread_metadata_for_event(event)
@@ -4595,7 +4595,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                                self.name, sum(not t.done() for t in tasks))
                 break
         with contextlib.suppress(Exception):  # flush pending messages to disk before clearing
-            from gateway.shutdown_flush import flush_pending_to_file
+            from hermes_agent.gateway.shutdown_flush import flush_pending_to_file
             flush_pending_to_file(self._pending_messages, reason="adapter_shutdown")
         for state in self._text_debounce_store().values():
             state.cancel_timer()
@@ -4622,7 +4622,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         role_authorized: bool = False, auto_thread_created: bool = False,
         auto_thread_initial_name: Optional[str] = None) -> SessionSource:
         """Build a SessionSource (``gateway.profile_routes`` stamps the matching ``source.profile``)."""
-        from gateway.bot_loop_guard import configured_bot_user
+        from hermes_agent.gateway.bot_loop_guard import configured_bot_user
         def _opt(value) -> Optional[str]:
             return str(value) if value else None
         fields = dict(
@@ -4638,7 +4638,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         owner_profile = getattr(self, "_owner_profile", None)
         profile, profile_route_rejected, rejected_profile = owner_profile, False, None
         if self.gateway_runner is not None:
-            from gateway.profile_routing import ProfileRouteRejected
+            from hermes_agent.gateway.profile_routing import ProfileRouteRejected
             try:
                 profile = self.gateway_runner._profile_name_for_source(
                     SessionSource(**fields), adapter_profile=owner_profile) or owner_profile
@@ -4677,5 +4677,5 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         """Split a long message into Markdown-safe chunks with ``(1/3)`` indicators: fences
         close/reopen, inline code and links stay whole, pipe tables repeat their header.
         ``len_fn`` overrides ``len`` (``utf16_len`` for Telegram). See ``base_chunking``."""
-        from gateway.platforms.base_chunking import chunk_markdown_message
+        from hermes_agent.gateway.platforms.base_chunking import chunk_markdown_message
         return chunk_markdown_message(content, max_length, len_fn)

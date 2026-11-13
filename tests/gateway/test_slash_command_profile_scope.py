@@ -34,8 +34,8 @@ def profile_home(tmp_path, monkeypatch):
 @pytest.fixture
 def runner():
     """Minimal host exposing the mixin plus the runner's executor helpers."""
-    from gateway.run import GatewayRunner
-    from gateway.slash_commands import GatewaySlashCommandsMixin
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.slash_commands import GatewaySlashCommandsMixin
 
     class _Runner(GatewaySlashCommandsMixin):
         _run_in_executor_with_context = GatewayRunner._run_in_executor_with_context
@@ -62,7 +62,7 @@ async def test_insights_opens_session_db_under_the_routed_home(
 ):
     import agent.insights as insights_mod
     from hermes_agent import hermes_state
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
     from hermes_constants import get_hermes_home
 
     seen: dict = {}

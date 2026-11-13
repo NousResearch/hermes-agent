@@ -21,7 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Runtime state that lives at $HERMES_HOME's root on a flat install, exactly as
 # ``hermes update`` would sweep it: one representative per ignored class. The
-# sidecar names mirror ``_sqlite_files`` in gateway/platforms/base.py; the
+# sidecar names mirror ``_sqlite_files`` in hermes_agent/gateway/platforms/base.py; the
 # credential entries mirror ``_ROOT_CREDENTIAL_PATHS`` there.
 FLAT_INSTALL_RUNTIME_STATE = (
     "state.db",

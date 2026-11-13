@@ -1,12 +1,12 @@
 from types import SimpleNamespace
 
-from gateway.config import Platform
-from gateway.run_turn_persistence import GatewayTurnPersistenceMixin
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.run_turn_persistence import GatewayTurnPersistenceMixin
 
 
 def test_local_final_does_not_receive_platform_reasoning_projection(monkeypatch):
     """Local viewers receive reasoning on their event stream, never in the final text."""
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {"display": {"show_reasoning": True}})
     result = {"last_reasoning": "private chain"}

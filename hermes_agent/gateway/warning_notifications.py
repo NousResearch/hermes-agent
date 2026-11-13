@@ -1,6 +1,6 @@
 """Delivery policy for engine diagnostics, never assistant or command responses."""
 
-from gateway.display_config import resolve_display_setting
+from hermes_agent.gateway.display_config import resolve_display_setting
 
 
 class DiagnosticText(str):

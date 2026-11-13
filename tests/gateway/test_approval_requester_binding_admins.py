@@ -9,9 +9,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.session import SessionSource
 from tests.gateway.test_approval_requester_binding import pending_from, write_approvers
 
 
@@ -55,8 +55,8 @@ async def test_discord_admin_answers_with_require_admin_off(clicker, allowed, mo
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("clicker", "allowed"), [("bob", True), ("carol", False)])
 async def test_relay_admin_answers_like_the_text_approve(clicker, allowed, monkeypatch):
-    import gateway.run as gateway_run
-    from gateway.relay.adapter import RelayAdapter
+    import hermes_agent.gateway.run as gateway_run
+    from hermes_agent.gateway.relay.adapter import RelayAdapter
     from tests.gateway.relay.stub_connector import StubConnector
     from tests.gateway.relay.test_relay_interactive import make_desc
 

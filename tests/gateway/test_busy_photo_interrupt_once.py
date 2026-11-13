@@ -9,11 +9,11 @@ import threading
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import SendResult
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
-from gateway.run_turn_runner import TurnRunner
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.run_turn_runner import TurnRunner
 
 
 async def _followup_while_running(monkeypatch, event, marker, *, fail_admit=False):
@@ -23,7 +23,7 @@ async def _followup_while_running(monkeypatch, event, marker, *, fail_admit=Fals
     The running turn stays inside its tool until the inbound handler returns, so a failed
     admit is visible to the drain. ``fail_admit`` makes that admit refuse (``admission_conflict``).
     """
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_authority import initialize_session_authority
     from plugins.platforms.discord.adapter import DiscordAdapter
     from tests.waiting import async_wait_until
 
@@ -90,7 +90,7 @@ async def _followup_while_running(monkeypatch, event, marker, *, fail_admit=Fals
             from hermes_agent.hermes_state_runtime import RuntimeStoreError
             raise RuntimeStoreError("admission_conflict")
 
-        monkeypatch.setattr("gateway.session_ingress.admit_message", deny)
+        monkeypatch.setattr("hermes_agent.gateway.session_ingress.admit_message", deny)
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     try:
         await adapter.handle_message(event)

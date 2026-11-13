@@ -4,7 +4,7 @@ The auto Telegram voice reply (``GatewayRunner._send_voice_reply``) is the
 final response of a turn. It must mark its metadata as ``notify=True`` so
 adapters that gate push notifications (Telegram's "important" mode) deliver
 it as a normal push instead of a silent message — mirroring the existing
-final-text path in ``gateway/platforms/base.py``.
+final-text path in ``hermes_agent/gateway/platforms/base.py``.
 """
 
 import json
@@ -15,10 +15,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource
 
 
 def _make_event(thread_id=None):

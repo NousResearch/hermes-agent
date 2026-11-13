@@ -19,7 +19,7 @@ from functools import partial
 import logging
 import threading
 
-from gateway.session_busy_controls import authorize
+from hermes_agent.gateway.session_busy_controls import authorize
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
@@ -214,13 +214,13 @@ def _session_runtime(authority, ref):
     if agent is not None:
         runtime = _main_runtime_from_agent(agent)
         return lambda: runtime
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_policy import policy_for_source
     policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
     if policy is None:
         return lambda: None
 
     def resolve():
-        from gateway.run_turn_prepare import _resolve_policy_agent_runtime
+        from hermes_agent.gateway.run_turn_prepare import _resolve_policy_agent_runtime
         # fallback=False: only the session's primary route. If it cannot resolve (an AuthError), the
         # one-shot fails with 5030 instead of walking the route's fallback chain, because that walk
         # sets the runner-wide fallback notice the next turn would report.
@@ -237,7 +237,7 @@ async def oneshot(connection, ref, params):
         authorize(connection, ref, params, 'session:read')
         runtime = _session_runtime(authority, ref)
     else:
-        from gateway.session_authorities import require_serving
+        from hermes_agent.gateway.session_authorities import require_serving
         require_serving(authority)
         if 'session:read' not in connection.actor.capabilities:
             raise RuntimeStoreError('permission_denied')
@@ -250,7 +250,7 @@ async def oneshot(connection, ref, params):
 
     def work():
         from agent.oneshot import run_oneshot
-        from gateway.session_authorities import owner_scope
+        from hermes_agent.gateway.session_authorities import owner_scope
         with owner_scope(authority):
             return {'text': run_oneshot(
                 instructions=params.get('instructions') or '', user_input=params.get('input') or '',

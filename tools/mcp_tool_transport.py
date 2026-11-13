@@ -355,7 +355,7 @@ class MCPServerTransportMixin:
     def _release_spawned_children(self, new_pids: set[int]) -> None:
         """Drop the ledger entries; a child (or its pgroup) still alive means SDK teardown failed
         (common on mid-way cancel on Linux: setsid() children escape) — mark it orphaned for the sweep."""
-        from gateway.status import _pid_exists
+        from hermes_agent.gateway.status import _pid_exists
         # Groups with nothing left alive; the supervisor forgets them after the lock is released.
         # Groups still alive stay registered on purpose, so the supervisor still reaps them if this
         # process dies before the orphan sweep runs.

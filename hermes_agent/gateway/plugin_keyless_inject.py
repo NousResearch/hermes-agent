@@ -23,9 +23,9 @@ from pathlib import Path
 import threading
 import time
 
-from gateway.config import Platform
+from hermes_agent.gateway.config import Platform
 
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 # One refusal warning per (plugin, kind) per window: a plugin retrying on a timer must not flood the log.
 # (plugin, kind) -> when it last warned; a mark past the window is dropped at the next refusal.
@@ -50,13 +50,13 @@ def _refuse(plugin_id: str, kind: str, detail: str) -> None:
 
 
 def _local(runner, live) -> bool:
-    from gateway.session_local import authorize_local_source
+    from hermes_agent.gateway.session_local import authorize_local_source
     source = live.source
     return source is not None and source.platform == Platform.LOCAL and authorize_local_source(runner, source) is True
 
 
 def _launched_by_classic_cli(runner, live) -> bool:
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_policy import policy_for_source
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     try:
         policy = policy_for_source(runner, live.source)
@@ -69,7 +69,7 @@ def resolve(runner, *, plugin_home, calling_session_key: str, plugin_id: str):
     """``(authority, live session)`` the key-less inject goes to, or ``None`` (logged). Runs on the
     plugin's calling thread so a refusal is the plugin's own ``False``; it only reads the authority's
     live map, never the store."""
-    from gateway.session_authorities import all_authorities, authority_for_home
+    from hermes_agent.gateway.session_authorities import all_authorities, authority_for_home
     authority = authority_for_home(runner, plugin_home) if plugin_home is not None else None
     if authority is None:
         _refuse(plugin_id, "unserved", f"its profile home {plugin_home} is not served by this gateway")
@@ -102,7 +102,7 @@ def resolve(runner, *, plugin_home, calling_session_key: str, plugin_id: str):
 async def admit(runner, authority, live, *, content: str, plugin_id: str) -> bool:
     """Commit the text to *live*'s durable FIFO through the keyed path's producer admission, under the
     plugin's profile (whose authority resolved it)."""
-    from gateway.session_authorities import active_authority
+    from hermes_agent.gateway.session_authorities import active_authority
     if not runner._plugin_injection_accepting():
         return False
     entry = await runner.async_session_store.lookup_by_session_key(live.route)
@@ -110,7 +110,7 @@ async def admit(runner, authority, live, *, content: str, plugin_id: str) -> boo
         return False
     scope = contextlib.nullcontext()
     if getattr(getattr(runner, "config", None), "multiplex_profiles", False) is True:
-        from gateway.run import _async_profile_runtime_scope
+        from hermes_agent.gateway.run import _async_profile_runtime_scope
         scope = _async_profile_runtime_scope(Path(authority.profile_id))
     async with scope:
         if active_authority(runner) is not authority:

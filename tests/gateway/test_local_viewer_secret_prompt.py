@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform
+from hermes_agent.gateway.config import Platform
 
 
 class _Peer:
@@ -23,7 +23,7 @@ class _Peer:
 
 
 def _turn(platform):
-    from gateway.session_events import SessionEvents
+    from hermes_agent.gateway.session_events import SessionEvents
     events, peer = SessionEvents(), _Peer()
     events.fanout.attach(peer)
     authority = SimpleNamespace(sessions={'s1': SimpleNamespace(event_stream=events)})
@@ -40,7 +40,7 @@ def _wait_for(predicate, timeout=5.0):
 
 
 def _answer_when_asked(peer, value):
-    from gateway.session_server_requests import resolve
+    from hermes_agent.gateway.session_server_requests import resolve
     _wait_for(lambda: any(f.get('method') == 'secret' for f in peer.frames))
     request = next(f for f in peer.frames if f.get('method') == 'secret')
     resolve({'jsonrpc': '2.0', 'id': request['id'], 'result': {'value': value}})
@@ -48,7 +48,7 @@ def _answer_when_asked(peer, value):
 
 
 def test_local_viewer_turn_prompts_and_saves_the_secret(monkeypatch):
-    from gateway.session_secret_prompt import secret_prompt_scope
+    from hermes_agent.gateway.session_secret_prompt import secret_prompt_scope
     from tools.skills_tool_setup import _capture_required_environment_variables
     saved = []
     from hermes_cli import config
@@ -77,7 +77,7 @@ def test_local_viewer_turn_prompts_and_saves_the_secret(monkeypatch):
 
 
 def test_skipped_secret_stays_missing(monkeypatch):
-    from gateway.session_secret_prompt import secret_prompt_scope
+    from hermes_agent.gateway.session_secret_prompt import secret_prompt_scope
     from tools.skills_tool_setup import _capture_required_environment_variables
     turn, peer = _turn(Platform.LOCAL)
     out = {}
@@ -94,7 +94,7 @@ def test_skipped_secret_stays_missing(monkeypatch):
 
 @pytest.mark.parametrize('platform', [Platform.TELEGRAM])
 def test_messaging_turn_keeps_the_unsupported_hint(monkeypatch, platform):
-    from gateway.session_secret_prompt import secret_prompt_scope
+    from hermes_agent.gateway.session_secret_prompt import secret_prompt_scope
     from tools.skills_tool_setup import _capture_required_environment_variables
     monkeypatch.setenv('HERMES_GATEWAY_SESSION', '1')
     monkeypatch.delenv('HERMES_INTERACTIVE', raising=False)

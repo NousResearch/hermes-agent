@@ -6,7 +6,7 @@ and the throw vanished. Same gate/observe path as a contact card: an observed th
 
 from __future__ import annotations
 
-from gateway.platforms.event import MessageType
+from hermes_agent.gateway.platforms.event import MessageType
 
 
 async def handle_dice_message(adapter, update, context) -> None:

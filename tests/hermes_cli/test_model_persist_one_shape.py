@@ -59,7 +59,7 @@ def _via_cli(home):
 
 
 def _via_gateway(home):
-    from gateway.slash_commands_model import _persist_model_switch_to_config
+    from hermes_agent.gateway.slash_commands_model import _persist_model_switch_to_config
     asyncio.run(_persist_model_switch_to_config(_RESULT, home / "config.yaml"))
 
 
@@ -165,7 +165,7 @@ def test_provider_switch_drops_the_key_env_pointer_but_a_same_route_repick_keeps
 def test_gateway_persists_to_the_profile_config_it_was_given(tmp_path, monkeypatch):
     """Multiplexed gateway: the write lands in the routed profile's config.yaml, never the
     process-level HERMES_HOME."""
-    from gateway.slash_commands_model import _persist_model_switch_to_config
+    from hermes_agent.gateway.slash_commands_model import _persist_model_switch_to_config
     process_home, profile_home = tmp_path / "default", tmp_path / "profiles" / "named"
     for home in (process_home, profile_home):
         home.mkdir(parents=True)

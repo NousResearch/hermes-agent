@@ -15,12 +15,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.platforms.base import (
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.base import (
     SendResult,
     SUPPORTED_VIDEO_TYPES,
 )
-from gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 
 
 # ---------------------------------------------------------------------------
@@ -130,16 +130,16 @@ def adapter():
 def _redirect_cache(tmp_path, monkeypatch):
     """Point document/video cache to tmp_path so tests don't touch ~/.hermes."""
     monkeypatch.setattr(
-        "gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache"
+        "hermes_agent.gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache"
     )
     monkeypatch.setattr(
-        "gateway.platforms.base.VIDEO_CACHE_DIR", tmp_path / "video_cache"
+        "hermes_agent.gateway.platforms.base.VIDEO_CACHE_DIR", tmp_path / "video_cache"
     )
     monkeypatch.setattr(
-        "gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path / "audio_cache"
+        "hermes_agent.gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path / "audio_cache"
     )
     monkeypatch.setattr(
-        "gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "image_cache"
+        "hermes_agent.gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "image_cache"
     )
 
 

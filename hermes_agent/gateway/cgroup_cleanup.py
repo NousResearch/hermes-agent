@@ -65,7 +65,7 @@ def _live_gateway_among(pids: list[int]) -> bool:
     or ``restart``): without a service manager, ``gateway restart`` runs the
     gateway in-process and is itself the live runtime.
     """
-    from gateway.status import _read_process_cmdline, looks_like_gateway_runtime_command_line
+    from hermes_agent.gateway.status import _read_process_cmdline, looks_like_gateway_runtime_command_line
 
     for pid in pids:
         cmdline = _read_process_cmdline(pid)

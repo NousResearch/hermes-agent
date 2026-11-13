@@ -35,7 +35,7 @@ def launchd_seam(monkeypatch, tmp_path):
     monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
     monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
     monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
-    monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda *a, **k: None)
     monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
     monkeypatch.setattr(
         gateway_cli, "_graceful_restart_via_sigusr1", lambda pid, timeout, **_: False

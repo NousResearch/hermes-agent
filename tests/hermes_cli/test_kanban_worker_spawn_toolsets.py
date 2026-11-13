@@ -197,8 +197,8 @@ def test_worker_toolsets_come_from_the_assignee_profile_not_the_parent_config(tm
 
     from hermes_cli import kanban_db as kb
     from hermes_cli.kanban_db_connect import connect
-    from gateway.session_contract import SessionActor
-    from gateway.session_kanban import build_kanban_policy
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_kanban import build_kanban_policy
 
     profile = tmp_path / "profiles" / "elias"
     profile.mkdir(parents=True)

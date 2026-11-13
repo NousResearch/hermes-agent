@@ -9,8 +9,8 @@ from pathlib import Path
 import psutil
 import pytest
 
-from gateway import run_inbound_hooks
-from gateway.run_inbound_hooks import GatewayInboundHooksMixin
+from hermes_agent.gateway import run_inbound_hooks
+from hermes_agent.gateway.run_inbound_hooks import GatewayInboundHooksMixin
 from tests.waiting import async_wait_until
 
 _TREE = 'echo $$ > shell.pid; sleep 120 & echo $! > child.pid; wait'

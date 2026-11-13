@@ -17,11 +17,11 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms import api_server_runs as _api_runs
-from gateway.platforms.api_server import APIServerAdapter
-from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
-from gateway.run import _INTERRUPT_REASON_GATEWAY_SHUTDOWN
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms import api_server_runs as _api_runs
+from hermes_agent.gateway.platforms.api_server import APIServerAdapter
+from hermes_agent.gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+from hermes_agent.gateway.run import _INTERRUPT_REASON_GATEWAY_SHUTDOWN
 from hermes_agent.hermes_state import SessionDB
 from tests.gateway.restart_test_helpers import make_restart_runner
 from tools import browser_session_lifecycle as bt_lifecycle
@@ -152,7 +152,7 @@ class TestDrainWaitsForApiWork:
         mock_agent.session_total_tokens = 0
 
         with patch(
-            "gateway.platforms.api_server.asyncio.create_task",
+            "hermes_agent.gateway.platforms.api_server.asyncio.create_task",
             side_effect=delayed_create_task,
         ), patch.object(api, "_create_agent", return_value=mock_agent):
             async with TestClient(TestServer(app)) as client:
@@ -230,7 +230,7 @@ class TestDrainAdmission:
             "/v1/runs",
         )
 
-        with patch("gateway.run._gateway_runner_ref", lambda: runner):
+        with patch("hermes_agent.gateway.run._gateway_runner_ref", lambda: runner):
             async with TestClient(TestServer(app)) as client:
                 for path in paths:
                     response = await client.post(path, json={})
@@ -642,8 +642,8 @@ class TestShutdownSettleWindow:
         monkeypatch.setattr(terminal_tool_lifecycle, "cleanup_all_environments", lambda: None)
         monkeypatch.setattr(bt_lifecycle, "cleanup_all_browsers", lambda: None)
 
-        with patch("gateway.status.remove_pid_file"), \
-             patch("gateway.status.publish_runtime_status"), \
+        with patch("hermes_agent.gateway.status.remove_pid_file"), \
+             patch("hermes_agent.gateway.status.publish_runtime_status"), \
              patch("hermes_agent.cron.scheduler.mark_job_run"):
             await runner.stop()
 
@@ -694,8 +694,8 @@ class TestShutdownSettleWindow:
 
         monkeypatch.setattr(type(loop), "time", _fast_time)
         try:
-            with patch("gateway.status.remove_pid_file"), \
-                 patch("gateway.status.publish_runtime_status"), \
+            with patch("hermes_agent.gateway.status.remove_pid_file"), \
+                 patch("hermes_agent.gateway.status.publish_runtime_status"), \
                  patch("hermes_agent.cron.scheduler.mark_job_run"):
                 await runner.stop()
         finally:

@@ -13,7 +13,7 @@ async def attach_bytes(connection, ref, params):
     if ref.session_id not in connection.subscriptions:
         raise RuntimeStoreError('permission_denied')
     # The declared ``profile`` selector names this owner's own home or is refused (dokterdok N73).
-    from gateway.session_busy_controls import authorize
+    from hermes_agent.gateway.session_busy_controls import authorize
     authorize(connection, ref, params, 'session:submit')
     # The owner, never the caller or ambient process profile, selects staging.
     directory = Path(connection.authority.profile_id) / 'cache' / 'images'

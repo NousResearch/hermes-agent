@@ -15,7 +15,7 @@ import threading
 from collections.abc import Callable
 
 from agent.memory_provider import spawn_context_thread
-from gateway import hosted_room_driver as state
+from hermes_agent.gateway import hosted_room_driver as state
 
 logger = logging.getLogger(__name__)
 

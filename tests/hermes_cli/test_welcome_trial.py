@@ -316,9 +316,9 @@ def _kanban_worker_model(monkeypatch, tmp_path) -> str:
     from hermes_cli.config import load_config
     from hermes_cli.kanban_db_connect import connect
     from hermes_constants import get_hermes_home
-    from gateway.session_contract import SessionActor
-    from gateway.session_kanban import build_kanban_policy
-    from gateway.session_policy import restore_policy
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_kanban import build_kanban_policy
+    from hermes_agent.gateway.session_policy import restore_policy
 
     home = str(get_hermes_home())
     monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path / "kanban"))

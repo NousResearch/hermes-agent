@@ -155,8 +155,8 @@ class TestSubscribe:
     def test_profile_rebind_rotates_secret_without_exposing_mixed_record(
         self, tmp_path, monkeypatch
     ):
-        from gateway.config import PlatformConfig
-        from gateway.platforms.webhook import WebhookAdapter
+        from hermes_agent.gateway.config import PlatformConfig
+        from hermes_agent.gateway.platforms.webhook import WebhookAdapter
 
         profile_dir = tmp_path / "profiles" / "compta"
         profile_dir.mkdir(parents=True)

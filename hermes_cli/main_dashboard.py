@@ -588,7 +588,7 @@ def _report_dashboard_status() -> int:
     ``--port 0`` backends are probed on the port the OS actually gave them. See #81564.
     """
     from hermes_cli.dashboard_procs import _ledger_serve_binds, _scan_dashboard_processes
-    from gateway.status import _pid_exists
+    from hermes_agent.gateway.status import _pid_exists
     binds = _ledger_serve_binds()
     live: list[tuple[int, str, str]] = []
     for pid, command in _scan_dashboard_processes():
@@ -848,7 +848,7 @@ def _host_backend_attachment():
     The record only nominates a CANDIDATE; :func:`_attach_to_host_backend` makes it prove itself.
     """
     try:
-        from gateway import host_rendezvous as hr
+        from hermes_agent.gateway import host_rendezvous as hr
 
         record = hr.read_record(hr.ROLE_SERVE)
         if record is None or not record.port:
@@ -921,8 +921,8 @@ def _attach_to_host_backend(args, headless_backend: bool) -> None:
     if record is None:
         return
 
-    from gateway import host_rendezvous as hr
-    from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+    from hermes_agent.gateway import host_rendezvous as hr
+    from hermes_agent.gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
 
     identity = hr.probe_owner(record)
     if identity is None:

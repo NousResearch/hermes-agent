@@ -9,9 +9,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionSource, build_session_key
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionSource, build_session_key
 from hermes_agent.hermes_state import AsyncSessionDB, SessionDB
 
 
@@ -21,7 +21,7 @@ def _src(chat_id="67890", user_id="12345", thread_id="topic-b", chat_type="dm"):
 
 
 def _runner(db, source):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
     runner.config = SimpleNamespace(platforms={})

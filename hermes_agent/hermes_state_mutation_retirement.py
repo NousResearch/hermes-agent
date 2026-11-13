@@ -12,7 +12,7 @@ RETIRED_PREFIX = 'gateway.retired_session.v1.'
 # slot of that profile's routing keys. Only routing saves read it, so the launch profile's own
 # creates, binds and generation walks never see another profile's retirement.
 ROUTE_FENCE_PREFIX = 'gateway.retired_route.v1.'
-# A last viewer's close stored until the owner's idle point (gateway/session_viewer_close).
+# A last viewer's close stored until the owner's idle point (hermes_agent/gateway/session_viewer_close).
 VIEWER_CLOSE_PREFIX = 'gateway.viewer_close.v1:'
 
 

@@ -45,8 +45,8 @@ def _std_headers(secret: str, body: bytes, *, msg_id: str = "msg_1", ts: str | N
 
 async def main(port: int) -> None:
     sys.path.insert(0, os.getcwd())
-    from gateway.config import PlatformConfig
-    from gateway.platforms.webhook import WebhookAdapter
+    from hermes_agent.gateway.config import PlatformConfig
+    from hermes_agent.gateway.platforms.webhook import WebhookAdapter
 
     raw_secret = "gitlab-legacy-token"
     whsec = "whsec_" + base64.b64encode(b"0123456789abcdef0123456789abcdef").decode()

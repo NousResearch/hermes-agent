@@ -126,7 +126,7 @@ def test_corrupt_epoch_refuses_profile_sweep_with_separate_recovery(tmp_path, mo
 def test_update_restore_excludes_startup_until_publication(tmp_path, monkeypatch):
     import subprocess
     import sys
-    from gateway.runtime_ownership import ProfileOwnership
+    from hermes_agent.gateway.runtime_ownership import ProfileOwnership
     from hermes_cli import backup
     from hermes_cli.update_cmd_maint import _restore_state_db_from_snapshot
 
@@ -166,7 +166,7 @@ def test_update_restore_excludes_startup_until_publication(tmp_path, monkeypatch
         env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ', 'TIRITH_ENABLED') if k in os.environ}
         env.update(HOME=str(tmp_path / 'user'), HERMES_HOME=str(home), PYTHONPATH=str(root))
         contender = subprocess.run([sys.executable, '-c',
-            "import logging, runpy; logging.basicConfig(level=logging.INFO); runpy.run_module('gateway.run', run_name='__main__')"],
+            "import logging, runpy; logging.basicConfig(level=logging.INFO); runpy.run_module('hermes_agent.gateway.run', run_name='__main__')"],
             cwd=root, env=env, stdin=subprocess.DEVNULL, capture_output=True,
             text=True, encoding='utf-8', timeout=25, check=False)
         assert 'already owns profile' in contender.stdout + contender.stderr, contender

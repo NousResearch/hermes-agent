@@ -29,8 +29,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import Platform
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.session import SessionSource
 
 
 def _clear_auth_env(monkeypatch) -> None:
@@ -49,7 +49,7 @@ def _make_runner(*, platform: Platform, authorization_is_upstream: bool):
     ``authorization_is_upstream`` controls whether that adapter declares the
     upstream-authz capability.
     """
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     adapter = SimpleNamespace(
@@ -83,7 +83,7 @@ def _relay_source(**kw) -> SessionSource:
 
 def test_base_adapter_defaults_to_not_upstream_authorized():
     """The base property is False — direct adapters keep env default-deny."""
-    from gateway.platforms.base import BasePlatformAdapter
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
     assert BasePlatformAdapter.authorization_is_upstream.fget(object()) is False
 
@@ -155,7 +155,7 @@ def test_event_from_wire_stamps_routed_profile():
     transport must carry it through so build_session_key namespaces the session
     and the agent turn resolves that profile's config/credentials.
     """
-    from gateway.relay.ws_transport import _event_from_wire
+    from hermes_agent.gateway.relay.ws_transport import _event_from_wire
 
     event = _event_from_wire(
         {

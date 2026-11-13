@@ -1,7 +1,7 @@
 """Shared wording for the exec-approval prompt every messaging surface renders.
 
 The button card (``BasePlatformAdapter._format_exec_approval``) and the plain-text
-``/approve`` fallback (``gateway.run._format_exec_approval_fallback``) must tell the user
+``/approve`` fallback (``hermes_agent.gateway.run._format_exec_approval_fallback``) must tell the user
 the same three things: what Hermes wants to run, why it was flagged, and that silence means
 the command does NOT run once ``approvals.timeout`` elapses. Keeping the text here means one
 edit changes every platform; adapters only wrap these strings in their own markup.
@@ -10,7 +10,7 @@ The ``EA_*`` / ``APPROVAL_TIMED_OUT_NOTICE`` module constants are the English so
 (catalog keys ``gateway.exec_approval.*``); anything that renders the prompt calls the sibling
 accessors (``ea_header_text()`` …) so the active ``display.language`` is honoured at render time.
 
-No imports from ``gateway.platforms.base`` or ``gateway.run`` — both import this module.
+No imports from ``gateway.platforms.base`` or ``hermes_agent.gateway.run`` — both import this module.
 """
 
 from __future__ import annotations

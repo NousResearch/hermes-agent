@@ -21,7 +21,7 @@ import pytest
     ("@file:/tmp/a.txt\n/goal go", "[Content of a.txt]:\nx", ("@file:/tmp/a.txt\n/goal go", [False])),
 ])
 def test_inline_document_text_keeps_a_command_caption_first(caption, injection, expected):
-    from gateway.platforms.helpers import inline_document_text  # here, so the adapter cases run on any base
+    from hermes_agent.gateway.platforms.helpers import inline_document_text  # here, so the adapter cases run on any base
 
     assert inline_document_text(caption, injection, [True]) == expected
 
@@ -96,11 +96,11 @@ async def _telegram_album(tmp_path, monkeypatch, captions):
     from tests.gateway.test_telegram_documents import _make_document, _make_file_obj, _make_message, _make_update
     from tests.waiting import async_wait_until
 
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
     from plugins.platforms.telegram.adapter import TelegramAdapter
 
     for attr in ("DOCUMENT_CACHE_DIR", "IMAGE_CACHE_DIR"):
-        monkeypatch.setattr(f"gateway.platforms.base.{attr}", tmp_path / attr)
+        monkeypatch.setattr(f"hermes_agent.gateway.platforms.base.{attr}", tmp_path / attr)
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="t", extra={"media_group_wait_seconds": 0.05}))
     adapter.handle_message = AsyncMock()
     adapter._is_callback_user_authorized = lambda user_id, **_kw: True

@@ -1,7 +1,7 @@
 """Every spelling of a group chat orders Stop with validated approval dispatch."""
 import threading
 
-from gateway import hosted_room_driver as driver
+from hermes_agent.gateway import hosted_room_driver as driver
 from tests.tui_gateway.test_hosted_room_service import _FakeRPC
 from tests.tui_gateway.test_hosted_room_approval_lifetime import pending_approval as pending_approval_fixture
 

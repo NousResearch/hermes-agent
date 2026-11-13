@@ -12,7 +12,7 @@ def test_session_context_and_task_record_remain_distinct(monkeypatch):
     token = runtime_cwd.set_session_cwd("/workspace/session")
     record_session_cwd("task-1", "/workspace/task")
     monkeypatch.setattr(
-        "gateway.session_context.get_session_env", lambda _name, _default: ""
+        "hermes_agent.gateway.session_context.get_session_env", lambda _name, _default: ""
     )
     try:
         assert relay_cwd.resolve_relay_scope_cwds(
@@ -51,7 +51,7 @@ def test_gateway_session_key_uses_its_recorded_cwd(monkeypatch):
     token = runtime_cwd.set_session_cwd(None)
     record_session_cwd("gateway-key", "/remote/gateway-workspace")
     monkeypatch.setattr(
-        "gateway.session_context.get_session_env",
+        "hermes_agent.gateway.session_context.get_session_env",
         lambda name, default: (
             "gateway-key" if name == "HERMES_SESSION_KEY" else default
         ),
@@ -97,7 +97,7 @@ def test_only_local_cli_uses_host_cwd(
 
     monkeypatch.setattr("tools.terminal_tool.get_session_cwd", lambda _key: None)
     monkeypatch.setattr(
-        "gateway.session_context.get_session_env", lambda _name, default: default
+        "hermes_agent.gateway.session_context.get_session_env", lambda _name, default: default
     )
     monkeypatch.setattr(
         "tools.terminal_scope.terminal_env",
@@ -119,7 +119,7 @@ def test_cwd_lookup_failures_do_not_break_the_turn(monkeypatch):
 
     monkeypatch.setattr("tools.terminal_tool.get_session_cwd", unavailable)
     monkeypatch.setattr(runtime_cwd, "scoped_session_cwd", unavailable)
-    monkeypatch.setattr("gateway.session_context.get_session_env", unavailable)
+    monkeypatch.setattr("hermes_agent.gateway.session_context.get_session_env", unavailable)
     monkeypatch.setattr("tools.terminal_scope.terminal_env", unavailable)
 
     assert relay_cwd.resolve_relay_scope_cwds(

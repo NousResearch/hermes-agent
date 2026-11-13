@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from plugins.platforms.telegram.callback_answer import answer_callback, is_stale_query_error
 

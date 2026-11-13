@@ -1,6 +1,6 @@
 """Bot Mode never renders or relays a bare intentional-silence marker (#110782).
 
-Silence is a delivery decision shared with the gateway (``gateway/response_filters``):
+Silence is a delivery decision shared with the gateway (``hermes_agent/gateway/response_filters``):
 the assistant row stays persisted, only the outbound text is emptied; failed turns and
 prose that merely mentions a marker are delivered unchanged.
 """

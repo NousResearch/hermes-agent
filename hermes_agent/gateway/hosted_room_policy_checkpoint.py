@@ -13,9 +13,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from gateway import hosted_rooms
-from gateway.hosted_room_task_input import validate_task_input
-from gateway.hosted_rooms_common import DbPath, compact_json, fenced_update
+from hermes_agent.gateway import hosted_rooms
+from hermes_agent.gateway.hosted_room_task_input import validate_task_input
+from hermes_agent.gateway.hosted_rooms_common import DbPath, compact_json, fenced_update
 
 
 MAX_ACTIVE_POLICY_EVENTS = 64

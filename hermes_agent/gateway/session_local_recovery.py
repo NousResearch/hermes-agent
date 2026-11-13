@@ -5,9 +5,9 @@ import json
 import logging
 from pathlib import Path
 
-from gateway.config import Platform
-from gateway.session import SessionEntry, SessionSource
-from gateway.session_contract import SessionRef
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.session import SessionEntry, SessionSource
+from hermes_agent.gateway.session_contract import SessionRef
 from hermes_agent.hermes_state_keys import local_identity
 from hermes_agent.hermes_state_local import POLICY_PREFIX, local_receipt
 from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions
@@ -30,10 +30,10 @@ def local_adapter_map(authority):
 
 def local_adapter(authority):
     """The LOCAL adapter *authority*'s local sessions, and the conversations its chats moved past
-    (gateway/session_detached.py), deliver through: created on first use."""
+    (hermes_agent/gateway/session_detached.py), deliver through: created on first use."""
     adapters = local_adapter_map(authority)
     if (adapter := adapters.get(Platform.LOCAL)) is None:
-        from gateway.session_local import LocalSessionAdapter
+        from hermes_agent.gateway.session_local import LocalSessionAdapter
         adapter = adapters[Platform.LOCAL] = LocalSessionAdapter(authority)
     return adapter
 
@@ -82,7 +82,7 @@ def _with_untracked_compression(authority, sid, receipt):
     with authority.db._read_ctx() as conn:
         if adoptable_compression(conn, receipt) is None:
             return receipt
-    from gateway.session_local_adoption import on_owner_loop, schedule_adoption
+    from hermes_agent.gateway.session_local_adoption import on_owner_loop, schedule_adoption
     if on_owner_loop():
         schedule_adoption(authority, sid, receipt)
         raise _CatchUpPending('storage_unavailable')
@@ -130,7 +130,7 @@ def restorable_receipt(authority, sid):
     """*sid*'s receipt and entry once ``restore_local_session``'s checks on the stored receipt pass,
     judged read-only: ``owned_receipt`` plus the stored policy and lineage. A compression catch-up
     still to adopt is judged as the restore would commit it (``with_adopted_compression``)."""
-    from gateway.session_policy import restore_policy
+    from hermes_agent.gateway.session_policy import restore_policy
     from hermes_agent.hermes_state_local_lineage import adoptable_compression, validate_local_lineage, with_adopted_compression
     receipt, source, route, entry = owned_receipt(authority, sid)
     restore_policy(receipt['policy'])
@@ -171,9 +171,9 @@ def _stray_route_target(authority, receipt, session_id):
 
 
 def restore_local_session(authority, sid):
-    from gateway.session_authority import LiveSession
-    from gateway.session_local import LocalSessionAdapter
-    from gateway.session_policy import restore_policy
+    from hermes_agent.gateway.session_authority import LiveSession
+    from hermes_agent.gateway.session_local import LocalSessionAdapter
+    from hermes_agent.gateway.session_policy import restore_policy
     try:
         # The catch-up writes, so the receipt as stored must already be this owner's (#140060).
         receipt, source, route, entry = owned_receipt(authority, sid)
@@ -198,7 +198,7 @@ def restore_local_session(authority, sid):
     if not isinstance(adapter, LocalSessionAdapter) or adapter.authority is not authority:
         raise RuntimeStoreError('runtime_draining')
     live = authority.sessions.get(sid)
-    from gateway.session_history_mount import is_history_mount
+    from hermes_agent.gateway.session_history_mount import is_history_mount
     if live is None or is_history_mount(live):
         source = adapter.kept_source(source)
         with store._lock:
@@ -435,8 +435,8 @@ def restore_completion_route(runner, session_key):
     """Background work that outlived its local session reports after a restart: boot left that ended
     session unrestored, so restore it first, as ``authorize`` does on a viewer's first touch, and its
     completion is noted on it as before. Anything else is left to the delivery's own checks."""
-    from gateway.run import _parse_session_key
-    from gateway.session_authorities import active_authority
+    from hermes_agent.gateway.run import _parse_session_key
+    from hermes_agent.gateway.session_authorities import active_authority
     authority, parsed = active_authority(runner), _parse_session_key(session_key) or {}
     if authority is None or parsed.get('platform') != Platform.LOCAL.value or parsed['chat_id'] in authority.sessions:
         return
@@ -451,7 +451,7 @@ def release_handed_off_receipts(db, *, epoch):
     restores from its route like any other platform session, and move the rest of its conversation
     there with it (``hand_off_conversations``). Only receipts whose CURRENT target a messaging lane
     now holds: any other refused receipt stays as it is, logged when it is touched."""
-    from gateway.session_route_recovery import _messaging_platform
+    from hermes_agent.gateway.session_route_recovery import _messaging_platform
     from hermes_agent.hermes_state_local import hand_off_conversations, moved_receipts
     from hermes_agent.hermes_state_runtime import _epoch
 
@@ -466,7 +466,7 @@ def release_handed_off_receipts(db, *, epoch):
 
 
 def local_receipt_ids(authority):
-    from gateway.session_viewer_close import CLOSE_PREFIX
+    from hermes_agent.gateway.session_viewer_close import CLOSE_PREFIX
     start = len(POLICY_PREFIX) + 1
     with authority.db._read_ctx() as conn:
         return [row[0][len(POLICY_PREFIX):] for row in conn.execute(
@@ -490,12 +490,12 @@ def recover_local_sessions(authority, *, schedule=False):
             logging.getLogger(__name__).warning('Local session %s paused: %s', sid, exc.reason)
     if schedule:
         # A last-viewer close the previous owner stopped before completing (#134889 LC-6b).
-        from gateway.session_viewer_close import rearm_persisted_closes, settle_viewer_close
-        from gateway.session_runtime_workers import track_mutation
+        from hermes_agent.gateway.session_viewer_close import rearm_persisted_closes, settle_viewer_close
+        from hermes_agent.gateway.session_runtime_workers import track_mutation
         for sid in rearm_persisted_closes(authority):
             authority._schedule(SessionRef(authority.profile_id, sid))
             if any(row['status'] == 'unknown' for row in list_session_admissions(authority.db, session_id=sid)):
                 # A hard-killed owner's turn: the drain pauses on it, so the close resolves it.
                 track_mutation(authority, settle_viewer_close(authority, sid))
-        from gateway.session_viewer_close import arm_startup_orphan_closes
+        from hermes_agent.gateway.session_viewer_close import arm_startup_orphan_closes
         arm_startup_orphan_closes(authority, orphans)

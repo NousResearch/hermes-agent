@@ -21,12 +21,12 @@ log = logging.getLogger(__name__)
 # so a transient runtime state can't erase operator intent.
 # Transient sub-states of a RUNNING gateway (not an operator stop, not a failed boot). A gateway
 # hard-killed in one of them with no `desired_state` would otherwise stay DOWN on every later boot
-# (observed: staging stranded at `draining`); map them to `running`, mirroring gateway/run.py.
+# (observed: staging stranded at `draining`); map them to `running`, mirroring hermes_agent/gateway/run.py.
 # `starting` / `startup_failed` are excluded: auto-restarting a mid-boot death is the crash-loop.
 # A gateway only ever reaches these while it is up and serving, so they are NOT an operator stop and NOT a
 # failed boot: - `draining`  — written by the drain watcher / scale-to-zero go-dormant path when an
-# in-flight quiesce begins (gateway/run.py). - `degraded`  — written when the gateway comes up with some
-# platforms queued for retry, then "falls through to the normal running state" (gateway/run.py #5196): the
+# in-flight quiesce begins (hermes_agent/gateway/run.py). - `degraded`  — written when the gateway comes up with some
+# platforms queued for retry, then "falls through to the normal running state" (hermes_agent/gateway/run.py #5196): the
 # process is up, serving cron + whatever platforms connected, and the reconnect watcher takes the rest from
 # there. When a gateway is hard-killed *while in one of these states* (a container/VM recreate SIGTERMs it
 # before `_stop_impl` reaches its terminal-state persist), the last value left in gateway_state.json is the
@@ -34,7 +34,7 @@ log = logging.getLogger(__name__)
 # autostart intent would leave the gateway DOWN on every subsequent boot — the gateway never comes back, the
 # dashboard is up but messaging stays dark (observed on a relay-opted-in staging instance stranded at
 # `draining`, 2026-06; `degraded` is the same wedge class). Map these transient sub-states to `running` so a
-# stranded marker reads as the run-intent it actually represents. This mirrors gateway/run.py's #42675
+# stranded marker reads as the run-intent it actually represents. This mirrors hermes_agent/gateway/run.py's #42675
 # handling, which persists `running` (not the mid-shutdown `draining`) when an unexpected signal tears the
 # gateway down — extended here to the case where the gateway died before it could persist anything at all.
 _TRANSIENT_RUNNING_STATES = frozenset({"draining", "degraded"})
@@ -264,7 +264,7 @@ def _cleanup_stale_runtime_files(profile_dir: Path) -> None:
 def _read_prior_exit_label(profile_dir: Path) -> str:
     """Exception-free ``lifecycle_ledger.read_prior_exit_label`` — forensics never block boot."""
     try:
-        from gateway.lifecycle_ledger import read_prior_exit_label
+        from hermes_agent.gateway.lifecycle_ledger import read_prior_exit_label
         return read_prior_exit_label(profile_dir)
     except Exception:
         return "unknown"

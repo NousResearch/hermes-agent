@@ -298,7 +298,7 @@ class TestFreeTierCooldownCutoff:
     def test_a_subagent_of_a_desktop_session_keeps_waiting(self):
         """The child runs in a copy of the parent's context, so it reads the parent's source."""
         from agent.turn_recovery import free_tier_cooldown_ends_turn
-        from gateway.session_context import clear_session_vars, set_session_vars
+        from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
         tokens = set_session_vars(source="desktop")
         try:
             assert free_tier_cooldown_ends_turn(_agent(platform="subagent"), _plain_429(90), WELCOME) is False
@@ -308,7 +308,7 @@ class TestFreeTierCooldownCutoff:
     def test_a_gateway_admitted_finite_cli_turn_keeps_waiting(self):
         """``hermes chat -q`` over the daemon carries its one-shot fact on the admission, not in env."""
         from agent.turn_recovery import free_tier_cooldown_ends_turn
-        from gateway.session_finite import finite_turn_scope
+        from hermes_agent.gateway.session_finite import finite_turn_scope
         with finite_turn_scope(True):
             assert free_tier_cooldown_ends_turn(_agent(platform="cli"), _plain_429(90), WELCOME) is False
         assert free_tier_cooldown_ends_turn(_agent(platform="cli"), _plain_429(90), WELCOME) is True

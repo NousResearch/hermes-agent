@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import session_control_actions as actions
+from hermes_agent.gateway import session_control_actions as actions
 
 
 def _session(published):
@@ -53,7 +53,7 @@ async def test_the_per_tool_republish_reads_its_snapshot_off_the_loop(monkeypatc
     """Every tool of every running session republishes the control card. Its snapshot read takes
     state.db's connection lock, which the agents' own writes hold, so on the loop it was a large
     share of loop time with many sessions running (gateway disconnects under load)."""
-    from gateway.local_viewer_events import publish_control_if_changed
+    from hermes_agent.gateway.local_viewer_events import publish_control_if_changed
 
     published = []
     authority, live = _session(published)

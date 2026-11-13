@@ -16,7 +16,7 @@ def _home(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_the_control_card_of_a_compressed_messaging_session_reads_its_current_segment(tmp_path):
     from hermes_cli.goals import GoalState
-    from gateway.session_ancillary import control_snapshot
+    from hermes_agent.gateway.session_ancillary import control_snapshot
     _compressed_lane(tmp_path)
     cold = await _cold(tmp_path)
     cold.authority.authorize(cold.actor, _ref('lane-root'), 'session:read')
@@ -32,7 +32,7 @@ async def test_the_control_card_of_a_compressed_messaging_session_reads_its_curr
 @pytest.mark.asyncio
 async def test_an_unviewed_superseded_mount_is_not_listed_live(tmp_path):
     """A refused delete of an old conversation leaves its read-only mount behind with no viewer."""
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     cold, _successor = await _superseded(tmp_path)
     connection = AuthorityConnection(cold.authority, object(), {
         'provider': 'local', 'user_id': 'viewer', 'profile_id': 'fixture', 'instance_id': 'cold',
@@ -55,7 +55,7 @@ async def test_an_unviewed_superseded_mount_is_not_listed_live(tmp_path):
 async def test_an_old_messaging_conversation_can_be_deleted_from_the_picker(tmp_path):
     """The picker reads the revision with ``session.resume`` (a read-only mount for a conversation its
     chat moved past), then deletes by ``session.mutate``; the delete removes this row only."""
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     cold, successor = await _superseded(tmp_path)
     connection = AuthorityConnection(cold.authority, object(), {
         'provider': 'local', 'user_id': 'viewer', 'profile_id': 'fixture', 'instance_id': 'cold',
@@ -78,7 +78,7 @@ async def test_an_old_messaging_conversation_can_be_deleted_from_the_picker(tmp_
 
 @pytest.mark.asyncio
 async def test_an_old_messaging_conversation_takes_every_other_write(tmp_path):
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     cold, _successor = await _superseded(tmp_path)
     connection = AuthorityConnection(cold.authority, object(), {
         'provider': 'local', 'user_id': 'viewer', 'profile_id': 'fixture', 'instance_id': 'cold',
@@ -93,7 +93,7 @@ async def test_an_old_messaging_conversation_takes_every_other_write(tmp_path):
 @pytest.mark.asyncio
 async def test_an_unopened_old_messaging_conversation_deletes_on_the_first_attempt(tmp_path):
     """Desktop reads the revision from the stored row without mounting it; the delete itself mounts."""
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     cold, _successor = await _superseded(tmp_path)
     connection = AuthorityConnection(cold.authority, object(), {
         'provider': 'local', 'user_id': 'viewer', 'profile_id': 'fixture', 'instance_id': 'cold',
@@ -113,7 +113,7 @@ async def test_an_unopened_old_messaging_conversation_deletes_on_the_first_attem
 async def test_a_compressed_messaging_conversation_deletes_by_its_listed_segment(tmp_path):
     """Listings name a compressed conversation by its current segment; the delete authorizes on the
     lineage root, where the lane's session lives, and removes the whole conversation."""
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     _compressed_lane(tmp_path)
     cold = await _cold(tmp_path)
     connection = AuthorityConnection(cold.authority, object(), {

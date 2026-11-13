@@ -14,12 +14,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gateway import status
-from gateway import status_lock_dir as scoped_locks
-from gateway.status_scoped_locks import release_scoped_lock
-from gateway.platforms.base import BasePlatformAdapter
-from gateway.restart import is_global_startup_conflict
-from gateway.run_startup import GatewayStartupMixin
+from hermes_agent.gateway import status
+from hermes_agent.gateway import status_lock_dir as scoped_locks
+from hermes_agent.gateway.status_scoped_locks import release_scoped_lock
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.restart import is_global_startup_conflict
+from hermes_agent.gateway.run_startup import GatewayStartupMixin
 
 pytestmark = [pytest.mark.platforms("posix"),
               pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason="root ignores mode bits")]
@@ -66,7 +66,7 @@ def locked_out_dir(tmp_path, monkeypatch):
 
 def test_unusable_lock_dir_parks_the_adapter_with_the_repair(locked_out_dir, caplog):
     adapter = _adapter()
-    with caplog.at_level(logging.DEBUG, logger="gateway.status"):
+    with caplog.at_level(logging.DEBUG, logger="hermes_agent.gateway.status"):
         # On main this raised PermissionError out of connect() and the adapter retried forever.
         assert adapter._acquire_platform_lock("telegram-bot-token", "tok", "Telegram bot token") is False
         assert _adapter()._acquire_platform_lock("telegram-bot-token", "tok", "Telegram bot token") is False
@@ -136,7 +136,7 @@ class _StartupProbe:
 
 def test_a_sole_token_locked_platform_on_an_unusable_lock_dir_keeps_the_gateway_up(locked_out_dir, monkeypatch):
     """Review 2.1 on #140490: a Telegram-only gateway must not exit 78 over the lock dir."""
-    import gateway.run as run_mod
+    import hermes_agent.gateway.run as run_mod
     monkeypatch.setattr(run_mod, "_write_runtime_status_quiet", lambda **k: None, raising=False)
     adapter = _adapter()
     assert adapter._acquire_platform_lock("telegram-bot-token", "tok", "Telegram bot token") is False

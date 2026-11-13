@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 def _make_adapter(*, supports_delete: bool = True) -> MagicMock:
     """Build a minimal MagicMock adapter wired for send/edit/delete."""
@@ -296,7 +296,7 @@ class TestStreamingConfigFreshFinalField:
     """The gateway-level StreamingConfig carries the setting."""
 
     def test_from_dict_respects_explicit_zero(self):
-        from gateway.config import StreamingConfig
+        from hermes_agent.gateway.config import StreamingConfig
         cfg = StreamingConfig.from_dict({
             "enabled": True,
             "fresh_final_after_seconds": 0,

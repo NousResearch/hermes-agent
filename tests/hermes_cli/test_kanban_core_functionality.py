@@ -948,7 +948,7 @@ def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
     import logging
     import sqlite3
 
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
     import hermes_cli.config as _cfg_mod
     import hermes_cli.kanban_db as _kb
     from hermes_cli import kanban_db_connect as _kbc
@@ -1010,10 +1010,10 @@ def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
         return None
 
     monkeypatch.setattr(_kbc, "connect", _connect)
-    monkeypatch.setattr("gateway.run.asyncio.to_thread", _to_thread)
-    monkeypatch.setattr("gateway.run.asyncio.sleep", _sleep)
+    monkeypatch.setattr("hermes_agent.gateway.run.asyncio.to_thread", _to_thread)
+    monkeypatch.setattr("hermes_agent.gateway.run.asyncio.sleep", _sleep)
 
-    with caplog.at_level(logging.ERROR, logger="gateway.run"):
+    with caplog.at_level(logging.ERROR, logger="hermes_agent.gateway.run"):
         asyncio.run(
             asyncio.wait_for(
                 runner._kanban_dispatcher_watcher(),

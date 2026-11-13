@@ -17,8 +17,8 @@ from typing import Any, Callable, Optional
 
 from agent.i18n import t
 
-from gateway.kanban_watchers_common import _list_boards, _to_thread_process_service, logger
-from gateway.wake import session_owned_by_profile
+from hermes_agent.gateway.kanban_watchers_common import _list_boards, _to_thread_process_service, logger
+from hermes_agent.gateway.wake import session_owned_by_profile
 
 
 def _kbc():
@@ -219,7 +219,7 @@ def _adapter_for_subscription(runner: Any, platform: Any, sub: dict, owner_profi
                     "Re-subscribe with `hermes kanban notify-subscribe ... --notifier-profile %s`.",
                     profile, route.profile, route.profile)
                 return None
-            from gateway.run import _multiplex_profile_homes
+            from hermes_agent.gateway.run import _multiplex_profile_homes
             served = {name for name, _home in _multiplex_profile_homes(config)}
             return primary if profile in served else None
         if route.matches(platform.value, guild_id=guild or route.guild_id, chat_id=chat,
@@ -326,7 +326,7 @@ class _Collector:
             logger.debug("kanban notifier: subscription for %s on %s skipped; adapter not connected",
                          sub.get("task_id"), platform or "<missing>")
             return None
-        from gateway.config import Platform
+        from hermes_agent.gateway.config import Platform
         if _adapter_for_subscription(self.runner, Platform(platform), sub, owner_profile or self.notifier_profile) is None:
             _warn_anchorless_thread_sub_once(sub, platform)
             return None
@@ -642,14 +642,14 @@ class _KanbanNotification:
         served_profile = self._served_wake_profile()
         if not served_profile:
             return contextlib.nullcontext()
-        from gateway.run import _async_profile_runtime_scope
-        from gateway.session import SessionSource
+        from hermes_agent.gateway.run import _async_profile_runtime_scope
+        from hermes_agent.gateway.session import SessionSource
         source = SessionSource(platform=self.plat, chat_id=self.sub["chat_id"], profile=served_profile)
         return _async_profile_runtime_scope(runner._resolve_profile_home_for_source(source))
 
     async def wake(self) -> None:
         """Wake the creator session (raises on failure): push adapters get a full SessionSource, non-push a raw self-post."""
-        from gateway.wake import deliver_wake
+        from hermes_agent.gateway.wake import deliver_wake
         sub = self.sub
         if not self.is_push_adapter:
             # A served profile's raw-session wake runs in THAT profile's scope, in-process: the
@@ -662,7 +662,7 @@ class _KanbanNotification:
                                    notification_category="diagnostic" if self.wake_diagnostic else "result")
             self._log_woke()
             return
-        from gateway.session import SessionSource
+        from hermes_agent.gateway.session import SessionSource
         # Rebuild the creator's real session scope from the persisted chat_type:
         # build_session_key() keys DMs differently from group/thread, so a
         # hardcoded "group" mis-routed DM/thread creators into a fresh session.
@@ -681,7 +681,7 @@ class _KanbanNotification:
             parent_chat_id=_delivery_meta.get("parent_chat_id"),
         )
         _source._transport_adapter_ref = weakref.ref(self.adapter)
-        from gateway.run import _async_profile_runtime_scope
+        from hermes_agent.gateway.run import _async_profile_runtime_scope
         if self.sub_profile and getattr(getattr(self.runner, "config", None), "multiplex_profiles", False):
             from hermes_cli.profiles import profile_exists
             if not profile_exists(self.sub_profile):
@@ -693,7 +693,7 @@ class _KanbanNotification:
 
     async def _send_event(self, ev: Any, msg: str) -> bool:
         """Send one text ping; raises on adapter exception or SendResult(success=False)."""
-        from gateway.warning_notifications import present_notification
+        from hermes_agent.gateway.warning_notifications import present_notification
         sub, adapter = self.sub, self.adapter
         delivery_metadata = sub.get("delivery_metadata")
         metadata: dict[str, Any] = dict(delivery_metadata) if isinstance(delivery_metadata, dict) else {}
@@ -781,7 +781,7 @@ class _KanbanNotification:
             await self.rewind()
             return
         self.adapter = adapter
-        from gateway.wake import adapter_supports_push
+        from hermes_agent.gateway.wake import adapter_supports_push
         self.is_push_adapter = adapter_supports_push(adapter)
 
         # Pings, artifact uploads (media policy) and the wake text (display.language) all read the
@@ -791,7 +791,7 @@ class _KanbanNotification:
                 return
             # All text pings delivered (or skipped for non-push / wake-only).
             original_events = self.d["events"]
-            from gateway.warning_notifications import warning_notifications_enabled
+            from hermes_agent.gateway.warning_notifications import warning_notifications_enabled
             split = not warning_notifications_enabled(self.platform_str)
             wake_groups = ([original_events] if not split else [
                 [ev for ev in original_events if diagnostic_event(ev)],
@@ -810,7 +810,7 @@ class _KanbanNotification:
                     wake_payloads.append((self.synth, self.wake_diagnostic, self.wake_kinds))
             self.d = {**self.d, "events": original_events}
         is_push = self.is_push_adapter
-        from gateway.wake import WakeNotAccepted
+        from hermes_agent.gateway.wake import WakeNotAccepted
 
         # A requested wake is required even when its passive ping already landed.
         if wake_payloads:

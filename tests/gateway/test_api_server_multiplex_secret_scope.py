@@ -17,8 +17,8 @@ from __future__ import annotations
 import pytest
 
 from agent import secret_scope as ss
-from gateway.config import PlatformConfig
-from gateway.platforms.api_server import APIServerAdapter
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.api_server import APIServerAdapter
 
 
 @pytest.fixture(autouse=True)
@@ -59,7 +59,7 @@ class TestProfileScopedApiAuthentication:
     def test_named_profile_rejects_default_listener_key(
         self, adapter, tmp_path, monkeypatch
     ):
-        from gateway.platforms.api_server import _api_request_profile
+        from hermes_agent.gateway.platforms.api_server import _api_request_profile
 
         profile_home = tmp_path / "profiles" / "worker"
         profile_home.mkdir(parents=True)
@@ -94,8 +94,8 @@ async def test_profile_middleware_binds_auth_before_handler(
 ):
     from aiohttp import web
     from aiohttp.test_utils import TestClient, TestServer
-    from gateway.config import GatewayConfig
-    from gateway.platforms.api_server import _api_request_profile
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.platforms.api_server import _api_request_profile
 
     worker_home = tmp_path / "profiles" / "worker"
     worker_home.mkdir(parents=True)

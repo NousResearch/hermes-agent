@@ -14,9 +14,9 @@ import pytest
 
 import hermes_constants
 from agent.secret_scope import is_multiplex_active
-from gateway.config import GatewayConfig
-from gateway.run import GatewayRunner
-from gateway.status import flush_runtime_status, write_runtime_status
+from hermes_agent.gateway.config import GatewayConfig
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.status import flush_runtime_status, write_runtime_status
 from hermes_cli import gateway_migrate as gm
 from hermes_cli.gateway_multiplex_mode import SINGLE_PROFILE_REASON
 
@@ -44,7 +44,7 @@ def standalone_host(tmp_path, monkeypatch):
                          served_profiles=[])
     flush_runtime_status()
     yield runner, home, restarts
-    from gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.runtime_ownership import process_ownership
     for profile in (home / "profiles").iterdir():
         process_ownership.release(profile.resolve())
 
@@ -60,8 +60,8 @@ def _mkprofile(home, name):
 @pytest.mark.asyncio
 async def test_profile_created_after_a_single_profile_boot_is_served_without_a_restart(standalone_host):
     """End to end through the creator's real signal: the control socket's ``rescan-profiles`` verb."""
-    from gateway import control_socket
-    from gateway.run_bootstrap import _start_gateway_start_control_socket
+    from hermes_agent.gateway import control_socket
+    from hermes_agent.gateway.run_bootstrap import _start_gateway_start_control_socket
 
     runner, home, restarts = standalone_host
     server = await _start_gateway_start_control_socket(runner)
@@ -80,7 +80,7 @@ async def test_profile_created_after_a_single_profile_boot_is_served_without_a_r
         # The new profile reads its own credentials and never borrows the launch profile's env.
         assert is_multiplex_active()
         from agent.secret_scope import UnscopedSecretError, get_secret
-        from gateway.run import _profile_runtime_scope
+        from hermes_agent.gateway.run import _profile_runtime_scope
         with _profile_runtime_scope(bot.resolve()):
             assert get_secret("OPENAI_API_KEY") == "bot-own-key"
         # The default profile's next message goes through the production handler the switch re-wired.
@@ -148,7 +148,7 @@ def test_launch_profile_work_on_a_standalone_host_binds_its_scope_once_a_second_
     from types import SimpleNamespace
 
     from agent.secret_scope import get_secret
-    from gateway.session_authorities import owner_scope
+    from hermes_agent.gateway.session_authorities import owner_scope
     from hermes_agent.tui_gateway.launch_profile_policy import activate_multi_profile_hosting
 
     runner, home, _restarts = standalone_host

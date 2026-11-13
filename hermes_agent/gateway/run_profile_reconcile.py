@@ -26,7 +26,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from gateway.run_shutdown import _log_suppressed
+from hermes_agent.gateway.run_shutdown import _log_suppressed
 from hermes_cli.config_backend import ConfigBackendUnavailable
 from utils import file_cache_version
 
@@ -144,8 +144,8 @@ class GatewayProfileReconcileMixin:
         key covers ``config.yaml`` too: a sync that read an empty/unreadable config applied nothing,
         so its recovery must re-run it. A failed sync is left unrecorded and retried next tick."""
         from agent.shell_hooks import ALLOWLIST_FILENAME, sync_from_config
-        from gateway.run import _load_gateway_config, _profile_runtime_scope
-        from gateway.run_turn import GatewayTurnMixin
+        from hermes_agent.gateway.run import _load_gateway_config, _profile_runtime_scope
+        from hermes_agent.gateway.run_turn import GatewayTurnMixin
         current = {}
         for home in (h.resolve() for h in homes):
             sig = tuple(_stat_signature(home / name) for name in (ALLOWLIST_FILENAME, "config.yaml"))
@@ -173,7 +173,7 @@ class GatewayProfileReconcileMixin:
         Other profiles' adapters are never touched. A new profile whose home another gateway owns or
         whose store is unusable is parked (logged, not served) and left for an explicit rescan.
         Returns ``{"added", "removed", "rescanned", "parked", "served_profiles"}``."""
-        from gateway.run import MultiplexConfigError
+        from hermes_agent.gateway.run import MultiplexConfigError
         from hermes_cli.profiles import profiles_to_serve
         result: dict[str, Any] = {"added": [], "removed": [], "rescanned": [], "parked": [], "reason": reason}
         if not self._multiplex_on() and not await self._multiplex_for_added_profile():
@@ -186,7 +186,7 @@ class GatewayProfileReconcileMixin:
             live = {str(name): Path(home) for name, home in profiles_to_serve(multiplex=True)}
             listed = set(live)  # a probe skip below is not a deletion: it never clears a parked verdict
             known = dict(self._served_profile_homes or {})
-            from gateway.status import live_gateway_pid_for_home
+            from hermes_agent.gateway.status import live_gateway_pid_for_home
 
             blocked = set()
             timed_out = set()
@@ -224,7 +224,7 @@ class GatewayProfileReconcileMixin:
             self._profile_own_gateway_warned = blocked
             self._profile_probe_timeout_warned = timed_out
             sigs = self._served_profile_signatures or {}
-            from gateway.run_runtime import unpark_profile
+            from hermes_agent.gateway.run_runtime import unpark_profile
             for name in [n for n in self._parked_profile_names() if n not in listed]:
                 unpark_profile(self, name)
             parked = self._parked_profile_names()
@@ -243,8 +243,8 @@ class GatewayProfileReconcileMixin:
         """Apply a selected diff under the reconcile lock, shared by the watcher and the
         serve/unserve control verbs. New profiles first get a runtime (reservation + store); one
         whose home another gateway owns or whose store is unusable is parked, not served."""
-        from gateway.run import MultiplexConfigError
-        from gateway.run_runtime import park_profile, unpark_profile
+        from hermes_agent.gateway.run import MultiplexConfigError
+        from hermes_agent.gateway.run_runtime import park_profile, unpark_profile
         from hermes_cli.profiles import profiles_to_serve
         active = getattr(self, "_primary_profile_name", None) or "default"
         result = dict(result or {"added": [], "removed": [], "rescanned": [], "parked": [], "reason": reason})
@@ -324,7 +324,7 @@ class GatewayProfileReconcileMixin:
             if isinstance(configs, dict):
                 configs.pop(name, None)
         if added:
-            from gateway.run_runtime import recover_served_native_rows
+            from hermes_agent.gateway.run_runtime import recover_served_native_rows
             await recover_served_native_rows(self)
             await self._after_profiles_added([(n, current[n]) for n in added])
         result["served_profiles"] = self.served_profile_names()
@@ -334,7 +334,7 @@ class GatewayProfileReconcileMixin:
         """Before a changed profile's rescan, drop its ``<name>:<platform>`` status entries for
         platforms with no live or queued adapter: the rescan re-publishes every verdict that still
         holds, so a fatal/disabled entry about a credential the user just removed can't outlive it."""
-        from gateway.run import _write_runtime_status_quiet
+        from hermes_agent.gateway.run import _write_runtime_status_quiet
         live = set((getattr(self, "_profile_adapters", None) or {}).get(name) or {})
         live |= set((getattr(self, "_profile_failed_platforms", None) or {}).get(name) or {})
         noted = getattr(self, "_unserved_secondary_platforms", None)
@@ -346,7 +346,7 @@ class GatewayProfileReconcileMixin:
     def _parked_profile_names(self) -> list:
         """Profiles that exist but could not be served (unusable store, home owned elsewhere); boot's
         ``initialize_gateway_runtime`` parks into the same published ``name -> reason`` map."""
-        from gateway.run_runtime import parked_profile_map
+        from hermes_agent.gateway.run_runtime import parked_profile_map
         return list(parked_profile_map(self))
 
     async def _multiplex_for_added_profile(self) -> bool:
@@ -419,8 +419,8 @@ class GatewayProfileReconcileMixin:
         steps). Returns the park reason — reservation released — when another gateway owns the home
         (a stray per-profile daemon) or its store cannot be opened; None when served. An
         adapters-only runner (no authority registry) grows the reservation alone."""
-        from gateway.run_runtime import release_profile_home, reserve_profile_home_in_worker, serve_profile_runtime
-        from gateway.runtime_ownership import OwnershipConflict
+        from hermes_agent.gateway.run_runtime import release_profile_home, reserve_profile_home_in_worker, serve_profile_runtime
+        from hermes_agent.gateway.runtime_ownership import OwnershipConflict
         try:
             await reserve_profile_home_in_worker(self, name, home)
         except (OwnershipConflict, OSError) as exc:
@@ -458,7 +458,7 @@ class GatewayProfileReconcileMixin:
 
     async def _after_profiles_added(self, profile_homes) -> None:
         """Per-profile startup side effects for hot-added profiles: log routing + scoped MCP discovery."""
-        from gateway.run import _enable_multiplex_log_routing, _profile_runtime_scope
+        from hermes_agent.gateway.run import _enable_multiplex_log_routing, _profile_runtime_scope
         from contextvars import copy_context
         with _log_suppressed(logging.DEBUG, "log routing refresh failed", exc_info=True):
             _enable_multiplex_log_routing(self.config)
@@ -486,8 +486,8 @@ class GatewayProfileReconcileMixin:
         teardown hook needing this profile's credential failed closed (or, worse, borrowed the launch
         profile's). Secrets are not re-hydrated: teardown must not block the loop on a source fetch.
         """
-        from gateway.run import _profile_runtime_scope, _write_runtime_status_quiet
-        from gateway.run_runtime import release_profile_home, unserve_profile_runtime
+        from hermes_agent.gateway.run import _profile_runtime_scope, _write_runtime_status_quiet
+        from hermes_agent.gateway.run_runtime import release_profile_home, unserve_profile_runtime
         # Retire before teardown; a False verdict (writer outlived its Stop) is honoured below.
         retired = getattr(self, 'session_authorities', None) is None or await unserve_profile_runtime(self, home)
         pending = (getattr(self, "_profile_failed_platforms", None) or {}).pop(name, None) or {}
@@ -531,7 +531,7 @@ class GatewayProfileReconcileMixin:
                 self._served_profile_homes.pop(name, None)
             if isinstance(self._served_profile_signatures, dict):
                 self._served_profile_signatures.pop(name, None)
-            from gateway.session import _session_key_namespace
+            from hermes_agent.gateway.session import _session_key_namespace
             prefix = _session_key_namespace(name) + ":"
             cache = getattr(self, "_agent_cache", None)
             for key in [k for k in list(cache or {}) if str(k).startswith(prefix)]:
@@ -667,10 +667,10 @@ def _for_each_served_profile(runner, body) -> None:
     there the process env IS the profile's own value — unless a hosted room already flipped the
     process-wide guard (#112878), in which case the launch profile's OWN scope is bound, as
     ``run_turn.py::_standalone_launch_scope`` does for turns."""
-    from gateway.run import _multiplex_profile_homes, _profile_runtime_scope
+    from hermes_agent.gateway.run import _multiplex_profile_homes, _profile_runtime_scope
     config = getattr(runner, "config", None)
     if not getattr(config, "multiplex_profiles", False):
-        from gateway.run_turn import GatewayTurnMixin
+        from hermes_agent.gateway.run_turn import GatewayTurnMixin
         with GatewayTurnMixin._standalone_launch_scope():
             body("default")
         return

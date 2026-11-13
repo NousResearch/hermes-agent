@@ -37,8 +37,8 @@ def reserved_profile_homes(runner):
 
 async def _build_profile_authority(runner, name, home, *, register):
     """One profile's authority against its own ``state.db``; raises when that store is unusable."""
-    from gateway.run import _profile_runtime_scope
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.session_authority import initialize_session_authority
     registry = runner.session_authorities
     instance_id = runner.session_runtime_descriptor['instance_id']
     # Each home's store resolves through the runner's scope-following handle cache, exactly
@@ -67,7 +67,7 @@ def open_profile_store(runner, home):
     Callers run it in a worker: a first open runs the schema / FTS setup, about a second per store
     on a loaded host, and run on the loop it froze every connected client for the whole
     multi-profile boot. Later opens of the same path are cache hits."""
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
     with _profile_runtime_scope(home, hydrate_secrets=False):
         db = runner._session_db
         return getattr(db, '_db', db)
@@ -151,11 +151,11 @@ def refuse_parked_scope(runner):
     """An API request under a parked profile's ``/p/<profile>/`` prefix finds no authority: refuse it
     retryably (``runtime_draining``, a 503 with ``Retry-After``), not with the final
     ``profile_mismatch`` of a profile this gateway does not serve."""
-    from gateway.session_authorities import served_profile_name
+    from hermes_agent.gateway.session_authorities import served_profile_name
     from hermes_constants import get_hermes_home
     name = served_profile_name(get_hermes_home())
     if profile_parked(runner, name):
-        from gateway.parked_route_refusal import ParkedProfileRefusal
+        from hermes_agent.gateway.parked_route_refusal import ParkedProfileRefusal
         raise ParkedProfileRefusal(name)
 
 
@@ -168,16 +168,16 @@ def parked_profile_map(runner):
 
 def _record_parked_profiles(parked):
     try:
-        from gateway.status import write_runtime_status
+        from hermes_agent.gateway.status import write_runtime_status
         write_runtime_status(parked_profiles=dict(parked))
     except Exception:
         logger.debug('could not record parked_profiles', exc_info=True)
 
 
 async def initialize_gateway_runtime(runner):
-    from gateway.runtime_bootstrap import TicketStore
-    from gateway.runtime_ownership import process_ownership
-    from gateway.session_authorities import SessionAuthorities
+    from hermes_agent.gateway.runtime_bootstrap import TicketStore
+    from hermes_agent.gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.session_authorities import SessionAuthorities
 
     homes = reserved_profile_homes(runner)
     for _name, home in homes:
@@ -213,7 +213,7 @@ def release_unknown_turn_markers(runner):
     admission recovered ``unknown`` (the owner died before its terminal commit) owes no reply, so
     its marker is cleared rather than ledgered as a delivery the FIFO never committed. A terminal
     admission keeps its marker: its persisted reply is ledgered and sent once, never re-run."""
-    from gateway.session_authorities import admission_owner, owner_scope
+    from hermes_agent.gateway.session_authorities import admission_owner, owner_scope
     store = getattr(runner, 'session_store', None)
     if store is None:
         return
@@ -240,8 +240,8 @@ def reserve_profile_home(runner, name, home, cancel=None):
     all-or-nothing reserve — sees it. Waits out a transient holder within boot's window (blocking:
     the event loop calls :func:`reserve_profile_home_in_worker`). ``OwnershipConflict`` when another
     gateway owns the home; *cancel* set ends the wait with nothing reserved."""
-    from gateway.run_bootstrap import _browse_reconcile_reserve_wait_s
-    from gateway.runtime_ownership import process_ownership, reserve_waiting_out_transient_holders
+    from hermes_agent.gateway.run_bootstrap import _browse_reconcile_reserve_wait_s
+    from hermes_agent.gateway.runtime_ownership import process_ownership, reserve_waiting_out_transient_holders
     home = Path(home).resolve()
     reserve_waiting_out_transient_holders(process_ownership, [home], wait_s=_browse_reconcile_reserve_wait_s(),
                                           cancel=cancel)
@@ -256,7 +256,7 @@ async def reserve_profile_home_in_worker(runner, name, home):
     ownership cleanup with no coroutine left to serve or release it. So a cancel stops the worker,
     waits for it to finish (each further cancel is absorbed until then), undoes a reservation it
     completed first, and only then propagates."""
-    from gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.runtime_ownership import process_ownership
     home = await asyncio.to_thread(Path(home).resolve)
     owned_before = process_ownership.owns(home)
     cancel = threading.Event()
@@ -275,7 +275,7 @@ async def reserve_profile_home_in_worker(runner, name, home):
 
 def release_profile_home(runner, home):
     """Shrink the reservation by one profile (deleted, or parked because it cannot be served)."""
-    from gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.runtime_ownership import process_ownership
     home = Path(home).resolve()
     registry = getattr(runner, 'session_authorities', None)
     if registry is not None and registry.for_home(home) is not None:
@@ -297,7 +297,7 @@ def _authority_tasks(authority):
     """Snapshot every async task family owned directly by one session authority."""
     tasks = [live.task for live in authority.sessions.values() if live.task is not None]
     tasks.extend(getattr(authority, '_bot_receipt_tasks', ()))
-    from gateway.session_runtime_workers import mutation_tasks
+    from hermes_agent.gateway.session_runtime_workers import mutation_tasks
     tasks.extend(mutation_tasks(authority))
     return list(dict.fromkeys(tasks))
 
@@ -312,7 +312,7 @@ STOP_TAIL_RESERVE_SECONDS = 10.0
 
 def managed_turn_count(runner):
     """Unmapped claims, managed workers and owner mutations across the served authorities."""
-    from gateway.session_runtime_workers import uncounted_runtime_work
+    from hermes_agent.gateway.session_runtime_workers import uncounted_runtime_work
     return uncounted_runtime_work(runner)
 
 
@@ -342,7 +342,7 @@ def stop_authority_turns(authority, *, in_process=False, reason=None):
     if not in_process:
         return signalled
     from agent.interrupt_compat import request_hard_interrupt
-    from gateway.run import _AGENT_PENDING_SENTINEL
+    from hermes_agent.gateway.run import _AGENT_PENDING_SENTINEL
     running = getattr(authority.runner, '_running_agents', {})
     for sid, live in list(authority.sessions.items()):
         generation = live.event_stream.execution.get('execution_generation')
@@ -386,7 +386,7 @@ def stop_managed_turns(runner, reason=None):
 
 def interrupt_side_agents(runner, reason):
     """Whole-runtime shutdown: interrupt every counted side agent (``session_runtime_workers``)."""
-    from gateway.session_runtime_workers import interrupt_side_agents as interrupt
+    from hermes_agent.gateway.session_runtime_workers import interrupt_side_agents as interrupt
     return interrupt(runner, reason)
 
 
@@ -400,14 +400,14 @@ async def _retire_profile_authority(authority, timeout=None):
     those turns must be signalled first or the room stop cannot finish. False when a turn or room
     thread misses *timeout* (default TURN_SETTLE_SECONDS): it may still call tools and write
     history, so the caller must keep the profile's reservation and store handles."""
-    from gateway.session_cron import unbind_owner
-    from gateway.session_runtime_workers import join_authority_work, stop_authority_work
+    from hermes_agent.gateway.session_cron import unbind_owner
+    from hermes_agent.gateway.session_runtime_workers import join_authority_work, stop_authority_work
     timeout = TURN_SETTLE_SECONDS if timeout is None else timeout
     authority.retiring = True
     if getattr(authority.runner, 'session_ticket_store', None) is not None:
         _publish_served_set(authority.runner)  # discovery and tickets stop naming it now
     stop_authority_work(authority)
-    from gateway.session_llm_oneshot import stop as stop_oneshots
+    from hermes_agent.gateway.session_llm_oneshot import stop as stop_oneshots
     stop_oneshots(authority)
     service = getattr(authority, 'hosted_room_service', None)
     rooms = None if service is None else asyncio.ensure_future(asyncio.to_thread(service.stop, timeout=timeout))
@@ -452,10 +452,10 @@ async def serve_profile_runtime(runner, name, home):
     publish it in the descriptor/ticket store — the steps boot performs per secondary. Raises when
     the profile's store is unusable; the caller parks it (and releases the reservation). Its
     queued native rows are recovered once its adapters connect (``recover_served_native_rows``)."""
-    from gateway.session_authorities import owner_scope
-    from gateway.session_hosted_service import _ensure_hosted_service, start_ready_hosted_services
-    from gateway.session_local_recovery import recover_local_sessions
-    from gateway.platforms.webhook_ingress import recover_webhook_finalizations
+    from hermes_agent.gateway.session_authorities import owner_scope
+    from hermes_agent.gateway.session_hosted_service import _ensure_hosted_service, start_ready_hosted_services
+    from hermes_agent.gateway.session_local_recovery import recover_local_sessions
+    from hermes_agent.gateway.platforms.webhook_ingress import recover_webhook_finalizations
     home = await asyncio.to_thread(Path(home).resolve)
     registry = runner.session_authorities
     existing = registry.for_home(home)
@@ -492,8 +492,8 @@ def _drop_retired_local_adapter(authority):
     retired, gives way to *authority*'s own: restore and create otherwise refuse every local session
     of the served profile as ``runtime_draining``. A retained writer never gets here (the serve is
     refused while the previous authority is still retiring)."""
-    from gateway.config import Platform
-    from gateway.session_local_recovery import local_adapter_map
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session_local_recovery import local_adapter_map
     adapters = local_adapter_map(authority)
     previous = getattr(adapters.get(Platform.LOCAL), 'authority', None)
     if previous is not None and previous is not authority and getattr(previous, 'retired', False):
@@ -503,10 +503,10 @@ def _drop_retired_local_adapter(authority):
 def _recover_published_api_turns(runner, authority):
     """Boot recovers queued API turns when the launch API adapter is published
     (``recover_api_turns``); a profile served after that runs the same pass on its own store."""
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     api = (getattr(runner, 'adapters', None) or {}).get(Platform.API_SERVER)
     if api is not None:
-        from gateway.session_api_turn import recover_authority_api_turns
+        from hermes_agent.gateway.session_api_turn import recover_authority_api_turns
         recover_authority_api_turns(api, authority)
 
 
@@ -518,7 +518,7 @@ async def recover_served_native_rows(runner):
     start and never stops the other ledgers or the reconcile."""
     if getattr(runner, 'session_authorities', None) is None:
         return
-    from gateway.session_authorities import serving_authorities
+    from hermes_agent.gateway.session_authorities import serving_authorities
     for authority in serving_authorities(runner):
         try:
             await recover_profile_native_sessions(runner, authority)
@@ -544,7 +544,7 @@ async def unserve_profile_runtime(runner, home):
 
 
 def _authorities(runner):
-    from gateway.session_authorities import all_authorities
+    from hermes_agent.gateway.session_authorities import all_authorities
     return all_authorities(runner)
 
 
@@ -556,7 +556,7 @@ async def recover_bot_mailbox(authority):
     deliveries pause (``_locked`` already logged the dir, its owner and the remedy); every other
     client keeps working instead of the whole gateway refusing to start. Any other failure still
     aborts startup."""
-    from gateway.session_bot import recover_bot_deliveries
+    from hermes_agent.gateway.session_bot import recover_bot_deliveries
     from tools.bot_live_delivery import MailboxUnusable
     try:
         await recover_bot_deliveries(authority)
@@ -565,8 +565,8 @@ async def recover_bot_mailbox(authority):
 
 
 async def start_gateway_runtime_api(runner):
-    from gateway import run_api
-    from gateway.webapp_listener import (
+    from hermes_agent.gateway import run_api
+    from hermes_agent.gateway.webapp_listener import (
         STARTING, BrowserCredentialError, browser_session_token, dial_origin, listener_plan, register_control_verbs,
     )
     from hermes_constants import get_hermes_home
@@ -622,7 +622,7 @@ async def _recover_profile_bot_mailbox(runner, authority):
     be recovered is parked like one whose store cannot be opened (retired, unreserved, named under
     ``parked_profiles``): under multiplex it would otherwise take every other profile down with it,
     on every restart (#140018). The launch profile's failure still aborts the start."""
-    from gateway.session_authorities import owner_scope
+    from hermes_agent.gateway.session_authorities import owner_scope
     try:
         with owner_scope(authority):
             await recover_bot_mailbox(authority)
@@ -654,14 +654,14 @@ async def recover_gateway_native_sessions(runner):
     Stored envelopes are input, not authority to create a route or reconnect a
     transport. The authority preflights every queued sender before any claim.
     """
-    from gateway.session_authorities import owner_scope, serving_authorities
+    from hermes_agent.gateway.session_authorities import owner_scope, serving_authorities
     authorities = serving_authorities(runner)
     if not authorities:
         return {}
-    from gateway.session_hosted_service import ensure_hosted_service
+    from hermes_agent.gateway.session_hosted_service import ensure_hosted_service
     await ensure_hosted_service(runner)
-    from gateway.session_local_recovery import recover_local_sessions
-    from gateway.platforms.webhook_ingress import recover_webhook_finalizations
+    from hermes_agent.gateway.session_local_recovery import recover_local_sessions
+    from hermes_agent.gateway.platforms.webhook_ingress import recover_webhook_finalizations
     results = {}
     for authority in authorities:
         with owner_scope(authority):
@@ -673,7 +673,7 @@ async def recover_gateway_native_sessions(runner):
 
 async def recover_profile_native_sessions(runner, authority):
     """Bind one authority's queued native rows to the adapters connected now."""
-    from gateway.session_authorities import owner_scope
+    from hermes_agent.gateway.session_authorities import owner_scope
     with owner_scope(authority):
         pending = {row['target_session_id'] for row in authority.db._read_all(
             "SELECT DISTINCT target_session_id FROM session_admissions WHERE status IN ('queued','unknown')")}
@@ -681,7 +681,7 @@ async def recover_profile_native_sessions(runner, authority):
                     for entry in runner.session_store.list_sessions() if entry.origin is not None
                     for owner in [authority.logical_owner(entry.session_id)] if owner in pending]
         outcome = await authority.recover_native_sessions(bindings)
-        from gateway.session_detached import recover_detached_sessions
+        from hermes_agent.gateway.session_detached import recover_detached_sessions
         outcome.update(dict.fromkeys(recover_detached_sessions(authority, pending - set(outcome)), 'detached'))
     for sid, verdict in outcome.items():
         logger.info('Native session startup recovery %s (%s): %s', sid, authority.profile_id, verdict)
@@ -694,7 +694,7 @@ def publish_gateway_runtime_ready(runner):
         raise RuntimeError('gateway stopped before session API readiness')
     descriptor.update(state='ready', capabilities=[
         'session-authority-v1', 'durable-admission-v1', 'event-replay-v1'])
-    from gateway.session_hosted_service import start_ready_hosted_services
+    from hermes_agent.gateway.session_hosted_service import start_ready_hosted_services
     start_ready_hosted_services(runner)
 
 
@@ -743,10 +743,10 @@ async def drain_gateway_runtime(runner):
         return
     runner._draining = True
     descriptor.update(state='draining', capabilities=[])
-    from gateway.drain_control import RESTART_WAIT_REASON
+    from hermes_agent.gateway.drain_control import RESTART_WAIT_REASON
     if descriptor.get('drain_reason') == RESTART_WAIT_REASON:
         del descriptor['drain_reason']  # stopping now: no client attaches to answer anymore
-    from gateway.session_hosted_service import stop_hosted_service
+    from hermes_agent.gateway.session_hosted_service import stop_hosted_service
     await stop_hosted_service(runner)
     # Stop fetching (long-poll / socket) BEFORE withdrawing the handlers: an update a fetcher acks
     # after the withdrawal is dropped and never redelivered (#143122); one never fetched stays on
@@ -774,7 +774,7 @@ async def settle_gateway_runtime(runner, budget=None, reason=None):
     the ownership lock, so raising here would only skip teardown and disarm the watchdog."""
     authorities = _authorities(runner)
     stop_managed_turns(runner, reason)
-    from gateway.session_llm_oneshot import stop as stop_oneshots
+    from hermes_agent.gateway.session_llm_oneshot import stop as stop_oneshots
     for authority in authorities:
         stop_oneshots(authority)  # an answer is no durable settlement: never waited for
     tasks = [task for authority in authorities for task in _authority_tasks(authority)]
@@ -789,7 +789,7 @@ async def settle_gateway_runtime(runner, budget=None, reason=None):
         if pending:
             logger.warning('%d authority task(s) did not settle within %.0fs; left for recovery',
                            len(pending), wait)
-    from gateway.session_runtime_workers import join_authority_work
+    from hermes_agent.gateway.session_runtime_workers import join_authority_work
     for authority in authorities:
         try:
             await join_authority_work(authority, max(0.0, deadline - asyncio.get_running_loop().time()))
@@ -798,7 +798,7 @@ async def settle_gateway_runtime(runner, budget=None, reason=None):
                            getattr(authority, 'profile_id', '?'))
     # Work settled above. ACP has no per-session destroy,
     # so the stop is the end of every ACP session nobody is viewing (#118216).
-    from gateway.session_acp_lifecycle import end_idle_acp_sessions
+    from hermes_agent.gateway.session_acp_lifecycle import end_idle_acp_sessions
     for authority in _authorities(runner):
         try:
             end_idle_acp_sessions(authority)
@@ -807,7 +807,7 @@ async def settle_gateway_runtime(runner, budget=None, reason=None):
             import logging
             logging.getLogger(__name__).warning('ACP sessions of %s not ended at shutdown',
                                                 getattr(authority, 'profile_id', '?'), exc_info=True)
-    from gateway.run_api import stop_gateway_api
+    from hermes_agent.gateway.run_api import stop_gateway_api
     store = getattr(runner, 'session_ticket_store', None)
     if store is not None:
         store.revoke()

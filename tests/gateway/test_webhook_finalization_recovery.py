@@ -9,8 +9,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import PlatformConfig
-from gateway.platforms.webhook import WebhookAdapter
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.webhook import WebhookAdapter
 from hermes_agent.hermes_state_runtime import claim_session_input, settle_session_input
 from tests.gateway.fixtures.webhook_route_authority import mount_authority
 
@@ -80,14 +80,14 @@ async def settled_before_finalizer(*, compress=False):
 @pytest.mark.asyncio
 async def test_restart_finalizes_settled_webhook_without_provider_retry(monkeypatch):
     async with settled_before_finalizer() as (_client, _body, _headers, runner, authority, row):
-        from gateway import run_runtime
-        from gateway.session_authority import initialize_session_authority
+        from hermes_agent.gateway import run_runtime
+        from hermes_agent.gateway.session_authority import initialize_session_authority
 
         async def skip_unrelated_hosted_service(_runner):
             return None
 
         monkeypatch.setattr(
-            "gateway.session_hosted_service.ensure_hosted_service",
+            "hermes_agent.gateway.session_hosted_service.ensure_hosted_service",
             skip_unrelated_hosted_service,
         )
         restarted = await initialize_session_authority(
@@ -112,8 +112,8 @@ async def test_restart_reauthorizes_compressed_route_but_finalizes_logical_webho
     async with settled_before_finalizer(compress=True) as (
         _client, _body, _headers, runner, authority, row
     ):
-        from gateway.platforms.webhook_ingress import recover_webhook_finalizations
-        from gateway.session_authority import initialize_session_authority
+        from hermes_agent.gateway.platforms.webhook_ingress import recover_webhook_finalizations
+        from hermes_agent.gateway.session_authority import initialize_session_authority
 
         logical = row["target_session_id"]
         physical = row["physical_session_id"]

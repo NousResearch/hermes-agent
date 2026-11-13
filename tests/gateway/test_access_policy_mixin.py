@@ -12,7 +12,7 @@ import itertools
 import pytest
 
 from agent.secret_scope import reset_secret_scope, set_secret_scope
-from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
+from hermes_agent.gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 
 POLICIES = ("open", "allowlist", "disabled", "pairing", "typo")
 SENDERS = ("alice", "stranger", "", "   ", None)
@@ -32,7 +32,7 @@ def _hosts():
     from plugins.platforms.qqbot.adapter import QQAdapter
     from plugins.platforms.weixin.adapter import WeixinAdapter
     from plugins.platforms.whatsapp_cloud.adapter import WhatsAppCloudAdapter
-    from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
+    from hermes_agent.gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
     from plugins.platforms.wecom.adapter import WeComAdapter
 
     hosts = {

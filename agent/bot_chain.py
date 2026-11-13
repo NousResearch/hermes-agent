@@ -31,7 +31,7 @@ _LOCK = threading.Lock()
 
 
 def _settings():
-    from gateway.bot_loop_guard import load_settings
+    from hermes_agent.gateway.bot_loop_guard import load_settings
     return load_settings()
 
 
@@ -79,7 +79,7 @@ def on_turn_start(agent: Any, turn_author: Optional[dict], display_kind: Optiona
     settings = _settings()
     if not settings.enabled:
         return
-    from gateway.response_filters import is_machinery_display_kind
+    from hermes_agent.gateway.response_filters import is_machinery_display_kind
     from tools.bot_mode_probe import NO_REPLY_MARKER
     now = time.monotonic()
     with _LOCK:
@@ -91,7 +91,7 @@ def on_turn_start(agent: Any, turn_author: Optional[dict], display_kind: Optiona
             state = _CHAINS.setdefault(key, _new_state(now))
             state["hops"] = max(state["hops"] + 1, _hops(turn_author))
             state["sent"] = max(state["sent"], state["hops"])
-            # The sender's notify-only marker, read from the text like gateway/session_bot_outcome.py
+            # The sender's notify-only marker, read from the text like hermes_agent/gateway/session_bot_outcome.py
             # does, so it survives every transport (the Desktop relay rebuilds the author).
             state["no_reply_from"] = turn_author.get("id") if NO_REPLY_MARKER in str(user_message or "") else None
         elif state is not None and is_machinery_display_kind(display_kind):

@@ -140,9 +140,9 @@ def test_send_to_platform_routes_slack_media():
     if not hasattr(httpx, "Proxy") or not hasattr(httpx, "URL"):
         pytest.skip("httpx type annotations incompatible with telegram library")
 
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     from hermes_cli.plugins import discover_plugins
-    from gateway.platform_registry import platform_registry
+    from hermes_agent.gateway.platform_registry import platform_registry
     from tools.send_message_tool import _send_to_platform
 
     pdf = _tmpfile(".pdf")

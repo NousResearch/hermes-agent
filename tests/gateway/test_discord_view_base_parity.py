@@ -64,7 +64,7 @@ def _views():
 )
 async def test_unauthorized_click_uses_the_shared_notice(monkeypatch, name, call):
     """Every view refuses a stranger with the ONE gateway-wide sentence that names the fix command."""
-    from gateway.platforms.base import unauthorized_action_notice
+    from hermes_agent.gateway.platforms.base import unauthorized_action_notice
 
     monkeypatch.delenv("DISCORD_ALLOW_ALL_USERS", raising=False)
     monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)

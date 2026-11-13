@@ -11,12 +11,12 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict
 
-from gateway.hosted_room_peer import MAX_STATUS_GRANT_TTL_SECONDS
+from hermes_agent.gateway.hosted_room_peer import MAX_STATUS_GRANT_TTL_SECONDS
 from hermes_cli.sqlite_util import add_column_if_missing
 
 
 # Keep the extracted store's log records on the API server logger.
-logger = logging.getLogger("gateway.platforms.api_server")
+logger = logging.getLogger("hermes_agent.gateway.platforms.api_server")
 
 TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "interrupted"})
 # A key closed by ``find_or_close``: no request body hashes to it, so it never replays as a run.

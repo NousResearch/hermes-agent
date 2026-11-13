@@ -53,8 +53,8 @@ def _summary(body, compacted):
 
 @pytest.mark.asyncio
 async def test_transcript_pages_both_ways_across_a_compaction_and_never_attach(tmp_path, monkeypatch):
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_local_recovery import transcript_target
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_local_recovery import transcript_target
 
     async def handle(event):
         return 'ok'
@@ -117,7 +117,7 @@ def _compact_carrying_tail(db, target, summary, tail_rows=2):
 @pytest.mark.asyncio
 async def test_a_page_boundary_inside_the_carried_tail_never_repeats_a_row(tmp_path, monkeypatch):
     from agent.context_compressor import SUMMARY_PREFIX
-    from gateway.session_local_recovery import transcript_target
+    from hermes_agent.gateway.session_local_recovery import transcript_target
 
     async def handle(event):
         return 'ok'
@@ -143,7 +143,7 @@ async def test_every_compaction_is_a_row_when_a_later_one_reuses_a_summary_carri
     from agent.context_compressor import (
         SUMMARY_PREFIX, _MERGED_PRIOR_CONTEXT_HEADER, _MERGED_SUMMARY_DELIMITER, _SUMMARY_END_MARKER,
     )
-    from gateway.session_local_recovery import transcript_target
+    from hermes_agent.gateway.session_local_recovery import transcript_target
 
     async def handle(event):
         return 'ok'
@@ -178,8 +178,8 @@ async def test_every_compaction_is_a_row_when_a_later_one_reuses_a_summary_carri
 
 @pytest.mark.asyncio
 async def test_a_page_stays_under_its_byte_cap_and_shows_images_as_placeholders(tmp_path, monkeypatch):
-    from gateway.session_local_recovery import transcript_target
-    from gateway.session_stored_reads import PAGE_BYTES
+    from hermes_agent.gateway.session_local_recovery import transcript_target
+    from hermes_agent.gateway.session_stored_reads import PAGE_BYTES
 
     async def handle(event):
         return 'ok'
@@ -209,7 +209,7 @@ async def test_a_page_stays_under_its_byte_cap_and_shows_images_as_placeholders(
 
 @pytest.mark.asyncio
 async def test_a_preview_of_an_ended_conversation_leaves_the_live_list_alone(tmp_path, monkeypatch):
-    from gateway.session_local_recovery import transcript_target
+    from hermes_agent.gateway.session_local_recovery import transcript_target
 
     async def handle(event):
         return 'ok'
@@ -229,9 +229,9 @@ async def test_a_preview_of_an_ended_conversation_leaves_the_live_list_alone(tmp
 
 
 def _legacy_owner(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
@@ -255,15 +255,15 @@ def _legacy_owner(tmp_path, monkeypatch):
 
 
 def _native(authority, tmp_path, user):
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     return AuthorityConnection(authority, object(), {'provider': 'local', 'user_id': user,
         'profile_id': str(tmp_path), 'instance_id': 'owner'})
 
 
 @pytest.mark.asyncio
 async def test_an_old_compressed_transcript_reads_across_its_lineage_without_adoption(tmp_path, monkeypatch):
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     from hermes_agent import hermes_state
 
     store, db, runner = _legacy_owner(tmp_path, monkeypatch)
@@ -294,7 +294,7 @@ async def test_an_old_compressed_transcript_reads_across_its_lineage_without_ado
 async def test_an_old_row_is_judged_at_its_tip_whichever_lineage_id_is_asked(tmp_path, monkeypatch):
     """Another principal's stamp on the tip refuses the list, resume and every read of the lineage,
     the root's id included (the stored list and resume judge the tip)."""
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_authority import initialize_session_authority
 
     store, db, runner = _legacy_owner(tmp_path, monkeypatch)
     db._write_sql("UPDATE sessions SET user_id='alice' WHERE id='tui-tip'", ())

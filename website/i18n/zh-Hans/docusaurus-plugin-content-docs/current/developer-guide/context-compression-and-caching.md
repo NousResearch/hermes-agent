@@ -8,7 +8,7 @@ description: Hermes Agent 如何通过双重压缩系统和 Anthropic prompt 缓
 Hermes Agent 使用双重压缩系统和 Anthropic prompt（提示词）缓存，在长对话中高效管理上下文窗口用量。
 
 源文件：`agent/context_engine.py`（ABC）、`agent/context_compressor.py`（默认引擎）、
-`agent/prompt_caching.py`、`gateway/run.py`（会话清理）、`run_agent.py`（搜索 `_compress_context`）
+`agent/prompt_caching.py`、`hermes_agent/gateway/run.py`（会话清理）、`run_agent.py`（搜索 `_compress_context`）
 
 
 ## 可插拔上下文引擎
@@ -57,7 +57,7 @@ Hermes 有两个独立运行的压缩层：
 
 ### 1. Gateway 会话清理（85% 阈值）
 
-位于 `gateway/run.py`（搜索 `Session hygiene: auto-compress`）。这是一个**安全网**，在 agent 处理消息之前运行。它防止会话在两次交互之间增长过大时（例如 Telegram/Discord 中的隔夜积累）导致 API 失败。
+位于 `hermes_agent/gateway/run.py`（搜索 `Session hygiene: auto-compress`）。这是一个**安全网**，在 agent 处理消息之前运行。它防止会话在两次交互之间增长过大时（例如 Telegram/Discord 中的隔夜积累）导致 API 失败。
 
 - **阈值**：固定为模型上下文长度的 85%
 - **Token 来源**：优先使用上一轮 API 实际报告的 token 数；回退到基于字符的粗略估算（`estimate_messages_tokens_rough`）

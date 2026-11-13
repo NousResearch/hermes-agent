@@ -22,7 +22,7 @@ Five outcomes, in order:
 
 **The attach channel is the OWNER's control socket, never ours.** Ordering matters: the owner
 publishes its rendezvous record when it claims its PID file and binds its control socket a moment
-later (``gateway/run.py``: claim → socket), so for a short window the record exists and the channel
+later (``hermes_agent/gateway/run.py``: claim → socket), so for a short window the record exists and the channel
 does not. A reader that took "no socket" for "no owner" would start exactly the second gateway this
 module prevents — but a reader that took the RECORD's word for the served set is worse: the
 claim-time record is published before the process knows what it will serve, so a supervised unit
@@ -70,7 +70,7 @@ def _normalize(name: str) -> str:
 
 def profile_name_for_home(home: Path | str) -> str:
     """Profile a home belongs to; the root/default home is ``'default'`` (not ``None``)."""
-    from gateway.status import _profile_name_for_home
+    from hermes_agent.gateway.status import _profile_name_for_home
 
     return _profile_name_for_home(Path(home)) or "default"
 
@@ -125,7 +125,7 @@ def launched_by_other_tenant(owner_home: Path | str, our_home: Path | str) -> bo
     """
     if not str(owner_home or ""):
         return False
-    from gateway.status import _same_hermes_home
+    from hermes_agent.gateway.status import _same_hermes_home
     from hermes_constants import get_default_hermes_root
 
     return not _same_hermes_home(get_default_hermes_root(home=owner_home),
@@ -134,7 +134,7 @@ def launched_by_other_tenant(owner_home: Path | str, our_home: Path | str) -> bo
 
 def _identify(home: Path) -> Optional[dict]:
     try:
-        from gateway.control_socket import identify_gateway
+        from hermes_agent.gateway.control_socket import identify_gateway
 
         return identify_gateway(home)
     except Exception:
@@ -174,7 +174,7 @@ def _identity_matches(identity, record, home: Path) -> bool:
     if not reported:
         return True  # older gateway: PID + a socket keyed by this home is all it can prove
     try:
-        from gateway.status import _same_hermes_home
+        from hermes_agent.gateway.status import _same_hermes_home
 
         return bool(_same_hermes_home(Path(str(reported)), home))
     except Exception:
@@ -195,7 +195,7 @@ def invalidate_host_gateway_cache() -> None:
 
 
 def _probe_host_gateway(wait_for_channel: float) -> Optional[HostGateway]:
-    from gateway import host_rendezvous as hr
+    from hermes_agent.gateway import host_rendezvous as hr
 
     record = hr.read_record(hr.ROLE_GATEWAY)
     if record is None:
@@ -249,7 +249,7 @@ def request_serve_profile(profile: str, *, timeout: float = 8.0,
     if gateway is None or gateway.serves(profile):
         return gateway
     try:
-        from gateway.control_socket import rescan_gateway_profiles
+        from hermes_agent.gateway.control_socket import rescan_gateway_profiles
 
         answer = rescan_gateway_profiles(gateway.home, timeout=timeout)
     except Exception:
@@ -321,7 +321,7 @@ def _coexisting_gateways(owner: Optional[HostGateway]):
     Use the existing per-home liveness and control channels, not the single host
     record, to ask every running profile gateway what it actually serves.
     """
-    from gateway.status import live_gateway_pid_for_home
+    from hermes_agent.gateway.status import live_gateway_pid_for_home
     from hermes_cli.profiles import profiles_to_serve
 
     seen = {os.getpid()}

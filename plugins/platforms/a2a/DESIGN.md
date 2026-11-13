@@ -7,7 +7,7 @@ codebase already exposes. Implements **A2A Protocol v1.0** (JSON-RPC binding).
 ## Why a plugin, not a core feature
 
 Earlier A2A attempts (#4135, #4948, #4952, #11025) added a standalone server
-package (`a2a_adapter/`) and/or patched `gateway/run.py` + `gateway/config.py`.
+package (`a2a_adapter/`) and/or patched `hermes_agent/gateway/run.py` + `hermes_agent/gateway/config.py`.
 Since then the codebase grew `ctx.register_platform()` (the plugin
 platform-adapter API — used by irc, line, teams, ntfy, simplex, …) and
 `ctx.register_tool()`. That makes the standing policy achievable: **plugins

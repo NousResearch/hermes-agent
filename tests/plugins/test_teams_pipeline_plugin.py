@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 from plugins.teams_pipeline.meetings import (
     TeamsMeetingError,
     looks_like_transcript_id,

@@ -548,7 +548,7 @@ Setting `display.tool_progress: log` sends **no** progress bubbles to chat. Inst
 
 ### Configurable status phrases
 
-Long-running gateway status lines ("still working…"-style heartbeats) draw from a phrase catalog. Built-in defaults ship in `gateway/assets/status_phrases.yaml`; you can add your own with profile-portable files under `HERMES_HOME`:
+Long-running gateway status lines ("still working…"-style heartbeats) draw from a phrase catalog. Built-in defaults ship in `hermes_agent/gateway/assets/status_phrases.yaml`; you can add your own with profile-portable files under `HERMES_HOME`:
 
 - `~/.hermes/status_phrases.yaml` or any `*.yaml` in `~/.hermes/status_phrases/` (conventional paths, auto-loaded), or
 - point config at a relative path:

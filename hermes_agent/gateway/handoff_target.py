@@ -5,8 +5,8 @@ One check for every surface that queues a handoff (the classic CLI's own store, 
 would otherwise sit ``pending`` until the client gives up. The watcher re-resolves the live transport
 before dispatch (``GatewayStartupMixin._handoff_resolve_destination``).
 """
-from gateway import config as gateway_config
-from gateway.config import HomeChannel, Platform
+from hermes_agent.gateway import config as gateway_config
+from hermes_agent.gateway.config import HomeChannel, Platform
 
 
 class HandoffTargetError(ValueError):
@@ -22,7 +22,7 @@ def _relay_fronts(config, platform_name: str) -> bool:
     relay = config.platforms.get(Platform.RELAY)
     if not (relay and relay.enabled):
         return False
-    from gateway.relay import relay_platform_identities
+    from hermes_agent.gateway.relay import relay_platform_identities
     return platform_name in {name for name, _bot in relay_platform_identities()}
 
 

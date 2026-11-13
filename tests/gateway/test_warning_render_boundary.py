@@ -1,6 +1,6 @@
 """UI sink gating never suppresses the producer or interprets its return value."""
 import pytest
-from gateway import warning_notifications as policy
+from hermes_agent.gateway import warning_notifications as policy
 
 
 @pytest.mark.parametrize("setting", [None, False, True])

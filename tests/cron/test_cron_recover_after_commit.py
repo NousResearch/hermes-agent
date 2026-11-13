@@ -7,7 +7,7 @@ paused the job and gave up a run the owner then completed. Real SessionAuthority
 import asyncio
 
 from hermes_agent.cron import executions, jobs, scheduler
-from gateway import session_cron
+from hermes_agent.gateway import session_cron
 from hermes_agent.hermes_state_runtime import claim_session_input, settle_session_input
 from tests.cron.test_cron_recovery import _owner
 

@@ -135,7 +135,7 @@ class TestAttachUrl:
     def test_attach_brackets_ipv6_host_in_browser_url(self, monkeypatch):
         """Named-profile attach to a running IPv6 dashboard must open a valid URL."""
         import webbrowser
-        from gateway import host_rendezvous as hr
+        from hermes_agent.gateway import host_rendezvous as hr
 
         opened = []
         monkeypatch.setattr(webbrowser, "open", lambda url: opened.append(url))

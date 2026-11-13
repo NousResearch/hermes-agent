@@ -9,9 +9,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionSource
 
 def _make_event(text="/title", platform=Platform.TELEGRAM,
                 user_id="12345", chat_id="67890"):
@@ -26,7 +26,7 @@ def _make_event(text="/title", platform=Platform.TELEGRAM,
 
 def _make_runner(session_db=None):
     """Create a bare GatewayRunner with a mock session_store and optional session_db."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
     runner._voice_mode = {}
@@ -134,8 +134,8 @@ class TestResetCommandWithTitle:
         """/new <title> with an already-in-use title returns a warning in the reply."""
         from datetime import datetime
 
-        from gateway.run import GatewayRunner
-        from gateway.session import SessionEntry, SessionSource, build_session_key
+        from hermes_agent.gateway.run import GatewayRunner
+        from hermes_agent.gateway.session import SessionEntry, SessionSource, build_session_key
 
         runner = object.__new__(GatewayRunner)
         runner.config = GatewayConfig(

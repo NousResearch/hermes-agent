@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from gateway import hosted_room_links, hosted_room_peer, hosted_rooms
+from hermes_agent.gateway import hosted_room_links, hosted_room_peer, hosted_rooms
 from tests.gateway.test_hosted_room_disband_publication import _surface
 from tests.gateway.test_session_group_peers import (
     gateway as gateway_fixture, linked_peer as linked_peer_fixture, _seat, _grant_error, _owed)

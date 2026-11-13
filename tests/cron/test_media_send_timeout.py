@@ -62,7 +62,7 @@ class TestEmptyReasonFallback:
         media.write_bytes(b"x")
 
         monkeypatch.setattr(
-            "gateway.platforms.base.BasePlatformAdapter.filter_media_delivery_paths",
+            "hermes_agent.gateway.platforms.base.BasePlatformAdapter.filter_media_delivery_paths",
             staticmethod(lambda files, session_key="": [(str(media), False)]),
         )
 

@@ -30,10 +30,10 @@ def _dump_every_thread_on_hang(request):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('listener_failure', [False, True])
 async def test_runtime_wait_observes_listener_exit(tmp_path, listener_failure):
-    from gateway.config import GatewayConfig
-    from gateway.run import GatewayRunner
-    from gateway import run_runtime
-    from gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway import run_runtime
+    from hermes_agent.gateway.runtime_ownership import process_ownership
     from hermes_constants import get_hermes_home
 
     process_ownership.reserve([get_hermes_home()])
@@ -41,7 +41,7 @@ async def test_runtime_wait_observes_listener_exit(tmp_path, listener_failure):
     waiter = None
     try:
         await run_runtime.initialize_gateway_runtime(runner)
-        from gateway.control_socket import GatewayControlServer
+        from hermes_agent.gateway.control_socket import GatewayControlServer
         runner.session_control_server = GatewayControlServer()
         assert await runner.session_control_server.start()
         await run_runtime.start_gateway_runtime_api(runner)
@@ -70,8 +70,8 @@ async def test_runtime_wait_observes_listener_exit(tmp_path, listener_failure):
 @pytest.mark.asyncio
 async def test_listener_failure_stops_bootstrap_background_threads(monkeypatch):
     import threading
-    from gateway import run_bootstrap, run_runtime
-    from gateway.config import GatewayConfig
+    from hermes_agent.gateway import run_bootstrap, run_runtime
+    from hermes_agent.gateway.config import GatewayConfig
     from hermes_constants import get_hermes_home
 
     get_hermes_home().chmod(0o700)

@@ -9,10 +9,10 @@ from hermes_agent.cron.scheduler_delivery import _deliver_result
 
 @pytest.fixture(autouse=True)
 def configured_transport():
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
     config = GatewayConfig()
     config.platforms[Platform.TELEGRAM] = PlatformConfig(enabled=True)
-    with patch("gateway.config.load_gateway_config", return_value=config):
+    with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config):
         yield
 
 

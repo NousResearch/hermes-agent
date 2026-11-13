@@ -556,7 +556,7 @@ def resolve_persist_behavior(
 
 
 # --- Single-owner /model request parsing + effective-model resolution. Surfaces
-# (cli.py, gateway/slash_commands.py, hermes_agent/tui_gateway/server.py, api_server.py)
+# (cli.py, hermes_agent/gateway/slash_commands.py, hermes_agent/tui_gateway/server.py, api_server.py)
 # map error codes to their own copy but never re-derive the semantics.
 
 # Error codes emitted by parse_model_switch_args().
@@ -663,7 +663,7 @@ def resolve_effective_model(
     session_overrides: Any = None, channel_config: Any = None, global_config: Any = "") -> str:
     """Resolve the effective model: session override > channel > global.
 
-    Single owner of the precedence rule gateway/run.py and api_server.py each used to encode.
+    Single owner of the precedence rule hermes_agent/gateway/run.py and api_server.py each used to encode.
     Each argument may be a model string, a dict with a ``"model"`` key, or an object with a
     ``.model`` attribute; empty entries fall through to the next tier."""
     for tier in (session_overrides, channel_config, global_config):

@@ -1,13 +1,13 @@
 """A missing staging file must not hide a changed sibling on an exact retry."""
 import pytest
 
-from gateway.session_ingress_media import admit_attachments
+from hermes_agent.gateway.session_ingress_media import admit_attachments
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
 @pytest.mark.parametrize('missing_index', [0, 1])
 def test_missing_staging_sibling_does_not_skip_remaining_image_hashes(missing_index):
-    from gateway.platforms.base import get_image_cache_dir
+    from hermes_agent.gateway.platforms.base import get_image_cache_dir
     staging = get_image_cache_dir()
     paths = [staging / 'first.png', staging / 'second.png']
     for index, path in enumerate(paths):

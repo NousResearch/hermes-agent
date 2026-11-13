@@ -2,10 +2,10 @@
 import asyncio
 from pathlib import Path
 
-from gateway.config import GatewayConfig, Platform
-from gateway.kanban_watchers_notifier import _KanbanNotification, _notifier_collect
-from gateway.profile_routing import parse_profile_routes
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.kanban_watchers_notifier import _KanbanNotification, _notifier_collect
+from hermes_agent.gateway.profile_routing import parse_profile_routes
+from hermes_agent.gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb, kanban_db_connect as kbc, kanban_db_notify as kbn
 
 
@@ -168,7 +168,7 @@ def test_route_denials_leave_events_retryable_at_claim_and_send(tmp_path, monkey
 
 def test_kanban_wakes_install_the_destination_runtime_scope(tmp_path, monkeypatch):
     from agent.secret_scope import get_secret
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
     from hermes_constants import get_hermes_home
 
     runner = setup_runner(tmp_path, monkeypatch)
@@ -219,7 +219,7 @@ def test_anchorless_thread_subscription_warns_once_instead_of_silent_skip(tmp_pa
     route and is skipped fail-closed — that skip must be visible ONCE at WARNING, not buried at
     DEBUG on every tick forever (#110919)."""
     import logging
-    from gateway import kanban_watchers_notifier as notifier
+    from hermes_agent.gateway import kanban_watchers_notifier as notifier
 
     runner = setup_runner(tmp_path, monkeypatch)
     monkeypatch.setattr(notifier, "_ANCHORLESS_WARNED", set())
@@ -239,7 +239,7 @@ def test_pinned_profile_without_this_platform_delivers_via_primary(tmp_path, mon
     chat, for inbound turns too — delivers, exactly as for a route-only profile (#115460, option 1).
     A sub stamped with a profile other than the route's still warns ONCE instead of rewinding silently."""
     import logging
-    from gateway import kanban_watchers_notifier as notifier
+    from hermes_agent.gateway import kanban_watchers_notifier as notifier
 
     runner = setup_runner(tmp_path, monkeypatch)
     primary = runner.adapters[Platform.DISCORD]

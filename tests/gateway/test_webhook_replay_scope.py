@@ -6,8 +6,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import PlatformConfig
-from gateway.platforms.webhook import WebhookAdapter
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.webhook import WebhookAdapter
 
 
 def _adapter(routes):
@@ -37,7 +37,7 @@ async def test_cron_route_replay_fires_the_job_once():
 
 def test_adding_a_dynamic_route_keeps_the_adapter_credential():
     """An unrelated hot-reloaded subscription must not re-key the connector of admitted deliveries."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
     a = _adapter({"victim": {"secret": "v", "prompt": "x"}})
     before = GatewayRunner._adapter_credential_fingerprint(a)
     a._dynamic_routes = {"agent-made": {"secret": "n", "prompt": "y"}}

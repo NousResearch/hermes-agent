@@ -16,12 +16,12 @@ async def test_model_prepare_waiting_on_a_contended_writer_keeps_the_loop_live(t
     """Another process takes state.db's write lock as the prepare-only BEGIN IMMEDIATE starts, so the
     prepare waits for it. That wait must not freeze every other session's loop work."""
     from types import SimpleNamespace
-    from gateway import run, session_mutations
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import SessionAuthority
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway import run, session_mutations
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_local import create_local_session
     from hermes_cli import model_switch
     import hermes_agent.hermes_state_runtime as rt
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {})

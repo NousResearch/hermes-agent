@@ -2,10 +2,10 @@
 
 A platform declares ``env_overrides`` (ordered ``step(config)`` callables, usually :class:`EnvCred`,
 :func:`home_step`, :func:`reply_mode_step`) and ``env_enable_credentials`` (the env names its
-explicit-disable WARNING cites). ``gateway.config_env._apply_env_overrides`` runs the steps of every
+explicit-disable WARNING cites). ``hermes_agent.gateway.config_env._apply_env_overrides`` runs the steps of every
 platform with activation evidence, so the data lives with the adapter instead of in a core table.
 
-Import-light on purpose (only ``gateway.config``): adapters import it at module load.
+Import-light on purpose (only ``hermes_agent.gateway.config``): adapters import it at module load.
 """
 
 import contextlib
@@ -18,10 +18,10 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig, _getenv_str
+from hermes_agent.gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig, _getenv_str
 
-# Logger name parity with the origin module: records stay under "gateway.config".
-logger = logging.getLogger("gateway.config")
+# Logger name parity with the origin module: records stay under "hermes_agent.gateway.config".
+logger = logging.getLogger("hermes_agent.gateway.config")
 
 getenv = _getenv_str
 
@@ -132,7 +132,7 @@ def reply_mode_step(platform: Platform, env: str):
 def enable_from_env(config: GatewayConfig, platform: Platform) -> PlatformConfig:
     """Enable *platform* on env credentials unless config.yaml explicitly disabled it (warns once).
     Delegates to the core gate, which owns the explicit-disable marker and the one-time WARNING."""
-    from gateway.config_env import _enable_from_env  # lazy: config_env imports this module
+    from hermes_agent.gateway.config_env import _enable_from_env  # lazy: config_env imports this module
     return _enable_from_env(config, platform)
 
 
@@ -189,7 +189,7 @@ def bundled_sibling(directory: str, stem: str = "gateway_env") -> Any:
     """``plugins/platforms/<directory>/<stem>.py`` (a light declaration module importing only core)
     executed from its file under a private name: the plugin package (``__init__``, adapter,
     ``register()``) is never imported. None when absent or *directory* is not a bundled plugin."""
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     if directory not in Platform._scan_bundled_plugin_platforms()[0]:
         return None
     from hermes_cli.plugins import get_bundled_plugins_dir

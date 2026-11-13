@@ -5,8 +5,8 @@ import json
 
 
 def test_policy_identity_preserves_pre_editor_credential_binding(tmp_path):
-    from gateway.session_policy import build_policy
-    from gateway.session_policy_credentials import policy_identity
+    from hermes_agent.gateway.session_policy import build_policy
+    from hermes_agent.gateway.session_policy_credentials import policy_identity
     policy = build_policy({'source': 'cli', 'cwd': str(tmp_path), 'model': 'local'}, {})
     legacy = asdict(policy)
     legacy.pop('credential_ref')

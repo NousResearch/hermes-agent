@@ -241,7 +241,7 @@ class TestToolLevelSpeed:
              patch("tools.tts_tool._resolve_command_provider_config", return_value=None), \
              patch("tools.tts_tool._resolve_max_text_length", return_value=4096), \
              patch("tools.tts_tool._generate_openai_tts") as mock_gen, \
-             patch("gateway.session_context.get_session_env", return_value=""):
+             patch("hermes_agent.gateway.session_context.get_session_env", return_value=""):
             from tools.tts_tool import text_to_speech_tool
             text_to_speech_tool("Hello", str(tmp_path / "out.mp3"), speed=0.7)
 
@@ -259,7 +259,7 @@ class TestToolLevelSpeed:
              patch("tools.tts_tool._resolve_command_provider_config", return_value=None), \
              patch("tools.tts_tool._resolve_max_text_length", return_value=4096), \
              patch("tools.tts_tool._generate_openai_tts") as mock_gen, \
-             patch("gateway.session_context.get_session_env", return_value=""):
+             patch("hermes_agent.gateway.session_context.get_session_env", return_value=""):
             from tools.tts_tool import text_to_speech_tool
             text_to_speech_tool("Hello", str(tmp_path / "out.mp3"), speed=10.0)
 
@@ -276,7 +276,7 @@ class TestToolLevelSpeed:
              patch("tools.tts_tool._resolve_command_provider_config", return_value=None), \
              patch("tools.tts_tool._resolve_max_text_length", return_value=4096), \
              patch("tools.tts_tool._generate_openai_tts") as mock_gen, \
-             patch("gateway.session_context.get_session_env", return_value=""):
+             patch("hermes_agent.gateway.session_context.get_session_env", return_value=""):
             from tools.tts_tool import text_to_speech_tool
             text_to_speech_tool("Hello", str(tmp_path / "out.mp3"), speed=None)
 

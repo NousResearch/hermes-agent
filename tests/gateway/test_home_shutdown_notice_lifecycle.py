@@ -11,8 +11,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gateway.config import HomeChannel, Platform
-from gateway.restart_notice import planned_restart_marker_path
+from hermes_agent.gateway.config import HomeChannel, Platform
+from hermes_agent.gateway.restart_notice import planned_restart_marker_path
 from tests.gateway.restart_test_helpers import make_restart_runner
 
 HOME_CHAT = "home-42"
@@ -21,7 +21,7 @@ HOME_CHAT = "home-42"
 @pytest.fixture
 def runner(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr("gateway.drain_control.drain_notification_suppressed", lambda: False)
+    monkeypatch.setattr("hermes_agent.gateway.drain_control.drain_notification_suppressed", lambda: False)
     runner, adapter = make_restart_runner()
     runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
         platform=Platform.TELEGRAM, chat_id=HOME_CHAT, name="Family")
@@ -41,7 +41,7 @@ async def _stop_cycle(runner, adapter, *, adapters=None) -> None:
     runner._stop_task = None
     runner._shutdown_event = asyncio.Event()
     runner.adapters = {Platform.TELEGRAM: adapter} if adapters is None else adapters
-    with patch("gateway.status.remove_pid_file"), patch("gateway.status.publish_runtime_status"):
+    with patch("hermes_agent.gateway.status.remove_pid_file"), patch("hermes_agent.gateway.status.publish_runtime_status"):
         await runner.stop()
 
 
@@ -84,11 +84,11 @@ async def test_supervisor_restart_that_said_goodbye_owes_the_next_boot_a_hello(r
 @pytest.mark.asyncio
 async def test_planned_replace_takeover_sends_no_home_notice(runner, monkeypatch):
     """The real SIGTERM handler, with the takeover marker naming this PID, then the real ``stop()``."""
-    from gateway import run as gateway_run
+    from hermes_agent.gateway import run as gateway_run
 
     runner, adapter = runner
-    monkeypatch.setattr("gateway.status.consume_takeover_marker_for_self", lambda: True)
-    with patch("gateway.status.remove_pid_file"), patch("gateway.status.publish_runtime_status"):
+    monkeypatch.setattr("hermes_agent.gateway.status.consume_takeover_marker_for_self", lambda: True)
+    with patch("hermes_agent.gateway.status.remove_pid_file"), patch("hermes_agent.gateway.status.publish_runtime_status"):
         before = set(asyncio.all_tasks())
         gateway_run._start_gateway_make_shutdown_signal_handler(runner, [False])(signal.SIGTERM)
         stop_tasks = set(asyncio.all_tasks()) - before
@@ -128,7 +128,7 @@ async def test_loop_cap_counts_delivered_notices_not_attempts(runner):
 async def test_a_loop_longer_than_the_stored_history_stays_quiet(runner):
     """The notice log keeps only the newest stops. A continuous loop that outruns it must still
     remember the goodbyes it already delivered, or it posts three more every ~50 cycles."""
-    from gateway import restart_loop_guard
+    from hermes_agent.gateway import restart_loop_guard
     runner, adapter = runner
     for _ in range(restart_loop_guard._MAX_STORED_BOOTS * 2 + 10):
         await _stop_cycle(runner, adapter)
@@ -144,7 +144,7 @@ class _KilledDuringDrain(Exception):
 @pytest.mark.asyncio
 async def test_a_process_killed_during_drain_still_owes_hello_and_spends_its_slot(runner, monkeypatch):
     """The goodbye is out before the drain; a lifetime that ends there must already have recorded it."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
     runner, adapter = runner
 
     async def _killed(*_a, **_k):

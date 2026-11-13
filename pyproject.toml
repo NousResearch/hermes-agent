@@ -747,7 +747,7 @@ hermes_cli = [
 # status phrases fall back to the tiny hardcoded set and the Telegram
 # topic-setup image disappears. Loaded via Path(__file__).parent / "assets"
 # in gateway/status_phrases.py and gateway/run.py.
-gateway = ["assets/**/*"]
+"hermes_agent.gateway" = ["assets/**/*"]
 # Bundled plugin discovery reads these manifests at runtime. Keep them in
 # sealed wheels with the plugin Python modules; without this declaration the
 # wheel contains adapters but discovery finds zero bundled plugins.

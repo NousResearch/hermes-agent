@@ -41,7 +41,7 @@ class RelayLinkError(RuntimeError):
 
 
 def _bot_entry(platform: str) -> dict:
-    from gateway.relay import _relay_bot_ids_map
+    from hermes_agent.gateway.relay import _relay_bot_ids_map
 
     entry = _relay_bot_ids_map().get(platform)
     return entry if isinstance(entry, dict) else {}
@@ -73,7 +73,7 @@ def relay_channel_view() -> tuple[frozenset[str], bool]:
     The second half mirrors ``config_env._relay``: only the ``GATEWAY_RELAY_URL`` env stamp without
     ``GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS`` makes the relay exclusive. Reads this process's env, which
     on a hosted instance is the container stamp every process shares."""
-    from gateway.relay import relay_fronted_platforms, relay_url
+    from hermes_agent.gateway.relay import relay_fronted_platforms, relay_url
     from utils import is_truthy_value
 
     if not relay_url():
@@ -84,8 +84,8 @@ def relay_channel_view() -> tuple[frozenset[str], bool]:
 
 
 def _bearer_and_base() -> tuple[str, str]:
-    from gateway.relay import _connector_url, relay_connection_auth, relay_url
-    from gateway.relay.auth import make_upgrade_token
+    from hermes_agent.gateway.relay import _connector_url, relay_connection_auth, relay_url
+    from hermes_agent.gateway.relay.auth import make_upgrade_token
 
     dial_url = relay_url()
     if not dial_url:
@@ -118,8 +118,8 @@ def _http_error(code: int, reason: str) -> RelayLinkError:
 
 
 def _post(path: str, body: dict) -> dict:
-    from gateway.relay import _json_post
-    from gateway.relay.http_diagnostics import connector_reason, read_error_body, redact_excerpt
+    from hermes_agent.gateway.relay import _json_post
+    from hermes_agent.gateway.relay.http_diagnostics import connector_reason, read_error_body, redact_excerpt
 
     token, base = _bearer_and_base()
     try:
@@ -134,7 +134,7 @@ def _post(path: str, body: dict) -> dict:
 
 
 def _get(path: str) -> dict:
-    from gateway.relay.http_diagnostics import connector_reason, read_error_body, redact_excerpt
+    from hermes_agent.gateway.relay.http_diagnostics import connector_reason, read_error_body, redact_excerpt
 
     token, base = _bearer_and_base()
     req = urllib.request.Request(f"{base}{path}", method="GET", headers={
@@ -181,7 +181,7 @@ def _managed_by_for_listing() -> str:
 
 def request_link(platform: str) -> dict[str, Any]:
     """Mint a one-time code that binds the chat account which DMs it to this instance."""
-    from gateway.relay import relay_fronted_platforms
+    from hermes_agent.gateway.relay import relay_fronted_platforms
 
     if platform not in relay_fronted_platforms():
         raise RelayLinkError("platform_not_fronted", f"Team Gateway does not carry {platform} on this instance.")
@@ -206,7 +206,7 @@ def link_code_state(code: str) -> dict[str, Any]:
 
 def link_status() -> dict[str, Any]:
     """Accounts linked to this instance, per fronted platform, plus each shared bot's DM link."""
-    from gateway.relay import relay_fronted_platforms
+    from hermes_agent.gateway.relay import relay_fronted_platforms
 
     platforms = sorted(relay_fronted_platforms())
     payload = _post("/manage/link-status", {"platforms": platforms}) if platforms else {}

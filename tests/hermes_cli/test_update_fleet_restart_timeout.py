@@ -183,7 +183,7 @@ class TestGracefulSigusr1Eligibility:
         )
 
     def test_serve_units_are_not_eligible(self):
-        # hermes-serve doesn't run gateway/run.py, so it never installs the
+        # hermes-serve doesn't run hermes_agent/gateway/run.py, so it never installs the
         # SIGUSR1 handler — sending it the signal would just terminate the
         # process (the default action) instead of draining gracefully.
         assert not _service_unit_supports_graceful_sigusr1_restart("hermes-serve")

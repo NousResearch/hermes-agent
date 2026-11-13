@@ -190,8 +190,8 @@ def _live_relay_fronted() -> Optional[set[str]]:
     # fail-CLOSED by default; previously it was fail-open by default.
     try:
         try:
-            from gateway.config import Platform
-            from gateway.run import _gateway_runner_ref
+            from hermes_agent.gateway.config import Platform
+            from hermes_agent.gateway.run import _gateway_runner_ref
         except ImportError as exc:
             # Only the gateway package being genuinely absent is benign; a
             # nested dependency failing to load is a broken install, i.e. a
@@ -240,13 +240,13 @@ def _relay_fronted() -> set[str]:
     raising, an unattested target was authorized.
     """
     try:
-        from gateway.relay import relay_fronted_platforms
+        from hermes_agent.gateway.relay import relay_fronted_platforms
     except ImportError as exc:
         # Only the ABSENCE of the relay module itself is benign. An ImportError
         # naming a nested dependency means an installed module failed to load —
         # a FAULT — and returning an empty set there reclassifies every relay
         # platform as native. Review probed this with
-        # `ImportError.name = "gateway.relay.dependency"` and got an authorized
+        # `ImportError.name = "hermes_agent.gateway.relay.dependency"` and got an authorized
         # verdict, so `except ImportError` alone was not the fix it looked like.
         if not _is_missing_gateway_relay(exc):
             raise RelayRouteUnknown(
@@ -279,13 +279,13 @@ def _relay_fronted() -> set[str]:
 def _has_live_native_adapter(platform_name: str) -> bool:
     """Whether THIS process runs a native (non-relay) adapter for the platform.
 
-    Mirrors ``gateway/delivery.resolve_delivery_transport``'s precedence: a
+    Mirrors ``hermes_agent/gateway/delivery.resolve_delivery_transport``'s precedence: a
     concrete native adapter always wins, so a platform served natively here is
     not a relay egress and this guard does not apply to it.
     """
     try:
-        from gateway.config import Platform
-        from gateway.run import _gateway_runner_ref
+        from hermes_agent.gateway.config import Platform
+        from hermes_agent.gateway.run import _gateway_runner_ref
 
         runner = _gateway_runner_ref()
         if runner is None:
@@ -300,7 +300,7 @@ def _has_live_native_adapter(platform_name: str) -> bool:
         # delivery actually routed it over the relay — the guard then skipped
         # authorization for a relay send. Two independent routing classifiers
         # are unsafe; this one now answers the same question the router does.
-        from gateway.config import load_gateway_config
+        from hermes_agent.gateway.config import load_gateway_config
 
         # NO `except: return True` HERE. I wrote one, and it recreated the very
         # bypass this method was fixed for: a config read that fails would
@@ -344,7 +344,7 @@ def relay_routed_platform(platform_name: str) -> bool:
 
 def _home_channel_id(platform_name: str) -> Optional[str]:
     try:
-        from gateway.config import Platform, load_gateway_config
+        from hermes_agent.gateway.config import Platform, load_gateway_config
 
         home = load_gateway_config().get_home_channel(Platform(platform_name))
         return str(home.chat_id) if home and home.chat_id else None
@@ -354,7 +354,7 @@ def _home_channel_id(platform_name: str) -> Optional[str]:
 
 def _directory_ids(platform_name: str) -> set[str]:
     try:
-        from gateway.channel_directory import load_directory
+        from hermes_agent.gateway.channel_directory import load_directory
 
         entries = load_directory().get("platforms", {}).get(platform_name) or []
     except Exception:
@@ -369,7 +369,7 @@ def _directory_ids(platform_name: str) -> set[str]:
 def _session_ids(platform_name: str) -> set[str]:
     """Chat ids this gateway has actually held a session in for the platform."""
     try:
-        from gateway.channel_directory import _build_from_sessions
+        from hermes_agent.gateway.channel_directory import _build_from_sessions
 
         entries = _build_from_sessions(platform_name) or []
     except Exception:
@@ -436,7 +436,7 @@ def _has_native_credential(platform_name: str) -> bool:
     exemption and falls back to the ordinary attestation check.
     """
     try:
-        from gateway.config import Platform, load_gateway_config
+        from hermes_agent.gateway.config import Platform, load_gateway_config
 
         config = load_gateway_config()
         pconfig = config.platforms.get(Platform(platform_name))

@@ -2,7 +2,7 @@
 
 import re
 
-from gateway.platforms.send_targets import StandaloneSendPolicy, regex_groups_parser
+from hermes_agent.gateway.platforms.send_targets import StandaloneSendPolicy, regex_groups_parser
 
 # "<channel>[:<thread>]" snowflakes: numeric, same shape as Telegram's "<id>[:<topic>]".
 _SEND_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")

@@ -15,10 +15,10 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Mapping
 
-from gateway import hosted_rooms
-from gateway.hosted_room_peer import (
+from hermes_agent.gateway import hosted_rooms
+from hermes_agent.gateway.hosted_room_peer import (
     GatewayRoomCatalog, HostedRoomPeerError, TransportSecurity, room_grant_hard_expiry, validate_room_link_url)
-from gateway.hosted_rooms_common import DbPath, compact_json, exact_fields, identifier
+from hermes_agent.gateway.hosted_rooms_common import DbPath, compact_json, exact_fields, identifier
 
 
 MAX_LINKS = 512

@@ -3,7 +3,7 @@
 Regression for #87939 / #75684: the multiplexed inbound handler already runs
 every slash handler inside ``_profile_runtime_scope`` (routed HERMES_HOME
 override), but several handlers built their write path from the module
-constant ``gateway.run._hermes_home`` — the LAUNCH home — so ``/reasoning
+constant ``hermes_agent.gateway.run._hermes_home`` — the LAUNCH home — so ``/reasoning
 --global``, ``/fast``, ``/memory approval``, ``/skills approval``, ``/verbose``
 and ``/footer`` persisted into the default profile's config.yaml. They now go
 through ``_gateway_config_home()`` like the reads do.
@@ -14,9 +14,9 @@ from __future__ import annotations
 import pytest
 import hermes_yaml as yaml
 
-import gateway.run as gateway_run
-from gateway.config import GatewayConfig
-from gateway.run import GatewayRunner, _profile_runtime_scope
+import hermes_agent.gateway.run as gateway_run
+from hermes_agent.gateway.config import GatewayConfig
+from hermes_agent.gateway.run import GatewayRunner, _profile_runtime_scope
 from tools import write_approval as wa
 
 

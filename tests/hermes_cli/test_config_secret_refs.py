@@ -282,7 +282,7 @@ def test_dashboard_main_save_for_a_known_endpoint_reuses_the_row_variable(home, 
 def test_webhook_env_secret_is_never_persisted_to_config_yaml(home, monkeypatch):
     """The issue's webhook claim: ``WEBHOOK_SECRET`` from the environment is folded into the
     in-memory gateway config only; config saves (home channel, ``config set``) never write it."""
-    from gateway.config import HomeChannel, Platform, load_gateway_config, persist_home_channel
+    from hermes_agent.gateway.config import HomeChannel, Platform, load_gateway_config, persist_home_channel
     from hermes_cli.config import set_config_value
 
     (home / "config.yaml").write_text("platforms:\n  webhook:\n    enabled: true\n", encoding="utf-8")

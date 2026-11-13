@@ -10,10 +10,10 @@ queued lane's own send was refused.
 
 import pytest
 
-from gateway.config import Platform
-from gateway.platforms.base import SendResult
-from gateway.platforms.event import MessageEvent, MessageType, SessionSource
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.base import SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType, SessionSource
+from hermes_agent.gateway.run import GatewayRunner
 from tests.gateway.test_run_progress_topics import ProgressCaptureAdapter, _make_runner, _run_with_agent
 
 _SESSION_KEY = "agent:main:telegram:group:-1001:17585"

@@ -8,7 +8,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from gateway.session_busy_controls import authorize
+from hermes_agent.gateway.session_busy_controls import authorize
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
@@ -23,7 +23,7 @@ async def complete_path(connection, ref, params):
     if ref.session_id not in authority.sessions:
         raise RuntimeStoreError('not_found')
     authorize(connection, ref, params, 'session:read')
-    from gateway.session_policy import policy_for_source, terminal_uses_host_cwd
+    from hermes_agent.gateway.session_policy import policy_for_source, terminal_uses_host_cwd
     policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
     if policy is None or not terminal_uses_host_cwd(json.loads(policy.terminal_json)):
         # A remote or sandboxed backend's tree is not this host's; completion is advisory, so nothing.
@@ -32,7 +32,7 @@ async def complete_path(connection, ref, params):
     from hermes_agent.tui_gateway import server
 
     def listing():
-        from gateway.run import _profile_runtime_scope
+        from hermes_agent.gateway.run import _profile_runtime_scope
         with _profile_runtime_scope(Path(authority.profile_id)):
             return server._path_completion_items(word, policy.cwd, None, True)
 

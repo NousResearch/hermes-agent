@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 
 class AnimatedDraftAdapter(BasePlatformAdapter):
@@ -46,8 +46,8 @@ def make_consumer(monkeypatch, *, cursor="", edit_interval=0.8):
     adapter.messages = []
     clock = SimpleNamespace(now=100.0)
     fake_time = SimpleNamespace(monotonic=lambda: clock.now)
-    monkeypatch.setattr("gateway.stream_consumer.time", fake_time)
-    monkeypatch.setattr("gateway.stream_consumer_transport.time", fake_time)
+    monkeypatch.setattr("hermes_agent.gateway.stream_consumer.time", fake_time)
+    monkeypatch.setattr("hermes_agent.gateway.stream_consumer_transport.time", fake_time)
     consumer = GatewayStreamConsumer(
         adapter, "123", StreamConsumerConfig(
             transport="draft", chat_type="dm", edit_interval=edit_interval,

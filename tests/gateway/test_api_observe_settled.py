@@ -3,7 +3,7 @@ import asyncio
 
 import pytest
 
-from gateway.session_api_turn import admit_api_turn, observe_api_turn
+from hermes_agent.gateway.session_api_turn import admit_api_turn, observe_api_turn
 
 
 @pytest.mark.asyncio
@@ -16,7 +16,7 @@ async def test_observer_arriving_after_a_fast_settle_returns_the_committed_resul
     assert row['status'] == 'queued'
 
     async def handle(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         execution_result.get()['result'] = {'final_response': 'settled'}
         return 'settled'
     owner.runner._handle_message = handle
@@ -29,7 +29,7 @@ async def test_observer_arriving_after_a_fast_settle_returns_the_committed_resul
 
 @pytest.mark.asyncio
 async def test_observer_arriving_after_a_cancel_reports_the_cancellation(api, owner):
-    from gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_contract import SessionActor
     admitted = admit_api_turn(api, session_id='gone', user_message='hello', conversation_history=[])
     authority, ref, row = admitted
     actor = SessionActor('api', authority.profile_id, frozenset({'session:submit', 'session:control'}), 'api-run:x')

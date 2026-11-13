@@ -14,15 +14,15 @@ import pytest
 
 
 
-from gateway.session_authority import LiveSession
+from hermes_agent.gateway.session_authority import LiveSession
 
 
 
-from gateway.session_contract import SessionActor, SessionRef, Submission
+from hermes_agent.gateway.session_contract import SessionActor, SessionRef, Submission
 
 
 
-from gateway.session_results import admission_result, finish_result
+from hermes_agent.gateway.session_results import admission_result, finish_result
 
 
 

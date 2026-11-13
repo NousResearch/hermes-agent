@@ -91,7 +91,7 @@ def _with_launch_entrypoint(event: dict[str, Any]) -> dict[str, Any]:
 
     if not is_single_query_session():
         return event
-    from gateway.session_context import get_session_env
+    from hermes_agent.gateway.session_context import get_session_env
 
     source = str(get_session_env("HERMES_SESSION_SOURCE", "") or "").strip().lower()
     return {**event, "entrypoint": "background" if source in _DISPATCHED_SOURCES else "one_shot"}

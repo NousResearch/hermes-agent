@@ -38,7 +38,7 @@ def _free_port() -> int:
 
 def _make_live_adapter(monkeypatch, reply_fn=None):
     from plugins.platforms.a2a.adapter import A2AAdapter
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
 
     port = _free_port()
     monkeypatch.setenv("A2A_PORT", str(port))
@@ -611,7 +611,7 @@ class TestDynamicAgentCards:
     def test_skills_reflect_live_tool_registry(self, monkeypatch):
         """The Agent Card is built from the real tool registry at serve time."""
         from tools.registry import registry
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.a2a.adapter import A2AAdapter
 
         monkeypatch.setattr(registry, "get_registered_toolset_names",
@@ -627,7 +627,7 @@ class TestDynamicAgentCards:
 
     def test_advertised_toolsets_restrict_card(self, monkeypatch):
         from tools.registry import registry
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.a2a.adapter import A2AAdapter
 
         monkeypatch.setattr(registry, "get_registered_toolset_names",

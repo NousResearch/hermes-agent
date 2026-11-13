@@ -289,8 +289,8 @@ def resume_editor_mcp(authority, ref, editor):
     servers = editor.get('mcp_servers') if isinstance(editor, dict) else None
     if servers == []:
         return
-    from gateway.session_local_editor import validate_editor
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_local_editor import validate_editor
+    from hermes_agent.gateway.session_policy import policy_for_source
     policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
     if policy is None:
         raise RuntimeStoreError('acp_mcp_policy_conflict')
@@ -309,7 +309,7 @@ def retire_editor_mcp(authority, sid):
 
 def install_editor_mcp(authority, sid, servers):
     """After a committed change: *sid*'s borrowed credentials follow its committed policy (memory only)."""
-    from gateway.session_policy import restore_policy
+    from hermes_agent.gateway.session_policy import restore_policy
     from hermes_agent.hermes_state_local import local_receipt
     policy = restore_policy(local_receipt(authority.db, sid)['policy'])
     data = json.loads(policy.editor_mcp_json or '{}')
@@ -334,8 +334,8 @@ async def prepare_editor_mcp(authority, live, payload, prepared, *, servers):
     """``session.mutate editor_mcp``: discover the new list and freeze it into the policy the next
     turn runs under. Equal schemas leave the manifest, and so the prompt-cache prefix, as it was;
     only the fingerprint and the borrowed credentials swap."""
-    from gateway.session_mutation_policy import _rebind
-    from gateway.session_policy import restore_policy
+    from hermes_agent.gateway.session_mutation_policy import _rebind
+    from hermes_agent.gateway.session_policy import restore_policy
     receipt = prepared['snapshot']['receipt']
     old = restore_policy(receipt['policy'])
     if old.source != 'acp':
@@ -410,7 +410,7 @@ async def refreeze_editor_mcp(authority, ref, live):
 
 
 async def _refreeze(authority, ref):
-    from gateway.session_policy import restore_policy
+    from hermes_agent.gateway.session_policy import restore_policy
     from hermes_agent.hermes_state_local import local_receipt
     # The committed policy the claim just restored (``restore_local_session``).
     receipt = await asyncio.to_thread(local_receipt, authority.db, ref.session_id)
@@ -438,7 +438,7 @@ async def _refreeze(authority, ref):
 async def _commit_refreeze(authority, ref, servers):
     """The ``editor_mcp`` change on the owning principal's behalf, through ``session.mutate``'s own
     writer (the drain holds the session's locks, and a schema re-check needs no capability)."""
-    from gateway.session_mutations import write_mutation
+    from hermes_agent.gateway.session_mutations import write_mutation
     from hermes_agent.hermes_state_local import local_receipt
     owner = await asyncio.to_thread(local_receipt, authority.db, ref.session_id)
     row = await asyncio.to_thread(authority.db.get_session, ref.session_id)
@@ -452,7 +452,7 @@ async def _commit_refreeze(authority, ref, servers):
 def _child_secret_ref(authority, child, parent, policy):
     """A durable config-secret reference names the policy identity, which the child's own editor
     selection changed; the frozen secrets themselves are the parent's."""
-    from gateway.session_policy_credentials import PREFIX, config_reference, recover_config_secrets
+    from hermes_agent.gateway.session_policy_credentials import PREFIX, config_reference, recover_config_secrets
     if parent.config_secret_ref is None or not parent.config_secret_ref.startswith(PREFIX):
         return policy
     secrets = recover_config_secrets(authority, parent, skip=())
@@ -466,7 +466,7 @@ async def prepare_branch_editor(authority, ref, servers, gate):
 
     Discovery starts every server, so *gate* (the branch's prepare-only fences: receipt, revision,
     generation, idle) runs first; an exact retry's durable receipt comes back as ``prepared``."""
-    from gateway.session_policy import restore_policy
+    from hermes_agent.gateway.session_policy import restore_policy
     from hermes_agent.hermes_state_keys import local_identity
     from hermes_agent.hermes_state_local import local_receipt
     try:

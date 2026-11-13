@@ -94,7 +94,7 @@ def test_cli_refine_reaches_spawn_as_explicit(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_gateway_refine_snapshot_does_not_alias_live_history():
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     key = "agent:main:test:dm:1"
     agent = _agent_with_real_chokepoint()

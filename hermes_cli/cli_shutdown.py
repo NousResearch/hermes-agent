@@ -26,7 +26,7 @@ def _cli():
 
 def _sync_process_session_id(session_id: str) -> None:
     """Keep process-local session-id consumers aligned after CLI switches."""
-    from gateway.session_context import set_current_session_id
+    from hermes_agent.gateway.session_context import set_current_session_id
 
     set_current_session_id(session_id)
 
@@ -158,7 +158,7 @@ _CLEANUP_STEPS = (
 
 def _gateway_owns_session_end(agent) -> bool:
     """A gateway-backed session ends in the gateway: the viewer's ``end_session`` (``session.detach
-    {end_reason}``) makes the owner run finalize and the memory commit (gateway/session_viewer_close)."""
+    {end_reason}``) makes the owner run finalize and the memory commit (hermes_agent/gateway/session_viewer_close)."""
     from hermes_cli.gateway_agent import GatewayAgent
     return isinstance(agent, GatewayAgent)
 

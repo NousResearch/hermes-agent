@@ -22,7 +22,7 @@ _admitted: "OrderedDict[str, None]" = OrderedDict()
 
 
 def _relayed_discord(source: Any) -> bool:
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
 
     return (getattr(source, "delivered_via_upstream_relay", False) is True
             and getattr(source, "platform", None) == Platform.DISCORD)

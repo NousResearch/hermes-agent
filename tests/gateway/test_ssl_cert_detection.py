@@ -18,7 +18,7 @@ def test_gateway_import_does_not_export_a_certifi_bundle(tmp_path):
 import os, ssl
 original = ssl.get_default_verify_paths
 ssl.get_default_verify_paths = lambda: original()._replace(cafile=None, openssl_cafile=None)
-import gateway.run
+import hermes_agent.gateway.run
 assert 'SSL_CERT_FILE' not in os.environ, os.environ.get('SSL_CERT_FILE')
 """
     child = subprocess.run(
@@ -35,7 +35,7 @@ def test_gateway_import_preserves_explicit_certificate_override(tmp_path):
     bundle.write_text("operator-provided bundle")
     env = os.environ.copy()
     env.update(HOME=str(tmp_path), HERMES_HOME=str(home), SSL_CERT_FILE=str(bundle))
-    script = "import os, gateway.run; assert os.environ['SSL_CERT_FILE'] == os.environ['EXPECTED_CA']"
+    script = "import os, hermes_agent.gateway.run; assert os.environ['SSL_CERT_FILE'] == os.environ['EXPECTED_CA']"
     env["EXPECTED_CA"] = str(bundle)
     child = subprocess.run(
         [sys.executable, "-c", script], env=env, capture_output=True,

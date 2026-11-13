@@ -15,8 +15,8 @@ TERN = {'name': 'hermes-tern', 'version': '0.4.1+g1a2b'}
 
 
 def _create(owner, actor, home, request_id, source='tui', **extra):
-    from gateway.session_local import create_local_session
-    from gateway.session_policy import restore_policy
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_policy import restore_policy
     from hermes_agent.hermes_state_local import local_receipt
     ref = create_local_session(owner, actor, {'request_id': request_id, 'source': source, 'cwd': str(home),
                                               'toolsets': [], **extra})
@@ -24,8 +24,8 @@ def _create(owner, actor, home, request_id, source='tui', **extra):
 
 
 def _info(owner, ref, policy, monkeypatch):
-    from gateway import session_policy
-    from gateway.session_local import local_session_info
+    from hermes_agent.gateway import session_policy
+    from hermes_agent.gateway.session_local import local_session_info
     monkeypatch.setattr(session_policy, 'policy_for_source', lambda runner, source: policy)
     return local_session_info(owner, ref)
 
@@ -89,8 +89,8 @@ async def test_a_malformed_client_is_refused_as_invalid_params(tmp_path, monkeyp
 
 @pytest.mark.parametrize('source', ['cli', 'tui', 'gui', 'acp', 'tool', 'oneshot'])
 def test_the_client_label_changes_no_policy_decision(tmp_path, monkeypatch, source):
-    from gateway.local_viewer_events import launch_shows_reasoning
-    from gateway.session_policy import DAYBREAK_LABELS, build_policy
+    from hermes_agent.gateway.local_viewer_events import launch_shows_reasoning
+    from hermes_agent.gateway.session_policy import DAYBREAK_LABELS, build_policy
     from tools.approval_context import _LOCAL_INTERACTIVE_SOURCES
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     config = {'model': {'default': 'm', 'provider': 'custom', 'base_url': 'http://x.invalid/v1'},
@@ -109,7 +109,7 @@ def test_the_client_label_changes_no_policy_decision(tmp_path, monkeypatch, sour
 @pytest.mark.asyncio
 async def test_an_exact_retry_must_repeat_the_same_client(tmp_path, monkeypatch):
     """The label is part of the exact-retry identity, like every other create field."""
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_local import create_local_session
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     home = _home(tmp_path)
     owner, connection = await _owner(home, monkeypatch)
@@ -132,8 +132,8 @@ async def test_a_named_session_restores_after_restart(tmp_path, monkeypatch):
     """The label lives only in ``request_json``: the receipt's policy keys are main's, so an older
     owner's ``restore_policy`` (checked against a base tree in the PR) restores it too."""
     from dataclasses import fields
-    from gateway.session_local_recovery import restore_local_session
-    from gateway.session_policy import LocalSessionPolicy, restore_policy
+    from hermes_agent.gateway.session_local_recovery import restore_local_session
+    from hermes_agent.gateway.session_policy import LocalSessionPolicy, restore_policy
     from hermes_agent.hermes_state_local import local_receipt
     home = _home(tmp_path)
     owner, connection = await _owner(home, monkeypatch)
@@ -152,7 +152,7 @@ async def test_a_named_session_restores_after_restart(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_runtime_describe_advertises_the_client_parameter(tmp_path, monkeypatch):
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     from tests.gateway.test_local_source_labels import _authority
     authority, _store = await _authority(tmp_path, monkeypatch)
     monkeypatch.setenv('HERMES_HOME', authority.profile_id)
@@ -172,7 +172,7 @@ async def test_runtime_describe_advertises_the_client_parameter(tmp_path, monkey
 @pytest.mark.asyncio
 async def test_a_named_create_and_resume_return_snapshots_that_match_their_contract(tmp_path, monkeypatch):
     """``session.create`` / ``session.resume`` return ``local_session_info`` as the snapshot's ``info``."""
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     from tests.gateway.test_local_source_labels import _authority
     from hermes_agent.tui_gateway.contracts.registry import CANONICAL_METHODS
     authority, _store = await _authority(tmp_path, monkeypatch)
@@ -216,7 +216,7 @@ def test_the_classic_clis_new_does_not_repeat_another_clients_name():
 async def test_each_profile_home_sees_only_its_own_sessions_client(tmp_path, monkeypatch):
     """Multiplexed homes: two owners' turns run side by side; each plugin read answers for its own."""
     from agent.system_prompt import _plugin_session_info
-    from gateway.session_policy import policy_scope
+    from hermes_agent.gateway.session_policy import policy_scope
     from hermes_cli.plugin_session import session_client
     (tmp_path / 'a').mkdir()
     (tmp_path / 'b').mkdir()

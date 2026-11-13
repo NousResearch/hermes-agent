@@ -1,6 +1,6 @@
 """Outbound ``$...$`` / ``$$...$$`` become Element ``data-mx-maths`` markup (#106458)."""
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.matrix.adapter import MatrixAdapter
 
 

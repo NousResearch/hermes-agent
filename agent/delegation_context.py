@@ -32,7 +32,7 @@ def delegated_child_context(session_id: str | None = None) -> Iterator[None]:
     construction calls ``set_current_session_id``)."""
     token = _DELEGATED_CHILD_CONTEXT.set(True)
     try:
-        from gateway.session_context import scoped_current_session_id  # lazy: it calls is_delegated_child_context()
+        from hermes_agent.gateway.session_context import scoped_current_session_id  # lazy: it calls is_delegated_child_context()
 
         with scoped_current_session_id(session_id):
             yield

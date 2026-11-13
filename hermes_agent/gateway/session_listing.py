@@ -3,8 +3,8 @@ from hermes_agent.hermes_state_local_migration import client_history_row, valida
 from hermes_agent.hermes_state_mutation_binding import authorize_history
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
-from gateway.owner_identity import same_owner
-from gateway.session_route_recovery import _messaging_platform, mountable
+from hermes_agent.gateway.owner_identity import same_owner
+from hermes_agent.gateway.session_route_recovery import _messaging_platform, mountable
 
 # Local labels (a cron run is a canonical local session whose last viewer is its own fire).
 _LOCAL_SOURCES = ('cli', 'tui', 'gui', 'desktop', 'local', 'cron')
@@ -32,7 +32,7 @@ def _native_reader(authority, actor):
 
 def legacy_readable(authority, actor, sid):
     """Whether this picker lists old local row *sid* (unadopted: no receipt, no route) to *actor*, so a
-    read of it may show it without adopting it (``gateway/session_stored_reads.py``)."""
+    read of it may show it without adopting it (``hermes_agent/gateway/session_stored_reads.py``)."""
     db = authority.db
     row = db.get_session(sid)
     if actor.profile_id != authority.profile_id or row is None or not _native_reader(authority, actor):
@@ -53,7 +53,7 @@ def stored_picker_sessions(authority, actor, *, limit, include_hidden=False, wor
     Canonical sessions are already in the live feed. Old local rows have no policy
     receipt until explicit resume; listing them must not claim or restore anything.
     *workspace*: only the folder's rows (``hermes -c``'s rule). *picker*: each row carries the picker
-    fields, from the columns the listing already read (``gateway/session_picker_fields.py``).
+    fields, from the columns the listing already read (``hermes_agent/gateway/session_picker_fields.py``).
     """
     if actor.profile_id != authority.profile_id:
         raise RuntimeStoreError('profile_mismatch')
@@ -104,7 +104,7 @@ def stored_picker_sessions(authority, actor, *, limit, include_hidden=False, wor
             break
         offset += len(rows)
     if picker and sessions:
-        from gateway.session_picker_fields import fill_picker_fields
+        from hermes_agent.gateway.session_picker_fields import fill_picker_fields
         fill_picker_fields(db, [(row, *source) for row, source in zip(sessions, sources)])
     return {'sessions': sessions, 'scope': 'stored'}
 
@@ -112,8 +112,8 @@ def stored_picker_sessions(authority, actor, *, limit, include_hidden=False, wor
 def _closed_local_session(authority, actor, row, tip):
     """A canonical local session (created here, or adopted from main) its last viewer closed: main's
     picker listed it as resumable. None for anything else, including a session another principal owns."""
-    from gateway.session_contract import SessionRef
-    from gateway.session_local_close import closed_and_unviewed
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_local_close import closed_and_unviewed
     owner = tip.get('chat_id')
     live = authority.sessions.get(owner) if owner else None
     if live is None:
@@ -137,7 +137,7 @@ def _stored_closed(authority, actor, owner):
     its stored receipt as ``authorize`` and ``closed_and_unviewed`` would after a restore. No viewer.
     The stored receipt is judged by the checks a restore runs on it (``restorable_receipt``); the
     restore's live route check (another session on its route) stays the restore's."""
-    from gateway.session_local_recovery import restorable_receipt
+    from hermes_agent.gateway.session_local_recovery import restorable_receipt
     from hermes_agent.hermes_state_runtime import list_session_admissions
     if actor.profile_id != authority.profile_id or 'session:read' not in actor.capabilities:
         return False

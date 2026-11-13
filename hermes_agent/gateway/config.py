@@ -14,7 +14,7 @@ from enum import Enum
 
 from hermes_cli.config import get_hermes_home
 from agent.secret_scope import current_secret_scope, get_secret as _get_secret
-from gateway.shutdown_watchdog import (
+from hermes_agent.gateway.shutdown_watchdog import (
     DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
     DEFAULT_LOOP_WATCHDOG_MAX_STRIKES,
     DEFAULT_LOOP_WATCHDOG_TIMEOUT_S,
@@ -161,7 +161,7 @@ def _coerce_dict(value: Any) -> dict[str, Any]:
 
 
 # "pair" DMs a pairing code, "ignore" drops silently, "decline" sends one polite refusal then goes
-# silent toward that sender for gateway.pairing.DECLINE_DEDUPE_SECONDS (#88028).
+# silent toward that sender for hermes_agent.gateway.pairing.DECLINE_DEDUPE_SECONDS (#88028).
 UNAUTHORIZED_DM_BEHAVIORS = {"pair", "ignore", "decline"}
 DEFAULT_UNAUTHORIZED_DM_DECLINE_MESSAGE = (
     "Hi! I'm a personal assistant and can only chat with my owner, so I can't help you directly. Sorry!"
@@ -279,7 +279,7 @@ class Platform(Enum):
                 # registry and every value-based consumer key on.
                 return cls._value2member_map_.get(alias) or cls._add_pseudo_member(alias)
             with contextlib.suppress(Exception):
-                from gateway.platform_registry import platform_registry
+                from hermes_agent.gateway.platform_registry import platform_registry
                 registered = platform_registry.is_registered(value)
         return cls._add_pseudo_member(value) if registered else None
 
@@ -321,7 +321,7 @@ _BUILTIN_PLATFORM_VALUES = frozenset(m.value for m in Platform.__members__.value
 
 # Platforms that bind a host TCP port. In a multiplexer only the default profile binds: a SECONDARY
 # profile's port-binder is built in shared-listener mode and served at /p/<profile>/<path> on the
-# default's listener (gateway/platforms/shared_ingress.py); api_server/webhook are mirrored there.
+# default's listener (hermes_agent/gateway/platforms/shared_ingress.py); api_server/webhook are mirrored there.
 PORT_BINDING_PLATFORM_VALUES = frozenset({
     "webhook", "api_server", "msgraph_webhook", "feishu", "wecom_callback",
     "bluebubbles", "sms", "whatsapp_cloud", "line", "teams",
@@ -413,7 +413,7 @@ class ChannelOverride:
 
 
 # Platforms whose primary credential is ``PlatformConfig.token`` → its env var (empty-token
-# warnings; multiplex primary-startup gate in ``gateway.run``). Platforms absent here
+# warnings; multiplex primary-startup gate in ``hermes_agent.gateway.run``). Platforms absent here
 # authenticate another way and must never be skipped for a missing token.
 # Platforms absent from this map authenticate some other way (session files, port-bound webhooks,
 # api_key-only) and must never be skipped for a missing token. See #64674.
@@ -568,7 +568,7 @@ class StreamingConfig:
 
 def _has_usable_api_server_key(key: object) -> bool:
     """True when API_SERVER_KEY is strong enough for the adapter to start (mirrors the
-    ``has_usable_secret(min_length=16)`` guard in ``gateway/platforms/api_server.py``)."""
+    ``has_usable_secret(min_length=16)`` guard in ``hermes_agent/gateway/platforms/api_server.py``)."""
     if not key:
         return False
     try:
@@ -601,7 +601,7 @@ def _discovered_registry_entry(platform: Platform):
         from hermes_cli.plugins import discover_plugins
         discover_plugins()
     with contextlib.suppress(Exception):  # registry not initialised yet during early import
-        from gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.platform_registry import platform_registry
         return platform_registry.get(platform.value)
     return None
 
@@ -672,7 +672,7 @@ class GatewayConfig:
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
     # Prune SessionEntry records older than this (a resumed chat gets a fresh session). 0 = off.
     session_store_max_age_days: int = 90
-    profile_routes: list = field(default_factory=list)  # gateway/profile_routing.py
+    profile_routes: list = field(default_factory=list)  # hermes_agent/gateway/profile_routing.py
 
     # Scalar fields serialized verbatim by ``to_dict`` (in output order).
     _SCALAR_DICT_FIELDS = (
@@ -800,7 +800,7 @@ class GatewayConfig:
         except (TypeError, ValueError):
             session_store_max_age_days = 90
 
-        from gateway.profile_routing import parse_profile_routes
+        from hermes_agent.gateway.profile_routing import parse_profile_routes
 
         return cls(
             platforms=by_platform("platforms", PlatformConfig.from_dict, dicts_only=True),
@@ -849,7 +849,7 @@ class GatewayConfig:
 
 def load_gateway_config() -> GatewayConfig:
     """Load gateway configuration. Priority: env > ~/.hermes/config.yaml > legacy gateway.json > defaults."""
-    from gateway import config_loader
+    from hermes_agent.gateway import config_loader
 
     _home = get_hermes_home()
     gw_data = config_loader.load_legacy_gateway_json(_home)
@@ -908,6 +908,6 @@ def _validate_gateway_config(config: GatewayConfig) -> None:
 
 
 def _apply_env_overrides(config: GatewayConfig) -> None:
-    """Apply environment variable overrides to config (see ``gateway.config_env``)."""
-    from gateway.config_env import _apply_env_overrides as _impl
+    """Apply environment variable overrides to config (see ``hermes_agent.gateway.config_env``)."""
+    from hermes_agent.gateway.config_env import _apply_env_overrides as _impl
     _impl(config)

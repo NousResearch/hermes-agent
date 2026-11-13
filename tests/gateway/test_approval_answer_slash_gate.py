@@ -13,9 +13,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.session import SessionSource
 
 ADMIN, MEMBER = "111", "222"
 
@@ -37,7 +37,7 @@ def _gate(admins):
 
 def _raise_approval(session_key, platform, requester=ADMIN):
     """Enqueue an approval the way the agent thread does, inside the requester's DM turn."""
-    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
     from tools import approval
     from tools.approval_gateway_wait import _ApprovalEntry
 
@@ -214,7 +214,7 @@ def test_a_non_admin_answers_only_where_they_could_type_the_command(path, admins
     ([], [], ADMIN, "deny", True),                  # admins always answer
 ])
 def test_narrowed_approvers_take_precedence_over_the_slash_gate(approvers, user_cmds, who, choice, allowed):
-    from gateway.approval_actor import approval_refusal
+    from hermes_agent.gateway.approval_actor import approval_refusal
     from tests.gateway.test_approval_requester_binding import write_approvers
 
     write_approvers(approvers)
@@ -224,6 +224,6 @@ def test_narrowed_approvers_take_precedence_over_the_slash_gate(approvers, user_
     if approvers == ["*"]:  # the typed command passes the same slash gate the button does
         typed = "/deny" if choice == "deny" else "/approve"
         assert (_runner(extra)._check_slash_access(_event(who, typed).source, typed[1:]) is None) is allowed
-        from gateway.slash_access import policy_for_runner_source  # /whoami and /help list what runs
+        from hermes_agent.gateway.slash_access import policy_for_runner_source  # /whoami and /help list what runs
         listed = policy_for_runner_source(_runner(extra), _event(who, typed).source).user_runnable_commands
         assert (typed[1:] in listed or who == ADMIN) is allowed

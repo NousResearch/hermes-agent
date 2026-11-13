@@ -13,8 +13,8 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.session import (
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.session import (
     SessionEntry,
     SessionSource,
     SessionStore,

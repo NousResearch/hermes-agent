@@ -1,10 +1,10 @@
 """A classic CLI plugin command runs in the gateway and its ``ctx.call_mcp`` reaches the gateway's MCP
 registry (#134889 CLI-13, PLG-7).
 
-A real daemon (``gateway.run``) loads a user plugin whose ``/probe-mcp-status`` calls ``probe-mcp``, a
+A real daemon (``hermes_agent.gateway.run``) loads a user plugin whose ``/probe-mcp-status`` calls ``probe-mcp``, a
 fake server in the daemon's own MCP registry (tests/gateway/fixtures/plugin_mcp_daemon.py). The CLI's
 dispatch reads the daemon's ``commands.catalog`` and sends ``slash.exec`` over its websocket, so the
-command goes through ``gateway/session_commands.py`` -> ``_hm_run_plugin_handler``.
+command goes through ``hermes_agent/gateway/session_commands.py`` -> ``_hm_run_plugin_handler``.
 """
 import asyncio
 from contextlib import asynccontextmanager, contextmanager
@@ -319,7 +319,7 @@ def test_a_command_a_plugin_reload_removed_is_dispatched_again(tmp_path, monkeyp
     the "no longer has this plugin command" line, never the raw code, on that try or a later one."""
     import cli as cli_mod
     from cli import HermesCLI
-    from gateway.control_socket import reload_gateway_plugins
+    from hermes_agent.gateway.control_socket import reload_gateway_plugins
     _no_local_plugins(monkeypatch)
     ran_skill = []
     monkeypatch.setattr(cli_mod, '_ensure_skill_commands', dict)  # the skill is the gateway's, below

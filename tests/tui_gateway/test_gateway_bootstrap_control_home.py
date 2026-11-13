@@ -56,7 +56,7 @@ def test_served_secondary_uses_multiplexer_control_home(monkeypatch, tmp_path):
     }).encode() + b"\n"
 
     if module.os.name == "nt":
-        import gateway.runtime_bootstrap_windows as windows_bootstrap
+        import hermes_agent.gateway.runtime_bootstrap_windows as windows_bootstrap
 
         def query_runtime_control(home, request, timeout):
             seen["control_home"] = Path(home).resolve()

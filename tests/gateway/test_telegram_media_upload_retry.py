@@ -12,8 +12,8 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 

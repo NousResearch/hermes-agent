@@ -9,7 +9,7 @@ override to the launch-profile pass, which documents that it has none.
 
 import pytest
 
-from gateway import run as gateway_run
+from hermes_agent.gateway import run as gateway_run
 
 
 class _Cfg:

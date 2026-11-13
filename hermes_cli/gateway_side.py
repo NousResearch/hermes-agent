@@ -4,7 +4,7 @@ On main the classic CLI built a second ``AIAgent`` (``/bg``) or made a one-shot 
 (``/btw``) in its own process. Rewired, the side work runs in the gateway, like Ink's: the verb
 replies ``{task_id}`` at once and the answer arrives later on the session's event stream as
 ``background.complete`` / ``btw.complete`` ``{task_id, text}`` (``error: <exc>`` on failure,
-``gateway/session_tui_side.py``). The connection's pump hands those frames to the waiter
+``hermes_agent/gateway/session_tui_side.py``). The connection's pump hands those frames to the waiter
 registered here, so neither the turn pump nor the idle notification tick can drop them.
 """
 from __future__ import annotations

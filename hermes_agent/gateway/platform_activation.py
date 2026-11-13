@@ -3,7 +3,7 @@
 Bundled platform plugins register lazily (``PlatformRegistry.register_deferred``); importing all
 ~20 of them costs every cold gateway start about half a second (discord, telegram, google_chat
 SDKs, telegram's i18n catalog) although a fresh profile configures none. The config passes in
-``gateway.config_loader`` / ``gateway.config_env`` only need a platform's hooks
+``hermes_agent.gateway.config_loader`` / ``hermes_agent.gateway.config_env`` only need a platform's hooks
 (``apply_yaml_config_fn``, ``env_enablement_fn``, ``is_connected``) when the profile could be
 configuring that platform, so they materialize only names with *activation evidence*:
 
@@ -110,7 +110,7 @@ def activation_predicate(
         home = get_hermes_home()
     if yaml_cfg is None and home is not None:
         try:
-            from gateway.config_loader import read_yaml_layers
+            from hermes_agent.gateway.config_loader import read_yaml_layers
             yaml_cfg = read_yaml_layers(home)
         except Exception:
             logger.debug("platform activation: config.yaml unreadable", exc_info=True)

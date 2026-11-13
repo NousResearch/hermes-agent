@@ -16,13 +16,13 @@ from typing import Any
 
 import pytest
 
-# Imported at MODULE level on purpose: gateway.run's import side effects (hermes_bootstrap's
+# Imported at MODULE level on purpose: hermes_agent.gateway.run's import side effects (hermes_bootstrap's
 # interrupted-update probe) stat the checkout's git dir, which sits inside the real Hermes home
 # when the suite runs from a developer worktree — the home-I/O guard is fixture-scoped and only
 # active during a test, so the probe must happen here at collection time.
-import gateway.run as gateway_run
-from gateway.run_turn_runner import TurnRunner
-from gateway.platforms.base import SendResult
+import hermes_agent.gateway.run as gateway_run
+from hermes_agent.gateway.run_turn_runner import TurnRunner
+from hermes_agent.gateway.platforms.base import SendResult
 from tools import approval as _approval
 from tools import approval_gateway_wait as wait_mod
 
@@ -71,7 +71,7 @@ def test_acknowledged_card_leaves_a_delivery_record(tmp_path, monkeypatch, caplo
         async def send(self, chat_id: str, message: str, **k: Any) -> SendResult:
             return SendResult(success=True, message_id="m2")
 
-    monkeypatch.setattr("gateway.platforms.base_exec_approval.approval_timeout_seconds", lambda: 300)
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base_exec_approval.approval_timeout_seconds", lambda: 300)
     runner = object.__new__(TurnRunner)
     runner._ctx = SimpleNamespace(
         _status_adapter=_ButtonAdapter(), _status_chat_id="C1", _status_thread_metadata={"thread_id": "77"},
@@ -86,7 +86,7 @@ def test_acknowledged_card_leaves_a_delivery_record(tmp_path, monkeypatch, caplo
     runner._close_native_stream_boundary = lambda _why: None
 
     data = dict(APPROVAL, request_id="req-1")
-    with caplog.at_level(logging.INFO, logger="gateway.run"):
+    with caplog.at_level(logging.INFO, logger="hermes_agent.gateway.run"):
         runner._approval_notify_sync(data)
 
     delivered = [r.message for r in caplog.records if r.message.startswith("Exec approval card delivered")]
@@ -133,14 +133,14 @@ def test_text_fallback_send_leaves_a_record(tmp_path, monkeypatch, caplog, text_
         async def send(self, chat_id: str, message: str, **k: Any) -> SendResult:
             return SendResult(success=True, message_id="t1") if text_ok else SendResult(success=False, error="Not connected")
 
-    monkeypatch.setattr("gateway.platforms.base_exec_approval.approval_timeout_seconds", lambda: 300)
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base_exec_approval.approval_timeout_seconds", lambda: 300)
     runner = object.__new__(TurnRunner)
     runner._ctx = SimpleNamespace(
         _status_adapter=_FailingCardAdapter(), _status_chat_id="C1", _status_thread_metadata=None, session_key=SESSION)
     runner._schedule = lambda coro, _label: SimpleNamespace(result=lambda timeout=None, _r=asyncio.run(coro): _r)
     runner._close_native_stream_boundary = lambda _why: None
 
-    with caplog.at_level(logging.INFO, logger="gateway.run"):
+    with caplog.at_level(logging.INFO, logger="hermes_agent.gateway.run"):
         runner._approval_notify_sync(dict(APPROVAL, request_id="req-1"))
 
     text = [r for r in caplog.records if r.message.startswith("Exec approval text prompt send")]

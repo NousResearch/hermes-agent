@@ -18,7 +18,7 @@ sidebar_position: 9
 用户 ↔ 消息平台 ↔ 平台适配器 ↔ Gateway Runner ↔ AIAgent
 ```
 
-每个适配器都继承自 `gateway/platforms/base.py` 中的 `BasePlatformAdapter`，并实现以下方法：
+每个适配器都继承自 `hermes_agent/gateway/platforms/base.py` 中的 `BasePlatformAdapter`，并实现以下方法：
 
 - **`connect()`** — 建立连接（WebSocket、长轮询、HTTP 服务器等）*(抽象方法)*
 - **`disconnect()`** — 清理关闭 *(抽象方法)*
@@ -65,9 +65,9 @@ optional_env:
 
 ```python
 import os
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.config import Platform, PlatformConfig
 
 
 class MyPlatformAdapter(BasePlatformAdapter):
@@ -239,7 +239,7 @@ def register(ctx):
 
 ## YAML→env 配置桥接
 
-部分用户更倾向于设置 `config.yaml` 键（`my_platform.require_mention`、`my_platform.allowed_channels` 等）而非环境变量。`apply_yaml_config_fn` hook 允许你的 plugin 自行处理这一转换，而无需强制核心 `gateway/config.py` 了解你平台的 YAML schema。
+部分用户更倾向于设置 `config.yaml` 键（`my_platform.require_mention`、`my_platform.allowed_channels` 等）而非环境变量。`apply_yaml_config_fn` hook 允许你的 plugin 自行处理这一转换，而无需强制核心 `hermes_agent/gateway/config.py` 了解你平台的 YAML schema。
 
 ```python
 import os
@@ -461,7 +461,7 @@ LINE 两者都支持：阈值默认为 45 秒用于免费 postback 获取，`LIN
 
 ### 1. Platform 枚举
 
-在 `gateway/config.py` 的 `Platform` 枚举中添加你的平台：
+在 `hermes_agent/gateway/config.py` 的 `Platform` 枚举中添加你的平台：
 
 ```python
 class Platform(str, Enum):
@@ -474,9 +474,9 @@ class Platform(str, Enum):
 创建 `plugins/platforms/newplat/adapter.py`：
 
 ```python
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 
 def check_newplat_requirements() -> bool:
     """如果依赖可用则返回 True。"""
@@ -525,7 +525,7 @@ event = MessageEvent(
 await self.handle_message(event)
 ```
 
-### 3. Gateway 配置（`gateway/config.py`）
+### 3. Gateway 配置（`hermes_agent/gateway/config.py`）
 
 三个接触点：
 
@@ -533,7 +533,7 @@ await self.handle_message(event)
 2. **`load_gateway_config()`** — 添加 token 环境变量映射条目：`Platform.NEWPLAT: "NEWPLAT_TOKEN"`
 3. **`_apply_env_overrides()`** — 将所有 `NEWPLAT_*` 环境变量映射到配置
 
-### 4. Gateway Runner（`gateway/run.py`）
+### 4. Gateway Runner（`hermes_agent/gateway/run.py`）
 
 六个接触点：
 
@@ -546,7 +546,7 @@ await self.handle_message(event)
 
 ### 5. 跨平台投递
 
-1. **`gateway/platforms/webhook.py`** — 将 `"newplat"` 添加到投递类型元组
+1. **`hermes_agent/gateway/platforms/webhook.py`** — 将 `"newplat"` 添加到投递类型元组
 2. **`hermes_agent/cron/scheduler.py`** — 添加到 `_KNOWN_DELIVERY_PLATFORMS` frozenset 和 `_deliver_result()` 平台映射
 
 ### 6. CLI 集成
@@ -661,7 +661,7 @@ async def _handle_callback(self, request):
 如果适配器持有带唯一凭据的持久连接，添加作用域锁以防止两个配置文件使用相同凭据：
 
 ```python
-from gateway.status import acquire_scoped_lock, release_scoped_lock
+from hermes_agent.gateway.status import acquire_scoped_lock, release_scoped_lock
 
 async def connect(self):
     if not acquire_scoped_lock("newplat", self._token):

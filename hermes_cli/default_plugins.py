@@ -125,7 +125,7 @@ def fetch_policy(home: Path) -> str:
     profile: a whole-profile bind at boot would freeze the launch environment before boot sets it up."""
     if os.environ.get("HERMES_DISABLE_LAZY_INSTALLS", "").strip().lower() in ("1", "true", "yes"):
         return "denied"
-    from gateway.config_loader import read_yaml_layers
+    from hermes_agent.gateway.config_loader import read_yaml_layers
     try:
         security = read_yaml_layers(home).get("security")
     except Exception:  # health: allow BLE001 -- a malformed or unreadable config never grants a fetch

@@ -14,7 +14,7 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 
-from gateway.hosted_rooms_common import clock, table_columns, table_exists
+from hermes_agent.gateway.hosted_rooms_common import clock, table_columns, table_exists
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ def _select_expressions(legacy: sqlite3.Connection, target: sqlite3.Connection, 
     Columns only the source has are dropped; columns the target added without a default are left
     to its DDL default.
     """
-    from gateway.hosted_rooms import _LEGACY_COLUMNS
+    from hermes_agent.gateway.hosted_rooms import _LEGACY_COLUMNS
 
     defaults = {(table, column): default for table, column, _, default in _LEGACY_COLUMNS if default is not None}
     source_columns = [str(row[1]) for row in legacy.execute(f"PRAGMA table_info({name})")]
@@ -77,7 +77,7 @@ def _copy_rows(target: sqlite3.Connection, source: Path, *, only: frozenset[str]
     (the driver, policy and replica schemas are initialized by their own modules) is created from
     the source's own DDL so its rows survive the upgrade too.
     """
-    from gateway.hosted_rooms import _EVENT_BYTES_BACKFILL
+    from hermes_agent.gateway.hosted_rooms import _EVENT_BYTES_BACKFILL
 
     copied_rooms: list[str] = []
     existing = {str(row[0]) for row in target.execute("SELECT room_id FROM hosted_rooms")}

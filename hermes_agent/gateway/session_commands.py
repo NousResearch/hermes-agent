@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 import shlex
 
-from gateway.session_cron_commands import cron_read
+from hermes_agent.gateway.session_cron_commands import cron_read
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
@@ -26,23 +26,23 @@ _CONTROL_COMMANDS = frozenset({'title'})
 # Authoring/workflow commands whose messaging handler (``_command_handler_table``) runs as-is for a
 # local session: goal/loop/heartbeat state on the session's row, the review/refine forks of its
 # cached agent, the /debug summary upload, /blueprint's job creation. A turn the handler would have
-# pushed onto the adapter FIFO comes back as a ``send`` directive (gateway/session_command_sink.py).
+# pushed onto the adapter FIFO comes back as a ``send`` directive (hermes_agent/gateway/session_command_sink.py).
 _HANDLER_CONTROLS = frozenset({'goal', 'subgoal', 'loop', 'heartbeat', 'review', 'refine', 'debug', 'curator',
                                'login', 'autoprune'})
 # Idle-path commands the messaging gateway answers by rewriting the turn (``_hm_cmd_<name>``,
-# gateway/run_inbound.py): the rewritten text is returned as the client's ``send`` directive.
+# hermes_agent/gateway/run_inbound.py): the rewritten text is returned as the client's ``send`` directive.
 _PROMPT_COMMANDS = frozenset({'plan', 'learn', 'init', 'moa', 'blueprint', 'egress'})
 # Per-session settings: the messaging handler itself, made session-correct for a local session
-# (gateway/session_setting_commands.py). Admission-fenced like any control.
+# (hermes_agent/gateway/session_setting_commands.py). Admission-fenced like any control.
 _SETTING_COMMANDS = frozenset({'reasoning', 'voice', 'approvals', 'codex-runtime', 'footer', 'busy', 'verbose',
                                'yolo', 'fast', 'personality'})
 # Typed `/approve` / `/deny`: the messaging handler resolves THIS session's waiting approval (its
 # route is the session key), the same waiter `approval.respond` answers by prompt id.
 _APPROVAL_COMMANDS = frozenset({'approve', 'deny'})
 # Reports with no messaging handler: the classic CLI's own text, built by the owner for this
-# session (gateway/session_info_reads.py).
+# session (hermes_agent/gateway/session_info_reads.py).
 _INFO_READS = frozenset({'toolsets', 'platforms'})
-# The classic CLI's own handler, run by the owner (gateway/session_cron_commands.py): the profile's cron store
+# The classic CLI's own handler, run by the owner (hermes_agent/gateway/session_cron_commands.py): the profile's cron store
 # belongs to the gateway whose ticker fires its jobs, so no client writes it. Bare ``/cron`` and ``list``
 # read; every other form (add/edit/pause/resume/run/remove) is a control that writes the store. A write runs
 # only on a connection that is not attached to the session: the classic CLI's command socket
@@ -157,7 +157,7 @@ def _parse(params, dispatch):
 
 
 def _resolve_alias(name, arg):
-    from gateway.run import _load_gateway_config
+    from hermes_agent.gateway.run import _load_gateway_config
     from hermes_cli.commands import resolve_command
     quick = _load_gateway_config().get('quick_commands') or {}
     seen = set()
@@ -183,7 +183,7 @@ def _runner_command(name):
     """``('exec', shell)`` for a ``type: exec`` quick command, ``('plugin', registered)`` for a plugin
     slash command, else None (read in the owning profile's scope). The exact registered name wins over
     Telegram's ``_`` -> ``-`` form, as main's CLI looked it up: ``foo_bar`` is its own command."""
-    from gateway.run import _load_gateway_config
+    from hermes_agent.gateway.run import _load_gateway_config
     from hermes_cli.plugins import get_plugin_command_handler
     entry = (_load_gateway_config().get('quick_commands') or {}).get(name)
     if isinstance(entry, dict) and entry.get('type') == 'exec':
@@ -197,14 +197,14 @@ async def _run_runner_command(runner, live, name, arg, kind, shell):
     (``run_inbound_hooks``): the operator's slash access policy, the 30 s sanitized-env exec with
     redacted output, the plugin handler under this session's env scope."""
     from agent.i18n import t
-    from gateway.platforms.base import MessageEvent
+    from hermes_agent.gateway.platforms.base import MessageEvent
     if kind == 'exec':
         if not shell:
             return t('gateway.quick_command.no_command', command=name)
         refused = runner._check_slash_access(live.source, name)
         if refused:
             return refused
-        from gateway.session_policy import policy_for_source
+        from hermes_agent.gateway.session_policy import policy_for_source
         policy = policy_for_source(runner, live.source)
         cwd = getattr(policy, 'cwd', None) or None
         if cwd is None or not await asyncio.to_thread(os.path.isdir, cwd):
@@ -256,9 +256,9 @@ def _skill_directive(name, arg, route):
 async def _tui_read(authority, actor, ref, name, arg, before):
     """Main's TUI sidecar text for a TUI session's /status or /context read, else None;
     ``before`` (its ``pre_command``) runs once the read is accepted."""
-    from gateway.session_local import authorize_local_source
-    from gateway.session_policy import policy_for_source
-    from gateway.session_tui_reads import run_tui_read, tui_read
+    from hermes_agent.gateway.session_local import authorize_local_source
+    from hermes_agent.gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_tui_reads import run_tui_read, tui_read
     live = authority.sessions[ref.session_id]
     if authorize_local_source(authority.runner, live.source) is not True:
         return None
@@ -319,8 +319,8 @@ def _pre_command(authority, ref, canonical, alias, arg):
     ``platform`` keep main's ``cli`` on every local surface (Ink and Desktop fired it through the CLI
     slash worker). During a turn every command that still runs fires, as main's CLI did, except the
     escape hatches."""
-    from gateway.run import _profile_runtime_scope
-    from gateway.session_local import authorize_local_source
+    from hermes_agent.gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.session_local import authorize_local_source
     live = authority.sessions[ref.session_id]
     if ((canonical in _ESCAPE_HATCHES and authority._handle(ref).execution_state != 'idle')
             or authorize_local_source(authority.runner, live.source) is not True):
@@ -334,7 +334,7 @@ def _pre_command(authority, ref, canonical, alias, arg):
         return None
 
     def fire():  # bound to the session it fires for: a key-less inject_message from the hook lands there
-        from gateway.session_context import scoped_session_key
+        from hermes_agent.gateway.session_context import scoped_session_key
         from hermes_cli.plugins import fire_pre_command_hook
         with _profile_runtime_scope(home), scoped_session_key(live.route):
             fire_pre_command_hook(surface='cli', command=canonical, alias_used=alias, args_raw=arg,
@@ -386,7 +386,7 @@ async def observe_command(connection, ref, params):
 def _accepting(before):
     """``before`` as the busy dispatcher's acceptance hook: a mid-run variant that refuses its arguments
     (``/goal <new text>``) never reaches it, so a refused command fires no ``pre_command``."""
-    from gateway.run_busy import BUSY_ACCEPTED
+    from hermes_agent.gateway.run_busy import BUSY_ACCEPTED
     token = BUSY_ACCEPTED.set(before)
     try:
         yield
@@ -400,14 +400,14 @@ def _session_workspace(runner, source):
     reads the caller's checkout instead of the gateway process's configured directory."""
     import json
     from agent.runtime_cwd import reset_session_cwd, set_session_cwd
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_policy import policy_for_source
     from agent.runtime_scope import bind_terminal_policy
     from tools.terminal_scope import reset_terminal_scope
     policy = policy_for_source(runner, source)
     if policy is None:
         yield
         return
-    from gateway.session_authorities import active_authority
+    from hermes_agent.gateway.session_authorities import active_authority
     cwd_token = set_session_cwd(policy.cwd)
     owner = getattr(active_authority(runner), 'profile_id', None)
     terminal_token = bind_terminal_policy(json.loads(policy.terminal_json), profile_home=owner)
@@ -428,7 +428,7 @@ async def execute_command(connection, ref, params, *, dispatch=False):
     if params.get('profile') and not profile_matches_home(params['profile'], home):
         raise RuntimeStoreError('profile_mismatch')
 
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
     def resolve():
         with _profile_runtime_scope(home):
             return _resolve_alias(name, arg)
@@ -459,10 +459,10 @@ async def execute_command(connection, ref, params, *, dispatch=False):
     if verdict == 'refused' or (verdict == 'control' and canonical in _OWNER_COMMANDS
                                 and ref.session_id in connection.subscriptions):
         raise RuntimeStoreError('unsupported_command', detail=REFUSAL_HINTS.get(canonical))
-    from gateway.session_history_mount import is_history_mount, read_only
+    from hermes_agent.gateway.session_history_mount import is_history_mount, read_only
     if is_history_mount(live):
         raise read_only()  # no policy or agent to run even a read command against
-    from gateway.session_local import authorize_local_source
+    from hermes_agent.gateway.session_local import authorize_local_source
     if authorize_local_source(authority.runner, live.source) is not True:
         raise RuntimeStoreError('permission_denied')
     if capability != 'session:read':
@@ -471,7 +471,7 @@ async def execute_command(connection, ref, params, *, dispatch=False):
                                    or authority._handle(ref).execution_state == 'idle'):
         await before()  # mid-run the busy dispatcher fires it once it accepts the command (``BUSY_ACCEPTED``)
     if runner_command is not None:
-        from gateway.plugin_command_choice import viewer_choices
+        from hermes_agent.gateway.plugin_command_choice import viewer_choices
         with (_profile_runtime_scope(home), _session_workspace(authority.runner, live.source),
               viewer_choices(live, ref.session_id)):
             output = await _run_runner_command(authority.runner, live, name, arg, *runner_command)
@@ -483,14 +483,14 @@ async def execute_command(connection, ref, params, *, dispatch=False):
         return await asyncio.to_thread(build)
 
     if canonical in _INFO_READS:
-        from gateway.session_info_reads import run_info_read
+        from hermes_agent.gateway.session_info_reads import run_info_read
         return await run_info_read(authority, live, canonical)
     if canonical in _OWNER_COMMANDS:
-        from gateway.session_cron_commands import run_cron
+        from hermes_agent.gateway.session_cron_commands import run_cron
         return await run_cron(authority, arg)
 
-    from gateway.platforms.base import MessageEvent
-    from gateway.session_command_sink import capture
+    from hermes_agent.gateway.platforms.base import MessageEvent
+    from hermes_agent.gateway.session_command_sink import capture
     typed = '/' + canonical + (' ' + arg if arg else '')
     event = MessageEvent(text=typed, source=live.source)
     runner = authority.runner
@@ -509,8 +509,8 @@ async def execute_command(connection, ref, params, *, dispatch=False):
         else:
             await before()
             if canonical == 'reasoning':
-                from gateway.run_config_loaders import GatewayConfigLoadersMixin
-                from gateway.session_setting_commands import commit_reasoning_command
+                from hermes_agent.gateway.run_config_loaders import GatewayConfigLoadersMixin
+                from hermes_agent.gateway.session_setting_commands import commit_reasoning_command
                 await commit_reasoning_command(authority, actor, ref,
                                                *GatewayConfigLoadersMixin._parse_reasoning_command_args(arg))
             handler = runner._command_handler_table((canonical,))[canonical]
@@ -521,7 +521,7 @@ async def execute_command(connection, ref, params, *, dispatch=False):
         live.controls.snapshot(ref.session_id, handle.execution_generation
                                if handle.execution_state == 'running' else None)
     if canonical in _AUTOMATION_COMMANDS:
-        from gateway.session_control_actions import publish
+        from hermes_agent.gateway.session_control_actions import publish
         publish(authority, ref.session_id)
     prompt = prompt if prompt is not None else sink.prompt
     if prompt:

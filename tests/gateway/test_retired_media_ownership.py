@@ -3,13 +3,13 @@ from pathlib import Path
 
 import pytest
 
-from gateway.session_contract import SessionActor, SessionRef, Submission
+from hermes_agent.gateway.session_contract import SessionActor, SessionRef, Submission
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
 @pytest.mark.asyncio
 async def test_attachment_retry_survives_lost_staging_but_rejects_changed_payload(tmp_path, monkeypatch):
-    from gateway.platforms.base import cache_image_from_bytes
+    from hermes_agent.gateway.platforms.base import cache_image_from_bytes
     from tests.gateway.test_prompt_attachments import _authority, _ONE_PX_PNG
     async def answer(event):
         return 'ok'

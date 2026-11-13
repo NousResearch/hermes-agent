@@ -16,9 +16,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.run import GatewayRunner, _parse_session_key
-from gateway.run_notifications import INTERNAL_NOTIFICATION_FOOTER
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.run import GatewayRunner, _parse_session_key
+from hermes_agent.gateway.run_notifications import INTERNAL_NOTIFICATION_FOOTER
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +57,7 @@ def _build_runner(monkeypatch, tmp_path, mode: str) -> GatewayRunner:
         encoding="utf-8",
     )
 
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
@@ -101,7 +101,7 @@ class TestLoadBackgroundNotificationsMode:
         (tmp_path / "config.yaml").write_text(
             "display:\n  background_process_notifications: bogus\n"
         )
-        import gateway.run as gw
+        import hermes_agent.gateway.run as gw
         monkeypatch.setattr(gw, "_hermes_home", tmp_path)
         monkeypatch.delenv("HERMES_BACKGROUND_NOTIFICATIONS", raising=False)
         assert GatewayRunner._load_background_notifications_mode() == "concise"
@@ -110,7 +110,7 @@ class TestLoadBackgroundNotificationsMode:
         (tmp_path / "config.yaml").write_text(
             "display:\n  background_process_notifications: error\n"
         )
-        import gateway.run as gw
+        import hermes_agent.gateway.run as gw
         monkeypatch.setattr(gw, "_hermes_home", tmp_path)
         monkeypatch.delenv("HERMES_BACKGROUND_NOTIFICATIONS", raising=False)
         assert GatewayRunner._load_background_notifications_mode() == "error"
@@ -243,7 +243,7 @@ async def test_consumed_completion_skips_raw_notification_without_agent_notify(
 
 @pytest.mark.asyncio
 async def test_inject_watch_notification_routes_from_session_store_origin(monkeypatch, tmp_path):
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.session import SessionSource
 
     runner = _build_runner(monkeypatch, tmp_path, "all")
     adapter = runner.adapters[Platform.TELEGRAM]
@@ -295,7 +295,7 @@ async def test_post_turn_watch_drain_off_consumes_without_injecting(monkeypatch,
 
 @pytest.mark.asyncio
 async def test_post_turn_watch_drain_all_injects_from_queued_event_origin(monkeypatch, tmp_path):
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.session import SessionSource
 
     runner = _build_runner(monkeypatch, tmp_path, "all")
     adapter = runner.adapters[Platform.TELEGRAM]
@@ -336,7 +336,7 @@ async def test_inject_watch_notification_drops_stale_trigger_reply_anchor(monkey
     synthetic sends through the topic's message_thread_id (#87051) — and the original id
     survives only as event metadata for debugging.
     """
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.session import SessionSource
 
     runner = _build_runner(monkeypatch, tmp_path, "all")
     adapter = runner.adapters[Platform.TELEGRAM]
@@ -369,7 +369,7 @@ async def test_inject_watch_notification_drops_stale_trigger_reply_anchor(monkey
     # Routing provenance is untouched: the notification still lands in the origin topic.
     assert synth_event.source.thread_id == "24296"
     # The derived final-reply anchor is empty on every platform branch.
-    from gateway.platforms.base import _reply_anchor_for_event
+    from hermes_agent.gateway.platforms.base import _reply_anchor_for_event
     assert _reply_anchor_for_event(synth_event) is None
     # The original id survives for debugging only.
     assert synth_event.metadata["original_trigger_message_id"] == "777"
@@ -381,7 +381,7 @@ async def test_inject_watch_notification_drops_stale_trigger_reply_anchor(monkey
 
 @pytest.mark.asyncio
 async def test_inject_watch_notification_loads_session_store_off_loop(monkeypatch, tmp_path):
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.session import SessionSource
 
     runner = _build_runner(monkeypatch, tmp_path, "all")
     adapter = runner.adapters[Platform.TELEGRAM]
@@ -422,7 +422,7 @@ async def test_inject_watch_notification_loads_session_store_off_loop(monkeypatc
 @pytest.mark.asyncio
 async def test_inject_watch_notification_ignores_foreground_event_source(monkeypatch, tmp_path):
     """Negative test: watch notification must NOT route to the foreground thread."""
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.session import SessionSource
 
     runner = _build_runner(monkeypatch, tmp_path, "all")
     adapter = runner.adapters[Platform.TELEGRAM]
@@ -462,7 +462,7 @@ async def test_inject_watch_notification_ignores_foreground_event_source(monkeyp
 class TestConciseFormatter:
 
     def test_success_is_one_line_without_output(self):
-        from gateway.run import _format_concise_process_notification
+        from hermes_agent.gateway.run import _format_concise_process_notification
         text = _format_concise_process_notification(
             "proc_abc", "python3 scan_fleet.py --all", 0,
             "1300\n1400\n1500\n{...huge json...}",
@@ -476,7 +476,7 @@ class TestConciseFormatter:
         assert "\n" not in text
 
     def test_failure_appends_short_tail(self):
-        from gateway.run import _format_concise_process_notification
+        from hermes_agent.gateway.run import _format_concise_process_notification
         out = "\n".join(f"line{i}" for i in range(50)) + "\nTraceback: boom"
         text = _format_concise_process_notification(
             "proc_abc", "make build", 2, out,
@@ -488,7 +488,7 @@ class TestConciseFormatter:
         assert "line0" not in text
 
     def test_long_command_is_truncated(self):
-        from gateway.run import _format_concise_process_notification
+        from hermes_agent.gateway.run import _format_concise_process_notification
         text = _format_concise_process_notification(
             "proc_abc", "x" * 300, 0, "",
         )
@@ -503,8 +503,8 @@ async def test_agent_notify_refused_completion_backs_off_then_sends_plain_notice
     dropped either: bounded backoff, then the plain completion notice (#138940). A last refusal
     whose admission actually committed (lost ACK) must not add a second notice."""
     import tools.process_registry as pr_module
-    from gateway import session_automation
-    from gateway import run_notifications as rn
+    from hermes_agent.gateway import session_automation
+    from hermes_agent.gateway import run_notifications as rn
 
     exited = SimpleNamespace(
         output_buffer="done\n", exited=True, exit_code=0, command="echo done", started_at=1.0,
@@ -661,7 +661,7 @@ def test_build_process_event_source_named_profile_key(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# api_server (stateless) wake routing — gateway/wake.py self-post path
+# api_server (stateless) wake routing — hermes_agent/gateway/wake.py self-post path
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -683,7 +683,7 @@ async def test_inject_watch_notification_raw_session_key_self_posts(monkeypatch,
     async def fake_self_post(adapter, *, text, session_id):
         posts.append({"text": text, "session_id": session_id})
 
-    import gateway.wake as wake_mod
+    import hermes_agent.gateway.wake as wake_mod
     monkeypatch.setattr(wake_mod, "_self_post_chat_completion", fake_self_post)
 
     evt = {
@@ -719,7 +719,7 @@ async def test_inject_watch_notification_origin_session_id_wins(monkeypatch, tmp
     async def fake_self_post(adapter, *, text, session_id):
         posts.append(session_id)
 
-    import gateway.wake as wake_mod
+    import hermes_agent.gateway.wake as wake_mod
     monkeypatch.setattr(wake_mod, "_self_post_chat_completion", fake_self_post)
 
     evt = {
@@ -748,7 +748,7 @@ async def test_async_delegation_apiserver_persists_delivery_not_self_post(
     )
     runner.adapters[Platform.API_SERVER] = api_adapter
 
-    import gateway.wake as wake_mod
+    import hermes_agent.gateway.wake as wake_mod
 
     posts = []
 
@@ -798,7 +798,7 @@ async def test_async_delegation_apiserver_persist_failure_is_retryable(
     )
     runner.adapters[Platform.API_SERVER] = api_adapter
 
-    import gateway.wake as wake_mod
+    import hermes_agent.gateway.wake as wake_mod
 
     async def fail_persist(adapter, *, text, session_id, evt=None):
         raise RuntimeError("state.db unavailable")
@@ -819,7 +819,7 @@ def test_gateway_drain_retains_and_formats_overflow_events():
     their summary — previously they were discarded at the drain (only
     watch_match/watch_disabled were retained) and had no formatter branch."""
     import asyncio
-    from gateway.run import (
+    from hermes_agent.gateway.run import (
         _drain_gateway_watch_events,
         _format_gateway_process_notification,
     )

@@ -62,7 +62,7 @@ def test_revoke_worker_has_a_total_header_deadline(gateway):
 def test_revoke_transport_without_optional_http_packages(gateway, monkeypatch, response):
     import builtins
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-    from gateway import hosted_rooms
+    from hermes_agent.gateway import hosted_rooms
 
     from hermes_agent.tui_gateway import hosted_room_peer_http
     monkeypatch.setattr(hosted_room_peer_http, 'MAX_PEER_RESPONSE_BYTES', 32)

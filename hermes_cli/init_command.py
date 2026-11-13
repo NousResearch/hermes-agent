@@ -95,7 +95,7 @@ def _resolve_session_cwd(session_key: str | None) -> str:
     the ambient ``HERMES_SESSION_KEY``.
     """
     try:
-        from gateway.session_context import get_session_env
+        from hermes_agent.gateway.session_context import get_session_env
         from tools.terminal_tool import get_session_cwd
 
         key = session_key if session_key is not None else get_session_env("HERMES_SESSION_KEY", "")

@@ -11,7 +11,7 @@ description: "Wire contract between the Hermes gateway relay adapter and externa
 > gated by `contract_version`. A breaking change updates both repos in lockstep.
 
 This document is the formal interface between the **Hermes gateway** (Python,
-`gateway/relay/`) and the **connector** (Node/TypeScript,
+`hermes_agent/gateway/relay/`) and the **connector** (Node/TypeScript,
 `NousResearch/gateway-gateway`). The connector implementer's first action is to
 read this file.
 
@@ -40,7 +40,7 @@ fields from defaults.
 
 ## 2. CapabilityDescriptor (handshake payload)
 
-JSON object. Source of truth: `gateway/relay/descriptor.py`.
+JSON object. Source of truth: `hermes_agent/gateway/relay/descriptor.py`.
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
@@ -70,7 +70,7 @@ live platform adapter's capability methods.
 ## 3. Inbound: `MessageEvent` envelope
 
 The connector normalizes each platform wire event into a `MessageEvent`
-(`gateway/platforms/base.py`) and delivers it to the gateway. **Inbound is
+(`hermes_agent/gateway/platforms/base.py`) and delivers it to the gateway. **Inbound is
 delivered over the gateway's OUTBOUND `/relay` WebSocket** (see the transport
 note below) — the connector pushes an `inbound` frame down the socket the
 gateway already dialed. The gateway keys the session via `build_session_key()`
@@ -180,7 +180,7 @@ gateway acks it after durable handoff.
 
 ### SessionSource fields (the wire surface)
 
-Source of truth: `SessionSource.to_dict()` in `gateway/session.py`. These are
+Source of truth: `SessionSource.to_dict()` in `hermes_agent/gateway/session.py`. These are
 every key the gateway accepts on the wire. `platform`, `chat_id`, `chat_type`,
 `user_id`, `user_name`, `thread_id`, `chat_name`, and `chat_topic` are always
 present (may be `null`); the rest are included only when set.
@@ -416,7 +416,7 @@ first buffered event for a flipped instance).
 ## 4. Outbound: action set
 
 The gateway calls the transport with action dicts. Source of truth:
-`gateway/relay/transport.py` + `gateway/relay/adapter.py`.
+`hermes_agent/gateway/relay/transport.py` + `hermes_agent/gateway/relay/adapter.py`.
 
 | `op` | Fields | Result |
 | --- | --- | --- |
@@ -445,7 +445,7 @@ the inbound (`scope_id`, `user_id`) and, on a multiplexed gateway, the Hermes
 the profile encoded in their `session_key` namespace. The connector MUST stamp
 the same `profile` on the next `passthrough_forward` / `inbound` for that chat or
 interaction, so a Discord button press after a slash command lands in the same
-profile's session (`gateway/relay/adapter.py::_with_scope`, `send_follow_up`).
+profile's session (`hermes_agent/gateway/relay/adapter.py::_with_scope`, `send_follow_up`).
 Single-profile gateways never emit the key — frames stay byte-identical.
 
 **`send_media` (Phase 2 media egress).** Media crosses the wire BY REFERENCE:
@@ -597,7 +597,7 @@ enforces the tenant match (tenant B can never wield tenant A's capability), and
 egresses. `success: false` when the capability is absent/expired or the tenant
 doesn't match — the gateway has nothing to retry with, by design (a leaked
 gateway holds zero capability material). Source of truth:
-`gateway/relay/transport.py` (`send_follow_up`) + `gateway/relay/adapter.py`.
+`hermes_agent/gateway/relay/transport.py` (`send_follow_up`) + `hermes_agent/gateway/relay/adapter.py`.
 
 ---
 
@@ -666,7 +666,7 @@ is itself authenticated. The gateway holds an enrollment- or provision-issued
 **per-gateway secret** (`hermes gateway enroll` → connector `/relay/enroll`, or
 managed self-provision → `/relay/provision`) that authenticates its outbound WS
 upgrade. It is an HMAC-SHA256 scheme with a multi-secret rotation verify list
-(gateway side: `gateway/relay/auth.py`; connector side:
+(gateway side: `hermes_agent/gateway/relay/auth.py`; connector side:
 `src/core/relayAuthToken.ts`).
 
 | Leg | Credential | Mechanism |
@@ -740,7 +740,7 @@ behaviour knobs (`require_mention`, `free_response_channels`,
 gateway projects those knobs into a **platform-agnostic** policy and POSTs it to
 `POST /relay/policy` at boot (after its per-gateway secret is resolved).
 
-Body (`gateway/relay/__init__.py` `relay_relevance_policy()` → `send_relay_policy()`):
+Body (`hermes_agent/gateway/relay/__init__.py` `relay_relevance_policy()` → `send_relay_policy()`):
 
 | Field | Type | Projected from | Meaning |
 | --- | --- | --- | --- |
@@ -784,7 +784,7 @@ platforms:
 
 Resolution: nested `extra.<platform>` object wins → legacy flat key on
 `extra` honored as fallback → default. Source of truth:
-`RelayAdapter._effective_reply_in_thread` (`gateway/relay/adapter.py`).
+`RelayAdapter._effective_reply_in_thread` (`hermes_agent/gateway/relay/adapter.py`).
 Values coerce exactly as the native Slack adapter's do — `1/true/yes/on`
 (case-insensitive, whitespace-trimmed) are ON, anything else is OFF — so a
 YAML-quoted `"false"` turns a knob off rather than being read as a truthy

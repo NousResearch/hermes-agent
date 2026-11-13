@@ -14,7 +14,7 @@ _QUESTION_KEYS = ("qid", "question", "choices", "multi_select")
 
 
 def ask_clarify_batch(turn, questions) -> dict:
-    from gateway.session_server_requests import ask_viewer_result
+    from hermes_agent.gateway.session_server_requests import ask_viewer_result
     from tools.clarify_gateway import get_clarify_timeout
     authority, session_id, _generation = turn._approval_owner
     live = authority.sessions.get(session_id)

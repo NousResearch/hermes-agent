@@ -12,7 +12,7 @@ import types
 
 import pytest
 
-from gateway.run_turn_runner import TurnRunner
+from hermes_agent.gateway.run_turn_runner import TurnRunner
 
 
 def _wire(user_config, **runner_attrs):

@@ -18,7 +18,7 @@ from typing import Any, Optional
 
 from agent.i18n import t
 
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 _TIMEOUT = "timeout"
 _STOPPED = "stopped"
@@ -42,7 +42,7 @@ async def preagent_setup_guard(runner, session_key: str):
     """Bound setup by ``HERMES_AGENT_TIMEOUT`` (``agent.gateway_timeout``; ``<= 0`` = unbounded) and
     publish a stop handle on the turn slot. Raises ``PreagentSetupTimeout`` past the deadline and
     ``PreagentSetupStopped`` after ``cancel_preagent_setup``."""
-    from gateway.run import _dump_wedged_turn_stacks, _float_env
+    from hermes_agent.gateway.run import _dump_wedged_turn_stacks, _float_env
     delay = _float_env("HERMES_AGENT_TIMEOUT", 1800)
     task = asyncio.current_task()
     turn = runner._session_state(session_key).turn
@@ -142,7 +142,7 @@ async def run_preagent_setup(runner, event, source, quick_key: str, run_generati
                 "message": prepared.message_text[:500],
             }
             await runner.hooks.emit("agent:start", hook_ctx)
-            from gateway.run_heartbeat_acceptance import heartbeat_owner_is_current
+            from hermes_agent.gateway.run_heartbeat_acceptance import heartbeat_owner_is_current
             if not heartbeat_owner_is_current(runner, event, session_key):
                 return (source, session_entry, session_key, prepared, env_tokens, None, None), None
             channel = runner._pinned_channel_inputs(  # internal/synthetic reuse pins
@@ -154,7 +154,7 @@ async def run_preagent_setup(runner, event, source, quick_key: str, run_generati
                 await runner._persist_prompt_pins(session_key, session_entry.session_id)
     except (PreagentSetupTimeout, PreagentSetupStopped) as ended:
         runner._clear_session_env([])  # prepare may have bound them before the hang
-        from gateway.session_results import execution_result, record_unexecuted_failure
+        from hermes_agent.gateway.session_results import execution_result, record_unexecuted_failure
         if isinstance(ended, PreagentSetupStopped):
             captured = execution_result.get()
             if captured is not None:  # a claimed admission settles interrupted, as the Stop would have
@@ -163,7 +163,7 @@ async def run_preagent_setup(runner, event, source, quick_key: str, run_generati
             # The turn never ran: a failed result, so /goal never grades the resend notice as an
             # answer (``_turn_failed``) and the admission does not settle "completed".
             record_unexecuted_failure(t("gateway.busy.setup_timeout"))
-        from gateway.bot_peer_notices import automatic_notices_allowed
+        from hermes_agent.gateway.bot_peer_notices import automatic_notices_allowed
         timed_out = isinstance(ended, PreagentSetupTimeout) and automatic_notices_allowed(source)
         return None, (t("gateway.busy.setup_timeout") if timed_out else None)
     return (source, session_entry, session_key, prepared, env_tokens, hook_ctx, channel), None
@@ -176,8 +176,8 @@ def pending_setup_busy_notice(runner, session_key: str, source) -> Optional[str]
     notice as a stalled running turn, debounced to one per 30 s. Never to a known bot peer."""
     import os
     import time
-    from gateway.bot_peer_notices import automatic_notices_allowed
-    from gateway.run import _AGENT_PENDING_SENTINEL, _float_env
+    from hermes_agent.gateway.bot_peer_notices import automatic_notices_allowed
+    from hermes_agent.gateway.run import _AGENT_PENDING_SENTINEL, _float_env
     if (os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true").lower() != "true"
             or not automatic_notices_allowed(source)):
         return None

@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from agent import turn_empty_response as ter
-from gateway.run import _prepare_gateway_status_message
+from hermes_agent.gateway.run import _prepare_gateway_status_message
 
 
 @pytest.mark.parametrize("message", [

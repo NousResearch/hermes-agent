@@ -53,7 +53,7 @@ def gated_gateway(tmp_path_factory):
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
                PYTHONUNBUFFERED='1', HERMES_DASHBOARD_SESSION_TOKEN=TOKEN)
     with (tmp / 'gateway.log').open('w+') as log:
-        process = subprocess.Popen([sys.executable, '-m', 'gateway.run'], cwd=root, env=env,
+        process = subprocess.Popen([sys.executable, '-m', 'hermes_agent.gateway.run'], cwd=root, env=env,
                                    stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
         try:
             descriptor = wait_until(lambda: _identify_ready(home, process), timeout=90,

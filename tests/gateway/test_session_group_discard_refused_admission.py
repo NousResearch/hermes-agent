@@ -6,10 +6,10 @@ import asyncio
 
 import pytest
 
-from gateway import hosted_room_driver as driver
+from hermes_agent.gateway import hosted_room_driver as driver
 from aiohttp import web
 
-from gateway.platforms import api_server_runs
+from hermes_agent.gateway.platforms import api_server_runs
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 from tests.gateway.test_session_group_peer_discard import (
     _never_admitted_deferred_turn, gateway as gateway_fixture, linked_peer as linked_peer_fixture,
@@ -55,7 +55,7 @@ async def test_discard_after_a_refused_overlapping_admission_settles_the_turn(
     async def discard_then_refuse(adapter, launch, run_id, *args):
         # Retry's POST reserved the key; Discard finds that reservation before admission ends.
         overlapped.append((run_id, await call(gateway.owner, 'groups.discard', **control)))
-        monkeypatch.setattr('gateway.session_api_turn.admit_api_turn_async', refuse)
+        monkeypatch.setattr('hermes_agent.gateway.session_api_turn.admit_api_turn_async', refuse)
         return await admit(adapter, launch, run_id, *args)
 
     _member_admits_through_its_authority(gateway, monkeypatch, discard_then_refuse)
@@ -96,7 +96,7 @@ async def test_disband_after_a_refused_overlapping_admission_finishes(gateway, m
 
     async def discard_then_refuse(adapter, launch, run_id, *args):
         assert await call(gateway.owner, 'groups.discard', **control) == 'session_busy'
-        monkeypatch.setattr('gateway.session_api_turn.admit_api_turn_async', refuse)
+        monkeypatch.setattr('hermes_agent.gateway.session_api_turn.admit_api_turn_async', refuse)
         return await admit(adapter, launch, run_id, *args)
 
     _member_admits_through_its_authority(gateway, monkeypatch, discard_then_refuse)
@@ -121,7 +121,7 @@ async def test_retry_checks_the_saved_run_before_trusting_it(gateway, monkeypatc
     with monkeypatch.context() as overlap:
         async def discard_then_refuse(adapter, launch, run_id, *args):
             assert await call(gateway.owner, 'groups.discard', **control) == 'session_busy'
-            overlap.setattr('gateway.session_api_turn.admit_api_turn_async', refuse)
+            overlap.setattr('hermes_agent.gateway.session_api_turn.admit_api_turn_async', refuse)
             return await admit(adapter, launch, run_id, *args)
 
         _member_admits_through_its_authority(gateway, overlap, discard_then_refuse)

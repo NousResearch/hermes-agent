@@ -13,7 +13,7 @@ import time
 
 import pytest
 
-from gateway.run_startup import GatewayStartupMixin
+from hermes_agent.gateway.run_startup import GatewayStartupMixin
 
 
 def _runner() -> GatewayStartupMixin:
@@ -54,7 +54,7 @@ async def test_warmup_timeout_warning_runs_off_the_event_loop(monkeypatch):
     base_logger.handlers = [handler]
     base_logger.setLevel(logging.WARNING)
     base_logger.propagate = False
-    monkeypatch.setattr("gateway.run_startup.logger", base_logger)
+    monkeypatch.setattr("hermes_agent.gateway.run_startup.logger", base_logger)
 
     runner = _runner()
     pending = asyncio.create_task(asyncio.sleep(60))

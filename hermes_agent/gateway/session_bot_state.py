@@ -5,7 +5,7 @@ approval or clarify card; it waits out the bound and reports a silent timeout. T
 (and every same-id replay the waiting runner makes) carries this state instead. Read on the owner
 loop, never persisted: a receipt holds outcomes, not a snapshot that is stale a second later.
 """
-from gateway.session_contract import SessionRef
+from hermes_agent.gateway.session_contract import SessionRef
 
 # Prompt kinds a running turn parks on, in the order a sender should hear about them.
 _WAITING_KINDS = ('approval', 'clarify')

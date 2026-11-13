@@ -26,7 +26,7 @@ import threading
 import time
 from pathlib import Path
 
-from gateway.lifecycle_ledger import (
+from hermes_agent.gateway.lifecycle_ledger import (
     check_state_db_integrity,
     get_lifecycle_sentinel_path,
     record_startup,
@@ -140,7 +140,7 @@ def test_clean_exit_does_not_pay_for_the_check(tmp_path: Path, monkeypatch) -> N
     _write_sentinel(tmp_path, phase="exited")
 
     called = []
-    import gateway.lifecycle_ledger as ledger
+    import hermes_agent.gateway.lifecycle_ledger as ledger
 
     monkeypatch.setattr(
         ledger, "check_state_db_integrity", lambda **kw: called.append(1) or "ok"
@@ -157,7 +157,7 @@ def test_deferred_startup_never_runs_the_check_inline(tmp_path: Path, monkeypatc
     """DEFERRAL IS THE DEFAULT: the boot entry point must return WITHOUT the forensic
     scan completing, and the exit-diag record must record that the verdict is pending.
     The blocking stub below never returns unless the deferred path wrongly runs it."""
-    import gateway.lifecycle_ledger as ledger
+    import hermes_agent.gateway.lifecycle_ledger as ledger
 
     started = threading.Event()
     released = threading.Event()
@@ -204,7 +204,7 @@ def test_deferred_scan_appends_a_second_record_and_returns_the_verdict(tmp_path:
 
 
 def test_deferred_scan_never_raises(tmp_path: Path, monkeypatch) -> None:
-    import gateway.lifecycle_ledger as ledger
+    import hermes_agent.gateway.lifecycle_ledger as ledger
 
     _write_sentinel(tmp_path)
     evidence = record_startup(home=tmp_path, defer_integrity_check=True)
@@ -224,7 +224,7 @@ def test_deferred_scan_never_raises(tmp_path: Path, monkeypatch) -> None:
 
 def _spy_on_scan(monkeypatch) -> list:
     """Record every scan while still running the real one."""
-    import gateway.lifecycle_ledger as ledger
+    import hermes_agent.gateway.lifecycle_ledger as ledger
 
     calls: list = []
     real = ledger.check_state_db_integrity
@@ -253,7 +253,7 @@ def test_deferred_scan_skips_a_rollback_journal_store(tmp_path: Path, monkeypatc
     calls = _spy_on_scan(monkeypatch)
     evidence = {"prior_pid": _DEAD_PID}
 
-    with caplog.at_level(logging.WARNING, logger="gateway.lifecycle_ledger"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.lifecycle_ledger"):
         verdict = run_deferred_integrity_check(evidence, home=tmp_path, deadline_s=60.0)
 
     assert not calls, "quick_check ran beside live traffic on a rollback-journal store"
@@ -309,7 +309,7 @@ def test_deferred_scan_of_an_absent_store_is_unchanged(tmp_path: Path) -> None:
 
 
 def test_deadline_bounds_the_scan(tmp_path: Path, monkeypatch) -> None:
-    import gateway.lifecycle_ledger as ledger
+    import hermes_agent.gateway.lifecycle_ledger as ledger
 
     _make_multi_page_state_db(tmp_path)
     monkeypatch.setattr(ledger, "_INTEGRITY_CHECK_PROGRESS_OPS", 1_000)
@@ -321,7 +321,7 @@ def test_deadline_bounds_the_scan(tmp_path: Path, monkeypatch) -> None:
 
 def test_no_deadline_keeps_the_historic_verdict_contract(tmp_path: Path, monkeypatch) -> None:
     """``deadline_s=None`` must be byte-for-byte today's behaviour: the handler never aborts."""
-    import gateway.lifecycle_ledger as ledger
+    import hermes_agent.gateway.lifecycle_ledger as ledger
 
     _make_multi_page_state_db(tmp_path)
     monkeypatch.setattr(ledger, "_INTEGRITY_CHECK_PROGRESS_OPS", 1_000)
@@ -354,7 +354,7 @@ def test_unclean_exit_check_renews_the_startup_lease_while_sqlite_progresses(
     a phase-owned lease from SQLite's progress handler for as long as the PRAGMA advances,
     through the real unclean-exit entry point.
     """
-    import gateway.lifecycle_ledger as ledger
+    import hermes_agent.gateway.lifecycle_ledger as ledger
 
     handle = _armed_handle(monkeypatch)
     # Renew on every handler tick so the renewal count is deterministic, not clock-bound.

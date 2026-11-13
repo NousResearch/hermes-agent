@@ -7,10 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome, SendResult
-from gateway.platforms.event import MessageEvent
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome, SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.run import GatewayRunner
 from hermes_constants import get_hermes_home
 
 
@@ -69,8 +69,8 @@ def profiles(tmp_path, monkeypatch):
 @pytest.mark.parametrize("setting", [None, True])
 async def test_recursive_three_turn_chain_then_human(profiles, monkeypatch, diagnostic_first, setting):
     """Real runner recursion and final-event handoff, not a copied mute snapshot."""
-    import gateway.run as gateway_run
-    from gateway.session import SessionSource
+    import hermes_agent.gateway.run as gateway_run
+    from hermes_agent.gateway.session import SessionSource
 
     root, _ = profiles
     monkeypatch.setattr(gateway_run, "_hermes_home", root)
@@ -78,7 +78,7 @@ async def test_recursive_three_turn_chain_then_human(profiles, monkeypatch, diag
         "display: {tool_progress: off, streaming: false" +
         ("}" if setting is None else f", suppress_warning_notifications: {str(setting).lower()}}}")
     )
-    from gateway.config import HomeChannel
+    from hermes_agent.gateway.config import HomeChannel
     config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(
         enabled=True, home_channel=HomeChannel(platform=Platform.TELEGRAM, chat_id="42", name="test"))})
     runner = GatewayRunner(config)
@@ -168,7 +168,7 @@ async def test_turn_error_preserves_diagnostic_bridge_and_failed_outcome(
     emitted = []
     monkeypatch.setattr(gateway_health.emitter, "get_emitter",
                         lambda: SimpleNamespace(emit=emitted.append))
-    logger = logging.getLogger("gateway.platforms.base")
+    logger = logging.getLogger("hermes_agent.gateway.platforms.base")
     bridge = gateway_health.GatewayDiagnosticLogHandler(profile="fixture", version="fixture")
     logger.addHandler(bridge)
     adapter = RecordingAdapter()

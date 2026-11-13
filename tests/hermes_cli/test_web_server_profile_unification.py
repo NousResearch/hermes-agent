@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 import hermes_yaml as yaml
-import gateway.status as _gw_status
+import hermes_agent.gateway.status as _gw_status
 import hermes_cli.config as _cfg_mod
 import hermes_cli.web_server_chat as _web_server_chat
 import hermes_cli.web_server_gateway as _web_server_gateway
@@ -440,14 +440,14 @@ class TestProfileScopedGateway:
             lambda payload, **k: 4242,
         )
         monkeypatch.setattr(web_server, "_GATEWAY_HEALTH_URL", None)
-        from gateway.config import Platform
+        from hermes_agent.gateway.config import Platform
 
         class _FakeGatewayConfig:
             def get_connected_platforms(self):
                 return [Platform.TELEGRAM]
 
         monkeypatch.setattr(
-            "gateway.config.load_gateway_config", lambda: _FakeGatewayConfig()
+            "hermes_agent.gateway.config.load_gateway_config", lambda: _FakeGatewayConfig()
         )
 
         resp = client.get("/api/status", params={"profile": "worker_beta"})

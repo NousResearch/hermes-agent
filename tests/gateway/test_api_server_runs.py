@@ -20,9 +20,9 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import PlatformConfig
-from gateway.platforms.api_server_runs import _RunStream
-from gateway.platforms.api_server import (
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.api_server_runs import _RunStream
+from hermes_agent.gateway.platforms.api_server import (
     APIServerAdapter,
     _api_request_profile,
     _approval_event_choices,
@@ -213,7 +213,7 @@ class TestStartRun:
     async def test_room_auth_is_validated_before_body_parse_or_work_reservation(
         self, auth_adapter
     ):
-        from gateway.platforms import api_server_runs
+        from hermes_agent.gateway.platforms import api_server_runs
 
         app = _create_runs_app(auth_adapter)
         handler = AsyncMock()
@@ -656,8 +656,8 @@ class TestRunEvents:
     @pytest.mark.asyncio
     async def test_failed_sse_prepare_releases_subscriber(self, adapter):
         """A failed HTTP prepare must not leave an orphan fanout queue subscribed forever."""
-        from gateway.platforms import api_server as api_server_module
-        from gateway.platforms import api_server_runs
+        from hermes_agent.gateway.platforms import api_server as api_server_module
+        from hermes_agent.gateway.platforms import api_server_runs
 
         run_id = "run_prepare_failure"
         stream = _RunStream()
@@ -691,7 +691,7 @@ class TestRunEvents:
         """/events is fanout, not a work queue: every subscriber sees the whole ordered stream,
         and one client's disconnect never tears down the stream another client still reads."""
 
-        from gateway.platforms.api_server_runs import _mark_run_event
+        from hermes_agent.gateway.platforms.api_server_runs import _mark_run_event
 
         async def frame(resp):
             # Skip SSE comment frames (``: open`` head flush, keepalives): only events count.
@@ -1220,7 +1220,7 @@ class TestRunLifecycleSweep:
                 adapter._run_streams_created[run_id] -= adapter._RUN_STREAM_TTL + 1
                 # Exercise one real sweeper iteration without waiting 60 seconds.
                 with patch(
-                    "gateway.platforms.api_server.asyncio.sleep",
+                    "hermes_agent.gateway.platforms.api_server.asyncio.sleep",
                     side_effect=[None, asyncio.CancelledError()],
                 ):
                     with pytest.raises(asyncio.CancelledError):
@@ -1481,7 +1481,7 @@ class TestRunsProviderAuthFailure:
         endpoint. _handle_runs()'s own _ProviderAuthResolutionError branch
         must give the same distinguished message instead of the generic
         except-Exception "run failed" text."""
-        from gateway.platforms.api_server import _ProviderAuthResolutionError
+        from hermes_agent.gateway.platforms.api_server import _ProviderAuthResolutionError
 
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:
@@ -1516,7 +1516,7 @@ class TestRunsProviderAuthFailure:
 
 
 def _use_idempotency_db(adapter, path):
-    from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+    from hermes_agent.gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 
     adapter._run_idempotency_store.close()
     adapter._run_idempotency_store = RunIdempotencyStore(str(path))
@@ -1671,7 +1671,7 @@ class TestRunIdempotency:
         assert calls == 1
 
     def test_restart_durability_and_terminal_semantics(self, tmp_path):
-        from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+        from hermes_agent.gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 
         path = tmp_path / "idem.db"
         for terminal in ("completed", "failed", "cancelled"):
@@ -1698,7 +1698,7 @@ class TestRunIdempotency:
             restarted.close()
 
     def test_tenant_isolation_and_retention(self, tmp_path):
-        from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+        from hermes_agent.gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 
         store = RunIdempotencyStore(str(tmp_path / "idem.db"))
         assert (
@@ -1714,10 +1714,10 @@ class TestRunIdempotency:
     def test_retention_never_releases_an_active_idempotency_reservation(
         self, tmp_path
     ):
-        from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+        from hermes_agent.gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 
         store = RunIdempotencyStore(str(tmp_path / "idem.db"))
-        with patch("gateway.platforms.api_server.time.time", return_value=100):
+        with patch("hermes_agent.gateway.platforms.api_server.time.time", return_value=100):
             assert store.reserve(
                 "tenant",
                 "active-key",
@@ -1735,7 +1735,7 @@ class TestRunIdempotency:
 
         after_retention = 100 + RunIdempotencyStore.RETENTION_SECONDS + 1
         with patch(
-            "gateway.platforms.api_server.time.time", return_value=after_retention
+            "hermes_agent.gateway.platforms.api_server.time.time", return_value=after_retention
         ):
             active, active_record = store.lookup(
                 "tenant", "active-key", "active-fingerprint"
@@ -1753,7 +1753,7 @@ class TestRunIdempotency:
     def test_room_terminal_receipt_survives_offline_home_until_grant_horizon(
         self, tmp_path, monkeypatch
     ):
-        from gateway.platforms import api_server_run_idempotency as idempotency
+        from hermes_agent.gateway.platforms import api_server_run_idempotency as idempotency
 
         now = [100.0]
         monkeypatch.setattr(idempotency.time, "time", lambda: now[0])
@@ -1932,7 +1932,7 @@ class TestRunIdempotency:
     async def test_dead_owner_nonterminal_status_becomes_interrupted(
         self, tmp_path
     ):
-        from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+        from hermes_agent.gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 
         path = tmp_path / "idem.db"
         scope = hashlib.sha256(

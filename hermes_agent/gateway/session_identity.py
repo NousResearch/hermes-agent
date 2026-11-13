@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.session import SessionSource
 
 logger = logging.getLogger(__name__)
 
@@ -68,8 +68,8 @@ class RoutingIdentity:
     @property
     def namespace(self) -> str:
         """``agent:<ns>`` prefix for this identity's session keys — byte-identical to
-        :func:`gateway.session._session_key_namespace` for every historical key."""
-        from gateway.session import _session_key_namespace
+        :func:`hermes_agent.gateway.session._session_key_namespace` for every historical key."""
+        from hermes_agent.gateway.session import _session_key_namespace
         return _session_key_namespace(self.session_key_profile)
 
     @property
@@ -78,7 +78,7 @@ class RoutingIdentity:
 
     @property
     def session_key_profile(self) -> Optional[str]:
-        """The ``profile=`` argument :func:`gateway.session.build_session_key` expects for this
+        """The ``profile=`` argument :func:`hermes_agent.gateway.session.build_session_key` expects for this
         identity: the runtime profile under multiplexing, else ``None`` (legacy namespace)."""
         return self.runtime_profile if self.multiplexed else None
 
@@ -112,7 +112,7 @@ def transport_profile_of(source: Any) -> Optional[str]:
     multiplexing, when nothing resolved the source, or when a messaging transport was only inferred:
     a restored row is trusted as the receiving bot, so the primary-profile guess must never be saved.
     A LOCAL chat has no bot; its inferred transport is the launch profile's authority (#139060), a fact."""
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     identity = identity_of(source)
     if identity is None or not identity.multiplexed:
         return None
@@ -216,7 +216,7 @@ def resolve_identity(
 
     Raises :class:`IdentityUnresolved` under multiplexing when the route is rejected.
     """
-    from gateway.profile_routing import ProfileRouteRejected
+    from hermes_agent.gateway.profile_routing import ProfileRouteRejected
     from hermes_constants import get_hermes_home, get_process_hermes_home
 
     multiplexed = bool(getattr(getattr(runner, "config", None), "multiplex_profiles", False))

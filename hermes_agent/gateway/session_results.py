@@ -97,7 +97,7 @@ def finish_result(db, *, epoch, row, response, outcome, result=None, prepared=No
     # A gateway-owned refusal (a message typed into a cron session) commits its explanation and
     # error card as the transcript's failed-turn boundary in this same write too: the admission
     # result is not history, so a reopened chat would otherwise show nothing about the refusal.
-    from gateway.session_settlement_recovery import gateway_refusal_boundary, owner_stop_notice
+    from hermes_agent.gateway.session_settlement_recovery import gateway_refusal_boundary, owner_stop_notice
     notice, display_metadata = owner_stop_notice(result, outcome, row), None
     if notice is None and (refusal := gateway_refusal_boundary(result, outcome)) is not None:
         notice, display_metadata = refusal

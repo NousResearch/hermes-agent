@@ -11,8 +11,8 @@ from unittest.mock import patch
 
 import pytest
 
-from gateway.config import Platform
-from gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 from tests.gateway.test_voice_command import _make_event, _make_runner
 
 

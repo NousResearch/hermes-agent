@@ -27,7 +27,7 @@ class _ClarifyEntry:
     event: threading.Event = field(default_factory=threading.Event)
     response: Optional[str] = None
     awaiting_text: bool = False  # set when user picked "Other" or clarify is open-ended
-    # Who may answer it from a chat (``gateway.approval_actor.clarify_refusal``).
+    # Who may answer it from a chat (``hermes_agent.gateway.approval_actor.clarify_refusal``).
     authority: Optional[dict] = None
 
 

@@ -27,7 +27,7 @@ from urllib.parse import urlparse
 
 from agent.i18n import t
 from agent.secret_scope import is_multiplex_active
-from gateway.platforms._shared import (
+from hermes_agent.gateway.platforms._shared import (
     get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
 )
 
@@ -122,21 +122,21 @@ def _load_google_modules() -> bool:
     GOOGLE_CHAT_AVAILABLE = True
     return True
 
-from gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.config import Platform, PlatformConfig
 
 # Register the dynamic enum member at import time so ``Platform.GOOGLE_CHAT``
 # resolves before any adapter instance exists.
 Platform("google_chat")
-from gateway.platforms.helpers import MessageDeduplicator, numbered_clarify_choices
-from gateway.platforms.base import (
+from hermes_agent.gateway.platforms.helpers import MessageDeduplicator, numbered_clarify_choices
+from hermes_agent.gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, SendResult, describe_proxy_error, env_proxy_for_redaction,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
     cache_video_from_bytes_async,
 )
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
 # Pinned to the legacy module path so operator log filters keep matching.
-logger = logging.getLogger("gateway.platforms.google_chat")
+logger = logging.getLogger("hermes_agent.gateway.platforms.google_chat")
 
 _SUBSCRIPTION_PATH_RE = re.compile(r"^projects/(?P<project>[^/]+)/subscriptions/(?P<sub>[^/]+)$")
 # chat.bot covers the bot's own messaging ops; it CANNOT call media.upload
@@ -388,7 +388,7 @@ def _create_kwargs(chat_id: str, body: dict[str, Any]) -> dict[str, Any]:
 
 class GoogleChatAdapter(BasePlatformAdapter):
     """Google Chat bot adapter: Pub/Sub pull (or HTTP callbacks) + Chat REST API. Env vars
-    are documented in gateway/config.py (GOOGLE_CHAT_PROJECT_ID, GOOGLE_CHAT_SUBSCRIPTION_NAME,
+    are documented in hermes_agent/gateway/config.py (GOOGLE_CHAT_PROJECT_ID, GOOGLE_CHAT_SUBSCRIPTION_NAME,
     GOOGLE_CHAT_SERVICE_ACCOUNT_JSON + optional allowlist/home-channel/flow-control keys)."""
 
     MAX_MESSAGE_LENGTH = _MAX_TEXT_LENGTH
@@ -870,7 +870,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 message.ack()
 
     async def dispatch_http_event(self, envelope: dict[str, Any]) -> dict[str, Any]:
-        from gateway.parked_route_refusal import ParkedRouteRefused, retryable_ingress
+        from hermes_agent.gateway.parked_route_refusal import ParkedRouteRefused, retryable_ingress
         prepared = self._prepare_inbound(envelope)
         if prepared is None:
             return {}

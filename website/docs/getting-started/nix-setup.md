@@ -992,7 +992,7 @@ nix flake check
 # Individual checks
 nix build .#checks.x86_64-linux.package-contents   # binaries exist + version
 nix build .#checks.x86_64-linux.entry-points-sync  # pyproject.toml ↔ Nix package sync
-nix build .#checks.x86_64-linux.cli-commands        # gateway/config subcommands
+nix build .#checks.x86_64-linux.cli-commands        # hermes_agent/gateway/config subcommands
 nix build .#checks.x86_64-linux.managed-guard       # HERMES_MANAGED blocks mutation
 nix build .#checks.x86_64-linux.bundled-skills      # skills present in package
 nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves user keys

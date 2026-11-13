@@ -2,7 +2,7 @@
 
 A background child takes a lease at dispatch (``tools.async_delegation``). Its prompts go through the
 ``background_notify`` the gateway turn runner published for the chat
-(``gateway/run_turn_runner_approval_transport.py``), before and after the parent turn ends, so ending
+(``hermes_agent/gateway/run_turn_runner_approval_transport.py``), before and after the parent turn ends, so ending
 the parent never withdraws or strands them (#133514). A surface that publishes none keeps main's
 behaviour while a turn runs and fails closed once none does, instead of parking an approval nobody can
 see.

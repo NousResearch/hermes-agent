@@ -44,7 +44,7 @@ def test_served_profile_reads_its_own_sessions_settings(two_homes, monkeypatch):
 
 def test_per_turn_sessions_bridge_skips_secondary_scope(two_homes, monkeypatch):
     _root, alpha = two_homes
-    from gateway import run as gw_run
+    from hermes_agent.gateway import run as gw_run
     monkeypatch.delenv("HERMES_SEARCH_SLOW_MS", raising=False)
     ss.set_multiplex_active(True)
     with gw_run._profile_runtime_scope(alpha):
@@ -54,7 +54,7 @@ def test_per_turn_sessions_bridge_skips_secondary_scope(two_homes, monkeypatch):
 
 def test_resolve_proxy_url_reads_routed_profile_scope(two_homes, monkeypatch):
     _root, _alpha = two_homes
-    from gateway.platforms.base import resolve_proxy_url
+    from hermes_agent.gateway.platforms.base import resolve_proxy_url
     monkeypatch.setenv("TELEGRAM_PROXY", "socks5://default-proxy:1080")  # launch profile's .env
     ss.set_multiplex_active(True)
     token = ss.set_secret_scope({"TELEGRAM_PROXY": "socks5://alpha-proxy:1080"})
@@ -76,7 +76,7 @@ def test_stale_served_turn_never_recreates_archived_profile(two_homes):
     """#94590: a multiplexer still holding an archived profile's route must not re-scaffold it."""
     import shutil
     _root, alpha = two_homes
-    from gateway import run as gw_run
+    from hermes_agent.gateway import run as gw_run
     shutil.rmtree(alpha)
     ss.set_multiplex_active(True)
     with gw_run._profile_runtime_scope(alpha):

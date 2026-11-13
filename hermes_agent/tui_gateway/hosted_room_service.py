@@ -14,14 +14,14 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-from gateway import hosted_room_discussion as discussion
-from gateway import hosted_room_driver as driver
-from gateway import hosted_room_links
-from gateway import hosted_rooms
-from gateway import hosted_room_router as router
-from gateway.hosted_room_context import ROUTING_MODES, room_context
-from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint, PolicySnapshot
-from gateway.hosted_room_peer import (
+from hermes_agent.gateway import hosted_room_discussion as discussion
+from hermes_agent.gateway import hosted_room_driver as driver
+from hermes_agent.gateway import hosted_room_links
+from hermes_agent.gateway import hosted_rooms
+from hermes_agent.gateway import hosted_room_router as router
+from hermes_agent.gateway.hosted_room_context import ROUTING_MODES, room_context
+from hermes_agent.gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint, PolicySnapshot
+from hermes_agent.gateway.hosted_room_peer import (
     GatewayRoomCatalog, HostedMemberDispatch, PROTOCOL_VERSION, room_grant_hard_expiry,
     room_grant_needs_dispatch_refresh)
 from hermes_agent.tui_gateway import hosted_room_prepare_stall as prepare_stall
@@ -929,7 +929,7 @@ class HostedRoomService:
         return room
 
     def send(self, *, room_id: str, event_id: str, payload: Any) -> dict[str, Any]:
-        from gateway.session_hosted_attachments import append_user_event
+        from hermes_agent.gateway.session_hosted_attachments import append_user_event
         try:
             normalized = discussion.validate_user_payload(payload)
             gateway_id, epoch = self._owned_authority(room_id)

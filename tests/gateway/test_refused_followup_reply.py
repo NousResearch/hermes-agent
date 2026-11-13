@@ -6,13 +6,13 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_refused_followups_are_each_told_they_were_not_answered(tmp_path, monkeypatch):
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.platforms.event import MessageEvent
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import SessionAuthority, initialize_session_authority
-    from gateway.session_contract import SessionRef
-    from gateway.session_ingress import admit_message
-    from gateway.session_ingress_context import native_callback
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import SessionAuthority, initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_ingress import admit_message
+    from hermes_agent.gateway.session_ingress_context import native_callback
     from hermes_constants import get_hermes_home
     from hermes_agent.hermes_state_runtime import list_session_admissions
     from plugins.platforms.discord.adapter import DiscordAdapter

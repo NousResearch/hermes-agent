@@ -12,7 +12,7 @@ import pytest
 
 pytest.importorskip("aiohttp")
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.feishu.adapter import _FEISHU_WEBHOOK_RATE_LIMIT_MAX, FeishuAdapter
 
 _SOURCE_IP = "203.0.113.7"

@@ -58,7 +58,7 @@ def _repo(tmp_path, name):
 def _enable(*, gateway=True, **extra):
     """``delegation.auto_resume`` on; *gateway*: this process owns the profile the way a gateway does (the only
     process whose watcher resumes its children, so the only one whose stop notices promise a resume)."""
-    from gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.runtime_ownership import process_ownership
     from hermes_constants import get_hermes_home
     (get_hermes_home() / "config.yaml").write_text(json.dumps(
         {"delegation": {"auto_resume": True, "worktree_isolation": True, **extra}}))

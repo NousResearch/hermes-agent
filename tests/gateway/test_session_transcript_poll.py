@@ -46,7 +46,7 @@ class Reader:
 
 @pytest.mark.asyncio
 async def test_a_poller_gets_appends_as_new_rows_and_resets_on_every_other_change(tmp_path, monkeypatch):
-    from gateway.session_local_recovery import transcript_target
+    from hermes_agent.gateway.session_local_recovery import transcript_target
     from tests.gateway.test_session_mutation_model_busy import _owner
 
     async def handle(event):
@@ -104,7 +104,7 @@ async def test_a_poller_gets_appends_as_new_rows_and_resets_on_every_other_chang
 async def test_rows_written_and_compacted_between_two_polls_reset_the_poller(tmp_path, monkeypatch):
     """The rows the cursor never covered were appended and compacted before the next poll: the
     compaction is a non-append change, so the poll starts over instead of passing their copies as new."""
-    from gateway.session_local_recovery import transcript_target
+    from hermes_agent.gateway.session_local_recovery import transcript_target
     from tests.gateway.test_session_mutation_model_busy import _owner
 
     async def handle(event):
@@ -130,7 +130,7 @@ async def test_rows_written_and_compacted_between_two_polls_reset_the_poller(tmp
 
 @pytest.mark.asyncio
 async def test_a_rotation_between_polls_resets_the_poller_onto_the_new_segment(tmp_path, monkeypatch):
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_authority import initialize_session_authority
 
     store, db, runner = _legacy_owner(tmp_path, monkeypatch)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='owner')
@@ -163,7 +163,7 @@ async def test_a_rotation_between_polls_resets_the_poller_onto_the_new_segment(t
 async def test_a_poller_matches_a_fresh_read_after_any_sequence_of_changes(tmp_path, monkeypatch):
     """Seeded random appends, compactions, rewinds and reactions between polls: after every poll the
     reader holds exactly the rows a fresh read shows (nothing missed, nothing twice)."""
-    from gateway.session_local_recovery import transcript_target
+    from hermes_agent.gateway.session_local_recovery import transcript_target
     from tests.gateway.test_session_mutation_model_busy import _owner
 
     async def handle(event):

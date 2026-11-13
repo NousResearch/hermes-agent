@@ -108,7 +108,7 @@ def test_an_importable_dependency_is_not_reported(home, monkeypatch):
 
 
 def _gateway_answers(monkeypatch, activations):
-    monkeypatch.setattr("gateway.control_socket.reload_gateway_plugins",
+    monkeypatch.setattr("hermes_agent.gateway.control_socket.reload_gateway_plugins",
                         lambda target, *, profile_home=None, timeout=30.0:
                         {"reloaded": True, "plugins": ["depprobe"], "activations": activations})
     monkeypatch.setattr(plugins_activation, "notify_serve_backend", lambda name, home: None)
@@ -185,7 +185,7 @@ def test_a_plugin_importing_its_new_dependency_at_load_still_asks_for_a_restart(
     """The common shape: ``import <dep>`` at module top. In a gateway booted before the install the
     load fails, so the plugin has no activation summary; the reload answer must still carry what
     blocked it, or enable reports "nothing of this plugin needs a session or restart"."""
-    from gateway.run_plugin_rewire import reload_plugins_verb
+    from hermes_agent.gateway.run_plugin_rewire import reload_plugins_verb
     from hermes_cli import plugins
     from hermes_agent.tui_gateway.contracts.tools_mcp_plugins import PluginActivation
 
@@ -199,7 +199,7 @@ def test_a_plugin_importing_its_new_dependency_at_load_still_asks_for_a_restart(
     finally:
         loop.call_soon_threadsafe(loop.stop)
         plugins._reset_plugin_managers_for_tests()
-    monkeypatch.setattr("gateway.control_socket.reload_gateway_plugins",
+    monkeypatch.setattr("hermes_agent.gateway.control_socket.reload_gateway_plugins",
                         lambda target, *, profile_home=None, timeout=30.0: answer)
     monkeypatch.setattr(plugins_activation, "notify_serve_backend", lambda name, home: None)
 

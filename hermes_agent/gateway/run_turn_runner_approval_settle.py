@@ -16,8 +16,8 @@ import re
 from typing import Any, Callable, Optional
 
 from agent.i18n import t
-from gateway.platforms.base import fit_prefix
-from gateway.platforms.base_exec_approval import (
+from hermes_agent.gateway.platforms.base import fit_prefix
+from hermes_agent.gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_default_reason_text, ea_reason_label_text, format_approval_timed_out_notice)
 
 logger = logging.getLogger(__name__)
@@ -62,9 +62,9 @@ def register_timeout_notice(
 
 async def _post_timeout_notice(
         ctx, command: str, card_message_id: Optional[str], timeout_s: int, reason: str = "") -> None:
-    from gateway.run import _interim_metadata
+    from hermes_agent.gateway.run import _interim_metadata
 
-    from gateway.bot_peer_notices import automatic_notices_allowed
+    from hermes_agent.gateway.bot_peer_notices import automatic_notices_allowed
 
     adapter = ctx._status_adapter
     if not automatic_notices_allowed(getattr(ctx, "source", None)):

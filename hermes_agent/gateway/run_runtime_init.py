@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import logging
 
-logger = logging.getLogger("gateway.run")  # log-record parity with gateway/run.py
+logger = logging.getLogger("hermes_agent.gateway.run")  # log-record parity with hermes_agent/gateway/run.py
 
 class GatewayRuntimeInitMixin:
     def _init_runtime_settings(self) -> None:
         """Load ephemeral per-call config (prefill, reasoning, busy modes, timeouts, routing)."""
-        from gateway.run import (Dict, Optional, _load_gateway_config)
+        from hermes_agent.gateway.run import (Dict, Optional, _load_gateway_config)
         self._prefill_messages = self._load_prefill_messages()
         self._reasoning_config = self._load_reasoning_config()
         self._service_tier = self._load_service_tier()
@@ -36,7 +36,7 @@ class GatewayRuntimeInitMixin:
 
     def _init_session_store(self) -> None:
         """Build the SessionStore (with process-registry reset guard), its async facade and the router."""
-        from gateway.run import (AsyncSessionStore, DeliveryRouter, SessionStore)
+        from hermes_agent.gateway.run import (AsyncSessionStore, DeliveryRouter, SessionStore)
         from tools.process_registry import process_registry
         self.session_store = SessionStore(
             self.config.sessions_dir, self.config,
@@ -48,7 +48,7 @@ class GatewayRuntimeInitMixin:
 
     def _init_lifecycle_state(self) -> None:
         """Initialise run/exit/restart flags, per-session state, and completion-delivery bookkeeping."""
-        from gateway.run import (Dict, List, MessageEvent, Optional, OrderedDict, Platform, SessionSource, SessionState, SessionTurnLeaseRegistry, asyncio, concurrent, threading, time)
+        from hermes_agent.gateway.run import (Dict, List, MessageEvent, Optional, OrderedDict, Platform, SessionSource, SessionState, SessionTurnLeaseRegistry, asyncio, concurrent, threading, time)
         self._running = self._exit_cleanly = self._exit_with_failure = self._draining = False
         self._gateway_loop: Optional[asyncio.AbstractEventLoop] = None
         self._shutdown_event = asyncio.Event()
@@ -78,7 +78,7 @@ class GatewayRuntimeInitMixin:
         self._housekeeping_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
         # Set on gateway stop so the recreate-on-shutdown path can't resurrect the pool.
         self._executor_closing = False
-        # ALL per-session state lives here (gateway/session_state.py); use _session_state / _peek_session_state.
+        # ALL per-session state lives here (hermes_agent/gateway/session_state.py); use _session_state / _peek_session_state.
         self._sessions: Dict[str, SessionState] = {}
         # Per-SESSION_ID turn lease: serializes [load history → run → flush] when two ROUTING KEYS resolve
         # to one session_id (switch_session's many-to-one mapping), which routing-key guards cannot see.
@@ -87,7 +87,7 @@ class GatewayRuntimeInitMixin:
         # Held turn-lease tokens live on SessionState.turn.lease_tokens keyed by run generation, so a
         # stale unwind can never free a newer turn's lease (#28686). Runner-level queued interrupt text lives on
         # SessionState.persistent.pending_command_text (NOTE: distinct from the adapter-level
-        # _pending_messages Dict[str, MessageEvent] in gateway/platforms/base.py, which shares the legacy
+        # _pending_messages Dict[str, MessageEvent] in hermes_agent/gateway/platforms/base.py, which shares the legacy
         # name). Last successfully-resolved (non-empty) model, keyed by session. Used as a fallback when a
         # fresh config read transiently returns an empty model (e.g. an mtime-keyed config-cache miss during
         # a post-interrupt recovery turn). Without this, the agent is built with model="" and every API call
@@ -101,7 +101,7 @@ class GatewayRuntimeInitMixin:
         # one-at-a-time after each run's drain. Cleared on /new and /reset.  /model and other mid-session
         # operations preserve the queue. Lives on SessionState.conversation.queued_events; native image
         # paths, busy-ack debounce timestamps and the monotonic run-generation counter (#28686, NEVER reset)
-        # live on SessionState too. See gateway.session_stall.
+        # live on SessionState too. See hermes_agent.gateway.session_stall.
         self._session_stall_notified: Dict[str, bool] = {}
         # Consecutive "persisted transcript lagged live cached history" turns per session key; see
         # run_turn_runner._load_turn_history (#114266). Cleared on /new.
@@ -135,7 +135,7 @@ class GatewayRuntimeInitMixin:
 
     def _init_runtime_caches(self) -> None:
         """Agent cache, profile identity, Teams runtime, failed-platform tracking, slash-confirm counter."""
-        from gateway.run import (Any, Dict, Optional, OrderedDict, Platform, threading)
+        from hermes_agent.gateway.run import (Any, Dict, Optional, OrderedDict, Platform, threading)
         # AIAgent per session preserves prompt caching (fresh agent per message ~10x cost on Anthropic).
         # Value: (AIAgent, config_signature); LRU cap in _enforce_agent_cache_cap, TTL in expiry watcher.
         self._agent_cache: OrderedDict[str, tuple] = OrderedDict()
@@ -159,12 +159,12 @@ class GatewayRuntimeInitMixin:
         # Slash-confirm state lives in tools.slash_confirm (module-level) so adapters resolve callbacks
         # without a runner backref; a counter keeps confirm_ids compact (64-byte callback_data caps)
         # and its random start keeps a pre-restart card from answering a new confirmation.
-        from gateway.platforms.helpers import prompt_id_counter
+        from hermes_agent.gateway.platforms.helpers import prompt_id_counter
         self._slash_confirm_counter = prompt_id_counter()
 
     def _init_session_db(self) -> None:
         """Open the session DB for the active scope and run opportunistic state.db / checkpoint maintenance."""
-        from gateway.run import (Any, Dict, Path, _SESSION_DB_UNPINNED, _housekeeping_chore, _housekeeping_state_db_maintenance, _launch_sessions_dir, threading)
+        from hermes_agent.gateway.run import (Any, Dict, Path, _SESSION_DB_UNPINNED, _housekeeping_chore, _housekeeping_state_db_maintenance, _launch_sessions_dir, threading)
         # Session DB is a property caching one AsyncSessionDB per path (a handle bound here would pin the
         # root home under multiplex); priming here keeps startup diagnostics at init.
         # Initialize session database for session_search tool support. Same frozen-handle class of bug as
@@ -174,7 +174,7 @@ class GatewayRuntimeInitMixin:
         self._session_db_pinned: Any = _SESSION_DB_UNPINNED
         self._session_db_handles: Dict[Path, Any] = {}
         self._session_db_handles_lock = threading.Lock()
-        from gateway.session_db_recovery import RecoverableHandleCache
+        from hermes_agent.gateway.session_db_recovery import RecoverableHandleCache
         self._session_db_handle_cache = RecoverableHandleCache(
             handles=self._session_db_handles, lock=self._session_db_handles_lock)
         try:
@@ -195,7 +195,7 @@ class GatewayRuntimeInitMixin:
         # against the construction-time launch home only, so a multiplexed secondary profile's
         # state.db was never pruned or vacuumed by anybody, and the launch profile's
         # retention_days/auto_prune decided whether it happened at all.
-        from gateway.run_profile_reconcile import _for_each_served_profile
+        from hermes_agent.gateway.run_profile_reconcile import _for_each_served_profile
         _launch_sessions = _launch_sessions_dir(self.config)  # resolved OUTSIDE any profile scope
         _housekeeping_chore(
             "state.db startup maintenance",
@@ -208,11 +208,11 @@ class GatewayRuntimeInitMixin:
 
     def _init_registries_and_clocks(self) -> None:
         """Pairing stores, hook registry, voice modes, background-task set, liveness and idle clocks."""
-        from gateway.run import (Dict, List, Optional, asyncio, time)
+        from hermes_agent.gateway.run import (Dict, List, Optional, asyncio, time)
         # ``pairing_store``: global/default store (CLI, callers without profile context); ``pairing_stores``:
         # per-profile map ``authz_mixin._is_user_authorized`` routes through (one whitelist per profile).
-        from gateway.pairing import PairingStore
-        from gateway.hooks import ProfileHookRegistries
+        from hermes_agent.gateway.pairing import PairingStore
+        from hermes_agent.gateway.hooks import ProfileHookRegistries
         self.pairing_store = PairingStore()
         self.pairing_stores: Dict[str, PairingStore] = {}
         # One HookRegistry per served profile home, resolved from the active scope at emit time.

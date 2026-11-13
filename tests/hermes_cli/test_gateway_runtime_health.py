@@ -17,10 +17,10 @@ def _stale_lines(lines):
 
 def test_runtime_health_lines_flags_stale_running_with_dead_pid(monkeypatch):
     """Stale updated_at + dead PID + 'running' -> contradiction line, no draining line."""
-    from gateway import status as status_mod
+    from hermes_agent.gateway import status as status_mod
 
     monkeypatch.setattr(
-        "gateway.status.read_runtime_status",
+        "hermes_agent.gateway.status.read_runtime_status",
         lambda: {
             "gateway_state": "running",
             "pid": 4242,
@@ -45,7 +45,7 @@ def test_runtime_health_lines_flags_stale_running_with_dead_pid(monkeypatch):
 
 def test_runtime_health_lines_include_fatal_platform_and_startup_reason(monkeypatch):
     monkeypatch.setattr(
-        "gateway.status.read_runtime_status",
+        "hermes_agent.gateway.status.read_runtime_status",
         lambda: {
             "gateway_state": "startup_failed",
             "exit_reason": "telegram conflict",
@@ -68,11 +68,11 @@ def test_runtime_health_lines_flag_stale_heartbeat_with_live_pid(monkeypatch):
     """'running' + updated_at past the TTL + PID ALIVE is the reporter's 'not a crash' case
     (#113372): housekeeping stopped stamping the heartbeat while the file still says running.
     Render it as a heartbeat warning naming the age and the live PID; a fresh stamp stays silent."""
-    from gateway import status as status_mod
+    from hermes_agent.gateway import status as status_mod
 
     record = {"gateway_state": "running", "pid": 4242, "start_time": 111,
               "updated_at": _iso_age(900), "active_agents": 0, "platforms": {}}
-    monkeypatch.setattr("gateway.status.read_runtime_status", lambda: record)
+    monkeypatch.setattr("hermes_agent.gateway.status.read_runtime_status", lambda: record)
     monkeypatch.setattr(status_mod, "_pid_exists", lambda pid: True)
     monkeypatch.setattr(status_mod, "_get_process_start_time", lambda pid: 111)
 
@@ -91,7 +91,7 @@ def test_runtime_health_lines_render_watchdog_degraded_exit(monkeypatch):
     ``degraded`` (retryable platforms queued, no exit_reason) stays silent (#113372)."""
     record = {"gateway_state": "degraded", "exit_reason": "loop_liveness_watchdog",
               "pid": 4242, "updated_at": _iso_age(30), "platforms": {}}
-    monkeypatch.setattr("gateway.status.read_runtime_status", lambda: record)
+    monkeypatch.setattr("hermes_agent.gateway.status.read_runtime_status", lambda: record)
 
     degraded = [ln for ln in _runtime_health_lines() if ln.startswith("⚠ Gateway exited degraded:")]
     assert len(degraded) == 1
@@ -102,7 +102,7 @@ def test_runtime_health_lines_render_watchdog_degraded_exit(monkeypatch):
 
 
 def test_runtime_status_running_pid_validates_live_gateway_record(monkeypatch):
-    from gateway import status as status_mod
+    from hermes_agent.gateway import status as status_mod
 
     runtime = {
         "pid": 12345,

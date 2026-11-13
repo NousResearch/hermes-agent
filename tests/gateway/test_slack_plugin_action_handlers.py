@@ -61,7 +61,7 @@ _ensure_slack_mock()
 import plugins.platforms.slack.adapter as _slack_mod
 _slack_mod.SLACK_AVAILABLE = True
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.slack.adapter import SlackAdapter
 
 from hermes_cli.plugins import (
@@ -186,8 +186,8 @@ def _connect_with_recording_app(
          patch.object(_slack_mod, "AsyncWebClient", return_value=mock_web_client), \
          patch.object(_slack_mod, "AsyncSocketModeHandler", return_value=MagicMock()), \
          patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}), \
-         patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
-         patch("gateway.status_scoped_locks.release_scoped_lock"), \
+         patch("hermes_agent.gateway.status.acquire_scoped_lock", return_value=(True, None)), \
+         patch("hermes_agent.gateway.status_scoped_locks.release_scoped_lock"), \
          patch("hermes_cli.plugins.get_plugin_manager", return_value=fake_mgr), \
          patch("asyncio.create_task"):
         result = asyncio.run(adapter.connect())
@@ -252,8 +252,8 @@ class TestSlackAdapterPluginActionWiring:
              patch.object(_slack_mod, "AsyncWebClient", return_value=mock_web_client), \
              patch.object(_slack_mod, "AsyncSocketModeHandler", return_value=MagicMock()), \
              patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}), \
-             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
-             patch("gateway.status_scoped_locks.release_scoped_lock"), \
+             patch("hermes_agent.gateway.status.acquire_scoped_lock", return_value=(True, None)), \
+             patch("hermes_agent.gateway.status_scoped_locks.release_scoped_lock"), \
              patch("hermes_cli.plugins.get_plugin_manager",
                    side_effect=RuntimeError("plugins broken")), \
              patch("asyncio.create_task"):

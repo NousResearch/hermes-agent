@@ -42,8 +42,8 @@ def settle_recovered_unattended(db, epoch) -> int:
     """Boot recovery, right after ``recover_session_inputs`` fenced lost turns ``unknown`` and before
     any FIFO is scheduled: settle every unattended one. Synchronous; runs off the owner loop."""
     from agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE
-    from gateway.session_ingress_media import release_admission_media
-    from gateway.session_results import close_discarded_turn
+    from hermes_agent.gateway.session_ingress_media import release_admission_media
+    from hermes_agent.gateway.session_results import close_discarded_turn
     from hermes_agent.hermes_state_runtime import RuntimeStoreError, _row, resolve_unknown_session_input
     with db._read_ctx() as conn:
         rows = [_row(r) for r in conn.execute(

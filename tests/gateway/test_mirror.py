@@ -1,11 +1,11 @@
-"""Tests for gateway/mirror.py — session mirroring."""
+"""Tests for hermes_agent/gateway/mirror.py — session mirroring."""
 
 import importlib
 import json
 from unittest.mock import patch, MagicMock
 
-import gateway.mirror as mirror_mod
-from gateway.mirror import (
+import hermes_agent.gateway.mirror as mirror_mod
+from hermes_agent.gateway.mirror import (
     mirror_to_session,
     _find_session_id,
 )
@@ -96,7 +96,7 @@ class TestMirrorToSession:
 
         with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
              patch.object(mirror_mod, "_SESSIONS_INDEX", index_file), \
-             patch("gateway.mirror._append_to_sqlite") as mock_sqlite:
+             patch("hermes_agent.gateway.mirror._append_to_sqlite") as mock_sqlite:
             result = mirror_to_session(
                 "telegram",
                 "-1001",
@@ -145,7 +145,7 @@ class TestMirrorToSession:
 class TestAppendToSqlite:
     def test_connection_is_released_after_use(self, tmp_path):
         """Verify _append_to_sqlite returns the shared SessionDB reference."""
-        from gateway.mirror import _append_to_sqlite
+        from hermes_agent.gateway.mirror import _append_to_sqlite
         mock_db = MagicMock()
         released = []
 

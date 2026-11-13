@@ -97,8 +97,8 @@ def _whatsapp_allowed_users(wa_mode: str, get_env_value, save_env_value) -> None
 def _whatsapp_warn_customer_facing(wa_mode: str, get_env_value) -> None:
     """A bot number open to anyone with no home channel: every new session's first message gets the
     /sethome nudge and every sender sees tool progress, so point the operator at the hardening recipe."""
-    from gateway.config import Platform, load_gateway_config
-    from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin as _wa
+    from hermes_agent.gateway.config import Platform, load_gateway_config
+    from hermes_agent.gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin as _wa
     from utils import is_truthy_value
 
     if wa_mode != "bot":
@@ -209,7 +209,7 @@ def cmd_whatsapp(args):
     _whatsapp_allowed_users(wa_mode, get_env_value, save_env_value)
     _whatsapp_warn_customer_facing(wa_mode, get_env_value)
 
-    from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
+    from hermes_agent.gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
     bridge_dir = resolve_whatsapp_bridge_dir()
     bridge_script = bridge_dir / "bridge.js"
     if not bridge_script.exists():

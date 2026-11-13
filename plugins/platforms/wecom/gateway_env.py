@@ -1,7 +1,7 @@
 """WeCom (bot + callback sibling) env -> gateway config bridge (``PlatformEntry.env_overrides``)."""
 
-from gateway.config import Platform
-from gateway.platform_env import EnvCred, int_or
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platform_env import EnvCred, int_or
 
 ENV_ENABLE_CREDENTIALS = ("WECOM_BOT_ID", "WECOM_SECRET")
 ENV_OVERRIDES = (

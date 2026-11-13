@@ -15,10 +15,10 @@ from authority_controls_peer import ModelPeer
 
 async def probe(peer, target, kind):
     import websockets
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import SessionRef
-    from gateway.run_api import start_gateway_api, stop_gateway_api
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.run_api import start_gateway_api, stop_gateway_api
     from hermes_cli import web_server
     from run_agent import AIAgent
     from tools.approval import resolve_gateway_approval
@@ -81,8 +81,8 @@ async def probe(peer, target, kind):
             assert not runner._is_user_authorized_for_source(replace(source, profile='foreign'))
         finally:
             os.environ.pop('GATEWAY_ALLOW_ALL_USERS')
-        from gateway.session_local import create_local_session
-        from gateway.session_contract import SessionActor
+        from hermes_agent.gateway.session_local import create_local_session
+        from hermes_agent.gateway.session_contract import SessionActor
         from hermes_agent.hermes_state_runtime import RuntimeStoreError
         for actor, reason in ((SessionActor('read-only', 'fixture', frozenset({'session:read'}), 'readonly'),
                                'permission_denied'),

@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import host_attach, host_rendezvous as hr, status
+from hermes_agent.gateway import host_attach, host_rendezvous as hr, status
 from hermes_cli import dashboard_procs, gateway as gw
 
 HOST_PID = 4242

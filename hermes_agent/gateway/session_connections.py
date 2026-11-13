@@ -61,8 +61,8 @@ def _view(operation):
 
 
 async def _handle(connection, method, _ref, params):
-    from gateway.session_busy_controls import authorize
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_busy_controls import authorize
+    from hermes_agent.gateway.session_contract import SessionRef
     from tools.connectors import live
     from hermes_agent.tui_gateway import connector_refusals as refusals
     request, answer = _request(method, params)
@@ -143,7 +143,7 @@ def _session_toolsets(authority, ref):
     if agent is not None:
         return getattr(agent, 'enabled_toolsets', None), getattr(agent, 'disabled_toolsets', None)
     from agent.skill_utils import parse_config_string_list
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_policy import policy_for_source
     from toolsets import session_disabled_toolsets
     policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
     config = policy.config(authority, secrets=False) if policy is not None else {}
@@ -156,8 +156,8 @@ def _session_toolsets(authority, ref):
 
 def _session_context(authority, ref):
     """The session vars a turn of this session binds (``GatewayRunner._session_env_scope``), so a re-mint carries the turn's caller identity and session key."""
-    from gateway.session import SessionContext
-    from gateway.session_ancillary import physical_target
+    from hermes_agent.gateway.session import SessionContext
+    from hermes_agent.gateway.session_ancillary import physical_target
     live = authority.sessions[ref.session_id]
     context = SessionContext(source=live.source, connected_platforms=[], home_channels={},
                              session_key=live.route, session_id=physical_target(authority, ref))

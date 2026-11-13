@@ -6,10 +6,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 from agent.status_output import StatusOutputMixin
-from gateway.run_turn_runner import TurnRunner
-from gateway.turn_context import TurnContext
-from gateway.session import SessionSource
-from gateway.config import Platform
+from hermes_agent.gateway.run_turn_runner import TurnRunner
+from hermes_agent.gateway.turn_context import TurnContext
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
 from tests.gateway.test_slack_native_streaming import _make_adapter, _open_streams, META
 
 

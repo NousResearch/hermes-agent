@@ -22,11 +22,11 @@ def _no_delegations():
 
 
 async def _owner(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.run_shutdown_session_end import GatewaySessionEndMixin
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.run_shutdown_session_end import GatewaySessionEndMixin
+    from hermes_agent.gateway.session_authority import initialize_session_authority
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
@@ -58,7 +58,7 @@ async def _call(conn, method, **params):
 
 
 async def _open(db, authority, tmp_path, session_id):
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     db.create_session(session_id, source='cli', model='fake-model', cwd=str(tmp_path))
     db.append_message(session_id, 'user', 'q')
     viewer = AuthorityConnection(authority, SimpleNamespace(write=lambda frame: None), {
@@ -118,7 +118,7 @@ async def test_viewer_reattaching_during_detach_cleanup_keeps_delegations(tmp_pa
     meanwhile keeps the session's work: the viewer check sits right before the interruption."""
     import asyncio
     import threading
-    from gateway import session_local_mcp
+    from hermes_agent.gateway import session_local_mcp
     db, authority = await _owner(tmp_path, monkeypatch)
     viewer, subscription = await _open(db, authority, tmp_path, 'chat')
     stopped = []
@@ -172,7 +172,7 @@ async def test_a_closed_sessions_refusal_goes_with_its_live_state(tmp_path, monk
     """A session closed and never resumed keeps refusing its still-running turn's dispatches until
     the owner retires its live state (delete, prune); then the refusal goes too, so closed sessions
     don't accumulate refusals. Another closed session keeps its own."""
-    from gateway.session_mutations import retire_live_sessions
+    from hermes_agent.gateway.session_mutations import retire_live_sessions
     db, authority = await _owner(tmp_path, monkeypatch)
     viewer, subscription = await _open(db, authority, tmp_path, 'chat')
     other, other_subscription = await _open(db, authority, tmp_path, 'other')
@@ -193,11 +193,11 @@ async def test_a_closed_sessions_refusal_goes_with_its_live_state(tmp_path, monk
 # --- completions for a local session with no viewer --------------------------------------------
 
 async def _local(tmp_path, monkeypatch):
-    from gateway.config import GatewayConfig
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import SessionAuthority, initialize_session_authority
-    from gateway.session_contract import SessionActor
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import SessionAuthority, initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_local import create_local_session
     from hermes_agent.hermes_state import AsyncSessionDB, SessionDB
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
@@ -220,7 +220,7 @@ _CARDS = {'completion': 'process_complete', 'async_delegation': 'async_delegatio
 
 async def _deliver(runner, authority, ref, producer):
     """What ``_inject_watch_notification`` admits for a finished background process or delegation."""
-    from gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.platforms.event import MessageEvent
     identity = json.dumps(producer, separators=(',', ':'))
     live = authority.sessions[ref.session_id]
     entry = runner.session_store.lookup_by_session_key(live.route)
@@ -303,11 +303,11 @@ async def test_viewed_local_completion_still_starts_its_turn(tmp_path, monkeypat
 @pytest.mark.asyncio
 async def test_messaging_completion_still_starts_its_turn(tmp_path, monkeypatch):
     """A messaging chat has no viewers at all: its completion keeps admitting a turn, as on main."""
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.platforms.event import MessageEvent
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import SessionAuthority, initialize_session_authority
-    from gateway.session_ingress_context import native_callback
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import SessionAuthority, initialize_session_authority
+    from hermes_agent.gateway.session_ingress_context import native_callback
     from hermes_constants import get_hermes_home
     from hermes_agent.hermes_state_runtime import list_session_admissions
     from plugins.platforms.discord.adapter import DiscordAdapter
@@ -330,7 +330,7 @@ async def test_messaging_completion_still_starts_its_turn(tmp_path, monkeypatch)
     rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
     assert [r['principal_id'].startswith('automation:') for r in rows] == [False, True], rows
     seen = _record_turns(runner)
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_contract import SessionRef
     await authority._drain(SessionRef(authority.profile_id, sid))
     assert seen[0] == 'human' and len(seen) == 2 and 'deleg_chat' in seen[1], 'the completion ran as a turn'
     rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
@@ -341,7 +341,7 @@ async def test_messaging_completion_still_starts_its_turn(tmp_path, monkeypatch)
 @pytest.mark.asyncio
 async def test_other_local_automation_is_unchanged(tmp_path, monkeypatch):
     """Only completions become notes: a /loop tick or Kanban wake keeps its turn with no viewer."""
-    from gateway.session_automation import admit_route_wake
+    from hermes_agent.gateway.session_automation import admit_route_wake
     runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
     try:
         live = authority.sessions[ref.session_id]

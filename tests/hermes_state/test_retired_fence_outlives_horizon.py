@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 import hermes_agent.hermes_state_runtime as rt
-from gateway.session_results import retain_result
+from hermes_agent.gateway.session_results import retain_result
 from hermes_agent.hermes_state import SessionDB
 
 
@@ -41,8 +41,8 @@ def test_a_deleted_session_is_never_recreated_after_the_horizon(tmp_path):
 
 
 def test_a_deleted_bot_chat_generation_is_never_reissued(tmp_path):
-    from gateway.session_bot import _bot_chat_creation_id
-    from gateway.session_local_recovery import local_identity
+    from hermes_agent.gateway.session_bot import _bot_chat_creation_id
+    from hermes_agent.gateway.session_local_recovery import local_identity
     with SessionDB(tmp_path / "state.db") as db:
         epoch = rt.begin_runtime_epoch(db, instance_id="owner")
         authority, actor = SimpleNamespace(profile_id="owned", db=db), SimpleNamespace(subject="owner")

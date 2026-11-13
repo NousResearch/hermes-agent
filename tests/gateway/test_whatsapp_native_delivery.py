@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 from tests.gateway.test_whatsapp_formatting import _AsyncCM, _make_adapter
 

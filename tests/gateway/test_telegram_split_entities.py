@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from tests.fakes.platforms.telegram_standin import BotApiError, _check_text
 
@@ -91,7 +91,7 @@ async def test_overflow_edit_split_leaves_literal_markers_and_a_final_backslash_
 
 def _scanned_chars(monkeypatch, content: str) -> tuple[int, list[str], list[str]]:
     """Characters the raw split's emphasis tokenizer reads to split *content* (work done, not time)."""
-    from gateway.platforms.base import BasePlatformAdapter, utf16_len
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter, utf16_len
     from plugins.platforms.telegram import telegram_chunking
 
     scanned = [0]
@@ -144,7 +144,7 @@ async def test_overflow_edit_split_never_adds_markers_the_reply_does_not_have():
 async def test_overflow_edit_split_chunks_stay_within_telegram_limit_once_escaped():
     """The overflow edit cuts raw text and formats each chunk after: a reply dense in ``.``/``-``/``!``
     grows past 4,096 units once MarkdownV2-escaped, and Telegram refuses an over-long message."""
-    from gateway.platforms.base import utf16_len
+    from hermes_agent.gateway.platforms.base import utf16_len
 
     bot = _BotApi()
     content = "**" + "a.b-c! " * 1500 + "**"
@@ -159,7 +159,7 @@ async def test_overflow_edit_split_chunks_stay_within_telegram_limit_once_escape
 async def test_overflow_edit_split_of_dense_punctuation_sends_a_handful_of_full_parts(content):
     """Every ``.`` doubles once escaped; the re-cut must shrink the raw budget by that ratio, not by
     the formatted overshoot, or 10,000 dots go out as 5,000 two-character messages."""
-    from gateway.platforms.base import utf16_len
+    from hermes_agent.gateway.platforms.base import utf16_len
 
     bot = _BotApi()
     result = await _adapter(bot)._edit_overflow_split("4242", "99", content, finalize=True)
@@ -183,7 +183,7 @@ def test_standalone_send_split_never_breaks_an_inline_entity(monkeypatch):
 
     for var in ("TELEGRAM_PROXY", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setattr("gateway.platforms.base._detect_macos_system_proxy", lambda: None)
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base._detect_macos_system_proxy", lambda: None)
     parse_mode = SimpleNamespace(MARKDOWN_V2="MarkdownV2", HTML="HTML")
     for unit in UNITS:
         for pad in range(0, 60, 6):

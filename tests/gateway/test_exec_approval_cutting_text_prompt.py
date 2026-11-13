@@ -8,8 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.run_turn_runner import TurnRunner
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.run_turn_runner import TurnRunner
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 from tools import approval
 from tools.approval_gateway_wait import _ApprovalEntry

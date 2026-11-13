@@ -26,12 +26,12 @@ except ImportError:
     # would reset the already-imported ``web`` to None (500 on POST /v1/runs).
     RequestKey = None  # type: ignore[assignment,misc]
 
-from gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response, room_run_claims
-from gateway.turn_executor import _UnboundedThreadExecutor
-from gateway.platforms.api_server_run_idempotency import TERMINAL_STATUSES
+from hermes_agent.gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response, room_run_claims
+from hermes_agent.gateway.turn_executor import _UnboundedThreadExecutor
+from hermes_agent.gateway.platforms.api_server_run_idempotency import TERMINAL_STATUSES
 
 
-logger = logging.getLogger("gateway.platforms.api_server")
+logger = logging.getLogger("hermes_agent.gateway.platforms.api_server")
 
 # Executor-thread lifetime for API-server agent turns (#116535). The handler-side
 # ``_inflight_agent_runs`` count in api_server.py drops in the handler's ``finally`` when the
@@ -261,7 +261,7 @@ def _initialize_run_state(self, *, store_factory) -> None:
     self._run_idempotency_store = store_factory()
     self._run_owner_pid = os.getpid()
     try:
-        from gateway.status import get_process_start_time
+        from hermes_agent.gateway.status import get_process_start_time
         self._run_owner_started = int(get_process_start_time(self._run_owner_pid) or 0)
     except Exception:
         self._run_owner_started = 0
@@ -448,7 +448,7 @@ def _check_run_auth(self, request: web.Request, *, permission: str, _api_server)
 def _owner_alive(owner_pid: int, owner_started: int) -> bool:
     """True when the recorded owner pid still exists and is the same process incarnation."""
     try:
-        from gateway.status import _pid_exists, get_process_start_time, start_time_fingerprints_match
+        from hermes_agent.gateway.status import _pid_exists, get_process_start_time, start_time_fingerprints_match
         return owner_pid > 0 and bool(_pid_exists(owner_pid)) and (
             not owner_started
             or start_time_fingerprints_match(owner_started, get_process_start_time(owner_pid) or 0))
@@ -458,7 +458,7 @@ def _owner_alive(owner_pid: int, owner_started: int) -> bool:
 
 def _durable_run_status(self, request: web.Request, run_id: str) -> dict[str, Any] | None:
     """Hydrate a scoped run status and fail stale owners closed."""
-    from gateway.platforms.api_server_authority_runs import run_projection
+    from hermes_agent.gateway.platforms.api_server_authority_runs import run_projection
     canonical = run_projection(self, run_id)
     if canonical is not None:
         # The documented poll shape: the canonical projection decides status/output/usage; the
@@ -535,7 +535,7 @@ async def _resolve_chained_history(self, body: dict, raw_input: Any, *, _openai_
     its next generation (an explicit body ``session_id`` still wins in the caller), and a store
     that cannot answer is the retryable store verdict (``continued_session``). The last item is the
     stored session the chain moved past (``walked_from``), else None."""
-    from gateway.platforms.api_server_authority_runs import continued_session
+    from hermes_agent.gateway.platforms.api_server_authority_runs import continued_session
     # Off the loop: a previous_response_id chain reads (and json-decodes) the stored history.
     history, instructions, chain_root, error = await asyncio.to_thread(
         _resolve_conversation_history, self, body, raw_input, _openai_error=_openai_error)
@@ -647,7 +647,7 @@ async def run_internal_session_turn(self, *, session_id: str, text: str, profile
     The HTTP wake self-post cannot serve a multiplexed *served* profile: ``/p/<profile>/`` on
     the shared listener authenticates with that profile's own ``API_SERVER_KEY`` — which a
     route-only profile legitimately does not have — while an unprefixed self-post would resume
-    the session in the DEFAULT profile's store. ``gateway.wake`` therefore runs the turn here,
+    the session in the DEFAULT profile's store. ``hermes_agent.gateway.wake`` therefore runs the turn here,
     inside the owner profile's runtime scope (the session DB, model resolution and tool policy
     all follow the ambient scope), with ``profile`` naming the profile the caller proved owns
     the session — never derived here, so a missing proof cannot silently become the default.
@@ -655,7 +655,7 @@ async def run_internal_session_turn(self, *, session_id: str, text: str, profile
     (the HTTP self-post's 503) while a saturated concurrent-run cap is retried with the same
     backoff the HTTP self-post uses for a 429.
     """
-    from gateway.wake import _RETRY_DELAYS_SECONDS
+    from hermes_agent.gateway.wake import _RETRY_DELAYS_SECONDS
     profile = (profile or "").strip()
     if not profile:
         raise ValueError("run_internal_session_turn requires the owning profile")
@@ -733,9 +733,9 @@ async def _admit_run_to_authority(
     idempotency_scope, idempotency_key, _openai_error,
 ) -> Optional[web.Response]:
     """Admit a /v1/runs turn to the session authority FIFO -> ``None``, or the refusal."""
-    from gateway.platforms.api_server_authority_runs import run_admission, store_error_response
-    from gateway.session_api_turn import admit_api_turn_async
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.platforms.api_server_authority_runs import run_admission, store_error_response
+    from hermes_agent.gateway.session_api_turn import admit_api_turn_async
+    from hermes_agent.gateway.session_contract import SessionRef
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     try:
         with self._profile_scope(launch.request_profile):
@@ -934,8 +934,8 @@ def _served_runtime(agent) -> dict[str, str]:
 
 def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_server):
     """Executor-thread body of one run; returns ``(result, usage, served_runtime)``."""
-    from gateway.session_context import clear_session_vars
-    from gateway.hosted_room_execution_policy import (
+    from hermes_agent.gateway.session_context import clear_session_vars
+    from hermes_agent.gateway.hosted_room_execution_policy import (
         RoomExecutionPolicy, bind_room_execution_policy, reset_room_execution_policy)
     # No eager slash-worker pre-warm: slash.exec spawns one on demand (its error path already relies on that
     # respawn to recover from a dead worker). Each worker child runs its own MCP discovery (#61891), so
@@ -1022,7 +1022,7 @@ async def _execute_run_via_live_owner(self, run: _RunLaunch, home, record: dict[
     as ``cancelled`` while the chat finishes on its own; the stop handler already reports that a
     run without an in-process agent is not interruptible here.
     """
-    from gateway.platforms.api_server_bot_chat import await_live_delivery
+    from hermes_agent.gateway.platforms.api_server_bot_chat import await_live_delivery
 
     run_id = run.run_id
     delivery_id = record["delivery_id"]
@@ -1110,7 +1110,7 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             _finish("cancelled")
             return
         if run.admission is not None:
-            from gateway.session_api_turn import observe_api_controls, observe_api_turn
+            from hermes_agent.gateway.session_api_turn import observe_api_controls, observe_api_turn
             tool_cb = self._make_run_event_callback(run_id, loop)
 
             def _control_cb(event_type, prompt):
@@ -1221,7 +1221,7 @@ def _request_owns_run(self, request: web.Request, run_id: str) -> bool:
     # would make the boundary allow-all (#93689).
     if self._run_idempotency_store.owns_run(scope, run_id):
         return True
-    from gateway.session_api_turn import owns_api_run
+    from hermes_agent.gateway.session_api_turn import owns_api_run
     return owns_api_run(self, run_id, scope)
 
 
@@ -1414,7 +1414,7 @@ async def _handle_run_approval(self, request: web.Request, *, _api_server) -> we
 
 
 async def _respond_authority_run(self, run_id, body, *, kind, _api_server):
-    from gateway.platforms.api_server_authority_runs import respond_run, store_error_response
+    from hermes_agent.gateway.platforms.api_server_authority_runs import respond_run, store_error_response
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     try:
         result = await respond_run(self, run_id, body, kind=kind)
@@ -1448,7 +1448,7 @@ async def _handle_steer_run(self, request: web.Request, *, _api_server) -> web.R
         return err
     owned = None
     if getattr(self.gateway_runner, 'session_authority', None) is not None:
-        from gateway.platforms.api_server_authority_runs import run_admission
+        from hermes_agent.gateway.platforms.api_server_authority_runs import run_admission
         owned = run_admission(self, run_id)
         owned = owned if run_id not in self._stopping_run_ids else None
         agent = None
@@ -1466,7 +1466,7 @@ async def _handle_steer_run(self, request: web.Request, *, _api_server) -> web.R
             _openai_error, "Missing non-empty steer text; expected 'input', 'message', or 'text'.",
             code="invalid_steer_input", status=400)
     if owned is not None:
-        from gateway.session_contract import SessionRef
+        from hermes_agent.gateway.session_contract import SessionRef
         from hermes_agent.hermes_state_runtime import RuntimeStoreError
         authority, row = owned
         sid, latched = row['target_session_id'], False
@@ -1505,7 +1505,7 @@ async def _handle_stop_run(self, request: web.Request, *, _api_server) -> web.Re
     # admission: its stop is the legacy in-process task cancel below, never ``stop_run``.
     if (getattr(self.gateway_runner, 'session_authority', None) is not None
             and not (task is not None and status.get("delivery_id"))):
-        from gateway.platforms.api_server_authority_runs import stop_run, store_error_response
+        from hermes_agent.gateway.platforms.api_server_authority_runs import stop_run, store_error_response
         from hermes_agent.hermes_state_runtime import RuntimeStoreError
         try:
             return web.json_response(await stop_run(self, run_id))
@@ -1540,7 +1540,7 @@ async def _handle_resolve_unknown_run(
         body = await request.json()
     except (ValueError, LookupError):  # bad JSON/UTF-8 (ValueError) or unknown charset: no body
         body = None
-    from gateway.platforms.api_server_authority_runs import resolve_unknown_run, store_error_response
+    from hermes_agent.gateway.platforms.api_server_authority_runs import resolve_unknown_run, store_error_response
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     try:
         result = await resolve_unknown_run(self, run_id, body)

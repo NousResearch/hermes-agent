@@ -20,7 +20,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Iterator, Optional
 
-from gateway.config import Platform
+from hermes_agent.gateway.config import Platform
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,7 @@ def _fit(adapter: Any, chat_id: str, text: str) -> str:
 
 
 def _supports_edit(adapter: Any) -> bool:
-    from gateway.platforms.base import BasePlatformAdapter
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter
     if getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True) is False:
         return False
     return getattr(type(adapter), "edit_message", None) is not BasePlatformAdapter.edit_message
@@ -88,7 +88,7 @@ def resolve(runner, *, session_key: str, route, plugin_home, plugin_id: str):
     is the live source the gateway bound for this call, used only while the session is not stored."""
     entry = runner.session_store.lookup_by_session_key(session_key)
     if entry is not None and entry.origin is not None:
-        from gateway.session_identity import replace_source
+        from hermes_agent.gateway.session_identity import replace_source
         source = replace_source(runner._restored_source(entry))
     elif route is not None and runner._session_key_for_source(route) == session_key:
         source = route

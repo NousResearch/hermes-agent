@@ -52,7 +52,7 @@ def _assert_private(session):
 def _connectable_adapter(host, tmp_path, monkeypatch):
     from unittest.mock import AsyncMock, MagicMock
 
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     from plugins.platforms.whatsapp import adapter as wa
 
     monkeypatch.setattr(wa, "find_node_executable", lambda name: sys.executable)
@@ -112,7 +112,7 @@ async def test_adopting_a_running_bridge_tightens_its_existing_log(host, tmp_pat
 
 def test_dashboard_pairing_tightens_an_existing_world_readable_session(host, tmp_path, monkeypatch):
     import hermes_constants
-    from gateway.platforms import whatsapp_common
+    from hermes_agent.gateway.platforms import whatsapp_common
     from hermes_cli.web_routers import messaging
 
     monkeypatch.setattr(whatsapp_common, "resolve_whatsapp_bridge_dir", lambda: host.parent)
@@ -132,7 +132,7 @@ def test_cli_pairing_writes_the_session_owner_only(host, tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     import hermes_constants
-    from gateway.platforms import whatsapp_common
+    from hermes_agent.gateway.platforms import whatsapp_common
     from hermes_cli import main_platform_setup as setup
 
     home = tmp_path / "hermes"

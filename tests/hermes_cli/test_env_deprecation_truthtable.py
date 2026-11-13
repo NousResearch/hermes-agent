@@ -16,7 +16,7 @@ session restoration / cron / the gateway):
       suppresses the warning (fix commit a93f1b2be removed suppression).
     * Commented-out or empty-valued .env entries do NOT warn.
     * There is NO quiet/non-interactive gating in the scanner itself; the
-      gateway calls it before setting HERMES_QUIET (gateway/run.py), so the
+      gateway calls it before setting HERMES_QUIET (hermes_agent/gateway/run.py), so the
       warning fires regardless of HERMES_QUIET.
 
 Exercises the real scanner against a real temp HERMES_HOME .env file.

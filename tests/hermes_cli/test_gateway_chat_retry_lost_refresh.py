@@ -31,12 +31,12 @@ class _DropRefreshOnce:
 
 @pytest.mark.asyncio
 async def test_retry_after_a_lost_refresh_replays_the_same_rewind(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_local import create_local_session
     from hermes_cli.gateway_chat_commands import run_command
     from hermes_cli.gateway_client import GatewayClientError
     from hermes_cli.gateway_mutations import PreparedMutations

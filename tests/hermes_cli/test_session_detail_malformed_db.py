@@ -106,7 +106,7 @@ def _mutation_request(monkeypatch):
     import sqlite3
     from types import SimpleNamespace
 
-    import gateway.session_mutations as _mutations
+    import hermes_agent.gateway.session_mutations as _mutations
 
     authority = SimpleNamespace(db=_CorruptAuthorityDB(), profile_id="p", epoch=1)
     principal = object()

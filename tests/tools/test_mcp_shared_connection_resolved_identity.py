@@ -100,8 +100,8 @@ def two_profile_homes(tmp_path, monkeypatch):
 
 
 def _discover_and_call(homes: dict, tool: str, args: dict) -> dict:
-    import gateway.run as gateway_run
-    from gateway.config import GatewayConfig
+    import hermes_agent.gateway.run as gateway_run
+    from hermes_agent.gateway.config import GatewayConfig
     from tools.registry import registry
 
     asyncio.run(gateway_run._discover_gateway_mcp_tools(GatewayConfig(multiplex_profiles=True)))

@@ -20,7 +20,7 @@ def test_secondary_profile_worker_gets_no_launch_credentials(tmp_path, monkeypat
     from hermes_cli import env_loader
     monkeypatch.setitem(env_loader._SECRET_SOURCES, "VAULT_ONLY_TOKEN", "bitwarden")
     from agent import secret_scope
-    from gateway.session_managed_worker import _worker_env
+    from hermes_agent.gateway.session_managed_worker import _worker_env
     secret_scope.set_multiplex_active(multiplex)
     try:
         env = _worker_env(SimpleNamespace(profile_id=str(sec)))
@@ -48,7 +48,7 @@ def test_launch_profile_worker_keeps_env_only_tool_credentials_under_multiplex(t
     monkeypatch.setenv("FIRECRAWL_API_KEY", "ENVONLY-fc")
     monkeypatch.setenv("AUXILIARY_VISION_API_KEY", "ENVONLY-aux")
     from agent.secret_scope import get_secret, set_multiplex_active
-    from gateway.session_managed_worker import _worker_env
+    from hermes_agent.gateway.session_managed_worker import _worker_env
     from hermes_agent.tui_gateway.launch_profile_policy import activate_multi_profile_hosting, launch_profile_runtime_scope
     activate_multi_profile_hosting()
     try:

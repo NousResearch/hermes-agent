@@ -16,14 +16,14 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import PlatformConfig, Platform
-from gateway.platforms.base import (
+from hermes_agent.gateway.config import PlatformConfig, Platform
+from hermes_agent.gateway.platforms.base import (
     SendResult,
     _reply_anchor_for_event,
     _thread_metadata_for_source,
 )
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import build_session_key
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.session import build_session_key
 
 
 # ── Fake telegram.error hierarchy ──────────────────────────────────────
@@ -302,7 +302,7 @@ def test_base_gateway_metadata_marks_telegram_dm_topics_as_reply_fallback():
 @pytest.mark.asyncio
 async def test_gateway_runner_busy_ack_replies_to_triggering_message_for_telegram_dm_topic(monkeypatch, tmp_path):
     """GatewayRunner's duplicate thread metadata must match the base helper."""
-    from gateway import run as gateway_run
+    from hermes_agent.gateway import run as gateway_run
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     GatewayRunner = gateway_run.GatewayRunner
@@ -704,7 +704,7 @@ async def test_control_message_to_dead_private_topic_lands_in_root_without_its_a
 async def test_send_image_upload_fallback_blocks_connect_time_rebind(monkeypatch):
     import httpcore
     from httpcore._backends.auto import AutoBackend
-    from gateway.platforms.base import BasePlatformAdapter
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
     adapter = _make_adapter()
     adapter._bot = SimpleNamespace(
@@ -801,7 +801,7 @@ async def test_slash_confirm_forum_callback_followup_keeps_existing_thread_behav
 @pytest.mark.asyncio
 async def test_base_send_image_fallback_preserves_metadata():
     """Base image fallback should pass metadata through instead of referencing kwargs."""
-    from gateway.platforms.base import BasePlatformAdapter
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
     class _ConcreteBaseAdapter(BasePlatformAdapter):
         async def connect(self, *, is_reconnect: bool = False):
@@ -967,7 +967,7 @@ async def test_named_topic_media_to_dead_topic_fails_closed_instead_of_landing_i
     assert call_log and all(c.get("message_thread_id") or c.get("direct_messages_topic_id") for c in call_log), call_log
 
 
-# The metadata gateway/platforms/base.py::_thread_metadata_for_source builds for a private topic reply.
+# The metadata hermes_agent/gateway/platforms/base.py::_thread_metadata_for_source builds for a private topic reply.
 _GATEWAY_META = {**_GONE_META, "direct_messages_topic_id": "20197"}
 
 

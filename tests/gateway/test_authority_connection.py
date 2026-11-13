@@ -5,9 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_authority import LiveSession, SessionAuthority
-from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL
-from gateway.session_controls import AuthorityConnection
+from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+from hermes_agent.gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL
+from hermes_agent.gateway.session_controls import AuthorityConnection
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 
@@ -189,7 +189,7 @@ async def test_a_sqlite_failure_keeps_the_wire_error_and_logs_its_cause(tmp_path
                 return {'session.storage_probe': probe}
 
         connection = Connection(authority, object(), {'user_id': 'human'})
-        with caplog.at_level('WARNING', logger='gateway.session_controls'):
+        with caplog.at_level('WARNING', logger='hermes_agent.gateway.session_controls'):
             reply = await connection.dispatch({'id': 9, 'method': 'session.storage_probe', 'params': {
                 'session_id': 'session-9'}})
         assert reply['error'] == {
@@ -218,7 +218,7 @@ async def test_a_retrying_client_cannot_flood_the_log_with_storage_failures(tmp_
                 return {'session.retry_probe': probe}
 
         connection = Connection(authority, object(), {'user_id': 'human'})
-        with caplog.at_level('WARNING', logger='gateway.session_controls'):
+        with caplog.at_level('WARNING', logger='hermes_agent.gateway.session_controls'):
             for _ in range(3):
                 reply = await connection.dispatch({'id': 9, 'method': 'session.retry_probe', 'params': {
                     'session_id': 'x' * 100_000}})

@@ -28,7 +28,7 @@ def defer_pick(authority, actor, ref, params):
     validate_action(operation, params['payload'])
     shown = None
     if operation == 'model':
-        from gateway.session_mutation_model import configured_default, is_model_reset
+        from hermes_agent.gateway.session_mutation_model import configured_default, is_model_reset
         if is_model_reset(params['payload']):  # a queued reset shows the default it adopts, not "reset"
             shown = configured_default(authority)[0]
     key, digest = mutation_receipt_key(actor.subject, ref.session_id, params['request_id'], operation=operation,
@@ -84,7 +84,7 @@ async def _commit(authority, ref, entry, operation):
     """Commit the deferred *entry* as an *operation* mutation. Returns None while a worker still holds
     the transcript (the pick waits for the next boundary), else the mutation's result."""
     import asyncio
-    from gateway.session_mutations import write_mutation
+    from hermes_agent.gateway.session_mutations import write_mutation
     from hermes_agent.hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
     from hermes_agent.hermes_state_mutation_retirement import has_mutation_receipt
     if await asyncio.to_thread(has_mutation_receipt, authority.db, entry['principal_id'], ref.session_id,

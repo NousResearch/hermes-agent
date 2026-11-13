@@ -212,7 +212,7 @@ def resolve_gateway_approval_card(session_key: str, choice: str, request_id: Opt
     its creation until its card shows the whole command, so a forged or early approve tap resolves
     nothing.
 
-    With *actor_id* the clicker's authority (``gateway.approval_actor.may_answer``, with the platform
+    With *actor_id* the clicker's authority (``hermes_agent.gateway.approval_actor.may_answer``, with the platform
     *extra* / *admin_ids*, and the chat's slash policy for the answer's own ``/approve`` or ``/deny``)
     is checked against that same entry (*admitted* as there). The Deny-only check, the authority
     check and the settle are one critical section."""
@@ -223,8 +223,8 @@ def resolve_gateway_approval_card(session_key: str, choice: str, request_id: Opt
         if target is not None and choice != "deny" and target.card_deny_only:
             return 0
         if target is not None and actor_id is not None:
-            from gateway.approval_actor import may_answer
-            from gateway.approval_actor import approval_commands
+            from hermes_agent.gateway.approval_actor import may_answer
+            from hermes_agent.gateway.approval_actor import approval_commands
             if not may_answer(target.authority, actor_id, admin_ids, extra, approval_commands(choice),
                               admitted=admitted):
                 return 0
@@ -406,7 +406,7 @@ def _yolo_active() -> bool:
     (session-scoped). Hardline / deny-rule floors run BEFORE this everywhere."""
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
         return True
-    from gateway.session_finite import unattended_turn
+    from hermes_agent.gateway.session_finite import unattended_turn
     return unattended_turn()
 
 
@@ -452,7 +452,7 @@ def _session_grant_key(session_key: str) -> str | tuple[str, str]:
     home/credentials; approvals in that child are keyed by both the session and home.
     The mark is scoped by delegated_profile_scope and survives nested child routes.
     """
-    from gateway.hosted_room_execution_policy import profile_routed
+    from hermes_agent.gateway.hosted_room_execution_policy import profile_routed
     if not profile_routed():
         return session_key
     from hermes_constants import hermes_home_key
@@ -1047,7 +1047,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             return grant(choice)
 
         # No gateway callback (cron, batch, or ask-mode leaked into an interactive CLI, historically via `import
-        # gateway.run`): paint the local panel when possible instead of a pending_approval that makes the agent look
+        # hermes_agent.gateway.run`): paint the local panel when possible instead of a pending_approval that makes the agent look
         # "auto-blocked".
         if not _should_fall_through_to_cli_approval(
             is_cli=is_cli, approval_callback=approval_callback, notify_cb=notify_cb,

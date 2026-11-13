@@ -20,8 +20,8 @@ from pathlib import Path
 import pytest
 
 from hermes_agent import hermes_state
-from gateway.config import GatewayConfig
-from gateway.session import SessionStore
+from hermes_agent.gateway.config import GatewayConfig
+from hermes_agent.gateway.session import SessionStore
 from hermes_agent.hermes_state import SessionDB
 
 # These probe the live-DB guard against the real root on purpose.

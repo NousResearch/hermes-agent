@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from gateway import rich_sent_store
+from hermes_agent.gateway import rich_sent_store
 
 
 @pytest.fixture

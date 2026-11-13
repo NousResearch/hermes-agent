@@ -1,6 +1,6 @@
 """Remote access to the gateway-served Webapp, for Desktop's Web Access pane.
 
-The gateway serves the Webapp (``gateway.webapp_listener``) from the ``webapp:`` block of its home's
+The gateway serves the Webapp (``hermes_agent.gateway.webapp_listener``) from the ``webapp:`` block of its home's
 ``config.yaml``, read when it starts, so this writes that home's config and the caller restarts the
 gateway. Sign-in is the user's Nous account (a self-hosted portal client registered with the right
 callback); a gated bind without it would keep the Webapp off. Two shapes:
@@ -50,9 +50,9 @@ def lan_address() -> Optional[str]:
 
 def _public_url(raw: Optional[str]) -> str:
     """``https://host[:port][/prefix]`` without a trailing slash, or WebappAccessError: a
-    ``webapp.public_url`` the gateway reads (``gateway.webapp_listener._public_url``) that is also an
+    ``webapp.public_url`` the gateway reads (``hermes_agent.gateway.webapp_listener._public_url``) that is also an
     https address other devices reach."""
-    from gateway.webapp_listener import _public_url as read_public_url
+    from hermes_agent.gateway.webapp_listener import _public_url as read_public_url
 
     value = (raw or "").strip()
     url = read_public_url(value)
@@ -202,7 +202,7 @@ def _port_to_serve(home: Path, host: str) -> tuple[int, Optional[int]]:
     lock every gateway on this machine shares, before the slow steps of Start: a Start that fails after
     this keeps the port, which is that profile's from then on, as one a finished Start writes. *home* is
     the home in scope, whose config :func:`save_config` writes (Start runs in its gateway's scope)."""
-    from gateway.webapp_listener import DEFAULT_PORT, webapp_settings
+    from hermes_agent.gateway.webapp_listener import DEFAULT_PORT, webapp_settings
     from hermes_cli.auth import _file_lock
     from hermes_constants import named_profile_home
 
@@ -229,7 +229,7 @@ def _create_user_only(lock: Path) -> None:
     """Create *lock* (0600) and its folder (0700) before :func:`_file_lock` opens it, which would create
     both with the umask's mode: the folder also holds the Webapp's credentials. A folder other users can
     reach is closed to them again, as the credential writers do (POSIX)."""
-    from gateway.webapp_listener import _close_to_other_users
+    from hermes_agent.gateway.webapp_listener import _close_to_other_users
 
     lock.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     _close_to_other_users(lock.parent)
@@ -265,7 +265,7 @@ def _claimed_ports(home: Path) -> set[int]:
     """The Webapp ports the other Hermes homes beside *home* claim: the default profile's (9120 unless
     set) and every other profile's own ``webapp.port``, whether or not its gateway runs now. Only that
     setting is read from their configs."""
-    from gateway.webapp_listener import DEFAULT_PORT
+    from hermes_agent.gateway.webapp_listener import DEFAULT_PORT
     from hermes_constants import named_profile_home
 
     profile = named_profile_home(home)
@@ -364,7 +364,7 @@ def _mode(settings) -> Optional[str]:
     """Who the configured Webapp serves: ``public`` (its own URL pins the callback and Host),
     ``lan`` (a wildcard bind), ``local`` (a loopback bind, as ``hermes webapp`` sets it up), or None
     when it is off."""
-    from gateway.webapp_listener import _is_wildcard
+    from hermes_agent.gateway.webapp_listener import _is_wildcard
 
     if not settings.enabled:
         return None
@@ -377,7 +377,7 @@ def access_status() -> dict:
     """Everything the Web Access pane shows, read for the gateway home in scope. The ``webapp:``
     block is read once, by the gateway's own reader, so the pane shows the address and port the
     gateway will serve, and no public URL it would refuse."""
-    from gateway.webapp_listener import webapp_settings
+    from hermes_agent.gateway.webapp_listener import webapp_settings
 
     home = gateway_home()
     settings = webapp_settings(home)

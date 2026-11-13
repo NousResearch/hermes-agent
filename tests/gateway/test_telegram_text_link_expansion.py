@@ -131,7 +131,7 @@ def test_quote_cutting_through_a_link_leaves_it_out():
 def test_partial_quote_of_a_cron_delivery_keeps_its_header():
     """Selecting one line of a wrapped cron delivery still marks it as that delivery (#26714);
     the gateway frames any quote that starts with the header as a past report."""
-    from gateway.inbound_reply_context import reply_pointer
+    from hermes_agent.gateway.inbound_reply_context import reply_pointer
 
     replied = _Message(text="Cronjob Response: nightly-ops\n-------------\n\nDeploy prod now.",
                               entities=[])

@@ -18,9 +18,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import gateway.run as gateway_run
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.restart import EXTERNAL_GATEWAY_SUPERVISOR_ENV
+import hermes_agent.gateway.run as gateway_run
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.restart import EXTERNAL_GATEWAY_SUPERVISOR_ENV
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 
 
@@ -45,7 +45,7 @@ def _make_runner_with_mock_restart(tmp_path, monkeypatch):
     # regardless of the env markers under test (the detection under test is
     # the SUPERVISOR markers, not the runner's own containment).
     monkeypatch.setattr(
-        "gateway.restart.is_container_restart_context", lambda: False
+        "hermes_agent.gateway.restart.is_container_restart_context", lambda: False
     )
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)
@@ -82,7 +82,7 @@ def test_supervised_child_marker_is_a_launch_not_a_restart_route():
     """The Windows Scheduled-Task launcher exports only ``HERMES_SUPERVISED_CHILD``: that must make
     the gateway a supervised LAUNCH (self-kill guards active, #113667) without selecting the exit-75
     restart route, which the task cannot honour (#113670)."""
-    from gateway.restart import is_gateway_supervisor_process, is_supervised_gateway_launch
+    from hermes_agent.gateway.restart import is_gateway_supervisor_process, is_supervised_gateway_launch
     from hermes_cli.gateway_windows import _GATEWAY_ENV
 
     task_env = dict(_GATEWAY_ENV)

@@ -8,7 +8,7 @@ from tests.gateway.test_session_mutation_model_busy import _owner
 
 @pytest.mark.asyncio
 async def test_live_rows_carry_picker_fields_and_filter_by_workspace(tmp_path, monkeypatch):
-    from gateway.session_local_recovery import transcript_target
+    from hermes_agent.gateway.session_local_recovery import transcript_target
 
     async def handle(event):
         return 'ok'
@@ -45,11 +45,11 @@ async def test_live_rows_carry_picker_fields_and_filter_by_workspace(tmp_path, m
 
 @pytest.mark.asyncio
 async def test_stored_rows_carry_picker_fields_and_filter_by_repo_root(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})

@@ -34,7 +34,7 @@ import pytest
 
 def _make_runner():
     """Bare GatewayRunner with a real thread-pool-backed executor helper."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     from concurrent.futures import ThreadPoolExecutor
@@ -121,10 +121,10 @@ async def test_cleanup_off_loop_times_out_gracefully(caplog):
             aw.close()
         raise TimeoutError
 
-    import gateway.run as _run
+    import hermes_agent.gateway.run as _run
 
     agent = _agent_with_close(lambda: None)
-    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.run"):
         # Patch the wait_for the helper uses so we don't actually wait 30s.
         orig = _run.asyncio.wait_for
         _run.asyncio.wait_for = _instant_timeout
@@ -155,7 +155,7 @@ async def test_cleanup_off_loop_swallows_executor_failure(caplog):
 
     runner._cleanup_agent_resources = _boom_cleanup
 
-    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.run"):
         await runner._cleanup_agent_resources_off_loop(
             _agent_with_close(boom), context="shutdown finalize"
         )

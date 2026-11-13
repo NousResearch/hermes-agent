@@ -14,13 +14,13 @@ from aiohttp.test_utils import TestClient, TestServer
 
 
 async def probe():
-    from gateway.config import PlatformConfig
-    from gateway.platforms.api_server import APIServerAdapter
-    from gateway.session_context import get_session_env
-    from gateway.wake import persist_delegation_delivery
+    from hermes_agent.gateway.config import PlatformConfig
+    from hermes_agent.gateway.platforms.api_server import APIServerAdapter
+    from hermes_agent.gateway.session_context import get_session_env
+    from hermes_agent.gateway.wake import persist_delegation_delivery
     from hermes_agent.hermes_state import SessionDB
     from tools.delegate_tool_dispatch import _resolve_async_wake_sid
-    import gateway.session_context as sc
+    import hermes_agent.gateway.session_context as sc
 
     db = SessionDB(db_path=Path(os.environ["HERMES_HOME"]) / "state.db")
     db.create_session("parent", source="api_server")

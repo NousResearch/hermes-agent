@@ -24,7 +24,7 @@ except ImportError:  # pragma: no cover - mirrors api_server's optional import
     web = None  # type: ignore[assignment]
 
 # Logger parity with the origin module (moved log records keep their name).
-logger = logging.getLogger("gateway.platforms.api_server")
+logger = logging.getLogger("hermes_agent.gateway.platforms.api_server")
 
 async def _iter_stream_items(stream_q, agent_task, response):
     """Yield agent stream items until EOS, writing SSE keepalives while idle.
@@ -32,7 +32,7 @@ async def _iter_stream_items(stream_q, agent_task, response):
     Yields the ``None`` sentinel once so callers can run EOS-only work; when ``agent_task``
     is already done the remaining queue is drained and the sentinel swallowed.
     """
-    from gateway.platforms.api_server import CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS
+    from hermes_agent.gateway.platforms.api_server import CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS
 
     last_activity = time.monotonic()
     while True:
@@ -109,7 +109,7 @@ def _responses_fingerprint_keys(body):
 
 async def _response_identity(store, durable_key):
     if durable_key is not None:
-        from gateway.platforms.api_server_response_identity import durable_response_id
+        from hermes_agent.gateway.platforms.api_server_response_identity import durable_response_id
         return durable_response_id(durable_key[0]), await store.off_loop(store.request_created_at, durable_key[0])
     return f'resp_{uuid.uuid4().hex[:28]}', int(time.time())
 
@@ -287,7 +287,7 @@ class _ResponsesStream:
                  conversation_history: list[dict[str, str]], user_message: str,
                  instructions: Optional[str], conversation: Optional[str], store: bool, session_id: str,
                  durable_key=None, terminal_replay=False):
-        from gateway.platforms import api_server as api
+        from hermes_agent.gateway.platforms import api_server as api
         self._api = api
         self.adapter, self.response, self.response_id = adapter, response, response_id
         self.model, self.created_at, self.conversation_history = model, created_at, conversation_history
@@ -348,7 +348,7 @@ class _ResponsesStream:
         await self.response.write(self._api._sse_frame(data, event=event_type))
 
     def _item_id(self, kind, *, call_id=None, commentary=False):
-        from gateway.platforms.api_server_response_identity import next_item_id
+        from hermes_agent.gateway.platforms.api_server_response_identity import next_item_id
         return next_item_id(self.response_id, self._identity_counts, kind,
                             call_id=call_id, commentary=commentary)
 
@@ -714,7 +714,7 @@ def _parse_chat_messages(messages: list[Any]) -> tuple:
 
     System messages -> ephemeral system prompt layered ON TOP of core, flattened to text
     (Anthropic rejects images there, OpenAI text models ignore them)."""
-    from gateway.platforms.api_server import (
+    from hermes_agent.gateway.platforms.api_server import (
         _multimodal_validation_error, _normalize_chat_content, _normalize_multimodal_content)
     system_prompt = None
     conversation_messages: list[dict[str, str]] = []
@@ -735,7 +735,7 @@ def _parse_chat_messages(messages: list[Any]) -> tuple:
 
 def _parse_responses_input(raw_input: Any) -> tuple:
     """Responses ``input`` (string or item array) -> ``(input_messages, error_response_or_None)``."""
-    from gateway.platforms.api_server import (
+    from hermes_agent.gateway.platforms.api_server import (
         _error_response, _multimodal_validation_error, _normalize_multimodal_content)
     input_messages: list[dict[str, Any]] = []
     if isinstance(raw_input, str):
@@ -759,7 +759,7 @@ def _parse_responses_input(raw_input: Any) -> tuple:
 
 def _parse_conversation_history(raw_history: Any) -> tuple:
     """Explicit Responses ``conversation_history`` -> ``(history, error_response_or_None)``."""
-    from gateway.platforms.api_server import (
+    from hermes_agent.gateway.platforms.api_server import (
         _error_response, _multimodal_validation_error, _normalize_multimodal_content)
     conversation_history: list[dict[str, Any]] = []
     if not isinstance(raw_history, list):
@@ -784,7 +784,7 @@ class OpenAICompatRoutesMixin:
         self, body: dict[str, Any], *, session_id, gateway_session_key, model_alias) -> tuple:
         """Resolve the model_routes alias + per-request overrides ->
         ``(route, agent_overrides, error_response_or_None)``."""
-        from gateway.platforms.api_server import _error_response, _request_agent_overrides
+        from hermes_agent.gateway.platforms.api_server import _error_response, _request_agent_overrides
         route = self._resolve_route(model_alias)
         overrides = _request_agent_overrides(
             body, virtual_model=self._model_name, allow_bare_model=self._direct_model_requests)
@@ -799,7 +799,7 @@ class OpenAICompatRoutesMixin:
         (#51871) -> ``(notify, on_done)``. Owner + status are stamped like the session stream, so
         ``_load_owned_run`` finds it; keyed by the completion id (never the shared session key) so
         concurrent turns can't cross-resolve. ``on_done`` retires it when the agent task ends."""
-        from gateway.platforms.api_server import _approval_request_event
+        from hermes_agent.gateway.platforms.api_server import _approval_request_event
         self._run_owners[completion_id] = self._run_idempotency_scope(request)
         self._set_run_status(completion_id, "running", session_id=session_id or "")
         self._run_approval_sessions[completion_id] = completion_id
@@ -811,7 +811,7 @@ class OpenAICompatRoutesMixin:
             stream_q.put_threadsafe(("__approval__", event))
 
         def _on_done(fut):
-            from gateway.platforms.api_server_runs import terminal_run_status
+            from hermes_agent.gateway.platforms.api_server_runs import terminal_run_status
             self._run_approval_sessions.pop(completion_id, None)
             if fut.cancelled():
                 status = "cancelled"
@@ -843,7 +843,7 @@ class OpenAICompatRoutesMixin:
         def _on_status(kind, message=None):
             # Lifecycle/warning status (provider wait, auto-recovery countdown, fallback switch) as a
             # ``hermes.status`` event, so a client sees why the stream is silent instead of a dead socket.
-            from gateway.platforms.api_server import _redact_api_error_text
+            from hermes_agent.gateway.platforms.api_server import _redact_api_error_text
             text = _redact_api_error_text(message if message is not None else kind or "").strip()
             if text:
                 stream_q.put_threadsafe(("__status__", {"kind": str(kind), "text": text}))
@@ -864,7 +864,7 @@ class OpenAICompatRoutesMixin:
 
     async def _handle_chat_completions(self, request: web.Request) -> web.Response:
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
-        from gateway.platforms.api_server import (
+        from hermes_agent.gateway.platforms.api_server import (
             ThreadSafeAsyncQueue, _api_request_profile, _chat_usage_payload, _coerce_request_bool,
             _content_has_visible_payload, _derive_chat_session_id, _error_response, _invalid_request,
             _openai_error, _redact_api_error_text, _resolve_media_to_data_urls)
@@ -876,7 +876,7 @@ class OpenAICompatRoutesMixin:
             body = await request.json()
         except Exception:
             return _error_response("Invalid JSON in request body", 400)
-        from gateway.platforms.api_server import _request_relay_metadata
+        from hermes_agent.gateway.platforms.api_server import _request_relay_metadata
         relay_metadata = _request_relay_metadata(body)
         messages = body.get("messages")
         if not messages or not isinstance(messages, list):
@@ -908,7 +908,7 @@ class OpenAICompatRoutesMixin:
                 return _error_response("Session continuation requires API key authentication. "
                         "Configure API_SERVER_KEY to enable this feature.", 403)
             # Same guard as the native gateway: ids are interpolated into on-disk filenames.
-            from gateway.session import _is_path_unsafe
+            from hermes_agent.gateway.session import _is_path_unsafe
             if re.search(r'[\r\n\x00]', provided_session_id) or _is_path_unsafe(provided_session_id):
                 return _invalid_request("Invalid session ID")
             if len(provided_session_id) > self._MAX_SESSION_HEADER_LEN:
@@ -921,8 +921,8 @@ class OpenAICompatRoutesMixin:
                     # must adopt the live continuation tip — history loads from it, the turn and
                     # the wake target bind it, and a detached delegation delivery row persisted
                     # on the tip is what this continuation consumes. Same canonical resolution
-                    # the delivery writer (gateway/wake.py) and /v1/runs use; fails open.
-                    from gateway.platforms.api_server_runs import _resolve_live_session_id
+                    # the delivery writer (hermes_agent/gateway/wake.py) and /v1/runs use; fails open.
+                    from hermes_agent.gateway.platforms.api_server_runs import _resolve_live_session_id
                     session_id = await _resolve_live_session_id(self, provided_session_id)
                     history = await asyncio.to_thread(db.get_messages_as_conversation, session_id)
             except Exception as e:
@@ -1083,8 +1083,8 @@ class OpenAICompatRoutesMixin:
         ``storage_unavailable`` (``store_error_response``); anything else is the OpenAI 500."""
         if getattr(self.gateway_runner, 'session_authority', None) is None:
             return session_id, None
-        from gateway.session_api import implicit_api_session
-        from gateway.session_authorities import active_authority
+        from hermes_agent.gateway.session_api import implicit_api_session
+        from hermes_agent.gateway.session_authorities import active_authority
         authority = active_authority(self.gateway_runner)
         if authority is None:
             return session_id, None  # admission refuses the unserved profile with its own verdict
@@ -1094,11 +1094,11 @@ class OpenAICompatRoutesMixin:
             return await asyncio.to_thread(implicit_api_session, authority.db, session_id,
                                            self._chat_request_id(request)), None
         except (RuntimeStoreError, sqlite3.Error, OSError) as exc:
-            from gateway.platforms.api_server import _openai_error
-            from gateway.platforms.api_server_authority_runs import store_error_response
+            from hermes_agent.gateway.platforms.api_server import _openai_error
+            from hermes_agent.gateway.platforms.api_server_authority_runs import store_error_response
             return session_id, store_error_response(_openai_error, exc)
         except Exception as e:
-            from gateway.platforms.api_server import _error_response
+            from hermes_agent.gateway.platforms.api_server import _error_response
             logger.error("Error resolving the chat completions session: %s", e, exc_info=True)
             return session_id, _error_response(f"Internal server error: {e}", 500, err_type="server_error")
 
@@ -1115,7 +1115,7 @@ class OpenAICompatRoutesMixin:
         ``route`` is the logical endpoint (``/v1/...`` and its ``/p/<profile>/v1/...`` alias are the same
         route), folded into the key because the store keeps the fingerprint only as the slot's value.
         """
-        from gateway.platforms.api_server import _error_response, _idem_cache, _make_request_fingerprint
+        from hermes_agent.gateway.platforms.api_server import _error_response, _idem_cache, _make_request_fingerprint
         from hermes_agent.hermes_state_runtime import RuntimeStoreError
         idempotency_key = request.headers.get("Idempotency-Key")
         try:
@@ -1130,8 +1130,8 @@ class OpenAICompatRoutesMixin:
                 result, usage = await compute()
             return (result, usage), None
         except RuntimeStoreError as exc:
-            from gateway.platforms.api_server import _openai_error
-            from gateway.platforms.api_server_authority_runs import store_error_response
+            from hermes_agent.gateway.platforms.api_server import _openai_error
+            from hermes_agent.gateway.platforms.api_server_authority_runs import store_error_response
             return None, store_error_response(_openai_error, exc)
         except Exception as e:
             logger.error("Error running agent for %s: %s", log_label, e, exc_info=True)
@@ -1158,7 +1158,7 @@ class OpenAICompatRoutesMixin:
         gateway_session_key: str | None = None) -> web.StreamResponse:
         """Stream ``chat.completion.chunk`` frames from the agent's delta queue. On client
         disconnect the agent is interrupted (stops LLM calls), then its task wrapper cancelled."""
-        from gateway.platforms.api_server import (
+        from hermes_agent.gateway.platforms.api_server import (
             _abandon_agent_task, _chat_usage_payload, _resolve_media_to_data_urls, _sse_frame)
         response = await self._prepare_sse_response(request, session_id, gateway_session_key)
 
@@ -1261,7 +1261,7 @@ class OpenAICompatRoutesMixin:
         ``durable_key`` (canonical Idempotency-Key record) is written only once the admitted turn
         settled, so an exact retry replays this stream instead of admitting different history.
         """
-        from gateway.platforms.api_server import _abandon_agent_task, _redact_api_error_text
+        from hermes_agent.gateway.platforms.api_server import _abandon_agent_task, _redact_api_error_text
         response = await self._prepare_sse_response(request, session_id, gateway_session_key)
         st = _ResponsesStream(
             self, response, response_id=response_id, model=model, created_at=created_at,
@@ -1310,7 +1310,7 @@ class OpenAICompatRoutesMixin:
     async def _replay_sse_responses(self, request: web.Request, replay: dict[str, Any]) -> web.StreamResponse:
         """Re-emit a settled idempotent record as SSE. A record made by the streaming path replays
         its exact frames; one made by the nonstreaming path gets ``created`` + its terminal event."""
-        from gateway.platforms.api_server import _sse_frame
+        from hermes_agent.gateway.platforms.api_server import _sse_frame
         headers = replay.get('headers') or {}
         response = await self._prepare_sse_response(
             request, headers.get('X-Hermes-Session-Id'), headers.get('X-Hermes-Session-Key'))
@@ -1337,12 +1337,12 @@ class OpenAICompatRoutesMixin:
             # expanded: the first success already advanced the conversation, so re-expanding
             # would build a different admission payload and refuse the retry as a conflict.
             # Streaming and nonstreaming share the record: transport mode is not identity.
-            from gateway.platforms.api_server import _make_request_fingerprint
+            from hermes_agent.gateway.platforms.api_server import _make_request_fingerprint
             idempotency_scope = self._run_idempotency_scope(request)
             durable_key = (f'idem:{idempotency_scope}:{idempotency_key}',
                            _make_request_fingerprint(body, keys=_responses_fingerprint_keys(body)))
-            from gateway.platforms.api_server import _openai_error
-            from gateway.platforms.api_server_response_admissions import request_binding
+            from hermes_agent.gateway.platforms.api_server import _openai_error
+            from hermes_agent.gateway.platforms.api_server_response_admissions import request_binding
             response_store = self._current_response_store()
             binding = request_binding(self, request, durable_key)
             matches, replay = await response_store.off_loop(_matching_replay, response_store, durable_key[0], binding)
@@ -1366,7 +1366,7 @@ class OpenAICompatRoutesMixin:
 
     async def _handle_responses(self, request: web.Request) -> web.Response:
         """POST /v1/responses — OpenAI Responses API format."""
-        from gateway.platforms.api_server import (
+        from hermes_agent.gateway.platforms.api_server import (
             ThreadSafeAsyncQueue, _coerce_request_bool,
             _error_response, _invalid_request, _redact_api_error_text,
             _resolve_media_to_data_urls, _responses_usage_payload)
@@ -1395,14 +1395,14 @@ class OpenAICompatRoutesMixin:
             request, body, stream)
         if replayed is not None:
             return replayed
-        from gateway.platforms.api_server_response_admissions import prepare_context
+        from hermes_agent.gateway.platforms.api_server_response_admissions import prepare_context
         from hermes_agent.hermes_state_runtime import RuntimeStoreError
         try:
             context, error = await prepare_context(
                 self, request, body, gateway_session_key, durable_key, idempotency_scope, idempotency_key)
         except RuntimeStoreError as exc:
-            from gateway.platforms.api_server import _openai_error
-            from gateway.platforms.api_server_authority_runs import store_error_response
+            from hermes_agent.gateway.platforms.api_server import _openai_error
+            from hermes_agent.gateway.platforms.api_server_authority_runs import store_error_response
             return store_error_response(_openai_error, exc)
         if error is not None:
             return error
@@ -1505,7 +1505,7 @@ class OpenAICompatRoutesMixin:
 
     async def _handle_get_response(self, request: web.Request) -> web.Response:
         """GET /v1/responses/{response_id} — retrieve a stored response."""
-        from gateway.platforms.api_server import _error_response
+        from hermes_agent.gateway.platforms.api_server import _error_response
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -1518,7 +1518,7 @@ class OpenAICompatRoutesMixin:
 
     async def _handle_delete_response(self, request: web.Request) -> web.Response:
         """DELETE /v1/responses/{response_id} — delete a stored response."""
-        from gateway.platforms.api_server import _error_response
+        from hermes_agent.gateway.platforms.api_server import _error_response
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -1541,7 +1541,7 @@ class OpenAICompatRoutesMixin:
         ``tool_output_max_chars`` > 0 caps tool outputs / tool-call argument blobs in the
         stored copy (gateway.api_server.history_tool_output_max_chars; 0 = store verbatim).
         """
-        from gateway.platforms.api_server import APIServerAdapter
+        from hermes_agent.gateway.platforms.api_server import APIServerAdapter
         prior = list(conversation_history)
         current_user = {"role": "user", "content": user_message}
         if isinstance(result, dict) and isinstance(result.get("_turn_user_row"), dict):
@@ -1564,7 +1564,7 @@ class OpenAICompatRoutesMixin:
         conversation_history: list[dict[str, Any]], user_message: Any, result: dict[str, Any],
     ) -> int:
         """Index where this turn starts in a transcript-shaped result["messages"] (0 = all)."""
-        from gateway.platforms.api_server_turn_boundary import response_turn_start_index
+        from hermes_agent.gateway.platforms.api_server_turn_boundary import response_turn_start_index
         return response_turn_start_index(conversation_history, user_message, result)
 
     @classmethod
@@ -1597,7 +1597,7 @@ class OpenAICompatRoutesMixin:
     def _extract_output_items(result: dict[str, Any], start_index: int = 0, *, response_id=None) -> list[dict[str, Any]]:
         """Output items from ``result["messages"][start_index:]``: ``function_call`` per assistant
         tool_call, ``function_call_output`` per tool message, then the final ``message``."""
-        from gateway.platforms.api_server import _redact_api_error_text
+        from hermes_agent.gateway.platforms.api_server import _redact_api_error_text
         items: list[dict[str, Any]] = []
         messages = result.get("messages", [])
         if start_index > 0:
@@ -1628,6 +1628,6 @@ class OpenAICompatRoutesMixin:
             result.get("error", "(No response generated)"))
         items.append(_message_item(final))
         if response_id is not None:
-            from gateway.platforms.api_server_response_identity import identify_output
+            from hermes_agent.gateway.platforms.api_server_response_identity import identify_output
             return identify_output(items, response_id)
         return items

@@ -1,14 +1,14 @@
 """API run controls resolve durable claims, never adapter agent/task ownership."""
 from dataclasses import asdict
 
-from gateway.session_contract import SessionActor, SessionRef
-from gateway.session_results import admission_result
+from hermes_agent.gateway.session_contract import SessionActor, SessionRef
+from hermes_agent.gateway.session_results import admission_result
 from hermes_agent.hermes_state_runtime import RuntimeStoreError, _row
 
 
 def _authority(adapter):
     """The routed profile's authority: ``/p/<profile>/`` middleware already entered its scope."""
-    from gateway.session_authorities import active_authority
+    from hermes_agent.gateway.session_authorities import active_authority
     return active_authority(adapter.gateway_runner)
 
 
@@ -40,8 +40,8 @@ async def continued_session(adapter, session_id, request_id=None):
     ``storage_unavailable`` (``store_error_response``), as for the header-less chat lookup."""
     import asyncio
     import sqlite3
-    from gateway.platforms.api_server import _openai_error
-    from gateway.session_api import continued_api_session
+    from hermes_agent.gateway.platforms.api_server import _openai_error
+    from hermes_agent.gateway.session_api import continued_api_session
     try:
         return await asyncio.to_thread(
             continued_api_session, adapter.gateway_runner, session_id, request_id), None
@@ -84,7 +84,7 @@ def run_projection(adapter, run_id):
             # The run SSE's own mapper: a `partial` or `completed: false` turn (iteration
             # budget, truncation) settles with outcome `completed` but is a failed run there,
             # so polling must not report `completed` for the same receipt.
-            from gateway.platforms.api_server_runs import terminal_run_status
+            from hermes_agent.gateway.platforms.api_server_runs import terminal_run_status
             status = terminal_run_status(result)[0]
     pending, progress = [], {}
     live = authority.sessions.get(row['target_session_id'])
@@ -99,7 +99,7 @@ def run_projection(adapter, run_id):
 
 
 async def send_clarify(adapter, *, chat_id, **kwargs):
-    from gateway.platforms.base import SendResult
+    from hermes_agent.gateway.platforms.base import SendResult
     authority = _authority(adapter)
     if authority is None or chat_id not in authority.sessions:
         return SendResult(success=False, error='No canonical API session')

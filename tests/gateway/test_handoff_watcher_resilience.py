@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway import run
+from hermes_agent.gateway import run
 
 
 def _running_flag(ticks):

@@ -85,7 +85,7 @@ def resolve_delivery_transport(platform: Platform, config: GatewayConfig,
 
 def looks_like_telegram_private_chat_id(chat_id: Optional[str]) -> bool:
     """True when ``chat_id`` is a positive int — Telegram's private-chat shape (groups/channels are negative).
-    Single source of truth, reused by the handoff seed path in ``gateway/run.py`` so handoff-created DM
+    Single source of truth, reused by the handoff seed path in ``hermes_agent/gateway/run.py`` so handoff-created DM
     topics key the same way as inbound DM-topic messages."""
     try:
         return int(chat_id) > 0
@@ -357,7 +357,7 @@ class DeliveryRouter:
             send_metadata["thread_id"] = await _ensure_named_dm_topic(adapter, target.chat_id, named_topic, refresh=True)
             send_metadata["telegram_dm_topic_created_for_send"] = True
         if error is not None:
-            from gateway.platforms.base import BasePlatformAdapter
+            from hermes_agent.gateway.platforms.base import BasePlatformAdapter
             if BasePlatformAdapter._is_partial_delivery(result):
                 raise PartialDeliveryError(error, result)
             raise DeliverySendError(

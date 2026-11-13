@@ -18,10 +18,10 @@ def _profile(home, model, port, key):
 
 
 def _owner(home):
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import SessionAuthority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     import hermes_agent.hermes_state_runtime as rt
     store = SessionStore(home / 'sessions', GatewayConfig())
     db = store._db
@@ -44,18 +44,18 @@ async def _create(owner, authority, home, request_id, **extra):
 
 
 def _route(runner, live):
-    from gateway.run_turn_prepare import GatewayTurnPrepareMixin
+    from hermes_agent.gateway.run_turn_prepare import GatewayTurnPrepareMixin
     model, runtime = GatewayTurnPrepareMixin._resolve_session_agent_runtime(runner, source=live.source)
     return model, runtime.get('base_url'), runtime.get('api_key')
 
 
 @pytest.mark.asyncio
 async def test_follow_profile_session_runs_the_profiles_current_route_and_a_pick_until_superseded(monkeypatch):
-    from gateway import run
+    from hermes_agent.gateway import run
     from hermes_constants import get_hermes_home
     home = get_hermes_home()
     home.mkdir(parents=True, exist_ok=True)
-    # gateway.run binds its home at first import; another test module may have imported it under
+    # hermes_agent.gateway.run binds its home at first import; another test module may have imported it under
     # a different HERMES_HOME. The loader itself is real.
     monkeypatch.setattr(run, '_hermes_home', home)
     _profile(home, 'old', 1, 'k-old')

@@ -1,9 +1,9 @@
 """Regression: a profile route declared by ``user_id`` must resolve inside admission.
 
-Background: ``gateway/run.py::_route_profile_for_source`` (ingress stamping) matches
+Background: ``hermes_agent/gateway/run.py::_route_profile_for_source`` (ingress stamping) matches
 ``profile_routes`` with the sender's ``user_id``, so a route written as
 ``user_id: "+15550000001"`` stamps its profile onto the source. The admission path
-matches the same routes again in ``gateway/session_ingress_context.py::_binding`` — but
+matches the same routes again in ``hermes_agent/gateway/session_ingress_context.py::_binding`` — but
 it never passed ``user_id``, and ``ProfileRoute.matches`` returns ``False`` for a route
 that declares a ``user_id`` when none is supplied. The ``user_id`` route therefore
 cannot match there, a catch-all route wins, and the final
@@ -19,14 +19,14 @@ from pathlib import Path
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.profile_routing import parse_profile_routes
-from gateway.run import GatewayRunner
-from gateway.run_runtime import initialize_gateway_runtime
-from gateway.runtime_ownership import process_ownership
-from gateway.session import SessionSource
-from gateway.session_ingress_context import (
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.profile_routing import parse_profile_routes
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.run_runtime import initialize_gateway_runtime
+from hermes_agent.gateway.runtime_ownership import process_ownership
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.session_ingress_context import (
     capture_provenance, native_callback, register_transport_home)
 
 from hermes_agent.hermes_state_runtime import RuntimeStoreError

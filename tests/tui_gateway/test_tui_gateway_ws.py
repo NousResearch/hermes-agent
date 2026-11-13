@@ -431,7 +431,7 @@ _INTERACTIVE = frozenset({"session:create", "session:read", "session:submit", "s
 def _drive_authority_fallback(monkeypatch, *, capabilities, profile_id, method):
     """One RPC through handle_ws on an authority connection whose dispatch answers -32601, so the
     request takes the legacy-fallback branch (R2-M3). Returns the reply frame for id 1."""
-    from gateway import session_controls
+    from hermes_agent.gateway import session_controls
 
     class FakeConnection:
         def __init__(self, authority, transport, identity, operator=False):
@@ -473,7 +473,7 @@ def _drive_authority_fallback(monkeypatch, *, capabilities, profile_id, method):
 
 def test_ready_frame_advertises_a_session_authority_only_when_one_is_bound(monkeypatch):
     """An explicit TUI attach (HERMES_TUI_GATEWAY_URL) negotiates the canonical wire from this flag."""
-    from gateway import session_controls
+    from hermes_agent.gateway import session_controls
 
     class FakeConnection:
         def __init__(self, authority, transport, identity, operator=False):
@@ -546,7 +546,7 @@ def test_legacy_fallback_never_writes_an_authority_owned_session(monkeypatch, tm
     change the authority's state.db behind its receipts and revision fence (and a delete would leave
     the authority holding a live session whose row is gone)."""
     from types import SimpleNamespace
-    from gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 

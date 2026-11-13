@@ -1,8 +1,8 @@
 """Regression for #139227: adopted local chats stay visible in the bot roster."""
 from types import SimpleNamespace
 
-from gateway.session_contract import SessionActor
-from gateway.session_group_controls import _profiles
+from hermes_agent.gateway.session_contract import SessionActor
+from hermes_agent.gateway.session_group_controls import _profiles
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_local_migration import bind_legacy_target
 

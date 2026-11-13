@@ -27,7 +27,7 @@ def _skipped(var_name, reason, message):
 @contextlib.contextmanager
 def secret_prompt_scope(turn, agent):
     """Bind this turn's secret-capture callback (a ContextVar, so parallel tool workers inherit it)."""
-    from gateway.run_turn_progress import local_viewer_turn
+    from hermes_agent.gateway.run_turn_progress import local_viewer_turn
     if not local_viewer_turn(turn):
         yield
         return
@@ -35,7 +35,7 @@ def secret_prompt_scope(turn, agent):
     authority, session_id, _generation = turn._approval_owner
 
     def callback(var_name, prompt, metadata=None):
-        from gateway.session_server_requests import ask_viewer
+        from hermes_agent.gateway.session_server_requests import ask_viewer
         live = authority.sessions.get(session_id)
         if live is None:
             return _skipped(var_name, "cancelled", "Secret setup was skipped.")

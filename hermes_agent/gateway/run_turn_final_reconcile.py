@@ -12,10 +12,10 @@ import inspect
 import logging
 from typing import Any, Callable, Optional
 
-from gateway.delivery_ledger import flood_wait_seconds, is_flood_error
-from gateway.platforms.base import _SEND_RETRY_INLINE_WAIT_CAP_SECS
+from hermes_agent.gateway.delivery_ledger import flood_wait_seconds, is_flood_error
+from hermes_agent.gateway.platforms.base import _SEND_RETRY_INLINE_WAIT_CAP_SECS
 
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 _FLOOD_WAIT_SLACK_SECS = 1.0
 _MAX_FLOOD_WAITS = 2
@@ -44,7 +44,7 @@ def _edit_carries_whole(adapter: Any, chat_id: str, content: str) -> bool:
     Slack cuts the FORMATTED text (``&`` -> ``&amp;``), others the raw text: both must fit."""
     if getattr(adapter, "SPLITS_OVERSIZED_FINAL_EDIT", False) is True:
         return True
-    from gateway.platforms.base import BasePlatformAdapter
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter
     limit, len_fn = getattr(adapter, "MAX_MESSAGE_LENGTH", 4096), len
     if isinstance(adapter, BasePlatformAdapter):
         limit, len_fn = adapter.max_message_length_for_chat(chat_id), adapter.message_len_fn_for_chat(chat_id)

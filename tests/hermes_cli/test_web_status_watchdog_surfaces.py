@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone, UTC
 
 import pytest
 
-import gateway.status as _gw_status
+import hermes_agent.gateway.status as _gw_status
 
 
 def _iso_age(seconds_ago: float) -> str:

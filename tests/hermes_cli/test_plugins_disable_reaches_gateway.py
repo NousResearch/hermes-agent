@@ -42,7 +42,7 @@ def _gateway(monkeypatch, answer, *, shared=None):
         calls.append((Path(target), profile_home))
         return answer if profile_home is None else shared
 
-    monkeypatch.setattr("gateway.control_socket.reload_gateway_plugins", reload_gateway_plugins)
+    monkeypatch.setattr("hermes_agent.gateway.control_socket.reload_gateway_plugins", reload_gateway_plugins)
     return calls
 
 
@@ -155,7 +155,7 @@ def test_enable_prints_only_the_outcome_that_applies(home, monkeypatch, capsys, 
                "activation": {"activated_now": {"hooks": 1}} if reloaded else None}
     monkeypatch.setattr(plugins_activation, "activate_plugin_now", lambda *_a, **_k: outcome)
     # Not reloaded: a gateway runs but did not answer the reload (an older one), so it needs a restart.
-    monkeypatch.setattr("gateway.status.get_running_pid", lambda *_a, **_k: 4242)
+    monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda *_a, **_k: 4242)
 
     plugins_cmd.cmd_enable("probe", allow_tool_override=False)
 

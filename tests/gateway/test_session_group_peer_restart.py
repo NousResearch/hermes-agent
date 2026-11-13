@@ -4,8 +4,8 @@ import asyncio
 
 import pytest
 
-from gateway import hosted_room_driver as driver, hosted_rooms
-from gateway.run import _profile_runtime_scope
+from hermes_agent.gateway import hosted_room_driver as driver, hosted_rooms
+from hermes_agent.gateway.run import _profile_runtime_scope
 from hermes_agent.hermes_state_runtime import list_session_admissions
 from tests.gateway.test_api_unknown_resolution import (
     _AUTH_HEADERS, _close_fixture, _restarted_api_runs,

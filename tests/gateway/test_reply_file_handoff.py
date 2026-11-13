@@ -15,8 +15,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from plugins.platforms.telegram import adapter as telegram_adapter
 from plugins.platforms.telegram.adapter import TelegramAdapter
 

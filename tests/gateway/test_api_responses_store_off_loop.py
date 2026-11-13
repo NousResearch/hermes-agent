@@ -20,8 +20,8 @@ _AUTH = {'Authorization': 'Bearer ' + _API_KEY}
 @pytest.mark.asyncio
 @pytest.mark.parametrize('stream', [False, True])
 async def test_response_store_writes_leave_the_loop_and_read_back_at_once(api, owner, monkeypatch, stream):
-    from gateway.platforms.api_server_response_store import ResponseStore
-    from gateway.session_results import execution_result
+    from hermes_agent.gateway.platforms.api_server_response_store import ResponseStore
+    from hermes_agent.gateway.session_results import execution_result
 
     async def handle(event):
         execution_result.get()['result'] = {'final_response': 'ok', 'messages': []}
@@ -63,7 +63,7 @@ async def test_response_store_writes_leave_the_loop_and_read_back_at_once(api, o
 @pytest.mark.asyncio
 @pytest.mark.parametrize('stream', [False, True])
 async def test_store_false_keeps_no_snapshot_and_no_conversation_pointer(api, owner, stream):
-    from gateway.session_results import execution_result
+    from hermes_agent.gateway.session_results import execution_result
 
     async def handle(event):
         execution_result.get()['result'] = {'final_response': 'ok', 'messages': []}
@@ -94,7 +94,7 @@ async def test_store_false_keeps_no_snapshot_and_no_conversation_pointer(api, ow
 async def test_keyed_admission_and_retry_never_take_the_store_lock_on_the_loop(api, owner):
     """The store lock is held by workers for a whole persistence unit; a loop-side wait on it
     freezes every other session for as long as that write takes."""
-    from gateway.session_results import execution_result
+    from hermes_agent.gateway.session_results import execution_result
 
     async def handle(event):
         execution_result.get()['result'] = {'final_response': 'ok', 'messages': []}

@@ -24,8 +24,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import host_attach
-from gateway import host_rendezvous as hr
+from hermes_agent.gateway import host_attach
+from hermes_agent.gateway import host_rendezvous as hr
 from hermes_cli import gateway as gw
 
 
@@ -68,7 +68,7 @@ def host_owner(tmp_path, monkeypatch):
     assert hr.claim_host_lock(hr.ROLE_GATEWAY)[0] is hr.HostLockOutcome.ACQUIRED
     _write_record(child.pid, home, ("default", "ops", "coder"))
     monkeypatch.setattr(
-        "gateway.control_socket.identify_gateway",
+        "hermes_agent.gateway.control_socket.identify_gateway",
         lambda dialled, **kw: {"pid": child.pid, "hermes_home": str(home),
                                "served_profiles": ["default", "ops", "coder"]})
     try:
@@ -228,7 +228,7 @@ def test_restart_all_refuses_to_sweep_a_host_multiplexer_owned_by_another_profil
 
     monkeypatch.setattr(gw, "kill_gateway_processes", _never)
     monkeypatch.setattr(gw, "_stop_installed_service", lambda system: False)
-    monkeypatch.setattr("gateway.status._get_process_hermes_home",
+    monkeypatch.setattr("hermes_agent.gateway.status._get_process_hermes_home",
                         lambda: Path(tmp_path / "root" / "profiles" / "ops"))
 
     with pytest.raises(SystemExit) as exc:
@@ -243,7 +243,7 @@ def test_restart_all_does_not_attach_to_the_process_it_just_stopped(
     Without both, the re-entered ``gateway run`` read the corpse's record, decided ATTACH and
     exited 0 — a restart that silently left the host with no gateway at all.
     """
-    monkeypatch.setattr("gateway.status._get_process_hermes_home", lambda: host_owner.home)
+    monkeypatch.setattr("hermes_agent.gateway.status._get_process_hermes_home", lambda: host_owner.home)
     monkeypatch.setattr(gw, "_stop_installed_service", lambda system: False)
     monkeypatch.setattr(gw, "kill_gateway_processes", lambda **k: 1)
     monkeypatch.setattr(gw, "_wait_for_api_server_port_free", lambda *a, **k: None)
@@ -285,7 +285,7 @@ def test_a_supervised_attach_is_retried_not_parked(monkeypatch, capsys):
     """78 parks the unit for good; "someone serves me right now" is a transient observation."""
     owner = host_attach.HostGateway(4321, Path("/somewhere"), ("default", "other"))
     monkeypatch.setattr(
-        "gateway.host_attach.decide",
+        "hermes_agent.gateway.host_attach.decide",
         lambda home, replace=False: host_attach.HostAttachDecision(
             host_attach.ATTACH, "attached", owner, transient=True))
     monkeypatch.setattr(gw, "_running_under_gateway_supervisor", lambda: True)
@@ -302,7 +302,7 @@ def test_a_refusal_lands_in_the_profile_logs_not_only_on_stdout(monkeypatch, cap
     parks the unit. Nothing in the profile's own logs said why (field report on #118097)."""
     owner = host_attach.HostGateway(4321, Path("/somewhere"), ("default",))
     monkeypatch.setattr(
-        "gateway.host_attach.decide",
+        "hermes_agent.gateway.host_attach.decide",
         lambda home, replace=False: host_attach.HostAttachDecision(
             host_attach.REFUSE, host_attach._refuse_message(owner, "nous"), owner))
 
@@ -324,7 +324,7 @@ def test_replace_is_not_eaten_by_the_cli_guard(monkeypatch):
         return host_attach.HostAttachDecision(
             host_attach.REPLACE_HOST if replace else host_attach.ATTACH, "", owner)
 
-    monkeypatch.setattr("gateway.host_attach.decide", _decide)
+    monkeypatch.setattr("hermes_agent.gateway.host_attach.decide", _decide)
     monkeypatch.setattr(gw, "_guard_named_profile_under_multiplexer",
                         lambda **k: pytest.fail("--replace must not fall through to the guard"))
 

@@ -25,11 +25,11 @@ class Hold:
 
 
 async def authority_route(monkeypatch, executed, hold=None):
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.platforms.base import SendResult
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_results import execution_result
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.base import SendResult
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_results import execution_result
     from plugins.platforms.discord.adapter import DiscordAdapter
 
     monkeypatch.setenv("DISCORD_ALLOWED_USERS", "42")
@@ -68,7 +68,7 @@ def admissions(runner, authority, source):
 
 
 async def start_human_turn(runner, adapter, authority, source, hold):
-    from gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.platforms.event import MessageEvent
 
     await adapter.handle_message(MessageEvent(text="A", source=source, message_id="A"))
     if hold is not None:
@@ -83,7 +83,7 @@ async def start_human_turn(runner, adapter, authority, source, hold):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("busy", [False, True], ids=["idle", "busy"])
 async def test_authority_route_refuses_a_wake_while_draining(monkeypatch, busy):
-    from gateway.wake import WakeNotAccepted, deliver_wake
+    from hermes_agent.gateway.wake import WakeNotAccepted, deliver_wake
 
     executed, hold = [], Hold() if busy else None
     runner, adapter, authority, source = await authority_route(monkeypatch, executed, hold)
@@ -104,8 +104,8 @@ async def test_authority_route_refuses_a_wake_while_draining(monkeypatch, busy):
 
 @pytest.mark.asyncio
 async def test_authority_route_refuses_a_wake_when_the_drain_starts_during_admission(monkeypatch):
-    import gateway.session_automation as automation
-    from gateway.wake import WakeNotAccepted, deliver_wake
+    import hermes_agent.gateway.session_automation as automation
+    from hermes_agent.gateway.wake import WakeNotAccepted, deliver_wake
 
     executed = []
     runner, adapter, authority, source = await authority_route(monkeypatch, executed)

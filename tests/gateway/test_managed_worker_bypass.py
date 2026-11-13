@@ -10,14 +10,14 @@ import pytest
 
 
 def _policy(tmp_path, **extra):
-    from gateway.session_local import _bypass_policy
+    from hermes_agent.gateway.session_local import _bypass_policy
     return _bypass_policy({'cwd': str(tmp_path), 'model': 'safe-fixture', 'provider': 'custom',
                            'base_url': 'http://127.0.0.1:9/v1', **extra}, private_secrets={})
 
 
 def test_bypass_policy_routes_to_managed_worker_and_bootstrap_carries_flags(tmp_path, monkeypatch):
-    from gateway import session_managed_worker as smw
-    from gateway.session_policy import build_policy
+    from hermes_agent.gateway import session_managed_worker as smw
+    from hermes_agent.gateway.session_policy import build_policy
     from agent.managed_worker import validate_bootstrap
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
@@ -30,11 +30,11 @@ def test_bypass_policy_routes_to_managed_worker_and_bootstrap_carries_flags(tmp_
     authority = SimpleNamespace(sessions={'sid': live}, runner=None, profile_id=str(tmp_path))
     ref = SimpleNamespace(session_id='sid')
     for policy, expected in ((safe, safe), (config_only, config_only), (ordinary, None), (opted, opted)):
-        monkeypatch.setattr('gateway.session_policy.policy_for_source', lambda runner, source, p=policy: p)
+        monkeypatch.setattr('hermes_agent.gateway.session_policy.policy_for_source', lambda runner, source, p=policy: p)
         assert smw.managed_policy(authority, ref) is expected
     # A bypass launch never depends on the profile's gateway.managed_workers opt-in.
     assert 'gateway' not in safe.config() or safe.config()['gateway'].get('managed_workers') is not True
-    monkeypatch.setattr('gateway.session_policy.launch_key', lambda authority, policy: None)
+    monkeypatch.setattr('hermes_agent.gateway.session_policy.launch_key', lambda authority, policy: None)
     row = {'payload': {'text': 'SAFE_PROBE'}}
     scope = {'profile_id': str(tmp_path), 'session_id': 'sid', 'execution_id': 'x', 'generation': 1,
              'pid': os.getpid(), 'birth': 0, 'secret': 's', 'epoch': 1}

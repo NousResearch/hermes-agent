@@ -7,13 +7,13 @@ rendered through the adapter that answers that chat when the prompt is raised (t
 resolver), never through the finished turn's stream or typing state, and never projected onto its
 canonical execution generation, which has settled by then and would refuse it.
 """
-from gateway.turn_context import TurnContext
+from hermes_agent.gateway.turn_context import TurnContext
 
 
 def approval_transport(turn):
-    from gateway.run_turn_progress import local_viewer_turn
-    from gateway.session_context import NON_MESSAGING_SESSION_SURFACES
-    from gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.run_turn_progress import local_viewer_turn
+    from hermes_agent.gateway.session_context import NON_MESSAGING_SESSION_SURFACES
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
     # The closure below must not keep the finished turn alive: capture what it needs, not the turn.
     ctx, runner = turn._ctx, getattr(turn, "_runner", None)
     origin = TurnContext(

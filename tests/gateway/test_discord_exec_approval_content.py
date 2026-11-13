@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from agent.i18n import t
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.discord.adapter import DiscordAdapter
 
 

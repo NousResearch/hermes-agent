@@ -21,7 +21,7 @@ Three defects, each pinned here:
 3. MEDIA-POLICY ENV BRIDGE IS GATEWAY-ONLY: ``gateway.strict`` /
    ``media_delivery_allow_dirs`` / ``trust_recent_files`` from config.yaml
    are exported to the env vars ``validate_media_delivery_path`` reads ONLY
-   in gateway startup (gateway/run.py). A CLI-process manual run filters
+   in gateway startup (hermes_agent/gateway/run.py). A CLI-process manual run filters
    MEDIA paths under different policy than the gateway's scheduled tick.
 """
 
@@ -65,7 +65,7 @@ def _install_fake_slack_sender(monkeypatch, result_factory):
         })
         return result_factory(calls[-1])
 
-    import gateway.platform_registry as reg_mod
+    import hermes_agent.gateway.platform_registry as reg_mod
 
     entry = reg_mod.platform_registry.get("slack")
     if entry is None:
@@ -94,7 +94,7 @@ def slack_platform_config(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(home))
     # Config caches are process-global; clear them so the temp HERMES_HOME wins.
     try:
-        from gateway import config as gwconfig
+        from hermes_agent.gateway import config as gwconfig
 
         for attr in ("_config_cache", "_CONFIG_CACHE", "_cached_config"):
             if hasattr(gwconfig, attr):
@@ -235,11 +235,11 @@ class TestMediaPolicyEnvBridge:
         for var in ("HERMES_MEDIA_DELIVERY_STRICT", "HERMES_MEDIA_ALLOW_DIRS"):
             monkeypatch.delenv(var, raising=False)
 
-        from gateway.media_policy import apply_media_policy_env
+        from hermes_agent.gateway.media_policy import apply_media_policy_env
 
         apply_media_policy_env()
 
-        from gateway.platforms.base import BasePlatformAdapter
+        from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
         kept = BasePlatformAdapter.filter_media_delivery_paths([(str(media), False)])
         assert kept, (

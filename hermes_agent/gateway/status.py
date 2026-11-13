@@ -22,14 +22,14 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, NamedTuple, Optional
 from hermes_dir_acl import make_user_dir
 
-from gateway.status_inline_source import (
+from hermes_agent.gateway.status_inline_source import (
     command_line_runs_inline_source,
     inline_bootstrap_argv,
     inline_source_flag_index,
 )
 from hermes_constants import _get_platform_default_hermes_home, get_hermes_home, get_process_hermes_home
 from hermes_cli._subprocess_compat import pid_exists_stdlib
-from gateway.status_lock_dir import unusable_lock_dir, unusable_lock_dir_recovered
+from hermes_agent.gateway.status_lock_dir import unusable_lock_dir, unusable_lock_dir_recovered
 from utils import atomic_json_write
 
 if sys.platform == "win32":
@@ -324,7 +324,7 @@ def _get_lock_dir() -> Path:
     Scope is the **OS user**, not the kernel host: separate users have separate ``$HOME``s,
     separate ``~/.hermes`` profile roots and separate credentials, so "one gateway per host"
     means "one per host per OS user". Holds the token-scoped locks (:func:`acquire_scoped_lock`)
-    and the host-role lock + rendezvous record (``gateway/host_rendezvous.py``); the per-home
+    and the host-role lock + rendezvous record (``hermes_agent/gateway/host_rendezvous.py``); the per-home
     ``gateway.pid``/``gateway.lock`` above deliberately stay under each profile's HERMES_HOME.
     """
     override = os.getenv("HERMES_GATEWAY_LOCK_DIR")
@@ -372,7 +372,7 @@ def normalize_updated_at(value: Any) -> Optional[str]:
     return None
 
 
-# ``exit_reason`` values the out-of-loop watchdogs (gateway/shutdown_watchdog.py) stamp together with
+# ``exit_reason`` values the out-of-loop watchdogs (hermes_agent/gateway/shutdown_watchdog.py) stamp together with
 # ``gateway_state: degraded`` right before they hard-exit a wedged process (#113372).
 WATCHDOG_EXIT_REASONS = frozenset({"loop_liveness_watchdog", "shutdown_watchdog"})
 
@@ -571,8 +571,8 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     # inside one JXA script string; the gateway itself is its child and is matched on its own command line.
     if basenames[0] == "osascript":
         return None
-    # Gateway-dedicated entrypoints carry no subcommand to inspect (``python -m gateway.run`` is the
-    # module spelling of the same script: its PID record renders argv as ``gateway/run.py``, and a
+    # Gateway-dedicated entrypoints carry no subcommand to inspect (``python -m hermes_agent.gateway.run`` is the
+    # module spelling of the same script: its PID record renders argv as ``hermes_agent/gateway/run.py``, and a
     # liveness probe that read the live ``-m`` cmdline as "not a gateway" made every fixture-launched
     # standalone owner invisible to the multiplex preflight).
     if any(t == "gateway/run.py" or t.endswith("/gateway/run.py") for t in tokens):
@@ -745,7 +745,7 @@ def _host_gateway_serves_home(pid: int, profile_home: Path) -> bool:
     served set is the only proof; the argv rule stays as the fallback when no record exists.
     """
     try:
-        from gateway.host_attach import host_gateway, profile_name_for_home
+        from hermes_agent.gateway.host_attach import host_gateway, profile_name_for_home
 
         owner = host_gateway()
     except Exception:
@@ -799,7 +799,7 @@ def _build_pid_record() -> dict:
 
 def _get_code_identity_fields() -> dict[str, Any]:
     """Code identity of THIS process for ``gateway_state.json`` (restart picked up new code?).
-    Lazy import keeps ``gateway.status`` free of ``hermes_cli`` at import time. Never raises.
+    Lazy import keeps ``hermes_agent.gateway.status`` free of ``hermes_cli`` at import time. Never raises.
 
     A gateway keeps serving the module versions it imported at startup, so stamping the identity into
     ``gateway_state.json`` lets `hermes update` (and the dashboard) prove whether a running gateway actually
@@ -984,7 +984,7 @@ def _release_file_lock(handle) -> None:
 
 def acquire_gateway_runtime_lock() -> bool:
     """Reserve the launch profile without unlinking inaccessible lock inodes."""
-    from gateway.runtime_ownership import process_ownership, OwnershipConflict
+    from hermes_agent.gateway.runtime_ownership import process_ownership, OwnershipConflict
     try:
         process_ownership.reserve([_get_process_hermes_home()])
     except (OwnershipConflict, OSError):
@@ -994,12 +994,12 @@ def acquire_gateway_runtime_lock() -> bool:
 
 def release_gateway_runtime_lock() -> None:
     """Release only this process's profile reservations, never their lock files."""
-    from gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.runtime_ownership import process_ownership
     process_ownership.close()
     _clear_running_pid_cache()
 
 def owns_gateway_runtime_lock() -> bool:
-    from gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.runtime_ownership import process_ownership
     return process_ownership.owns(_get_process_hermes_home())
 
 def _probe_lock_file(handle) -> bool:
@@ -1296,7 +1296,7 @@ def multiplexer_liveness_for_profile(profile_dir: Path) -> Optional[tuple[int, d
     is ``profile_dir``; None for a home it does not serve or when no gateway owns the host role.
 
     Multiplex-only: ``default`` is just another served profile, not the owner of a private topology —
-    resolving from the host rendezvous record (``gateway/host_topology.py``) is what lets it be
+    resolving from the host rendezvous record (``hermes_agent/gateway/host_topology.py``) is what lets it be
     reported as SERVED rather than only as owner. A served profile owns no
     ``gateway.pid``/``gateway_state.json`` (#97120), so every PID-file rung of the dashboard ladder
     reports it stopped while ``hermes -p X status`` says running — the two must agree.
@@ -1304,7 +1304,7 @@ def multiplexer_liveness_for_profile(profile_dir: Path) -> Optional[tuple[int, d
     name = profile_name_for_home(Path(profile_dir))
     if not name:
         return None
-    from gateway.host_topology import host_gateway_topology
+    from hermes_agent.gateway.host_topology import host_gateway_topology
     from hermes_cli.gateway import named_profile_served_by_running_multiplexer
     from hermes_cli.gateway_multiplex_served import live_default_gateway_pid
     from hermes_constants import get_default_hermes_root
@@ -1331,8 +1331,8 @@ def multiplexer_liveness_for_profile(profile_dir: Path) -> Optional[tuple[int, d
 
 
 def shared_listener_mirror_platforms(runtime: Optional[dict[str, Any]], profile: str) -> dict[str, Any]:
-    """Entries a served ``profile`` mirrors from the default; see ``gateway.status_served``."""
-    from gateway.status_served import served_profile_mirror_platforms
+    """Entries a served ``profile`` mirrors from the default; see ``hermes_agent.gateway.status_served``."""
+    from hermes_agent.gateway.status_served import served_profile_mirror_platforms
     return served_profile_mirror_platforms(runtime, profile)
 
 
@@ -1509,7 +1509,7 @@ def acquire_scoped_lock(
 
     ``metadata={"owner_kind": "process"}`` allows a non-gateway owner such as
     a setup process. Its PID/start-time identity still gates stale recovery.
-    Raises :class:`gateway.status_lock_dir.ScopedLockDirUnusable` (logged once per dir with the repair) when this token may
+    Raises :class:`hermes_agent.gateway.status_lock_dir.ScopedLockDirUnusable` (logged once per dir with the repair) when this token may
     not use the lock dir at all."""
     lock_path = _get_scope_lock_path(scope, identity)
     try:
@@ -1523,7 +1523,7 @@ def acquire_scoped_lock(
 def _acquire_scoped_lock_at(
     lock_path: Path, scope: str, identity: str, metadata: Optional[dict[str, Any]]
 ) -> tuple[bool, Optional[dict[str, Any]]]:
-    from gateway.status_scoped_locks import _scoped_lock_record_is_stale
+    from hermes_agent.gateway.status_scoped_locks import _scoped_lock_record_is_stale
 
     make_user_dir(lock_path.parent, parents=True, exist_ok=True)
     # An existing lock this token may not read (left by an elevated gateway) must raise here:
@@ -1550,7 +1550,7 @@ def _acquire_scoped_lock_at(
         # while we are alive). Requiring start_time equality here falsely rejects reconnects when the
         # on-disk record has ``start_time: null`` (older writers / psutil failure at first write) while the fresh
         # record has a real value — the gateway then reports itself as the foreign squatter of its token (#81468).
-        from gateway.status_scoped_locks import scoped_lock_pid_is_ours
+        from hermes_agent.gateway.status_scoped_locks import scoped_lock_pid_is_ours
         if existing_pid == os.getpid() and scoped_lock_pid_is_ours(existing):
             _write_json_file(lock_path, record)
             return True, existing
@@ -1964,7 +1964,7 @@ def get_running_pid(
     resolved_pid_path = pid_path or _get_pid_path()
     resolved_lock_path = _get_gateway_lock_path(resolved_pid_path)
     if is_gateway_runtime_lock_active(resolved_lock_path):
-        from gateway.status_scoped_locks import scoped_lock_pid_is_ours
+        from hermes_agent.gateway.status_scoped_locks import scoped_lock_pid_is_ours
         records = (_read_pid_record(resolved_pid_path), _read_gateway_lock_record(resolved_lock_path))
         expected_home = pid_path.parent if pid_path is not None else None
         saw_live_pid = foreign_live_pid = False
@@ -2021,7 +2021,7 @@ def get_running_pid_identity_strict(pid_path: Path) -> Optional[tuple[int, float
     # The PID file is advisory beside a HELD lock: a launch-service gateway keeps serving after its
     # gateway.pid was unlinked (#110166) and --replace force-unlinks the old one (#123430) or leaves
     # it behind (#143331); the lock record validated against the live process below is the proof.
-    from gateway.status_pid_records import strict_identity_records
+    from hermes_agent.gateway.status_pid_records import strict_identity_records
     records = strict_identity_records(resolved_pid_path, lock_record, pid_exists)
     if not all(records):
         raise RuntimeError("gateway PID or lock metadata is malformed")

@@ -12,7 +12,7 @@ import sqlite3
 
 import pytest
 
-from gateway import delivery_ledger as dl
+from hermes_agent.gateway import delivery_ledger as dl
 
 
 class _TrackingConnection:

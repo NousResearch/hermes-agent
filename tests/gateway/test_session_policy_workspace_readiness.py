@@ -4,7 +4,7 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_removed_workspace_reads_and_moves_but_refuses_a_turn(tmp_path, monkeypatch):
-    from gateway.session_policy import policy_for_source, policy_scope
+    from hermes_agent.gateway.session_policy import policy_for_source, policy_scope
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     from tests.gateway.test_session_policy_verbs import _mutation, _owner
 
@@ -35,8 +35,8 @@ async def test_turn_in_removed_workspace_names_the_folder_instead_of_failing_gen
     from types import SimpleNamespace
 
     from agent.error_surface import build_error_surface_from_result
-    from gateway.run_turn_runner import TurnRunner
-    from gateway.session_results import execution_result
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.session_results import execution_result
     from tests.gateway.test_session_policy_verbs import _owner
 
     store, _db, authority, owner, ref = _owner(tmp_path, monkeypatch, None)

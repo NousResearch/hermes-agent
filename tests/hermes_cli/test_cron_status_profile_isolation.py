@@ -127,14 +127,14 @@ class TestCronStatusMissingHeartbeat:
         with (
             patch("hermes_cli.cron._active_cron_provider_name", return_value="builtin"),
             patch("hermes_cli.gateway.find_gateway_pids", return_value=[4242]),
-            patch("gateway.status.is_gateway_runtime_lock_active", return_value=True),
-            patch("gateway.status.get_running_pid", return_value=4242),
+            patch("hermes_agent.gateway.status.is_gateway_runtime_lock_active", return_value=True),
+            patch("hermes_agent.gateway.status.get_running_pid", return_value=4242),
             patch("hermes_agent.cron.jobs.get_ticker_heartbeat_age", return_value=None),
             patch("hermes_agent.cron.jobs.get_ticker_success_age", return_value=None),
             patch("hermes_agent.cron.jobs.TICKER_INTERVAL_SECONDS", 60),
             # Gateway started a few seconds ago, ticker hasn't had its first tick yet
-            patch("gateway.status._read_pid_record", return_value={"pid": 4242, "start_time": int(now)}),
-            patch("gateway.status._get_process_start_time", return_value=int(now)),
+            patch("hermes_agent.gateway.status._read_pid_record", return_value={"pid": 4242, "start_time": int(now)}),
+            patch("hermes_agent.gateway.status._get_process_start_time", return_value=int(now)),
             patch("time.time", return_value=now + 5),
             redirect_stdout(out),
         ):

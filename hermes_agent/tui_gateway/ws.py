@@ -25,7 +25,7 @@ from hermes_agent.tui_gateway.ws_legacy_fallback import dispatch_legacy, legacy_
 _log = logging.getLogger(__name__)
 
 # Scale-to-zero: tell the (separate) gateway process a dashboard/desktop/TUI client is attached via
-# the mtime of a marker file it reads in its idle predicate (gateway/scale_to_zero.py). Clients ping
+# the mtime of a marker file it reads in its idle predicate (hermes_agent/gateway/scale_to_zero.py). Clients ping
 # every 15s; one write per 5s per process is plenty.
 _DASHBOARD_CLIENT_TOUCH_MIN_INTERVAL_S = 5.0
 _dashboard_client_touched_at = 0.0
@@ -42,7 +42,7 @@ def _touch_dashboard_client_marker(path) -> None:
     with _dashboard_client_touch_lock:
         # Cleared before the write: activity during a slow write queues exactly one follow-up.
         _dashboard_client_touch_pending.discard(path)
-    from gateway.scale_to_zero import touch_dashboard_client_heartbeat
+    from hermes_agent.gateway.scale_to_zero import touch_dashboard_client_heartbeat
     touch_dashboard_client_heartbeat(path)  # best-effort, never raises
 
 
@@ -56,7 +56,7 @@ def _note_dashboard_client_activity(*, force: bool = False) -> None:
         _dashboard_client_touched_at = now
     path = None
     try:
-        from gateway.scale_to_zero import dashboard_client_heartbeat_path
+        from hermes_agent.gateway.scale_to_zero import dashboard_client_heartbeat_path
         # The process's own home, whatever profile scope the socket runs in (the watcher reads it).
         path = dashboard_client_heartbeat_path()
         with _dashboard_client_touch_lock:
@@ -381,7 +381,7 @@ def _authority_connection(ws: Any, transport: WSTransport, auth_identity: dict |
         getattr(getattr(ws, 'app', None), 'state', None), 'session_authority', None)
     if authority is None:
         return None
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     return AuthorityConnection(authority, transport, auth_identity or {}, operator=operator)
 
 

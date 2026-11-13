@@ -13,7 +13,7 @@ import threading
 
 import pytest
 
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.run import GatewayRunner
 
 
 def _runner():

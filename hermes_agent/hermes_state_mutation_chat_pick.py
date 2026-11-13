@@ -1,4 +1,4 @@
-"""Exact-retry receipts for a viewer's pick on a messaging chat (gateway/session_messaging_picks.py).
+"""Exact-retry receipts for a viewer's pick on a messaging chat (hermes_agent/gateway/session_messaging_picks.py).
 
 A messaging chat has no frozen policy for ``apply_action`` to write: its pick is the chat's own
 ``/model`` / ``/reasoning`` override. It still answers ``session.mutate`` like a LOCAL pick: the

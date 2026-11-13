@@ -30,8 +30,8 @@ Test categories:
 
 from unittest.mock import MagicMock
 
-from gateway.platforms.base import BasePlatformAdapter
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig, ensure_closed_code_fences
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig, ensure_closed_code_fences
 
 
 # ── helpers ───────────────────────────────────────────────────────────────

@@ -62,7 +62,7 @@ def test_every_surface_honours_preview_without_compressing(surface, monkeypatch)
         assert cli.conversation_history == frozen
     elif surface == "gateway":
         import asyncio
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
         gw = GatewayRunner.__new__(GatewayRunner)
         gw.session_store = MagicMock()
         entry = MagicMock(session_id="sid")

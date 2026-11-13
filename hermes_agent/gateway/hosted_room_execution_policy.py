@@ -7,7 +7,7 @@ from contextvars import ContextVar, Token
 from dataclasses import asdict, dataclass
 from typing import Any, Mapping
 
-from gateway.hosted_rooms_common import bounded_int, compact_json, identifier
+from hermes_agent.gateway.hosted_rooms_common import bounded_int, compact_json, identifier
 
 POLICY_VERSION = 1
 MAX_POLICY_TOOLSETS = 128
@@ -80,7 +80,7 @@ def _served_profile_scope(target_profile: str):
         return nullcontext()
     if not profile_exists(target_profile):
         raise RoomExecutionPolicyError(f"target_profile {target_profile!r} is not a live profile")
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
     return _profile_runtime_scope(get_profile_dir(target_profile))
 
 
@@ -88,7 +88,7 @@ def execution_policy_mapping(*, target_profile: str, config: Mapping[str, Any] |
     """Resolve the effective API-server policy from the served ``target_profile``'s own config."""
     target_profile = _identifier(target_profile, field="target_profile")
     if config is None:
-        from gateway.run import _load_gateway_config
+        from hermes_agent.gateway.run import _load_gateway_config
         with _served_profile_scope(target_profile):
             config = _load_gateway_config()
             return execution_policy_mapping(target_profile=target_profile, config=config)

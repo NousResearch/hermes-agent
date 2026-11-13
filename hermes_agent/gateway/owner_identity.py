@@ -16,7 +16,7 @@ from __future__ import annotations
 
 def host_owner_subject() -> str:
     """The owner's own OS identity: the subject native Desktop's ticket carries on this host."""
-    from gateway.session_worker_reservation import owner_worker_subject
+    from hermes_agent.gateway.session_worker_reservation import owner_worker_subject
     return owner_worker_subject()
 
 
@@ -26,7 +26,7 @@ def principal_subject(identity: dict) -> str:
     login (a Webapp tab, the loopback session token, the server's own PTY child, or a dashboard login
     a standalone backend forwards in a local ticket) is the owner. An identity naming nobody stays
     unbound, exactly as before."""
-    from gateway.session_identity import authenticated_subject, parse_authenticated_subject
+    from hermes_agent.gateway.session_identity import authenticated_subject, parse_authenticated_subject
     subject = authenticated_subject(identity)
     if not identity.get('user_id'):
         return subject
@@ -70,7 +70,7 @@ def _login_label(value: str) -> bool:
 
 def _login_subject(value) -> bool:
     """An ``auth:v1:[provider, issuer, user]`` subject a sign-in stored (a provider is named)."""
-    from gateway.session_identity import parse_authenticated_subject
+    from hermes_agent.gateway.session_identity import parse_authenticated_subject
     parts = parse_authenticated_subject(value)
     return parts is not None and bool(parts[2].strip()) and _owner_login(parts[0], parts[2])
 

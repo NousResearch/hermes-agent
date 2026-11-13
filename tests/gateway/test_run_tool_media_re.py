@@ -1,4 +1,4 @@
-r"""Tests for _TOOL_MEDIA_RE regex patterns in gateway/run.py.
+r"""Tests for _TOOL_MEDIA_RE regex patterns in hermes_agent/gateway/run.py.
 
 Issue #34632: The _TOOL_MEDIA_RE patterns in GatewayRunner used (?:/|~\/) to
 anchor paths, which only matched Unix-style absolute and home-relative paths.
@@ -20,7 +20,7 @@ import re
 import pytest
 
 
-# Reconstruct the exact _TOOL_MEDIA_RE pattern from gateway/run.py
+# Reconstruct the exact _TOOL_MEDIA_RE pattern from hermes_agent/gateway/run.py
 # The pattern is built by concatenating raw string parts:
 #   r'MEDIA:((?:[A-Za-z]:[/\\]|/|~\/)\S+\.(?:png|...))'
 _TOOL_MEDIA_RE = re.compile(

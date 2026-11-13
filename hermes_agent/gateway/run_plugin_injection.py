@@ -16,11 +16,11 @@ import weakref
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.session import SessionSource
 
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 
 class GatewayPluginInjectionMixin:
@@ -45,14 +45,14 @@ class GatewayPluginInjectionMixin:
 
         With ``origin`` the profile, origin and adapter checks run here, synchronously, so the plugin
         gets ``False`` for a chat it may not start; authorization is rechecked at dispatch. ``keyless``
-        (neither given) picks the target here too (``gateway/plugin_keyless_inject.py``)."""
-        from gateway.run import safe_schedule_threadsafe
+        (neither given) picks the target here too (``hermes_agent/gateway/plugin_keyless_inject.py``)."""
+        from hermes_agent.gateway.run import safe_schedule_threadsafe
         loop = getattr(self, "_gateway_loop", None)
         if not getattr(self, "_running", False) or loop is None or loop.is_closed():
             return False
 
         if keyless:
-            from gateway import plugin_keyless_inject
+            from hermes_agent.gateway import plugin_keyless_inject
             resolved = plugin_keyless_inject.resolve(self, plugin_home=plugin_home, plugin_id=plugin_id,
                                                      calling_session_key=calling_session_key)
             if resolved is None:
@@ -119,7 +119,7 @@ class GatewayPluginInjectionMixin:
         default loop context, not from the profile adapter's own intake task)."""
         if getattr(getattr(self, "config", None), "multiplex_profiles", False) is not True:
             return contextlib.nullcontext()
-        from gateway.run import _async_profile_runtime_scope
+        from hermes_agent.gateway.run import _async_profile_runtime_scope
         return _async_profile_runtime_scope(home or self._resolve_profile_home_for_source(source))
 
     def _plugin_injection_authorized(self, source: SessionSource, *, plugin_id: str, target: str) -> bool:
@@ -144,7 +144,7 @@ class GatewayPluginInjectionMixin:
         entry = self.session_store.lookup_by_session_key(session_key)
         if entry is None or entry.origin is None:
             return True
-        from gateway.session_identity import replace_source
+        from hermes_agent.gateway.session_identity import replace_source
         source = replace_source(self._restored_source(entry))
         if source.platform == Platform.LOCAL:
             return self._plugin_local_session(source, session_key, plugin_home=plugin_home,
@@ -176,7 +176,7 @@ class GatewayPluginInjectionMixin:
         the live session under this key. Its ``LiveSession``, or ``None`` (logged). Never resolved
         through the source's profile, whose fallback is the ambient scope (a default-profile local
         source carries none, so under beta's scope it would read as beta's)."""
-        from gateway.session_authorities import authority_for_home
+        from hermes_agent.gateway.session_authorities import authority_for_home
         authority = authority_for_home(self, plugin_home) if plugin_home is not None else None
         live = authority.sessions.get(source.chat_id) if authority is not None else None
         if live is not None and live.route == session_key:
@@ -195,7 +195,7 @@ class GatewayPluginInjectionMixin:
         if entry is None or entry.origin is None or not self._plugin_injection_accepting():
             return False
 
-        from gateway.session_identity import replace_source
+        from hermes_agent.gateway.session_identity import replace_source
         source = replace_source(self._restored_source(entry))
         if source.platform == Platform.LOCAL:
             return await self._dispatch_plugin_local_injection(source, entry, content=content, plugin_id=plugin_id,
@@ -252,7 +252,7 @@ class GatewayPluginInjectionMixin:
         from hermes_constants import get_routing_process_hermes_home, hermes_home_key
         key = hermes_home_key(home)
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
-            from gateway.run import _multiplex_profile_homes
+            from hermes_agent.gateway.run import _multiplex_profile_homes
             try:
                 served = _multiplex_profile_homes(self.config)
             except Exception:
@@ -306,8 +306,8 @@ class GatewayPluginInjectionMixin:
         message already committed in that chat, and the gateway never mints it for a chat the
         platform did not deliver: refuse such an origin here, so the plugin gets ``False`` instead of
         a ``True`` for a turn the dispatch then drops. Dispatch rechecks."""
-        from gateway.session_authorities import authority_for_home
-        from gateway.session_automation import committed_route_envelope
+        from hermes_agent.gateway.session_authorities import authority_for_home
+        from hermes_agent.gateway.session_automation import committed_route_envelope
         authority = authority_for_home(self, plugin_home) if plugin_home is not None else None
         if authority is None:
             return True  # no authority: the adapter's normal session path creates the session
@@ -335,7 +335,7 @@ class GatewayPluginInjectionMixin:
             return False
         session_key = self._session_key_for_source(source)
         async with self._plugin_injection_scope(source):
-            from gateway.session_authorities import active_authority
+            from hermes_agent.gateway.session_authorities import active_authority
             if active_authority(self) is not None:
                 # The FIFO admits a producer turn only into a session that already holds a
                 # committed human turn (its connector provenance is borrowed, never minted), so
@@ -368,7 +368,7 @@ class GatewayPluginInjectionMixin:
         trusted producer admission (the heartbeat / completion seam) instead of running it on the
         in-process lane beside an admitted turn. ``None`` means no authority serves this scope and
         the caller keeps the standalone adapter path; a refused admission is ``False``, logged."""
-        from gateway.session_authorities import active_authority
+        from hermes_agent.gateway.session_authorities import active_authority
         authority = active_authority(self)
         if authority is None:
             return None

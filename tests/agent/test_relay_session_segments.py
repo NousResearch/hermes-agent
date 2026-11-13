@@ -551,9 +551,9 @@ class TestRotationSafety:
 
 
 class TestGatewayRunStaysUnimported:
-    """Guard against re-importing gateway.run from a non-gateway host.
+    """Guard against re-importing hermes_agent.gateway.run from a non-gateway host.
 
-    relay_runtime._segments_config() must NEVER trigger ``gateway.run`` — its
+    relay_runtime._segments_config() must NEVER trigger ``hermes_agent.gateway.run`` — its
     import-time env setup (_HERMES_GATEWAY, HERMES_QUIET, TERMINAL_CWD := home)
     hangs CLI approvals (#87183) and runs ``hermes -z`` in $HOME (#95577). A
     monkeypatch can't catch a refactor re-adding the import, so this runs the
@@ -574,8 +574,8 @@ rr._segments_config()
 rr._segments_config()  # cached path too
 
 leaked = {v: os.environ[v] for v in ("TERMINAL_CWD", "HERMES_QUIET", "_HERMES_GATEWAY") if v in os.environ}
-print("gateway.run imported:", "gateway.run" in sys.modules, "leaked env:", leaked)
-sys.exit(1 if "gateway.run" in sys.modules or leaked else 0)
+print("gateway.run imported:", "hermes_agent.gateway.run" in sys.modules, "leaked env:", leaked)
+sys.exit(1 if "hermes_agent.gateway.run" in sys.modules or leaked else 0)
 """
         )
         assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"

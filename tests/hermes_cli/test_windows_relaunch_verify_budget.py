@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from gateway.status import (
+from hermes_agent.gateway.status import (
     _gateway_command_subcommand, looks_like_gateway_command_line, looks_like_gateway_runtime_command_line,
 )
 from hermes_cli import gateway as gateway_mod

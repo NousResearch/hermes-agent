@@ -44,7 +44,7 @@ def test_deferred_platform_loader_registers_cli_command_before_parser_table():
     """
     import argparse
 
-    from gateway.platform_registry import PlatformRegistry
+    from hermes_agent.gateway.platform_registry import PlatformRegistry
     from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 
     mgr = PluginManager()
@@ -72,7 +72,7 @@ def test_deferred_platform_loader_registers_cli_command_before_parser_table():
 
     fake_module = type(sys)("gateway.platform_registry")
     fake_module.platform_registry = registry
-    with patch.dict(sys.modules, {"gateway.platform_registry": fake_module}):
+    with patch.dict(sys.modules, {"hermes_agent.gateway.platform_registry": fake_module}):
         _resolve_deferred_platform_cli_command(command_name)
 
     # Loader resolution must promote deferred -> concrete and fire CLI register.

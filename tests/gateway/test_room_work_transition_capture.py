@@ -5,9 +5,9 @@ import sqlite3
 
 import pytest
 
-from gateway import hosted_room_driver as driver
-from gateway import hosted_room_work_records as work
-from gateway import hosted_rooms as rooms
+from hermes_agent.gateway import hosted_room_driver as driver
+from hermes_agent.gateway import hosted_room_work_records as work
+from hermes_agent.gateway import hosted_rooms as rooms
 
 
 def snapshot(path):

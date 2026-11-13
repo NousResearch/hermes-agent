@@ -785,7 +785,7 @@ def _for_each_systemd_gateway_unit(list_units_stdout: str, *, process_unit, on_u
 def _service_unit_supports_graceful_sigusr1_restart(svc_name: str) -> bool:
     """Whether *svc_name* wires SIGUSR1 to a graceful drain-then-restart.
 
-    Only ``hermes-gateway*`` runs ``gateway/run.py`` (the handler); SIGUSR1 would just
+    Only ``hermes-gateway*`` runs ``hermes_agent/gateway/run.py`` (the handler); SIGUSR1 would just
     kill ``hermes-serve*`` and burn the drain budget, so those go straight to the blunt
     restart. Same exact/hyphenated shape as ``_for_each_systemd_gateway_unit`` so a
     near-prefix unit like ``hermes-gatewayd`` is never signalled.
@@ -1153,7 +1153,7 @@ def _gateway_home_for_pid(pid: int):
     """HERMES_HOME of the gateway ``pid`` per the fleet inventory, else None (own profile's file)."""
     with suppress(Exception):
         from hermes_cli.update_receipt import _profile_homes
-        from gateway.status import read_runtime_status
+        from hermes_agent.gateway.status import read_runtime_status
         for _profile, home in _profile_homes():
             record = read_runtime_status(home / "gateway_state.json") or {}
             if record.get("pid") == pid:
@@ -1595,7 +1595,7 @@ def _force_kill_stuck_gateways(killed_pids) -> None:
         if _stuck:
             print()
             print(f"  ⚠ {len(_stuck)} gateway process(es) ignored SIGTERM — force-killing")
-            from gateway.status import get_process_start_time, terminate_pid
+            from hermes_agent.gateway.status import get_process_start_time, terminate_pid
             for pid in _stuck:
                 with suppress(ProcessLookupError, PermissionError, OSError):
                     # taskkill /T /F on Windows (no SIGKILL there), SIGKILL on POSIX.

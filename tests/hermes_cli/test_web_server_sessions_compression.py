@@ -82,7 +82,7 @@ class TestDeleteSessionCompressionChain(_SessionsCompressionEndpoints):
         previous chain link on the next reload."""
         from types import SimpleNamespace
 
-        from gateway.session_authority import LiveSession, SessionAuthority
+        from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
         from hermes_cli.web_server import app
         from hermes_constants import get_hermes_home
         from hermes_agent.hermes_state import SessionDB

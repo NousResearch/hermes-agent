@@ -55,7 +55,7 @@ def may_answer(authority: dict, actor_id: Any, admin_ids: Any = (), extra: Any =
     approvers and admins only, never by anyone.
 
     ``admitted=False`` marks an answer whose sender no allowlist admitted (a relayed Discord sender the
-    connector never delivered a message from, ``gateway.relay.admitted_authors``): under ``"*"`` the
+    connector never delivered a message from, ``hermes_agent.gateway.relay.admitted_authors``): under ``"*"`` the
     sender must then pass the slash floor AND be the requester or an admin, as with ``approvers`` narrowed."""
     return _refusal(authority, actor_id, admin_ids, extra, commands, admitted) is None
 
@@ -65,7 +65,7 @@ def _refusal(authority: dict, actor_id: Any, admin_ids: Any, extra: Any, command
     """:func:`may_answer`'s decision: ``None`` when allowed, else what the refusal names, taken from
     the check that failed: the answer's admin-only command when the slash policy refused it, else the
     requester."""
-    from gateway.slash_access import SlashAccessPolicy, _coerce_id_list, policy_for_chat_type
+    from hermes_agent.gateway.slash_access import SlashAccessPolicy, _coerce_id_list, policy_for_chat_type
 
     actor = str(actor_id or "").strip()
     if extra is not None:
@@ -97,8 +97,8 @@ def approval_commands(choice: Optional[str] = None) -> tuple[str, ...]:
 
 def runner_answer_policy(source: Any):
     """Slash policy of the profile whose bot received *source*: the one the text ``/approve`` uses."""
-    from gateway.run import _gateway_runner_ref
-    from gateway.slash_access import policy_for_runner_source
+    from hermes_agent.gateway.run import _gateway_runner_ref
+    from hermes_agent.gateway.slash_access import policy_for_runner_source
 
     return policy_for_runner_source(_gateway_runner_ref(), source)
 
@@ -218,7 +218,7 @@ def update_prompt_refusal(actor_id: Any, *, admin_ids: Iterable[str] = (), extra
     recorded in its pending marker. No marker or no authority in it is never refused."""
     import json
 
-    from hermes_constants import get_process_hermes_home  # where /update wrote it (gateway.run._hermes_home)
+    from hermes_constants import get_process_hermes_home  # where /update wrote it (hermes_agent.gateway.run._hermes_home)
 
     for name in (".update_pending.claimed.json", ".update_pending.json"):
         try:

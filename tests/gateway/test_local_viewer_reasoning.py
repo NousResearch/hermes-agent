@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform
+from hermes_agent.gateway.config import Platform
 from tests.gateway.test_local_viewer_events_turn import _turn
 
 
@@ -19,8 +19,8 @@ from tests.gateway.test_local_viewer_events_turn import _turn
 ])
 def test_a_local_turn_streams_reasoning_unless_the_session_or_its_config_hides_it(tmp_path, source, config, flag,
                                                                                     streams):
-    from gateway import local_viewer_events
-    from gateway.session_policy import build_policy, policy_scope
+    from hermes_agent.gateway import local_viewer_events
+    from hermes_agent.gateway.session_policy import build_policy, policy_scope
     published = []
     live = SimpleNamespace(tool_progress_mode=None, **({} if flag is None else {'show_reasoning': flag}))
     turn = _turn(Platform.LOCAL, published, live=live)
@@ -34,7 +34,7 @@ def test_a_local_turn_streams_reasoning_unless_the_session_or_its_config_hides_i
 
 
 def test_completion_carries_the_turns_reasoning_only_to_local_viewers():
-    from gateway.session_settlement_recovery import completion_payload
+    from hermes_agent.gateway.session_settlement_recovery import completion_payload
     from hermes_agent.tui_gateway.contracts.registry import EVENTS
     row = {'admission_id': 'a1', 'request_id': 'r1'}
     local = completion_payload(row, {'outcome': 'completed'}, 'answer', {'result': {
@@ -50,8 +50,8 @@ def test_completion_carries_the_turns_reasoning_only_to_local_viewers():
 
 
 def _wired(tmp_path, source, config, flag):
-    from gateway import local_viewer_events
-    from gateway.session_policy import build_policy, policy_scope
+    from hermes_agent.gateway import local_viewer_events
+    from hermes_agent.gateway.session_policy import build_policy, policy_scope
     published = []
     live = SimpleNamespace(tool_progress_mode=None, **({} if flag is None else {'show_reasoning': flag}))
     turn = _turn(Platform.LOCAL, published, live=live)
@@ -101,11 +101,11 @@ def test_other_local_launches_still_wait_for_the_session_flag(tmp_path, source):
 
 
 def test_an_empty_reply_still_carries_the_turns_reasoning_to_local_viewers():
-    from gateway.run_turn_runner import TurnRunner
-    from gateway.session import SessionSource
-    from gateway.session_results import execution_result
-    from gateway.session_settlement_recovery import completion_payload
-    from gateway.turn_context import TurnContext
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.session import SessionSource
+    from hermes_agent.gateway.session_results import execution_result
+    from hermes_agent.gateway.session_settlement_recovery import completion_payload
+    from hermes_agent.gateway.turn_context import TurnContext
     from tests.gateway.test_local_viewer_events_submit import _gateway_runner, _SteeredAgent
     ctx = TurnContext(
         source=SessionSource(platform=Platform.LOCAL, chat_id='sid', user_id='u'),
@@ -130,11 +130,11 @@ def test_an_empty_reply_still_carries_the_turns_reasoning_to_local_viewers():
 @pytest.mark.asyncio
 @pytest.mark.parametrize(('display', 'value'), [('', '1'), ('display: {show_reasoning: false}\n', '0')])
 async def test_config_get_reports_the_reasoning_display_the_session_streams(tmp_path, monkeypatch, display, value):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     home = tmp_path / 'home'
     home.mkdir()
     (home / 'config.yaml').write_text(
@@ -163,9 +163,9 @@ async def test_config_get_reports_the_reasoning_display_the_session_streams(tmp_
 
 @pytest.mark.parametrize(('source', 'projected'), [('acp', True), ('gui', False)])
 def test_only_acp_keeps_the_reasoning_block_in_its_reply_text(monkeypatch, source, projected):
-    import gateway.run as gateway_run
-    from gateway import session_setting_commands
-    from gateway.run_turn_persistence import GatewayTurnPersistenceMixin
+    import hermes_agent.gateway.run as gateway_run
+    from hermes_agent.gateway import session_setting_commands
+    from hermes_agent.gateway.run_turn_persistence import GatewayTurnPersistenceMixin
     monkeypatch.setattr(gateway_run, '_load_gateway_config', lambda: {'display': {'show_reasoning': True}})
     monkeypatch.setattr(session_setting_commands, 'local_policy', lambda runner, src: SimpleNamespace(source=source))
     reply = GatewayTurnPersistenceMixin()._hmwa_prepend_reasoning(

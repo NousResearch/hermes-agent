@@ -9,7 +9,7 @@ import logging
 from contextlib import nullcontext
 from functools import partial
 
-from gateway.session_messaging_picks import CHAT_PICKS, is_chat_pick
+from hermes_agent.gateway.session_messaging_picks import CHAT_PICKS, is_chat_pick
 from hermes_agent.hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
 from hermes_agent.hermes_state_runtime import RuntimeStoreError, mutate_runtime_session
 
@@ -53,7 +53,7 @@ def _authorize_control(authority, actor, ref, params, owner=None):
         if ref.session_id not in authority.sessions:
             from hermes_agent.hermes_state_mutation_binding import authorize_history
             with authority.db._read_ctx() as conn:
-                from gateway.session_local_migration import require_history_claim
+                from hermes_agent.gateway.session_local_migration import require_history_claim
                 require_history_claim(authority, conn, actor, ref.session_id)
                 cold_history = authorize_history(conn, actor, ref.session_id)
         if not cold_history:
@@ -61,9 +61,9 @@ def _authorize_control(authority, actor, ref, params, owner=None):
             if operation in {'delete', 'archive', 'sidebar'}:
                 # The read gate mounts a cold row first, so the checks below see what it is.
                 authority.authorize(actor, ref, 'session:read')
-            from gateway.session_history_mount import is_history_mount
+            from hermes_agent.gateway.session_history_mount import is_history_mount
             if operation == 'delete':
-                from gateway.session_history_mount import require_history_leaf
+                from hermes_agent.gateway.session_history_mount import require_history_leaf
                 require_history_leaf(authority, ref.session_id)
             if not (operation in {'delete', 'archive', 'sidebar'} and is_history_mount(authority.sessions[ref.session_id])):
                 # Stored history is read-only, but deleting it retires its own lineage only, and
@@ -89,22 +89,22 @@ def _owner_ref(authority, ref, params):
     if params.get('operation') in CHAT_PICKS:
         # A messaging chat's picks are its lane's (route-keyed) overrides: a compression segment names
         # the lineage root its lane is mounted on. Any other row keeps its id.
-        from gateway.session_route_recovery import messaging_owner_ref
+        from hermes_agent.gateway.session_route_recovery import messaging_owner_ref
         return messaging_owner_ref(authority, ref)
     if params.get('operation') not in _OWNER_AUTHORIZED:
         return ref
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_contract import SessionRef
     from hermes_agent.hermes_state_local import local_lineage_owner
     with authority.db._read_ctx() as conn:
         owner = local_lineage_owner(conn, ref.session_id)
     if owner == ref.session_id and params.get('operation') == 'delete':
-        from gateway.session_route_recovery import messaging_owner_ref
+        from hermes_agent.gateway.session_route_recovery import messaging_owner_ref
         return messaging_owner_ref(authority, ref)
     return ref if owner == ref.session_id else SessionRef(ref.profile_id, owner)
 
 
 async def mutate_session(authority, actor, ref, params):
-    from gateway.session_runtime_workers import track_mutation
+    from hermes_agent.gateway.session_runtime_workers import track_mutation
     authority._require_admission_open()
     # A request socket can disappear while its writer is inside to_thread. The owner task keeps
     # the session gate until commit AND publication finish, and retirement joins that same task.
@@ -137,7 +137,7 @@ async def _owned_mutation(authority, actor, ref, params):
                 if (params.get('operation') not in {'model', 'reasoning'}
                         or getattr(exc, 'reason', 'session_busy') != 'session_busy'):
                     raise
-                from gateway.session_deferred_pick import defer_pick
+                from hermes_agent.gateway.session_deferred_pick import defer_pick
                 # Its own BEGIN IMMEDIATE: off the loop, like the receipt commit.
                 return await asyncio.to_thread(defer_pick, authority, actor, ref, params)
     if params.get('operation') in {*_POLICY, 'compress', 'reset'} and not is_chat_pick(live, params['operation']):
@@ -152,7 +152,7 @@ async def _mutate_session(authority, actor, ref, params, *, commit_lock=None, ow
     operation = params['operation']
     if not isinstance(operation, str) or (operation in _POLICY and params.get('expected_generation') is None):
         raise RuntimeStoreError('invalid_params')
-    from gateway.session_local_mcp import private_mutation_payload
+    from hermes_agent.gateway.session_local_mcp import private_mutation_payload
     # Editor MCP transport specs (credentials) stay in owner memory; the store sees a fingerprint.
     payload, editor_servers = private_mutation_payload(operation, params['payload'])
     params = {**params, 'payload': payload}
@@ -168,7 +168,7 @@ async def _mutate_session(authority, actor, ref, params, *, commit_lock=None, ow
     live = authority.sessions.get((owner or ref).session_id)
     if is_chat_pick(live, operation):
         # No frozen policy to commit into: the chat's own /model and /reasoning override (#141152).
-        from gateway.session_messaging_picks import apply_chat_pick
+        from hermes_agent.gateway.session_messaging_picks import apply_chat_pick
         return await apply_chat_pick(authority, ref, owner or ref, live, params, principal_id=actor.subject)
 
     def authorize_write(conn):
@@ -234,16 +234,16 @@ async def write_mutation(authority, ref, params, editor_servers, *, principal_id
 
     prepared = None
     if operation == 'branch':
-        from gateway.session_local_mcp import prepare_branch_editor
+        from hermes_agent.gateway.session_local_mcp import prepare_branch_editor
         # Discovery launches the child's servers: the fences (receipt, revision, generation, idle) answer first.
         prepared, editor_servers = await prepare_branch_editor(authority, ref, editor_servers, prepare_only)
     if operation in {*_POLICY, 'compress'}:
         prepared = await prepare_only()
         if 'snapshot' in prepared:
-            from gateway.session_mutation_model import prepare_model
-            from gateway.session_mutation_compress import prepare_compress
-            from gateway.session_mutation_policy import PREPARE
-            from gateway.session_local_mcp import prepare_editor_mcp
+            from hermes_agent.gateway.session_mutation_model import prepare_model
+            from hermes_agent.gateway.session_mutation_compress import prepare_compress
+            from hermes_agent.gateway.session_mutation_policy import PREPARE
+            from hermes_agent.gateway.session_local_mcp import prepare_editor_mcp
             prepare = {'model': prepare_model, 'compress': prepare_compress, **PREPARE,
                        'editor_mcp': partial(prepare_editor_mcp, servers=editor_servers)}[operation]
             prepared = await prepare(authority, live, params['payload'], prepared)
@@ -266,7 +266,7 @@ async def write_mutation(authority, ref, params, editor_servers, *, principal_id
             commit = partial(mutate_runtime_session, authority.db, **fields,
                              _prepared=prepared, _authorize_write=authorize_write)
             if operation == 'delete':
-                from gateway.session_onboarding import ending_run_on_delete
+                from hermes_agent.gateway.session_onboarding import ending_run_on_delete
                 commit = partial(ending_run_on_delete, authority.db, ref.session_id, commit)
             try:
                 result = await asyncio.to_thread(commit)
@@ -274,7 +274,7 @@ async def write_mutation(authority, ref, params, editor_servers, *, principal_id
                 if operation == 'compress':
                     # Before the projection's boundary eviction ends the resident agent's engine
                     # session; a refused commit only releases a one-off engine.
-                    from gateway.session_mutation_compress import finish_compress_engine
+                    from hermes_agent.gateway.session_mutation_compress import finish_compress_engine
                     await finish_compress_engine(authority, prepared, result if applied else None)
         try:
             await _project_result(authority, ref, live, params, result, editor_servers, applied=applied)
@@ -282,7 +282,7 @@ async def write_mutation(authority, ref, params, editor_servers, *, principal_id
             # The receipt is committed: a failed projection must not swallow the hook, and an exact
             # retry (applied=False) never refires it.
             if operation == 'compress' and applied and (prepared or {}).get('post_compaction'):
-                from gateway.session_mutation_compress import fire_post_compaction_hook
+                from hermes_agent.gateway.session_mutation_compress import fire_post_compaction_hook
                 await fire_post_compaction_hook(authority, prepared, result)
     if operation == 'delete':
         # After the synchronous projections (no yield before retirement), off the loop: the
@@ -302,17 +302,17 @@ async def _project_result(authority, ref, live, params, result, editor_servers, 
         current['runtime_generation'] == result.get('execution_generation', params.get('expected_generation')))
     if operation == 'compress' and applied and owns_projection and live is not None:
         # Before the boundary evicts the agent whose compressor holds the running count.
-        from gateway.session_usage import note_compression
+        from hermes_agent.gateway.session_usage import note_compression
         note_compression(authority, ref, live)
     elif operation == 'reset' and applied and live is not None:
         live.compression_count = 0  # a fresh conversation, as main's /new builds a fresh agent
     if editor_servers is not None and (operation == 'branch' or owns_projection):
         # Before the policy publication below, so no execution sees the policy without them.
-        from gateway.session_local_mcp import install_editor_mcp
+        from hermes_agent.gateway.session_local_mcp import install_editor_mcp
         install_editor_mcp(authority, result.get('branched_session_id', ref.session_id), editor_servers)
         if operation == 'editor_mcp' and not editor_servers:
             # An empty selection: the old servers must not keep running for a viewer.
-            from gateway.session_local_mcp import retire_editor_mcp
+            from hermes_agent.gateway.session_local_mcp import retire_editor_mcp
             await asyncio.to_thread(retire_editor_mcp, authority, ref.session_id)
     if operation not in {*_POLICY, 'reset', 'compress', 'rewind'} or owns_projection:
         if operation == 'workspace':
@@ -320,7 +320,7 @@ async def _project_result(authority, ref, live, params, result, editor_servers, 
             # route-keyed one a turn built and the cwd its commands recorded, which would win over the move.
             # Off-loop (a remote teardown takes seconds) and before the policy publishes and the queue runs,
             # so no turn starts on the old environment.
-            from gateway.session_policy_refresh import drop_session_terminal
+            from hermes_agent.gateway.session_policy_refresh import drop_session_terminal
             try:
                 await asyncio.to_thread(drop_session_terminal, authority, ref)
             except Exception:  # health: allow BLE001 -- the move is committed: it must still publish
@@ -332,14 +332,14 @@ async def _project_result(authority, ref, live, params, result, editor_servers, 
             authority.runner._evict_cached_agent(live.route)
         if applied:
             live.event_stream.publish(ref.session_id, result, event_type='session.updated')
-            from gateway.session_local_mcp import announce_tools_changed
+            from hermes_agent.gateway.session_local_mcp import announce_tools_changed
             announce_tools_changed(live, ref.session_id, result)
 
 
 def _project_committed(authority, ref, operation, result):
     """Publish a committed receipt's runtime projections (safe to repeat on exact retry)."""
     if operation in _POLICY:
-        from gateway.session_local import publish_local_policy
+        from hermes_agent.gateway.session_local import publish_local_policy
         # The edit policy is read per edit, never by the built agent: it keeps its agent (and prompt cache).
         publish_local_policy(authority, ref.session_id, evict=operation != 'edit_policy')
         # A drain that ran while the receipt committed off-loop saw the new stored policy beside
@@ -354,14 +354,14 @@ def _project_committed(authority, ref, operation, result):
     if operation in {'model', 'reasoning', 'workspace', 'edit_policy'}:
         # Every viewer repaints its model, reasoning pill or workspace from the published policy,
         # as main's _emit_session_info did after the live change.
-        from gateway.session_local import local_session_info
+        from hermes_agent.gateway.session_local import local_session_info
         authority.sessions[ref.session_id].event_stream.publish(
             ref.session_id, local_session_info(authority, ref), event_type='session.info')
     if operation == 'branch':
-        from gateway.session_local_recovery import restore_local_session
+        from hermes_agent.gateway.session_local_recovery import restore_local_session
         restore_local_session(authority, result['branched_session_id'])
     if operation in {'reset', 'compress'}:
-        from gateway.session_local_recovery import restore_local_session
+        from hermes_agent.gateway.session_local_recovery import restore_local_session
         restore_local_session(authority, ref.session_id)
         # A session boundary, not a resource evict: memory providers get on_session_end first.
         evict = getattr(authority.runner, '_evict_cached_agent_at_boundary', None) or authority.runner._evict_cached_agent
@@ -369,7 +369,7 @@ def _project_committed(authority, ref, operation, result):
         # Publish the prepared entry, not just its target ID, so fresh-reset and
         # per-session counters match cold recovery in this process too.
         from hermes_agent.hermes_state_local import local_receipt
-        from gateway.session import SessionEntry
+        from hermes_agent.gateway.session import SessionEntry
         store = authority.runner.session_store
         with store._lock:
             entry = SessionEntry.from_dict(local_receipt(authority.db, ref.session_id)['entry'])
@@ -401,7 +401,7 @@ def retire_live_sessions(authority, session_ids, *, require_fence=False):
         routing = getattr(store, '_routing_db', None)
         if session_ids and routing is not None and routing.db_path != authority.db.db_path:
             try:
-                from gateway.session import _session_key_namespace
+                from hermes_agent.gateway.session import _session_key_namespace
                 from hermes_agent.hermes_state_mutation_retirement import expiring_retirements
                 registry = getattr(authority.runner, 'session_authorities', None)
                 profile = registry.profile_name(authority) if registry is not None else None
@@ -420,11 +420,11 @@ def retire_live_sessions(authority, session_ids, *, require_fence=False):
                 strip(session_ids)
             except Exception:
                 logger.warning('could not strip retired routes from sessions.json', exc_info=True)
-    from gateway.session_policy import release_launch_secrets, release_session_workspaces
+    from hermes_agent.gateway.session_policy import release_launch_secrets, release_session_workspaces
     release_launch_secrets(authority, session_ids)
     release_session_workspaces(authority, session_ids)
     from tools.async_delegation import allow_for_session
-    from gateway.session_vault_prompt import release_unlocks
+    from hermes_agent.gateway.session_vault_prompt import release_unlocks
     for sid in session_ids:
         # A closed session's refusal of new delegations (session_viewer_close) goes with its live state.
         allow_for_session((authority.profile_id, sid))
@@ -433,7 +433,7 @@ def retire_live_sessions(authority, session_ids, *, require_fence=False):
         candidate = authority.sessions.pop(sid, None)
         if candidate is None and sid in getattr(authority, 'retired_routes', ()):
             # A conversation retirement let go: its cached agent, and what the local adapter keeps for it.
-            from gateway.session_retirement import forget_retired
+            from hermes_agent.gateway.session_retirement import forget_retired
             forget_retired(authority, sid)
         elif candidate is not None:
             getattr(authority, 'retired_routes', {}).pop(sid, None)
@@ -441,14 +441,14 @@ def retire_live_sessions(authority, session_ids, *, require_fence=False):
             evict = getattr(authority.runner, '_evict_cached_agent', None)
             if callable(evict):
                 evict(candidate.route)
-            from gateway.session_local import forget_live_session
+            from hermes_agent.gateway.session_local import forget_live_session
             forget_live_session(authority, sid, candidate)
             if candidate.detached:  # the ids its key owned in the store (session_detached.detached_entry)
-                from gateway.session_detached import drop_owner_hints
+                from hermes_agent.gateway.session_detached import drop_owner_hints
                 drop_owner_hints(authority.runner.session_store, candidate.route)
-    from gateway.session_local_mcp import release_editor_mcp
+    from hermes_agent.gateway.session_local_mcp import release_editor_mcp
     release_editor_mcp(authority, session_ids)
-    from gateway.session_worker_construct import release_session_prefill
+    from hermes_agent.gateway.session_worker_construct import release_session_prefill
     release_session_prefill(authority, session_ids)
     if fence_error is not None and require_fence:
         raise RuntimeStoreError('storage_unavailable') from fence_error

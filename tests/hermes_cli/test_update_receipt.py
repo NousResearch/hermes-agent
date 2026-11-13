@@ -6,7 +6,7 @@ Covers:
 - gateway restart phase recording (success + phase-error shapes)
 - receipt pruning
 - fleet version classification (current / stale / unknown)
-- gateway_state.json code-identity stamping (gateway/status.py side)
+- gateway_state.json code-identity stamping (hermes_agent/gateway/status.py side)
 """
 
 import json
@@ -330,14 +330,14 @@ class TestFleetClassification:
         )
         monkeypatch.setattr(ur, "_socket_identity", lambda home: None)
         monkeypatch.setattr(
-            "gateway.status.live_gateway_pid_for_home",
+            "hermes_agent.gateway.status.live_gateway_pid_for_home",
             lambda candidate_home: gateway_record["pid"],
         )
         return ur.collect_fleet_versions()
 
     def test_live_non_gateway_state_writer_is_unknown(self, monkeypatch, tmp_path):
         """A state file written by this non-gateway pytest process proves no gateway is current."""
-        from gateway.status import write_runtime_status
+        from hermes_agent.gateway.status import write_runtime_status
 
         home = tmp_path / "fleet_home"
         home.mkdir()
@@ -421,7 +421,7 @@ class TestFleetClassification:
             "hermes_cli.profiles._get_profiles_root",
             lambda: tmp_path / "nope",
         )
-        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
+        monkeypatch.setattr("hermes_agent.gateway.status._pid_exists", lambda pid: False)
         assert ur.collect_fleet_versions() == []
 
     def test_live_runtime_record_without_verified_gateway_is_unknown(
@@ -445,9 +445,9 @@ class TestFleetClassification:
         }
         monkeypatch.setattr(ur, "_profile_homes", lambda: [("default", home)])
         monkeypatch.setattr(ur, "_socket_identity", lambda home: None)
-        monkeypatch.setattr("gateway.status.read_runtime_status", lambda path: record)
-        monkeypatch.setattr("gateway.status.runtime_status_pid_is_live", lambda record: True)
-        monkeypatch.setattr("gateway.status.live_gateway_pid_for_home", lambda home: None)
+        monkeypatch.setattr("hermes_agent.gateway.status.read_runtime_status", lambda path: record)
+        monkeypatch.setattr("hermes_agent.gateway.status.runtime_status_pid_is_live", lambda record: True)
+        monkeypatch.setattr("hermes_agent.gateway.status.live_gateway_pid_for_home", lambda home: None)
 
         fleet = ur.collect_fleet_versions()
 
@@ -479,7 +479,7 @@ class TestFleetClassification:
 
 class TestGatewayStatusStamping:
     def test_runtime_status_record_carries_code_identity(self, monkeypatch):
-        import gateway.status as gs
+        import hermes_agent.gateway.status as gs
 
         monkeypatch.setattr(
             "hermes_cli.version_info.get_code_identity",
@@ -491,7 +491,7 @@ class TestGatewayStatusStamping:
         assert record["code_version"] == "2.0"
 
     def test_code_identity_failure_degrades_to_absent(self, monkeypatch):
-        import gateway.status as gs
+        import hermes_agent.gateway.status as gs
 
         def _boom(refresh=False):
             raise RuntimeError("no build info")

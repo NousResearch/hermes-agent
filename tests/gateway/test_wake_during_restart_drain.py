@@ -9,10 +9,10 @@ import threading
 
 import pytest
 
-from gateway.config import Platform
-from gateway.kanban_watchers_notifier import _KanbanNotification, _notifier_collect
-from gateway.platforms.event import MessageEvent
-from gateway.wake import WakeNotAccepted, deliver_wake
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.kanban_watchers_notifier import _KanbanNotification, _notifier_collect
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.wake import WakeNotAccepted, deliver_wake
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn

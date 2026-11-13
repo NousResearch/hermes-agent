@@ -12,7 +12,7 @@ async def test_stop_between_adoption_and_promotion_reaches_the_adopted_agent_aft
     """adopt_agent ran, the route's running slot is still the claim's pending sentinel, and the
     agent cache entry was evicted (pressure / idle sweep): the Stop must still interrupt the agent
     this generation adopted, not resolve nobody through the cache and latch nothing."""
-    from gateway import session_finite
+    from hermes_agent.gateway import session_finite
 
     db, authority = _authority(tmp_path, monkeypatch)
     fresh = Agent()
@@ -46,8 +46,8 @@ async def test_retire_stop_between_adoption_and_promotion_reaches_the_adopted_ag
     """The same window on the retire/shutdown path: stop_authority_turns(in_process=True) used to
     re-resolve the running slot (still the pending sentinel) and latch a generation adopt_agent had
     already consumed, so the adopted agent ran on through the profile stop."""
-    from gateway import session_finite
-    from gateway.run_runtime import stop_authority_turns
+    from hermes_agent.gateway import session_finite
+    from hermes_agent.gateway.run_runtime import stop_authority_turns
 
     db, authority = _authority(tmp_path, monkeypatch)
     fresh = Agent()

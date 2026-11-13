@@ -8,9 +8,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import hosted_room_driver as tasks
-from gateway import hosted_rooms
-from gateway.runtime_ownership import ProfileOwnership
+from hermes_agent.gateway import hosted_room_driver as tasks
+from hermes_agent.gateway import hosted_rooms
+from hermes_agent.gateway.runtime_ownership import ProfileOwnership
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 
@@ -19,7 +19,7 @@ from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 def deferred(tmp_path, monkeypatch):
     """A room on this home whose member 'two' is served by its own daemon at *member_home*, with
     a turn deferred because that daemon never confirmed its Stop. Yields a factory."""
-    from gateway.session_hosted_service import CanonicalHostedRoomService
+    from hermes_agent.gateway.session_hosted_service import CanonicalHostedRoomService
     root = tmp_path.resolve()
     monkeypatch.setenv('HERMES_HOME', str(root))
     dbs = []

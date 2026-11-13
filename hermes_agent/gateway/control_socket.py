@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from gateway.control_dispatch import ControlRequestDispatcher
+from hermes_agent.gateway.control_dispatch import ControlRequestDispatcher
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +145,7 @@ def _detect_supervisor() -> str:
     env = os.environ
     if env.get("INVOCATION_ID"):
         return "systemd"
-    from gateway.restart import launchd_job_label
+    from hermes_agent.gateway.restart import launchd_job_label
     if sys.platform == "darwin" and (launchd_job_label(env) or env.get("LAUNCHD_SOCKET")):
         return "launchd"
     if env.get("HERMES_DESKTOP_MANAGED"):
@@ -155,10 +155,10 @@ def _detect_supervisor() -> str:
 
 def _structured_login_subject(value: str) -> bool:
     """Whether ``value`` is ``authenticated_subject``'s namespaced login form
-    ``auth:v1:[provider, issuer, user]`` (gateway.session_identity) — the only identity
+    ``auth:v1:[provider, issuer, user]`` (hermes_agent.gateway.session_identity) — the only identity
     a same-user peer may forward a ticket for. Bare labels (``admin``, ``uid:501``) fail:
     they can collide with another stored owner representation."""
-    from gateway.session_identity import parse_authenticated_subject
+    from hermes_agent.gateway.session_identity import parse_authenticated_subject
     return parse_authenticated_subject(value) is not None
 
 
@@ -177,8 +177,8 @@ def launch_supervisor(identity: dict[str, Any]) -> Optional[str]:
 
 
 def build_identify_payload() -> dict[str, Any]:
-    """Default ``identify`` answer, built from gateway.status primitives."""
-    from gateway.status import _build_pid_record, _get_code_identity_fields, _profile_label_for_home, read_runtime_status
+    """Default ``identify`` answer, built from hermes_agent.gateway.status primitives."""
+    from hermes_agent.gateway.status import _build_pid_record, _get_code_identity_fields, _profile_label_for_home, read_runtime_status
     record = _build_pid_record()
     supervisor = _detect_supervisor()
     payload: dict[str, Any] = {
@@ -196,7 +196,7 @@ def build_identify_payload() -> dict[str, Any]:
 
 def build_status_payload() -> dict[str, Any]:
     """Default ``status`` answer — current runtime status, answered live."""
-    from gateway.status import read_runtime_status
+    from hermes_agent.gateway.status import read_runtime_status
     return {**(read_runtime_status() or {}), "protocol": CONTROL_PROTOCOL_VERSION,
             "answered_at": time.time(), "answering_pid": os.getpid()}
 
@@ -209,13 +209,13 @@ class GatewayControlServer:
     def __init__(self, home: Optional[Path] = None, *,
                  verb_handlers: Optional[dict[str, Callable[..., dict[str, Any]]]] = None) -> None:
         if home is None:
-            from gateway.status import _get_process_hermes_home
+            from hermes_agent.gateway.status import _get_process_hermes_home
             home = _get_process_hermes_home()
         # The real directory, as clients canonicalize it: the peer check below refuses any
         # symlinked component, so an unresolved symlinked ~/.hermes would never mint tickets.
         self._home = Path(home).resolve()
         self.ticket_store = None
-        # ``resolve-profile`` (gateway.control_resolve); None keeps the unknown-verb answer.
+        # ``resolve-profile`` (hermes_agent.gateway.control_resolve); None keeps the unknown-verb answer.
         self.resolve_handler: Optional[Callable[[dict, Path], dict[str, Any]]] = None
         self.private_handlers = {}
         self._server: Optional[asyncio.AbstractServer] = None
@@ -295,7 +295,7 @@ class GatewayControlServer:
         return bind_path
 
     async def _start_windows(self) -> bool:
-        from gateway.runtime_bootstrap_windows import NativeControlServer
+        from hermes_agent.gateway.runtime_bootstrap_windows import NativeControlServer
         self._pipe_server = NativeControlServer(self._home, self.handle_request_line)
         await asyncio.to_thread(self._pipe_server.start)
         return True
@@ -524,7 +524,7 @@ def _query_windows_pipe(home: Path, request: bytes, timeout: float) -> Optional[
 def _windows_pipe_exchange(home: Path, request: bytes, timeout: float) -> Optional[bytes]:  # pragma: no cover - wine2e lane
     # The server is the native overlapped pipe worker; its client verifies the server's SID and
     # speaks the same framing (a plain open() got no answer in the live Windows pipe test).
-    from gateway.runtime_bootstrap_windows import query_runtime_control
+    from hermes_agent.gateway.runtime_bootstrap_windows import query_runtime_control
 
     return query_runtime_control(Path(home), request, timeout)
 

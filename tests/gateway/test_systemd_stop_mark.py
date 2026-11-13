@@ -9,14 +9,14 @@ from __future__ import annotations
 
 import pytest
 
-from gateway import systemd_stop_mark
+from hermes_agent.gateway import systemd_stop_mark
 
 
 def test_stop_mark_writes_planned_stop_for_supervised_pid(monkeypatch):
     """MAINPID (or an explicit argv PID) is marked; the helper owns identity."""
     marked: list[int] = []
     monkeypatch.setattr(
-        "gateway.status.write_planned_stop_marker",
+        "hermes_agent.gateway.status.write_planned_stop_marker",
         lambda pid: marked.append(pid) or True,
     )
     monkeypatch.setenv("MAINPID", "4242")
@@ -33,7 +33,7 @@ def test_stop_mark_never_blocks_restart_and_unit_wires_exec_stop(monkeypatch):
     """Unknown PIDs mark nothing but still exit 0; the unit runs the marker."""
     marked: list[int] = []
     monkeypatch.setattr(
-        "gateway.status.write_planned_stop_marker",
+        "hermes_agent.gateway.status.write_planned_stop_marker",
         lambda pid: marked.append(pid) or True,
     )
     for argv, env in ((["m"], None), (["m", "0"], None), (["m", "abc"], None)):
@@ -45,7 +45,7 @@ def test_stop_mark_never_blocks_restart_and_unit_wires_exec_stop(monkeypatch):
     def _boom(_pid):
         raise OSError("disk gone")
 
-    monkeypatch.setattr("gateway.status.write_planned_stop_marker", _boom)
+    monkeypatch.setattr("hermes_agent.gateway.status.write_planned_stop_marker", _boom)
     monkeypatch.setenv("MAINPID", "4242")
     assert systemd_stop_mark.main(["m"]) == 0
 

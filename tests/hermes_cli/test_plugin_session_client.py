@@ -20,7 +20,7 @@ def register(ctx):
 @contextlib.contextmanager
 def _turn_of(tmp_path, monkeypatch, **request):
     """The task-local state a local session's turn runs under (``policy_scope`` sets the same var)."""
-    from gateway import session_policy
+    from hermes_agent.gateway import session_policy
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     policy = session_policy.build_policy({'source': 'tui', 'cwd': str(tmp_path), **request}, {'model': {'default': 'm'}})
     token = session_policy._ACTIVE_POLICY.set(policy)
@@ -31,7 +31,7 @@ def _turn_of(tmp_path, monkeypatch, **request):
 
 
 def test_session_client_answers_for_the_running_session_only(tmp_path, monkeypatch):
-    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
     from hermes_cli.plugin_session import session_client
     assert session_client() is None  # outside any session
     with _turn_of(tmp_path, monkeypatch, client=dict(TERN)):
@@ -49,7 +49,7 @@ def test_session_client_answers_for_the_running_session_only(tmp_path, monkeypat
 
 
 def test_a_stored_label_that_is_not_valid_reads_as_none():
-    from gateway.session_client import policy_client
+    from hermes_agent.gateway.session_client import policy_client
     for request in ({'client': {'name': 'Bad Name'}}, {'client': 'x'}, [], 'nope'):
         assert policy_client(SimpleNamespace(request_json=json.dumps(request))) is None
     assert policy_client(SimpleNamespace(request_json='{')) is None

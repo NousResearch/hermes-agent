@@ -9,7 +9,7 @@ profile's HERMES_HOME, and the dashboard's own profile stays untouched.
 """
 import pytest
 import hermes_yaml as yaml
-import gateway.status as _gw_status
+import hermes_agent.gateway.status as _gw_status
 
 
 _VALID_WORKER_BOT_TOKEN = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_1234"
@@ -350,7 +350,7 @@ class TestMultiplexPortBindingGuard:
     def test_rejects_only_mirrored_listeners_on_secondary(
         self, client, isolated_profiles
     ):
-        from gateway.config import PORT_BINDING_PLATFORM_VALUES, SHARED_LISTENER_MIRROR_PLATFORMS
+        from hermes_agent.gateway.config import PORT_BINDING_PLATFORM_VALUES, SHARED_LISTENER_MIRROR_PLATFORMS
 
         _enable_multiplex(isolated_profiles["default"])
         assert SHARED_LISTENER_MIRROR_PLATFORMS  # guard set must not be empty

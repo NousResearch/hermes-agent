@@ -18,7 +18,7 @@ DEFAULT_ROUTE = {"model": "default-model", "provider": "custom", "base_url": "ht
 
 
 def _limited_child_of_session(tmp_path):
-    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
     from tools.delegate_tool import delegate_task
     from tools.terminal_tool import record_session_cwd
     _enable()
@@ -39,7 +39,7 @@ def _limited_child_of_session(tmp_path):
 
 
 def _runner():
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
     runner = object.__new__(GatewayRunner)
     runner.session_store = None
     runner._session_model_overrides[KEY] = dict(SESSION_ROUTE)  # the parent conversation's /model
@@ -47,7 +47,7 @@ def _runner():
 
 
 def _start(runner, model, built):
-    from gateway.run_auto_resume import _start_continue
+    from hermes_agent.gateway.run_auto_resume import _start_continue
 
     def factory(**kw):
         if kw.get("platform") == "gateway":
@@ -64,7 +64,7 @@ def test_the_stand_in_parent_keeps_the_sessions_model_override(tmp_path):
     parent, model, sid = _limited_child_of_session(tmp_path)
     built = []
     factory, start = _start(_runner(), model, built)
-    with patch("gateway.run._resolve_runtime_agent_kwargs", return_value=dict(DEFAULT_ROUTE)), \
+    with patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", return_value=dict(DEFAULT_ROUTE)), \
             patch("run_agent.AIAgent", side_effect=factory):
         resumed = tick(start, capacity=3)
     assert [kw["provider"] for kw in built] == ["openrouter"] and built[0]["model"] == "parent-model"
@@ -100,7 +100,7 @@ def test_a_stand_in_that_cannot_be_built_retries_later_and_never_turns_auto_resu
 def test_capacity_counts_only_this_profiles_running_units(tmp_path, monkeypatch):
     """One gateway serves many profiles: another profile's running units never use up this one's slots."""
     from agent.runtime_scope import bind_profile_scope
-    from gateway.run_auto_resume import _capacity
+    from hermes_agent.gateway.run_auto_resume import _capacity
     from hermes_constants import hermes_home_key
     from tools import async_delegation
     other, mine = tmp_path / "other", tmp_path / "mine"

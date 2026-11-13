@@ -11,8 +11,8 @@ async def test_terminal_retry_after_cache_eviction_preserves_result(api, owner):
     calls = []
     api._model_name = 'accepted-model'
     async def handle(event):
-        from gateway.session_results import execution_result
-        from gateway.session_api_turn import publish_api_tool_event
+        from hermes_agent.gateway.session_results import execution_result
+        from hermes_agent.gateway.session_api_turn import publish_api_tool_event
         calls.append(event.text)
         sid = event.source.chat_id
         generation = owner.sessions[sid].event_stream.execution['execution_generation']
@@ -52,7 +52,7 @@ async def test_terminal_retry_after_cache_eviction_preserves_result(api, owner):
 async def test_failed_terminal_retry_after_eviction_keeps_envelope(api, owner):
     calls = []
     async def handle(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         calls.append(event.text)
         execution_result.get()['result'] = {'final_response': '', 'failed': True, 'error': 'provider unavailable', 'messages': []}
         return ''
@@ -76,7 +76,7 @@ async def test_failed_terminal_retry_after_eviction_keeps_envelope(api, owner):
 async def test_retired_terminal_retry_after_eviction_keeps_compact_outcome(api, owner):
     calls = []
     async def handle(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         calls.append(event.text)
         execution_result.get()['result'] = {'final_response': 'answer', 'messages': [
             {'role': 'assistant', 'content': '', 'tool_calls': [
@@ -109,7 +109,7 @@ async def test_retired_terminal_retry_after_eviction_keeps_compact_outcome(api, 
 async def test_terminal_replay_does_not_roll_named_conversation_back(api, owner):
     calls = []
     async def handle(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         calls.append(event.text)
         execution_result.get()['result'] = {'final_response': event.text, 'messages': []}
         return event.text

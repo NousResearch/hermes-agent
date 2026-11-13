@@ -2,7 +2,7 @@
 
 import json
 
-from gateway.hosted_rooms_common import table_exists
+from hermes_agent.gateway.hosted_rooms_common import table_exists
 
 
 INVALID_TABLE = "hosted_room_work_records_invalid"
@@ -28,7 +28,7 @@ def initialize(conn):
 
 
 def _initialize_locked(conn):
-    from gateway import hosted_room_work_records as work
+    from hermes_agent.gateway import hosted_room_work_records as work
     tables = (work.SOURCE_TABLE, work.PENDING_TABLE)
     # Orphans are opaque evidence, not snapshots. No FK or producer can honestly
     # be supplied for them. Preserve every original column and forbid mutation.
@@ -92,7 +92,7 @@ def _initialize_locked(conn):
 
 def scope_disposition(conn, table, row):
     """Read-only authority projection, also used when inserting migrated rows."""
-    from gateway import hosted_room_work_records as work
+    from hermes_agent.gateway import hosted_room_work_records as work
     if row["disposition"] != "current":
         return row["disposition"]
     current = None
@@ -157,7 +157,7 @@ def _guards(conn, work, tables):
 
 
 def retained_fields(table):
-    from gateway import hosted_room_work_records as work
+    from hermes_agent.gateway import hosted_room_work_records as work
     fields = ["room_id", "revision", "digest", "record_json"]
     fields += ["source_table"] if table == INVALID_TABLE else ["producer_gateway_id", "producer_epoch"]
     if table in (work.PENDING_TABLE, INVALID_TABLE):
@@ -177,7 +177,7 @@ def usage_sql(tables):
 
 
 def validate_stored(row):
-    from gateway import hosted_room_work_records as work
+    from hermes_agent.gateway import hosted_room_work_records as work
     try:
         record = work.validate(json.loads(row["record_json"]))
         if (row["disposition"] == "invalid"
@@ -197,7 +197,7 @@ def validate_stored_locked(conn, table, row):
     transaction before reporting controlled failure. Historical rows are never
     rewritten, and read-only projections use validate_stored instead.
     """
-    from gateway import hosted_room_work_records as work
+    from hermes_agent.gateway import hosted_room_work_records as work
     try:
         return validate_stored(row)
     except work.InvalidStoredWorkRecord:
@@ -222,7 +222,7 @@ def scope(record):
 
 
 def save_locked(conn, table, record, *, target_install_id=None, route_generation=None):
-    from gateway import hosted_room_work_records as work
+    from hermes_agent.gateway import hosted_room_work_records as work
     data = work.encode(record)
     fields = ["room_id", "producer_gateway_id", "producer_epoch", "revision", "digest", "record_json", "disposition"]
     values = [*scope(record), record["revision"], record["digest"], data, "current"]

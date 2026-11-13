@@ -9,9 +9,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.pairing import PairingStore
-from gateway.profile_routing import ProfileRoute
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.pairing import PairingStore
+from hermes_agent.gateway.profile_routing import ProfileRoute
 
 
 @pytest.fixture
@@ -39,7 +39,7 @@ def mux_home(tmp_path, monkeypatch):
 
 
 def _runner(home):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(multiplex_profiles=True)
@@ -90,7 +90,7 @@ def test_routed_primary_callback_uses_routed_pairing_store_and_transport_allowli
 def test_bot_sender_reaches_allow_bots_policy_through_callback(mux_home):
     """#92840: the early prefilter must carry ``is_bot`` so TELEGRAM_ALLOW_BOTS
     admits bot-authored messages under the multiplex closure handler."""
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
 
     runner = _runner(mux_home)
     (mux_home / ".env").write_text("TELEGRAM_ALLOWED_USERS=999\nTELEGRAM_ALLOW_BOTS=all\n", encoding="utf-8")
@@ -164,7 +164,7 @@ def test_slack_interactive_auth_prefers_wired_profile_check(mux_home, monkeypatc
     wired ``_make_adapter_auth_check`` for its own profile; the DEFAULT
     profile's process-env allow-all never leaks in — not through the
     injected path, and not through the env-only fallback either."""
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
     from plugins.platforms.slack.adapter import SlackAdapter
 
     runner = _runner(mux_home)
@@ -197,7 +197,7 @@ def test_authorization_adapter_ignores_per_turn_active_profile(mux_home):
     default bot must not be handed to that profile (fail-closed None); the
     launch profile still resolves ``self.adapters``. The secondary's own bot
     is down (reconnect pending), so it is not a route-only satellite."""
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
 
     runner = _runner(mux_home)
     default_bot = object()
@@ -212,8 +212,8 @@ def test_authorization_adapter_ignores_per_turn_active_profile(mux_home):
 def test_channel_directory_path_follows_current_home(mux_home):
     """#87240: the directory file resolves against the CURRENT profile home,
     not the home that happened to import the module."""
-    import gateway.channel_directory as cd
-    from gateway.run import _profile_runtime_scope
+    import hermes_agent.gateway.channel_directory as cd
+    from hermes_agent.gateway.run import _profile_runtime_scope
 
     assert cd.DIRECTORY_PATH is None
     with _profile_runtime_scope(mux_home / "profiles" / "secondary"):

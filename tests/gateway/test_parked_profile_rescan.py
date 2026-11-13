@@ -7,15 +7,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.run import GatewayRunner
-from gateway.runtime_ownership import process_ownership
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.runtime_ownership import process_ownership
 
 
 @pytest.fixture
 def multiplexed(tmp_path, monkeypatch):
     """``(runner, beta_home)``: a multiplexed runner serving the default profile and ``beta``."""
-    from gateway import run
+    from hermes_agent.gateway import run
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {
         'platform_toolsets': {'cli': [], 'tui': []},
         'model': {'provider': 'custom', 'base_url': 'http://127.0.0.1:9/v1', 'api_key': 'test-key'}})
@@ -44,8 +44,8 @@ def multiplexed(tmp_path, monkeypatch):
 
 async def _boot_with_beta_parked(runner, beta, monkeypatch):
     """Boot's API start with beta's startup Bot recovery failing once: beta is parked."""
-    from gateway import session_bot
-    from gateway.run_runtime import parked_profile_map, start_gateway_runtime_api
+    from hermes_agent.gateway import session_bot
+    from hermes_agent.gateway.run_runtime import parked_profile_map, start_gateway_runtime_api
     real, failed = session_bot.recover_bot_deliveries, []
 
     async def recover_once_failing(authority):
@@ -58,7 +58,7 @@ async def _boot_with_beta_parked(runner, beta, monkeypatch):
         return SimpleNamespace(api_origin='http://127.0.0.1:1')
 
     monkeypatch.setattr(session_bot, 'recover_bot_deliveries', recover_once_failing)
-    monkeypatch.setattr('gateway.run_api.start_gateway_api', api)
+    monkeypatch.setattr('hermes_agent.gateway.run_api.start_gateway_api', api)
     await start_gateway_runtime_api(runner)
     assert 'beta' in parked_profile_map(runner)
 
@@ -82,16 +82,16 @@ async def _rescan(runner, beta, monkeypatch, connected=None):
 
 
 def _actor(authority):
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     return AuthorityConnection(authority, object(), {'user_id': 'human'}).actor
 
 
 @pytest.mark.asyncio
 async def test_local_sessions_work_after_the_rescan(multiplexed, tmp_path, monkeypatch):
-    from gateway.run_runtime import initialize_gateway_runtime
-    from gateway.session_authorities import owner_scope
-    from gateway.session_local import create_local_session
-    from gateway.session_local_recovery import restore_local_session
+    from hermes_agent.gateway.run_runtime import initialize_gateway_runtime
+    from hermes_agent.gateway.session_authorities import owner_scope
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_local_recovery import restore_local_session
     runner, beta = multiplexed
     await initialize_gateway_runtime(runner)
     first = runner.session_authorities.for_home(beta)
@@ -108,9 +108,9 @@ async def test_local_sessions_work_after_the_rescan(multiplexed, tmp_path, monke
 
 @pytest.mark.asyncio
 async def test_api_work_queued_before_the_park_is_recovered_by_the_rescan(multiplexed, monkeypatch):
-    from gateway.run_runtime import initialize_gateway_runtime
-    from gateway.session_api import bind_api_session
-    from gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.run_runtime import initialize_gateway_runtime
+    from hermes_agent.gateway.session_api import bind_api_session
+    from hermes_agent.gateway.session_authority import SessionAuthority
     from hermes_agent.hermes_state_runtime import admit_session_input
     runner, beta = multiplexed
     api = SimpleNamespace(gateway_runner=runner)
@@ -137,8 +137,8 @@ async def test_native_recovery_runs_once_the_rescanned_adapters_connect(multiple
     (``recover_gateway_native_sessions``); the rescan runs the same step once the served profile's
     bots connect, in every serving ledger: a ``bot_profile`` route runs a bot's messages on another
     profile, so the rows those bots carry can be queued in the default profile's ledger."""
-    from gateway.run_runtime import initialize_gateway_runtime
-    from gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.run_runtime import initialize_gateway_runtime
+    from hermes_agent.gateway.session_authority import SessionAuthority
     runner, beta = multiplexed
     connected, recovered = [], []
     real = SessionAuthority.recover_native_sessions

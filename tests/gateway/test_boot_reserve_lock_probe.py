@@ -1,7 +1,7 @@
 """A client's lock probe never refuses a gateway boot.
 
 ``gateway ensure`` (and every discovery) asks "is a reservation pending?" by taking
-``gateway.lock``'s flock for an instant (``gateway.status._probe_lock_file``). A multiplexer whose
+``gateway.lock``'s flock for an instant (``hermes_agent.gateway.status._probe_lock_file``). A multiplexer whose
 non-blocking boot reserve lands in that instant used to exit 1 with ``Cannot reserve gateway
 profiles``, so the very client that started it read ``runtime_exited``. These tests hold a real
 flock exactly where a probe holds it and boot through the real reserve.
@@ -18,9 +18,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.run_bootstrap import _browse_reconcile_reserve_wait_s, _reserve_waiting_out_browse_reconcile
-from gateway.run_profile_reconcile import GatewayProfileReconcileMixin
-from gateway.runtime_ownership import OwnershipConflict, ProfileOwnership, process_ownership
+from hermes_agent.gateway.run_bootstrap import _browse_reconcile_reserve_wait_s, _reserve_waiting_out_browse_reconcile
+from hermes_agent.gateway.run_profile_reconcile import GatewayProfileReconcileMixin
+from hermes_agent.gateway.runtime_ownership import OwnershipConflict, ProfileOwnership, process_ownership
 
 pytestmark = pytest.mark.platforms("linux", "macos")
 
@@ -102,7 +102,7 @@ from pathlib import Path
 sys.path.insert(0, sys.argv[3])
 home = Path(sys.argv[2])
 if sys.argv[1] == "owner":
-    from gateway.runtime_ownership import ProfileOwnership
+    from hermes_agent.gateway.runtime_ownership import ProfileOwnership
     owner = ProfileOwnership()
     owner.reserve([home])
 else:  # what _probe_lock_file holds: the flock on its own description, no record written
@@ -226,7 +226,7 @@ def test_cancelled_hot_serve_never_takes_the_profile_after_cleanup(tmp_path, mon
     """The gateway stop cancels the reconcile mid-wait, then releases ownership. The reservation
     worker must not outlive that cancel: a worker still retrying took the flock once the holder let
     go, after cleanup, with no coroutine left to serve or release it."""
-    from gateway import runtime_ownership
+    from hermes_agent.gateway import runtime_ownership
 
     root, fresh = _homes(tmp_path)
     retrying, worker_done = threading.Event(), threading.Event()

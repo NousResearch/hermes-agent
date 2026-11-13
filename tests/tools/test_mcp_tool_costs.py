@@ -87,7 +87,7 @@ def test_untrusted_prompt_names_cost_and_running_total_and_declines_add_nothing(
 
 
 def test_full_trust_asks_only_past_the_limit_and_unattended_refuses_without_dispatch(session):
-    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
     _register(COSTED)
     for _ in range(2):  # 80 of 100: trust: full stays silent below the limit
         result, asked = _call("paid_render")
@@ -116,7 +116,7 @@ def test_full_trust_asks_only_past_the_limit_and_unattended_refuses_without_disp
 def test_over_limit_untrusted_prompt_shows_notice_then_arguments_on_the_text_fallback(session):
     """A surface without approval buttons gets the gateway's plain-text prompt: it carries the spend-limit
     notice and cost first, then the call's arguments."""
-    from gateway.run import _format_exec_approval_fallback
+    from hermes_agent.gateway.run import _format_exec_approval_fallback
     _register(dict(COSTED, spend_limit=30, trust="untrusted"))
     asked = []
     token = set_current_session_key("chat-a")
@@ -195,7 +195,7 @@ def test_declarations_validate_translate_and_survive_a_native_trust_override(tmp
 
 def test_a_chat_keeps_its_total_across_a_rotation_and_each_cron_run_has_its_own(session, caplog):
     from hermes_agent.cron.scheduler import _CronRunScope
-    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
     config = dict(COSTED, tool_costs={**COSTED["tool_costs"], "mcp_srv_typo": 3})
     _register(config)
     with caplog.at_level("WARNING", logger="tools.mcp_tool"):  # live discovery sees the full tool list

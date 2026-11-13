@@ -4,10 +4,10 @@ import asyncio
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionSource
-from gateway.session_identity import replace_source
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.session_identity import replace_source
 from hermes_agent.hermes_state_runtime import RuntimeStoreError, get_session_admission, list_session_admissions
 from tests.gateway.test_automation_compression_media import _admit_human, _discord_owner
 from tests.gateway.test_automation_notification_category import _SOURCE, _authority, _native_owner
@@ -55,7 +55,7 @@ async def test_subagent_process_notice_enters_its_parent_route_but_not_after_res
     root = (await _admit_human(runner, authority, MessageEvent(text='human', source=source, message_id='human'))).ref.session_id
     key = runner.session_store._generate_session_key(source)
     worker, nested = root + '-worker', root + '-nested'
-    # Shaped like reserve_child_execution's rows (gateway/session_worker_child.py).
+    # Shaped like reserve_child_execution's rows (hermes_agent/gateway/session_worker_child.py).
     authority.db.create_session(worker, source='subagent', parent_session_id=root, model_config={'_delegate_from': root})
     authority.db.create_session(nested, source='subagent', parent_session_id=worker,
                                 model_config={'_delegate_from': worker})
@@ -130,8 +130,8 @@ def _compress(runner, authority, key, child):
 
 @pytest.mark.asyncio
 async def test_wake_on_a_resumed_delegate_passes_preflight_after_compression(tmp_path, monkeypatch):
-    from gateway.session_contract import SessionRef
-    from gateway.session_envelope import check_native_route
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_envelope import check_native_route
     runner, authority, source, key, child = await _resumed_delegate_route(tmp_path, monkeypatch)
     tip = _compress(runner, authority, key, child)
     event = {'type': 'completion', 'session_id': 'proc', 'started_at': 1, 'session_key': key, 'parent_session_id': tip}
@@ -171,9 +171,9 @@ async def test_process_notice_from_a_subagent_of_a_resumed_delegate_reaches_the_
 
 
 def _relay_adapter():
-    from gateway.relay.adapter import RelayAdapter
-    from gateway.relay.descriptor import CapabilityDescriptor
-    from gateway.relay.ws_transport import WebSocketRelayTransport
+    from hermes_agent.gateway.relay.adapter import RelayAdapter
+    from hermes_agent.gateway.relay.descriptor import CapabilityDescriptor
+    from hermes_agent.gateway.relay.ws_transport import WebSocketRelayTransport
     descriptor = CapabilityDescriptor(1, 'relay', 'Fixture', 4096, False, True, False, 'plain', 'chars')
     transport = WebSocketRelayTransport('http://127.0.0.1:1/relay', 'relay', '',
                                         gateway_id='fixture-gateway', upgrade_secret='fixture-secret')
@@ -189,8 +189,8 @@ def _relay_source(message_id=None):
 
 @pytest.mark.asyncio
 async def test_relay_wake_row_reverifies_the_source_it_stores(tmp_path, monkeypatch):
-    from gateway.session_envelope import restore_native
-    from gateway.session_ingress_context import native_callback, register_transport_home, relay_callback
+    from hermes_agent.gateway.session_envelope import restore_native
+    from hermes_agent.gateway.session_ingress_context import native_callback, register_transport_home, relay_callback
     runner, authority = await _authority(tmp_path, monkeypatch)
     adapter, transport = _relay_adapter()
     runner.adapters = {Platform.RELAY: adapter}
@@ -230,8 +230,8 @@ async def test_wake_after_a_reset_borrows_the_previous_conversations_envelope(tm
         assert wake['payload']['native_text_v1']['automation']['owner'] == fresh.session_id
         assert 'fresh done' in wake['payload']['text']
         # The borrowed envelope passes the drain's pre-claim route proof, not only admission.
-        from gateway.session_contract import SessionRef
-        from gateway.session_envelope import check_native_route
+        from hermes_agent.gateway.session_contract import SessionRef
+        from hermes_agent.gateway.session_envelope import check_native_route
         await check_native_route(runner, wake['payload'],
                                  authority.physical_target(SessionRef(authority.profile_id, fresh.session_id)),
                                  _source, runner._adapter_for_source(_source))
@@ -242,7 +242,7 @@ async def test_wake_after_a_reset_borrows_the_previous_conversations_envelope(tm
 @pytest.mark.asyncio
 async def test_wake_prefers_the_fresh_conversations_own_envelope(tmp_path, monkeypatch):
     """Once the fresh conversation admits a human message, its own envelope wins over the predecessor."""
-    from gateway.session_ingress_context import native_callback
+    from hermes_agent.gateway.session_ingress_context import native_callback
     runner, authority, adapter, _source, metadata = await _native_owner(tmp_path, monkeypatch, 'human-1')
     try:
         route = metadata['gateway_session_key']
@@ -393,8 +393,8 @@ async def test_wake_crosses_an_intermediate_compression_tip(tmp_path, monkeypatc
 @pytest.mark.asyncio
 async def test_wake_does_not_borrow_a_legacy_unmarked_branch_parent(tmp_path, monkeypatch):
     """Old /branch children lack _branched_from; their ended parent is not a reset predecessor."""
-    from gateway.session_automation import wake_route_envelope
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_automation import wake_route_envelope
+    from hermes_agent.gateway.session_contract import SessionRef
 
     _runner, authority, _adapter, _source, metadata = await _native_owner(tmp_path, monkeypatch, 'human-1')
     try:
@@ -411,8 +411,8 @@ async def test_wake_does_not_borrow_a_legacy_unmarked_branch_parent(tmp_path, mo
 @pytest.mark.asyncio
 async def test_wake_does_not_follow_a_delegate_or_branch_parent(tmp_path, monkeypatch):
     """Only a reset predecessor is borrowed; delegate and ended branch edges are not."""
-    from gateway.session_automation import wake_route_envelope
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_automation import wake_route_envelope
+    from hermes_agent.gateway.session_contract import SessionRef
     _runner, authority, _adapter, _source, metadata = await _native_owner(tmp_path, monkeypatch, 'human-1')
     try:
         root = metadata['gateway_session_id']
@@ -433,7 +433,7 @@ async def test_consecutive_route_wakes_on_a_shared_route_keep_landing(tmp_path, 
     """A /loop or Kanban wake names no requester (``admit_route_wake``): on a shared group route the
     second tick borrows the first tick's own automation envelope, exactly as before the reset
     fallback existed, instead of being refused ``not_found`` until someone speaks again."""
-    from gateway.session_automation import admit_route_wake
+    from hermes_agent.gateway.session_automation import admit_route_wake
     fields = {**_SOURCE, 'chat_type': 'group', 'thread_id': None}
     runner, authority, adapter, source, metadata = await _native_owner(
         tmp_path, monkeypatch, 'human-1', fields, group_sessions_per_user=False)

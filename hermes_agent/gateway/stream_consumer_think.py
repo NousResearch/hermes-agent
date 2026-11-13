@@ -12,7 +12,7 @@ import logging
 from agent.think_scrubber import THINK_CLOSE_TAGS, THINK_OPEN_TAGS
 from agent.think_scrubber import StreamingThinkScrubber as _Scrubber
 
-logger = logging.getLogger("gateway.stream_consumer")
+logger = logging.getLogger("hermes_agent.gateway.stream_consumer")
 
 
 class StreamThinkFilterMixin:

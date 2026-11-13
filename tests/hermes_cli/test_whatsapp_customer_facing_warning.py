@@ -25,7 +25,7 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setattr("builtins.input", lambda _prompt="": "n")
     monkeypatch.setattr("hermes_cli.main._require_tty", lambda *_a, **_kw: None)
     # Stop right after the access-control step: no bridge script on disk.
-    monkeypatch.setattr("gateway.platforms.whatsapp_common.resolve_whatsapp_bridge_dir", lambda: tmp_path / "nobridge")
+    monkeypatch.setattr("hermes_agent.gateway.platforms.whatsapp_common.resolve_whatsapp_bridge_dir", lambda: tmp_path / "nobridge")
     return hermes
 
 

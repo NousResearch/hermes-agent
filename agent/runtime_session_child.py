@@ -1,7 +1,7 @@
 """A delegated child's store inside a worker: owner-reserved, never self-registered (#141793).
 
 The parent's ``RuntimeSessionStore`` asks the owner for a child on its own receipt stream; the
-owner mints the child's session row and execution (gateway/session_worker_child.py) and the
+owner mints the child's session row and execution (hermes_agent/gateway/session_worker_child.py) and the
 child persists through the ordinary ``worker.persist`` path under its own claim. A refusal
 (capacity, depth, draining) is a ValueError so ``delegate_task`` reports it as a tool error.
 """

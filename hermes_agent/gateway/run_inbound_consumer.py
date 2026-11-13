@@ -27,7 +27,7 @@ POST_ADMISSION_HOOK = "post_gateway_admission"
 def _routed_scope(runner: Any, source: Any):
     if not getattr(getattr(runner, "config", None), "multiplex_profiles", False):
         return contextlib.nullcontext()
-    from gateway.run import _async_profile_runtime_scope
+    from hermes_agent.gateway.run import _async_profile_runtime_scope
     return _async_profile_runtime_scope(runner._resolve_profile_home_for_source(source))
 
 

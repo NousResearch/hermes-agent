@@ -1,6 +1,6 @@
 """Completion ownership for GatewayRunner: the session a pinned completion belongs to.
 
-Split out of ``gateway/run_notifications.py`` (itself split out of ``gateway/run.py``); bound onto
+Split out of ``hermes_agent/gateway/run_notifications.py`` (itself split out of ``hermes_agent/gateway/run.py``); bound onto
 ``GatewayRunner`` through ``GatewayNotificationsMixin``. A completion may be pinned to a delegate
 child's execution transcript: ownership follows only ``model_config._delegate_from`` to the
 human-facing session, shared by delivery preflight and route resolution, and no route moves until
@@ -15,11 +15,11 @@ import logging
 import sqlite3
 from typing import Any, Optional, Sequence, cast
 
-from gateway.session import SessionEntry
+from hermes_agent.gateway.session import SessionEntry
 from hermes_agent.hermes_state_errors import StateDbReplacedError
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 # Upper bound on the ``model_config._delegate_from`` chain walked by _resolve_async_delegation_session
 # when canonicalizing a delegate child to its human-facing gateway parent (#92611). Real nesting is
@@ -45,7 +45,7 @@ def _local_completion_card(evt: dict) -> dict[str, str]:
     if evt_type == "heartbeat":
         # The wake stays machinery (no bubble, and a quiet tick may end in silence); the receipt lets an
         # idle CLI open the turn with one line and show the agent's reply.
-        from gateway.response_filters import INTERNAL_NOTIFICATION_DISPLAY_KIND
+        from hermes_agent.gateway.response_filters import INTERNAL_NOTIFICATION_DISPLAY_KIND
         from tools.process_registry_notifications import heartbeat_display_text
         return {"display_kind": INTERNAL_NOTIFICATION_DISPLAY_KIND, "display_text": heartbeat_display_text(evt)}
     return {}
@@ -96,7 +96,7 @@ class GatewayNotificationOwnershipMixin:
         route, so the replacement never matches, and messaging routes never qualify. Only a close ends a
         local tip (``session.detach {end_reason}`` stamps the client's own reason: ``cli_close``,
         ``tui_close``, ``tui_shutdown``...), so any end but compression is one."""
-        from gateway.config import Platform
+        from hermes_agent.gateway.config import Platform
         if entry is None or entry.platform != Platform.LOCAL or pinned_row is None:
             return ""
         target, row = pinned_session_id, pinned_row
@@ -119,7 +119,7 @@ class GatewayNotificationOwnershipMixin:
         Generic parent pointers also describe compression and branches; only
         ``_delegate_from`` authorizes walking out of an execution transcript.
         """
-        from gateway.run import _USER_BOUNDARY_END_REASONS
+        from hermes_agent.gateway.run import _USER_BOUNDARY_END_REASONS
         session_db = cast(Any, self)._session_db
         if session_db is None:
             return "retry", session_id, None
@@ -215,7 +215,7 @@ class GatewayNotificationOwnershipMixin:
         whose ownership was never verified is the same class of defect this canonicalization fixes,
         and the completion remains readable in the delegation records either way.
         """
-        from gateway.run import _USER_BOUNDARY_END_REASONS
+        from hermes_agent.gateway.run import _USER_BOUNDARY_END_REASONS
         session_db = cast(Any, self._session_db)
         if session_db is None:
             logger.warning(

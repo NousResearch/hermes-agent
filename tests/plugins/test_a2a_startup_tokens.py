@@ -13,7 +13,7 @@ from plugins.platforms.a2a import security
 
 def test_token_in_the_profile_env_only_turns_auth_on(tmp_path, monkeypatch):
     import hermes_constants
-    from gateway.platforms import _shared
+    from hermes_agent.gateway.platforms import _shared
 
     monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
     monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)

@@ -145,7 +145,7 @@ def _gateway_multiplexes(root: Path) -> bool:
 
 
 def live_gateway_homes(stores: Iterable[Store]) -> list[tuple[str, int]]:
-    from gateway.status import live_gateway_pid_for_home
+    from hermes_agent.gateway.status import live_gateway_pid_for_home
     live = []
     for store in stores:
         pid = live_gateway_pid_for_home(store.home)

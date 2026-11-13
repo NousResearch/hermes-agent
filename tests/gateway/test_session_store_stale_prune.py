@@ -11,8 +11,8 @@ import json
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
-from gateway.config import GatewayConfig, Platform
-from gateway.session import SessionEntry, SessionSource, SessionStore
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.session import SessionEntry, SessionSource, SessionStore
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +46,7 @@ def _make_entry_with_origin(key: str, session_id: str) -> SessionEntry:
 def _make_store_with_db(tmp_path, db_mock) -> SessionStore:
     """Build a SessionStore with a mock SessionDB, bypassing disk load."""
     config = GatewayConfig()
-    with patch("gateway.session.SessionStore._ensure_loaded"):
+    with patch("hermes_agent.gateway.session.SessionStore._ensure_loaded"):
         store = SessionStore(sessions_dir=tmp_path, config=config)
     store._db = db_mock
     store._loaded = True
@@ -153,7 +153,7 @@ class TestPruneStaleSessionsLocked:
 
     def test_noop_when_db_is_none(self, tmp_path):
         config = GatewayConfig()
-        with patch("gateway.session.SessionStore._ensure_loaded"):
+        with patch("hermes_agent.gateway.session.SessionStore._ensure_loaded"):
             store = SessionStore(sessions_dir=tmp_path, config=config)
         store._db = None
         store._loaded = True

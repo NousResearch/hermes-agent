@@ -150,7 +150,7 @@ class TestTickReapsDeadOwnerClaims:
 class TestOneShotCliRunIsSynchronous:
     @pytest.fixture(autouse=True)
     def _restore_async_delivery_flag(self):
-        from gateway.session_context import _SESSION_ASYNC_DELIVERY, _UNSET
+        from hermes_agent.gateway.session_context import _SESSION_ASYNC_DELIVERY, _UNSET
 
         token = _SESSION_ASYNC_DELIVERY.set(_UNSET)
         yield
@@ -159,7 +159,7 @@ class TestOneShotCliRunIsSynchronous:
     def test_cli_run_declares_stateless_channel_before_dispatch(self, monkeypatch):
         """`hermes cron run` must gate off async delivery so the run executes
         synchronously in the CLI process instead of on a doomed daemon thread."""
-        from gateway.session_context import async_delivery_supported
+        from hermes_agent.gateway.session_context import async_delivery_supported
         from hermes_cli import cron as cron_cli
 
         observed = {}
@@ -177,7 +177,7 @@ class TestOneShotCliRunIsSynchronous:
         assert async_delivery_supported() is True
 
     def test_non_run_actions_leave_channel_capability_alone(self, monkeypatch):
-        from gateway.session_context import async_delivery_supported
+        from hermes_agent.gateway.session_context import async_delivery_supported
         from hermes_cli import cron as cron_cli
 
         observed = {}
@@ -195,7 +195,7 @@ class TestOneShotCliRunIsSynchronous:
         """End-to-end gate: with the stateless declaration active, the cron
         tool's background dispatcher must fall back to synchronous execution
         (return None) even when a session key is inherited from a gateway env."""
-        from gateway.session_context import declare_stateless_channel
+        from hermes_agent.gateway.session_context import declare_stateless_channel
         from tools.cronjob_tools import _try_dispatch_background_run
 
         declare_stateless_channel()

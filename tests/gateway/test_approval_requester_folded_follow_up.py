@@ -6,9 +6,9 @@ from contextvars import copy_context
 
 import pytest
 
-from gateway.config import GatewayConfig
-from gateway.run import GatewayRunner
-from gateway.session import build_session_context, build_session_key
+from hermes_agent.gateway.config import GatewayConfig
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import build_session_context, build_session_key
 from tests.gateway.test_approval_requester_binding import write_approvers
 from tests.gateway.test_approval_requester_binding_shared_turns import (  # _clean_state: autouse fixture
     _clean_state, _observe_adapter, _observed_event)
@@ -39,7 +39,7 @@ def _raise_approval(key):
 ], ids=["other-member", "same-member"])
 async def test_a_folded_follow_up_rebinds_the_running_turns_approvals(
         mode, follow_uid, follow_name, alice_answers, bob_answers):
-    from gateway.approval_actor import approval_refusal
+    from hermes_agent.gateway.approval_actor import approval_refusal
 
     write_approvers([])
     adapter = _observe_adapter()

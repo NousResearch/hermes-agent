@@ -242,7 +242,7 @@ def endpoint_identity(provider: Any, base_url: Any) -> tuple[Any, Optional[str]]
 
 
 def _owner_identity() -> dict[str, Any]:
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway.status import get_process_start_time
     started = get_process_start_time(os.getpid())
     return {"owner_pid": os.getpid(), "owner_started_at": started}
 

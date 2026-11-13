@@ -9,7 +9,7 @@ through MoA).
 
 import pytest
 
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.run import GatewayRunner
 
 KEY = "agent:main:telegram:dm:999"
 PRIOR = {"provider": "openrouter", "model": "gpt-4"}

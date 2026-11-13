@@ -7,9 +7,9 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
-from gateway.config import PlatformConfig
-from gateway.platforms.base import utf16_len
-from gateway.platforms.base_exec_approval import send_full_command
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.base import utf16_len
+from hermes_agent.gateway.platforms.base_exec_approval import send_full_command
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 

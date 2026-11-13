@@ -26,10 +26,10 @@ def served_root(tmp_path, monkeypatch):
     monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", list)
     # Model the default gateway's identity, not merely a live pytest PID. The satellite has no lock.
     monkeypatch.setattr(
-        "gateway.status.is_gateway_runtime_lock_active",
+        "hermes_agent.gateway.status.is_gateway_runtime_lock_active",
         lambda lock_path=None: lock_path == root / "gateway.lock",
     )
-    monkeypatch.setattr("gateway.status._read_process_cmdline", lambda pid: "hermes gateway run")
+    monkeypatch.setattr("hermes_agent.gateway.status._read_process_cmdline", lambda pid: "hermes gateway run")
     root.joinpath("gateway.pid").write_text(json.dumps({"pid": os.getpid()}))
     root.joinpath("config.yaml").write_text("gateway:\n  multiplex_profiles: true\n")
     return root
@@ -53,7 +53,7 @@ def test_status_preserves_profile_health_contract(served_root, capsys, monkeypat
     if mode == "external":
         monkeypatch.setattr(cron, "_active_cron_provider_name", lambda: "managed-test")
     if mode == "unrelated_pid":
-        monkeypatch.setattr("gateway.status._read_process_cmdline", lambda pid: "python -m pytest")
+        monkeypatch.setattr("hermes_agent.gateway.status._read_process_cmdline", lambda pid: "python -m pytest")
 
     cron.cron_status()
     output = capsys.readouterr().out
@@ -93,7 +93,7 @@ def test_host_record_rung_names_the_roster_and_a_runnable_restart(served_root, c
     """
     import os
 
-    from gateway import host_rendezvous as hr
+    from hermes_agent.gateway import host_rendezvous as hr
     from hermes_cli import cron
 
     # A live owner holds the host lock for its lifetime (run.py claims before it publishes).
@@ -145,7 +145,7 @@ def test_standalone_guidance_matches_profile_membership(served_root, monkeypatch
     home.mkdir(exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.delenv("HERMES_PROFILE")
-    monkeypatch.setattr("gateway.status.is_gateway_runtime_lock_active", lambda lock_path=None: False)
+    monkeypatch.setattr("hermes_agent.gateway.status.is_gateway_runtime_lock_active", lambda lock_path=None: False)
     cron_status()
     output = capsys.readouterr().out
     assert "hermes --profile default gateway install" in output
@@ -172,9 +172,9 @@ def test_desktop_serve_ticker_is_not_reported_as_no_gateway(tmp_path, monkeypatc
     monkeypatch.setattr(jobs, "JOBS_FILE", home / "cron/jobs.json")
     monkeypatch.setattr(jobs, "OUTPUT_DIR", home / "cron/output")
     monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", list)
-    monkeypatch.setattr("gateway.status.is_gateway_runtime_lock_active", lambda lock_path=None: False)
+    monkeypatch.setattr("hermes_agent.gateway.status.is_gateway_runtime_lock_active", lambda lock_path=None: False)
     monkeypatch.setattr("hermes_cli.gateway.named_profile_served_by_running_multiplexer", lambda: False)
-    monkeypatch.setattr("gateway.host_topology.host_gateway_serving", lambda profile_name=None: None)
+    monkeypatch.setattr("hermes_agent.gateway.host_topology.host_gateway_serving", lambda profile_name=None: None)
     monkeypatch.setattr(cron, "_active_cron_provider_name", lambda: "builtin")
     jobs.record_ticker_heartbeat(success=True)
 
@@ -209,7 +209,7 @@ def test_in_process_ticker_heartbeat_counts_only_while_its_writer_lives(tmp_path
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(jobs, "CRON_DIR", home / "cron")
     monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", list)
-    monkeypatch.setattr("gateway.status.is_gateway_runtime_lock_active", lambda lock_path=None: False)
+    monkeypatch.setattr("hermes_agent.gateway.status.is_gateway_runtime_lock_active", lambda lock_path=None: False)
     monkeypatch.setattr("hermes_cli.gateway.named_profile_served_by_running_multiplexer", lambda: False)
     monkeypatch.setattr(cron, "_active_cron_provider_name", lambda: "builtin")
     dead = subprocess.Popen([sys.executable, "-c", ""], stdin=subprocess.DEVNULL)

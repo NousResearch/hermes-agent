@@ -15,7 +15,7 @@ import json
 import pytest
 import pytest_asyncio
 
-from gateway.relay.ws_transport import WebSocketRelayTransport, WEBSOCKETS_AVAILABLE
+from hermes_agent.gateway.relay.ws_transport import WebSocketRelayTransport, WEBSOCKETS_AVAILABLE
 
 pytestmark = pytest.mark.skipif(not WEBSOCKETS_AVAILABLE, reason="websockets not installed")
 
@@ -229,7 +229,7 @@ async def test_go_dormant_redials_on_wake_and_drains(server):
 
 def _relay_descriptor():
     """Placeholder descriptor for the adapter tests below."""
-    from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+    from hermes_agent.gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
 
     return CapabilityDescriptor(
         contract_version=CONTRACT_VERSION,
@@ -247,8 +247,8 @@ def _relay_descriptor():
 
 def test_adapter_reports_false_when_the_transport_hold_fails():
     """The runner suspends on the strength of this answer, so a transport that is missing the method or throws must read as 'not held' rather than pass for success on the mere absence of an exception."""
-    from gateway.config import PlatformConfig
-    from gateway.relay.adapter import RelayAdapter
+    from hermes_agent.gateway.config import PlatformConfig
+    from hermes_agent.gateway.relay.adapter import RelayAdapter
 
     placeholder = _relay_descriptor()
 
@@ -309,8 +309,8 @@ async def test_go_dormant_leaves_the_socket_open_when_the_ack_is_missed(server):
 async def test_adapter_go_dormant_delegates_to_transport(server):
     """RelayAdapter.go_dormant() drives the transport's go_dormant (going_idle +
     dormant close) without the terminal teardown disconnect() does."""
-    from gateway.config import PlatformConfig
-    from gateway.relay.adapter import RelayAdapter
+    from hermes_agent.gateway.config import PlatformConfig
+    from hermes_agent.gateway.relay.adapter import RelayAdapter
 
     placeholder = _relay_descriptor()
     transport = WebSocketRelayTransport(

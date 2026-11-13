@@ -7,7 +7,7 @@ import pytest
 
 
 def test_config_credentials_recover_only_exact_source(tmp_path, monkeypatch):
-    from gateway.session_policy import build_policy, bind_launch_key
+    from hermes_agent.gateway.session_policy import build_policy, bind_launch_key
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     home = tmp_path / 'profile'
     home.mkdir()
@@ -44,12 +44,12 @@ def test_config_credentials_recover_only_exact_source(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_config_creation_retry_does_not_rebind_current_credentials(tmp_path, monkeypatch):
-    from gateway.config import GatewayConfig, Platform
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import SessionActor
-    from gateway.session_local import create_local_session
-    from gateway import run
+    from hermes_agent.gateway.config import GatewayConfig, Platform
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway import run
     config = {'model': {'api_key': 'original-private'}, 'platform_toolsets': {'cli': []}}
     monkeypatch.setattr(run, '_load_gateway_config', lambda: config)
     def runner():
@@ -73,7 +73,7 @@ def test_dropped_top_level_setting_does_not_wedge_the_session(tmp_path, monkeypa
     .env, where ``hermes config set`` writes it) leaves the session running on what its frozen tree
     holds instead of failing every read of the chat with ``launch_credentials_unavailable``. A
     ROUTE credential that disappeared still refuses, and a settings-only read never needs either."""
-    from gateway.session_policy import build_policy, bind_launch_key
+    from hermes_agent.gateway.session_policy import build_policy, bind_launch_key
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     home = tmp_path / 'profile'
     home.mkdir()
@@ -113,7 +113,7 @@ def test_an_unrelated_secret_edit_keeps_the_route_and_a_gone_route_key_is_named(
     """CFG-1: editing ANY config secret (here an MCP server's env token) used to strand every older
     session after a restart. Only the session's own route credential may refuse, and that refusal
     names the credential; the unrelated secret is simply no longer supplied, never swapped."""
-    from gateway.session_policy import build_policy, bind_launch_key
+    from hermes_agent.gateway.session_policy import build_policy, bind_launch_key
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     home = tmp_path / 'profile'
     home.mkdir()
@@ -153,8 +153,8 @@ def test_an_unrelated_secret_edit_keeps_the_route_and_a_gone_route_key_is_named(
 def _bound_session(tmp_path, monkeypatch, cfg):
     """A session frozen on *cfg* as the gateway loads it (``${VAR}`` expanded), plus a
     fresh-authority factory (a restarted owner, no secret cache)."""
-    from gateway.run import _load_gateway_config
-    from gateway.session_policy import build_policy, bind_launch_key
+    from hermes_agent.gateway.run import _load_gateway_config
+    from hermes_agent.gateway.session_policy import build_policy, bind_launch_key
     home = tmp_path / 'profile'
     home.mkdir()
     monkeypatch.setenv('HERMES_HOME', str(home))
@@ -255,8 +255,8 @@ def test_a_bare_custom_key_selected_by_url_is_the_route(tmp_path, monkeypatch):
 
 def _policy_runtime(policy, owner):
     """The real gateway resolution a frozen session's turn runs (primary, then its fallback chain)."""
-    from gateway.run_turn_prepare import _resolve_policy_agent_runtime
-    from gateway.session_policy import policy_scope
+    from hermes_agent.gateway.run_turn_prepare import _resolve_policy_agent_runtime
+    from hermes_agent.gateway.session_policy import policy_scope
     authority = owner()
     runner = SimpleNamespace(session_authority=authority)
     with policy_scope(policy, authority=authority):
@@ -320,7 +320,7 @@ def test_a_changed_auxiliary_secret_reaches_the_next_side_task_call(tmp_path, mo
     route is untouched. (Earlier, a changed side-task key returned the task to the main route;
     that kept a retired or rotated side-task setting from ever reaching an existing chat.)"""
     from agent.auxiliary_client import get_text_auxiliary_client, reset_runtime_main, set_runtime_main
-    from gateway.session_policy import policy_scope
+    from hermes_agent.gateway.session_policy import policy_scope
     from tests.fakes.fake_llm_provider import FakeLLMServer
     with FakeLLMServer() as main, FakeLLMServer() as aux:
         cfg = {'model': {'provider': 'custom', 'default': 'primary-model', 'base_url': main.base_url,

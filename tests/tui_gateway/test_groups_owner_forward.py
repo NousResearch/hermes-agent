@@ -63,7 +63,7 @@ def test_room_calls_go_to_the_owning_gateway_and_nothing_lands_locally(home, own
     assert created["result"]["room"]["room_id"] == "room-desk"
     assert listed["result"]["rooms"] == [{"room_id": "room-webapp"}]
     assert [call[0] for call in owner] == ["groups.create", "groups.list"]
-    from gateway.hosted_rooms import default_db_path, list_rooms
+    from hermes_agent.gateway.hosted_rooms import default_db_path, list_rooms
     assert list_rooms(default_db_path()) == []  # no second store, no local driver for it
 
 
@@ -90,7 +90,7 @@ def test_owner_refusal_is_returned_not_run_locally(home, monkeypatch):
 
     reply = srv._methods["groups.create"](1, {"room_id": "room-desk", "name": "Desk", "members": MEMBERS})
     assert reply["error"]["code"] == 4030 and reply["error"]["data"] == {"reason": "permission_denied"}
-    from gateway.hosted_rooms import default_db_path, list_rooms
+    from hermes_agent.gateway.hosted_rooms import default_db_path, list_rooms
     assert list_rooms(default_db_path()) == []
 
 
@@ -141,8 +141,8 @@ def test_without_a_gateway_rooms_stay_standalone(home):
 
 
 def test_gateway_less_list_hides_rooms_handed_to_the_gateway(home):
-    from gateway.hosted_rooms import default_db_path
-    from gateway.hosted_rooms_gateway_import import import_standalone_rooms
+    from hermes_agent.gateway.hosted_rooms import default_db_path
+    from hermes_agent.gateway.hosted_rooms_gateway_import import import_standalone_rooms
     import sqlite3
     srv._methods["groups.create"](1, {"room_id": "room-desk", "name": "Desk", "members": MEMBERS})
     target = default_db_path().with_name("state.db")
@@ -164,7 +164,7 @@ def test_a_starting_gateway_is_waited_for_and_nothing_lands_locally(home, owner,
 
     assert created["result"]["room"]["room_id"] == "room-desk"
     assert [call[0] for call in owner] == ["groups.create"]
-    from gateway.hosted_rooms import default_db_path, list_rooms
+    from hermes_agent.gateway.hosted_rooms import default_db_path, list_rooms
     assert list_rooms(default_db_path()) == []  # never a room the gateway's list would not show
 
 
@@ -183,8 +183,8 @@ def test_a_named_profile_gateway_never_hides_the_standalone_rooms(home, owner, m
 
 def test_a_named_profile_reaches_the_rooms_handed_to_the_root_gateway(home, owner, monkeypatch):
     import sqlite3
-    from gateway.hosted_rooms import default_db_path
-    from gateway.hosted_rooms_gateway_import import import_standalone_rooms
+    from hermes_agent.gateway.hosted_rooms import default_db_path
+    from hermes_agent.gateway.hosted_rooms_gateway_import import import_standalone_rooms
     _discovery(monkeypatch, "absent")
     srv._methods["groups.create"](1, {"room_id": "room-desk", "name": "Desk", "members": MEMBERS})
     target = default_db_path().with_name("state.db")
@@ -205,8 +205,8 @@ def test_a_handed_room_is_never_renamed_in_the_standalone_store_while_its_gatewa
     the gateway down, a rename (or any call on that room) is a retryable refusal, never a local
     write the gateway would never see and the import marker would never copy again."""
     import sqlite3
-    from gateway.hosted_rooms import default_db_path, list_rooms
-    from gateway.hosted_rooms_gateway_import import import_standalone_rooms
+    from hermes_agent.gateway.hosted_rooms import default_db_path, list_rooms
+    from hermes_agent.gateway.hosted_rooms_gateway_import import import_standalone_rooms
     from hermes_agent.tui_gateway.methods_groups_forward import OWNER_LOST_CODE
     _discovery(monkeypatch, "absent")
     srv._methods["groups.create"](1, {"room_id": "room-desk", "name": "Before", "members": MEMBERS})

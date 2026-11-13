@@ -10,7 +10,7 @@ import types
 
 import pytest
 
-from gateway.relay.adapter import RelayAdapter
+from hermes_agent.gateway.relay.adapter import RelayAdapter
 
 
 class TraceTransport:

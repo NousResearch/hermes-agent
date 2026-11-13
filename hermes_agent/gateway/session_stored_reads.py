@@ -1,6 +1,6 @@
 """``session.transcript``: a stored conversation's display rows, read without attaching (#150091), paged
 both ways, polled forward from a cursor, with its compaction handoffs as rows; with ``subagent_id``, the
-same read of a delegated child of the session (``gateway/session_transcript_subagent.py``).
+same read of a delegated child of the session (``hermes_agent/gateway/session_transcript_subagent.py``).
 
 A picker previews a conversation before it opens it. ``session.resume`` would subscribe the caller,
 and ``session.history`` / ``session.events.since`` serve an attached session. This read builds no
@@ -32,8 +32,8 @@ import binascii
 import json
 from functools import partial
 
-from gateway.session_busy_controls import authorize
-from gateway.session_transcript_rows import (
+from hermes_agent.gateway.session_busy_controls import authorize
+from hermes_agent.gateway.session_transcript_rows import (
     ROW_KIND_COMPACTION, ROW_KIND_MESSAGE, page_handoffs, project_entries, shown_occurrences,
 )
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
@@ -74,14 +74,14 @@ def _readable_target(connection, ref, params):
     try:
         authorize(connection, ref, params, 'session:read')
     except RuntimeStoreError as exc:
-        from gateway.session_listing import legacy_readable
+        from hermes_agent.gateway.session_listing import legacy_readable
         if exc.reason != 'not_found':
             raise
         tip = authority.db.get_compression_tip(ref.session_id) or ref.session_id
         if not legacy_readable(authority, connection.actor, tip):
             raise
         return tip
-    from gateway.session_local_recovery import transcript_target
+    from hermes_agent.gateway.session_local_recovery import transcript_target
     return transcript_target(authority, ref)
 
 
@@ -380,7 +380,7 @@ def read_page(db, target, order, after, limit, *, profile_home, inline_images=Fa
     plus the tool results that stay with their call. A window whose rows all project to nothing (hidden
     scaffolding) is read past, so an empty page is the end. *whole*: ``_whole_lineage``, decided here
     when None."""
-    from gateway.session_controls import display_projection
+    from hermes_agent.gateway.session_controls import display_projection
     latest = order == 'latest'
     count = limit + _TOOL_RUN
     lineage = lineage or db._resume_lineage_ids(target)
@@ -507,7 +507,7 @@ async def transcript(connection, ref, params):
     binding = (ref.session_id, subagent_id, order)
     held = None if cursor is None else _decode_cursor(cursor, binding)
     if subagent_id is not None:
-        from gateway.session_transcript_subagent import subagent_transcript
+        from hermes_agent.gateway.session_transcript_subagent import subagent_transcript
         return await subagent_transcript(connection, ref, params, binding, held, limit, inline_images)
     target = _readable_target(connection, ref, params)
     authority = connection.authority

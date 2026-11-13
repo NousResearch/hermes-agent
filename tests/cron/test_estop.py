@@ -132,7 +132,7 @@ def test_cron_tick_resumes_after_disengage(hermes_home, monkeypatch):
 
 
 def test_kanban_dispatch_blocked_when_engaged(hermes_home):
-    from gateway.kanban_watchers_common import _kanban_dispatch_allowed
+    from hermes_agent.gateway.kanban_watchers_common import _kanban_dispatch_allowed
 
     assert _kanban_dispatch_allowed() is True
     estop.engage(reason="test")
@@ -166,7 +166,7 @@ class _FakeEvent:
 
 @pytest.mark.asyncio
 async def test_gateway_new_turn_gets_paused_reply(hermes_home):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner._is_user_authorized = lambda source: True  # bare-instance stub
@@ -180,7 +180,7 @@ async def test_gateway_new_turn_gets_paused_reply(hermes_home):
 @pytest.mark.asyncio
 async def test_gateway_internal_events_bypass_estop(hermes_home):
     """Internal events (in-flight work completions) must NOT be paused."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     estop.engage()
@@ -277,7 +277,7 @@ async def test_gateway_slash_commands_bypass_estop(hermes_home):
     """Recognized slash commands must pass the estop gate — /pause off is
     the in-band resume path for messaging-only users, and /status, /help
     and friends must keep working while paused."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner._is_user_authorized = lambda source: True
@@ -307,7 +307,7 @@ class _FakePauseEvent(_FakeEvent):
 
 @pytest.mark.asyncio
 async def test_gateway_pause_command_engages_and_resumes(hermes_home):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
 

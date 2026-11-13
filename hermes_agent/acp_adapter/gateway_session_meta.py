@@ -161,7 +161,7 @@ def provenance_meta(db_path: Path, acp_session_id: str, session_id: str) -> dict
         return None
 
 
-# ``stats`` below is the owner's usage dict (``gateway/session_usage.py::usage_stats``): the
+# ``stats`` below is the owner's usage dict (``hermes_agent/gateway/session_usage.py::usage_stats``): the
 # ``session.usage`` event published after every API call and at turn end, or ``session.stats``.
 
 def usage_update(stats: dict) -> UsageUpdate | None:

@@ -6,10 +6,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource, SessionStore, build_session_key
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource, SessionStore, build_session_key
 
 pytestmark = pytest.mark.usefixtures("authority_cwd_in_tmp")  # symbolic profile ids are relative homes
 
@@ -20,7 +20,7 @@ def _event(text: str, source: SessionSource) -> MessageEvent:
 
 @pytest.mark.asyncio
 async def test_reset_clears_a_persisted_override_after_restart(tmp_path, monkeypatch):
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     home = tmp_path / "home"
     home.mkdir()
@@ -62,12 +62,12 @@ async def test_reset_clears_a_persisted_override_after_restart(tmp_path, monkeyp
 @pytest.mark.asyncio
 async def test_owner_reset_returns_a_local_session_to_the_configured_default_read_fresh(monkeypatch):
     """The TUI, Desktop and the attached CLI send ``session.mutate model {model: 'reset'}`` to the owner."""
-    from gateway.run_turn_prepare import GatewayTurnPrepareMixin
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.run_turn_prepare import GatewayTurnPrepareMixin
+    from hermes_agent.gateway.session_policy import policy_for_source
     from hermes_constants import get_hermes_home
     from tests.gateway.test_follow_profile_followups import _profile
     from tests.gateway.test_session_follow_profile_config import _owner
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     home = get_hermes_home()
     home.mkdir(parents=True, exist_ok=True)

@@ -22,8 +22,8 @@ from pathlib import Path
 
 import pytest
 
-from gateway import host_attach, host_rendezvous as hr
-from gateway import run as gateway_run
+from hermes_agent.gateway import host_attach, host_rendezvous as hr
+from hermes_agent.gateway import run as gateway_run
 
 
 def _reset_probe_memo() -> None:
@@ -80,7 +80,7 @@ def _publish(pid: int, home: Path, profiles: tuple[str, ...]) -> None:
 def _answer_identify(monkeypatch, pid: int, home: Path, served: list[str]) -> None:
     """Make the owner's control socket answer ``identify`` — the ONLY source of a served set."""
     monkeypatch.setattr(
-        "gateway.control_socket.identify_gateway",
+        "hermes_agent.gateway.control_socket.identify_gateway",
         lambda dialled, **kw: (
             {"pid": pid, "hermes_home": str(home), "served_profiles": served}
             if Path(dialled) == home else None))
@@ -96,8 +96,8 @@ def test_a_record_only_owner_never_produces_attach(tmp_path, monkeypatch, owner_
     ours = tmp_path / "root" / "profiles" / "other"
     _publish(owner_pid, tmp_path / "root", ("default", "other"))
     monkeypatch.setattr(host_attach, "ATTACH_CHANNEL_WAIT_S", 0.0)
-    monkeypatch.setattr("gateway.control_socket.identify_gateway", lambda *a, **k: None)
-    monkeypatch.setattr("gateway.control_socket.rescan_gateway_profiles", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.gateway.control_socket.identify_gateway", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.gateway.control_socket.rescan_gateway_profiles", lambda *a, **k: None)
 
     decision = host_attach.decide(ours)
 
@@ -134,7 +134,7 @@ def test_run_for_an_unserved_profile_rescans_then_attaches(tmp_path, monkeypatch
         asked.append(Path(home))
         return {"multiplex": True, "served_profiles": ["default", "other"]}
 
-    monkeypatch.setattr("gateway.control_socket.rescan_gateway_profiles", _rescan)
+    monkeypatch.setattr("hermes_agent.gateway.control_socket.rescan_gateway_profiles", _rescan)
 
     assert asyncio.run(gateway_run._host_attach_or_none(replace=False)) is True
     assert asked == [owner_home], "the rescan must reach the OWNER's home, not ours"
@@ -146,7 +146,7 @@ def test_host_gateway_refuses_when_it_will_not_serve_the_profile(tmp_path, monke
     _publish(owner_pid, owner_home, ("default",))
     _answer_identify(monkeypatch, owner_pid, owner_home, ["default"])
     monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: owner_home / "profiles" / "other")
-    monkeypatch.setattr("gateway.control_socket.rescan_gateway_profiles",
+    monkeypatch.setattr("hermes_agent.gateway.control_socket.rescan_gateway_profiles",
                         lambda home, timeout=8.0: {"multiplex": True, "served_profiles": ["default"]})
 
     assert asyncio.run(gateway_run._host_attach_or_none(replace=False)) is False
@@ -160,10 +160,10 @@ def test_a_standalone_owner_is_the_per_profile_topology_not_a_refusal(tmp_path, 
     _publish(owner_pid, owner_home, ("tank",))
     _answer_identify(monkeypatch, owner_pid, owner_home, ["tank"])
     monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: tmp_path / "root" / "profiles" / "nous")
-    monkeypatch.setattr("gateway.control_socket.rescan_gateway_profiles",
+    monkeypatch.setattr("hermes_agent.gateway.control_socket.rescan_gateway_profiles",
                         lambda home, timeout=8.0: {"multiplex": False, "served_profiles": ["tank"]})
 
-    with caplog.at_level("INFO", logger="gateway.host_attach"):
+    with caplog.at_level("INFO", logger="hermes_agent.gateway.host_attach"):
         assert host_attach.decide(tmp_path / "root" / "profiles" / "nous").outcome == host_attach.START
     assert any("migrate --multiplex" in r.getMessage() for r in caplog.records), "the converge hint is logged"
     assert asyncio.run(gateway_run._host_attach_or_none(replace=False)) is None
@@ -178,7 +178,7 @@ def test_replace_starts_beside_a_standalone_owner_it_does_not_belong_to(tmp_path
     _publish(owner_pid, owner_home, ("tank",))
     _answer_identify(monkeypatch, owner_pid, owner_home, ["tank"])
     monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: tmp_path / "root" / "profiles" / "nous")
-    monkeypatch.setattr("gateway.control_socket.rescan_gateway_profiles",
+    monkeypatch.setattr("hermes_agent.gateway.control_socket.rescan_gateway_profiles",
                         lambda home, timeout=8.0: {"multiplex": False, "served_profiles": ["tank"]})
     signalled: list[int] = []
 
@@ -290,7 +290,7 @@ def test_the_default_profile_arriving_second_starts_beside_a_standalone_named_ow
     _publish(owner_pid, owner_home, ("agent-ops",))
     _answer_identify(monkeypatch, owner_pid, owner_home, ["agent-ops"])
     monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: root)
-    monkeypatch.setattr("gateway.control_socket.rescan_gateway_profiles",
+    monkeypatch.setattr("hermes_agent.gateway.control_socket.rescan_gateway_profiles",
                         lambda home, timeout=8.0: {"multiplex": False, "served_profiles": ["agent-ops"]})
 
     decision = host_attach.decide(root)
@@ -314,6 +314,6 @@ def test_another_tenants_host_gateway_never_yields_attach_or_the_lock_refusal(tm
     assert host_attach.decide(root_a / "profiles" / "coder").outcome == host_attach.ATTACH  # control: A's own
 
     monkeypatch.setattr(hr, "claim_host_lock", lambda role: (hr.HostLockOutcome.HELD_BY_OTHER, None))
-    monkeypatch.setattr("gateway.control_socket.rescan_gateway_profiles",
+    monkeypatch.setattr("hermes_agent.gateway.control_socket.rescan_gateway_profiles",
                         lambda *a, **k: pytest.fail("B must not ask A's gateway to rescan"))
     gateway_run._claim_host_gateway_role()  # no SystemExit(75)

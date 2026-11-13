@@ -35,7 +35,7 @@ def test_a_hosted_background_start_and_kill_leave_the_host_checkpoint_alone(prov
 
 
 def test_hosted_process_manage_does_not_load_or_prune_host_receipts(provider, monkeypatch):
-    from gateway.session_context import scoped_current_session_id
+    from hermes_agent.gateway.session_context import scoped_current_session_id
     from hermes_constants import get_hermes_home
     from tools import process_registry_results as results
 

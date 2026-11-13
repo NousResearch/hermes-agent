@@ -25,12 +25,12 @@ AFTER = ('model: {default: m2, provider: custom, base_url: "http://127.0.0.1:9/v
 
 def _home(monkeypatch):
     """The profile home the store's state.db lives in: creation and the refresh read its config.yaml."""
-    from gateway import run
+    from hermes_agent.gateway import run
     from hermes_constants import get_hermes_home
     home = get_hermes_home()
     home.mkdir(parents=True, exist_ok=True)
     (home / 'config.yaml').write_text(BEFORE)
-    # gateway.run binds its home at first import; another test module may have imported it elsewhere.
+    # hermes_agent.gateway.run binds its home at first import; another test module may have imported it elsewhere.
     monkeypatch.setattr(run, '_hermes_home', home)
     return home
 
@@ -51,7 +51,7 @@ async def _call(connection, method, **params):
 
 
 def _policy(authority, sid):
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_policy import policy_for_source
     return policy_for_source(authority.runner, authority.sessions[sid].source)
 
 
@@ -63,10 +63,10 @@ def _view(policy):
 
 @pytest.mark.asyncio
 async def test_resume_after_restart_rereads_config_derived_fields_and_keeps_picks(tmp_path, monkeypatch):
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     home = _home(monkeypatch)
     store = SessionStore(home / 'sessions', GatewayConfig())
     assert store._db.db_path.parent.resolve() == home.resolve()
@@ -97,7 +97,7 @@ async def test_resume_after_restart_rereads_config_derived_fields_and_keeps_pick
         # A new policy generation the resume reply already reports, durable in the receipt.
         assert resumed['execution_generation'] == before + 1 == store._db.get_session(plain)['runtime_generation']
         from hermes_agent.hermes_state_local import local_receipt
-        from gateway.session_policy import restore_policy
+        from hermes_agent.gateway.session_policy import restore_policy
         assert restore_policy(local_receipt(store._db, plain)['policy']) == _policy(cold, plain)
         # The launch flags stay the session's own; a config-derived field still follows.
         await _call(viewer, 'session.resume', session_id=flags)
@@ -123,11 +123,11 @@ async def test_resume_after_restart_rereads_config_derived_fields_and_keeps_pick
 
 @pytest.mark.asyncio
 async def test_resume_never_changes_a_running_turns_policy(tmp_path, monkeypatch):
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import Submission
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_contract import Submission
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     import hermes_agent.hermes_state_runtime as rt
     home = _home(monkeypatch)
     store = SessionStore(home / 'sessions', GatewayConfig())
@@ -135,7 +135,7 @@ async def test_resume_never_changes_a_running_turns_policy(tmp_path, monkeypatch
     started, release, seen = asyncio.Event(), asyncio.Event(), []
 
     async def handle(event):
-        from gateway.session_policy import policy_for_source
+        from hermes_agent.gateway.session_policy import policy_for_source
         seen.append('web' in policy_for_source(authority.runner, event.source).toolsets)
         started.set()
         await release.wait()
@@ -147,7 +147,7 @@ async def test_resume_never_changes_a_running_turns_policy(tmp_path, monkeypatch
     try:
         sid = (await _call(owner, 'session.create', request_id='busy', source='cli', cwd=str(tmp_path)))['session_id']
         ref = authority.sessions[sid]
-        from gateway.session_contract import SessionRef
+        from hermes_agent.gateway.session_contract import SessionRef
         turn = await authority.submit(owner.actor, Submission('turn-1', SessionRef(authority.profile_id, sid),
                                                                {'text': 'one'}, 'queue'))
         await asyncio.wait_for(started.wait(), 10)
@@ -191,16 +191,16 @@ class _Frames:
 
 
 async def _owner_authority(home, instance='only'):
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
     store = SessionStore(home / 'sessions', GatewayConfig())
     assert store._db.db_path.parent.resolve() == home.resolve()
     return store, await initialize_session_authority(_runner(store), profile_id=str(home), instance_id=instance)
 
 
 def _connect(authority, transport=None):
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     return AuthorityConnection(authority, transport or object(), {'user_id': 'human'})
 
 
@@ -211,8 +211,8 @@ async def test_a_resume_cancelled_mid_commit_still_publishes_the_committed_polic
     the stored policy current returns early without repairing it)."""
     import threading
     import hermes_agent.hermes_state_mutation_prepared as prepared
-    from gateway.session_policy import restore_policy
-    from gateway.session_runtime_workers import mutation_tasks
+    from hermes_agent.gateway.session_policy import restore_policy
+    from hermes_agent.gateway.session_runtime_workers import mutation_tasks
     from hermes_agent.hermes_state_local import local_receipt
     home = _home(monkeypatch)
     store, authority = await _owner_authority(home)
@@ -335,7 +335,7 @@ async def admit_during_refresh(authority, actor, sid, refresh, barrier):
     admission scheduled) cannot start the turn first. The refused transaction left the stored policy and its
     generation as they were. ``(refresh result, admission)``."""
     import hermes_agent.hermes_state_runtime as rt
-    from gateway.session_contract import SessionRef, Submission
+    from hermes_agent.gateway.session_contract import SessionRef, Submission
     from hermes_agent.hermes_state_local import local_receipt
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     entered, release, done, outcome = barrier
@@ -365,7 +365,7 @@ async def test_an_admission_queued_during_an_attach_refresh_keeps_the_old_policy
     seen = []
 
     async def handle(event):
-        from gateway.session_policy import policy_for_source
+        from hermes_agent.gateway.session_policy import policy_for_source
         seen.append('web' in policy_for_source(authority.runner, event.source).toolsets)
         return 'ok'
     store, authority = await _owner_authority(home)
@@ -516,8 +516,8 @@ def _raise(*_):
 
 def _terminal(authority, sid, command):
     """One terminal call as the session's turn makes it: its route's session context, its policy's scope."""
-    from gateway.session_context import clear_session_vars, set_session_vars
-    from gateway.session_policy import policy_scope
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_policy import policy_scope
     from tools.terminal_tool import terminal_tool
     tokens = set_session_vars(platform='local', session_key=authority.sessions[sid].route, session_id=sid)
     try:
@@ -596,8 +596,8 @@ async def test_the_next_command_after_a_workspace_move_runs_in_the_new_folder(tm
         assert built[-1].ran[-1] == str(moved), [(backend.cwd, backend.ran) for backend in built]
 
         # A teardown that fails must not leave the committed move unpublished (the queue would stall).
-        from gateway import session_policy_refresh
-        from gateway.session_policy import restore_policy
+        from hermes_agent.gateway import session_policy_refresh
+        from hermes_agent.gateway.session_policy import restore_policy
         from hermes_agent.hermes_state_local import local_receipt
         monkeypatch.setattr(session_policy_refresh, 'drop_session_terminal', _raise)
         again = tmp_path / 'again'
@@ -637,7 +637,7 @@ async def test_a_second_resume_during_terminal_cleanup_waits_for_the_refresh(tmp
         resume = {'id': 1, 'method': 'session.resume', 'params': {'session_id': sid}}
         resumes.append(asyncio.create_task(first.dispatch(resume)))
         await async_wait_until(entered.is_set, what='the first refresh to start its terminal cleanup')
-        with caplog.at_level(logging.DEBUG, logger='gateway.session_policy_refresh'):
+        with caplog.at_level(logging.DEBUG, logger='hermes_agent.gateway.session_policy_refresh'):
             resumes.append(asyncio.create_task(second.dispatch(resume)))
             await async_wait_until(lambda: resumes[1].done() or 'waits for its policy refresh' in caplog.text,
                                    what='the second resume to finish or wait')
@@ -659,7 +659,7 @@ def test_a_skipped_resume_refresh_warns_unless_the_session_is_busy(monkeypatch, 
     """A turn running or queued is the expected skip; a revoked credential or an unreadable profile leaves a
     silent no-refresh, so it is a WARNING."""
     import logging
-    from gateway import session_policy_refresh as refresh
+    from hermes_agent.gateway import session_policy_refresh as refresh
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     for failure in (RuntimeStoreError('session_busy'), RuntimeStoreError('launch_credentials_unavailable'),
                     OSError('config.yaml unreadable')):

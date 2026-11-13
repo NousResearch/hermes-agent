@@ -9,10 +9,10 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 
 import pytest
 
-from gateway import hosted_room_driver as driver
-from gateway import hosted_rooms as rooms
+from hermes_agent.gateway import hosted_room_driver as driver
+from hermes_agent.gateway import hosted_rooms as rooms
 from hermes_agent import hermes_state_wal
-from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint
+from hermes_agent.gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint
 from hermes_agent.hermes_state import SessionDB
 
 USER = {"kind": "user", "id": "desktop-user", "display_name": "User"}
@@ -1435,7 +1435,7 @@ def test_unreadable_legacy_store_is_reported_once_per_process(tmp_path, caplog):
     (tmp_path / "state.db").write_bytes(b"not a sqlite file" * 100)
     store = tmp_path / "shared-state.db"
 
-    with caplog.at_level(logging.WARNING, logger="gateway.hosted_rooms_legacy_import"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.hosted_rooms_legacy_import"):
         for _ in range(4):
             assert rooms.list_rooms(store) == []
     assert len([record for record in caplog.records if "could not import" in record.message]) == 1

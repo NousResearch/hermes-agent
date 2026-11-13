@@ -11,8 +11,8 @@ import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock
 
-from gateway.config import PlatformConfig
-from gateway.platforms.base import SendResult
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.base import SendResult
 
 
 def _make_adapter():

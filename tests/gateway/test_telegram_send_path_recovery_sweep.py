@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.telegram import telegram_send_path_recovery as recovery
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
@@ -86,11 +86,11 @@ async def test_an_edge_during_a_running_sweep_coalesces_into_one_rerun():
 async def test_a_refusal_whose_failed_row_lands_after_recovery_is_still_swept(monkeypatch):
     """The edge's sweep runs while ``_send_with_retry`` still holds the delivery-failure notice open;
     the ``failed`` row written after that sweep must re-arm it (healthy polling has no second edge)."""
-    import gateway.delivery_ledger as ledger
-    from gateway.config import Platform
-    from gateway.platforms.base import SendResult
-    from gateway.session import SessionSource
-    from gateway.platforms.event import MessageEvent
+    import hermes_agent.gateway.delivery_ledger as ledger
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.platforms.base import SendResult
+    from hermes_agent.gateway.session import SessionSource
+    from hermes_agent.gateway.platforms.event import MessageEvent
 
     runner = _Runner()
     adapter, generation = _degraded_adapter(runner)
@@ -131,9 +131,9 @@ async def test_stopping_a_profile_mid_recovery_leaves_no_reply_stranded(tmp_path
     from types import SimpleNamespace
     from unittest.mock import AsyncMock, MagicMock
 
-    import gateway.delivery_ledger as ledger
-    from gateway.config import Platform
-    from gateway.run import GatewayRunner
+    import hermes_agent.gateway.delivery_ledger as ledger
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.run import GatewayRunner
 
     monkeypatch.setattr(ledger, "_db_path", lambda: tmp_path / "state.db")
     monkeypatch.setattr(ledger, "ledger_enabled", lambda config=None: True)

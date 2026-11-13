@@ -4,9 +4,9 @@ import asyncio
 import logging
 from typing import Any
 
-from gateway.turn_context import TurnContext
+from hermes_agent.gateway.turn_context import TurnContext
 
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 # Per-delete bound: the callback runs under the post-delivery timeout (30 s), so one slow delete must
 # not use it up and leave the remaining bubbles undeleted. Also caps the handoff's sender wait.

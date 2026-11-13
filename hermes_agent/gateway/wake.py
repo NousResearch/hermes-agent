@@ -74,7 +74,7 @@ def session_owned_by_profile(config: Any, profile: Optional[str], session_id: An
         return False
     profile = str(profile)
     try:
-        from gateway.run import _multiplex_profile_homes
+        from hermes_agent.gateway.run import _multiplex_profile_homes
         home = dict(_multiplex_profile_homes(config)).get(profile)
         if home is None:
             return False
@@ -135,10 +135,10 @@ async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source:
     if adapter_supports_push(adapter):
         if source is None:
             raise ValueError("deliver_wake: push-capable adapter requires a SessionSource")
-        from gateway.platforms.event import MessageEvent, MessageType
+        from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
         runner = getattr(adapter, "gateway_runner", None)
         if runner is not None:
-            from gateway.session_automation import admit_route_wake
+            from hermes_agent.gateway.session_automation import admit_route_wake
             from hermes_agent.hermes_state_runtime import RuntimeStoreError
             category = {"notification_category": notification_category} if notification_category != "result" else {}
             try:
@@ -176,7 +176,7 @@ def _delegation_display_metadata(evt: dict) -> dict:
     if evt.get("task_failure_notice"):
         metadata["delivery_notice"] = f"task_failure:{results[0].get('task_index', '') if results else ''}"
         metadata["notification_category"] = "diagnostic"
-        from gateway.warning_notifications import warning_notifications_enabled
+        from hermes_agent.gateway.warning_notifications import warning_notifications_enabled
         if not warning_notifications_enabled("api_server"):
             metadata["presentation_suppressed"] = True
     duration = evt.get("total_duration_seconds") or evt.get("duration_seconds")

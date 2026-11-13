@@ -9,9 +9,9 @@ from typing import Any, Dict
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, ExecApprovalPrompt, SendResult
-from gateway.run_turn_runner import _renders_exec_approval_buttons
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, ExecApprovalPrompt, SendResult
+from hermes_agent.gateway.run_turn_runner import _renders_exec_approval_buttons
 
 
 class _Plain(BasePlatformAdapter):

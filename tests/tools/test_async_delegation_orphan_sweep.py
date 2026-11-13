@@ -268,7 +268,7 @@ def test_in_flight_claim_is_left_to_its_holder(tmp_path):
 
 def test_gateway_watcher_sweeps_each_served_ledger_in_its_own_scope(tmp_path, monkeypatch):
     """The gateway's delivery loop re-offers a secondary profile's orphan while it runs."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     home_b = tmp_path / "b"
     delegation_id = _orphan(home_b)

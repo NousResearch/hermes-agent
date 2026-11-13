@@ -61,7 +61,7 @@ def _session_voice_enabled(session_id) -> bool:
     """Push-to-talk gate: a shared-owner local session's own gateway ``/voice`` mode (what Ink's
     ``/voice on`` sets through slash.exec, T9); the sidecar's env flag for its own sessions."""
     try:
-        from gateway.session_config import local_voice_enabled
+        from hermes_agent.gateway.session_config import local_voice_enabled
         held = local_voice_enabled(session_id)
     except ImportError:
         held = None
@@ -72,7 +72,7 @@ def _set_session_voice_off(session_id) -> bool:
     """Turn a shared-owner session's own voice mode off (spoken stop, no-speech limit); False when
     no owner in this process holds it (the sidecar's env flag is the state)."""
     try:
-        from gateway.session_config import set_local_voice_mode
+        from hermes_agent.gateway.session_config import set_local_voice_mode
         return set_local_voice_mode(session_id, "off") is True
     except ImportError:
         return False

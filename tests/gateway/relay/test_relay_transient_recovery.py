@@ -25,10 +25,10 @@ import time
 import pytest
 import pytest_asyncio
 
-from gateway import relay
-from gateway.config import Platform, PlatformConfig
-from gateway.platform_registry import platform_registry
-from gateway.run_startup import GatewayStartupMixin
+from hermes_agent.gateway import relay
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platform_registry import platform_registry
+from hermes_agent.gateway.run_startup import GatewayStartupMixin
 from tests.gateway.relay.fake_connector import (
     FakeConnector,
     echoing,
@@ -48,12 +48,12 @@ def _relay_env(monkeypatch):
               "GATEWAY_RELAY_WAKE_URL", "GATEWAY_RELAY_BOT_IDS", "GATEWAY_RELAY_IDP_TOKEN_URL"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "slack")
-    monkeypatch.setattr("gateway.run._load_gateway_config", dict, raising=False)
+    monkeypatch.setattr("hermes_agent.gateway.run._load_gateway_config", dict, raising=False)
     monkeypatch.setattr("hermes_cli.auth.resolve_nous_access_token", lambda: TOKEN)
     # Upload retry pacing is a production constant; collapse it so tests run in
     # milliseconds. raising=False: on a tree without the retry the constant is absent
     # and the tests must fail on behaviour, not on this fixture.
-    monkeypatch.setattr("gateway.relay.media._UPLOAD_RETRY_DELAYS_S", (0.0, 0.0), raising=False)
+    monkeypatch.setattr("hermes_agent.gateway.relay.media._UPLOAD_RETRY_DELAYS_S", (0.0, 0.0), raising=False)
     platform_registry.unregister("relay")
     yield
     platform_registry.unregister("relay")
@@ -238,8 +238,8 @@ async def test_upload_failing_every_retry_reports_failure_with_one_notice(connec
 async def test_turn_dispatch_posts_one_notice_for_a_dropped_attachment(connector, tmp_path):
     """The interactive path posts its own failure notice for a failed media result.
     The relay fallback already posted one, so the result must say so."""
-    from gateway.platforms.base import MessageEvent
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.platforms.base import MessageEvent
+    from hermes_agent.gateway.session import SessionSource
 
     adapter = await _provisioned_adapter(connector)
     pdf = tmp_path / "report.pdf"
@@ -312,8 +312,8 @@ def test_diagnostics_scrub_the_exact_bearer_the_caller_sent():
     import io
     import urllib.error
 
-    from gateway.relay.auth import make_upgrade_token
-    from gateway.relay.http_diagnostics import describe_http_error, read_error_body
+    from hermes_agent.gateway.relay.auth import make_upgrade_token
+    from hermes_agent.gateway.relay.http_diagnostics import describe_http_error, read_error_body
 
     bearer = make_upgrade_token("gw-x", "s" * 64)
     hdrs = http.client.parse_headers(io.BytesIO(b"\r\n"))

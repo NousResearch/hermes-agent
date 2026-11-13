@@ -314,7 +314,7 @@ def _rebuild_served_webapp(project_root: Path, publish_stage) -> None:
     backend would talk to it with an outdated contract. Built with the function ``hermes webapp``
     uses, which reuses a current bundle. A failed build leaves the previous bundle on disk, marked
     out of date: its gateways report the Webapp unavailable until ``hermes webapp`` rebuilds it."""
-    from gateway.webapp_listener import webapp_settings
+    from hermes_agent.gateway.webapp_listener import webapp_settings
     from hermes_cli.webapp import mark_webapp_stale, prepare_webapp_renderer
     from pm.plugins_state import dependency_homes
 

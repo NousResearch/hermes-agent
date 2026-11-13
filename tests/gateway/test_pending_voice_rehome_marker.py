@@ -14,10 +14,10 @@ import pytest
 import hermes_yaml as yaml
 
 from agent import secret_scope as ss
-from gateway.config import GatewayConfig
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner, _profile_runtime_scope
-from gateway.run_inbound_media import rehome_inbound_media
+from hermes_agent.gateway.config import GatewayConfig
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner, _profile_runtime_scope
+from hermes_agent.gateway.run_inbound_media import rehome_inbound_media
 
 
 @pytest.fixture

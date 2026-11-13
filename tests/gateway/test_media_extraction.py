@@ -21,7 +21,7 @@ class TestMediaExtraction:
     """Tests for MEDIA tag extraction from tool results."""
 
     def test_repairs_explicit_computer_use_media_path_from_json_result(self):
-        from gateway.media_repair import (
+        from hermes_agent.gateway.media_repair import (
             repair_explicit_computer_use_media_paths as _repair_explicit_computer_use_media_paths,
         )
 
@@ -50,7 +50,7 @@ class TestMediaExtraction:
         assert repaired == f"Here is the screenshot.\nMEDIA:{canonical}"
 
     def test_repairs_explicit_path_from_multimodal_text_summary(self):
-        from gateway.media_repair import (
+        from hermes_agent.gateway.media_repair import (
             repair_explicit_computer_use_media_paths as _repair_explicit_computer_use_media_paths,
         )
 
@@ -83,7 +83,7 @@ class TestMediaExtraction:
         assert repaired == f'MEDIA:"{canonical}"'
 
     def test_does_not_auto_attach_computer_use_capture(self):
-        from gateway.media_repair import (
+        from hermes_agent.gateway.media_repair import (
             repair_explicit_computer_use_media_paths as _repair_explicit_computer_use_media_paths,
         )
 
@@ -103,7 +103,7 @@ class TestMediaExtraction:
         )
 
     def test_does_not_rewrite_unmatched_or_previous_turn_capture(self):
-        from gateway.media_repair import (
+        from hermes_agent.gateway.media_repair import (
             repair_explicit_computer_use_media_paths as _repair_explicit_computer_use_media_paths,
         )
 
@@ -146,7 +146,7 @@ class TestMediaExtraction:
         """
         import json as _json
 
-        from gateway.media_repair import (
+        from hermes_agent.gateway.media_repair import (
             repair_explicit_computer_use_media_paths as _repair_explicit_computer_use_media_paths,
         )
 
@@ -175,7 +175,7 @@ class TestMediaExtraction:
         closed (no rewrite) when no user message remains."""
         import json as _json
 
-        from gateway.media_repair import (
+        from hermes_agent.gateway.media_repair import (
             repair_explicit_computer_use_media_paths as _repair_explicit_computer_use_media_paths,
         )
 
@@ -209,7 +209,7 @@ class TestMediaExtraction:
 
     def test_gateway_auto_append_ignores_media_examples_in_skill_docs(self):
         """Skill/documentation examples must not be appended as real attachments."""
-        from gateway.run import _collect_auto_append_media_tags
+        from hermes_agent.gateway.run import _collect_auto_append_media_tags
 
         messages = [
             {"role": "user", "content": "How should I format gateway media?"},
@@ -248,7 +248,7 @@ caption
         fallback rescans full history, finds the generated path absent from
         the dedup set, and re-emits the same MEDIA tag every turn.
         """
-        from gateway.run import _collect_history_media_paths
+        from hermes_agent.gateway.run import _collect_history_media_paths
 
         history = [
             {"role": "user", "content": "make a cat"},
@@ -273,7 +273,7 @@ caption
         assert "/tmp/voice/note.ogg" in paths  # MEDIA: text path (already worked)
 
     def test_non_streaming_dedup_excludes_current_turn_tool_output(self):
-        from gateway.platforms.base import BasePlatformAdapter
+        from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
         old_path = "/tmp/gen/old.png"
         current_path = "/tmp/gen/current.png"
@@ -308,7 +308,7 @@ caption
     def test_non_streaming_dedup_scopes_tts_paths_to_prior_turns(
         self, current_path
     ):
-        from gateway.platforms.base import BasePlatformAdapter
+        from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
         old_path = "/tmp/tts/already-delivered.ogg"
         transcript = [
@@ -344,7 +344,7 @@ caption
         """End-to-end of the #46627 fix: collect history paths, then the
         compression-fallback rescan (history_offset stale) must dedup the
         generated image against them — no re-emission."""
-        from gateway.run import (
+        from hermes_agent.gateway.run import (
             _collect_auto_append_media_tags,
             _collect_history_media_paths,
         )

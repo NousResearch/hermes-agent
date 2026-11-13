@@ -20,7 +20,7 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
             "  model: meta-llama/llama-4-maverick\n"
         )
 
-        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        monkeypatch.setattr("hermes_agent.gateway.run._hermes_home", tmp_path)
 
         call_count = {"n": 0}
 
@@ -46,7 +46,7 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             side_effect=_mock_resolve,
         ):
-            from gateway.run import _resolve_runtime_agent_kwargs
+            from hermes_agent.gateway.run import _resolve_runtime_agent_kwargs
             result = _resolve_runtime_agent_kwargs()
 
         assert result["provider"] == "openrouter"

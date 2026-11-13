@@ -88,7 +88,7 @@ def _capture_origin() -> tuple[str, str, Any, Any, bool]:
     _origin_ui_session_id = ""
     _origin_session_history_delivery = False
     with _quiet(None):
-        from gateway.session_context import get_session_env, session_history_delivery_supported
+        from hermes_agent.gateway.session_context import get_session_env, session_history_delivery_supported
         _origin_ui_session_id = get_session_env("HERMES_UI_SESSION_ID", "")
         _origin_session_history_delivery = session_history_delivery_supported()
     return (_origin_wake_sid, _origin_ui_session_id, *_capture_gateway_steer_authority(_origin_ui_session_id), _origin_session_history_delivery)
@@ -300,11 +300,11 @@ def _resolve_async_wake_sid(
     continuation must read that row, not an authoritative caller-owned snapshot.
     *oneshot_session*: the parent's tools[] froze the one-shot ``delegate_task`` ("joined in this call", no
     list/steer/stop) for the whole session, so a later interactive turn (``chat -q`` then ``--resume``) joins too."""
-    from gateway.session_context import get_session_env
+    from hermes_agent.gateway.session_context import get_session_env
 
     # Finite consumers need the result in this tool round. Owner admission scope
     # wins over legacy standalone launch markers, without changing terminal delivery.
-    from gateway.session_finite import finite_turn_required
+    from hermes_agent.gateway.session_finite import finite_turn_required
     finite = finite_turn_required()
     if oneshot_session or finite is True or (finite is None and get_session_env("HERMES_SINGLE_QUERY_SESSION") == "1"):
         return None
@@ -314,7 +314,7 @@ def _resolve_async_wake_sid(
         # ends. This includes stateless HTTP requests (#10760) and one-shot Kanban workers (#63169). Fall
         # back to SYNCHRONOUS execution so the result returns in this same turn instead of handing out a
         # handle with no durable consumer. Mirrors the pool-at-capacity inline fallback below.
-        from gateway.session_context import async_delivery_supported
+        from hermes_agent.gateway.session_context import async_delivery_supported
         if async_delivery_supported():
             return ""
     except Exception:
@@ -345,7 +345,7 @@ def _resolve_async_session_key(parent_agent: Any, origin_ui_session_id: str) -> 
     session_key = get_current_session_key(default="")
     agent_session_id = str(getattr(parent_agent, "session_id", "") or "")
     with _quiet(None):
-        from gateway.session_context import get_session_env
+        from hermes_agent.gateway.session_context import get_session_env
         source = get_session_env("HERMES_SESSION_SOURCE", "")
         # Refresh from the task-local source when available, else retain the
         # immutable value captured before child construction.

@@ -65,7 +65,7 @@ def test_two_members_long_commands_never_coalesce_into_the_first_sender():
 
 
 def test_two_members_photos_batch_separately_but_share_the_group_session():
-    from gateway.platforms.event import MessageType
+    from hermes_agent.gateway.platforms.event import MessageType
     from tests.gateway.test_telegram_group_gating import _group_message as _msg
 
     adapter = _make_adapter(require_mention=False, allowed_chats=["-100"], group_allowed_chats=["-100"],

@@ -20,7 +20,7 @@ _STUB_KEY = os.environ.get("BUZZ_TEST_STUB_KEY") or ("k" * 8)
 
 @pytest.fixture(autouse=True)
 def _reset_unscoped_cache():
-    import gateway.platforms._shared as shared
+    import hermes_agent.gateway.platforms._shared as shared
 
     prev = shared._UNSCOPED_PROFILE_SECRETS
     shared._UNSCOPED_PROFILE_SECRETS = None

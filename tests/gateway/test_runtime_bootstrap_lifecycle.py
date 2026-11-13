@@ -8,11 +8,11 @@ from websockets.asyncio.client import connect
 
 @pytest.mark.asyncio
 async def test_runtime_preserves_browser_ticket_gate(tmp_path):
-    from gateway.config import GatewayConfig
-    from gateway.run import GatewayRunner
-    from gateway.run_runtime import (initialize_gateway_runtime, start_gateway_runtime_api,
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.run_runtime import (initialize_gateway_runtime, start_gateway_runtime_api,
                                      publish_gateway_runtime_ready)
-    from gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.runtime_ownership import process_ownership
     from hermes_constants import get_hermes_home
     from hermes_cli.dashboard_auth import register_provider, clear_providers
     from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
@@ -25,7 +25,7 @@ async def test_runtime_preserves_browser_ticket_gate(tmp_path):
     runner = GatewayRunner(GatewayConfig())
     try:
         await initialize_gateway_runtime(runner)
-        from gateway.control_socket import GatewayControlServer
+        from hermes_agent.gateway.control_socket import GatewayControlServer
         runner.session_control_server = GatewayControlServer()
         assert await runner.session_control_server.start()
         await start_gateway_runtime_api(runner)
@@ -50,13 +50,13 @@ async def test_runtime_preserves_browser_ticket_gate(tmp_path):
 
 @pytest.mark.asyncio
 async def test_drain_withdraws_native_admission_before_listener_close(tmp_path):
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.platforms.base import BasePlatformAdapter, SendResult
-    from gateway.platforms.event import MessageEvent
-    from gateway.run import GatewayRunner
-    from gateway.run_runtime import initialize_gateway_runtime, drain_gateway_runtime
-    from gateway.runtime_ownership import process_ownership
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.run_runtime import initialize_gateway_runtime, drain_gateway_runtime
+    from hermes_agent.gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.session import SessionSource
     from hermes_constants import get_hermes_home
 
     class LocalAdapter(BasePlatformAdapter):
@@ -107,11 +107,11 @@ async def test_drain_stops_adapter_inbound_before_withdrawing_handlers(tmp_path)
     """The drain closes the inbound window FIRST: stop_inbound runs while the handler is still
     installed, so an update fetched just before the stop is admitted instead of hitting the
     handler-less drop in the disconnect gap."""
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.platforms.base import BasePlatformAdapter, SendResult
-    from gateway.run import GatewayRunner
-    from gateway.run_runtime import initialize_gateway_runtime, drain_gateway_runtime
-    from gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.run_runtime import initialize_gateway_runtime, drain_gateway_runtime
+    from hermes_agent.gateway.runtime_ownership import process_ownership
     from hermes_constants import get_hermes_home
 
     class SequencedAdapter(BasePlatformAdapter):
@@ -173,7 +173,7 @@ async def test_drain_stops_adapter_inbound_before_withdrawing_handlers(tmp_path)
         for adapter in (primary, secondary, tertiary):
             adapter.stop_inbound = never.wait
         started = time.monotonic()
-        with patch('gateway.run_runtime.INBOUND_STOP_SECONDS', 0.2):
+        with patch('hermes_agent.gateway.run_runtime.INBOUND_STOP_SECONDS', 0.2):
             await drain_gateway_runtime(runner)
         assert time.monotonic() - started < 2.0
         for adapter in (primary, secondary, tertiary):

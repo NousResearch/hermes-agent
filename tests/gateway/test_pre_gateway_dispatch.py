@@ -10,9 +10,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionSource
 
 
 def _clear_auth_env(monkeypatch) -> None:
@@ -42,7 +42,7 @@ def _make_event(text: str = "hello", platform: Platform = Platform.WHATSAPP) -> 
 
 
 def _make_runner(platform: Platform):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     config = GatewayConfig(
         platforms={platform: PlatformConfig(enabled=True)},
@@ -160,11 +160,11 @@ async def test_rewritten_message_keeps_its_callback_provenance_and_is_admitted(m
     adapter callback's provenance is refused ``invalid_params`` (#139045: every message to a profile
     with a rewriting plugin failed), so the rewritten event must carry the callback's provenance and
     be admitted with the rewritten text."""
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.platforms.event import MessageEvent
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import SessionAuthority, initialize_session_authority
-    from gateway.session_ingress_context import capture_provenance, native_callback, register_transport_home
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import SessionAuthority, initialize_session_authority
+    from hermes_agent.gateway.session_ingress_context import capture_provenance, native_callback, register_transport_home
     from hermes_constants import get_hermes_home
     from hermes_agent.hermes_state_runtime import list_session_admissions
     from plugins.platforms.discord.adapter import DiscordAdapter
@@ -202,8 +202,8 @@ async def test_hook_fires_once_at_messaging_ingress_and_never_when_an_admission_
     """PLG-5: executing an admitted row (a local CLI/TUI/Desktop turn, or a messaging turn's first
     run or restart replay) re-enters ``_handle_message``. The hook already ran at ingress (main has
     no other firing point), so it must not run again there, and a "skip" never drops admitted input."""
-    import gateway.session_authorities as authorities
-    import gateway.session_ingress as ingress
+    import hermes_agent.gateway.session_authorities as authorities
+    import hermes_agent.gateway.session_ingress as ingress
 
     _clear_auth_env(monkeypatch)
     fired = []
@@ -256,7 +256,7 @@ async def test_webhook_delivery_fires_the_hook_once_at_ingress_before_commit():
     from aiohttp import web
     from aiohttp.test_utils import TestClient, TestServer
 
-    from gateway.platforms.webhook import WebhookAdapter
+    from hermes_agent.gateway.platforms.webhook import WebhookAdapter
     from hermes_cli.plugins import get_plugin_manager
     from tests.gateway.fixtures.webhook_route_authority import mount_authority
     from tests.waiting import async_wait_until
@@ -323,7 +323,7 @@ def _rewriting_hook(fired):
 def _webhook_app(prompt="{text}"):
     from aiohttp import web
 
-    from gateway.platforms.webhook import WebhookAdapter
+    from hermes_agent.gateway.platforms.webhook import WebhookAdapter
     from tests.gateway.fixtures.webhook_route_authority import mount_authority
 
     adapter = WebhookAdapter(PlatformConfig(enabled=True, extra={"secret": "owned-secret", "routes": {
@@ -413,7 +413,7 @@ async def test_a_webhook_row_committed_before_the_fingerprint_retries_exactly_an
 
     from aiohttp.test_utils import TestClient, TestServer
 
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_contract import SessionRef
     from tests.waiting import async_wait_until
 
     fired = []
@@ -447,13 +447,13 @@ async def test_relay_resend_of_a_rewritten_delivery_resolves_its_admission(tmp_p
     import json
 
     websockets = pytest.importorskip("websockets")
-    import gateway.platforms.webhook_ingress as ingress
-    from gateway.relay.adapter import RelayAdapter
-    from gateway.relay.descriptor import CapabilityDescriptor
-    from gateway.relay.ws_transport import WebSocketRelayTransport
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_results import execution_result
+    import hermes_agent.gateway.platforms.webhook_ingress as ingress
+    from hermes_agent.gateway.relay.adapter import RelayAdapter
+    from hermes_agent.gateway.relay.descriptor import CapabilityDescriptor
+    from hermes_agent.gateway.relay.ws_transport import WebSocketRelayTransport
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_results import execution_result
     from tests.waiting import async_wait_until
 
     outgoing, ready, turns, outcomes, fired = [], asyncio.Queue(), [], [], []
@@ -532,14 +532,14 @@ async def test_relay_resend_of_a_rewritten_media_delivery_reuses_its_admission_a
     from pathlib import Path
 
     websockets = pytest.importorskip("websockets")
-    import gateway.platforms.webhook_ingress as ingress
-    from gateway.relay.adapter import RelayAdapter
-    from gateway.relay.descriptor import CapabilityDescriptor
-    from gateway.relay.media import RelayMediaClient
-    from gateway.relay.ws_transport import WebSocketRelayTransport
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import SessionAuthority, initialize_session_authority
-    from gateway.session_ingress_media import _media_root
+    import hermes_agent.gateway.platforms.webhook_ingress as ingress
+    from hermes_agent.gateway.relay.adapter import RelayAdapter
+    from hermes_agent.gateway.relay.descriptor import CapabilityDescriptor
+    from hermes_agent.gateway.relay.media import RelayMediaClient
+    from hermes_agent.gateway.relay.ws_transport import WebSocketRelayTransport
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import SessionAuthority, initialize_session_authority
+    from hermes_agent.gateway.session_ingress_media import _media_root
     from tests.gateway.test_native_media_redelivery import PNG, _Media
     from tests.waiting import async_wait_until
 
@@ -629,7 +629,7 @@ async def test_an_identical_webhook_delivery_waits_for_the_running_hook_and_gets
 
     from aiohttp.test_utils import TestClient, TestServer
 
-    import gateway.platforms.webhook_ingress as ingress
+    import hermes_agent.gateway.platforms.webhook_ingress as ingress
     from hermes_cli.plugins import get_plugin_manager
     from tests.waiting import async_wait_until
 
@@ -686,14 +686,14 @@ async def test_a_relay_media_delivery_no_admission_owns_retains_no_bytes(
     from http.server import ThreadingHTTPServer
 
     websockets = pytest.importorskip("websockets")
-    import gateway.platforms.webhook_ingress as ingress
-    from gateway.relay.adapter import RelayAdapter
-    from gateway.relay.descriptor import CapabilityDescriptor
-    from gateway.relay.media import RelayMediaClient
-    from gateway.relay.ws_transport import WebSocketRelayTransport
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_ingress_media import _media_root
+    import hermes_agent.gateway.platforms.webhook_ingress as ingress
+    from hermes_agent.gateway.relay.adapter import RelayAdapter
+    from hermes_agent.gateway.relay.descriptor import CapabilityDescriptor
+    from hermes_agent.gateway.relay.media import RelayMediaClient
+    from hermes_agent.gateway.relay.ws_transport import WebSocketRelayTransport
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_ingress_media import _media_root
     from hermes_cli.plugins import get_plugin_manager
     from tests.gateway.test_native_media_redelivery import _Media
     from tests.waiting import async_wait_until
@@ -769,7 +769,7 @@ def test_relay_binding_moves_to_a_text_rewrite_but_never_to_a_new_source():
     from copy import copy
     from dataclasses import replace
 
-    from gateway.session_ingress_context import _relay_callback, carry_callback, relay_callback
+    from hermes_agent.gateway.session_ingress_context import _relay_callback, carry_callback, relay_callback
 
     transport, event = object(), _make_event("a")
     with relay_callback(transport, event):

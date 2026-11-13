@@ -7,9 +7,9 @@ import json
 import re
 import sqlite3
 
-from gateway import hosted_rooms as rooms
-from gateway import hosted_room_work_storage as storage
-from gateway.hosted_rooms_common import identifier, table_exists
+from hermes_agent.gateway import hosted_rooms as rooms
+from hermes_agent.gateway import hosted_room_work_storage as storage
+from hermes_agent.gateway.hosted_rooms_common import identifier, table_exists
 
 VERSION = 1
 PERMISSION = "work_records"
@@ -205,7 +205,7 @@ def history_anchor(conn, table: str, room_id: str, seq: int) -> str:
 
 
 def _capture_tasks(conn, room_id):
-    from gateway import hosted_room_driver as driver
+    from hermes_agent.gateway import hosted_room_driver as driver
     if not table_exists(conn, "hosted_room_driver_tasks"):
         return [], [], "task_store_missing"
     # Published terminal records already travel in canonical history. Keep
@@ -298,7 +298,7 @@ def capture_locked(conn, *, room_id, local_gateway_id, through_seq=None):
     }
     spans = None
     if content["version"] == 2:
-        from gateway import hosted_room_work_lineage as lineage
+        from hermes_agent.gateway import hosted_room_work_lineage as lineage
         spans, content["lineage_sha256"] = lineage.source_prefix_locked(conn, room_id, content["authority"], seq)
         content["incompleteness"] = ["prior_authority_work_unknown"]
     previous = conn.execute(f"SELECT * FROM {SOURCE_TABLE} WHERE room_id=? AND producer_gateway_id=? AND producer_epoch=?",

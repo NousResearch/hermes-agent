@@ -1,6 +1,6 @@
 """SessionStore durable-row recovery: session-key generation, legacy Slack key migration, rebuilding
 a routing entry from state.db, and the SQLite side of routing transitions (promote/reopen/create/
-peer). Mixin split out of ``gateway/session.py``; bound onto ``SessionStore`` via the MRO."""
+peer). Mixin split out of ``hermes_agent/gateway/session.py``; bound onto ``SessionStore`` via the MRO."""
 
 from __future__ import annotations
 
@@ -10,14 +10,14 @@ import math
 import threading
 from dataclasses import replace
 from datetime import datetime
-from gateway.config import Platform
+from hermes_agent.gateway.config import Platform
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 if TYPE_CHECKING:
-    from gateway.session import SessionEntry, SessionSource
+    from hermes_agent.gateway.session import SessionEntry, SessionSource
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("gateway.session")
+logger = logging.getLogger("hermes_agent.gateway.session")
 
 
 def _origin_json(source) -> Optional[str]:
@@ -39,7 +39,7 @@ class SessionRecoveryMixin:
         active profile."""
         if not getattr(self.config, "multiplex_profiles", False):
             return None
-        from gateway.session_identity import identity_of
+        from hermes_agent.gateway.session_identity import identity_of
         identity = identity_of(source)
         if identity is not None:
             return identity.session_key_profile
@@ -90,7 +90,7 @@ class SessionRecoveryMixin:
 
     def _generate_session_key(self, source: SessionSource, key_source: Optional[SessionSource] = None) -> str:
         """Session key for *source* (profile from *source*; key from *key_source* if given)."""
-        from gateway.session import build_session_key
+        from hermes_agent.gateway.session import build_session_key
         return build_session_key(
             key_source if key_source is not None else source,
             group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
@@ -135,7 +135,7 @@ class SessionRecoveryMixin:
     def _create_entry_from_recovered_row(
         self, *, row: dict[str, Any], session_key: str, source: SessionSource, now: datetime,
     ) -> SessionEntry:
-        from gateway.session import SessionEntry
+        from hermes_agent.gateway.session import SessionEntry
 
         def _ts(value, default: datetime) -> datetime:
             try:
@@ -151,7 +151,7 @@ class SessionRecoveryMixin:
         had_activity = row.get("_has_messages")
         if had_activity is None:
             had_activity = bool(row.get("message_count") or 0) or last_activity is not None
-        from gateway.session_identity import transport_profile_of
+        from hermes_agent.gateway.session_identity import transport_profile_of
         return SessionEntry(
             session_key=session_key, session_id=str(row["id"]), created_at=created_at,
             updated_at=updated_at, origin=source, display_name=source.chat_name,
@@ -300,7 +300,7 @@ class SessionRecoveryMixin:
                 promote(session_id, reason)
             else:
                 db.end_session(session_id, reason)
-            from gateway.session_bot import release_superseded_bot_chat
+            from hermes_agent.gateway.session_bot import release_superseded_bot_chat
             release_superseded_bot_chat(db, self, session_key, session_id)
             # Stop the departed conversation's schedule in its owning profile, even when
             # the in-memory watch still holds a pre-reset session id.
@@ -325,7 +325,7 @@ class SessionRecoveryMixin:
         chat's conversation: mark it adopted so the route guard (``is_delegate_child_row``, #138210) does
         not read the session the user chose as a stale capture and move the chat off it. ``_delegate_from``
         is kept: compression lineage and the still-running worker's publish check both read it."""
-        from gateway.session_lifecycle import CHAT_ADOPTED_MARKER, is_delegate_child_row
+        from hermes_agent.gateway.session_lifecycle import CHAT_ADOPTED_MARKER, is_delegate_child_row
         db = self._db_for_key(session_key)
         row = db.get_session(session_id)
         if not (row and is_delegate_child_row(row)):
@@ -346,9 +346,9 @@ class SessionRecoveryMixin:
         recorder = getattr(db, "record_gateway_session_peer", None)
         if not callable(recorder):
             return
-        from gateway.session_api import api_storage_source
-        from gateway.session_a2a import storage_source
-        from gateway.session_identity import transport_profile_of
+        from hermes_agent.gateway.session_api import api_storage_source
+        from hermes_agent.gateway.session_a2a import storage_source
+        from hermes_agent.gateway.session_identity import transport_profile_of
         peer = dict(
             source=storage_source(db, source, session_id, api_storage_source(db, session_id, source.platform.value)), user_id=source.user_id, session_key=session_key,
             chat_id=source.chat_id, chat_type=source.chat_type, thread_id=source.thread_id)
@@ -445,7 +445,7 @@ class SessionRecoveryMixin:
         """kwargs for ``SessionDB.create_session``. Identity (origin_json) and lineage
         (parent/_reset_from) land atomically in the INSERT so a crash right after cannot strand the
         row unroutable."""
-        from gateway.session_identity import transport_profile_of
+        from hermes_agent.gateway.session_identity import transport_profile_of
         return {
             "session_id": session_id,
             "source": source_value,

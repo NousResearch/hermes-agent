@@ -14,7 +14,7 @@ from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 def _status(live, handle, pending) -> str:
     if handle.execution_state == 'running':
-        from gateway.session_server_requests import open_requests
+        from hermes_agent.gateway.session_server_requests import open_requests
         sid = handle.ref.session_id
         # A question holds the turn: a shared control (approval) or a viewer request (clarify batch,
         # sudo, secret, vault) still open on the stream.
@@ -29,7 +29,7 @@ async def active_list(connection, ref, params):
         raise RuntimeStoreError('invalid_params')
     if 'session:read' not in connection.actor.capabilities:
         raise RuntimeStoreError('permission_denied')
-    from gateway.session_live_listing import live_entries
+    from hermes_agent.gateway.session_live_listing import live_entries
     from hermes_agent.hermes_state_sessions import INTERNAL_LISTING_SOURCES
     current = str(params.get('current_session_id') or '')
     rows = []

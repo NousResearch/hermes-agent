@@ -14,9 +14,9 @@ from tests.waiting import async_wait_until
 
 
 async def _owner(tmp_path, monkeypatch):
-    from gateway.config import GatewayConfig
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import initialize_session_authority
     from hermes_agent.hermes_state import SessionDB
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -28,13 +28,13 @@ async def _owner(tmp_path, monkeypatch):
 
 
 def _viewer():
-    from gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_contract import SessionActor
     return SessionActor("test-owner", "default", frozenset(
         {"session:create", "session:submit", "session:read", "session:control"}), "viewer")
 
 
 def _create(authority, request_id="r"):
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_local import create_local_session
     return create_local_session(authority, _viewer(), dict(request_id=request_id, source="tui", model="fixture",
                                                            toolsets=[]))
 
@@ -67,7 +67,7 @@ async def test_closed_local_session_leaves_memory_and_resumes_with_its_source(tm
         live = authority.sessions[ref.session_id]
         assert live.source is source
         assert runner._delivery_adapter_for(source).authorize_source(source)
-        from gateway.session_contract import Submission
+        from hermes_agent.gateway.session_contract import Submission
         await authority.submit(_viewer(), Submission("again", ref, {"text": "again"}, "queue"))
         await async_wait_until(lambda: replies == ["again"], timeout=10, what="the resumed turn")
     finally:
@@ -79,7 +79,7 @@ async def test_prompt_admitted_while_the_close_runs_is_never_stranded(tmp_path, 
     """A submit lands while the close lifecycle awaits (its drain is scheduled, and may clear
     ``rescan`` and start claiming, before the lifecycle returns): the turn runs and the session
     stays, whichever point of the claim the lifecycle returns at."""
-    from gateway.session_contract import Submission
+    from hermes_agent.gateway.session_contract import Submission
     from hermes_agent.hermes_state_runtime import list_session_admissions
 
     runner, authority, db = await _owner(tmp_path, monkeypatch)
@@ -127,8 +127,8 @@ async def test_prompt_admitted_while_the_close_runs_is_never_stranded(tmp_path, 
 
 @pytest.mark.asyncio
 async def test_retired_session_is_forgotten_by_delete_and_prune(tmp_path, monkeypatch):
-    from gateway.config import Platform
-    from gateway.session_mutations import retire_live_sessions
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session_mutations import retire_live_sessions
 
     runner, authority, db = await _owner(tmp_path, monkeypatch)
     try:
@@ -151,7 +151,7 @@ async def test_prompt_parked_behind_a_busy_head_while_the_close_runs_is_never_st
     """A submit lands while the close lifecycle awaits, and its drain parks it behind a busy head
     (a worker holds the FIFO) and exits before the lifecycle returns. The session must stay, so the
     worker's end wakes the FIFO (``wake_after_worker`` only wakes sessions in memory) and it runs."""
-    from gateway.session_contract import Submission
+    from hermes_agent.gateway.session_contract import Submission
 
     runner, authority, db = await _owner(tmp_path, monkeypatch)
     replies, parked = [], asyncio.Event()
@@ -198,11 +198,11 @@ async def _branching_owner(tmp_path, monkeypatch):
     """An owner whose local sessions carry a launch key and can branch (test_launch_secret_retirement)."""
     from types import SimpleNamespace
 
-    from gateway import run, session_mutations
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway import run, session_mutations
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     config = {'platform_toolsets': {'cli': []}, 'model': {
         'provider': 'custom', 'api_key': 'config-secret', 'base_url': 'http://127.0.0.1:9/v1'}}
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a, **k: config)
@@ -226,10 +226,10 @@ async def _branching_owner(tmp_path, monkeypatch):
 async def test_closed_branch_keeps_its_parents_launch_key_after_the_parent_is_deleted(tmp_path, monkeypatch):
     """A branch copies its parent's launch-key slot. Closed (and so retired from memory), it still
     resumes on that key after the parent is deleted, as an open branch does."""
-    from gateway.config import Platform
-    from gateway.session_contract import SessionRef
-    from gateway.session_local import create_local_session
-    from gateway.session_policy import launch_key
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_policy import launch_key
 
     owner, connection, mutate = await _branching_owner(tmp_path, monkeypatch)
     try:
@@ -254,8 +254,8 @@ async def test_closed_branch_keeps_its_parents_launch_key_after_the_parent_is_de
 async def test_retired_conversation_a_rename_brings_back_retires_again(tmp_path, monkeypatch):
     """A rename (any authorize: a read RPC, archive, pin) restores a retired conversation to run
     its checks; once it sits idle again it leaves memory again instead of staying until restart."""
-    from gateway import session_retirement
-    from gateway.session_mutations import mutate_session
+    from hermes_agent.gateway import session_retirement
+    from hermes_agent.gateway.session_mutations import mutate_session
     monkeypatch.setattr(session_retirement, 'RESTORED_IDLE_S', 0.05)
     _runner, authority, db = await _owner(tmp_path, monkeypatch)
     try:
@@ -270,7 +270,7 @@ async def test_retired_conversation_a_rename_brings_back_retires_again(tmp_path,
         assert db.get_session(ref.session_id)['title'] == 'Renamed'
 
         async def poll_listing():  # Desktop/TUI poll session.active_list the whole time
-            from gateway.session_live_listing import live_entries
+            from hermes_agent.gateway.session_live_listing import live_entries
             while True:
                 await live_entries(authority, _viewer())
                 await asyncio.sleep(0)
@@ -293,7 +293,7 @@ async def test_closed_conversation_with_a_running_refine_review_stays(tmp_path, 
     import threading
     from types import SimpleNamespace
 
-    from gateway import session_retirement
+    from hermes_agent.gateway import session_retirement
     _runner, authority, db = await _owner(tmp_path, monkeypatch)
     checked = []
     retire_closed = session_retirement.retire_closed
@@ -319,8 +319,8 @@ async def test_restored_conversation_retire_timer_firing_mid_close_keeps_the_clo
     (releasing the editor MCP): the close still stamps the row, and the conversation retires after."""
     import threading
 
-    from gateway import session_local_mcp, session_retirement
-    from gateway.session_mutations import mutate_session
+    from hermes_agent.gateway import session_local_mcp, session_retirement
+    from hermes_agent.gateway.session_mutations import mutate_session
     monkeypatch.setattr(session_retirement, 'RESTORED_IDLE_S', 0.05)
     _runner, authority, db = await _owner(tmp_path, monkeypatch)
     held, release = threading.Event(), threading.Event()
@@ -363,7 +363,7 @@ async def test_conversation_closed_during_a_refine_review_retires_once_the_revie
     from contextlib import nullcontext
 
     from agent import background_review
-    from gateway import session_refine, session_tui_side
+    from hermes_agent.gateway import session_refine, session_tui_side
     _runner, authority, db = await _owner(tmp_path, monkeypatch)
     finish = threading.Event()
     threads = []

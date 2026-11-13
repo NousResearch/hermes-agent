@@ -63,7 +63,7 @@ def test_recycled_pid_is_reclaimed_without_being_signalled(board):
 def test_matching_fingerprint_keeps_the_live_worker(board):
     """The same PID with ITS OWN fingerprint (recorded at spawn) is our worker: the expired claim is
     extended rather than reclaimed, and the timeout path signals it."""
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway.status import get_process_start_time
 
     conn = board
     killed = []
@@ -84,13 +84,13 @@ def test_same_pid_and_start_tick_on_another_boot_is_foreign(board, monkeypatch):
     """A row that survived a reboot: the PID AND the boot-relative start tick both match a process on
     this boot (the Linux start time is clock ticks since boot, so that recurs), but the persisted
     instantiation epoch does not. The worker is foreign: claim released, zero signals."""
-    from gateway import drain_control
+    from hermes_agent.gateway import drain_control
 
     conn = board
     killed = []
     live_fingerprint = kbd._process_fingerprint(os.getpid())
     assert live_fingerprint is not None and live_fingerprint.split("|", 1)[1] == str(
-        __import__("gateway.status", fromlist=["x"]).get_process_start_time(os.getpid()))
+        __import__("hermes_agent.gateway.status", fromlist=["x"]).get_process_start_time(os.getpid()))
     tid = _claimed_running(conn, pid=os.getpid(), started_at=live_fingerprint, max_runtime=1)
     assert kbd._worker_alive(os.getpid(), live_fingerprint) is True
 
@@ -114,7 +114,7 @@ def test_unverified_fingerprint_capture_never_authorizes_a_signal(board, monkeyp
     """Fingerprint capture fails for a new spawn: the row is NOT a legacy NULL row. A live PID under
     it is never SIGTERM/SIGKILLed by any reclaim/timeout path, and the claim is held (not released
     beside the live process); once the PID is gone the claim is reclaimed normally."""
-    from gateway import status
+    from hermes_agent.gateway import status
 
     conn = board
     killed = []

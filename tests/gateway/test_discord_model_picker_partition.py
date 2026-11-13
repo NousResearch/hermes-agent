@@ -11,7 +11,7 @@ fell off the 25-option cliff.
 
 from types import SimpleNamespace
 
-from gateway.platforms.base import utf16_len
+from hermes_agent.gateway.platforms.base import utf16_len
 from plugins.platforms.discord.adapter import ModelPickerView
 
 

@@ -1,7 +1,7 @@
 """Discord env -> gateway config bridge (``PlatformEntry.env_overrides``)."""
 
-from gateway.config import Platform
-from gateway.platform_env import EnvCred, home_step, reply_mode_step
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platform_env import EnvCred, home_step, reply_mode_step
 
 ENV_ENABLE_CREDENTIALS = ("DISCORD_BOT_TOKEN",)
 # Order matters: the home channel is read BEFORE the reply mode may create the entry.

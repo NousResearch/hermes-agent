@@ -12,8 +12,8 @@ from typing import Optional
 def prompt_actor(adapter, event) -> dict:
     """Who answers *event*'s prompt press: the clicker, the bot-owning profile's answer policy, and
     whether the connector admitted the clicker (``admitted_authors``)."""
-    from gateway.approval_actor import runner_answer_policy
-    from gateway.relay.admitted_authors import answer_admitted
+    from hermes_agent.gateway.approval_actor import runner_answer_policy
+    from hermes_agent.gateway.relay.admitted_authors import answer_admitted
 
     # Identity first: this answer is consumed before handle_message, and without the transport
     # identity the admin lookup read the routed runtime profile instead of the bot-owning one.
@@ -25,8 +25,8 @@ def prompt_actor(adapter, event) -> dict:
 def prompt_refusal(state: dict, actor: dict, option_id: Optional[str] = None) -> Optional[str]:
     """The localized refusal when *actor* (``actor_id`` + ``admin_ids`` + ``admitted``) may not answer
     the pending prompt *state*, else None: the requester / approvers / admins rule of
-    ``gateway.approval_actor``."""
-    from gateway import approval_actor
+    ``hermes_agent.gateway.approval_actor``."""
+    from hermes_agent.gateway import approval_actor
 
     admitted = actor.get("admitted", True)
     session_key = str(state.get("session_key") or "")
@@ -46,7 +46,7 @@ def prompt_refusal(state: dict, actor: dict, option_id: Optional[str] = None) ->
 
 
 async def resolve_exec_approval(adapter, state, option_id, chat_id, ack_meta) -> None:
-    from gateway.relay import adapter as _relay
+    from hermes_agent.gateway.relay import adapter as _relay
     from tools.approval import resolve_gateway_approval_card
 
     choice = option_id if option_id in _relay._EXEC_APPROVAL_LABELS else "deny"
@@ -62,7 +62,7 @@ async def resolve_exec_approval(adapter, state, option_id, chat_id, ack_meta) ->
 
 
 async def resolve_slash_confirm(adapter, state, option_id, chat_id, ack_meta) -> None:
-    from gateway.relay import adapter as _relay
+    from hermes_agent.gateway.relay import adapter as _relay
     from tools import slash_confirm as slash_confirm_mod
 
     choice = option_id if option_id in _relay._SLASH_CONFIRM_LABELS else "cancel"

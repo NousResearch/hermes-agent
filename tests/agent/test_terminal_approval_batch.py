@@ -11,7 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from run_agent import AIAgent
-from gateway.session_context import clear_session_vars
+from hermes_agent.gateway.session_context import clear_session_vars
 from tools import approval
 from tools.thread_context import propagate_context_to_thread
 

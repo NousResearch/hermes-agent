@@ -3,7 +3,7 @@
 Runs after ``GatewayConfig.from_dict`` so env always wins over config.yaml / gateway.json.
 Most platforms follow one shape — "credentials present in env ⇒ enable the platform and
 copy the values into ``extra``" — declared by each platform plugin as ``PlatformEntry.env_overrides``
-(``gateway.platform_env.EnvCred`` rows; see that module). Core-only platforms (api_server, webhook,
+(``hermes_agent.gateway.platform_env.EnvCred`` rows; see that module). Core-only platforms (api_server, webhook,
 msgraph_webhook, relay) keep their small functions here.
 """
 
@@ -13,7 +13,7 @@ import os
 from contextvars import ContextVar
 from typing import Optional
 
-from gateway.config import (
+from hermes_agent.gateway.config import (
     _BUILTIN_PLATFORM_VALUES,
     _discovered_registry_entry,
     GatewayConfig,
@@ -24,11 +24,11 @@ from gateway.config import (
     _has_usable_api_server_key,
     SHARED_LISTENER_MIRROR_PLATFORMS,
 )
-from gateway.platform_env import INT, csv_extras, env_extras
+from hermes_agent.gateway.platform_env import INT, csv_extras, env_extras
 from utils import is_truthy_value
 
-# Logger name parity with the origin module: records stay under "gateway.config".
-logger = logging.getLogger("gateway.config")
+# Logger name parity with the origin module: records stay under "hermes_agent.gateway.config".
+logger = logging.getLogger("hermes_agent.gateway.config")
 
 getenv = _getenv_str
 
@@ -48,11 +48,11 @@ def _enable_credential_names(platform: Platform) -> tuple:
     already materialized (its own env step is what is warning), so the lookup never imports."""
     if platform in _ENV_ENABLE_CREDENTIALS:
         return _ENV_ENABLE_CREDENTIALS[platform]
-    from gateway.platform_registry import platform_registry
+    from hermes_agent.gateway.platform_registry import platform_registry
     entry = platform_registry.get(platform.value)
     names = tuple(getattr(entry, "env_enable_credentials", ()) or ())
     if not names:
-        from gateway.platform_env import bundled_env_rows
+        from hermes_agent.gateway.platform_env import bundled_env_rows
         names = (bundled_env_rows(platform.value) or ((), ()))[1]
     return names
 
@@ -83,7 +83,7 @@ def _warn_explicit_disable_beats_env(platform: Platform) -> None:
 
 def _loading_secondary_under_multiplexer() -> bool:
     """True while a multiplexer loads a NON-default profile's config (``_profile_runtime_scope`` sets the
-    home override; the runner sets the multiplex flag). Same signal ``gateway.config`` uses for scoped reads."""
+    home override; the runner sets the multiplex flag). Same signal ``hermes_agent.gateway.config`` uses for scoped reads."""
     from agent.secret_scope import is_multiplex_active
     from hermes_constants import get_hermes_home_override, profile_name_for_home
     override = get_hermes_home_override()
@@ -236,14 +236,14 @@ def _enable_plugin_platform(config: GatewayConfig, entry) -> None:
 
 def _configured_plugin_entries(config: GatewayConfig) -> list:
     """Plugin entries with activation evidence (config block, env/.env, credential pool); only those
-    are imported — an unconfigured adapter has nothing to enable. See gateway.platform_activation.
+    are imported — an unconfigured adapter has nothing to enable. See hermes_agent.gateway.platform_activation.
     config.yaml blocks already materialized their adapters in load_yaml_layer (and every merged
     block is in config.platforms), so the YAML is not parsed a second time here."""
     try:
         from hermes_cli.plugins import discover_plugins
         discover_plugins()  # idempotent
-        from gateway.platform_registry import platform_registry
-        from gateway.platform_activation import configured_plugin_entries
+        from hermes_agent.gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.platform_activation import configured_plugin_entries
         return configured_plugin_entries(platform_registry, yaml_cfg={}, platform_names=config.platforms)
     except Exception as e:  # health: allow BLE001 -- moved from the plugin pass: discovery never breaks config load
         logger.debug("Plugin platform discovery for env overrides failed: %s", e)
@@ -253,10 +253,10 @@ def _configured_plugin_entries(config: GatewayConfig) -> list:
 def _bundled_env_fallbacks(config: GatewayConfig, entries: list, *, only: Optional[Platform] = None) -> list:
     """Env rows of bundled platforms with activation evidence but no registry entry (discovery
     suppressed or the plugin disabled), read from their ``gateway_env`` files; see
-    ``gateway.platform_env.bundled_env_rows``. They only run the env steps, never the enable pass."""
+    ``hermes_agent.gateway.platform_env.bundled_env_rows``. They only run the env steps, never the enable pass."""
     from types import SimpleNamespace
-    from gateway.platform_activation import activation_predicate
-    from gateway.platform_env import _BUNDLED_ENV_SIBLINGS, bundled_env_rows
+    from hermes_agent.gateway.platform_activation import activation_predicate
+    from hermes_agent.gateway.platform_env import _BUNDLED_ENV_SIBLINGS, bundled_env_rows
     have = {getattr(e, "name", "") for e in entries}
     if only is not None:  # bundled_env_rows() answers for one name without scanning every manifest
         names = {only.value} - have
@@ -402,7 +402,7 @@ def builtin_platform_status(platform_id: str, yaml_cfg: dict) -> Optional[tuple[
     """
     if platform_id not in _BUILTIN_PLATFORM_VALUES:
         return None
-    from gateway.config_loader import (
+    from hermes_agent.gateway.config_loader import (
         _apply_managed_extra, bridge_platform_shared_keys, merge_platform_sections, snapshot_authored_extra,
     )
     from hermes_cli.managed_scope import apply_managed_overlay

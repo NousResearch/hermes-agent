@@ -89,7 +89,7 @@ def test_discovery_refuses_unsupported_owner_without_releasing_lease(tmp_path, m
 
             def denied(pid):
                 raise PermissionError("process inspection denied")
-            patch.setattr("gateway.status._pid_exists", denied)
+            patch.setattr("hermes_agent.gateway.status._pid_exists", denied)
             with pytest.raises(RuntimeError, match="liveness is unknown"):
                 discover_attach_url("old", registry_home=tmp_path)
         assert registry.read_bytes() == before

@@ -1,5 +1,5 @@
 """
-Tests for audio cache utilities in gateway/platforms/base.py.
+Tests for audio cache utilities in hermes_agent/gateway/platforms/base.py.
 
 Covers: get_audio_cache_dir, cache_audio_from_bytes, cleanup_audio_cache.
 """
@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway.platforms.base import (
+from hermes_agent.gateway.platforms.base import (
     cache_audio_from_bytes,
     cleanup_audio_cache,
     get_audio_cache_dir,
@@ -24,7 +24,7 @@ from gateway.platforms.base import (
 def _redirect_cache(tmp_path, monkeypatch):
     """Point the module-level AUDIO_CACHE_DIR to a fresh tmp_path."""
     monkeypatch.setattr(
-        "gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path / "audio_cache"
+        "hermes_agent.gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path / "audio_cache"
     )
 
 
@@ -81,13 +81,13 @@ class TestCleanupAudioCache:
 class TestUnifiedMediaCacheCleanup:
 
     def test_cleanup_screenshot_cache_removes_old_files(self, tmp_path, monkeypatch):
-        from gateway.platforms.base import (
+        from hermes_agent.gateway.platforms.base import (
             cleanup_screenshot_cache,
             get_screenshot_cache_dir,
         )
 
         monkeypatch.setattr(
-            "gateway.platforms.base.SCREENSHOT_CACHE_DIR", tmp_path / "screenshots"
+            "hermes_agent.gateway.platforms.base.SCREENSHOT_CACHE_DIR", tmp_path / "screenshots"
         )
         cache_dir = get_screenshot_cache_dir()
         old_file = cache_dir / "old.png"

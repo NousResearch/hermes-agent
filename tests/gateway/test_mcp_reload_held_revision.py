@@ -18,7 +18,7 @@ CONFIG = ('model: {default: m1, provider: custom, base_url: "http://127.0.0.1:9/
 
 
 def _home(monkeypatch):
-    from gateway import run
+    from hermes_agent.gateway import run
     from hermes_constants import get_hermes_home
     home = get_hermes_home()
     home.mkdir(parents=True, exist_ok=True)
@@ -32,7 +32,7 @@ def _reloaded_profile(authority, monkeypatch):
     server is down — the state after a gateway restart whose TUI re-attached."""
     authority.runner.config = SimpleNamespace(multiplex_profiles=False)
     authority.runner._mcp_reload_refresh_cached_agents = lambda multiplex, profile: None
-    monkeypatch.setattr('gateway.session_authorities.served_profile_name', lambda profile_id: 'default')
+    monkeypatch.setattr('hermes_agent.gateway.session_authorities.served_profile_name', lambda profile_id: 'default')
     monkeypatch.setattr('tools.mcp_tool_discovery.reconcile_mcp_servers_with_config',
                         lambda: {'removed': [], 'added': [], 'pending': []})
     monkeypatch.setattr('tools.mcp_tool_discovery.mcp_servers_not_connected', lambda: ['parked'])
@@ -47,7 +47,7 @@ def _refusal(reply):
 @pytest.mark.asyncio
 async def test_a_reload_naming_the_revision_the_session_holds_is_not_refused(tmp_path, monkeypatch):
     home = _home(monkeypatch)
-    monkeypatch.setattr('gateway.session_policy.launch_key', lambda authority, policy: None)
+    monkeypatch.setattr('hermes_agent.gateway.session_policy.launch_key', lambda authority, policy: None)
     store, authority = await _owner_authority(home)
     _reloaded_profile(authority, monkeypatch)
     owner = _connect(authority)
@@ -78,9 +78,9 @@ async def test_the_held_policy_is_read_on_the_loop(tmp_path, monkeypatch):
     """``policy_for_source`` walks ``authority.sessions`` and the local adapter's maps, which only the loop
     mutates; reading it from a worker thread raced them. Only the config read and hash leave the loop."""
     import threading
-    from gateway import session_policy
+    from hermes_agent.gateway import session_policy
     home = _home(monkeypatch)
-    monkeypatch.setattr('gateway.session_policy.launch_key', lambda authority, policy: None)
+    monkeypatch.setattr('hermes_agent.gateway.session_policy.launch_key', lambda authority, policy: None)
     store, authority = await _owner_authority(home)
     _reloaded_profile(authority, monkeypatch)
     owner = _connect(authority)

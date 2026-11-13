@@ -1,6 +1,6 @@
 """#77464 repro: under a multiplexed host, a cron job for a secondary profile whose agent runs a
 terminal command must see THAT profile's HERMES_HOME — through the real owner bridge
-(``gateway.session_cron.execute`` -> ``_profile_runtime_scope`` -> ``asyncio.to_thread(run_job)``)
+(``hermes_agent.gateway.session_cron.execute`` -> ``_profile_runtime_scope`` -> ``asyncio.to_thread(run_job)``)
 and the real terminal tool / local backend."""
 
 import asyncio
@@ -68,8 +68,8 @@ def _install_agent(monkeypatch, seen):
 
 def _fire(home: Path, job_id: str):
     """Run one job through the owner bridge for *home*'s authority."""
-    from gateway.session_contract import SessionRef
-    from gateway.session_cron import execute
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_cron import execute
     from hermes_agent.hermes_state_registry import acquire, release
 
     job = {"id": job_id, "name": job_id, "schedule_display": "manual", "model": "test-model"}

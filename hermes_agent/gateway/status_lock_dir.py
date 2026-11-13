@@ -1,4 +1,4 @@
-"""The unusable scoped-lock dir report (#134889 W2). :mod:`gateway.status` raises it from
+"""The unusable scoped-lock dir report (#134889 W2). :mod:`hermes_agent.gateway.status` raises it from
 ``acquire_scoped_lock``; nothing here reads back into that module."""
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 
 from hermes_dir_acl import unusable_dir_remedy
 
-log = logging.getLogger("gateway.status")
+log = logging.getLogger("hermes_agent.gateway.status")
 
 
 class ScopedLockDirUnusable(PermissionError):

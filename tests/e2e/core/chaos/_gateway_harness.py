@@ -1,4 +1,4 @@
-"""Test-side driver for a real ``python -m gateway.run`` process with the chaos fake platform.
+"""Test-side driver for a real ``python -m hermes_agent.gateway.run`` process with the chaos fake platform.
 
 The gateway child runs the production entry point (plugin discovery, platform registry,
 adapter connect, message handler install, SIGTERM drain) in a hermetic home; this module
@@ -115,7 +115,7 @@ class GatewayProc:
         # Same process group as pytest (no start_new_session): when the runner kills a timed-out
         # file's group, the gateway goes with it instead of outliving the run.
         self.proc = subprocess.Popen(
-            [python_exe(), "-m", "gateway.run"], cwd=str(self.home), env=env,
+            [python_exe(), "-m", "hermes_agent.gateway.run"], cwd=str(self.home), env=env,
             stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
         log.close()
         deadline = time.monotonic() + BOOT_DEADLINE_S

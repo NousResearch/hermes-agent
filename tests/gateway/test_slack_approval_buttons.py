@@ -43,7 +43,7 @@ def _ensure_slack_mock():
 _ensure_slack_mock()
 
 from plugins.platforms.slack.adapter import SlackAdapter
-from gateway.config import PlatformConfig, Platform
+from hermes_agent.gateway.config import PlatformConfig, Platform
 
 
 def _make_adapter():
@@ -483,8 +483,8 @@ class TestSlackThreadContext:
 
 def test_thread_suspension_requires_a_fresh_context(tmp_path):
     """Stopping a Slack thread must re-enable first-turn history seeding."""
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
 
     adapter = _make_adapter()
     store = SessionStore(tmp_path / "sessions", GatewayConfig())
@@ -515,7 +515,7 @@ class TestSessionKeyChatType:
         This is the exact bug that the old ``hardcoded "group"`` code caused:
         the lookup builds ``group:…`` while the real session is ``dm:…``.
         """
-        from gateway.session import SessionEntry
+        from hermes_agent.gateway.session import SessionEntry
 
         adapter = _make_adapter()
         mock_store = MagicMock()

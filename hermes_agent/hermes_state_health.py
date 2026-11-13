@@ -4,7 +4,7 @@ A structurally corrupt state.db used to show up as an empty or partial Desktop s
 green readiness and a 500 from ``/api/sessions``: every surface guessed on its own and
 none said "the store is damaged" (#72046). This module is the single place that fact is
 recorded. Writers (``SessionDB._halt_db_corrupt``), readers (``SessionDB`` read helpers)
-and the readiness probe publish into it; ``gateway.readiness`` (``state_db`` /
+and the readiness probe publish into it; ``hermes_agent.gateway.readiness`` (``state_db`` /
 ``session_store`` checks, hence ``/api/status`` ``components.storage``) and the session
 list endpoints read from it, so Desktop and readiness cannot disagree.
 

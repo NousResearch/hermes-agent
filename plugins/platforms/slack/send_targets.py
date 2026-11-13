@@ -2,7 +2,7 @@
 
 import re
 
-from gateway.platforms.send_targets import StandaloneSendPolicy
+from hermes_agent.gateway.platforms.send_targets import StandaloneSendPolicy
 
 # Slack conversation IDs: C (public), G (private/group), D (DM); uppercase alnum, 9+ chars. User IDs
 # (U...) become ``user:U...`` and are opened as D... conversations first (posting straight to a U/W

@@ -5,7 +5,7 @@ import threading
 
 import pytest
 
-from gateway.hosted_rooms import default_db_path as hosted_rooms_default_db_path
+from hermes_agent.gateway.hosted_rooms import default_db_path as hosted_rooms_default_db_path
 import hermes_agent.tui_gateway.server as srv
 from hermes_agent.tui_gateway import methods_groups
 from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService
@@ -45,8 +45,8 @@ def test_reregistered_peer_route_keeps_its_trace_identity(home, monkeypatch):
 
     # A route stored before the identity was derived (a random trace) keeps the one it has: the
     # member's gateway fingerprinted that body when it accepted the turn.
-    from gateway import hosted_room_links
-    from gateway.hosted_room_peer import GatewayRoomCatalog
+    from hermes_agent.gateway import hosted_room_links
+    from hermes_agent.gateway.hosted_room_peer import GatewayRoomCatalog
     hosted_room_links.save_room_link(FakeService.db_path, hosted_room_links.make_stored_link(
         room_id="room-1", member_id="member-peer", target_url="https://peer.example.test",
         target_profile="reviewer", grant="older.room.grant", catalog=GatewayRoomCatalog.from_mapping(catalog),
@@ -64,8 +64,8 @@ def _serve_owed():
 
 
 def _serve_peer_client(monkeypatch, room, *, during_probe=lambda: None):
-    from gateway.hosted_room_peer import catalog_mapping
-    from gateway.hosted_rooms import local_authority_gateway_id
+    from hermes_agent.gateway.hosted_room_peer import catalog_mapping
+    from hermes_agent.gateway.hosted_rooms import local_authority_gateway_id
 
     catalog = catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
     probes = []
@@ -93,7 +93,7 @@ def _scoped_grant(room):
     import base64
     import json
 
-    from gateway.hosted_rooms import local_authority_gateway_id
+    from hermes_agent.gateway.hosted_rooms import local_authority_gateway_id
 
     claims = {"room_id": "room-1", "member_id": "member-peer", "home_install_id": local_authority_gateway_id(),
               "authority_gateway_id": room["authority_gateway_id"], "authority_epoch": room["authority_epoch"]}
@@ -106,7 +106,7 @@ def test_serve_disband_and_register_never_leave_a_route_or_a_grant_behind(home, 
     """`hermes serve` publishes a route only while its room is live. A grant handed in for a room
     that ended first is owed, never probed; one that Disband overtakes during the probe or before
     publication is refused and owed too."""
-    from gateway import hosted_room_links
+    from hermes_agent.gateway import hosted_room_links
     from hermes_agent.tui_gateway import hosted_room_peer_transport
     room = _create_room()
 

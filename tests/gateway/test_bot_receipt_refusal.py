@@ -14,7 +14,7 @@ KEY = 'e' * 32
 
 def _refuse(monkeypatch, reason):
     """Refuse at the snapshot check, before any FIFO write, until the returned switch is cleared."""
-    from gateway import session_automation
+    from hermes_agent.gateway import session_automation
     real, refusing = session_automation.snapshot_automation, [True]
     def snapshot(*args, **kwargs):
         if refusing:
@@ -30,8 +30,8 @@ def _scan_warnings(caplog, key):
 
 @pytest.mark.asyncio
 async def test_refused_delivery_leaves_a_terminal_receipt_the_scan_accepts(bot, monkeypatch, caplog):
-    from gateway.session_bot import deliver, recover_bot_deliveries
-    from gateway.session_bot_mailbox import scan_receipts
+    from hermes_agent.gateway.session_bot import deliver, recover_bot_deliveries
+    from hermes_agent.gateway.session_bot_mailbox import scan_receipts
     from tools.bot_live_delivery import read_delivery_result
     params = dict(id=KEY, profile='default', message='ping')
     refusing = _refuse(monkeypatch, 'permission_denied')
@@ -40,7 +40,7 @@ async def test_refused_delivery_leaves_a_terminal_receipt_the_scan_accepts(bot, 
     receipt = read_delivery_result(bot.home, KEY)
     assert (receipt['status'], receipt['reason']) == ('failed', 'agent_blocked'), receipt
     assert 'admission_id' not in receipt and 'permission' not in receipt['error']
-    with caplog.at_level(logging.DEBUG, logger='gateway.session_bot'):
+    with caplog.at_level(logging.DEBUG, logger='hermes_agent.gateway.session_bot'):
         _, records = await scan_receipts(bot.home)
         await recover_bot_deliveries(bot.authority)
     assert [record['delivery_id'] for _, record in records] == [KEY]
@@ -56,7 +56,7 @@ async def test_refused_delivery_leaves_a_terminal_receipt_the_scan_accepts(bot, 
 @pytest.mark.asyncio
 async def test_a_final_refusal_answers_every_resend_with_its_receipt(bot, monkeypatch, reason):
     """A refusal about the delivery itself is final for that id, like ``permission_denied``."""
-    from gateway.session_bot import deliver
+    from hermes_agent.gateway.session_bot import deliver
     params = dict(id=KEY, profile='default', message='ping')
     refusing = _refuse(monkeypatch, reason)
     with pytest.raises(RuntimeStoreError, match=reason):
@@ -72,7 +72,7 @@ async def test_a_final_refusal_answers_every_resend_with_its_receipt(bot, monkey
 async def test_a_transient_refusal_leaves_the_same_id_resendable(bot, monkeypatch, reason):
     """An owner-state refusal (a drain for restart/update, storage, a fenced epoch) says nothing
     about the delivery: no receipt is kept, and the same-id resend once it clears admits once."""
-    from gateway.session_bot import deliver
+    from hermes_agent.gateway.session_bot import deliver
     from tools.bot_live_delivery import read_delivery_result
     params = dict(id=KEY, profile='default', message='ping')
     refusing = _refuse(monkeypatch, reason)
@@ -93,7 +93,7 @@ async def test_a_cron_report_parked_across_a_drain_is_delivered_on_the_next_tick
     import asyncio
     import json
     from hermes_agent.cron.bot_chat_legacy import drain_legacy_pending
-    from gateway.session_bot import deliver
+    from hermes_agent.gateway.session_bot import deliver
     from tools import bot_live_delivery as mailbox
     loop = asyncio.get_running_loop()
     monkeypatch.setattr(mailbox, 'authority_delivery', lambda home, params: asyncio.run_coroutine_threadsafe(
@@ -118,7 +118,7 @@ async def test_a_cron_report_parked_across_a_drain_is_delivered_on_the_next_tick
 
 def _rpc_connection(bot):
     """The relay Desktop's own connection: ``bot_relay.deliver`` crosses the contract-checked dispatch."""
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     return AuthorityConnection(bot.authority, object(), {
         'user_id': 'uid:1000', 'provider': 'local', 'profile_id': bot.authority.profile_id,
         'instance_id': bot.authority.instance_id,
@@ -157,7 +157,7 @@ AUTHOR = {'id': 'bot:cto', 'name': 'cto', 'is_bot': True}
 async def test_a_refused_receipt_keeps_the_whole_delivery_identity(bot, monkeypatch, changed):
     """The refused receipt answers only the delivery it refused: the same id with another sender,
     category or message conflicts, exactly as an admission-backed receipt does."""
-    from gateway.session_bot import deliver
+    from hermes_agent.gateway.session_bot import deliver
     params = dict(id=KEY, profile='default', message='ping', author=AUTHOR)
     refusing = _refuse(monkeypatch, 'permission_denied')
     with pytest.raises(RuntimeStoreError, match='permission_denied'):
@@ -174,8 +174,8 @@ async def test_a_refused_receipt_keeps_the_whole_delivery_identity(bot, monkeypa
 async def test_a_pin_without_refusal_proof_still_warns(bot, monkeypatch, caplog):
     """A refusal raised after the admission row committed is not a refusal: the pin stays the
     explicit unknown record, and the bulk scan keeps warning about it."""
-    from gateway.session_bot import deliver
-    from gateway.session_bot_mailbox import scan_receipts
+    from hermes_agent.gateway.session_bot import deliver
+    from hermes_agent.gateway.session_bot_mailbox import scan_receipts
     from tools.bot_live_delivery import read_delivery_result
     real = type(bot.authority).admit_automation
     async def committed_then_refused(self, *args):
@@ -187,6 +187,6 @@ async def test_a_pin_without_refusal_proof_still_warns(bot, monkeypatch, caplog)
         await deliver(bot.connection, dict(id=KEY, profile='default', message='ping'))
     receipt = read_delivery_result(bot.home, KEY)
     assert receipt['status'] == 'ambiguous' and 'admission_id' not in receipt, receipt
-    with caplog.at_level(logging.DEBUG, logger='gateway.session_bot'):
+    with caplog.at_level(logging.DEBUG, logger='hermes_agent.gateway.session_bot'):
         await scan_receipts(bot.home)
     assert _scan_warnings(caplog, KEY)

@@ -8,9 +8,9 @@ from pathlib import Path
 import sqlite3
 import uuid
 
-from gateway.config import Platform
-from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL, SessionActor, SessionRef, Submission
-from gateway.session_llm_oneshot import DeferredReply
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL, SessionActor, SessionRef, Submission
+from hermes_agent.gateway.session_llm_oneshot import DeferredReply
 from hermes_constants import profile_name_for_home
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
@@ -57,7 +57,7 @@ def _log_refusal(profile, method, exc: RuntimeStoreError) -> None:
     where they were silent before. ``admission_conflict field=request_id`` is a client's explicit retry of
     a send already admitted (the dedupe working), so it is info: expected, never in errors.log. Any other
     reason tagged ``field=request_id`` (session.create's ``invalid_params``) is a real refusal: warning. The shape follows the
-    gateway's own refusal log lines (``gateway/run_notifications.py``): what was refused, for which
+    gateway's own refusal log lines (``hermes_agent/gateway/run_notifications.py``): what was refused, for which
     profile, and why."""
     line = '%s refused for profile=%s: %s%s%s'
     args = (method, _profile_label(profile), exc.reason,
@@ -129,7 +129,7 @@ async def _resume_transcript(authority, ref, snapshot, history, omit):
         # The newest todo result in the transcript, the snapshot the session's agent hydrates
         # from and its ``todo.updated`` frames carried: a viewer attaching shows the plan now.
         return {'messages': history, 'message_count': len(history), 'todo_state': _todo_state_from_history(history)}
-    from gateway.session_local_recovery import omitted_history_state
+    from hermes_agent.gateway.session_local_recovery import omitted_history_state
     # A delete committed since the attach is ``not_found``, as one during the attach is.
     todo_state, count = await asyncio.to_thread(authority.unless_deleted, ref, partial(
         omitted_history_state, authority.db, snapshot.transcript_target))
@@ -153,11 +153,11 @@ class AuthorityConnection:
         if (not identity.get('user_id')
                 or identity.get('instance_id', authority.instance_id) != authority.instance_id):
             capabilities = frozenset()
-        from gateway.owner_identity import principal_subject
+        from hermes_agent.gateway.owner_identity import principal_subject
         self.actor = SessionActor(principal_subject(identity),
                                identity.get('profile_id', authority.profile_id),
                                capabilities, uuid.uuid4().hex)
-        from gateway.session_local_migration import bind_native_transport
+        from hermes_agent.gateway.session_local_migration import bind_native_transport
         bind_native_transport(authority, self.actor, identity)
         self.native_owner = identity.get('native_bootstrap') is True
         self.subscriptions = {}
@@ -242,55 +242,55 @@ class AuthorityConnection:
                     'prompt.resolve_unknown': self.resolve_unknown,
                     'session.interrupt': self.interrupt, 'session.events.since': self.events_since,
                     'approval.respond': self.respond, 'clarify.respond': self.respond_clarify}
-        from gateway.session_busy_controls import handlers as busy_handlers
+        from hermes_agent.gateway.session_busy_controls import handlers as busy_handlers
         handlers.update(busy_handlers(self))
-        from gateway.session_queued_controls import handlers as queued_handlers
+        from hermes_agent.gateway.session_queued_controls import handlers as queued_handlers
         handlers.update(queued_handlers(self))
-        from gateway.session_config import handlers as config_handlers
+        from hermes_agent.gateway.session_config import handlers as config_handlers
         handlers.update(config_handlers(self))
-        from gateway.session_tui_config import handlers as tui_config_handlers
+        from hermes_agent.gateway.session_tui_config import handlers as tui_config_handlers
         handlers.update(tui_config_handlers(self))
-        from gateway.session_ancillary import handlers as ancillary_handlers
+        from hermes_agent.gateway.session_ancillary import handlers as ancillary_handlers
         handlers.update(ancillary_handlers(self))
-        from gateway.session_shell import handlers as shell_handlers
+        from hermes_agent.gateway.session_shell import handlers as shell_handlers
         handlers.update(shell_handlers(self))
-        from gateway.session_tui_ops import handlers as tui_ops_handlers
+        from hermes_agent.gateway.session_tui_ops import handlers as tui_ops_handlers
         handlers.update(tui_ops_handlers(self))
-        from gateway.session_tui_side import handlers as side_handlers
+        from hermes_agent.gateway.session_tui_side import handlers as side_handlers
         handlers.update(side_handlers(self))
-        from gateway.session_llm_oneshot import handlers as oneshot_handlers
+        from hermes_agent.gateway.session_llm_oneshot import handlers as oneshot_handlers
         handlers.update(oneshot_handlers(self))
-        from gateway.session_images import attach_bytes
+        from hermes_agent.gateway.session_images import attach_bytes
         from functools import partial
         handlers['image.attach_bytes'] = partial(attach_bytes, self)
-        from gateway.session_complete_path import complete_path
+        from hermes_agent.gateway.session_complete_path import complete_path
         handlers['complete.path'] = partial(complete_path, self)
-        from gateway.session_prune import prune
+        from hermes_agent.gateway.session_prune import prune
         handlers['session.prune'] = partial(prune, self)
-        from gateway.session_usage import stats
+        from hermes_agent.gateway.session_usage import stats
         handlers['session.stats'] = partial(stats, self)
-        from gateway.session_active_list import active_list
+        from hermes_agent.gateway.session_active_list import active_list
         handlers['session.active_list'] = partial(active_list, self)
-        from gateway.session_viewer_automation import automation
+        from hermes_agent.gateway.session_viewer_automation import automation
         handlers['session.automation'] = partial(automation, self)
-        from gateway.session_reactions import react
+        from hermes_agent.gateway.session_reactions import react
         handlers['message.react'] = partial(react, self)
-        from gateway.session_clarify_lock import clarify_lock
+        from hermes_agent.gateway.session_clarify_lock import clarify_lock
         handlers['clarify.lock'] = partial(clarify_lock, self)
-        from gateway.session_connections import handlers as connection_handlers
+        from hermes_agent.gateway.session_connections import handlers as connection_handlers
         handlers.update(connection_handlers(self))
-        from gateway.session_handoff import handlers as handoff_handlers
+        from hermes_agent.gateway.session_handoff import handlers as handoff_handlers
         handlers.update(handoff_handlers(self))
-        from gateway.session_control_actions import control
+        from hermes_agent.gateway.session_control_actions import control
         handlers['session.control'] = partial(control, self)
-        from gateway.session_onboarding import handlers as onboarding_handlers
+        from hermes_agent.gateway.session_onboarding import handlers as onboarding_handlers
         handlers.update(onboarding_handlers(self))
-        from gateway.session_stored_reads import handlers as stored_read_handlers
+        from hermes_agent.gateway.session_stored_reads import handlers as stored_read_handlers
         handlers.update(stored_read_handlers(self))
         return handlers
 
     async def dispatch(self, request):
-        from gateway.session_server_requests import is_response_frame
+        from hermes_agent.gateway.session_server_requests import is_response_frame
         if is_response_frame(request):
             # A viewer answering one of the owner's server→client requests (the sudo prompt): a
             # response gets no reply (JSON-RPC), and only a viewer entitled to respond on that
@@ -304,7 +304,7 @@ class AuthorityConnection:
             # Every handler indexes params as a mapping; refuse the frame before ``.get``.
             return {'jsonrpc': '2.0', 'id': rid, 'error': {
                 'code': 4001, 'message': 'invalid_params', 'data': {'reason': 'invalid_params'}}}
-        from gateway.drain_control import ws_method_refused_while_draining
+        from hermes_agent.gateway.drain_control import ws_method_refused_while_draining
         if self._operator is True and ws_method_refused_while_draining(getattr(self.authority, 'runner', None), method):
             # An interactive socket reaches a draining owner only in a restart's after-turn wait:
             # it may answer the parked turn and queue input, never change this owner's state.
@@ -345,18 +345,18 @@ class AuthorityConnection:
                 and ref.session_id not in getattr(authority, 'sessions', {ref.session_id: None})):
             # A first read of a session recovery never restored: its compression catch-up (#140060)
             # commits in a worker here, so the handler's synchronous restore only reads.
-            from gateway.session_local_adoption import adopt_before_restore
+            from hermes_agent.gateway.session_local_adoption import adopt_before_restore
             await adopt_before_restore(authority, ref.session_id)
         handlers = self.handlers()
         try:
-            from gateway.session_group_controls import GROUP_METHODS, dispatch_group_control
+            from hermes_agent.gateway.session_group_controls import GROUP_METHODS, dispatch_group_control
             # Every handler reads config/jobs/policy for the OWNING profile: enter its home so
             # ``_load_gateway_config`` / ``build_policy(get_hermes_home())`` never snapshot the
             # launch profile's config into a served secondary's session. Under a single profile
             # the scope is that profile's own home, so behaviour is unchanged.
-            from gateway.session_authorities import async_owner_scope
-            from gateway.session_connections import METHODS as CONNECTION_METHODS, session_owned
-            from gateway.session_plugin_rpc import call_plugin_rpc, resolve_plugin_rpc
+            from hermes_agent.gateway.session_authorities import async_owner_scope
+            from hermes_agent.gateway.session_connections import METHODS as CONNECTION_METHODS, session_owned
+            from hermes_agent.gateway.session_plugin_rpc import call_plugin_rpc, resolve_plugin_rpc
             async with async_owner_scope(self.authority):
                 if method in GROUP_METHODS or method == 'profiles.list':
                     result = await dispatch_group_control(self, method, params)
@@ -379,7 +379,7 @@ class AuthorityConnection:
             return {'jsonrpc': '2.0', 'id': rid, 'result': result}
         except RuntimeStoreError as exc:
             _log_refusal(getattr(self.actor, 'profile_id', None), method, exc)
-            # A connector refusal keeps the legacy handlers' code and message (gateway/session_connections.py).
+            # A connector refusal keeps the legacy handlers' code and message (hermes_agent/gateway/session_connections.py).
             return {'jsonrpc': '2.0', 'id': rid, 'error': {
                 'code': getattr(exc, 'wire_code', 4001), 'message': getattr(exc, 'wire_message', exc.reason),
                 'data': _refusal_data(exc)}}
@@ -390,99 +390,99 @@ class AuthorityConnection:
                 'code': 5001, 'message': 'storage_unavailable', 'data': {'reason': 'storage_unavailable'}}}
 
     async def a2a_forward(self, ref, params):
-        from gateway.session_a2a import forward
+        from hermes_agent.gateway.session_a2a import forward
         return await forward(self, params)
 
     async def kanban_run(self, ref, params):
-        from gateway.session_kanban import run_task
+        from hermes_agent.gateway.session_kanban import run_task
         return await run_task(self, params)
 
     async def cron_recover(self, ref, params):
-        from gateway.session_cron import rpc
+        from hermes_agent.gateway.session_cron import rpc
         return await rpc(self, 'recover', params)
 
     async def cron_submit(self, ref, params):
-        from gateway.session_cron import rpc
+        from hermes_agent.gateway.session_cron import rpc
         return await rpc(self, 'submit', params)
 
     async def cron_status(self, ref, params):
-        from gateway.session_cron import rpc
+        from hermes_agent.gateway.session_cron import rpc
         return await rpc(self, 'status', params)
 
     async def cron_cancel(self, ref, params):
-        from gateway.session_cron import rpc
+        from hermes_agent.gateway.session_cron import rpc
         return await rpc(self, 'cancel', params)
 
     async def bot_roster(self, ref, params):
-        from gateway.session_bot import relay_operation
+        from hermes_agent.gateway.session_bot import relay_operation
         return relay_operation(self, 'roster', params)
 
     async def bot_outbox(self, ref, params):
-        from gateway.session_bot import relay_operation
+        from hermes_agent.gateway.session_bot import relay_operation
         return relay_operation(self, 'outbox', params)
 
     async def bot_reply(self, ref, params):
-        from gateway.session_bot import relay_operation
+        from hermes_agent.gateway.session_bot import relay_operation
         return relay_operation(self, 'reply', params)
 
     async def bot_deliver(self, ref, params):
-        from gateway.session_bot import deliver
+        from hermes_agent.gateway.session_bot import deliver
         return await deliver(self, params)
 
     async def bot_settle(self, ref, params):
-        from gateway.session_bot import settle
+        from hermes_agent.gateway.session_bot import settle
         return await settle(self, params)
 
     async def bot_cancel(self, ref, params):
-        from gateway.session_bot_cancel import cancel
+        from hermes_agent.gateway.session_bot_cancel import cancel
         return await cancel(self, params)
 
     async def worker_register(self, ref, params):
-        from gateway.session_worker import worker_request
+        from hermes_agent.gateway.session_worker import worker_request
         return await worker_request(self, ref, params, operation='register')
 
     async def worker_adopt(self, ref, params):
-        from gateway.session_worker import worker_request
+        from hermes_agent.gateway.session_worker import worker_request
         return await worker_request(self, ref, params, operation='adopt')
 
     async def worker_persist(self, ref, params):
-        from gateway.session_worker import worker_request
+        from hermes_agent.gateway.session_worker import worker_request
         return await worker_request(self, ref, params, operation='persist')
 
     async def slash_exec(self, ref, params):
-        from gateway.session_commands import execute_command
+        from hermes_agent.gateway.session_commands import execute_command
         return await execute_command(self, ref, params)
 
     async def command_dispatch(self, ref, params):
-        from gateway.session_commands import execute_command
+        from hermes_agent.gateway.session_commands import execute_command
         return await execute_command(self, ref, params, dispatch=True)
 
     async def command_observe(self, ref, params):
-        from gateway.session_commands import observe_command
+        from hermes_agent.gateway.session_commands import observe_command
         return await observe_command(self, ref, params)
 
     async def command_catalog(self, ref, params):
-        from gateway.session_discovery import discover_commands
+        from hermes_agent.gateway.session_discovery import discover_commands
         return await discover_commands(self.authority, self.actor, params)
 
     async def plugins_list(self, ref, params):
-        from gateway.session_discovery import list_plugins
+        from hermes_agent.gateway.session_discovery import list_plugins
         return await list_plugins(self.authority, self.actor, params)
 
     async def slash_completions(self, ref, params):
-        from gateway.session_discovery import discover_commands
+        from hermes_agent.gateway.session_discovery import discover_commands
         return await discover_commands(self.authority, self.actor, params, completion=True)
 
     async def setup_status(self, ref, params):
-        from gateway.session_readiness import readiness
+        from hermes_agent.gateway.session_readiness import readiness
         return await readiness(self.authority, self.actor, params, runtime=False)
 
     async def setup_runtime_check(self, ref, params):
-        from gateway.session_readiness import readiness
+        from hermes_agent.gateway.session_readiness import readiness
         return await readiness(self.authority, self.actor, params, runtime=True)
 
     async def create(self, ref, params):
-        from gateway.session_local_title import validate_title
+        from hermes_agent.gateway.session_local_title import validate_title
         title = validate_title(params.pop('title')) if 'title' in params else None
         if title is None:
             return await self._create(params, None)
@@ -495,11 +495,11 @@ class AuthorityConnection:
             return await self._create(params, title)
 
     async def _create(self, params, title):
-        from gateway.session_local import stage_local_session, staged_creation_follows
-        from gateway.session_local_recovery import restore_local_session
-        from gateway.session_local_title import resolve_titled_session, title_new_session
-        from gateway.session_policy import BYPASS_FIELDS
-        from gateway.session_runtime_workers import tracked_write
+        from hermes_agent.gateway.session_local import stage_local_session, staged_creation_follows
+        from hermes_agent.gateway.session_local_recovery import restore_local_session
+        from hermes_agent.gateway.session_local_title import resolve_titled_session, title_new_session
+        from hermes_agent.gateway.session_policy import BYPASS_FIELDS
+        from hermes_agent.gateway.session_runtime_workers import tracked_write
         from hermes_agent.hermes_state_local import commit_local_session
         # Bot Mode's forever-chat mint: born hidden from the sidebar. `follow_profile_config` stays in
         # the frozen request: the policy re-reads the profile's current route every turn.
@@ -519,8 +519,8 @@ class AuthorityConnection:
             if 'skills' in params:
                 # Skill files are read off the owner loop, once per NEW session (a retried
                 # request_id resumes the frozen policy and never re-renders).
-                from gateway.session_local_recovery import local_identity
-                from gateway.session_policy import render_launch_skills
+                from hermes_agent.gateway.session_local_recovery import local_identity
+                from hermes_agent.gateway.session_policy import render_launch_skills
                 params.setdefault('request_id', uuid.uuid4().hex)
                 sid = local_identity(self.authority.profile_id, self.actor.subject, params['request_id'])
                 if self.authority.db.get_session(sid) is None:
@@ -538,7 +538,7 @@ class AuthorityConnection:
                 ref = restore_local_session(self.authority, receipt['session_id'])
             # `--accept-hooks`: record this launch's consent; ``resume`` below registers the hooks.
             if params.get('accept_hooks') is True:
-                from gateway.session_policy import accept_launch_hooks, restore_policy
+                from hermes_agent.gateway.session_policy import accept_launch_hooks, restore_policy
                 from hermes_agent.hermes_state_local import local_receipt
                 policy = restore_policy(local_receipt(self.authority.db, ref.session_id)['policy'])
                 await asyncio.to_thread(accept_launch_hooks, policy)
@@ -557,8 +557,8 @@ class AuthorityConnection:
 
     async def describe(self, ref, params):
         await self.ping(ref, params)
-        from gateway.session_policy import CREATE_FIELDS, SURFACES
-        from gateway.session_skin import resolved_skin
+        from hermes_agent.gateway.session_policy import CREATE_FIELDS, SURFACES
+        from hermes_agent.gateway.session_skin import resolved_skin
         return {'instance_id': self.authority.instance_id, 'profile_id': self.authority.profile_id,
                 'authority_epoch': self.authority.epoch,
                 'capabilities': ['durable-admission-v1', 'event-replay-v1', 'local-cli-create-v1', 'acp-editor-policy-v1',
@@ -569,7 +569,7 @@ class AuthorityConnection:
                 'skin': await asyncio.to_thread(resolved_skin)}
 
     async def info(self, ref, params):
-        from gateway.session_local_inventory import snapshot_info
+        from hermes_agent.gateway.session_local_inventory import snapshot_info
         if set(params) != {'session_id'}:
             raise RuntimeStoreError('invalid_params')
         await self.authority.resolve(self.actor, ref)
@@ -587,7 +587,7 @@ class AuthorityConnection:
                 or ('title' in params and ('scope' in params or workspace is not None or picker))):
             raise RuntimeStoreError('invalid_params')
         if params.get('scope') == 'stored':
-            from gateway.session_listing import stored_picker_sessions
+            from hermes_agent.gateway.session_listing import stored_picker_sessions
             return await asyncio.to_thread(stored_picker_sessions, self.authority, self.actor,
                 limit=limit, include_hidden=params.get('include_hidden', False), workspace=workspace, picker=picker)
         if 'title' in params:
@@ -596,7 +596,7 @@ class AuthorityConnection:
             # instead of being re-minted. Never confirms another principal's titles.
             # Deliberately archived rows are skipped inside get_session_by_title /
             # resolve_session_by_title (#139779); recoverable auto-archives still resolve.
-            from gateway.session_local_title import resolve_titled_session
+            from hermes_agent.gateway.session_local_title import resolve_titled_session
             found = resolve_titled_session(self.authority, self.actor, params['title'], missing_ok=True)
             if found is None:
                 return {'sessions': [], 'scope': 'stored'}
@@ -611,7 +611,7 @@ class AuthorityConnection:
                                   'running': found.session_id in self.authority.sessions}],
                     'scope': 'stored'}
         from hermes_agent.hermes_state_sessions import INTERNAL_LISTING_SOURCES
-        from gateway.session_live_listing import live_entries
+        from hermes_agent.gateway.session_live_listing import live_entries
         sessions = []
         for entry in await live_entries(self.authority, self.actor):
             row = entry.row
@@ -626,12 +626,12 @@ class AuthorityConnection:
                              'message_count': row.get('message_count', 0), 'model': row.get('model'),
                              'running': entry.handle.execution_state == 'running'})
         sessions.sort(key=lambda row: row['started_at'] or 0, reverse=True)
-        from gateway.session_picker_fields import live_picker_page
+        from hermes_agent.gateway.session_picker_fields import live_picker_page
         return {'sessions': await asyncio.to_thread(live_picker_page, self.authority, sessions, limit, workspace, picker),
                 'scope': 'live'}
 
     async def resume(self, ref, params):
-        from gateway.session_local_inventory import snapshot_info
+        from hermes_agent.gateway.session_local_inventory import snapshot_info
         replay_from = self.replay_cursors.pop(ref.session_id, None)
         reconnect = ref.session_id in self.reconnects
         self.reconnects.discard(ref.session_id)
@@ -639,10 +639,10 @@ class AuthorityConnection:
         if 'latest' in params:
             # Bare `-c` / `--resume latest`: the most recent session of that surface family the
             # actor may read (workspace first), resolved by the owner like a title.
-            from gateway.session_local_title import resolve_latest_session
+            from hermes_agent.gateway.session_local_title import resolve_latest_session
             ref = resolve_latest_session(self.authority, self.actor, params['latest'], params.get('workspace'))
         elif 'title' in params:
-            from gateway.session_local_title import resolve_titled_session
+            from hermes_agent.gateway.session_local_title import resolve_titled_session
             ref = resolve_titled_session(self.authority, self.actor, params['title'])
         else:
             # The TUI exit hint abbreviates canonical local IDs to ``local-`` plus 16 hex
@@ -653,8 +653,8 @@ class AuthorityConnection:
                 resolved_id = self.authority.db.resolve_session_id(ref.session_id)
                 if resolved_id is not None:
                     ref = SessionRef(ref.profile_id, resolved_id)
-            from gateway.session_local_migration import adopts_client_history, resolve_local_target
-            from gateway.session_policy_refresh import refresh_settled
+            from hermes_agent.gateway.session_local_migration import adopts_client_history, resolve_local_target
+            from hermes_agent.gateway.session_policy_refresh import refresh_settled
             from hermes_agent.hermes_state_local_migration import LEGACY_LOCAL_SOURCES
             # Another viewer's refresh mid-cleanup has committed a policy it has not published yet.
             await refresh_settled(self.authority, ref.session_id)
@@ -669,16 +669,16 @@ class AuthorityConnection:
             elif row:
                 # A messaging compression continuation attaches to its lineage root, the session
                 # its lane's turns stream to; the reply names that root.
-                from gateway.session_route_recovery import messaging_owner_ref
+                from hermes_agent.gateway.session_route_recovery import messaging_owner_ref
                 ref = messaging_owner_ref(self.authority, ref)
         if params.get('editor') is not None:
             self.authority.authorize(self.actor, ref, 'session:control')
-            from gateway.session_local_mcp import resume_editor_mcp
+            from hermes_agent.gateway.session_local_mcp import resume_editor_mcp
             resume_editor_mcp(self.authority, ref, params['editor'])
         if 'api_key' in params:
             # A launch-only key re-supplied after a restart (`--resume <id> --api-key`).
             self.authority.authorize(self.actor, ref, 'session:control')
-            from gateway.session_policy import rebind_launch_key
+            from hermes_agent.gateway.session_policy import rebind_launch_key
             rebind_launch_key(self.authority, ref, params['api_key'])
         # Read-only mount (#85303): an ended row stays ended until the first admitted turn
         # reopens it (``reopen_local_session`` in the drain), so opening a finished chat
@@ -690,7 +690,7 @@ class AuthorityConnection:
             # A client attaching (main's `hermes -c` was a new process) re-reads the config-derived settings
             # (CFG-2); a snapshot poll on this attachment does not. Any open still adopts a frozen Bot Chat
             # whose earlier open found it busy (Desktop's warm `session.activate` resumes on one connection).
-            from gateway.session_policy_refresh import refresh_resumed_policy
+            from hermes_agent.gateway.session_policy_refresh import refresh_resumed_policy
             await refresh_resumed_policy(self.authority, ref, attached=ref.session_id in self.subscriptions)
         # ``omit_messages``: the client pages the transcript itself (Desktop over REST), so the attach reads no
         # compression lineage (a whole-lineage read here made every open of a long chat cost seconds).
@@ -700,7 +700,7 @@ class AuthorityConnection:
         # before the attach yields, so no turn another viewer submits meanwhile runs ahead of it.
         opening = None
         if ref.session_id not in self.subscriptions and not (reconnect and ref.session_id == requested):
-            from gateway.session_open import open_local
+            from hermes_agent.gateway.session_open import open_local
             opening = open_local(self.authority, ref)
         try:
             snapshot = await self.authority.attach(self.actor, ref, history=not omit, replay_from=replay_from)
@@ -712,7 +712,7 @@ class AuthorityConnection:
             info = {'desktop_protocol': CANONICAL_GATEWAY_PROTOCOL}
             live = self.authority.sessions[snapshot.handle.ref.session_id]
             if live.source is not None and live.source.platform == Platform.LOCAL:
-                from gateway.session_policy import policy_for_source, refresh_profile_hooks
+                from hermes_agent.gateway.session_policy import policy_for_source, refresh_profile_hooks
                 policy = policy_for_source(self.authority.runner, live.source)
                 await asyncio.to_thread(refresh_profile_hooks, policy)
                 if opening is not None:
@@ -721,8 +721,8 @@ class AuthorityConnection:
         finally:
             if opening is not None:  # not fired (a refusal, a messaging lane, a history mount): nothing waits
                 opening.release()
-        from gateway.session_connections import pending_connection
-        from gateway.session_server_requests import open_requests
+        from hermes_agent.gateway.session_connections import pending_connection
+        from hermes_agent.gateway.session_server_requests import open_requests
         history, display = list(snapshot.history), {}
         if params.get('display_projection'):
             # A micro-compaction merge stays in ``messages`` (an undo target); its originals are what shows.
@@ -744,7 +744,7 @@ class AuthorityConnection:
 
     def _spawn_notice(self, ref):
         """Low-disk auto-prune question for this viewer, off the resume reply's path."""
-        from gateway.run_housekeeping_disk import publish_local_auto_prune_notice
+        from hermes_agent.gateway.run_housekeeping_disk import publish_local_auto_prune_notice
         task = asyncio.get_running_loop().create_task(publish_local_auto_prune_notice(self.authority, ref))
         tasks = self.__dict__.setdefault('_notice_tasks', set())
         tasks.add(task)
@@ -782,7 +782,7 @@ class AuthorityConnection:
         epoch = params.get('replay_epoch')
         if type(sequence) is not int or sequence < 0 or (epoch is not None and not isinstance(epoch, str)):
             raise RuntimeStoreError('invalid_params')
-        from gateway.session_server_requests import open_requests
+        from hermes_agent.gateway.session_server_requests import open_requests
         stream = self.authority.sessions[ref.session_id].event_stream
         replay = stream.since(epoch, sequence)
         # A read by a viewer holding the session (clarify recovery), or one this connection itself
@@ -849,7 +849,7 @@ class AuthorityConnection:
         source = getattr(live, 'source', None)
         if source is None or source.platform != Platform.LOCAL:
             return False
-        from gateway.session_config import local_voice_enabled
+        from hermes_agent.gateway.session_config import local_voice_enabled
         if not local_voice_enabled(ref.session_id):
             return False
         from hermes_agent.tui_gateway import server
@@ -867,10 +867,10 @@ class AuthorityConnection:
         request_id = params.get('submission_id') or params.get('input_id')
         if not isinstance(request_id, str) or not request_id:
             raise RuntimeStoreError('invalid_params')
-        from gateway.session_finite import admit_finite
-        from gateway.session_display import submit_display_fields
-        from gateway.session_surface import submit_surface_fields
-        from gateway.session_cli_turn import submit_cli_turn_fields
+        from hermes_agent.gateway.session_finite import admit_finite
+        from hermes_agent.gateway.session_display import submit_display_fields
+        from hermes_agent.gateway.session_surface import submit_surface_fields
+        from hermes_agent.gateway.session_cli_turn import submit_cli_turn_fields
         payload = {'text': params.get('text'), **admit_finite(params, submitter=(self, ref)), **submit_surface_fields(params),
                    **submit_display_fields(params), **submit_cli_turn_fields(params)}
         if 'attachments' in params:
@@ -878,7 +878,7 @@ class AuthorityConnection:
         return Submission(request_id, ref, payload, 'queue')
 
     async def mutate(self, ref, params):
-        from gateway.session_mutations import mutate_session
+        from hermes_agent.gateway.session_mutations import mutate_session
         from hermes_agent.hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS, busy_refusal
         try:
             result = await mutate_session(self.authority, self.actor, ref, params)
@@ -907,7 +907,7 @@ class AuthorityConnection:
             # The exact structured result the turn committed with settlement (`finish_result`):
             # a finite viewer reads its ledger (tokens, cost, model, exit reason) from here, the same
             # dict the in-process one-shot wrote from `run_conversation`.
-            from gateway.session_results import admission_result
+            from hermes_agent.gateway.session_results import admission_result
             saved = admission_result(self.authority.db, receipt.admission_id)
             if saved is not None:
                 out['result'] = saved['result']
@@ -946,13 +946,13 @@ class AuthorityConnection:
             self.actor, ref, params['admission_id'], params['execution_generation']))
 
     async def interrupt(self, ref, params):
-        from gateway.session_managed_worker import interrupt_managed
+        from hermes_agent.gateway.session_managed_worker import interrupt_managed
         if interrupt_managed(self.authority, self.actor, ref, params.get('execution_generation')):
             return asdict(self.authority._handle(ref))
         return asdict(await self.authority.interrupt(self.actor, ref, params.get('execution_generation')))
 
     def _resolve_response(self, frame):
-        from gateway.session_server_requests import may_settle, resolve
+        from hermes_agent.gateway.session_server_requests import may_settle, resolve
         asked = []
 
         def entitled(session_id, events):
@@ -983,22 +983,22 @@ class AuthorityConnection:
         for sibling in self._siblings.values():
             await sibling.close()
         self._siblings.clear()
-        from gateway.session_llm_oneshot import forget
+        from hermes_agent.gateway.session_llm_oneshot import forget
         forget(self)  # nobody is left to read its one-shot replies
         # Deletion may already have evicted a subscribed session; its membership died
         # with it, and one retired ID must not leave the others (or the transport) attached.
         # A sibling's teardown runs under the primary socket's scope: detach as this owner, as dispatch does.
-        from gateway.session_authorities import owner_scope
+        from hermes_agent.gateway.session_authorities import owner_scope
         with owner_scope(self.authority):
             for session_id, subscription in list(self.subscriptions.items()):
                 live = self.authority.sessions.get(session_id)
                 if live is not None and subscription in live.subscribers:
                     await self.authority.detach(self.actor, subscription, orphaned=True)
             # Kept in the background by this client: losing it orphans them too, unless another viewer holds one.
-            from gateway.session_viewer_close import arm_detached_orphan_close
+            from hermes_agent.gateway.session_viewer_close import arm_detached_orphan_close
             for session_id in self.handed_back:
                 await arm_detached_orphan_close(self.authority, session_id)
-        from gateway.session_local_migration import unbind_native_transport
+        from hermes_agent.gateway.session_local_migration import unbind_native_transport
         unbind_native_transport(self.authority, self.actor)
         self.subscriptions.clear()
         self.authority.events.pop(self.actor.transport_id, None)

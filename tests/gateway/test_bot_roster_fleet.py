@@ -2,7 +2,7 @@
 Bot Chat (the status dot's session id and the row's age), however that chat was created.
 
 Each profile here holds its Bot Chat from a different creation path: a pre-upgrade CLI chat adopted
-on its first open (the reporter's fleet), a first ``bot_relay.deliver`` (``gateway/session_bot.py``),
+on its first open (the reporter's fleet), a first ``bot_relay.deliver`` (``hermes_agent/gateway/session_bot.py``),
 ``hermes -p <bot> chat -c "Bot Chat" --create-if-missing``, and the Desktop's own mint. The Desktop
 asks ``profiles.list`` of its active bot over its one host-scoped socket, so the other bots' rows
 come from that same answer.
@@ -21,10 +21,10 @@ LEGACY_ID = '20261006_105832_fa0db9'  # a pre-upgrade CLI session id, kept as ch
 
 @pytest_asyncio.fixture
 async def fleet(tmp_path, monkeypatch, request):
-    from gateway.run_runtime import initialize_gateway_runtime
-    from gateway.runtime_ownership import process_ownership
-    from gateway.session_authorities import authority_for_profile_id, owner_scope
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.run_runtime import initialize_gateway_runtime
+    from hermes_agent.gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.session_authorities import authority_for_profile_id, owner_scope
+    from hermes_agent.gateway.session_controls import AuthorityConnection
 
     executed = []
 
@@ -32,7 +32,7 @@ async def fleet(tmp_path, monkeypatch, request):
         executed.append(ref.session_id)
         return 'pong'
 
-    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    monkeypatch.setattr('hermes_agent.gateway.session_finite.execute_finite_admission', execute)
     root, homes = _reserve_homes(tmp_path, monkeypatch, names=('alpha', 'beta', 'gamma'))
     # An extra served home outside ``profiles/`` (what a linked ``profiles/<name>`` resolves to).
     for name in getattr(request, 'param', ()):
@@ -44,7 +44,7 @@ async def fleet(tmp_path, monkeypatch, request):
     connections, runner = [], None
 
     def connect(name, subject='uid:desk', *, scope='profile', operator=True):
-        # gateway/run_api.py's redeem → identity → connection binding for a native ticket.
+        # hermes_agent/gateway/run_api.py's redeem → identity → connection binding for a native ticket.
         store = runner.session_ticket_store
         ticket = store.mint(profile_id=str(dict(homes)[name].resolve()), subject=subject,
                             purpose='interactive', scope=scope)
@@ -83,7 +83,7 @@ class _Fleet:
         self.runner, self.homes, self.connect, self.call, self.executed = runner, homes, connect, call, executed
 
     def db(self, name):
-        from gateway.session_authorities import authority_for_home
+        from hermes_agent.gateway.session_authorities import authority_for_home
         return authority_for_home(self.runner, self.homes[name]).db
 
     async def bot_chats(self):
@@ -100,7 +100,7 @@ class _Fleet:
                                 include_hidden=True, limit=50)
         assert [row['session_id'] for row in found['sessions']] == [LEGACY_ID], found
         assert legacy.get_session(LEGACY_ID)['chat_id'] == LEGACY_ID  # the reporter's row shape
-        # alpha: no Bot Chat until a teammate's first delivery mints it (gateway/session_bot.py).
+        # alpha: no Bot Chat until a teammate's first delivery mints it (hermes_agent/gateway/session_bot.py).
         relay = self.connect('alpha')
         delivered = await self.call(relay, 'bot_relay.deliver', id='a' * 32, profile='alpha',
                                     message='status?', author=AUTHOR)
@@ -215,8 +215,8 @@ async def test_the_roster_and_group_seating_read_one_set_of_local_bots(fleet):
     """RT-24 and HR-3 ask the same question, "which bots are local here": both read
     ``session_authorities.local_bots``. The roster reads a bot's chats only where group seating
     would seat it by name; a linked home is flagged for both."""
-    from gateway.session_authorities import authority_for_home, local_bots
-    from gateway.session_hosted_members import member_roster
+    from hermes_agent.gateway.session_authorities import authority_for_home, local_bots
+    from hermes_agent.gateway.session_hosted_members import member_roster
     bots = {bot.name: bot for bot in local_bots(fleet.runner)}
     assert set(bots) == {'default', 'alpha', 'beta', 'gamma', 'delta'}
     assert bots['delta'].problem and not any(bots[n].problem for n in ('default', 'alpha', 'beta', 'gamma'))

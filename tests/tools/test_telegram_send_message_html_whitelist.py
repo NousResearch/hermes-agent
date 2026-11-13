@@ -35,8 +35,8 @@ def _no_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
     for var in ("TELEGRAM_PROXY", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY",
                 "http_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None, raising=False)
-    monkeypatch.setattr("gateway.platforms.base._detect_macos_system_proxy", lambda: None)
+    monkeypatch.setattr("hermes_agent.gateway.run._gateway_runner_ref", lambda: None, raising=False)
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base._detect_macos_system_proxy", lambda: None)
 
 
 # Angle-bracketed prose that is NOT a Telegram tag: token names, generics, placeholders,

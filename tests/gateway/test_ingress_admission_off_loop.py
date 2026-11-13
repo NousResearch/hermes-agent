@@ -10,10 +10,10 @@ import pytest
 
 
 async def _msgraph(tmp_path):
-    from gateway.config import Platform, PlatformConfig
-    from gateway.platforms.msgraph_webhook import MSGraphWebhookAdapter
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import SessionAuthority, initialize_session_authority
+    from hermes_agent.gateway.config import Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.msgraph_webhook import MSGraphWebhookAdapter
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import SessionAuthority, initialize_session_authority
     runner = GatewayRunner()
     authority = await initialize_session_authority(runner, profile_id='default', instance_id='off-loop')
     authority._schedule = lambda ref: None  # the admission write is the subject, not the turn

@@ -6,9 +6,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_authority import LiveSession
-from gateway.session_contract import SessionActor, SessionRef, Submission
-from gateway.session_results import admission_result, finish_result
+from hermes_agent.gateway.session_authority import LiveSession
+from hermes_agent.gateway.session_contract import SessionActor, SessionRef, Submission
+from hermes_agent.gateway.session_results import admission_result, finish_result
 from hermes_agent.hermes_state_runtime import (
     RuntimeStoreError,
     admit_session_input,
@@ -22,8 +22,8 @@ from hermes_agent.hermes_state_runtime import (
 @pytest.mark.asyncio
 @pytest.mark.parametrize('rotated', [False, True])
 async def test_discard_closure_failure_keeps_unknown_fence_and_retry_is_exact(owner, monkeypatch, rotated):
-    from gateway import session_results
-    from gateway.session_ingress_media import capture_native_media
+    from hermes_agent.gateway import session_results
+    from hermes_agent.gateway.session_ingress_media import capture_native_media
     owner.db.create_session('s', source='test')
     owner.sessions['s'] = LiveSession(None, 'route')
     ref = SessionRef(owner.profile_id, 's')
@@ -59,7 +59,7 @@ async def test_discard_closure_failure_keeps_unknown_fence_and_retry_is_exact(ow
         claim_session_input(owner.db, epoch=owner.epoch, session_id='s')
     monkeypatch.setattr(session_results, 'close_discarded_turn', close)
     settled = await owner.resolve_unknown(actor, ref, first['admission_id'], claim['generation'])
-    from gateway.session_runtime_workers import mutation_tasks
+    from hermes_agent.gateway.session_runtime_workers import mutation_tasks
     from tests.waiting import async_wait_until
     await async_wait_until(lambda: not mutation_tasks(owner), timeout=5, what='off-loop media collection')
     assert not Path(references[0]['path']).exists()

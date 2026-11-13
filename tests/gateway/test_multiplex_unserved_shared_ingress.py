@@ -10,9 +10,9 @@ from pathlib import Path
 
 import pytest
 
-from gateway import run as gateway_run
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.run import GatewayRunner
+from hermes_agent.gateway import run as gateway_run
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.run import GatewayRunner
 
 
 def _runner():
@@ -40,7 +40,7 @@ def _install_secondary(monkeypatch, runner, stamps):
     monkeypatch.setattr("hermes_cli.env_loader.hydrate_profile_secret_sources", lambda home: {})
     monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
     monkeypatch.setattr(
-        "gateway.config.load_gateway_config",
+        "hermes_agent.gateway.config.load_gateway_config",
         lambda: GatewayConfig(
             multiplex_profiles=True,
             platforms={Platform.RELAY: PlatformConfig(enabled=True)},
@@ -59,7 +59,7 @@ async def test_secondary_relay_without_primary_is_reported_unserved(monkeypatch,
     stamps = []
     _install_secondary(monkeypatch, runner, stamps)
 
-    with caplog.at_level(logging.INFO, logger="gateway.run"):
+    with caplog.at_level(logging.INFO, logger="hermes_agent.gateway.run"):
         assert await runner._start_one_profile_adapters("work", Path("/profiles/work"), {}) == 0
         # The secondary was skipped: the startup phase folds it into the loud warning.
         aborted, _count = await runner._start_secondary_profiles(0, [])
@@ -75,7 +75,7 @@ async def test_secondary_relay_without_primary_is_reported_unserved(monkeypatch,
         "error_message": "not served under multiplex (shared ingress owned by default)",
     }) in stamps
     # ...and the CLI reader turns that stamp into the status line.
-    from gateway.status import write_runtime_status
+    from hermes_agent.gateway.status import write_runtime_status
     from hermes_cli import gateway_multiplex_served as served
     key, kw = next(s for s in stamps if s[0] == "work:relay")
     write_runtime_status(platform=key, **kw)
@@ -99,7 +99,7 @@ async def test_secondary_relay_served_by_default_is_not_reported(monkeypatch, ca
     stamps = []
     _install_secondary(monkeypatch, runner, stamps)
 
-    with caplog.at_level(logging.INFO, logger="gateway.run"):
+    with caplog.at_level(logging.INFO, logger="hermes_agent.gateway.run"):
         await runner._start_one_profile_adapters("work", Path("/profiles/work"), {})
         await runner._start_secondary_profiles(1, [])
 

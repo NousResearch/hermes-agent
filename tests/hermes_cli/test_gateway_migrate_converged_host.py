@@ -2,7 +2,7 @@
 
 Driven through the REAL topology path, not stubbed per-profile PIDs: a live host rendezvous
 record + the per-profile ``gateway_state.json`` the multiplexer stamps, so
-``gateway.status.live_gateway_pid_for_home`` genuinely answers with the HOST gateway's PID for
+``hermes_agent.gateway.status.live_gateway_pid_for_home`` genuinely answers with the HOST gateway's PID for
 every secondary (that is ``_host_gateway_serves_home`` working as designed). Stubbing PIDs by
 profile NAME is what let the "half-migrated converged host" defect hide behind green CI: the
 fixture simply never produced the value the reporting path produces.
@@ -55,11 +55,11 @@ def converged_host(tmp_path, monkeypatch):
         (home / "gateway_state.json").write_text(json.dumps(
             {"pid": pid, "hermes_home": str(home), "gateway_state": "running"}))
 
-    from gateway import status
-    from gateway import host_attach, host_rendezvous as hr
+    from hermes_agent.gateway import status
+    from hermes_agent.gateway import host_attach, host_rendezvous as hr
     monkeypatch.setattr(status, "_read_process_cmdline", lambda p: "hermes gateway run")
     # The WIRE only: the owner's control socket answer. Everything that reads it is real.
-    monkeypatch.setattr("gateway.control_socket.identify_gateway",
+    monkeypatch.setattr("hermes_agent.gateway.control_socket.identify_gateway",
                         lambda home: {"pid": pid, "hermes_home": str(root), "served_profiles": served})
     # A live owner holds the host lock for its lifetime (run.py claims before it publishes).
     assert hr.claim_host_lock(hr.ROLE_GATEWAY)[0] is hr.HostLockOutcome.ACQUIRED

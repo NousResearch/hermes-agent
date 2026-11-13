@@ -3,8 +3,8 @@ that lands between the turn's ownership check and the write leaves the fresh con
 from datetime import datetime
 from types import SimpleNamespace
 
-from gateway.session import SessionEntry
-from gateway.session_terminal_cwd import persist_turn_cwd, restore_turn_cwd
+from hermes_agent.gateway.session import SessionEntry
+from hermes_agent.gateway.session_terminal_cwd import persist_turn_cwd, restore_turn_cwd
 
 KEY = 'agent:main:telegram:dm:202'
 

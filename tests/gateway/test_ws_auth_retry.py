@@ -25,7 +25,7 @@ class TestMattermostWSAuthRetry:
         AND escalate through the fatal-error hook (a bare return used to
         leave _running True: dead listener, healthy-looking adapter)."""
         import aiohttp
-        from gateway.config import Platform
+        from hermes_agent.gateway.config import Platform
 
         exc = aiohttp.WSServerHandshakeError(
             request_info=MagicMock(),

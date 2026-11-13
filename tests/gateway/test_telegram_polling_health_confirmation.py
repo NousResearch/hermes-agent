@@ -10,7 +10,7 @@ reconnect is a reliable hung-poll signature.
 
 import asyncio
 import logging
-from gateway.config import Platform
+from hermes_agent.gateway.config import Platform
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 

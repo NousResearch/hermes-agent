@@ -10,7 +10,7 @@ actionable-looking text the user did not quote (#22619).
 
 from types import SimpleNamespace
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
@@ -60,7 +60,7 @@ def _make_message(
 
 def test_native_partial_quote_used_as_reply_to_text():
     """When ``message.quote`` is present, prefer the selected substring."""
-    from gateway.platforms.event import MessageType
+    from hermes_agent.gateway.platforms.event import MessageType
 
     adapter = _make_adapter()
     msg = _make_message(
@@ -83,7 +83,7 @@ def _text_link(offset, length, url):
 
 def test_hidden_link_in_replied_to_text_is_inlined():
     """A reply to a message whose link sits behind its anchor text still carries the URL."""
-    from gateway.platforms.event import MessageType
+    from hermes_agent.gateway.platforms.event import MessageType
 
     msg = _make_message(
         text="summarize the linked article",
@@ -99,7 +99,7 @@ def test_hidden_link_in_replied_to_text_is_inlined():
 
 
 def test_hidden_link_in_replied_to_caption_is_inlined():
-    from gateway.platforms.event import MessageType
+    from hermes_agent.gateway.platforms.event import MessageType
 
     msg = _make_message(
         text="what is this?",
@@ -114,7 +114,7 @@ def test_hidden_link_in_replied_to_caption_is_inlined():
 
 def test_hidden_link_in_native_quote_is_inlined():
     """Quotes keep no ``text_link`` entities, so the link comes from the replied-to message."""
-    from gateway.platforms.event import MessageType
+    from hermes_agent.gateway.platforms.event import MessageType
 
     msg = _make_message(
         text="open this one",
@@ -134,7 +134,7 @@ def test_hidden_link_in_native_quote_is_inlined():
 
 def test_native_quote_at_a_mismatched_position_is_left_as_quoted():
     """``position`` is approximate; links are only mapped where the quote matches exactly."""
-    from gateway.platforms.event import MessageType
+    from hermes_agent.gateway.platforms.event import MessageType
 
     msg = _make_message(
         text="open this one",

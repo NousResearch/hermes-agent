@@ -18,8 +18,8 @@ not on SessionSource field shapes — pins the end-to-end contract.
 from unittest.mock import MagicMock, patch
 
 from hermes_agent.cron.scheduler_delivery import _seed_cron_channel_session, _seed_cron_thread_session
-from gateway.config import Platform
-from gateway.session import SessionSource, build_session_key
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.session import SessionSource, build_session_key
 
 
 def _seeded_source(store):
@@ -34,7 +34,7 @@ def test_dm_thread_seed_key_matches_dm_reply_key():
     adapter = MagicMock()
     adapter._session_store = store
 
-    with patch("gateway.mirror.mirror_to_session", return_value=True):
+    with patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True):
         _seed_cron_thread_session(
             {"id": "j1", "name": "digest"}, adapter, "slack",
             "D0BJTDCSR7C", "1787188136.448949", "Three bullets",
@@ -64,7 +64,7 @@ def test_channel_thread_seed_key_matches_thread_reply_key():
     adapter = MagicMock()
     adapter._session_store = store
 
-    with patch("gateway.mirror.mirror_to_session", return_value=True):
+    with patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True):
         _seed_cron_thread_session(
             {"id": "j2", "name": "digest"}, adapter, "slack",
             "C0AAAAAAAA", "1787188000.000100", "Three bullets",
@@ -90,7 +90,7 @@ def test_matrix_room_thread_seed_key_matches_room_reply_key():
     adapter = MagicMock()
     adapter._session_store = store
 
-    with patch("gateway.mirror.mirror_to_session", return_value=True):
+    with patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True):
         _seed_cron_thread_session(
             {"id": "j7", "name": "alert"}, adapter, "matrix",
             "!ops:example.org", "$seed_event", "Three bullets",
@@ -115,7 +115,7 @@ def test_dm_seed_default_is_backward_compatible():
     adapter = MagicMock()
     adapter._session_store = store
 
-    with patch("gateway.mirror.mirror_to_session", return_value=True):
+    with patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True):
         _seed_cron_thread_session(
             {"id": "j3"}, adapter, "discord", "123", "9001", "brief",
         )
@@ -131,7 +131,7 @@ def test_telegram_forum_topic_seed_key_matches_topic_reply_key():
     adapter = MagicMock()
     adapter._session_store = store
 
-    with patch("gateway.mirror.mirror_to_session", return_value=True):
+    with patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True):
         _seed_cron_thread_session(
             {"id": "j8", "name": "digest"}, adapter, "telegram",
             "-1001234567", "77", "Three bullets", chat_name="ops", is_dm=False,
@@ -155,7 +155,7 @@ def test_scoped_dm_thread_seed_key_matches_scoped_reply_key():
     adapter = MagicMock()
     adapter._session_store = store
 
-    with patch("gateway.mirror.mirror_to_session", return_value=True):
+    with patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True):
         _seed_cron_thread_session(
             {"id": "j4", "name": "digest"}, adapter, "slack",
             "D0BJTDCSR7C", "1787188136.448949", "Three bullets",
@@ -183,7 +183,7 @@ def test_scoped_channel_thread_seed_key_matches_scoped_reply_key():
     adapter = MagicMock()
     adapter._session_store = store
 
-    with patch("gateway.mirror.mirror_to_session", return_value=True):
+    with patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True):
         _seed_cron_thread_session(
             {"id": "j5", "name": "digest"}, adapter, "slack",
             "C0AAAAAAAA", "1787188000.000100", "Three bullets",
@@ -209,7 +209,7 @@ def test_scoped_flat_channel_seed_key_matches_scoped_reply_key():
     adapter = MagicMock()
     adapter._session_store = store
 
-    with patch("gateway.mirror.mirror_to_session", return_value=True):
+    with patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True):
         _seed_cron_channel_session(
             {"id": "j6", "name": "digest"}, adapter, "slack",
             "C0AAAAAAAA", "Three bullets", is_dm=False,
@@ -238,7 +238,7 @@ def test_seeds_do_not_collide_across_workspaces():
         store = MagicMock()
         adapter = MagicMock()
         adapter._session_store = store
-        with patch("gateway.mirror.mirror_to_session", return_value=True):
+        with patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True):
             _seed_cron_channel_session(
                 {"id": f"j-{team}"}, adapter, "slack",
                 "C0AAAAAAAA", "brief", is_dm=False,

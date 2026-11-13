@@ -10,7 +10,7 @@ HERMES_HOME), so resolving there -- and caching on the instance -- gives each
 profile its own store. Exercised via ``_resolve_store_dir`` directly so the
 test needs no mautrix install.
 """
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from plugins.platforms.matrix import adapter as matrix_adapter
 

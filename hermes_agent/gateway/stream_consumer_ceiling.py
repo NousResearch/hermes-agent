@@ -23,9 +23,9 @@ import logging
 from types import SimpleNamespace
 from typing import Any, Optional
 
-from gateway.platforms.helpers import reply_message_cap, send_reply_as_file
+from hermes_agent.gateway.platforms.helpers import reply_message_cap, send_reply_as_file
 
-logger = logging.getLogger("gateway.stream_consumer")
+logger = logging.getLogger("hermes_agent.gateway.stream_consumer")
 
 
 class StreamCeilingMixin:

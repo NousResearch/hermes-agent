@@ -16,7 +16,7 @@ import textwrap
 
 import pytest
 
-from gateway import lifecycle_ledger, status
+from hermes_agent.gateway import lifecycle_ledger, status
 
 pytestmark = pytest.mark.platforms("linux")
 

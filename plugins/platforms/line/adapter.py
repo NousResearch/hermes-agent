@@ -36,17 +36,17 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote as _urlquote
 
 from agent.i18n import t
-from gateway.platforms._shared import (
+from hermes_agent.gateway.platforms._shared import (
     get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
 )
-from gateway.platforms.base import (
+from hermes_agent.gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, SendResult, describe_proxy_error, env_proxy_for_redaction,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
     cache_video_from_bytes_async,
 )
-from gateway.platforms.helpers import MessageDeduplicator, cancel_task
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.config import Platform
+from hermes_agent.gateway.platforms.helpers import MessageDeduplicator, cancel_task
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.config import Platform
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,7 @@ WEBHOOK_BODY_MAX_BYTES = 1_048_576  # 1 MiB — webhooks are tiny JSON
 DEFAULT_WEBHOOK_PORT = 8646
 DEFAULT_WEBHOOK_PATH = "/line/webhook"
 DEFAULT_MEDIA_PATH_PREFIX = "/line/media"
-# ``None`` → asyncio binds BOTH address families (mirrors gateway/platforms/webhook.py).
+# ``None`` → asyncio binds BOTH address families (mirrors hermes_agent/gateway/platforms/webhook.py).
 # "0.0.0.0" is unreachable on IPv6-only networks (Fly.io 6PN → 502s); "::" breaks IPv4
 # loopback probes on IPV6_V6ONLY=1 hosts. Pin via ``LINE_HOST`` / ``extra.host``.
 DEFAULT_HOST = None
@@ -321,7 +321,7 @@ def _is_interim_send(content: str, metadata: Optional[dict[str, Any]] = None) ->
     """True for mid-turn progress/status sends that must not become the cached answer.
 
     Purpose-first: the gateway stamps every mid-turn send with ``_interim_send`` metadata
-    (``gateway.run._interim_metadata``), which survives to the adapter and is stripped
+    (``hermes_agent.gateway.run._interim_metadata``), which survives to the adapter and is stripped
     before the wire. The text prefixes remain a fallback for callers that pass no
     metadata. See #106446.
     """
@@ -453,7 +453,7 @@ class LineAdapter(BasePlatformAdapter):
         self._app.router.add_get(f"{DEFAULT_MEDIA_PATH_PREFIX}/{{token}}/{{filename}}", self._handle_media)
         # Plugin-registered routes must be wired before AppRunner.setup() freezes the router.
         self._wire_plugin_handlers(self._app)
-        from gateway.platforms.shared_ingress import bind_listener
+        from hermes_agent.gateway.platforms.shared_ingress import bind_listener
         try:
             # SO_REUSEADDR: on macOS/BSD two sockets with it can silently split traffic →
             # disable; on Linux it only allows rebinding past TIME_WAIT → keep default.
@@ -659,7 +659,7 @@ class LineAdapter(BasePlatformAdapter):
         # A PENDING postback button caches the response for the tap — except interim /
         # system sends (progress heartbeats, busy-acks), which must land as visible
         # bubbles. Interim detection is purpose-first: the gateway marks every mid-turn
-        # status send with ``_interim_send`` (see ``gateway.run._interim_metadata``);
+        # status send with ``_interim_send`` (see ``hermes_agent.gateway.run._interim_metadata``);
         # the text prefixes stay as belt-and-suspenders for metadata-less callers.
         pending_rid = self._pending_buttons.get(chat_id)
         if pending_rid and not _is_interim_send(content, metadata):

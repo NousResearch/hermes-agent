@@ -12,10 +12,10 @@ from typing import TYPE_CHECKING, Optional
 from hermes_agent.hermes_state_ids import new_session_id
 
 if TYPE_CHECKING:
-    from gateway.session import SessionEntry, SessionSource
+    from hermes_agent.gateway.session import SessionEntry, SessionSource
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("gateway.session")
+logger = logging.getLogger("hermes_agent.gateway.session")
 
 
 def _now() -> datetime:
@@ -41,7 +41,7 @@ def _parse_iso(value) -> Optional[datetime]:
         return None
 
 
-# Auto-continue freshness window (1 hour) after the ``resume_pending`` mark; ``gateway/run.py``
+# Auto-continue freshness window (1 hour) after the ``resume_pending`` mark; ``hermes_agent/gateway/run.py``
 # bridges config.yaml ``agent.gateway_auto_continue_freshness`` into the env var at startup.
 _AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT = 60 * 60
 

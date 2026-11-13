@@ -4,8 +4,8 @@ import threading
 
 import pytest
 
-from gateway import hosted_rooms
-from gateway.hosted_room_attachments import (
+from hermes_agent.gateway import hosted_rooms
+from hermes_agent.gateway.hosted_room_attachments import (
     AttachmentConflictError,
     AttachmentError,
     AttachmentIntegrityError,

@@ -9,8 +9,8 @@ import pytest
 @pytest.mark.parametrize("flag", [None, False, True])
 def test_injected_config_cannot_multiplex_a_standalone_home(tmp_path, monkeypatch, flag):
     from agent.secret_scope import is_multiplex_active, set_multiplex_active
-    from gateway.config import GatewayConfig
-    from gateway.run import GatewayRunner, _profile_runtime_scope
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.run import GatewayRunner, _profile_runtime_scope
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     root = tmp_path / ".hermes"

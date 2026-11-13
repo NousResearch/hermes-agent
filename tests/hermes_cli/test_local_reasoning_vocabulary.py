@@ -67,7 +67,7 @@ def test_another_server_serving_the_same_model_name_keeps_the_request(managed_en
 
 
 def test_the_picker_hint_names_the_level_actually_sent(managed_endpoint):
-    from gateway.session_local import effort_fields
+    from hermes_agent.gateway.session_local import effort_fields
 
     model_id = _model("qwen3.8-27b")
     info = effort_fields({"enabled": True, "effort": "max"}, "", model_id, "custom", MANAGED)

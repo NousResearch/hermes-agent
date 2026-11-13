@@ -20,7 +20,7 @@ def local_policy(runner, source):
     """The frozen policy of a local session, else None."""
     if local_live(runner, source) is None:
         return None
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_policy import policy_for_source
     return policy_for_source(runner, source)
 
 
@@ -29,7 +29,7 @@ def session_busy_mode(runner, live):
     value = getattr(live, 'busy_input_mode', None)
     if value in ('interrupt', 'steer', 'queue'):
         return value
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_policy import policy_for_source
     policy = policy_for_source(runner, live.source)
     # Main's TUI defaulted to ``queue`` (``ui-tui/src/app/useConfigSync.ts`` TUI_BUSY_DEFAULT): in a
     # full-screen composer the next prompt is authored while the agent streams, and an unintended
@@ -46,8 +46,8 @@ def local_live_for_route(runner, session_key):
     """The local ``LiveSession`` whose route is ``session_key``, else None."""
     if not session_key:
         return None
-    from gateway.config import Platform
-    from gateway.session_authorities import all_authorities
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session_authorities import all_authorities
     for authority in all_authorities(runner):
         for live in list(getattr(authority, 'sessions', {}).values()):
             if live.route == session_key and getattr(live.source, 'platform', None) == Platform.LOCAL:
@@ -57,10 +57,10 @@ def local_live_for_route(runner, session_key):
 
 def local_authority_live(runner, source):
     """``(authority, live)`` owning the local session ``source`` belongs to, else ``(None, None)``."""
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     if source is None or getattr(source, 'platform', None) != Platform.LOCAL:
         return None, None
-    from gateway.session_authorities import all_authorities
+    from hermes_agent.gateway.session_authorities import all_authorities
     for authority in all_authorities(runner):
         live = getattr(authority, 'sessions', {}).get(source.chat_id)
         if live is not None and live.source.platform == Platform.LOCAL:
@@ -87,8 +87,8 @@ async def commit_reasoning_command(authority, actor, ref, value, persist_global)
     and so does a messaging chat (no session policy). While a turn runs, the handler applies it for the next
     turn as on main and the drain commits it at that turn's end (``apply_pending_reasoning``)."""
     import asyncio
-    from gateway.config import Platform
-    from gateway.session_mutations import mutate_session
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session_mutations import mutate_session
     from hermes_constants import parse_reasoning_effort
     from hermes_agent.hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
@@ -125,7 +125,7 @@ async def apply_pending_reasoning(authority, ref, live):
     """Commit a reasoning command that arrived while a turn ran. The drain calls this at the turn boundary,
     under the claim gate and mutation lock, before a deferred model pick (whose level wins, as on main)."""
     import asyncio
-    from gateway.session_mutations import write_mutation
+    from hermes_agent.gateway.session_mutations import write_mutation
     from hermes_agent.hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     pending, live.pending_reasoning = live.pending_reasoning, None
@@ -150,8 +150,8 @@ def defer_local_model_pick(authority, live, result, effort=''):
     itself the running admission). One writer, so the next request, ``sessions.model`` and
     ``session.info`` move together, or the commit is announced as a refusal."""
     import uuid
-    from gateway.session_contract import SessionRef
-    from gateway.session_deferred_pick import defer_pick
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_deferred_pick import defer_pick
     from hermes_agent.hermes_state_local import local_receipt
     sid = live.source.chat_id
     owner = SimpleNamespace(subject=local_receipt(authority.db, sid)['principal_id'])

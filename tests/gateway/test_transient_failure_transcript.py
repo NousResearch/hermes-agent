@@ -16,7 +16,7 @@ The gateway classifier must distinguish:
 """
 
 
-from gateway.run_turn import is_context_overflow_failure_result
+from hermes_agent.gateway.run_turn import is_context_overflow_failure_result
 
 
 def _classify(agent_result: dict, history_len: int) -> tuple[bool, bool]:

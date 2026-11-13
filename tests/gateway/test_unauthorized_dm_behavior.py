@@ -4,9 +4,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionSource
 
 
 def _clear_auth_env(monkeypatch) -> None:
@@ -66,7 +66,7 @@ def _make_event(
 
 
 def _make_runner(platform: Platform, config: GatewayConfig):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.config = config
@@ -135,7 +135,7 @@ def test_simplex_allowlist_matches_contact_id_not_display_name(monkeypatch, allo
     _clear_auth_env(monkeypatch)
     monkeypatch.setenv("SIMPLEX_ALLOWED_USERS", allowlist)
 
-    from gateway.platform_registry import platform_registry, PlatformEntry
+    from hermes_agent.gateway.platform_registry import platform_registry, PlatformEntry
     platform_registry.register(PlatformEntry(
         name="simplex",
         label="SimpleX Chat",
@@ -458,8 +458,8 @@ def test_decline_config_and_stamp_roundtrip(monkeypatch, tmp_path):
     persists the stamp, scopes it per sender, and expires it after the window."""
     from unittest.mock import patch as _patch
 
-    import gateway.pairing as pairing_mod
-    from gateway.config import load_gateway_config
+    import hermes_agent.gateway.pairing as pairing_mod
+    from hermes_agent.gateway.config import load_gateway_config
 
     _clear_auth_env(monkeypatch)
     (tmp_path / "config.yaml").write_text(
@@ -472,7 +472,7 @@ def test_decline_config_and_stamp_roundtrip(monkeypatch, tmp_path):
         "    unauthorized_dm_behavior: decline\n",
         encoding="utf-8",
     )
-    with _patch("gateway.config.get_hermes_home", return_value=tmp_path):
+    with _patch("hermes_agent.gateway.config.get_hermes_home", return_value=tmp_path):
         config = load_gateway_config()
     assert config.unauthorized_dm_behavior == "decline"
     assert config.unauthorized_dm_decline_message == "custom text"
@@ -481,11 +481,11 @@ def test_decline_config_and_stamp_roundtrip(monkeypatch, tmp_path):
     assert config.get_unauthorized_dm_behavior(Platform.DISCORD) == "decline"
     assert GatewayConfig.from_dict(config.to_dict()).unauthorized_dm_decline_message == "custom text"
 
-    with _patch("gateway.pairing.PAIRING_DIR", tmp_path):
+    with _patch("hermes_agent.gateway.pairing.PAIRING_DIR", tmp_path):
         store = pairing_mod.PairingStore()
         assert store.has_recent_decline("telegram", "12345") is False
         store.record_decline("telegram", "12345")
         assert store.has_recent_decline("telegram", "12345") is True
         assert store.has_recent_decline("telegram", "67890") is False
-        with _patch("gateway.pairing.time.time", return_value=time.time() + pairing_mod.DECLINE_DEDUPE_SECONDS + 1):
+        with _patch("hermes_agent.gateway.pairing.time.time", return_value=time.time() + pairing_mod.DECLINE_DEDUPE_SECONDS + 1):
             assert store.has_recent_decline("telegram", "12345") is False

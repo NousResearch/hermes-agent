@@ -41,7 +41,7 @@ def _same_birth(proc, state: dict, prefix: str = "") -> bool:
     """Linux derives psutil's create_time from /proc/stat's boot time, which moves whenever the
     clock is stepped (WSL re-syncs within minutes), so a live process stops matching its record.
     The start_time fingerprint is boot-relative there; create_time is for records that predate it."""
-    from gateway.status import get_process_start_time, start_time_fingerprints_match
+    from hermes_agent.gateway.status import get_process_start_time, start_time_fingerprints_match
 
     recorded = state.get(f"{prefix}start_time")
     if not _valid_birth(recorded):

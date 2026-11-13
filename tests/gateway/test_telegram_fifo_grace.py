@@ -9,11 +9,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
-from gateway.session_ingress_live_turn import _route
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.session_ingress_live_turn import _route
 
 
 def _busy_telegram_turn():
@@ -46,8 +46,8 @@ async def test_telegram_followup_within_grace_uses_durable_fifo(monkeypatch, ing
     runner, event, source, key = _busy_telegram_turn()
 
     with (
-        patch("gateway.run_inbound.time.time", return_value=102.0),
-        patch("gateway.session_ingress.admit_message", new_callable=AsyncMock, return_value="queued") as admit,
+        patch("hermes_agent.gateway.run_inbound.time.time", return_value=102.0),
+        patch("hermes_agent.gateway.session_ingress.admit_message", new_callable=AsyncMock, return_value="queued") as admit,
     ):
         if ingress == "durable":
             assert await runner._hm_admit_to_fifo(object(), event, source, key, True) == (True, "queued")
@@ -68,7 +68,7 @@ async def test_telegram_followup_after_grace_can_still_preempt(monkeypatch):
         return_value=SimpleNamespace(steered=False, redirected=False)
     )
 
-    with patch("gateway.run_inbound.time.time", return_value=105.0):
+    with patch("hermes_agent.gateway.run_inbound.time.time", return_value=105.0):
         assert await runner._hm_busy_preempt(event, source, key) is False
 
     runner._resolve_busy_steer_or_redirect.assert_awaited_once()
@@ -80,7 +80,7 @@ async def test_telegram_long_followup_uses_send_time_before_default_batch_flush(
     """A +2s Telegram text must not interrupt when its default 1.5s batch flushes at +3.5s."""
     from datetime import UTC, datetime
 
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
     from plugins.platforms.telegram.adapter import TelegramAdapter
 
     monkeypatch.delenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", raising=False)
@@ -93,7 +93,7 @@ async def test_telegram_long_followup_uses_send_time_before_default_batch_flush(
     delay = adapter._text_batch_delay_for(event)
     assert delay == pytest.approx(1.5)
 
-    with patch("gateway.run_inbound.time.time", return_value=102.0 + delay):
+    with patch("hermes_agent.gateway.run_inbound.time.time", return_value=102.0 + delay):
         assert await runner._hm_busy_preempt(event, source, key) is False
 
     runner._resolve_busy_steer_or_redirect.assert_not_awaited()
@@ -111,7 +111,7 @@ async def test_telegram_edited_followup_is_judged_by_its_edit_time(monkeypatch, 
     runner._resolve_busy_steer_or_redirect.side_effect = None  # the out-of-grace edit is expected to preempt
     event.timestamp = datetime.fromtimestamp(sent_at, UTC)  # the turn started at 100
     event.raw_message = SimpleNamespace(date=event.timestamp, edit_date=datetime.fromtimestamp(edited_at, UTC))
-    with patch("gateway.run_inbound.time.time", return_value=edited_at + 0.2):
+    with patch("hermes_agent.gateway.run_inbound.time.time", return_value=edited_at + 0.2):
         await runner._hm_busy_preempt(event, source, key)
     preempted = runner._busy_interrupt_and_ack.await_count + runner._resolve_busy_steer_or_redirect.await_count
     assert (preempted == 0) is waits

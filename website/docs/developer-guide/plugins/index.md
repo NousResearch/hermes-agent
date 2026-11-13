@@ -1654,16 +1654,16 @@ Every name in `hermes_cli.plugins.VALID_HOOKS` has at least one core fire site. 
 | `transform_api_error_classification` | `hermes_cli/plugins.py` `get_plugin_error_classification`, called from `agent/error_classifier.py` `_plugin_verdict` |
 | `on_session_start` | `agent/conversation_loop.py` `_restore_or_build_system_prompt` |
 | `on_session_end` | `agent/turn_finalizer.py` `finalize_turn`; interrupted exits: `hermes_cli/cli_shutdown.py` `_invoke_interrupted_session_end`, `hermes_agent/tui_gateway/session_lifecycle.py` `_finalize_session` |
-| `on_session_finalize` | `hermes_cli/lifecycle.py` `finalize_session`, called from `hermes_cli/cli_session_mixin.py` `CLISessionMixin._notify_session_boundary`, `hermes_cli/cli_shutdown.py` `_notify_session_finalize`, `hermes_agent/tui_gateway/session_lifecycle.py` `_notify_session_boundary` and `gateway/run_shutdown_session_end.py` `GatewaySessionEndMixin._finalize_session_off_loop` |
-| `on_session_reset` | `hermes_cli/cli_session_mixin.py` `CLISessionMixin._notify_session_boundary`; `hermes_agent/tui_gateway/session_registry.py` `_start_session_services`; `gateway/slash_commands_session.py` `GatewaySessionCommandsMixin._handle_reset_command`; `gateway/run_shutdown_session_end.py` `GatewaySessionEndMixin._reset_session_off_loop` |
+| `on_session_finalize` | `hermes_cli/lifecycle.py` `finalize_session`, called from `hermes_cli/cli_session_mixin.py` `CLISessionMixin._notify_session_boundary`, `hermes_cli/cli_shutdown.py` `_notify_session_finalize`, `hermes_agent/tui_gateway/session_lifecycle.py` `_notify_session_boundary` and `hermes_agent/gateway/run_shutdown_session_end.py` `GatewaySessionEndMixin._finalize_session_off_loop` |
+| `on_session_reset` | `hermes_cli/cli_session_mixin.py` `CLISessionMixin._notify_session_boundary`; `hermes_agent/tui_gateway/session_registry.py` `_start_session_services`; `hermes_agent/gateway/slash_commands_session.py` `GatewaySessionCommandsMixin._handle_reset_command`; `hermes_agent/gateway/run_shutdown_session_end.py` `GatewaySessionEndMixin._reset_session_off_loop` |
 | `on_session_delete` | `hermes_agent/hermes_state_common.py` `emit_session_deleted` |
-| `on_session_open` | `gateway/session_open.py` `_Open._deliver` |
+| `on_session_open` | `hermes_agent/gateway/session_open.py` `_Open._deliver` |
 | `on_skill_lifecycle` | `tools/skill_usage.py` `_emit_skill_lifecycle` |
 | `subagent_start` | `tools/delegate_tool.py` `_build_child_agent` |
 | `subagent_stop` | `tools/delegate_tool_results.py` `_fire_subagent_stop_hooks` |
-| `pre_gateway_dispatch` | `gateway/run_inbound_hooks.py` `GatewayInboundHooksMixin._hm_pre_gateway_dispatch_hook`; webhook and relay ingress: `gateway/platforms/webhook_ingress.py` `_admit_once` |
-| `post_gateway_admission` | `gateway/run_inbound_consumer.py` `run_post_admission_hook`; `gateway/platforms/webhook_ingress.py` `_admit_once` |
-| `agent_loop_stopped` | `gateway/run_agent_cache.py` `GatewayAgentCacheMixin._interrupt_and_clear_session`; `hermes_agent/tui_gateway/session_lifecycle.py` `_interrupt_session_turn` |
+| `pre_gateway_dispatch` | `hermes_agent/gateway/run_inbound_hooks.py` `GatewayInboundHooksMixin._hm_pre_gateway_dispatch_hook`; webhook and relay ingress: `hermes_agent/gateway/platforms/webhook_ingress.py` `_admit_once` |
+| `post_gateway_admission` | `hermes_agent/gateway/run_inbound_consumer.py` `run_post_admission_hook`; `hermes_agent/gateway/platforms/webhook_ingress.py` `_admit_once` |
+| `agent_loop_stopped` | `hermes_agent/gateway/run_agent_cache.py` `GatewayAgentCacheMixin._interrupt_and_clear_session`; `hermes_agent/tui_gateway/session_lifecycle.py` `_interrupt_session_turn` |
 | `pre_approval_request` / `post_approval_response` | `tools/approval_context.py` `_fire_approval_hook`, called from `tools/approval.py`, `tools/approval_prompt.py`, `tools/approval_gateway_wait.py`, `tools/approval_smart.py` and `tools/file_tools_write_guards.py` |
 | `on_human_input_request` / `on_human_input_resolved` | `tools/human_input_hooks.py` `human_input_request` |
 | `on_room_member_activity` | `hermes_agent/tui_gateway/hosted_room_member_activity.py` `emit_room_member_activity` |
@@ -1676,8 +1676,8 @@ Every name in `hermes_cli.plugins.VALID_HOOKS` has at least one core fire site. 
 | `on_kanban_worker_stale_claim` | `hermes_cli/kanban_db.py` `release_stale_claims` |
 | `on_kanban_task_updated` | `hermes_cli/kanban_db.py` `notify_task_updated` |
 | `on_kanban_dispatch_tick` | `hermes_cli/kanban_db.py` `_fire_dispatch_tick_hook` |
-| `gateway_platform_event` | `gateway/run_adapters.py` `GatewayAdapterLifecycleMixin._handle_gateway_platform_event` (events come from the Telegram and Discord adapters) |
-| `pre_command` | `hermes_cli/plugins.py` `fire_pre_command_hook`, called from `cli.py` `HermesCLI.process_command`, `gateway/run_inbound_hooks.py` `GatewayInboundHooksMixin._hm_command_hooks` and `gateway/session_commands.py` |
+| `gateway_platform_event` | `hermes_agent/gateway/run_adapters.py` `GatewayAdapterLifecycleMixin._handle_gateway_platform_event` (events come from the Telegram and Discord adapters) |
+| `pre_command` | `hermes_cli/plugins.py` `fire_pre_command_hook`, called from `cli.py` `HermesCLI.process_command`, `hermes_agent/gateway/run_inbound_hooks.py` `GatewayInboundHooksMixin._hm_command_hooks` and `hermes_agent/gateway/session_commands.py` |
 | `post_compaction` | `agent/compaction_events.py` `fire_post_compaction` |
 | `post_curator_run` | `agent/curator.py` `_notify_post_curator_run` |
 
@@ -1948,7 +1948,7 @@ After registration, users can type `/mystatus` in any session. The command appea
 | `session_id` | The calling session's id (the one `on_session_reset` later reports as `old_session_id`). Empty when the chat has no session yet. |
 | `session_key` | The routing key of the calling chat. |
 | `platform` | Where the command came from: `telegram`, `discord`, …, `local` (CLI/Desktop sessions owned by the gateway), `cli`, `tui`, `desktop`. |
-| `source` | The adapter-derived `gateway.session.SessionSource` (`user_id`, `chat_id`, `chat_type`, `thread_id`, …) when the gateway dispatched the command, else `None`. |
+| `source` | The adapter-derived `hermes_agent.gateway.session.SessionSource` (`user_id`, `chat_id`, `chat_type`, `thread_id`, …) when the gateway dispatched the command, else `None`. |
 
 Every surface passes them: messaging platforms, the classic CLI, the TUI and Desktop. Sync handlers run in the gateway executor and async handlers are awaited, as before.
 
@@ -1967,12 +1967,12 @@ def register(ctx):
 
 - Return the text to show. `print()` writes to the gateway's stdout, and the user never sees it.
 - Take the session's working directory from `agent.runtime_cwd.resolve_agent_cwd()`, not `os.getcwd()`, which is the gateway's own directory. Resolve relative paths against it.
-- Read session identity with `get_session_env("HERMES_SESSION_PLATFORM")`, `get_session_env("HERMES_SESSION_CHAT_ID")` and the other `HERMES_SESSION_*` names, not `os.environ`. Import the function itself with `from gateway.session_context import get_session_env`: that name is the public seam, and `hermes plugins validate` reports `import gateway.session_context` as a private import.
+- Read session identity with `get_session_env("HERMES_SESSION_PLATFORM")`, `get_session_env("HERMES_SESSION_CHAT_ID")` and the other `HERMES_SESSION_*` names, not `os.environ`. Import the function itself with `from hermes_agent.gateway.session_context import get_session_env`: that name is the public seam, and `hermes plugins validate` reports `import hermes_agent.gateway.session_context` as a private import.
 - For "who asked this turn" (authorization, provenance), read `HERMES_SESSION_ACTOR_ID` / `HERMES_SESSION_ACTOR_NAME`. Both are empty when the turn has no single actor (another member's message joined it), in process and in a terminal or `execute_code` child alike, so treat empty as nobody in particular. `HERMES_SESSION_USER_ID` is the session route, and it is empty in a shared chat (Telegram observe mode), so code that rebuilds a delivery target from it stays on the shared conversation.
 
 ```python
 from agent.runtime_cwd import resolve_agent_cwd
-from gateway.session_context import get_session_env
+from hermes_agent.gateway.session_context import get_session_env
 
 def _handle_todo(raw_args: str) -> str:
     todo = resolve_agent_cwd() / "TODO.md"  # the session's folder, not the gateway's
@@ -2404,7 +2404,7 @@ Drop an adapter into `plugins/platforms/<name>/`:
 
 ```python
 # plugins/platforms/myplatform/adapter.py
-from gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
 class MyPlatformAdapter(BasePlatformAdapter):
     async def connect(self): ...

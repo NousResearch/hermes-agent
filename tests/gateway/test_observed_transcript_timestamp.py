@@ -10,9 +10,9 @@ import logging
 import time
 from types import SimpleNamespace
 
-from gateway.config import GatewayConfig, Platform
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource, SessionStore
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.session import SessionSource, SessionStore
 from hermes_agent.hermes_state import SessionDB
 
 

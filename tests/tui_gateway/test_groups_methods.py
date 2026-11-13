@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.hosted_rooms import default_db_path as hosted_rooms_default_db_path
+from hermes_agent.gateway.hosted_rooms import default_db_path as hosted_rooms_default_db_path
 import hermes_agent.tui_gateway.server as srv
 from hermes_agent.tui_gateway import methods_groups
 
@@ -34,7 +34,7 @@ def _result(envelope):
 
 
 def _server_authority():
-    from gateway.hosted_rooms import local_authority_gateway_id
+    from hermes_agent.gateway.hosted_rooms import local_authority_gateway_id
 
     return local_authority_gateway_id()
 
@@ -91,7 +91,7 @@ def test_capabilities_and_invitation_advertise_scoped_roomlink(home, monkeypatch
     assert invitation["target_profile"] == "reviewer"
     assert invitation["catalog"] == result["room_link"]["catalog"]
     assert "." in invitation["grant"]
-    from gateway import hosted_rooms
+    from hermes_agent.gateway import hosted_rooms
 
     assert hosted_rooms.peer_room_is_reserved(
         hosted_rooms.default_db_path(),
@@ -214,7 +214,7 @@ def test_roomlink_endpoint_absence_has_machine_reason(home, monkeypatch):
 
 
 def test_multiplexed_invitation_uses_exact_profile_secret(home, monkeypatch):
-    from gateway.hosted_room_peer import (
+    from hermes_agent.gateway.hosted_room_peer import (
         HostedRoomGrantError,
         decode_room_grant,
         derive_room_grant_secret,
@@ -258,7 +258,7 @@ def test_multiplexed_invitation_uses_exact_profile_secret(home, monkeypatch):
 
 
 def test_named_profile_needs_no_copied_api_key_for_roomlink(home, monkeypatch):
-    from gateway.hosted_room_peer import (
+    from hermes_agent.gateway.hosted_room_peer import (
         HostedRoomGrantError,
         decode_room_grant,
         derive_room_grant_secret,
@@ -300,8 +300,8 @@ def test_named_profile_needs_no_copied_api_key_for_roomlink(home, monkeypatch):
 
 
 def test_register_peer_route_probes_scope_and_persists_via_service(home, monkeypatch):
-    from gateway.hosted_room_peer import catalog_mapping
-    from gateway.hosted_rooms import local_authority_gateway_id
+    from hermes_agent.gateway.hosted_room_peer import catalog_mapping
+    from hermes_agent.gateway.hosted_rooms import local_authority_gateway_id
 
     catalog = catalog_mapping(
             target_profile="default",
@@ -378,7 +378,7 @@ def test_register_rejects_plaintext_non_loopback(home, monkeypatch):
 
 
 def test_register_requires_roomlink_protocol_v2(home, monkeypatch):
-    from gateway.hosted_room_peer import catalog_mapping
+    from hermes_agent.gateway.hosted_room_peer import catalog_mapping
 
     class FakeService:
         db_path = hosted_rooms_default_db_path()
@@ -517,8 +517,8 @@ def test_send_refusals_say_only_a_refusal_before_commit_admitted_nothing(home, m
     """Desktop hands a Send's words back for editing only on ``admitted: false``: the room was
     ended, the payload refused, or no worker took it. A stored Send keeps its receipt even if
     preparation fails; an event-id conflict stays uncertain."""
-    from gateway.hosted_room_discussion import MAX_USER_TEXT_BYTES
-    from gateway import hosted_rooms
+    from hermes_agent.gateway.hosted_room_discussion import MAX_USER_TEXT_BYTES
+    from hermes_agent.gateway import hosted_rooms
 
     _create_room()
 
@@ -559,7 +559,7 @@ def test_send_refusals_say_only_a_refusal_before_commit_admitted_nothing(home, m
 
 
 def test_foreign_authority_cannot_send_or_disband(home):
-    from gateway.hosted_rooms import (
+    from hermes_agent.gateway.hosted_rooms import (
         claim_authority,
         default_db_path,
         list_rooms,
@@ -597,7 +597,7 @@ def test_foreign_authority_cannot_send_or_disband(home):
 
 
 def test_client_event_id_cannot_squat_disband_receipt(home, monkeypatch):
-    from gateway import hosted_rooms
+    from hermes_agent.gateway import hosted_rooms
 
     _create_room()
     service = methods_groups.get_hosted_room_service()
@@ -695,7 +695,7 @@ def test_create_ignores_client_supplied_authority_identity(home):
 
 
 def test_legacy_room_adoption_emits_one_lineage_receipt(home):
-    from gateway.hosted_rooms import create_room, default_db_path
+    from hermes_agent.gateway.hosted_rooms import create_room, default_db_path
 
     members = [
         {"member_id": "default", "profile": "default", "handle": "hermes"},
@@ -886,7 +886,7 @@ def test_disband_tombstones_room(home):
 
 
 def test_pruned_room_send_and_log_report_expired_history(home, monkeypatch):
-    from gateway import hosted_rooms
+    from hermes_agent.gateway import hosted_rooms
 
     members = [
         {"member_id": "default", "profile": "default", "handle": "hermes"},

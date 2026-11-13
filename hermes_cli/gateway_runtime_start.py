@@ -107,7 +107,7 @@ def spawn_unmanaged_gateway(profile_home: Path, *, deadline: float, idle_exit: b
     # Profile selection is the explicit home, not the invoking client's display
     # name. Launch-only approval/context/config flags ride the launching session's frozen
     # policy, not the shared daemon or every later session.
-    from gateway.session_context import _VAR_MAP  # the launching turn's session identity, too
+    from hermes_agent.gateway.session_context import _VAR_MAP  # the launching turn's session identity, too
     from tools.environments.local_env_policy import carry_gateway_profile_pin
     carry_gateway_profile_pin(env)  # the supervisor markers go; the daemon's tools keep their pin
     for key in (*DAEMON_STRIPPED_ENV, *_VAR_MAP):
@@ -196,7 +196,7 @@ def startup_failure_report(profile_home: Path, offset: int, status: int, pid: in
     if not lines:
         # A clean refusal (config/credential verdict, exit 78) is logged, not printed: the runtime
         # status file names it.
-        from gateway.status import read_runtime_status
+        from hermes_agent.gateway.status import read_runtime_status
         status_file = read_runtime_status(profile_home / "gateway_state.json") or {}
         if status_file.get("exit_reason") and pid is not None and status_file.get("pid") == pid:
             lines = [str(status_file["exit_reason"])[:2000]]

@@ -22,8 +22,8 @@ def native_desktop_client(monkeypatch, profiles: dict[str, Path] | None = None) 
 
     The runner also serves *profiles* (name → home), as one multiplexing gateway does: a request
     naming one in ``?profile=`` carries a grant for that home, as Desktop mints one per profile."""
-    from gateway.runtime_bootstrap import TicketStore
-    from gateway.session_authorities import SessionAuthorities
+    from hermes_agent.gateway.runtime_bootstrap import TicketStore
+    from hermes_agent.gateway.session_authorities import SessionAuthorities
     from hermes_cli import web_server
     from hermes_constants import get_hermes_home
 

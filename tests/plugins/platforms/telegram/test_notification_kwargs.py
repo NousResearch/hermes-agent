@@ -29,8 +29,8 @@ def test_clarify_text_fallback_pushes_in_important_mode():
     from types import SimpleNamespace
     from unittest.mock import AsyncMock, MagicMock
 
-    from gateway.config import PlatformConfig
-    from gateway.run_turn_runner_clarify_delivery import text_fallback_coro
+    from hermes_agent.gateway.config import PlatformConfig
+    from hermes_agent.gateway.run_turn_runner_clarify_delivery import text_fallback_coro
 
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="t", extra={}))
     adapter._bot, adapter._app = AsyncMock(), MagicMock()

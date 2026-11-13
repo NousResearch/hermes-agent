@@ -7,7 +7,7 @@ from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
 def route_digest(adapter, chat_id):
-    from gateway.platforms.webhook import _WebhookDeliveryIdentity
+    from hermes_agent.gateway.platforms.webhook import _WebhookDeliveryIdentity
     adapter._reload_dynamic_routes()
     try:
         route_name = _WebhookDeliveryIdentity.route_from_chat_id(chat_id)
@@ -20,7 +20,7 @@ def route_digest(adapter, chat_id):
 
 
 def validate_destination(delivery):
-    from gateway.platforms.webhook import _is_known_platform, _REPO_RE
+    from hermes_agent.gateway.platforms.webhook import _is_known_platform, _REPO_RE
     if (not isinstance(delivery, dict)
             or not {'deliver', 'deliver_extra'} <= set(delivery)
             or set(delivery) - {'deliver', 'deliver_extra', 'profile', 'mirror', 'route'}
@@ -55,7 +55,7 @@ def validate_destination(delivery):
 
 
 def snapshot_destination(adapter, delivery):
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
 
     result = validate_destination(delivery)
     if result['deliver'] not in {'log', 'github_comment'} and not result['deliver_extra'].get('chat_id'):
@@ -70,9 +70,9 @@ def snapshot_destination(adapter, delivery):
 
 def retained_destination(adapter, chat_id):
     """Readback also checks today's connector and authorization; retained data is not a grant."""
-    from gateway.session_envelope import restore_native, _validate_native
+    from hermes_agent.gateway.session_envelope import restore_native, _validate_native
     runner = adapter.gateway_runner or getattr(adapter._message_handler, '__self__', None)
-    from gateway.session_authorities import active_authority, all_authorities, serving_authorities
+    from hermes_agent.gateway.session_authorities import active_authority, all_authorities, serving_authorities
     if not all_authorities(runner):
         return validate_destination(adapter._delivery_info.get(chat_id))
     # The reply leg runs in the routed profile's scope; that ledger holds the destination. A

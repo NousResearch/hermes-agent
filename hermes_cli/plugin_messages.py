@@ -4,7 +4,7 @@ The conversation is the session bound in the calling context (a tool or hook run
 its slash command, a hook fired for it): the plugin never names a chat, so it cannot reach another
 one. Outside any session (a timer, a plugin thread, cron, a process with no live gateway) the call
 is refused with a result, never an exception. Routing and the edit fallback live in
-``gateway/plugin_messages.py``; this side only hands work to the gateway loop and back.
+``hermes_agent/gateway/plugin_messages.py``; this side only hands work to the gateway loop and back.
 """
 from __future__ import annotations
 
@@ -69,7 +69,7 @@ class PluginMessage:
         refused = self._refused()
         if refused is not None:
             return refused
-        from gateway import plugin_messages
+        from hermes_agent.gateway import plugin_messages
         return self._settle(await plugin_messages.edit(self._target, self.message_id, str(text),
                                                        plugin_id=self._plugin_id))
 
@@ -98,7 +98,7 @@ class PluginMessage:
 
 def _gateway_loop():
     try:
-        from gateway.run import _gateway_runner_ref
+        from hermes_agent.gateway.run import _gateway_runner_ref
         runner = _gateway_runner_ref()
     except ImportError:
         runner = None
@@ -153,7 +153,7 @@ async def _post_for(ctx: Any, text: str, session_key: str, route: Any) -> Plugin
     elif runner is None:
         result = _err("gateway_unavailable", "no live gateway is running in this process")
     else:
-        from gateway import plugin_messages
+        from hermes_agent.gateway import plugin_messages
         # The session store read is disk-bound: keep it off the gateway loop.
         target, refusal = await asyncio.to_thread(plugin_messages.resolve, runner, session_key=session_key,
                                                   route=route, plugin_home=ctx._manager.home_path, plugin_id=plugin_id)
@@ -169,19 +169,19 @@ async def _post_for(ctx: Any, text: str, session_key: str, route: Any) -> Plugin
 
 async def apost(ctx: Any, text: str) -> PluginMessage:
     """``post`` for code already running on the gateway's event loop (async hooks/commands)."""
-    from gateway.plugin_messages import bound_route
-    from gateway.session_context import bound_session_key
+    from hermes_agent.gateway.plugin_messages import bound_route
+    from hermes_agent.gateway.session_context import bound_session_key
     return await _post_for(ctx, text, bound_session_key(), bound_route())
 
 
 def post(ctx: Any, text: str) -> PluginMessage:
     """Post *text* to the calling session from a tool handler or hook on a worker thread. The session
     is read here, on the caller's own context, then the send runs on the gateway loop."""
-    from gateway.session_context import bound_session_key
+    from hermes_agent.gateway.session_context import bound_session_key
     session_key = bound_session_key()
     if not session_key:
         return PluginMessage(ctx.plugin_id, None, _err("no_conversation", _NO_SESSION))
-    from gateway.plugin_messages import bound_route
+    from hermes_agent.gateway.plugin_messages import bound_route
     route = bound_route()
     handle = PluginMessage(ctx.plugin_id, None, _err("timeout"))
 

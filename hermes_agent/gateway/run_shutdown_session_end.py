@@ -1,6 +1,6 @@
 """Session finalize dispatch and delivery of plugin ``on_session_finalize`` messages for GatewayRunner.
 
-Split out of ``gateway/run_shutdown.py``; bound onto ``GatewayRunner`` via ``GatewayShutdownMixin``.
+Split out of ``hermes_agent/gateway/run_shutdown.py``; bound onto ``GatewayRunner`` via ``GatewayShutdownMixin``.
 """
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ import asyncio
 import logging
 from typing import Any, List, Optional
 
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 
 class GatewaySessionEndMixin:
@@ -37,7 +37,7 @@ class GatewaySessionEndMixin:
 
     async def _reset_session_off_loop(self, *, session_key: Optional[str] = None, **kwargs: Any) -> None:
         """Plugin ``on_session_reset`` off-loop under the profile owning ``session_key``, bounded like
-        finalize: a viewer's ``/new`` resets its conversation on the owner (gateway/session_viewer_close)."""
+        finalize: a viewer's ``/new`` resets its conversation on the owner (hermes_agent/gateway/session_viewer_close)."""
         def _call() -> None:
             from hermes_cli.lifecycle import invoke_hook
             invoke_hook("on_session_reset", **kwargs)

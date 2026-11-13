@@ -16,13 +16,13 @@ from tests.waiting import async_wait_until
 
 @pytest.mark.asyncio
 async def test_kanban_wake_during_an_admitted_turn_queues_without_interrupting(monkeypatch):
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.platforms.base import SendResult
-    from gateway.platforms.event import MessageEvent
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_results import execution_result
-    from gateway.wake import deliver_wake
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.base import SendResult
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_results import execution_result
+    from hermes_agent.gateway.wake import deliver_wake
     from hermes_agent.hermes_state_runtime import list_session_admissions
     from plugins.platforms.discord.adapter import DiscordAdapter
 
@@ -86,12 +86,12 @@ async def test_idle_loop_tick_runs_as_a_fifo_turn_not_beside_it(monkeypatch):
     ``completed`` without running it. The tick must commit as its own FIFO admission."""
     from types import SimpleNamespace
 
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.platforms.event import MessageEvent
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_ingress import executing_admission
-    from gateway.session_results import execution_result
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_ingress import executing_admission
+    from hermes_agent.gateway.session_results import execution_result
     from hermes_cli import loops
     from hermes_agent.hermes_state_runtime import list_session_admissions
     from plugins.platforms.discord.adapter import DiscordAdapter
@@ -102,7 +102,7 @@ async def test_idle_loop_tick_runs_as_a_fifo_turn_not_beside_it(monkeypatch):
     adapter.gateway_runner = runner
 
     async def send(chat_id, content, reply_to=None, metadata=None):
-        from gateway.platforms.base import SendResult
+        from hermes_agent.gateway.platforms.base import SendResult
         return SendResult(success=True, message_id='sent')
     monkeypatch.setattr(adapter, 'send', send)
     runner.adapters = {Platform.DISCORD: adapter}

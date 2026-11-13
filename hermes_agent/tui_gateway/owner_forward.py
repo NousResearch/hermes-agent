@@ -221,7 +221,7 @@ class _Relay:
 def forward_rpc(home: Path, endpoint, method: str, params: dict) -> Any:
     """One request/answer RPC on the owner serving ``home`` (Group Chat calls, WA-19), on the
     host-scoped grant native Desktop itself holds, so a room may seat the served sibling profiles."""
-    from gateway.hosted_room_attachments import MAX_ATTACHMENT_BYTES
+    from hermes_agent.gateway.hosted_room_attachments import MAX_ATTACHMENT_BYTES
     # A groups.attachment.download answer carries a whole file as base64: room for the largest
     # one the room store accepts, plus its JSON-RPC envelope.
     frame = (MAX_ATTACHMENT_BYTES + 2) // 3 * 4 + 2 ** 20

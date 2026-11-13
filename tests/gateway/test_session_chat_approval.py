@@ -2,7 +2,7 @@
 import asyncio
 from unittest.mock import patch
 
-from gateway.platforms.api_server import APIServerAdapter, _SessionEventQueue
+from hermes_agent.gateway.platforms.api_server import APIServerAdapter, _SessionEventQueue
 
 
 def test_session_stream_approval_keyed_by_run_id_and_enqueued():

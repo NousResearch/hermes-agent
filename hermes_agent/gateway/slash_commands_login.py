@@ -13,11 +13,11 @@ from typing import Any
 from uuid import uuid4
 
 from agent.i18n import t
-from gateway.run_agent_cache import _first_agent
-from gateway.slash_access import policy_for_runner_source
+from hermes_agent.gateway.run_agent_cache import _first_agent
+from hermes_agent.gateway.slash_access import policy_for_runner_source
 from hermes_cli import anon_auth
 
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 _LOGIN_SINGLE = "login"
 _LOCK_TYPE = type(threading.Lock())
@@ -41,10 +41,10 @@ def _publish_local_notice(runner, source, text: str) -> bool:
     """A LOCAL session's adapter ``send`` is a no-op (viewers read the event stream), so the
     sign-in link/code/result reach its viewers as a sticky ``notification.show``. False when
     *source* is not a live local session (the platform push applies)."""
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     if getattr(source, "platform", None) != Platform.LOCAL:
         return False
-    from gateway.session_authorities import active_authority
+    from hermes_agent.gateway.session_authorities import active_authority
     authority = active_authority(runner)
     live = authority.sessions.get(source.chat_id) if authority is not None else None
     if live is None:

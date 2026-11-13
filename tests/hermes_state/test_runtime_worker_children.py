@@ -7,7 +7,7 @@ import psutil
 import pytest
 
 from hermes_cli.process_identity import worker_birth
-from gateway.session_worker_child import reserve_child_execution
+from hermes_agent.gateway.session_worker_child import reserve_child_execution
 from hermes_agent.hermes_state import SessionDB
 import hermes_agent.hermes_state_runtime as rt
 
@@ -122,7 +122,7 @@ async def test_child_reserve_verifies_the_parent_claim_and_refuses_while_drainin
     import subprocess
     import sys
     from types import SimpleNamespace
-    from gateway.session_worker import worker_request
+    from hermes_agent.gateway.session_worker import worker_request
     db = SessionDB(db_path=tmp_path / 'state.db')
     db.create_session('parent', source='kanban')
     process = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'], stdin=subprocess.PIPE)  # noqa: ASYNC220 -- returns at once; the test only needs a live pid

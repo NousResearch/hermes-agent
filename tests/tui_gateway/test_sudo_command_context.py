@@ -14,7 +14,7 @@ def test_sudo_request_preserves_command_without_leaking_prompt_context(monkeypat
     monkeypatch.setattr(threading, "excepthook", threading.excepthook)
     from hermes_agent.tui_gateway import server, server_requests
     from hermes_agent.tui_gateway.contracts.registry import SERVER_REQUESTS
-    from gateway.run import _redact_approval_command
+    from hermes_agent.gateway.run import _redact_approval_command
     from agent import redact
     from agent.vault_backends import unlock
     from tools import project_tools, skills_tool, terminal_tool, terminal_tool_sudo

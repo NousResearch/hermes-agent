@@ -24,12 +24,12 @@ async def test_rewind_under_a_held_compression_lock_names_the_lock(tmp_path, mon
         return 'ok'
     store, db, authority, owner, ref = _owner(tmp_path, monkeypatch, handle)
     try:
-        from gateway.session_local_recovery import transcript_target
+        from hermes_agent.gateway.session_local_recovery import transcript_target
         target = transcript_target(authority, ref)
         db.append_message(target, 'user', 'keep')
         assert db.try_acquire_compression_lock(target, 'another-writer')
         import logging
-        with caplog.at_level(logging.DEBUG, logger='gateway.session_controls'):
+        with caplog.at_level(logging.DEBUG, logger='hermes_agent.gateway.session_controls'):
             reply = await _rewind(db, owner, ref, target)
         assert reply['error']['message'] == 'session_busy', reply
         assert reply['error']['data'] == {'reason': 'session_busy', 'field': 'compression'}
@@ -50,7 +50,7 @@ async def test_rewind_with_an_admitted_turn_stays_a_plain_busy_refusal(tmp_path,
         return 'ok'
     store, db, authority, owner, ref = _owner(tmp_path, monkeypatch, handle)
     try:
-        from gateway.session_local_recovery import transcript_target
+        from hermes_agent.gateway.session_local_recovery import transcript_target
         target = transcript_target(authority, ref)
         db.append_message(target, 'user', 'keep')
         rt.admit_session_input(db, epoch=authority.epoch, principal_id='human', session_id=ref.session_id,
@@ -64,7 +64,7 @@ async def test_rewind_with_an_admitted_turn_stays_a_plain_busy_refusal(tmp_path,
 
 def test_authorize_reads_a_null_profile_as_this_owner():
     from types import SimpleNamespace
-    from gateway.session_busy_controls import authorize
+    from hermes_agent.gateway.session_busy_controls import authorize
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     seen = []

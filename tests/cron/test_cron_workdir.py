@@ -22,8 +22,8 @@ import pytest
 
 def _run_owned_job(job, tmp_path):
     """Exercise the production owner bridge with an isolated canonical store."""
-    from gateway.session_contract import SessionRef
-    from gateway.session_cron import current_execution, execute
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_cron import current_execution, execute
     from hermes_agent.hermes_state_registry import acquire, release
 
     ref = SessionRef("test-profile", "cron-owner-session")

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import hosted_room_driver as driver
+from hermes_agent.gateway import hosted_room_driver as driver
 from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
 from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService
 
@@ -16,8 +16,8 @@ from tests.tui_gateway.test_hosted_room_driver_runtime import (
     _identity,
     _runtime,
 )
-from gateway import hosted_rooms
-from gateway.hosted_room_peer import GatewayRoomCatalog, catalog_mapping
+from hermes_agent.gateway import hosted_rooms
+from hermes_agent.gateway.hosted_room_peer import GatewayRoomCatalog, catalog_mapping
 from tests.tui_gateway.test_hosted_room_service import _FakePeerClient, _server
 from hermes_agent.tui_gateway.hosted_room_peer_transport import PeerMemberRoute
 

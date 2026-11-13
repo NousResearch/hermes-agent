@@ -459,7 +459,7 @@ def _under_gateway_supervisor(argv: list) -> bool:
     that profile — adopting its credentials and double-polling a Telegram
     token already owned by that profile's own gateway (#74872).
 
-    Markers (see gateway/restart.py ``is_gateway_supervisor_process``):
+    Markers (see hermes_agent/gateway/restart.py ``is_gateway_supervisor_process``):
     HERMES_SUPERVISED_CHILD (systemd unit / launchd plist / Windows task),
     HERMES_S6_SUPERVISED_CHILD (legacy s6 container), INVOCATION_ID (systemd
     service children only — consulted ONLY for gateway commands because it is
@@ -2704,7 +2704,7 @@ def _resolve_deferred_platform_cli_command(command_name: str | None) -> None:
     if not command_name:
         return
     try:
-        from gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.platform_registry import platform_registry
 
         platform_registry.get(command_name)
     except Exception as exc:

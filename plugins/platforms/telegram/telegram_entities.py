@@ -196,7 +196,7 @@ def expand_link_entities(message: Any) -> str:
     return expanded
 
 
-# The cron delivery header (``cron.wrap_response``); gateway/inbound_reply_context.py frames a
+# The cron delivery header (``cron.wrap_response``); hermes_agent/gateway/inbound_reply_context.py frames a
 # reply whose quote starts with it as a past report.
 _CRON_DELIVERY_PREFIX = "Cronjob Response: "
 

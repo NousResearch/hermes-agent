@@ -14,7 +14,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform
+from hermes_agent.gateway.config import Platform
 
 
 class TestSendViaAdapterCrossLoopDispatch:
@@ -49,9 +49,9 @@ class TestSendViaAdapterCrossLoopDispatch:
                 adapters={platform: FakeAdapter()},
                 _gateway_loop=gateway_loop,
             )
-            fake_gateway_run = ModuleType("gateway.run")
+            fake_gateway_run = ModuleType("hermes_agent.gateway.run")
             fake_gateway_run._gateway_runner_ref = lambda: runner
-            monkeypatch.setitem(sys.modules, "gateway.run", fake_gateway_run)
+            monkeypatch.setitem(sys.modules, "hermes_agent.gateway.run", fake_gateway_run)
 
             result = await _send_via_adapter(
                 platform,
@@ -87,9 +87,9 @@ class TestSendViaAdapterCrossLoopDispatch:
             adapters={platform: FakeAdapter()},
             _gateway_loop=current_loop,
         )
-        fake_gateway_run = ModuleType("gateway.run")
+        fake_gateway_run = ModuleType("hermes_agent.gateway.run")
         fake_gateway_run._gateway_runner_ref = lambda: runner
-        monkeypatch.setitem(sys.modules, "gateway.run", fake_gateway_run)
+        monkeypatch.setitem(sys.modules, "hermes_agent.gateway.run", fake_gateway_run)
 
         result = await _send_via_adapter(
             platform,
@@ -119,9 +119,9 @@ class TestSendViaAdapterCrossLoopDispatch:
             adapters={platform: FakeAdapter()},
             _gateway_loop=stopped_loop,
         )
-        fake_gateway_run = ModuleType("gateway.run")
+        fake_gateway_run = ModuleType("hermes_agent.gateway.run")
         fake_gateway_run._gateway_runner_ref = lambda: runner
-        monkeypatch.setitem(sys.modules, "gateway.run", fake_gateway_run)
+        monkeypatch.setitem(sys.modules, "hermes_agent.gateway.run", fake_gateway_run)
 
         result = await _send_via_adapter(
             platform,
@@ -168,9 +168,9 @@ class TestSendViaAdapterCrossLoopDispatch:
                 adapters={platform: FakeAdapter()},
                 _gateway_loop=gateway_loop,
             )
-            fake_gateway_run = ModuleType("gateway.run")
+            fake_gateway_run = ModuleType("hermes_agent.gateway.run")
             fake_gateway_run._gateway_runner_ref = lambda: runner
-            monkeypatch.setitem(sys.modules, "gateway.run", fake_gateway_run)
+            monkeypatch.setitem(sys.modules, "hermes_agent.gateway.run", fake_gateway_run)
 
             # Start the send, then cancel the caller task after a short delay
             async def do_send():

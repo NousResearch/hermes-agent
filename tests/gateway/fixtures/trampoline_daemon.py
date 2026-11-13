@@ -10,4 +10,4 @@ import runpy
 import sys
 
 sys.executable = os.environ['UGW_TRAMPOLINE']
-runpy.run_module('gateway.run', run_name='__main__')
+runpy.run_module('hermes_agent.gateway.run', run_name='__main__')

@@ -8,11 +8,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.turn_failure_copy import FAILED_TURN_NOTICE
-import gateway.run as gateway_run
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, ProcessingOutcome
-from gateway.session import SessionEntry, SessionSource, build_session_key
+import hermes_agent.gateway.run as gateway_run
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent, ProcessingOutcome
+from hermes_agent.gateway.session import SessionEntry, SessionSource, build_session_key
 
 
 class CaptureSlackAdapter(BasePlatformAdapter):

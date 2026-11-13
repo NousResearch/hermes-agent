@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 class _FakeDingTalkModel:
     def __init__(self, **kwargs):
@@ -346,7 +346,7 @@ class TestExtractMedia:
         reset it to TEXT, dropping the voice note from the STT path
         (#38211, #38219)."""
         from plugins.platforms.dingtalk.adapter import DingTalkAdapter
-        from gateway.platforms.event import MessageType
+        from hermes_agent.gateway.platforms.event import MessageType
 
         msg = self._msg_with_rich_text(
             [{"type": "voice", "downloadCode": "dl_voice_rt"}]
@@ -362,7 +362,7 @@ class TestExtractMedia:
     def test_image_no_filename_still_photo(self):
         """msgtype='image' without fileName → still PHOTO (MIME heuristic)."""
         from plugins.platforms.dingtalk.adapter import DingTalkAdapter
-        from gateway.platforms.event import MessageType
+        from hermes_agent.gateway.platforms.event import MessageType
 
         msg = MagicMock()
         msg.text = None

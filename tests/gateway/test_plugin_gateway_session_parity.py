@@ -20,13 +20,13 @@ pytestmark = pytest.mark.usefixtures("authority_cwd_in_tmp")  # symbolic profile
 
 @pytest.mark.asyncio
 async def test_keyless_injection_from_a_cli_session_turn_lands_in_that_session(tmp_path, monkeypatch):
-    from gateway.config import GatewayConfig
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import SessionAuthority, initialize_session_authority
-    from gateway.session_context import set_session_vars
-    from gateway.session_contract import SessionActor
-    from gateway.session_local import create_local_session
-    from gateway.session_policy import _ACTIVE_POLICY
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import SessionAuthority, initialize_session_authority
+    from hermes_agent.gateway.session_context import set_session_vars
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_policy import _ACTIVE_POLICY
     from hermes_agent.hermes_state import SessionDB
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -64,14 +64,14 @@ async def test_keyed_local_injection_stays_inside_the_plugins_own_profile(tmp_pa
     """Multiplexed gateway: a plugin of profile A may inject into A's live local sessions (key-less
     from the turn, or by key), never into profile B's by naming B's session key; that is refused
     up front (``False``, reason in gateway.log) and admits nothing."""
-    from gateway.config import GatewayConfig
-    from gateway.run import GatewayRunner, _profile_runtime_scope
-    from gateway.session_authorities import SessionAuthorities
-    from gateway.session_authority import SessionAuthority
-    from gateway.session_context import set_session_vars
-    from gateway.session_contract import SessionActor
-    from gateway.session_local import create_local_session
-    from gateway.session_policy import _ACTIVE_POLICY
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.run import GatewayRunner, _profile_runtime_scope
+    from hermes_agent.gateway.session_authorities import SessionAuthorities
+    from hermes_agent.gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_context import set_session_vars
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_policy import _ACTIVE_POLICY
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 
@@ -162,9 +162,9 @@ async def test_keyed_messaging_injection_stays_inside_the_plugins_own_profile(tm
     session; default's own plugin is still accepted and its turn reaches the session's adapter."""
     from datetime import datetime
     from unittest.mock import AsyncMock
-    from gateway.config import GatewayConfig, Platform
-    from gateway.run import GatewayRunner
-    from gateway.session import SessionEntry, SessionSource
+    from hermes_agent.gateway.config import GatewayConfig, Platform
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import SessionEntry, SessionSource
 
     launch = tmp_path / ".hermes"
     beta = launch / "profiles" / "beta"
@@ -218,7 +218,7 @@ class caplog_at:
 
 
 def test_gateway_approval_hooks_report_a_cli_sessions_surface(tmp_path, monkeypatch):
-    from gateway.session_policy import _ACTIVE_POLICY
+    from hermes_agent.gateway.session_policy import _ACTIVE_POLICY
     from tools.approval_gateway_wait import _await_gateway_decision
 
     seen = []
@@ -250,8 +250,8 @@ def test_gateway_approval_hooks_report_a_cli_sessions_surface(tmp_path, monkeypa
 
 def test_plugin_context_reads_the_calling_sessions_cwd_and_surface(tmp_path):
     from agent.runtime_cwd import set_session_cwd
-    from gateway.session_context import set_session_vars
-    from gateway.session_policy import _ACTIVE_POLICY
+    from hermes_agent.gateway.session_context import set_session_vars
+    from hermes_agent.gateway.session_policy import _ACTIVE_POLICY
 
     ctx, manager = _context(tmp_path)
     workspace = tmp_path / "ws"

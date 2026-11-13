@@ -10,7 +10,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 import hermes_agent.hermes_state_runtime as rt
-from gateway.session_results import retain_result
+from hermes_agent.gateway.session_results import retain_result
 from hermes_agent.hermes_state import SessionDB
 from tools.bot_live_delivery import _locked, _read, _write
 
@@ -55,7 +55,7 @@ def _receipt(tmp_path):
 
 @pytest.mark.parametrize("days_ago", [6, 8])
 def test_a_settled_receipt_keeps_its_answer_after_its_chat_is_deleted(tmp_path, days_ago, caplog):
-    from gateway.session_bot import recover_bot_deliveries
+    from hermes_agent.gateway.session_bot import recover_bot_deliveries
     db = _receipt_then_deleted(tmp_path, status="settled", days_ago=days_ago)
     try:
         asyncio.run(recover_bot_deliveries(SimpleNamespace(db=db, waiters={})))
@@ -67,7 +67,7 @@ def test_a_settled_receipt_keeps_its_answer_after_its_chat_is_deleted(tmp_path, 
 
 
 def test_a_failed_receipt_keeps_its_error_after_its_chat_expired(tmp_path, caplog):
-    from gateway.session_bot import recover_bot_deliveries
+    from hermes_agent.gateway.session_bot import recover_bot_deliveries
     db = _receipt_then_deleted(tmp_path, status="failed", days_ago=8,
                                error="HTTP 401 invalid api key", reason="auth")
     try:
@@ -81,7 +81,7 @@ def test_a_failed_receipt_keeps_its_error_after_its_chat_expired(tmp_path, caplo
 
 @pytest.mark.parametrize("status", ["queued", "claimed", "canonical"])
 def test_a_pending_receipt_behind_an_expired_deleted_chat_becomes_ambiguous(tmp_path, status):
-    from gateway.session_bot import recover_bot_deliveries
+    from hermes_agent.gateway.session_bot import recover_bot_deliveries
     db = _receipt_then_deleted(tmp_path, status=status, days_ago=8)
     try:
         asyncio.run(recover_bot_deliveries(SimpleNamespace(db=db, waiters={})))
@@ -91,7 +91,7 @@ def test_a_pending_receipt_behind_an_expired_deleted_chat_becomes_ambiguous(tmp_
 
 
 def test_one_unanswerable_receipt_does_not_stop_the_others(tmp_path, caplog):
-    from gateway.session_bot import recover_bot_deliveries
+    from hermes_agent.gateway.session_bot import recover_bot_deliveries
     db = _receipt_then_deleted(tmp_path, status="queued", days_ago=8)
     db.create_session("live", source="cli")
     bad = "b" * 32
@@ -110,13 +110,13 @@ def test_one_unanswerable_receipt_does_not_stop_the_others(tmp_path, caplog):
 
 
 def test_the_runtime_api_starts_after_a_deleted_bot_chat_expired(tmp_path, monkeypatch):
-    import gateway.run_api
-    from gateway.run_runtime import start_gateway_runtime_api
+    import hermes_agent.gateway.run_api
+    from hermes_agent.gateway.run_runtime import start_gateway_runtime_api
     db = _receipt_then_deleted(tmp_path, status="queued", days_ago=8)
     try:
         async def fake_api(runner):
             return SimpleNamespace(api_origin="http://127.0.0.1:1")
-        monkeypatch.setattr(gateway.run_api, "start_gateway_api", fake_api)
+        monkeypatch.setattr(hermes_agent.gateway.run_api, "start_gateway_api", fake_api)
         authority = SimpleNamespace(db=db, waiters={}, runner=None, profile_id=str(tmp_path))
         runner = SimpleNamespace(session_authority=authority, session_runtime_descriptor={})
         asyncio.run(start_gateway_runtime_api(runner))
@@ -133,7 +133,7 @@ async def test_a_responses_key_of_a_deleted_session_never_reruns_and_never_503s(
     calls = []
 
     async def handle(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         calls.append(event.text)
         execution_result.get()["result"] = {"final_response": "answer", "messages": []}
         return "answer"

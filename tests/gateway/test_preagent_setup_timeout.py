@@ -13,10 +13,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
+from hermes_agent.gateway.session import SessionSource
 
 
 KEY = "agent:main:telegram:dm:138358-preagent"
@@ -53,7 +53,7 @@ async def test_hung_preagent_resolve_is_cancelled_and_notified(monkeypatch, capl
 
     runner._hmwa_resolve_session = _hang
 
-    with caplog.at_level("ERROR", logger="gateway.run"):
+    with caplog.at_level("ERROR", logger="hermes_agent.gateway.run"):
         started = time.monotonic()
         result = await GatewayRunner._handle_message_with_agent(
             runner, _event(), _source(), KEY, 1,

@@ -76,7 +76,7 @@ _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
 def process_elevation(pid: int | None = None) -> bool | None:
     """``TokenElevation`` of *pid*'s token (default: this process). The ONE elevation probe: the
-    grants below, the refused-owner naming in ``gateway.runtime_bootstrap_windows`` and the
+    grants below, the refused-owner naming in ``hermes_agent.gateway.runtime_bootstrap_windows`` and the
     Windows service installer all read it. None when the process or its token cannot be opened
     (across an elevation boundary that refusal is itself an answer the caller interprets)."""
     value = _token_dword(pid, _TOKEN_ELEVATION)

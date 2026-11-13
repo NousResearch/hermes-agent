@@ -1,4 +1,4 @@
-"""Unbounded executor for gateway turn bodies (see ``GatewayRunner._get_executor`` in gateway/run.py)."""
+"""Unbounded executor for gateway turn bodies (see ``GatewayRunner._get_executor`` in hermes_agent/gateway/run.py)."""
 
 from __future__ import annotations
 
@@ -88,7 +88,7 @@ class _UnboundedThreadExecutor(concurrent.futures.Executor):
 
     def _park(self, worker: _Worker):
         """Reset this thread, then wait for its next item; None means exit."""
-        from gateway.turn_thread_reset import reset_reused_thread_state
+        from hermes_agent.gateway.turn_thread_reset import reset_reused_thread_state
 
         try:
             reset_reused_thread_state()

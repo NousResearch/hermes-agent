@@ -13,8 +13,8 @@ import time
 
 import pytest
 
-from gateway import shutdown_flush
-from gateway.session import SessionStore
+from hermes_agent.gateway import shutdown_flush
+from hermes_agent.gateway.session import SessionStore
 
 
 def _make_store(db):
@@ -67,7 +67,7 @@ class TestSpoolOnDrop:
         store = _make_store(db)
 
         n_extra = 3
-        with caplog.at_level(logging.WARNING, logger="gateway.session"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.session"):
             for i in range(SessionStore._MAX_PENDING_PER_SESSION + n_extra):
                 store.append_to_transcript(
                     "sess-1", {"role": "user", "content": f"msg{i}"}
@@ -152,7 +152,7 @@ class TestSpoolOnDrop:
         db = BrokenThenHealedDb()
         store = _make_store(db)
 
-        with caplog.at_level(logging.WARNING, logger="gateway.session"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.session"):
             for i in range(SessionStore._MAX_PENDING_PER_SESSION + 5):
                 store.append_to_transcript(
                     "sess-x", {"role": "user", "content": f"msg{i}"}

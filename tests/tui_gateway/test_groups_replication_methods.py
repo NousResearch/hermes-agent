@@ -37,7 +37,7 @@ def _error(envelope):
 def _authority_page(tmp_path, gateway_id="install:" + "a" * 32, n=3):
     """Build a real room + log on a SEPARATE 'remote authority' DB and return
     its replay page, as a replicating client would fetch via groups.log."""
-    from gateway import hosted_rooms as rooms
+    from hermes_agent.gateway import hosted_rooms as rooms
 
     db = tmp_path / "remote-authority.db"
     rooms.create_room(
@@ -113,7 +113,7 @@ def test_promote_requires_confirm_and_takes_over(home, tmp_path):
 
 
 def test_demote_fences_local_room_against_newer_epoch(home):
-    from gateway.hosted_rooms import local_authority_gateway_id
+    from hermes_agent.gateway.hosted_rooms import local_authority_gateway_id
 
     _result(
         srv._methods["groups.create"](
@@ -161,7 +161,7 @@ def test_demote_fences_local_room_against_newer_epoch(home):
 
 
 def test_replicate_rejects_gapped_page(home, tmp_path):
-    from gateway import hosted_rooms as rooms
+    from hermes_agent.gateway import hosted_rooms as rooms
 
     _authority_page(tmp_path, n=5)
     db = tmp_path / "remote-authority.db"

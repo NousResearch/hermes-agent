@@ -39,11 +39,11 @@ class _Life:
 
 class _Owners:
     async def start(self, tmp_path, monkeypatch):
-        from gateway import run
-        from gateway.config import GatewayConfig
-        from gateway.session import SessionStore
-        from gateway.session_controls import AuthorityConnection
-        from gateway.session_local import create_local_session
+        from hermes_agent.gateway import run
+        from hermes_agent.gateway.config import GatewayConfig
+        from hermes_agent.gateway.session import SessionStore
+        from hermes_agent.gateway.session_controls import AuthorityConnection
+        from hermes_agent.gateway.session_local import create_local_session
         monkeypatch.setattr(run, '_load_gateway_config', lambda *a, **k: {'platform_toolsets': {'cli': []}})
         self.profile, self.loop, self.lives = str(tmp_path), asyncio.get_running_loop(), []
         self.store = SessionStore(tmp_path / 'sessions', GatewayConfig())
@@ -55,7 +55,7 @@ class _Owners:
         return self
 
     async def boot(self, instance_id):
-        from gateway.session_authority import initialize_session_authority
+        from hermes_agent.gateway.session_authority import initialize_session_authority
         owner = SimpleNamespace(session_store=self.store, _session_db=self.store._db, adapters={}, _draining=False,
                                 _cached_agent_for=lambda route: None, _evict_cached_agent=lambda route: None)
         owner._adapter_for_source = lambda source: owner.adapters.get(source.platform)
@@ -63,7 +63,7 @@ class _Owners:
         return self.current
 
     async def _open(self):
-        from gateway.session_controls import AuthorityConnection
+        from hermes_agent.gateway.session_controls import AuthorityConnection
         self.lives.append(_Life(AuthorityConnection(self.current, object(), {'user_id': 'owner'}), self.loop))
         return self.lives[-1]
 

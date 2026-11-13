@@ -3,7 +3,7 @@
 Previously async_delivery_supported()=False forced SYNCHRONOUS execution for
 every background dispatch on the API server, blocking the whole turn. Now
 that background completions can wake the originating session via the
-/v1/chat/completions self-post (gateway/wake.py), a session-continuable
+/v1/chat/completions self-post (hermes_agent/gateway/wake.py), a session-continuable
 turn (raw session id bound as the api_server chat_id) dispatches async; only
 session-id-less one-shot requests keep the sync fallback.
 
@@ -20,7 +20,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.session_context import set_session_vars
+from hermes_agent.gateway.session_context import set_session_vars
 from tools.process_registry import process_registry
 
 
@@ -36,7 +36,7 @@ def _clean_queue_and_context(monkeypatch):
     # Restore ContextVars to the pristine "never set" sentinel rather than
     # clear_session_vars()'s explicit-"" state, which would mask env vars for
     # unrelated tests running later in the same worker.
-    import gateway.session_context as sc
+    import hermes_agent.gateway.session_context as sc
 
     for var in sc._VAR_MAP.values():
         var.set(sc._UNSET)
@@ -97,7 +97,7 @@ def _patch_delegate(monkeypatch):
         # path does: it synchronizes the child's internal session id into the
         # HERMES_SESSION_ID ContextVar + os.environ, clobbering the spawner's
         # id ~milliseconds before delegate_tool dispatches the batch.
-        from gateway.session_context import set_current_session_id
+        from hermes_agent.gateway.session_context import set_current_session_id
 
         set_current_session_id("20260715_child1")
         return fake_child

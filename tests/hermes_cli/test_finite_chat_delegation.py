@@ -194,7 +194,7 @@ def test_tty_seeded_chat_keeps_background_delegation(monkeypatch, query, image):
     """A TTY -q (or image seed) still owns a later-turn completion consumer."""
     import cli
     import tools.delegate_tool as dt
-    from gateway.session_context import reset_session_vars
+    from hermes_agent.gateway.session_context import reset_session_vars
     from run_agent import AIAgent
     from tests.tools.test_delegate import _make_mock_parent
 

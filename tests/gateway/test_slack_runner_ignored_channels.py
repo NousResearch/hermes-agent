@@ -1,15 +1,15 @@
 import pytest
 from unittest.mock import AsyncMock
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import SendResult
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import (
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import (
     GatewayRunner,
     _is_slack_ignored_channel,
     _slack_ignored_channels_from_gateway_config,
 )
-from gateway.session import SessionSource
+from hermes_agent.gateway.session import SessionSource
 
 
 def _config_with_slack_extra(extra=None):

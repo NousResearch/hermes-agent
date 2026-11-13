@@ -63,7 +63,7 @@ def maybe_delivered_result(error: Exception, safe_error: str, **fields):
     """The gateway ``SendResult`` for a failed send: one that may be in the chat (``LOST``) is
     ``delivery_uncertain`` and not retryable, so ``_send_with_retry`` neither resends it nor falls
     back to plain text; everything else stays retryable as before."""
-    from gateway.platforms.base import SendResult
+    from hermes_agent.gateway.platforms.base import SendResult
 
     if send_error_kind(error) == LOST:
         return SendResult(success=False, error=safe_error, retryable=False,
@@ -88,7 +88,7 @@ def idless_send_result(adapter_name: str, chat_id, what: str):
     that never landed is never redelivered. The ledger redelivers it once, with its duplicate marker."""
     import logging
 
-    from gateway.platforms.base import SendResult
+    from hermes_agent.gateway.platforms.base import SendResult
 
     logging.getLogger(__name__).warning("[%s] %s for chat %s returned no message_id", adapter_name, what, chat_id)
     return SendResult(success=False, error=f"{what} returned no message_id", raw_response={"delivery_uncertain": True})

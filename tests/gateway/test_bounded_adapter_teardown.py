@@ -19,8 +19,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import Platform
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.run import GatewayRunner
 
 
 @pytest.fixture
@@ -41,7 +41,7 @@ async def test_teardown_bounds_hanging_cancel(bare_runner, monkeypatch, caplog):
     adapter.cancel_background_tasks = AsyncMock(side_effect=hang)
     adapter.disconnect = AsyncMock(return_value=None)
 
-    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.run"):
         await asyncio.wait_for(
             bare_runner._bounded_adapter_teardown(adapter, Platform.FEISHU),
             timeout=5.0,

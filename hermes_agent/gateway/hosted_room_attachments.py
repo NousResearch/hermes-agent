@@ -9,7 +9,7 @@ room's frozen recipient roster.
 
 from __future__ import annotations
 
-from gateway.hosted_rooms import EventAttachmentConflictError
+from hermes_agent.gateway.hosted_rooms import EventAttachmentConflictError
 from hermes_dir_acl import make_user_dir
 
 import base64
@@ -1177,7 +1177,7 @@ class HostedRoomAttachmentStore:
         authority_gateway_id: str,
         authority_epoch: int,
     ) -> None:
-        from gateway.hosted_rooms_common import table_exists as _table_exists
+        from hermes_agent.gateway.hosted_rooms_common import table_exists as _table_exists
 
         if not _table_exists(conn, "hosted_rooms"):
             raise AttachmentNotFoundError("Group Chat is unavailable to viewers")

@@ -11,11 +11,11 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Optional
 
-from gateway.platforms.base import cache_audio_from_bytes_async
-from gateway.platforms.helpers import spoken_mention_clips, voice_mention_gate_enabled
+from hermes_agent.gateway.platforms.base import cache_audio_from_bytes_async
+from hermes_agent.gateway.platforms.helpers import spoken_mention_clips, voice_mention_gate_enabled
 
 if TYPE_CHECKING:
-    from gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.platforms.event import MessageEvent
 
 logger = logging.getLogger("plugins.platforms.telegram.adapter")
 
@@ -40,7 +40,7 @@ async def admit_media(adapter: Any, msg: Any) -> Optional[list[str]]:
     except Exception as exc:  # health: allow BLE001 -- a failed fetch leaves the note gated, as before
         logger.warning("[%s] Could not fetch a group voice note for the spoken mention check: %s", adapter.name, exc)
         return None
-    from gateway.platforms.event import MessageType
+    from hermes_agent.gateway.platforms.event import MessageType
     source = adapter._build_message_event(msg, MessageType.VOICE).source
     clips = await spoken_mention_clips([path], adapter._mention_patterns, adapter=adapter, source=source)
     logger.info("[%s] Group voice note %s: spoken wake word %s", adapter.name, getattr(msg, "message_id", None),

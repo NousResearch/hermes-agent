@@ -17,7 +17,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any, NoReturn
 
-from gateway.hosted_room_peer import (
+from hermes_agent.gateway.hosted_room_peer import (
     GatewayRoomCatalog, HostedMemberDispatch, validate_room_link_url)
 
 
@@ -273,7 +273,7 @@ class PeerRunsHTTPClient:
         record = self._runs.get((task_id, execution_generation))
         if record is not None or self.receipt_db_path is None or self._room_scope is None:
             return record
-        from gateway import hosted_rooms
+        from hermes_agent.gateway import hosted_rooms
         identity = {"task_id": task_id, "execution_generation": execution_generation}
         return hosted_rooms.remote_run_receipt(
             self.receipt_db_path, record={**self._room_scope, **identity})
@@ -501,7 +501,7 @@ class PeerRunsHTTPClient:
             **{field: getattr(checked, field) for field in _RECEIPT_SCOPE_FIELDS},
             "task_id": checked.task_id, "execution_generation": checked.execution_generation}
         if self.receipt_db_path is not None:
-            from gateway import hosted_rooms
+            from hermes_agent.gateway import hosted_rooms
             hosted_rooms.upsert_remote_run_receipt(self.receipt_db_path, record=receipt)
         self._runs[(checked.task_id, checked.execution_generation)] = receipt
         self._status_cache.pop(run_id, None)
@@ -677,7 +677,7 @@ class PeerRunsHTTPClient:
         self._terminal_receipts.discard(key)
         if self.receipt_db_path is None or self._room_scope is None:
             return True
-        from gateway import hosted_rooms
+        from hermes_agent.gateway import hosted_rooms
         return hosted_rooms.drop_remote_run_receipt(self.receipt_db_path, record={
             **self._room_scope, "task_id": key[0], "execution_generation": key[1]}, run_id=run_id)
 

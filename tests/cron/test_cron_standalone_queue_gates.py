@@ -17,10 +17,10 @@ import time
 import pytest
 
 import hermes_agent.cron.scheduler_delivery as sd
-from gateway import delivery_ledger as dl
-from gateway.config import GatewayConfig, Platform
-from gateway.delivery import DeliveryRouter, DeliverySendError, DeliveryTarget
-from gateway.platforms.base import SendResult
+from hermes_agent.gateway import delivery_ledger as dl
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.delivery import DeliveryRouter, DeliverySendError, DeliveryTarget
+from hermes_agent.gateway.platforms.base import SendResult
 
 
 @pytest.fixture(autouse=True)

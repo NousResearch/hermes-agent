@@ -327,7 +327,7 @@ def process_state(pid: int, creation_time_ns: int, hermes_path: str, spawn_nonce
     # layout — so match "a python running our module" (`-c` bootstrap or plain `-m`). Identity
     # is anchored by the unforgeable creation-time + secret owner-nonce below.
     is_python = os.path.basename(arg0).startswith("python")
-    from gateway.status_inline_source import inline_bootstrap_argv
+    from hermes_agent.gateway.status_inline_source import inline_bootstrap_argv
     logical_argv = inline_bootstrap_argv(argv) or argv
     launches_module = logical_argv[1:3] == ["-m", "hermes_cli.main"]
     executable_match = arg0 == expected or (is_python and launches_module)

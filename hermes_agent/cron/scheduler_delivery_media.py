@@ -19,7 +19,7 @@ def _send_media_via_adapter(
     attachment surfaces in run status, not just the gateway log."""
     from hermes_agent.cron.scheduler_delivery import _note_target_error
     from hermes_agent.cron import scheduler_script as _script
-    from gateway.platforms.base import (
+    from hermes_agent.gateway.platforms.base import (
         BasePlatformAdapter, should_send_media_as_audio, validate_media_delivery_path)
     from agent.async_utils import safe_schedule_threadsafe
     job_ref = {"id": job.get("id", "?")}

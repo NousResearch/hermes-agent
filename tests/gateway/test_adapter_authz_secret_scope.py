@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent import secret_scope as ss
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 _DEFAULT_ENV = {
     "GATEWAY_ALLOW_ALL_USERS": "true", "GATEWAY_ALLOWED_USERS": "default-admin",
@@ -51,7 +51,7 @@ def _matrix(extra=None):
 
 
 def _whatsapp():
-    from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
+    from hermes_agent.gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
 
     host = WhatsAppBehaviorMixin()
     host._dm_allowlist_source, host._allow_from = "WHATSAPP_ALLOWED_USERS", set()
@@ -101,10 +101,10 @@ _GATES = [
      lambda: __import__("plugins.platforms.qqbot.adapter", fromlist=["QQAdapter"]).QQAdapter._open_dm_opted_in(object.__new__(__import__("plugins.platforms.qqbot.adapter", fromlist=["QQAdapter"]).QQAdapter)),
      False, True),
     ("whatsapp.open_dm", {"GATEWAY_ALLOW_ALL_USERS": "true"},
-     lambda: __import__("gateway.platforms.whatsapp_common", fromlist=["WhatsAppBehaviorMixin"]).WhatsAppBehaviorMixin._open_dm_opted_in(_whatsapp()),
+     lambda: __import__("hermes_agent.gateway.platforms.whatsapp_common", fromlist=["WhatsAppBehaviorMixin"]).WhatsAppBehaviorMixin._open_dm_opted_in(_whatsapp()),
      False, True),
     ("whatsapp.live_allow_from", {"WHATSAPP_ALLOWED_USERS": "+15559998888"},
-     lambda: __import__("gateway.platforms.whatsapp_common", fromlist=["WhatsAppBehaviorMixin"]).WhatsAppBehaviorMixin._live_dm_allow_from(_whatsapp()),
+     lambda: __import__("hermes_agent.gateway.platforms.whatsapp_common", fromlist=["WhatsAppBehaviorMixin"]).WhatsAppBehaviorMixin._live_dm_allow_from(_whatsapp()),
      set(), {"+15559998888"}),
     ("teams.card_action", {"TEAMS_ALLOWED_USERS": "clicker"},
      lambda: __import__("plugins.platforms.teams.adapter", fromlist=["TeamsAdapter"]).TeamsAdapter._card_action_denied(

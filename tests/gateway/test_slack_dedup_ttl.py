@@ -46,7 +46,7 @@ import plugins.platforms.slack.adapter as _slack_mod
 
 _slack_mod.SLACK_AVAILABLE = True
 
-from gateway.platforms.helpers import MessageDeduplicator
+from hermes_agent.gateway.platforms.helpers import MessageDeduplicator
 from plugins.platforms.slack.adapter import _slack_dedup_ttl_seconds
 
 

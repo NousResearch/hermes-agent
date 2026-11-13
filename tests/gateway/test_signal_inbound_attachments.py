@@ -7,22 +7,22 @@ import base64
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 
 OWNER, STRANGER = "+15550000001", "+15550000002"
 
 
 @pytest.fixture
 def signal(tmp_path, monkeypatch):
-    from gateway.pairing import PairingStore
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.pairing import PairingStore
+    from hermes_agent.gateway.run import GatewayRunner
     from plugins.platforms.signal.adapter import SignalAdapter
 
     for key in ("GATEWAY_ALLOWED_USERS", "GATEWAY_ALLOW_ALL_USERS", "SIGNAL_ALLOW_ALL_USERS"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("SIGNAL_ALLOWED_USERS", OWNER)
     monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "")
-    monkeypatch.setattr("gateway.pairing.PAIRING_DIR", tmp_path / "pairing")
+    monkeypatch.setattr("hermes_agent.gateway.pairing.PAIRING_DIR", tmp_path / "pairing")
 
     adapter = SignalAdapter(PlatformConfig(enabled=True, extra={"http_url": "http://127.0.0.1:1", "account": "+15559999999"}))
     rpc_calls = []

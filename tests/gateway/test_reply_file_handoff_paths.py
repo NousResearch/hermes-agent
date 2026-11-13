@@ -3,8 +3,8 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 import pytest
-from gateway.config import PlatformConfig
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from tests.gateway.test_reply_file_handoff import _telegram, _body, _Bot
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from plugins.platforms.telegram import adapter as tg
@@ -32,7 +32,7 @@ async def test_rich_refusal_recounts_before_legacy_flood():
 async def test_discord_tool_long_reply_uses_file(monkeypatch):
     import json
     import aiohttp
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     from tools.send_message_tool import _send_to_platform
     from plugins.platforms.discord import adapter as dc
     from tests.tools.test_send_message_tool import _StreamingAiohttpResponse, _discord_entry
@@ -63,7 +63,7 @@ async def test_file_segment_remains_known_as_delivered():
         c.on_delta(again[i:i + 1500])
     c.finish(text)
     await c.run()
-    from gateway.run_turn import GatewayTurnMixin
+    from hermes_agent.gateway.run_turn import GatewayTurnMixin
     confirmed = GatewayTurnMixin._run_agent_stream_confirmed_final_delivery(c, text)
     if not confirmed:
         await adapter._send_with_retry('4242', text)

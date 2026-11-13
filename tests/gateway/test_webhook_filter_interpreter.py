@@ -4,7 +4,7 @@ import stat
 
 import pytest
 
-from gateway.platforms.webhook_filters import WebhookRouteProcessor
+from hermes_agent.gateway.platforms.webhook_filters import WebhookRouteProcessor
 from tools.environments import local
 
 
@@ -45,7 +45,7 @@ def test_silent_nonzero_exit_is_logged_as_warning(tmp_path, monkeypatch, caplog)
     monkeypatch.setattr(local, "_find_bash", lambda: str(fake))
     filt = _filter_script("")
 
-    with caplog.at_level(logging.INFO, logger="gateway.platforms.webhook_filters"):
+    with caplog.at_level(logging.INFO, logger="hermes_agent.gateway.platforms.webhook_filters"):
         accepted, _ = WebhookRouteProcessor().run_route_script(str(filt), {})
 
     assert accepted is False

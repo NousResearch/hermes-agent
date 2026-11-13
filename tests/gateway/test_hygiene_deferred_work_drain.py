@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.run import run_codex_hygiene_compaction
+from hermes_agent.gateway.run import run_codex_hygiene_compaction
 from tests.gateway.restart_test_helpers import make_restart_runner
 
 
@@ -69,7 +69,7 @@ async def test_timed_out_codex_hygiene_worker_remains_visible_to_shutdown():
     assert started.is_set()
     assert outcome == "failed:timeout"
     assert runner._active_deferred_agent_worker_count() == 1
-    with patch("gateway.run.request_hard_interrupt") as interrupt:
+    with patch("hermes_agent.gateway.run.request_hard_interrupt") as interrupt:
         runner._interrupt_running_agents("gateway shutdown")
     interrupt.assert_called_once_with(agent, "gateway shutdown", tool_reason="gateway shutdown")
 
@@ -110,7 +110,7 @@ async def test_deferred_hygiene_worker_times_out_and_receives_interrupt():
 
     assert timed_out is True
     assert _snapshot == {}
-    with patch("gateway.run.request_hard_interrupt") as interrupt:
+    with patch("hermes_agent.gateway.run.request_hard_interrupt") as interrupt:
         runner._interrupt_running_agents("gateway shutdown")
     interrupt.assert_called_once_with(agent, "gateway shutdown", tool_reason="gateway shutdown")
 
@@ -137,8 +137,8 @@ async def test_stop_interrupts_deferred_worker_before_teardown():
     adapter.disconnect = AsyncMock()
 
     with (
-        patch("gateway.status.remove_pid_file"),
-        patch("gateway.status.write_runtime_status"),
+        patch("hermes_agent.gateway.status.remove_pid_file"),
+        patch("hermes_agent.gateway.status.write_runtime_status"),
         patch("hermes_agent.cron.scheduler.mark_job_run"),
         patch("tools.process_registry.process_registry.kill_all", return_value=0),
         patch("tools.terminal_tool.cleanup_all_environments"),

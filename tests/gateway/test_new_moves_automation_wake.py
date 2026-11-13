@@ -11,13 +11,13 @@ from tests.waiting import async_wait_until
 @pytest.mark.asyncio
 @pytest.mark.parametrize('settles_mid_reset', [False, True])
 async def test_new_moves_a_queued_wake_to_the_fresh_session(monkeypatch, settles_mid_reset):
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.platforms.base import SendResult
-    from gateway.platforms.event import MessageEvent
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_automation import admit_route_wake
-    from gateway.session_results import execution_result
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.base import SendResult
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_automation import admit_route_wake
+    from hermes_agent.gateway.session_results import execution_result
     from hermes_agent.hermes_state_runtime import list_session_admissions
     from plugins.platforms.discord.adapter import DiscordAdapter
 

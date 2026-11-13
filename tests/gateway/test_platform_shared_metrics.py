@@ -6,11 +6,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.platforms.base import BasePlatformAdapter, Platform, PlatformConfig, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run_adapters import GatewayAdapterLifecycleMixin
-from gateway.run_startup import GatewayStartupMixin
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, Platform, PlatformConfig, SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run_adapters import GatewayAdapterLifecycleMixin
+from hermes_agent.gateway.run_startup import GatewayStartupMixin
+from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from hermes_cli.observability import relay_shared_metrics as rsm
 from hermes_cli.observability import shared_metrics_contract as contract
 from hermes_cli.observability import shared_metrics_gateway as smg
@@ -23,7 +23,7 @@ def rows(monkeypatch):
     monkeypatch.setattr(rsm, "enabled", lambda: True)
     monkeypatch.setattr(rsm, "record_process_mark",
                         lambda mark, data: got.append((mark, dict(data), str(get_hermes_home()))))
-    monkeypatch.setattr("gateway.platforms.base.random.uniform", lambda *_: 0.0)
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base.random.uniform", lambda *_: 0.0)
     smg._reply_clocks.clear()
     smg._chat_homes.clear()
     smg._failing_connects.clear()

@@ -26,7 +26,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.platforms.base import (
+from hermes_agent.gateway.platforms.base import (
     BasePlatformAdapter,
     Platform,
     PlatformConfig,
@@ -288,8 +288,8 @@ async def test_process_message_pauses_typing_before_a_stalled_final_send():
     """Production entry point (#117300): ``_process_message_background`` must pause the chat
     BEFORE awaiting the final send. With the send parked forever the turn's ``finally`` never
     runs, so only a pre-delivery pause keeps ``_keep_typing`` from refreshing an idle agent."""
-    from gateway.platforms.event import MessageEvent, MessageType
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+    from hermes_agent.gateway.session import SessionSource
 
     adapter = _StubAdapter()
     send_started = asyncio.Event()

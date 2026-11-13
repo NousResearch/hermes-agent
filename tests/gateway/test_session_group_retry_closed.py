@@ -2,7 +2,7 @@
 
 import pytest
 
-from gateway import hosted_room_driver as driver
+from hermes_agent.gateway import hosted_room_driver as driver
 from tests.gateway.test_session_group_peer_discard import (
     _never_admitted_deferred_turn, gateway as gateway_fixture, linked_peer as linked_peer_fixture,
 )

@@ -14,8 +14,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.platforms.event import MessageType
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageType
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from plugins.platforms.telegram.telegram_media_fetch import local_bot_api_path
 
@@ -26,7 +26,7 @@ DATA = b"local-mov-bytes"
 @pytest.fixture(autouse=True)
 def _cache_dirs(tmp_path, monkeypatch):
     for name in ("DOCUMENT_CACHE_DIR", "VIDEO_CACHE_DIR", "AUDIO_CACHE_DIR", "IMAGE_CACHE_DIR"):
-        monkeypatch.setattr(f"gateway.platforms.base.{name}", tmp_path / name.lower())
+        monkeypatch.setattr(f"hermes_agent.gateway.platforms.base.{name}", tmp_path / name.lower())
 
 
 def _adapter(extra):

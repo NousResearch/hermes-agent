@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_contract import SessionRef
+from hermes_agent.gateway.session_contract import SessionRef
 
 
 def _connection(source, display):
@@ -29,8 +29,8 @@ def _connection(source, display):
     ('cli', {'busy_input_mode': 'queue'}, 'queue'),
 ])
 async def test_busy_default_follows_the_surface(monkeypatch, source, display, expected):
-    from gateway import session_policy
-    from gateway.session_busy_controls import busy_config
+    from hermes_agent.gateway import session_policy
+    from hermes_agent.gateway.session_busy_controls import busy_config
     connection, policy = _connection(source, display)
     monkeypatch.setattr(session_policy, 'policy_for_source', lambda runner, src: policy)
     result = await busy_config(connection, SessionRef('p', 's'), {'session_id': 's', 'key': 'busy'})

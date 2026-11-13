@@ -16,7 +16,7 @@ from unittest.mock import patch
 import pytest
 
 import plugins.platforms.discord.adapter as discord_platform
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 
 @pytest.mark.asyncio

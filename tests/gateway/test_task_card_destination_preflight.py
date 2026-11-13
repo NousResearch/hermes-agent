@@ -6,10 +6,10 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.relay.adapter import RelayAdapter
-from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
-from gateway.run_turn_runner import TurnRunner
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.relay.adapter import RelayAdapter
+from hermes_agent.gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+from hermes_agent.gateway.run_turn_runner import TurnRunner
 from plugins.platforms.slack.adapter import SlackAdapter
 
 

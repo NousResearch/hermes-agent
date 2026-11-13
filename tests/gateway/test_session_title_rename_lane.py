@@ -15,10 +15,10 @@ import weakref
 
 import pytest
 
-from gateway.config import Platform
-from gateway.session import SessionSource
-from gateway.run import GatewayRunner
-from gateway.run_turn_runner import TurnRunner
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.run_turn_runner import TurnRunner
 
 
 def _attach(lane):
@@ -211,7 +211,7 @@ def test_title_thread_copy_preserves_transport_adapter_ref(monkeypatch):
     def fake_schedule(coro, loop, logger=None, log_message=None):
         coro.close()
 
-    monkeypatch.setattr("gateway.run.safe_schedule_threadsafe", fake_schedule)
+    monkeypatch.setattr("hermes_agent.gateway.run.safe_schedule_threadsafe", fake_schedule)
 
     source = SessionSource(
         platform=Platform.DISCORD,

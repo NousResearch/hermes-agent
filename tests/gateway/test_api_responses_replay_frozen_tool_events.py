@@ -19,8 +19,8 @@ async def test_exact_retry_replays_full_incremental_tool_output(api, owner, size
     calls = []
 
     async def handle(event):
-        from gateway.session_api_turn import publish_api_tool_event
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_api_turn import publish_api_tool_event
+        from hermes_agent.gateway.session_results import execution_result
         calls.append(event.text)
         sid = event.source.chat_id
         generation = owner.sessions[sid].event_stream.execution['execution_generation']

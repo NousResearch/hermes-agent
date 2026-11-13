@@ -1,4 +1,4 @@
-"""Gateway status-line filtering helpers (facade: ``gateway/run.py``'s ``_prepare_gateway_status_message``).
+"""Gateway status-line filtering helpers (facade: ``hermes_agent/gateway/run.py``'s ``_prepare_gateway_status_message``).
 
 DM-only status lines:
 The blocked-overflow warning (context over the compression threshold, compression blocked) tells the reader to
@@ -51,7 +51,7 @@ def status_chat_type(source: Any) -> Any:
 
 
 def is_terminal_failure_status(message: Any) -> bool:
-    from gateway.warning_notifications import TerminalFailureText
+    from hermes_agent.gateway.warning_notifications import TerminalFailureText
     return isinstance(message, TerminalFailureText)
 
 

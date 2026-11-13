@@ -14,8 +14,8 @@ import types
 import pytest
 
 from agent import secret_scope
-from gateway import run as gateway_run
-from gateway.run_startup import GatewayStartupMixin
+from hermes_agent.gateway import run as gateway_run
+from hermes_agent.gateway.run_startup import GatewayStartupMixin
 
 PORTAL = "https://portal.staging-nousresearch.com"
 

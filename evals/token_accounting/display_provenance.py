@@ -21,11 +21,11 @@ def child(out: Path) -> None:
     from hermes_agent.tui_gateway.server import _get_usage, _format_live_context_output
     import threading
     import asyncio
-    from gateway.run import GatewayRunner
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore, SessionSource
-    from gateway.config import Platform
-    from gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore, SessionSource
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.platforms.event import MessageEvent
 
     runner = GatewayRunner.__new__(GatewayRunner)
     runner.config = GatewayConfig()

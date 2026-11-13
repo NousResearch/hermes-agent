@@ -11,7 +11,7 @@ _repo = str(Path(__file__).resolve().parents[2])
 if _repo not in sys.path:
     sys.path.insert(0, _repo)
 from plugins.platforms.telegram.adapter import TelegramAdapter
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 
 def _make_adapter():

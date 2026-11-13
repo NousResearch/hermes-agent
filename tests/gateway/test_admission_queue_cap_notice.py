@@ -1,9 +1,9 @@
 """A messaging follow-up past the FIFO cap gets a plain queue_full notice, not a turn error (N62)."""
 import pytest
 
-from gateway.platforms.event import MessageEvent
-from gateway.session_contract import Submission
-from gateway.session_ingress import admit_message
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session_contract import Submission
+from hermes_agent.gateway.session_ingress import admit_message
 from hermes_agent.hermes_state_runtime import ADMISSION_QUEUE_MAX, list_session_admissions
 from tests.gateway.test_session_authority_cancel_settlement import ACTOR, REF, _authority, _submit
 

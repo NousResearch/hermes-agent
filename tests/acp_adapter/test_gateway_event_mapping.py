@@ -46,8 +46,8 @@ async def test_todo_updated_becomes_the_native_plan_update():
 
 def test_an_acp_session_turn_publishes_todo_updated():
     """The real owner path: a LOCAL (ACP-created) turn's todo tool completion publishes ``todo.updated``."""
-    from gateway.config import Platform
-    from gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
     published = []
     turn = object.__new__(TurnRunner)
     turn._ctx = SimpleNamespace(source=SimpleNamespace(platform=Platform.LOCAL, chat_id='chat'),

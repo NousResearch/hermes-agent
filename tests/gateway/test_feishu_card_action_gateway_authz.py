@@ -26,7 +26,7 @@ def _ensure_feishu_mocks():
 
 _ensure_feishu_mocks()
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 import plugins.platforms.feishu.adapter as feishu_module
 from plugins.platforms.feishu.adapter import FeishuAdapter
 

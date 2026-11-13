@@ -21,9 +21,9 @@ import asyncio
 
 import pytest
 
-from gateway.platforms.base import BasePlatformAdapter
-from gateway.platforms.event import MessageEvent
-from gateway.session import build_session_key
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import build_session_key
 from tests.gateway.test_active_session_text_merge import _make_adapter, _make_event
 
 

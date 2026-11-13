@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 
 OGG = b"OggS" + b"\x01" * 64
 PATTERNS = [r"(?i)\bhermes\b"]
@@ -79,8 +79,8 @@ async def test_telegram_group_voice_note_wakes_on_the_spoken_wake_word(tmp_path,
 async def test_the_turn_reuses_the_gate_transcript(tmp_path):
     """The runner's STT pass finds the gate's transcript by clip content (native admission
     re-captures the clip under a new path), so the provider is billed once."""
-    from gateway.platforms.helpers import spoken_mention_clips
-    from gateway.run_inbound_transcription import GatewayInboundTranscriptionMixin
+    from hermes_agent.gateway.platforms.helpers import spoken_mention_clips
+    from hermes_agent.gateway.run_inbound_transcription import GatewayInboundTranscriptionMixin
     import re
     clip = tmp_path / "gate.ogg"
     clip.write_bytes(OGG)
@@ -240,7 +240,7 @@ async def test_a_bluebubbles_memo_from_an_unauthorized_sender_is_never_fetched_o
 async def test_disabled_stt_never_transcribes_at_the_gate_even_with_local_fallback(tmp_path, monkeypatch):
     """``stt.enabled: false`` is not a provider failure: the local fallback must not run either."""
     import re
-    from gateway.platforms.helpers import spoken_mention_clips
+    from hermes_agent.gateway.platforms.helpers import spoken_mention_clips
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text("stt:\n  enabled: false\n")
     clip = tmp_path / "gate.ogg"
@@ -337,7 +337,7 @@ async def test_the_gate_honours_the_runners_stt_setting(tmp_path, monkeypatch):
     """Legacy ``gateway.json`` ``stt_enabled: false`` turns STT off for the turn
     (``GatewayConfig.stt_enabled``); the gate reads that same value, so the note is never sent to STT."""
     import re
-    from gateway.platforms.helpers import spoken_mention_clips
+    from hermes_agent.gateway.platforms.helpers import spoken_mention_clips
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     clip = tmp_path / "gate.ogg"
     clip.write_bytes(OGG)
@@ -353,8 +353,8 @@ async def test_a_gate_transcript_never_crosses_profiles(tmp_path):
     """The same forwarded clip in a chat routed to another profile is transcribed with THAT profile's
     STT settings: the gate cache is keyed by profile as well as by clip content."""
     import re
-    from gateway.platforms.helpers import spoken_mention_clips
-    from gateway.run_inbound_transcription import GatewayInboundTranscriptionMixin
+    from hermes_agent.gateway.platforms.helpers import spoken_mention_clips
+    from hermes_agent.gateway.run_inbound_transcription import GatewayInboundTranscriptionMixin
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     clip = tmp_path / "gate.ogg"
     clip.write_bytes(OGG)
@@ -383,8 +383,8 @@ async def test_the_turn_notes_name_its_own_audio_never_the_gate_copy(tmp_path):
     another clip) is transcribed again by the turn, and every note is built from the turn's paths:
     the gate's copy is gone by then (native admission re-captures, a routed profile rehomes)."""
     import re
-    from gateway.platforms.helpers import spoken_mention_clips
-    from gateway.run_inbound_transcription import GatewayInboundTranscriptionMixin
+    from hermes_agent.gateway.platforms.helpers import spoken_mention_clips
+    from hermes_agent.gateway.run_inbound_transcription import GatewayInboundTranscriptionMixin
     gate = [tmp_path / "gate_1.ogg", tmp_path / "gate_2.ogg"]
     gate[0].write_bytes(OGG)
     gate[1].write_bytes(OGG + b"2")
@@ -416,7 +416,7 @@ async def test_a_sender_the_runner_refuses_is_never_transcribed(tmp_path):
     """An open group forwards members the allowlist refuses; the runner refuses them only after the
     gate, so the gate asks the runner's own authorization first and never spends STT on them."""
     import re
-    from gateway.platforms.helpers import spoken_mention_clips
+    from hermes_agent.gateway.platforms.helpers import spoken_mention_clips
     clip = tmp_path / "gate.ogg"
     clip.write_bytes(OGG)
     asked = []
@@ -459,7 +459,7 @@ async def test_photon_document_first_envelope_still_sends_its_spoken_audio_to_st
     """A group envelope whose first item is a document normalises to DOCUMENT, which the runner never
     transcribes; admitted by speech, its audio must still reach the turn's STT pass."""
     import base64
-    from gateway.run_inbound import GatewayInboundMixin
+    from hermes_agent.gateway.run_inbound import GatewayInboundMixin
     from plugins.platforms.photon.adapter import PhotonAdapter
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("PHOTON_PROJECT_ID", "p")
@@ -530,7 +530,7 @@ async def test_a_busy_session_sends_only_the_admitted_envelopes_audio_to_stt(tmp
     """An envelope speech admitted is VOICE; when it lands on a busy session (interrupt, steer, queue
     drain) only its audio enters STT, never the photo or PDF beside it."""
     import base64
-    from gateway.run_inbound_transcription import GatewayInboundTranscriptionMixin
+    from hermes_agent.gateway.run_inbound_transcription import GatewayInboundTranscriptionMixin
     from plugins.platforms.photon.adapter import PhotonAdapter
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("PHOTON_PROJECT_ID", "p")
@@ -597,7 +597,7 @@ async def test_a_photon_caf_sent_as_octet_stream_is_transcribed_as_the_voice_it_
     """A ``.caf`` attachment with a generic ``application/octet-stream`` MIME counts as voice, so it
     reaches gate STT (and the turn's) like any other voice note instead of being dropped unheard."""
     import base64
-    from gateway.run_inbound import GatewayInboundMixin
+    from hermes_agent.gateway.run_inbound import GatewayInboundMixin
     from plugins.platforms.photon.adapter import PhotonAdapter
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("PHOTON_PROJECT_ID", "p")
@@ -665,7 +665,7 @@ async def test_a_bluebubbles_memo_beside_a_file_sends_only_its_audio_to_stt_and_
     beside it never demotes it to an audio attachment)."""
     import asyncio
     import json
-    from gateway.run_inbound import GatewayInboundMixin
+    from hermes_agent.gateway.run_inbound import GatewayInboundMixin
     from plugins.platforms.bluebubbles.adapter import BlueBubblesAdapter
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     adapter = BlueBubblesAdapter(PlatformConfig(enabled=True, extra={

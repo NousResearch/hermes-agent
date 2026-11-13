@@ -79,7 +79,7 @@ def test_stale_epoch_leaves_a_per_process_surface_alone():
 def test_frozen_session_policy_wins_over_live_surface_config():
     """A gateway-owned session runs under its frozen launch policy: the refresh re-pins the
     policy's toolsets and never consults the live-config surface builder."""
-    from gateway.session_policy import _ACTIVE_POLICY
+    from hermes_agent.gateway.session_policy import _ACTIVE_POLICY
     agent, _db = _stale_bot_chat_agent("desktop")
     token = _ACTIVE_POLICY.set(MagicMock(toolsets=("file", "web")))
     try:

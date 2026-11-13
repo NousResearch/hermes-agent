@@ -20,7 +20,7 @@ Evidence paths are relative to the receipt directory. Supply a full report with 
 
 ## Normal gateway bootstrap descriptor probe
 
-`normal_boot.py` launches `python -m gateway.run` with a disposable, credential-free profile on native POSIX. It polls the real control socket until the deadline and exits nonzero unless the owner advertises `ready`, protocol 1, an authority epoch, and an API origin. The private receipt retains descriptor transitions and the child shutdown result; the adjacent log retains startup diagnostics. Only its owned process group receives cleanup signals. An unexpected SIGTERM normally gives the gateway exit code 1; this is separate from the probe's readiness verdict.
+`normal_boot.py` launches `python -m hermes_agent.gateway.run` with a disposable, credential-free profile on native POSIX. It polls the real control socket until the deadline and exits nonzero unless the owner advertises `ready`, protocol 1, an authority epoch, and an API origin. The private receipt retains descriptor transitions and the child shutdown result; the adjacent log retains startup diagnostics. Only its owned process group receives cleanup signals. An unexpected SIGTERM normally gives the gateway exit code 1; this is separate from the probe's readiness verdict.
 
     python3 evals/shared_gateway/normal_boot.py --repo /path/to/checkout --python /path/to/project/.venv/bin/python --output /private/path/boot-before.json
 

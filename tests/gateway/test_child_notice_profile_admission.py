@@ -10,8 +10,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.run import GatewayRunner
 
 OWNERS = ["child", "handoff", "foreground", "live_handoff"]
 
@@ -19,8 +19,8 @@ OWNERS = ["child", "handoff", "foreground", "live_handoff"]
 def _build_rig(monkeypatch, tmp_path, request, surface_a, mode):
     from typing import cast
 
-    from gateway.platforms.base import BasePlatformAdapter
-    from gateway.run import _async_profile_runtime_scope
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter
+    from hermes_agent.gateway.run import _async_profile_runtime_scope
     from hermes_cli.profiles import get_profile_dir
     from hermes_constants import get_hermes_home
     from hermes_agent import hermes_state
@@ -32,7 +32,7 @@ def _build_rig(monkeypatch, tmp_path, request, surface_a, mode):
     # The global fixture pins the default DB; restore call-time profile resolution
     # within these explicitly private homes instead of sharing its root handle.
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
-    import gateway.run as gw
+    import hermes_agent.gateway.run as gw
     monkeypatch.setattr(gw, "_hermes_home", tmp_path)
     registry = ProcessRegistry()
     monkeypatch.setattr(pr_module, "process_registry", registry)
@@ -84,8 +84,8 @@ def _transfer_to_parent(rig, leg):
 
 async def _for_each_leg(rig, owner, surface_a, path, consume):
     """Run ``consume`` on legs A, B, A; afterwards no route, row or pin may have moved."""
-    from gateway.run import _async_profile_runtime_scope, _profile_runtime_scope
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.run import _async_profile_runtime_scope, _profile_runtime_scope
+    from hermes_agent.gateway.session import SessionSource
     from hermes_constants import get_hermes_home
     from tools.process_registry import ProcessSession
 
@@ -233,7 +233,7 @@ async def test_watch_events_follow_the_owning_profile(
 async def test_registry_drain_follows_the_owning_profile(
     monkeypatch, tmp_path, request, surface_a, owner, private_db_probe_cleanup,
 ):
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
 
     rig = _build_rig(monkeypatch, tmp_path, request, surface_a, "all")
 
@@ -277,7 +277,7 @@ async def test_delegation_results_are_never_process_noise(
 async def test_batched_completions_follow_the_owning_profile(
     monkeypatch, tmp_path, request, surface_a, owner, path, private_db_probe_cleanup,
 ):
-    from gateway.run import _async_profile_runtime_scope
+    from hermes_agent.gateway.run import _async_profile_runtime_scope
 
     rig = _build_rig(monkeypatch, tmp_path, request, surface_a, "all")
     runner = rig.runner

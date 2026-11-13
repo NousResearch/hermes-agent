@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 # Logger parity with the origin module (moved log records keep their name).
-logger = logging.getLogger("gateway.platforms.api_server")
+logger = logging.getLogger("hermes_agent.gateway.platforms.api_server")
 
 MAX_STORED_RESPONSES = 100
 # Settled Idempotency-Key identities retained per response-body slot (see ResponseStore).
@@ -199,7 +199,7 @@ class ResponseStore:
             # Unreadable canonical store: nothing is proven terminal, so nothing is settled.
             logger.debug('Responses identity settlement skipped: %s unreadable', state_db, exc_info=True)
             return
-        from gateway.platforms.api_server_response_identity import durable_response_id
+        from hermes_agent.gateway.platforms.api_server_response_identity import durable_response_id
         self._conn.executemany(
             'UPDATE response_keys SET settled_at=COALESCE(?, created_at), response_id=COALESCE(response_id, ?) '
             'WHERE request_key=? AND settled_at IS NULL',

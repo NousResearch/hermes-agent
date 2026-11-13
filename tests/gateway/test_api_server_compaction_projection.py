@@ -14,8 +14,8 @@ from agent.context_compressor import (
     _MERGED_SUMMARY_DELIMITER,
     _SUMMARY_END_MARKER,
 )
-from gateway.config import PlatformConfig
-from gateway.platforms.api_server import (
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.api_server import (
     APIServerAdapter,
     _is_compressed_summary_message,
 )
@@ -194,7 +194,7 @@ class TestTurnTranscriptProjection:
 class TestMessagesEndpointProjection:
     @pytest.mark.asyncio
     async def test_suppressed_delegation_row_keeps_evidence_but_not_presentation(self, adapter, session_db, tmp_path, monkeypatch):
-        from gateway.wake import persist_delegation_delivery
+        from hermes_agent.gateway.wake import persist_delegation_delivery
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text("display: {suppress_warning_notifications: true}")
         sid = session_db.create_session("diagnostic-projection", "api_server")

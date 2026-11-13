@@ -19,8 +19,8 @@ OWNER_STOPPED_ERROR = ('its gateway stopped or restarted mid-turn, so the turn w
 
 
 def owner_stopped(result):
-    """True for a turn result its own gateway's stop or restart interrupted (``gateway/run.py`` reasons)."""
-    from gateway.run import _INTERRUPT_REASON_GATEWAY_RESTART, _INTERRUPT_REASON_GATEWAY_SHUTDOWN
+    """True for a turn result its own gateway's stop or restart interrupted (``hermes_agent/gateway/run.py`` reasons)."""
+    from hermes_agent.gateway.run import _INTERRUPT_REASON_GATEWAY_RESTART, _INTERRUPT_REASON_GATEWAY_SHUTDOWN
     return result.get('interrupt_message') in (_INTERRUPT_REASON_GATEWAY_RESTART, _INTERRUPT_REASON_GATEWAY_SHUTDOWN)
 
 
@@ -30,14 +30,14 @@ def forgotten_reply(authority, admission_id, record):
     author = record.get('author') or {}
     if not author.get('is_bot') or NO_REPLY_MARKER in (record.get('message') or ''):
         return None
-    from gateway.session_results import admission_result
+    from hermes_agent.gateway.session_results import admission_result
     saved = (admission_result(authority.db, admission_id) or {}).get('result') or {}
     text = _last_words(saved.get('messages') or [], str(author.get('name') or '').lower())
     return FORGOTTEN_REPLY_PREFIX + text if text else None
 
 
 def _last_words(messages, sender):
-    from gateway.response_filters import is_intentional_silence_response
+    from hermes_agent.gateway.response_filters import is_intentional_silence_response
     for message in reversed(messages):
         if not isinstance(message, dict) or message.get('role') != 'assistant':
             continue

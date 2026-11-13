@@ -13,9 +13,9 @@ from tools import clarify_gateway as clarify_mod
 @pytest.fixture
 def ask(owner, tmp_path, monkeypatch):
     """Drive the real delivery chain (native send, text fallback, wait) for one choice question."""
-    from gateway.run_turn_runner_clarify_delivery import _clarify_send_then_wait, text_fallback_coro
-    from gateway.session_local import LocalSessionAdapter
-    from gateway.session_policy import build_policy
+    from hermes_agent.gateway.run_turn_runner_clarify_delivery import _clarify_send_then_wait, text_fallback_coro
+    from hermes_agent.gateway.session_local import LocalSessionAdapter
+    from hermes_agent.gateway.session_policy import build_policy
 
     loop = asyncio.new_event_loop()
     thread = threading.Thread(target=loop.run_forever, daemon=True)
@@ -50,7 +50,7 @@ def ask(owner, tmp_path, monkeypatch):
 
 
 def test_hosted_clarify_is_declined_without_waiting(ask):
-    from gateway.run_turn_runner_clarify_delivery import UNDELIVERED_DECLINED
+    from hermes_agent.gateway.run_turn_runner_clarify_delivery import UNDELIVERED_DECLINED
     (response, answered), elapsed = ask('bot_room')
     assert (response, answered) == (UNDELIVERED_DECLINED, False)
     assert elapsed < 5, 'the member waited for an answer nobody can submit'
@@ -68,9 +68,9 @@ def test_clarify_without_an_answering_viewer_is_declined(ask, owner):
     """N8: the decline keys on who can answer, not on one source string. A forwarded A2A peer
     never can; a producer turn (Bot Chat DM) can only while a viewer holding session:respond is
     attached. A viewer's own turn keeps waiting for its author (the local test above)."""
-    from gateway.run_turn_runner_clarify_delivery import UNDELIVERED_DECLINED
-    from gateway.session_authority import LiveSession
-    from gateway.session_contract import SessionActor
+    from hermes_agent.gateway.run_turn_runner_clarify_delivery import UNDELIVERED_DECLINED
+    from hermes_agent.gateway.session_authority import LiveSession
+    from hermes_agent.gateway.session_contract import SessionActor
     from hermes_agent.hermes_state_runtime import admit_session_input, claim_session_input
     forwarded = {'source': 'a2a', 'a2a_identity': ['dev', '', 'peer', 'ctx']}
     (response, answered), elapsed = ask('a2a', request=forwarded)

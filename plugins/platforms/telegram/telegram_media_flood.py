@@ -20,7 +20,7 @@ import tempfile
 from contextvars import ContextVar
 from typing import Any, Awaitable, Callable, Optional
 
-from gateway.platforms.base import SendResult
+from hermes_agent.gateway.platforms.base import SendResult
 from plugins.platforms.telegram.telegram_media_budget import media_sources, scaled_budgets
 from plugins.platforms.telegram.telegram_media_retry import send_media_retrying, unconfirmed_media_result
 
@@ -97,7 +97,7 @@ class _KnownFloodWindow(Exception):
 class TelegramMediaFloodMixin:
     """Native local-file upload shell + flood recovery shared by every media sender."""
 
-    media_caption_limit = 1024  # a photo's caption cap: the runtime footer may ride it (gateway.runtime_footer)
+    media_caption_limit = 1024  # a photo's caption cap: the runtime footer may ride it (hermes_agent.gateway.runtime_footer)
 
     async def _send_media(
         self, send_fn: Any, chat_id: str, reply_to: Optional[str], metadata: Optional[dict[str, Any]], media_label: str,

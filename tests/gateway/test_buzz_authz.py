@@ -9,9 +9,9 @@ time, or an operator who listed only their npub is rejected with
 
 import pytest
 
-from gateway.config import Platform
-from gateway.platform_registry import PlatformEntry, platform_registry
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platform_registry import PlatformEntry, platform_registry
+from hermes_agent.gateway.session import SessionSource
 
 # Chip's public identity (public information, not a secret) — the same pair
 # used by tests/gateway/test_buzz_adapter.py.
@@ -53,7 +53,7 @@ def buzz_registered():
 
 
 def _make_runner():
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.pairing_store = None
@@ -107,7 +107,7 @@ def test_uppercase_npub_allowlist_authorizes(monkeypatch, buzz_registered):
 
 
 def test_normalize_nostr_allow_entries():
-    from gateway.authz_mixin import _normalize_nostr_allow_entries
+    from hermes_agent.gateway.authz_mixin import _normalize_nostr_allow_entries
 
     expanded = _normalize_nostr_allow_entries({SELF_NPUB, OTHER_PUBKEY, "not-a-key"})
     assert SELF_PUBKEY in expanded
@@ -117,7 +117,7 @@ def test_normalize_nostr_allow_entries():
 
 
 def test_npub_to_hex_roundtrip():
-    from gateway.authz_mixin import _npub_to_hex
+    from hermes_agent.gateway.authz_mixin import _npub_to_hex
 
     assert _npub_to_hex(SELF_NPUB) == SELF_PUBKEY
     assert _npub_to_hex(SELF_PUBKEY) is None  # hex input is not an npub
@@ -138,9 +138,9 @@ def _make_runner_with_adapter(extra: dict):
     """Single-profile (multiplex OFF) runner with a live Buzz adapter."""
     from types import SimpleNamespace
 
-    from gateway.authz_mixin import _npub_to_hex
-    from gateway.config import GatewayConfig, PlatformConfig
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.authz_mixin import _npub_to_hex
+    from hermes_agent.gateway.config import GatewayConfig, PlatformConfig
+    from hermes_agent.gateway.run import GatewayRunner
 
     def _normalize(entry):
         entry = (entry or "").strip()

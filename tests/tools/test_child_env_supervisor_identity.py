@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-from gateway.restart import is_gateway_supervisor_process, launchd_job_label
+from hermes_agent.gateway.restart import is_gateway_supervisor_process, launchd_job_label
 from tests.tools._child_env_fixtures import child_env, observe_terminal
 from tools.environments import local
 

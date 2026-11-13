@@ -14,7 +14,7 @@ from hermes_agent.hermes_state_runtime import RuntimeStoreError
 def build_kanban_policy(connection, params, config):
     from hermes_cli import kanban_db as kb
     from hermes_cli.profiles import resolve_profile_env
-    from gateway.session_policy import build_policy
+    from hermes_agent.gateway.session_policy import build_policy
     authority, actor = connection.authority, connection.actor
     if not connection.native_owner or 'session:create' not in actor.capabilities:
         raise RuntimeStoreError('permission_denied')
@@ -56,7 +56,7 @@ def build_kanban_policy(connection, params, config):
     private = {}
     policy = build_policy(params_policy, config, private_secrets=private)
     if policy.model is None:
-        from gateway.run import _resolve_gateway_model
+        from hermes_agent.gateway.run import _resolve_gateway_model
         policy = replace(policy, model=_resolve_gateway_model(policy.config()))
     context = dict(params, workspace=cwd, branch=task.branch_name, tenant=task.tenant,
         profile=task.assignee, workspaces_root=str(kb.workspaces_root(board=board).resolve()),
@@ -73,12 +73,12 @@ def build_kanban_policy(connection, params, config):
 async def run_task(connection, params):
     if not connection.native_owner or 'session:create' not in connection.actor.capabilities:
         raise RuntimeStoreError('permission_denied')
-    from gateway.run import _load_gateway_config
-    from gateway.session_local import create_local_session
-    from gateway.session_contract import Submission
-    from gateway.session_local_recovery import local_identity
+    from hermes_agent.gateway.run import _load_gateway_config
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_contract import Submission
+    from hermes_agent.gateway.session_local_recovery import local_identity
     from hermes_agent.hermes_state_local import local_receipt
-    from gateway.session_policy import restore_policy
+    from hermes_agent.gateway.session_policy import restore_policy
     authority = connection.authority
     # Resolved off-loop up front: no await separates the saved-claim check from session
     # creation. The Kanban claim check and its marker share one off-loop transaction; a
@@ -95,7 +95,7 @@ async def run_task(connection, params):
         if (not connection.native_owner or set(params) not in ({'board', 'task_id', 'run_id', 'claim_lock'}, {'board', 'task_id', 'run_id', 'claim_lock', 'db'})
                 or any(params[k] != context.get(k) for k in params)):
             raise RuntimeStoreError('permission_denied')
-        from gateway.session_local_recovery import restore_local_session
+        from hermes_agent.gateway.session_local_recovery import restore_local_session
         ref = restore_local_session(authority, sid)
     else:
         policy, private = build_kanban_policy(connection, params, _load_gateway_config())
@@ -128,7 +128,7 @@ async def run_task(connection, params):
                     {'db': owner_db, 'session_id': ref.session_id,
                      'request_id': request_id, 'pid': os.getpid(), 'birth': worker_birth(psutil.Process())},
                     run_id=task.current_run_id)
-    from gateway.session_runtime_workers import tracked_write
+    from hermes_agent.gateway.session_runtime_workers import tracked_write
     await tracked_write(authority, admit_claim)
     await connection.resume(ref, {})
     # Finite like the `chat -q` worker it replaced: nobody can answer an approval or clarify in a
@@ -226,8 +226,8 @@ def _watch_submitter(db, run_id):
 
 
 def run_worker_turns(agent, frame, history):
-    from gateway.session_managed_worker import worker_turn_scope
-    from gateway.session_surface import arm_surface_turn
+    from hermes_agent.gateway.session_managed_worker import worker_turn_scope
+    from hermes_agent.gateway.session_surface import arm_surface_turn
     with worker_turn_scope(frame):
         # The agent consumes explicit one-turn attributes, not the ContextVar: arm them exactly as
         # the in-process runner does (voice route marker + surface note on the user message).
@@ -245,9 +245,9 @@ def _worker_workspace(frame):
     if not session_id:
         yield None
         return
-    from gateway.session_authorities import served_profile_name
-    from gateway.session_context import clear_session_vars, set_session_vars
-    from gateway.session_policy import bind_turn_workspace, restore_policy
+    from hermes_agent.gateway.session_authorities import served_profile_name
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_policy import bind_turn_workspace, restore_policy
     from hermes_agent.hermes_state_keys import profile_from_session_key
     policy = restore_policy(frame['policy'])
     route = frame.get('route') or session_id
@@ -268,7 +268,7 @@ def _worker_workspace(frame):
 def _run_worker_turns(agent, frame, history):
     context = json.loads(frame['policy'].get('kanban_json') or 'null')
     if context is None:
-        from gateway.session_display import worker_display_kwargs
+        from hermes_agent.gateway.session_display import worker_display_kwargs
         author = frame.get('turn_author')
         with _worker_workspace(frame) as task_id:
             return agent.run_conversation(frame['text'], conversation_history=history, **worker_display_kwargs(),

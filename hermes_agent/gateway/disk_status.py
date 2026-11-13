@@ -1,6 +1,6 @@
 """Disk-usage rollup for ``/api/status``.
 
-Companion to :mod:`gateway.memory_status`: a hosted agent can fill its data
+Companion to :mod:`hermes_agent.gateway.memory_status`: a hosted agent can fill its data
 volume (SQLite writes failing, config saves lost) while its dashboard looks
 healthy.  Sampled live via one ``statvfs`` call, so there is no ``sampled_at``.
 ``/api/status`` is unauthenticated: only coarse numbers (MB, one-decimal
@@ -14,7 +14,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from gateway.memory_status import _nonneg_int
+from hermes_agent.gateway.memory_status import _nonneg_int
 
 # Percent alone misleads both ways: 90% used on 100 GB leaves 10 GB, while 50% on a tiny
 # volume is one download from write failures.  So percent triggers are gated on absolute

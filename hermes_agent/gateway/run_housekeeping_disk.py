@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 def housekeeping_media_caches() -> None:
     """Hourly media-cache prune (24h max age); spillover (None) keeps the session retention window."""
-    from gateway.platforms.base import (
+    from hermes_agent.gateway.platforms.base import (
         cleanup_audio_cache, cleanup_document_cache, cleanup_image_cache, cleanup_screenshot_cache,
         cleanup_video_cache)
     from tools.tool_result_storage import cleanup_spillover_cache
@@ -27,7 +27,7 @@ def housekeeping_media_caches() -> None:
     from tools.bot_mode_dm import cleanup_bot_dm_cache
     from tools.bot_relay import cleanup_bot_relay_artifacts
     from agent.provider_media import MEDIA_CACHE_MAX_AGE_HOURS
-    from gateway.run import _housekeeping_chore
+    from hermes_agent.gateway.run import _housekeeping_chore
 
     for cache_name, cleanup_fn in (
         ("Image", cleanup_image_cache), ("Document", cleanup_document_cache),
@@ -77,8 +77,8 @@ async def publish_local_auto_prune_notice(authority, ref) -> None:
     CLI asks at its own startup, so its sessions are skipped here."""
     import asyncio
     import time
-    from gateway.config import Platform
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session_policy import policy_for_source
     from hermes_cli import prune_advisor
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
@@ -107,8 +107,8 @@ async def publish_local_auto_prune_notice(authority, ref) -> None:
 
 def clear_local_auto_prune_notice(runner, source) -> None:
     """After /autoprune is answered on a local session, drop its sticky notice for that viewer."""
-    from gateway.config import Platform
-    from gateway.session_authorities import active_authority
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session_authorities import active_authority
     from hermes_cli.prune_advisor import NOTICE_KEY
     if getattr(source, "platform", None) != Platform.LOCAL:
         return
@@ -120,8 +120,8 @@ def clear_local_auto_prune_notice(runner, source) -> None:
 
 async def _post(runner, profile, home, advice) -> bool:
     """Send to the profile's home channels; True when at least one send was delivered."""
-    from gateway.run import _async_profile_runtime_scope
-    from gateway.warning_notifications import present_notification
+    from hermes_agent.gateway.run import _async_profile_runtime_scope
+    from hermes_agent.gateway.warning_notifications import present_notification
     from hermes_cli.prune_advisor import advice_lines
 
     delivered = False

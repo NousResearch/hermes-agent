@@ -70,7 +70,7 @@ def _where(remote: str) -> str:
         ok = False
     if not ok:
         raise GatewayCreateError("HERMES_TUI_GATEWAY_URL is not a ws:// or wss:// URL with a host; nothing was created")
-    from gateway.platforms.base_log_safety import safe_proxy_url_for_log  # a URL only: it loads gateway.platforms
+    from hermes_agent.gateway.platforms.base_log_safety import safe_proxy_url_for_log  # a URL only: it loads gateway.platforms
     named = safe_proxy_url_for_log(remote)
     return f"the gateway at {named}" if named.startswith(("ws://", "wss://")) else "the HERMES_TUI_GATEWAY_URL gateway"
 

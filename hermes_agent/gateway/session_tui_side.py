@@ -15,7 +15,7 @@ import logging
 import threading
 import uuid
 
-from gateway.session_busy_controls import authorize
+from hermes_agent.gateway.session_busy_controls import authorize
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
@@ -44,7 +44,7 @@ def _admit(connection, ref, params, prefix, required='text', optional=()):
     if ref.session_id not in connection.subscriptions:
         raise RuntimeStoreError('permission_denied')
     authority._require_admission_open()
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_policy import policy_for_source
     live = authority.sessions[ref.session_id]
     policy = policy_for_source(authority.runner, live.source)
     if policy is None:
@@ -56,9 +56,9 @@ def _admit(connection, ref, params, prefix, required='text', optional=()):
 def _side_scope(authority, policy, task_id):
     """The owning profile's home/secrets, the session's frozen policy, and the task's own session
     identity (approval key, HERMES_SESSION_ID) for the side agent's thread."""
-    from gateway.session_authorities import owner_scope, served_profile_name
-    from gateway.session_context import clear_session_vars, set_session_vars
-    from gateway.session_policy import bind_turn_workspace, policy_scope, unbind_turn_workspace
+    from hermes_agent.gateway.session_authorities import owner_scope, served_profile_name
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_policy import bind_turn_workspace, policy_scope, unbind_turn_workspace
     from tools.environments.local import _is_routed_home
     # The owning profile, as its own turns bind it: a served secondary by its name, so persistent
     # Docker keys ITS workspace container (never the launch profile's live one for the same folder);
@@ -82,19 +82,19 @@ def _side_scope(authority, policy, task_id):
 
 def _resolve_runtime(authority, policy):
     """``(model, runtime)`` the session's next turn would use: its frozen policy route."""
-    from gateway.run_turn_prepare import _resolve_policy_agent_runtime
+    from hermes_agent.gateway.run_turn_prepare import _resolve_policy_agent_runtime
     return _resolve_policy_agent_runtime(authority.runner, policy)
 
 
 def _side_agent(authority, policy, live, task_id, **overrides):
     """A fresh ``AIAgent`` on the session's frozen route (call inside ``_side_scope``)."""
     from agent.skill_utils import parse_config_string_list
-    from gateway.run import _checkpoint_agent_kwargs
+    from hermes_agent.gateway.run import _checkpoint_agent_kwargs
     from run_agent import AIAgent
     runner = authority.runner
     model, runtime = _resolve_runtime(authority, policy)
     config = policy.config(authority)
-    from gateway.session_worker_construct import session_routing
+    from hermes_agent.gateway.session_worker_construct import session_routing
     pr = session_routing(authority, policy)
     refresh_fallback = getattr(runner, '_refresh_fallback_model', None)
     kwargs = dict(
@@ -130,7 +130,7 @@ def _spawn(authority, ref, task_id, event_type, body, extra=None, holder=None):
     the restart wait, the shutdown drain, the SessionDB close gate and idle exit
     (``session_runtime_workers.uncounted_runtime_work``), and profile retirement interrupts
     ``holder[0]`` (the side agent, once built) and joins the thread."""
-    from gateway.session_runtime_workers import persist_work_count
+    from hermes_agent.gateway.session_runtime_workers import persist_work_count
     extra = extra or {}
     ledger = getattr(authority, '_side_agents', None)
     if ledger is None:
@@ -204,7 +204,7 @@ async def btw(connection, ref, params):
     # resident agent (never ran a turn here, or evicted) answers from its stored transcript.
     agent = authority.agent(ref)
     snapshot = list(getattr(agent, '_session_messages', None) or [])
-    from gateway.session_local_recovery import transcript_target
+    from hermes_agent.gateway.session_local_recovery import transcript_target
     target = None if snapshot else transcript_target(authority, ref)
 
     handle = _SideQuestionStop()
@@ -261,7 +261,7 @@ async def preview_restart(connection, ref, params):
                                         optional=('cwd', 'context'))
     authority = connection.authority
     cwd, context = (str(params.get(key) or '').strip() for key in ('cwd', 'context'))
-    from gateway.session_local_recovery import transcript_target
+    from hermes_agent.gateway.session_local_recovery import transcript_target
     target = transcript_target(authority, ref)
     holder = [None]
 

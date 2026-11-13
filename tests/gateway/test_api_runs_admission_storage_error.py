@@ -6,9 +6,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import GatewayConfig
-from gateway.session import SessionStore
-from gateway.session_authority import initialize_session_authority
+from hermes_agent.gateway.config import GatewayConfig
+from hermes_agent.gateway.session import SessionStore
+from hermes_agent.gateway.session_authority import initialize_session_authority
 from hermes_agent.hermes_state import SessionDB
 from tests.gateway.test_api_unknown_resolution import _AUTH_HEADERS, _adapter, _runs_client
 
@@ -21,7 +21,7 @@ async def test_locked_admission_write_is_503_and_exact_retry_runs(tmp_path, monk
     executed = []
 
     async def answer(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         executed.append(event.text)
         execution_result.get()["result"] = {"final_response": "ACK", "messages": []}
         return "ACK"

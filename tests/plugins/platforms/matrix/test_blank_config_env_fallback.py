@@ -4,7 +4,7 @@ exactly as it does when the key is absent (0.21.2 started seeding blank YAML val
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 
 @pytest.mark.parametrize("blank", ["", "  \t "])

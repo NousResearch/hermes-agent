@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.run_startup import GatewayStartupMixin
+from hermes_agent.gateway.run_startup import GatewayStartupMixin
 from hermes_cli import session_reset_retirement
 
 
@@ -18,7 +18,7 @@ def test_startup_warns_on_timed_session_reset_unless_plugin_enabled(tmp_path, mo
     runner = object.__new__(GatewayStartupMixin)
     runner.config = SimpleNamespace(multiplex_profiles=False)
 
-    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.run"):
         runner._start_log_retired_session_reset()
 
     warned = [r.getMessage() for r in caplog.records if "session_reset.mode: idle" in r.getMessage()]

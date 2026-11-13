@@ -98,7 +98,7 @@ def _wait_for(home: Path, metric: str) -> None:
 
 
 def test_graceful_gateway_exit_writes_the_open_sessions_summary(metrics_home, monkeypatch):
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     home, _ = metrics_home
     _finished_task_in_open_session()
@@ -171,7 +171,7 @@ def test_orphaned_slash_worker_writes_the_open_sessions_summary(metrics_home, mo
 
 
 def test_graceful_exit_with_collection_off_creates_no_store(metrics_home, monkeypatch):
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     home, policy = metrics_home
     policy["on"] = False
@@ -195,7 +195,7 @@ def test_exit_flush_applies_each_profiles_own_consent(tmp_path, monkeypatch):
     """A multiplex gateway exits from the launch profile's scope. A routed profile with sending off
     keeps it off (no consent window opened on its store), and one that turned collection off after
     its turn gets no exit rows; both rulings are that profile's own, not the launch profile's."""
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     _require_native_relay()
     launch, send_off, revoked = (tmp_path / name for name in ("launch", "send-off", "revoked"))
@@ -240,9 +240,9 @@ def test_a_wedged_exit_flush_is_bounded_and_runs_after_the_clean_exit_stamp(metr
     """A managed tool call still in flight holds the Relay flush barrier (#53107): the exit still
     leaves within the flush bound, and the clean-exit sentinel is already written, so a supervisor
     killing the process during the flush never records a graceful stop as an unclean death."""
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
     from agent import relay_tools
-    from gateway.lifecycle_ledger import get_lifecycle_sentinel_path
+    from hermes_agent.gateway.lifecycle_ledger import get_lifecycle_sentinel_path
 
     home, _ = metrics_home
     _finished_task_in_open_session()
@@ -292,7 +292,7 @@ def test_graceful_exit_drains_the_root_profiles_deferred_host_count(tmp_path, mo
     per-profile runtime owns. When another process held it past the busy timeout, the profile's visit
     was deferred in memory; the graceful exit still writes it there (and only there) once the store
     frees, instead of losing it to ``os._exit``."""
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
     from hermes_cli.observability import shared_metrics_engagement as engagement
     from hermes_cli.observability.shared_metrics import SharedMetricsStore
 

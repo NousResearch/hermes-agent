@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
-from gateway.platforms._shared import platform_gate_env as _scoped_gate_env
+from hermes_agent.gateway.platforms._shared import platform_gate_env as _scoped_gate_env
 
 
 def component_chat_context(interaction, thread_cls) -> tuple[str, Optional[str], Optional[str]]:
@@ -73,7 +73,7 @@ def _component_check_auth(
     # Pairing store (mirrors ``authz_mixin._check_authorization``): paired users click without allowlist.
     if uid:
         try:
-            from gateway.pairing import PairingStore
+            from hermes_agent.gateway.pairing import PairingStore
             store = PairingStore()
             if store.is_approved("discord", uid):
                 return True
@@ -85,8 +85,8 @@ def _component_check_auth(
 def opener_refusal(view, interaction) -> Optional[str]:
     """The localized "only X can answer" note when *interaction*'s clicker may not answer *view*: a
     picker card (its opener or an admin) or the ``/update`` prompt (its ``/update`` sender or an
-    admin), per ``gateway.approval_actor``; ``None`` for every other view or an allowed clicker."""
-    from gateway.approval_actor import picker_refusal, refusal_text, update_prompt_refusal
+    admin), per ``hermes_agent.gateway.approval_actor``; ``None`` for every other view or an allowed clicker."""
+    from hermes_agent.gateway.approval_actor import picker_refusal, refusal_text, update_prompt_refusal
 
     actor = getattr(getattr(interaction, "user", None), "id", "")
     extra = getattr(view, "answer_extra", None) or {}

@@ -11,15 +11,15 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import hermes_yaml as yaml
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionSource
 
 DEFAULT = "<no approvers key>"
 
 
 def _runner(extra=None):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(
@@ -51,7 +51,7 @@ def write_approvers(approvers):
 
 def pending_from(user_id, user_name, session_key, platform="telegram"):
     """Enqueue an approval the way the agent thread does, inside the requester's turn."""
-    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
     from tools import approval as approval_mod
     from tools.approval_gateway_wait import _ApprovalEntry
 

@@ -19,7 +19,7 @@ import unicodedata
 from pathlib import Path
 from typing import Any, Iterator, MutableMapping, Optional
 from urllib.parse import urljoin, urlsplit
-from gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.platforms.event import MessageEvent
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -123,7 +123,7 @@ def tag_safe_display_name(value: Any) -> str:
     Display names are set by the sender. On top of the one-line neutralization, the tag's own
     delimiters (``[``, ``]`` and the ``|`` that precedes a trusted id) are dropped, so a name can
     neither end the tag early nor forge a second id or mention span inside it."""
-    from gateway.session import neutralize_untrusted_inline_text
+    from hermes_agent.gateway.session import neutralize_untrusted_inline_text
     text = neutralize_untrusted_inline_text(value)
     return " ".join("".join(ch for ch in text if ch not in "[]|").split())
 
@@ -412,7 +412,7 @@ async def send_chunks(chunks: list, send_one) -> Any:
     ``BasePlatformAdapter._is_partial_delivery`` reads, so no caller (send retry, plain-text
     fallback, cron standalone fallback) re-sends the head the recipient already has.
     """
-    from gateway.platforms.base import SendResult
+    from hermes_agent.gateway.platforms.base import SendResult
     result = SendResult(success=False, error="nothing to send")
     for delivered, chunk in enumerate(chunks):
         result = await send_one(chunk)
@@ -601,7 +601,7 @@ def bypasses_chat_order(text: Any) -> bool:
     """A running-agent escape hatch (``/stop``, ``/approve``, ``/deny``): it acts on work already in
     flight, so it skips :class:`ChatOrderedWork`'s per-chat wait and never waits on an earlier voice
     note's gate STT. Every other command (``/new``, ``/undo``, ``/status``) keeps its place behind it."""
-    from gateway.session_commands import _ESCAPE_HATCHES
+    from hermes_agent.gateway.session_commands import _ESCAPE_HATCHES
     from hermes_cli.commands import resolve_command
     head = str(text or "").lstrip().split(maxsplit=1)
     if not head or not head[0].startswith("/"):
@@ -618,7 +618,7 @@ async def spoken_mention_clips(paths: list[str], patterns, *, adapter: Any = Non
     disables it. On a match, the clips to attach; the turn reuses their transcripts, one STT call
     per clip. Otherwise ``[]``, and the clips fetched only for this check are deleted (never those
     in *keep*, which another owner still references)."""
-    from gateway.run_inbound_transcription import (remember_gate_transcript, stt_enabled_for_turn,
+    from hermes_agent.gateway.run_inbound_transcription import (remember_gate_transcript, stt_enabled_for_turn,
                                                    transcribe_one_clip)
     results: dict = {}
     try:
@@ -741,7 +741,7 @@ def compile_mention_patterns(raw, *, log_prefix: str, platform_label: str | None
 
 
 # ─── Fence-Aware Markdown Chunking ───────────────────────────────────────────
-# Shared core for gateway/stream_consumer.py (``prefer_paragraphs=False, balance_fences=True``),
+# Shared core for hermes_agent/gateway/stream_consumer.py (``prefer_paragraphs=False, balance_fences=True``),
 # paragraph mode (``prefer_paragraphs=True, balance_fences=False``, derived from the Yuanbao adapter,
 # now a plugin) and weixin (``greedy_pack_blocks``).
 
@@ -779,7 +779,7 @@ def _cp_budget(text, budget, len_fn):
     (callers guarantee ``len_fn(text) > budget``, so plain ``len`` needs no search)."""
     if len_fn is len:
         return budget
-    from gateway.platforms.base import _custom_unit_to_cp  # heavyweight; lazy
+    from hermes_agent.gateway.platforms.base import _custom_unit_to_cp  # heavyweight; lazy
     return _custom_unit_to_cp(text, budget, len_fn)
 
 
@@ -1099,8 +1099,8 @@ def platform_http_client(**kwargs: Any) -> Any:
     (``gateway.platforms.base.ssrf_redirect_guard``, run before any caller ``response`` hooks) and the
     shared keepalive pool limits (``platform_httpx_limits()``; pass ``limits=None`` for httpx's
     defaults). Defaults ``timeout=30.0`` and ``follow_redirects=True``; other kwargs go to httpx."""
-    from gateway.platforms._http_client_limits import platform_httpx_limits
-    from gateway.platforms.base import ssrf_redirect_guard
+    from hermes_agent.gateway.platforms._http_client_limits import platform_httpx_limits
+    from hermes_agent.gateway.platforms.base import ssrf_redirect_guard
     from tools.url_safety import create_ssrf_safe_async_client
     hooks = dict(kwargs.pop("event_hooks", None) or {})
     hooks["response"] = [ssrf_redirect_guard, *hooks.get("response", ())]
@@ -1217,7 +1217,7 @@ def reply_document_sender(adapter: Any) -> Any:
     """The adapter's upload for a reply file: ``send_reply_document`` (an upload whose failure is a
     failed result, never a text notice reported as sent), else a native ``send_document``; None when
     it has neither (the base ``send_document`` only posts a failure notice)."""
-    from gateway.platforms.base import BasePlatformAdapter
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter
     if callable(getattr(type(adapter), "send_reply_document", None)):
         return adapter.send_reply_document
     native = getattr(type(adapter), "send_document", None) not in (None, BasePlatformAdapter.send_document)
@@ -1303,7 +1303,7 @@ async def _file_result(adapter: Any, chat_id: str, content: str, reply_to: Optio
     if ids is None:
         logger.warning("Long reply could not be sent as a file; sending it as messages")
         return None
-    from gateway.platforms.base import SendResult
+    from hermes_agent.gateway.platforms.base import SendResult
     return SendResult(success=True, message_id=ids[0] if ids else None,
                       raw_response={"message_ids": ids, "sent_as_file": True})
 

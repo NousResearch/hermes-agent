@@ -18,8 +18,8 @@ async def test_write_tool_log_shares_one_logger_across_turns(tmp_path, monkeypat
     every line lands in tool_calls.log exactly once through the shared handler."""
     import logging
 
-    import gateway.run as gateway_run
-    from gateway.run_turn import GatewayTurnMixin
+    import hermes_agent.gateway.run as gateway_run
+    from hermes_agent.gateway.run_turn import GatewayTurnMixin
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     shared = logging.getLogger("hermes.tool_calls")

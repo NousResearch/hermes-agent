@@ -30,7 +30,7 @@ def test_static_services_and_gateway_slots_use_distinct_scandirs(
     monkeypatch.setattr(service_manager, "detect_service_manager", lambda: "s6")
     monkeypatch.setattr(service_manager, "_s6_run", _fake_s6_run)
     monkeypatch.setattr(service_manager.S6ServiceManager, "list_profile_gateways", _list)
-    monkeypatch.setattr("gateway.host_topology.host_gateway_topology", lambda: None)
+    monkeypatch.setattr("hermes_agent.gateway.host_topology.host_gateway_topology", lambda: None)
 
     doctor_platform._check_s6_supervision([])
 

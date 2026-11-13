@@ -1,7 +1,7 @@
 """``hermes webapp``: open the browser-hosted Desktop that the gateway serves.
 
 The gateway serves the Webapp on its own listener when its home's config sets ``webapp.enabled``
-(``gateway.webapp_listener``). This command builds the bundle when it is stale, starts the gateway that
+(``hermes_agent.gateway.webapp_listener``). This command builds the bundle when it is stale, starts the gateway that
 serves the current profile, asks it for a one-use launch link over the control socket (same OS user
 only) and opens that link, so the credential appears in no argv, output or link. On Linux the gateway
 checks that the browser's connection is the user's; on Windows nothing checks it, and the link travels
@@ -119,7 +119,7 @@ def _open_privately(target: Path, url: str) -> bool:
     folder or page cannot be kept user-only, or when no browser opens it. On macOS ``webbrowser`` hands the
     URL to ``osascript`` on stdin, never in argv, so the page mainly protects the BSDs and illumos, where
     ``xdg-open`` or ``firefox`` gets the URL in argv."""
-    from gateway.webapp_listener import TOKEN_PATH, _close_to_other_users, _readable_by_other_users
+    from hermes_agent.gateway.webapp_listener import TOKEN_PATH, _close_to_other_users, _readable_by_other_users
     from hermes_constants import is_wsl
     if os.name == "nt" or is_wsl():
         return False
@@ -180,7 +180,7 @@ def _refusal(response: dict) -> str:
 def _off_message(target: Path, then: str) -> str:
     """Why *target*'s config keeps the Webapp off and what to do about it, then *then*: the
     ``webapp:`` block's own problem when it asks for the Webapp but cannot be used."""
-    from gateway.webapp_listener import webapp_settings
+    from hermes_agent.gateway.webapp_listener import webapp_settings
     settings = webapp_settings(target)
     if settings.reason:
         return f"The Webapp is off: {settings.reason}. Fix it, then {then}."
@@ -211,7 +211,7 @@ def _browser_address(target: Path, settings, served_url: str) -> str:
     *target*'s config now, not from when the gateway started."""
     from hermes_cli.web_server_boundary import public_hosts_engage_gate, public_url_hosts, should_require_auth
     from hermes_cli.webapp_access import registered_lan_origin
-    # The sign-in gate gateway.run_api.start_gateway_api engages on the Webapp's listener; without it
+    # The sign-in gate hermes_agent.gateway.run_api.start_gateway_api engages on the Webapp's listener; without it
     # webapp-launch hands out the loopback launch link and never reads the registration, which outlives
     # a move back to a loopback bind.
     gated = should_require_auth(settings.host) or public_hosts_engage_gate(public_url_hosts(settings.public_url))
@@ -223,7 +223,7 @@ def _status(target: Path) -> int:
     try:
         response = _control(target, "webapp-status")
     except GatewayUnreachable:
-        from gateway.webapp_listener import webapp_settings
+        from hermes_agent.gateway.webapp_listener import webapp_settings
         if webapp_settings(target).enabled:
             print("The gateway is not running. Run hermes webapp to start it.")
         else:
@@ -235,7 +235,7 @@ def _status(target: Path) -> int:
     status = response["result"]
     if status["state"] == "serving":
         print(f"Serving at {status['url']}")
-        from gateway.webapp_listener import webapp_settings
+        from hermes_agent.gateway.webapp_listener import webapp_settings
         settings = webapp_settings(target)
         if note := _plain_http_note(_browser_address(target, settings, status["url"])):
             print(note)
@@ -257,7 +257,7 @@ def _restart_applies(reason) -> bool:
     """Whether fixing *reason* (why the gateway does not serve the Webapp) takes a gateway restart. A
     missing or stale bundle does not: the gateway serves one as soon as it is built, and a restart
     keeps the stale mark."""
-    from gateway.webapp_listener import NOT_BUILT
+    from hermes_agent.gateway.webapp_listener import NOT_BUILT
     return not str(reason).startswith(NOT_BUILT)
 
 
@@ -295,7 +295,7 @@ def _signed_out_summary(result: dict) -> str:
 
 
 def _sign_out(target: Path) -> int:
-    from gateway.webapp_listener import BrowserCredentialError, browser_session_token
+    from hermes_agent.gateway.webapp_listener import BrowserCredentialError, browser_session_token
     for attempt in range(_START_WAIT_ATTEMPTS + 1):
         try:
             response = _control(target, "webapp-sign-out")
@@ -351,7 +351,7 @@ def _explain_refused_launch(target: Path, response: dict) -> int:
 
 
 def cmd_webapp(args) -> int:
-    from gateway.webapp_listener import webapp_settings
+    from hermes_agent.gateway.webapp_listener import webapp_settings
     from hermes_cli.webapp import WebappBuildError, packaged_webapp_dist
     from hermes_constants import get_hermes_home
 

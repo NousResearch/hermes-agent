@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from gateway.restart import DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, resolve_systemd_timeout_stop_sec
+from hermes_agent.gateway.restart import DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, resolve_systemd_timeout_stop_sec
 import contextlib
 
 _SIGNAL_NAME_BY_NUM: dict[int, str] = {
@@ -99,7 +99,7 @@ def snapshot_shutdown_context(received_signal: Any = None) -> dict[str, Any]:
             ctx["tracer_pid"] = int(tracer) if tracer.isdigit() else tracer
             ctx["tracer"] = _proc_summary(int(tracer)) if tracer.isdigit() else None
     # Race hint: a takeover marker on disk that does NOT name us is a smoking gun for "another
-    # --replace instance is killing us". Filenames mirror gateway.status; literals keep the signal-
+    # --replace instance is killing us". Filenames mirror hermes_agent.gateway.status; literals keep the signal-
     # handler path import-light.
     with contextlib.suppress(Exception):
         hermes_home_str = os.path.expanduser(os.environ.get("HERMES_HOME", ""))

@@ -4,8 +4,8 @@ import sqlite3
 from contextlib import closing
 from types import SimpleNamespace
 
-from gateway import hosted_rooms, hosted_room_driver as driver
-from gateway.hosted_room_attachments import HostedRoomAttachmentStore
+from hermes_agent.gateway import hosted_rooms, hosted_room_driver as driver
+from hermes_agent.gateway.hosted_room_attachments import HostedRoomAttachmentStore
 from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService
 
 

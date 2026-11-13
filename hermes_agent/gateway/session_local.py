@@ -9,10 +9,10 @@ import logging
 import uuid
 from contextlib import contextmanager
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.session import SessionSource
-from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
@@ -33,8 +33,8 @@ class LocalSessionAdapter(BasePlatformAdapter):
     @staticmethod
     def _source_key(source):
         # A conversation its chat moved past keeps the chat's id, which every other one of that chat
-        # shares: its own key names it (gateway/session_detached.py).
-        from gateway.session_detached import detached_route_of
+        # shares: its own key names it (hermes_agent/gateway/session_detached.py).
+        from hermes_agent.gateway.session_detached import detached_route_of
         return detached_route_of(source) or source.chat_id
 
     def authorize_source(self, source):
@@ -105,7 +105,7 @@ class LocalSessionAdapter(BasePlatformAdapter):
             # A structured decline releases the wait at once and skips the plain-text re-ask
             # (an ordinary failure would fall back to a send() that ACKs, and the turn would
             # wait the whole clarify timeout).
-            from gateway.relay.egress import EGRESS_DECLINE_CODE
+            from hermes_agent.gateway.relay.egress import EGRESS_DECLINE_CODE
             return SendResult(success=False, error=error, error_kind='forbidden',
                               raw_response={'success': False, 'code': EGRESS_DECLINE_CODE, 'error': error})
         # Local sessions keep the base prompt: a choice question also captures typed text.
@@ -122,7 +122,7 @@ class LocalSessionAdapter(BasePlatformAdapter):
         policy = self.policies.get(chat_id)
         if policy is None:
             return None
-        from gateway.session_a2a import is_forward_policy
+        from hermes_agent.gateway.session_a2a import is_forward_policy
         if policy.source == 'bot_room':
             return 'Clarification is unavailable in hosted rooms'
         if is_forward_policy(policy):
@@ -146,7 +146,7 @@ def forget_live_session(authority, session_id, live):
     authority.launch_sources.pop(session_id, None)
     if live.source is None or live.source.platform != Platform.LOCAL:
         return
-    from gateway.session_local_recovery import local_adapter_map
+    from hermes_agent.gateway.session_local_recovery import local_adapter_map
     local = local_adapter_map(authority).get(Platform.LOCAL)
     if local is not None:
         local.forget(live.source, live.route)
@@ -158,7 +158,7 @@ def authorize_local_source(runner, source):
         return None
     # A forged profile must not miss this adapter and fall into a messaging
     # allow-all policy. Local source identity is owned by this authority alone.
-    from gateway.session_authorities import all_authorities
+    from hermes_agent.gateway.session_authorities import all_authorities
     owners = all_authorities(runner)
     adapter = runner._adapters_for_profile(source.profile).get(Platform.LOCAL)
     if not isinstance(adapter, LocalSessionAdapter):
@@ -177,7 +177,7 @@ def _bypass_policy(params, *, private_secrets, client_local=False):
     launch options. The profile's config.yaml/.env are never read, so a malformed profile cannot
     block or shape the session; there is no default model to inherit, so one must be explicit."""
     import copy
-    from gateway.session_policy import build_policy
+    from hermes_agent.gateway.session_policy import build_policy
     from hermes_cli.config_defaults import DEFAULT_CONFIG
     if not params.get('model'):
         raise RuntimeStoreError('invalid_params', field='model',
@@ -196,7 +196,7 @@ def load_profile_config(home=None):
     turns. A bound scope (a served profile's owner scope) already is that source and is kept; a miss
     on the launch profile still falls to the process env (systemd / ``op run`` injection)."""
     from pathlib import Path
-    from gateway.run import _load_gateway_config
+    from hermes_agent.gateway.run import _load_gateway_config
     with profile_env_scope(home):
         return _load_gateway_config(*(() if home is None else (Path(home) / 'config.yaml',)))
 
@@ -206,7 +206,7 @@ def profile_env_scope(home=None):
     """Bind the profile's current ``.env`` (see ``load_profile_config``) unless a scope is bound."""
     from pathlib import Path
     from agent.secret_scope import build_profile_secret_scope, current_secret_scope, reset_secret_scope, set_secret_scope
-    from gateway.run import _gateway_config_home
+    from hermes_agent.gateway.run import _gateway_config_home
     if current_secret_scope() is not None:
         yield
         return
@@ -240,7 +240,7 @@ def project_plugins_warning(policy):
 def create_local_session(authority, actor, params, *, trusted_policy=None, trusted_secrets=None, skills_prompt=None,
                          client_local=False):
     """Stage, commit and publish a local session inline (synchronous callers)."""
-    from gateway.session_local_recovery import restore_local_session
+    from hermes_agent.gateway.session_local_recovery import restore_local_session
     from hermes_agent.hermes_state_local import commit_local_session
     staged = stage_local_session(authority, actor, params, trusted_policy=trusted_policy,
                                  trusted_secrets=trusted_secrets, skills_prompt=skills_prompt,
@@ -261,7 +261,7 @@ def staged_creation_follows(authority, actor, request_id):
     """
     if not isinstance(request_id, str) or not request_id:
         return True
-    from gateway.session_local_recovery import local_identity
+    from hermes_agent.gateway.session_local_recovery import local_identity
     from hermes_agent.hermes_state_local import local_receipt
     sid = local_identity(authority.profile_id, actor.subject, request_id)
     if authority.db.get_session(sid) is None:
@@ -285,8 +285,8 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
         raise RuntimeStoreError('profile_mismatch')
     if 'session:create' not in actor.capabilities:
         raise RuntimeStoreError('permission_denied')
-    from gateway.session_policy import build_policy, BYPASS_FIELDS, FOLLOW_ADOPTED, LOCAL_DESKTOP_CHAT
-    from gateway.run import _resolve_gateway_model
+    from hermes_agent.gateway.session_policy import build_policy, BYPASS_FIELDS, FOLLOW_ADOPTED, LOCAL_DESKTOP_CHAT
+    from hermes_agent.gateway.run import _resolve_gateway_model
     from dataclasses import replace
     private_secrets = dict(trusted_secrets or {})
     client_key = params.get('api_key')  # the client's own; an alias's key is the owner's expansion
@@ -295,7 +295,7 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
     elif any(params.get(name) is True for name in BYPASS_FIELDS):
         policy = _bypass_policy(params, private_secrets=private_secrets, client_local=client_local)
     else:
-        from gateway.session_local_route import resolve_launch_route
+        from hermes_agent.gateway.session_local_route import resolve_launch_route
         raw_model, sent = params.get('model'), params
         with profile_env_scope():  # an alias's ``key_env`` / ``${VAR}`` key reads the same .env
             config = load_profile_config()
@@ -327,12 +327,12 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
         raise RuntimeStoreError('invalid_params', field='request_id',
                                 detail='must be a non-empty string of at most 256 characters')
     from dataclasses import asdict
-    from gateway.session import SessionEntry
-    from gateway.session_lifecycle import _now
-    from gateway.session_local_recovery import local_identity, restore_local_session
+    from hermes_agent.gateway.session import SessionEntry
+    from hermes_agent.gateway.session_lifecycle import _now
+    from hermes_agent.gateway.session_local_recovery import local_identity, restore_local_session
     authority._require_admission_open()
     sid = local_identity(authority.profile_id, actor.subject, request_id)
-    from gateway.session_policy import bind_launch_key, restore_policy, launch_key
+    from hermes_agent.gateway.session_policy import bind_launch_key, restore_policy, launch_key
     if authority.db.get_session(sid) is not None:
         from hermes_agent.hermes_state_local import local_receipt
         saved = local_receipt(authority.db, sid)
@@ -353,7 +353,7 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
             if key is None or not hmac.compare_digest(key, params.get('api_key') or ''):
                 raise RuntimeStoreError('admission_conflict')
         return restore_local_session(authority, sid)
-    from gateway.session_policy import launch_skills
+    from hermes_agent.gateway.session_policy import launch_skills
     if launch_skills(params) and skills_prompt is None:
         # `-s` is rendered off-loop by the RPC handler (render_launch_skills); a caller that
         # skipped it must not mint a session silently missing its preload.
@@ -366,7 +366,7 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
     policy = bind_launch_key(authority, sid, policy, params.get("api_key"), config_secrets=private_secrets,
                              owner_key=client_key is None,  # an overlapping exact retry takes the held one
                              client_request=client_request)
-    from gateway.session_local_recovery import local_source
+    from hermes_agent.gateway.session_local_recovery import local_source
     source = local_source(authority, sid, actor.subject)
     route = authority.runner.session_store._generate_session_key(source)
     # Same clock as every other routing entry: the recovery sweeps compare against a
@@ -374,7 +374,7 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
     now = _now()
     entry = SessionEntry(route, sid, now, now, origin=source, platform=Platform.LOCAL)
     # Prefill is read now, at creation (main's CLI: at startup), and held only if this attempt commits.
-    from gateway.session_worker_construct import stage_session_prefill
+    from hermes_agent.gateway.session_worker_construct import stage_session_prefill
     staged = stage_session_prefill(authority, policy, {
         'profile_id': authority.profile_id, 'principal_id': actor.subject, 'request_id': request_id,
         'session_id': sid, 'route': route, 'entry': entry.to_dict(), 'policy': asdict(policy)})
@@ -386,9 +386,9 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
 
 def publish_local_policy(authority, session_id, *, evict=True):
     from hermes_agent.hermes_state_local import local_receipt
-    from gateway.session_policy import restore_policy
+    from hermes_agent.gateway.session_policy import restore_policy
     live = authority.sessions[session_id]
-    from gateway.session_local_recovery import local_adapter_map
+    from hermes_agent.gateway.session_local_recovery import local_adapter_map
     adapter = local_adapter_map(authority)[Platform.LOCAL]
     adapter.policies[live.source.chat_id] = restore_policy(local_receipt(authority.db, session_id)['policy'])
     if evict:
@@ -403,7 +403,7 @@ def _lazy_model(authority, policy):
     if (policy is None or json.loads(policy.request_json).get('model')
             or str(policy.provider or '').strip().lower() not in {'', 'auto'}):
         return model
-    from gateway.session_authorities import owner_scope
+    from hermes_agent.gateway.session_authorities import owner_scope
     from hermes_cli.anon_auth import GUEST_MODEL, free_tier_route
     with owner_scope(authority):
         return GUEST_MODEL if free_tier_route() else model
@@ -454,8 +454,8 @@ def effort_fields(config, tier, model, provider, base_url, api_mode=None):
 def local_session_info(authority, ref):
     live = authority.sessions[ref.session_id]
     agent = authority.agent(ref)
-    from gateway.session_authorities import served_profile_name
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_authorities import served_profile_name
+    from hermes_agent.gateway.session_policy import policy_for_source
     policy = policy_for_source(authority.runner, live.source)
     if live.source is None:  # a history mount: what its stored row says
         source = authority.db.get_session(ref.session_id)['source']
@@ -477,7 +477,7 @@ def local_session_info(authority, ref):
     if agent is None and policy is None and live.source is not None and live.source.platform != Platform.LOCAL:
         # A messaging chat not built yet: what its next turn resolves (its /model and /reasoning picks
         # included), so a viewer's model and reasoning pill never wait on a field that never comes.
-        from gateway.session_messaging_picks import messaging_route_info
+        from hermes_agent.gateway.session_messaging_picks import messaging_route_info
         info.update(messaging_route_info(authority.runner, live))
     else:
         info.update(_reasoning_fields(agent, policy, info['model'], authority, override))
@@ -486,7 +486,7 @@ def local_session_info(authority, ref):
         # resuming client can tell "same flags again" from a real override attempt.
         import json
         info['launch_request'] = json.loads(policy.request_json)
-        from gateway.session_client import policy_client
+        from hermes_agent.gateway.session_client import policy_client
         if (client := policy_client(policy)) is not None:  # only a client that named itself
             info['client'] = client
         from agent.session_client_env import NOT_LOCAL_WARNING

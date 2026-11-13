@@ -4,7 +4,7 @@
 aim at the profile's Bot Chat. Under session authority that chat is a LOCAL session whose only
 writer is the authority FIFO — a Desktop showing it is a viewer, never a lease-holding executor —
 so the API edge admits the turn through the same door as ``bot_relay.deliver``
-(``gateway/session_bot.py``) and reads the reply from that admission's receipt. Binding the
+(``hermes_agent/gateway/session_bot.py``) and reads the reply from that admission's receipt. Binding the
 session as an API conversation (``run_api_turn``) would be a second writer and is refused
 (``permission_denied``) by design. Without an authority the legacy live-owner mailbox applies.
 """
@@ -14,7 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import uuid
 
-from gateway.session_contract import SessionActor
+from hermes_agent.gateway.session_contract import SessionActor
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
@@ -27,7 +27,7 @@ _PEER_CREATE_FIELDS = frozenset({'title', 'source'})
 
 
 def _authority(runner):
-    from gateway.session_authorities import active_authority
+    from hermes_agent.gateway.session_authorities import active_authority
     return active_authority(runner) if getattr(runner, 'session_authority', None) is not None else None
 
 
@@ -45,14 +45,14 @@ async def create_peer_bot_chat(adapter, body):
             or body.get('id') or body.get('session_id')):
         return None
     from aiohttp import web
-    from gateway.platforms.api_server import _error_response
+    from hermes_agent.gateway.platforms.api_server import _error_response
     if unsupported := sorted(set(body) - _PEER_CREATE_FIELDS):
         return _error_response(
             f"Bot Chat creation refused: bot_chat_parameters_unsupported ({', '.join(unsupported)}); "
             "the Bot Chat is created with the profile's own model and prompt", 400,
             code='bot_chat_parameters_unsupported')
-    from gateway.session_bot import _create_bot_chat
-    from gateway.session_runtime_workers import track_mutation
+    from hermes_agent.gateway.session_bot import _create_bot_chat
+    from hermes_agent.gateway.session_runtime_workers import track_mutation
     actor = SessionActor(_PEER_SUBJECT, authority.profile_id,
                       frozenset({'session:create', 'session:read', 'session:submit'}), 'api-peer-dm')
     try:
@@ -77,7 +77,7 @@ def _refusal(authority, tip, exc):
             validate_legacy_row(authority.db, tip)
             reason, hint = 'bot_chat_unbound', 'open it once with `hermes chat -c "Bot Chat"` on that host'
         except RuntimeStoreError:
-            from gateway.session_bot import displaceable_bot_chat
+            from hermes_agent.gateway.session_bot import displaceable_bot_chat
             reason = 'bot_chat_not_local'
             if displaceable_bot_chat(authority, tip) is not None:
                 hint = "it is a conversation the gateway cannot own; it is moved aside as 'Bot Chat (<source> <id>)' on the next delivery"
@@ -128,8 +128,8 @@ def bot_chat_tip(authority, session_id):
 async def admit_peer_turn(runner, session_id, message, author):
     """``(profile home, receipt)`` when *session_id* is the Bot Chat and the turn was admitted to its
     FIFO; None when the target is any other session (the caller runs it as an API turn)."""
-    from gateway.session_authorities import served_profile_name
-    from gateway.session_bot import deliver
+    from hermes_agent.gateway.session_authorities import served_profile_name
+    from hermes_agent.gateway.session_bot import deliver
     authority = _authority(runner)
     if authority is None:
         return None
@@ -137,7 +137,7 @@ async def admit_peer_turn(runner, session_id, message, author):
     if tip is None:
         return None
     home = Path(authority.db.db_path).parent.resolve()
-    from gateway.session_bot import displaceable_bot_chat
+    from hermes_agent.gateway.session_bot import displaceable_bot_chat
     if displaceable_bot_chat(authority, authority.db.get_session_by_title('Bot Chat') or tip) is not None:
         # The title is held by an API conversation no FIFO can own (#140769, MSG-21): the owner
         # moves it aside and mints the local Bot Chat for the peer, as ``create_peer_bot_chat`` does.
@@ -176,7 +176,7 @@ async def await_peer_receipt(authority, record, timeout, *, should_stop=None):
     Each pass re-reads which admission is live (``peer_wait_admission``): after a transient failure
     the owner admits ONE retry, whose id is the only future that fires again; the original's interim
     ``failed`` (retry still eligible) reads as pending, never as the answer."""
-    from gateway.session_bot import peer_wait_admission
+    from hermes_agent.gateway.session_bot import peer_wait_admission
     if record['status'] not in _PENDING:
         return record
     loop = asyncio.get_running_loop()
@@ -220,5 +220,5 @@ async def _owner_published(authority, record, deadline):
 
 
 def _receipt(authority, record):
-    from gateway.session_bot import _result
+    from hermes_agent.gateway.session_bot import _result
     return {**record, **_result(authority, record)}

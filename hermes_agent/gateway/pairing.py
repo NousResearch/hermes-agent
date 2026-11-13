@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from gateway.whatsapp_identity import expand_whatsapp_aliases, normalize_whatsapp_identifier
+from hermes_agent.gateway.whatsapp_identity import expand_whatsapp_aliases, normalize_whatsapp_identifier
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
 from utils import atomic_json_write, file_cache_version
 
@@ -53,7 +53,7 @@ PAIRING_DIR = None
 # codes issued by the gateway unrecoverable while CLI-side writes to the same directory kept working
 # (NousResearch/hermes-agent#93449). ``_default_pairing_dir()`` below resolves this fresh on every call in
 # production. Tests patch this attribute directly to a concrete path for isolation (e.g.
-# ``patch("gateway.pairing.PAIRING_DIR", tmp_path)``); that continues to work unchanged, since a patched
+# ``patch("hermes_agent.gateway.pairing.PAIRING_DIR", tmp_path)``); that continues to work unchanged, since a patched
 # (non-``None``) value takes precedence over recomputing.
 def _default_pairing_dir() -> Path:
     return PAIRING_DIR if PAIRING_DIR is not None else get_hermes_dir("platforms/pairing", "pairing")
@@ -72,8 +72,8 @@ def _allowlist_env_for_platform(platform: str) -> Optional[str]:
         from hermes_cli.plugins import discover_plugins
         discover_plugins()  # idempotent
     with contextlib.suppress(Exception):
-        from gateway.platform_env import authz_field
-        from gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.platform_env import authz_field
+        from hermes_agent.gateway.platform_registry import platform_registry
         return authz_field(platform, "allowed_users_env", platform_registry.get(platform)) or None
     return None
 
@@ -127,7 +127,7 @@ def _read_allowlist_env(env_var: str) -> str:
 
     See #88441.
     """
-    from gateway.platforms._shared import get_scoped_secret
+    from hermes_agent.gateway.platforms._shared import get_scoped_secret
 
     return (get_scoped_secret(env_var, "") or "").strip()
 
@@ -165,7 +165,7 @@ def _iter_live_gateway_adapters():
     """Yield adapters from the in-process GatewayRunner, if one is running."""
     runner = None
     with contextlib.suppress(Exception):
-        from gateway.run import _gateway_runner_ref
+        from hermes_agent.gateway.run import _gateway_runner_ref
         runner = _gateway_runner_ref()
     if runner is None:
         return

@@ -270,7 +270,7 @@ class TestFormatFooter:
         config.yaml path out of the rendered footer (#35584)."""
         import os
         import tempfile
-        from gateway.platforms.base import BasePlatformAdapter
+        from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
         tmp = tempfile.mkdtemp(prefix="hermes_footer_")
         try:

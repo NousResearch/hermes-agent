@@ -798,7 +798,7 @@ def run_import(args) -> Optional[int]:
         hermes_root.mkdir(parents=True, exist_ok=True)
 
         t0 = time.monotonic()
-        from gateway.runtime_ownership import OwnershipConflict
+        from hermes_agent.gateway.runtime_ownership import OwnershipConflict
         try:
             restored, restored_external, errors, skipped_runtime, db_shrunk = _import_members(
                 zf, members, prefix, hermes_root, file_count)
@@ -916,7 +916,7 @@ def _import_members(
     zf: zipfile.ZipFile, members: list[str], prefix: str, hermes_root: Path, file_count: int
 ) -> tuple[int, int, list[str], list[str], list[tuple[str, tuple[int, int], tuple[int, int]]]]:
     """Reserve all affected profiles before publishing even the first config file."""
-    from gateway.runtime_ownership import exclusive_maintenance
+    from hermes_agent.gateway.runtime_ownership import exclusive_maintenance
     root_res = hermes_root.resolve()
     homes = {hermes_root}
     for member in members:
@@ -1115,8 +1115,8 @@ _QUICK_STATE_FILES = (
     "kanban.db",                        # default board (back-compat <root>/kanban.db)
     "kanban/boards",                    # non-default boards (workspaces/ + attachments/ skipped as regenerable)
     # Pairing stores (generic + per-platform JSONs outside state.db)
-    "pairing",                          # legacy location (gateway/pairing.py)
-    "platforms/pairing",                # new location (gateway/pairing.py)
+    "pairing",                          # legacy location (hermes_agent/gateway/pairing.py)
+    "platforms/pairing",                # new location (hermes_agent/gateway/pairing.py)
     "feishu_comment_pairing.json",      # Feishu comment subscription pairings
 )
 
@@ -1541,7 +1541,7 @@ def restore_quick_snapshot(
     Returns True if at least one file was restored and the listed auth.json
     was not refused or skipped.
     """
-    from gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
+    from hermes_agent.gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
     require_file_tooling("Snapshot restore")
     home = hermes_home or get_hermes_home()
     try:
@@ -1616,7 +1616,7 @@ def quick_snapshot_dir(snapshot_id: str, hermes_home: Optional[Path] = None) -> 
 
 def _restore_quick_snapshot_exclusive(snapshot_id: str, home: Path) -> bool:
     """Restore state from a quick snapshot while ``home`` is reserved."""
-    from gateway.runtime_ownership import exclusive_maintenance
+    from hermes_agent.gateway.runtime_ownership import exclusive_maintenance
     snap_dir = quick_snapshot_dir(snapshot_id, home)
     if snap_dir is None:
         return False

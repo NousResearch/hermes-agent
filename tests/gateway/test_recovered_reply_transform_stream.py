@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from tests.gateway.test_stream_consumer_silence import _draft_adapter, _numbered_adapter, _visible
 
 

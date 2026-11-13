@@ -14,8 +14,8 @@ import threading
 import pytest
 
 import hermes_agent.cron.scheduler_delivery as sd
-from gateway.config import GatewayConfig, Platform
-from gateway.platforms.base import SendResult
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.platforms.base import SendResult
 
 DM_USER = "861704526"
 

@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway import runtime_bootstrap_windows as native
+from hermes_agent.gateway import runtime_bootstrap_windows as native
 from hermes_cli import gateway_runtime as runtime
 from hermes_cli.gateway_runtime_cli import ensure_exit_code
 
@@ -46,7 +46,7 @@ def _gateway_child(tmp_path: Path):
 
 
 def _record(home: Path, pid: int, **extra) -> dict:
-    from gateway.status import _get_process_start_time
+    from hermes_agent.gateway.status import _get_process_start_time
     return {"pid": pid, "kind": "hermes-gateway", "argv": ["hermes", "gateway", "run"],
             "start_time": _get_process_start_time(pid), "hermes_home": str(home), **extra}
 

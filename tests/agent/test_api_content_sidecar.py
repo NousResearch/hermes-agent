@@ -628,7 +628,7 @@ class TestWireInvariant:
 
     def test_previous_message_after_a_gateway_replayed_multimodal_turn_is_the_ask(self, wire_env):
         from agent.turn_context import _previous_user_message_text
-        from gateway.run import _build_gateway_agent_history
+        from hermes_agent.gateway.run import _build_gateway_agent_history
         replayed = _build_gateway_agent_history(self._stored_multimodal_turn(wire_env))[0]
         assert _previous_user_message_text(replayed) == "what is this"
 

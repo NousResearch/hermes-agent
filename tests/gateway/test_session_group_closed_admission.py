@@ -5,9 +5,9 @@ import time
 
 import pytest
 
-from gateway import hosted_room_driver as driver
-from gateway.hosted_room_peer import MAX_STATUS_GRANT_TTL_SECONDS, room_grant_hard_expiry
-from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+from hermes_agent.gateway import hosted_room_driver as driver
+from hermes_agent.gateway.hosted_room_peer import MAX_STATUS_GRANT_TTL_SECONDS, room_grant_hard_expiry
+from hermes_agent.gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 from tests.gateway.test_session_group_peer_discard import (
     _never_admitted_deferred_turn, gateway as gateway_fixture, linked_peer as linked_peer_fixture,
 )

@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from gateway import hosted_rooms
+from hermes_agent.gateway import hosted_rooms
 from tests.gateway.test_hosted_room_owed_revoke_bounds import _grant, _owe, _rows
 from tests.gateway.test_session_group_peers import _grant_error, call, invite
 from tests.gateway.test_session_group_peers import gateway as gateway_fixture

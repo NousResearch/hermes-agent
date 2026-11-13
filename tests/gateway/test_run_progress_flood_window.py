@@ -14,9 +14,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.session import SessionSource
 
 
 class FloodedEditAdapter(BasePlatformAdapter):
@@ -71,7 +71,7 @@ async def _run(monkeypatch, tmp_path, retry_after, adapter=None, agent_cls=FourT
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = agent_cls
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
     adapter = adapter or FloodedEditAdapter(retry_after)
@@ -182,7 +182,7 @@ def _held_progress(edit_results):
     import queue
     from unittest.mock import AsyncMock
 
-    from gateway.run_turn_progress import GatewayTurnProgressMixin
+    from hermes_agent.gateway.run_turn_progress import GatewayTurnProgressMixin
 
     loop = GatewayTurnProgressMixin()
     loop._ctx = SimpleNamespace(

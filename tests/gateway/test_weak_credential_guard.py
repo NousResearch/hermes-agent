@@ -9,7 +9,7 @@ import logging
 
 import pytest
 
-from gateway.config import PlatformConfig, Platform, _validate_gateway_config
+from hermes_agent.gateway.config import PlatformConfig, Platform, _validate_gateway_config
 
 
 # ---------------------------------------------------------------------------
@@ -19,7 +19,7 @@ from gateway.config import PlatformConfig, Platform, _validate_gateway_config
 
 def _make_gateway_config(platform, token, enabled=True, **extra_kwargs):
     """Create a minimal GatewayConfig-like object for validation testing."""
-    from gateway.config import GatewayConfig
+    from hermes_agent.gateway.config import GatewayConfig
 
     config = GatewayConfig(platforms={})
     pconfig = PlatformConfig(enabled=enabled, token=token, **extra_kwargs)
@@ -87,7 +87,7 @@ class TestAPIServerPlaceholderKeyGuard:
         must now be refused — the API server dispatches terminal-capable agent
         work, so a guessable key is RCE.
         """
-        from gateway.platforms.api_server import APIServerAdapter
+        from hermes_agent.gateway.platforms.api_server import APIServerAdapter
 
         adapter = APIServerAdapter(
             PlatformConfig(enabled=True, extra={"host": "0.0.0.0", "key": "a1b2c3d4e5f6"})
@@ -101,7 +101,7 @@ class TestAPIServerPlaceholderKeyGuard:
         the credential guard). We don't assert full startup success here — the
         port/runner setup is environment-dependent — only that the weak-key
         guard does not reject it."""
-        from gateway.platforms.api_server import APIServerAdapter
+        from hermes_agent.gateway.platforms.api_server import APIServerAdapter
         from hermes_cli.auth import has_usable_secret
 
         strong = "0123456789abcdef0123456789abcdef"

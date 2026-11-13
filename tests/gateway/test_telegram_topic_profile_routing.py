@@ -6,8 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from hermes_agent.hermes_state import SessionDB
-from gateway.config import Platform
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.session import SessionSource
 
 
 CHAT = "208214988"
@@ -26,7 +26,7 @@ def _source(profile=None, thread_id="42"):
 
 
 def test_gateway_uses_source_profile_not_global(tmp_path: Path):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     assert GatewayRunner._telegram_topic_profile_name(_source("coder")) == "coder"
     assert GatewayRunner._telegram_topic_profile_name(_source(None)) == "default"
@@ -59,7 +59,7 @@ def test_routed_profile_flows_into_prune_via_send_metadata(tmp_path: Path):
     while the turn is routed to another profile — the outbound metadata built
     by the gateway carries the routed profile, and prune uses it over the
     adapter's own stamp (#76423)."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
     from plugins.platforms.telegram.adapter import TelegramAdapter
 
     runner = object.__new__(GatewayRunner)

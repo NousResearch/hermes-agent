@@ -1,7 +1,7 @@
 """Gateway provider-override credential resolution keys off the override's MODEL (#112600).
 
 Channel overrides, persisted ``/model`` switches and API-server provider refreshes all resolve
-credentials through ``gateway.run._resolve_runtime_agent_kwargs_for_provider``; without the model
+credentials through ``hermes_agent.gateway.run._resolve_runtime_agent_kwargs_for_provider``; without the model
 the ladder keys off config's ``default`` and a ``*-free`` default decides the api_mode/base_url
 for a Go-only model ("Model ... is not supported")."""
 
@@ -19,7 +19,7 @@ def _zen_free_default_home(monkeypatch, tmp_path):
 
 
 def test_provider_override_runtime_uses_the_override_model(_zen_free_default_home):
-    from gateway.run import _resolve_runtime_agent_kwargs_for_provider
+    from hermes_agent.gateway.run import _resolve_runtime_agent_kwargs_for_provider
 
     runtime = _resolve_runtime_agent_kwargs_for_provider("opencode-go", target_model="mimo-v2.5")
     assert runtime["provider"] == "opencode-go"
@@ -29,7 +29,7 @@ def test_provider_override_runtime_uses_the_override_model(_zen_free_default_hom
 def test_fallback_chain_runtime_uses_the_entry_model(_zen_free_default_home, monkeypatch):
     """The gateway's AuthError fallback goes through the shared ``resolve_runtime_with_fallback``
     walker (no gateway-private loop) and keeps the entry's own model."""
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
     import hermes_cli.runtime_provider as rp
     from hermes_cli.auth import AuthError
 

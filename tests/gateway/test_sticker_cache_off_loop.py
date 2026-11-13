@@ -1,6 +1,6 @@
 """The sticker-description cache write must not block the event loop.
 
-``gateway.sticker_cache._save_cache`` ends in ``os.replace``, whose duration is
+``hermes_agent.gateway.sticker_cache._save_cache`` ends in ``os.replace``, whose duration is
 unbounded under filesystem pressure.  Its only production caller is Telegram's
 ``_handle_sticker`` -- an inbound-message coroutine -- so every sticker that
 missed the cache paid that rename inline on the loop, stalling every other
@@ -16,7 +16,7 @@ import threading
 
 import pytest
 
-from gateway import sticker_cache
+from hermes_agent.gateway import sticker_cache
 
 
 @pytest.fixture()

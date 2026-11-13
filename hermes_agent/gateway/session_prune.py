@@ -36,14 +36,14 @@ async def prune(connection, ref, params):
         raise RuntimeStoreError('invalid_params')
     filters = _filters(params['filters']) if 'filters' in params else None
     authority._require_admission_open()
-    from gateway.session_runtime_workers import track_mutation
+    from hermes_agent.gateway.session_runtime_workers import track_mutation
     task = track_mutation(authority, _apply(authority, filters, never_active))
     return await asyncio.shield(task)
 
 
 async def _apply(authority, filters, never_active):
     from hermes_constants import get_hermes_home
-    from gateway.session_mutations import retire_live_sessions
+    from hermes_agent.gateway.session_mutations import retire_live_sessions
     # Same transcript dir the CLI's local prune unlinks under (dispatch runs in the owner's scope).
     sessions_dir = Path(get_hermes_home()) / 'sessions'
     deleted_ids = []

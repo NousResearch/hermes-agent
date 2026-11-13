@@ -1,4 +1,4 @@
-"""Tests for gateway/shutdown_flush.py — pending message durability (#72680)."""
+"""Tests for hermes_agent/gateway/shutdown_flush.py — pending message durability (#72680)."""
 
 import json
 import time
@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.shutdown_flush import (
+from hermes_agent.gateway.shutdown_flush import (
     flush_overflow_to_file,
     flush_pending_to_file,
     recover_pending_to_db,
@@ -24,7 +24,7 @@ def _make_flush_dir(tmp_path: Path) -> Path:
 def test_flush_writes_string_pending_to_file(tmp_path, monkeypatch):
     flush_dir = _make_flush_dir(tmp_path)
     monkeypatch.setattr(
-        "gateway.shutdown_flush._get_flush_dir", lambda: flush_dir
+        "hermes_agent.gateway.shutdown_flush._get_flush_dir", lambda: flush_dir
     )
     pending = {"agent:main:telegram:supergroup:123": "hello world"}
     count = flush_pending_to_file(pending, reason="shutdown")
@@ -42,7 +42,7 @@ def test_flush_writes_string_pending_to_file(tmp_path, monkeypatch):
 def test_flush_writes_message_event_to_file(tmp_path, monkeypatch):
     flush_dir = _make_flush_dir(tmp_path)
     monkeypatch.setattr(
-        "gateway.shutdown_flush._get_flush_dir", lambda: flush_dir
+        "hermes_agent.gateway.shutdown_flush._get_flush_dir", lambda: flush_dir
     )
     event = MagicMock()
     event.text = "user message"
@@ -66,7 +66,7 @@ def test_flush_writes_message_event_to_file(tmp_path, monkeypatch):
 def test_recover_inserts_via_append_message_and_deletes_file(tmp_path, monkeypatch):
     flush_dir = _make_flush_dir(tmp_path)
     monkeypatch.setattr(
-        "gateway.shutdown_flush._get_flush_dir", lambda: flush_dir
+        "hermes_agent.gateway.shutdown_flush._get_flush_dir", lambda: flush_dir
     )
     ts = int(time.time())
     # Write a flush file with session_id
@@ -101,7 +101,7 @@ def test_recover_payload_without_session_id_uses_resolver_and_deletes_file(
     """A str-pending payload carries session_key but no session_id; a resolver
     maps key→id so the message replays and the file is removed."""
     flush_dir = _make_flush_dir(tmp_path)
-    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    monkeypatch.setattr("hermes_agent.gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
     ts = int(time.time())
     payload = {
         "session_key": "agent:main:whatsapp:dm:15551234567",
@@ -141,7 +141,7 @@ def test_recover_closes_owned_db_when_unexpected_exception_escapes(
     """Owned SessionDB must close even when recovery is interrupted."""
     flush_dir = _make_flush_dir(tmp_path)
     monkeypatch.setattr(
-        "gateway.shutdown_flush._get_flush_dir", lambda: flush_dir
+        "hermes_agent.gateway.shutdown_flush._get_flush_dir", lambda: flush_dir
     )
     (flush_dir / "pending.json").write_text(
         json.dumps(
@@ -198,7 +198,7 @@ def test_recover_skips_failing_payload_and_continues(tmp_path, monkeypatch):
     """
     flush_dir = _make_flush_dir(tmp_path)
     monkeypatch.setattr(
-        "gateway.shutdown_flush._get_flush_dir", lambda: flush_dir
+        "hermes_agent.gateway.shutdown_flush._get_flush_dir", lambda: flush_dir
     )
     bad = _write_flush_file(flush_dir, "pending-a.json", "sid-bad", "first")
     good = _write_flush_file(flush_dir, "pending-b.json", "sid-good", "second")
@@ -224,7 +224,7 @@ def test_recover_skips_failing_payload_and_continues(tmp_path, monkeypatch):
 
 def test_get_flush_dir_uses_get_hermes_home(tmp_path, monkeypatch):
     """Flush dir must use get_hermes_home(), not hardcoded Path.home()."""
-    import gateway.shutdown_flush as mod
+    import hermes_agent.gateway.shutdown_flush as mod
 
     captured = {}
 
@@ -265,7 +265,7 @@ def test_flush_overflow_writes_one_payload_per_event_in_arrival_order(tmp_path, 
     with ``seq`` recording arrival order inside the session.
     """
     flush_dir = _make_flush_dir(tmp_path)
-    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    monkeypatch.setattr("hermes_agent.gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
 
     count = flush_overflow_to_file(
         {
@@ -292,7 +292,7 @@ def test_flushed_overflow_is_replayed_by_recover_pending_to_db(tmp_path, monkeyp
     """Round-trip: overflow payloads use the slot-flush shape, so the existing
     startup recovery inserts them as user rows without any new reader."""
     flush_dir = _make_flush_dir(tmp_path)
-    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    monkeypatch.setattr("hermes_agent.gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
     flush_overflow_to_file({"agent:main:telegram:dm:1": [_overflow_event("orphan-1")]})
 
     db = MagicMock()
@@ -313,10 +313,10 @@ def test_flush_overflow_noop_on_empty():
 
 def test_drain_transcript_spool_skips_parseable_non_dict_payload(tmp_path, monkeypatch):
     """A scalar/list JSON spool file must not abort the drain; the healthy payload still replays."""
-    from gateway.shutdown_flush import drain_transcript_spool, spool_dropped_transcript_message
+    from hermes_agent.gateway.shutdown_flush import drain_transcript_spool, spool_dropped_transcript_message
 
     flush_dir = _make_flush_dir(tmp_path)
-    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    monkeypatch.setattr("hermes_agent.gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
     (flush_dir / "pending-00-scalar.json").write_text("42", encoding="utf-8")
     (flush_dir / "pending-01-list.json").write_text("[1, 2]", encoding="utf-8")
     spool_dropped_transcript_message("sess-1", {"role": "user", "content": "hi"})

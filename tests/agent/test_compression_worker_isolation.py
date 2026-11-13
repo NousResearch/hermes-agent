@@ -334,7 +334,7 @@ def test_f5_session_contextvar_rebound_after_rotation(
     tmp_path: Path, monkeypatch
 ) -> None:
     """Post-compression tool reads of HERMES_SESSION_ID see the CHILD id."""
-    from gateway.session_context import (
+    from hermes_agent.gateway.session_context import (
         clear_session_vars,
         get_session_env,
         set_session_vars,

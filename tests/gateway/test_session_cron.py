@@ -7,10 +7,10 @@ import pytest
 
 def test_cron_admission_uses_job_model_and_exact_retry(tmp_path, monkeypatch):
     from hermes_agent.cron import jobs
-    from gateway import run, session_cron
-    from gateway.session import SessionStore
-    from gateway.session_authority import SessionAuthority
-    from gateway.session_contract import SessionActor
+    from hermes_agent.gateway import run, session_cron
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_contract import SessionActor
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import begin_runtime_epoch, RuntimeStoreError
 
@@ -18,7 +18,7 @@ def test_cron_admission_uses_job_model_and_exact_retry(tmp_path, monkeypatch):
     monkeypatch.setattr(jobs, 'get_job', lambda jid: {'id': jid, 'prompt': 'original', 'model': 'per-job-model'})
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {}, 'platform_toolsets': {'cli': []}})
     db = SessionDB(tmp_path / 'state.db')
-    from gateway.config import GatewayConfig
+    from hermes_agent.gateway.config import GatewayConfig
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     runner = SimpleNamespace(_draining=False, session_store=store, adapters={})
     authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='test', db=db,
@@ -50,9 +50,9 @@ async def test_cron_cancel_between_claim_and_execution_registration_stops_the_jo
     from contextlib import nullcontext
     import json
     from hermes_agent.cron import scheduler
-    from gateway import run, session_cron
-    from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import SessionActor, SessionRef
+    from hermes_agent.gateway import run, session_cron
+    from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_agent.gateway.session_contract import SessionActor, SessionRef
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
 
@@ -97,9 +97,9 @@ async def test_owner_execution_binds_the_scheduler_cron_identity_inside_run_job(
     from hermes_agent.cron import scheduler
     from hermes_agent.cron.execution_identity import current_cron_execution
     from hermes_agent.cron.executions import create_execution, mark_execution_running
-    from gateway import run, session_cron
-    from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway import run, session_cron
+    from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_agent.gateway.session_contract import SessionRef
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
 
@@ -142,10 +142,10 @@ def test_draining_owner_still_answers_status_and_cancel_of_admitted_cron_work(tm
     import threading
     from hermes_agent.cron import jobs
     from hermes_agent.cron.scheduler_authority import run_canonical_job
-    from gateway import run, session_cron
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway import run, session_cron
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import SessionAuthority
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import (RuntimeStoreError, begin_runtime_epoch, claim_session_input,
                                       settle_session_input)

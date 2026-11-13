@@ -21,7 +21,7 @@ def hello(process):
 
 
 def test_started_admission_binds_only_exact_owned_process_and_principal(tmp_path):
-    from gateway.session_worker_reservation import reserve_admission_worker
+    from hermes_agent.gateway.session_worker_reservation import reserve_admission_worker
     db = SessionDB(tmp_path / 'state.db')
     process = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'], stdin=subprocess.PIPE,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -57,8 +57,8 @@ def test_started_admission_binds_only_exact_owned_process_and_principal(tmp_path
 
 @pytest.mark.asyncio
 async def test_reserved_process_uses_existing_authenticated_adoption_and_persistence(tmp_path):
-    from gateway.session_worker import worker_request
-    from gateway.session_worker_reservation import reserve_admission_worker
+    from hermes_agent.gateway.session_worker import worker_request
+    from hermes_agent.gateway.session_worker_reservation import reserve_admission_worker
     db = SessionDB(tmp_path / 'state.db')
     process = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'], stdin=subprocess.PIPE,  # noqa: ASYNC220 -- Popen returns immediately; the test drives the child through its handle
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -94,12 +94,12 @@ async def test_input_queued_behind_a_live_worker_is_released_then_runs_when_it_f
     with a pause (never parked on a turn that cannot run yet), and the worker's durable finish
     restarts the drain so the queued input runs without an unrelated submit."""
     import asyncio
-    from gateway.config import Platform
-    from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import SessionActor, SessionRef, Submission
-    from gateway.session_ingress import admit_message
-    from gateway.session_worker import worker_request
-    from gateway import session_finite
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_agent.gateway.session_contract import SessionActor, SessionRef, Submission
+    from hermes_agent.gateway.session_ingress import admit_message
+    from hermes_agent.gateway.session_worker import worker_request
+    from hermes_agent.gateway import session_finite
     from hermes_agent.hermes_state_runtime import get_session_admission
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
@@ -161,7 +161,7 @@ def test_reservation_survives_a_clock_step_on_macos(tmp_path, stale_psutil_boot_
     """#140580: after a clock step a long-lived owner's psutil reads a fresh worker's birth
     shifted, while the worker reports its own unshifted one, so the exact match refused every
     managed worker. ``process_birth`` (the kernel start) is what both processes see."""
-    from gateway.session_worker_reservation import reserve_admission_worker
+    from hermes_agent.gateway.session_worker_reservation import reserve_admission_worker
     from hermes_cli.process_identity import process_birth
     db = SessionDB(tmp_path / 'state.db')
     process = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'], stdin=subprocess.PIPE,
@@ -193,7 +193,7 @@ def test_process_fingerprints_survive_a_clock_step_on_macos(stale_psutil_boot_re
     ``get_process_start_time``; ``_watch_submitter`` exits on a mismatch), the delegation
     ``owner_started_at`` and the spawn ledger's ``_pid_alive_matches`` read the same live process
     the same way before and after a clock step."""
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway.status import get_process_start_time
     from hermes_cli.kanban_db_dispatch import _pid_recycled, _process_fingerprint
     from hermes_cli.process_identity import _pid_alive_matches, _process_create_time
     process = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'], stdin=subprocess.PIPE,
@@ -218,7 +218,7 @@ def test_reservation_survives_a_boot_time_reanchor_on_linux(tmp_path, monkeypatc
     """KB-12: Linux psutil's ``create_time()`` adds the ``/proc/stat`` btime it re-reads on every
     call, and WSL2 re-anchors btime after host sleep, so the owner read a live worker's birth
     shifted from the one the worker reported and refused every managed worker."""
-    from gateway.session_worker_reservation import reserve_admission_worker
+    from hermes_agent.gateway.session_worker_reservation import reserve_admission_worker
     code = 'import json, sys; from agent.managed_worker import hello; print(json.dumps(hello()), flush=True); sys.stdin.read()'
     process = subprocess.Popen([sys.executable, '-c', code], cwd=Path(__file__).resolve().parents[2],
                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
@@ -249,7 +249,7 @@ def test_process_birth_is_create_time_where_psutil_applies_no_reference():
     """Linux and Windows read ``create_time()`` unchanged, so every stored fingerprint and ledger
     row written before KB-6 still matches there; on macOS with no step psutil returns the kernel
     start unchanged too (``adjust_proc_create_time`` ignores |drift| < 1 s)."""
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway.status import get_process_start_time
     from hermes_cli.process_identity import _pid_alive_matches, process_birth
     proc = psutil.Process()
     assert process_birth(proc) == proc.create_time()

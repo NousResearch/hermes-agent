@@ -77,10 +77,10 @@ def test_restore_reply_follows_the_restore_not_the_rejoin(tmp_path, monkeypatch,
     monkeypatch.setattr("hermes_cli.gateway_runtime.discover_gateway_endpoint",
                         lambda home: GatewayDiscovery("ready", endpoint))
     monkeypatch.setattr(GatewayConnection, "shared", classmethod(lambda cls: _Connection()))
-    monkeypatch.setattr("gateway.control_socket.identify_gateway", lambda h, **kw: {
+    monkeypatch.setattr("hermes_agent.gateway.control_socket.identify_gateway", lambda h, **kw: {
         "pid": 4321, "hermes_home": str(home), "launch_supervisor": supervisor})
     paused = []
-    monkeypatch.setattr("gateway.control_socket.pause_gateway_for_update",
+    monkeypatch.setattr("hermes_agent.gateway.control_socket.pause_gateway_for_update",
                         lambda *a, **kw: paused.append(a) or {"pausing": True,
                                                               "pid": 99 if case == "other-pid-paused" else 4321})
     parked_at = {}  # The host's rescan skips a parked profile; serve-profile refuses one.
@@ -93,8 +93,8 @@ def test_restore_reply_follows_the_restore_not_the_rejoin(tmp_path, monkeypatch,
     def serve(*a):
         parked_at["serve"] = marker.exists()
         return {"pending": True}
-    monkeypatch.setattr("gateway.control_socket.request_unserve_profile", unserve)
-    monkeypatch.setattr("gateway.control_socket.request_serve_profile_hot", serve)
+    monkeypatch.setattr("hermes_agent.gateway.control_socket.request_unserve_profile", unserve)
+    monkeypatch.setattr("hermes_agent.gateway.control_socket.request_serve_profile_hot", serve)
     monkeypatch.setattr("hermes_cli.profiles_remove.wait_profile_unowned", lambda home: True)
     monkeypatch.setattr("hermes_cli.backup.restore_quick_snapshot",
                         restore or (lambda sid: pytest.fail("restore ran without the identified owner's handoff")))

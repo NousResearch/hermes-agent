@@ -475,7 +475,7 @@ def check_process_notifications_private(provider: RecordingSandboxProvider, a: S
         lost = [e for e in queued if e.get("sandbox_key") != key]
         assert not lost, f"an event lost its producer identity: {lost}"
         assert not sunk, "a hosted process's live output reached a UI sink"
-        from gateway.run import _drain_gateway_watch_events
+        from hermes_agent.gateway.run import _drain_gateway_watch_events
         with _bind(b):
             for drain in (lambda: registry.drain_notifications(session_key="shared"),
                           lambda: registry.drain_notifications(),

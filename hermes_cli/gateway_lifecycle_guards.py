@@ -27,7 +27,7 @@ INTERRUPT_FLAG = "--yes"
 
 def _live_work_from_state(home: Path) -> Optional[dict[str, Any]]:
     """``active_agents`` from a fresh ``gateway_state.json`` whose writer is alive (older gateways)."""
-    from gateway.status import parse_active_agents, read_runtime_status, runtime_status_is_stale, runtime_status_pid_is_live
+    from hermes_agent.gateway.status import parse_active_agents, read_runtime_status, runtime_status_is_stale, runtime_status_pid_is_live
 
     record = read_runtime_status(home / "gateway_state.json")
     if not record or runtime_status_is_stale(record) or not runtime_status_pid_is_live(record):
@@ -41,7 +41,7 @@ def live_work(home: Path, profile: Optional[str] = None) -> Optional[dict[str, A
     """What the gateway serving ``home`` is running now: ``{"active_agents", "active_work"}``, or None
     when no gateway answers. The control socket answers live; the state file covers older gateways.
     ``profile`` narrows the answer to one served profile's work (the state file cannot, so it is skipped)."""
-    from gateway.control_socket import query_gateway_control
+    from hermes_agent.gateway.control_socket import query_gateway_control
 
     answer = query_gateway_control(home, "active-work", params={"profile": profile} if profile else None)
     if isinstance(answer, dict) and isinstance(answer.get("active_work"), list):

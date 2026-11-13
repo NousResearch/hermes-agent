@@ -144,7 +144,7 @@ class TestTransportTagsAmbiguity:
     async def test_ws_transport_timeout_result_is_tagged(self):
         """Source-of-truth check on the production transport: the ack
         timeout branch carries ambiguous=True; fail-fast branches do not."""
-        from gateway.relay.ws_transport import WebSocketRelayTransport
+        from hermes_agent.gateway.relay.ws_transport import WebSocketRelayTransport
 
         transport = WebSocketRelayTransport.__new__(WebSocketRelayTransport)
         transport._closing = False

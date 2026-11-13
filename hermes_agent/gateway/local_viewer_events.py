@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import time
 
-from gateway import local_desktop_ui
+from hermes_agent.gateway import local_desktop_ui
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,7 @@ def wire(turn, agent) -> dict:
     agent.reaction_callback = lambda kind: publish("reaction", {"kind": str(kind or "")})
     owner = getattr(turn, "_approval_owner", None)
     if owner is not None:
-        from gateway.session_usage import seed_compression_count
+        from hermes_agent.gateway.session_usage import seed_compression_count
         seed_compression_count(owner[0].sessions.get(owner[1]), agent)
     if show_reasoning(turn) or _config_default_launch():
         # A reasoning sink makes the agent ask the provider for reasoning; each delta re-checks the
@@ -69,12 +69,12 @@ def show_reasoning(turn) -> bool:
     flag = getattr(live, "show_reasoning", None)
     if flag is not None or live is None:
         return flag is True
-    from gateway.session_policy import active_policy
+    from hermes_agent.gateway.session_policy import active_policy
     return launch_shows_reasoning(active_policy(), owner[0])
 
 
 def _config_default_launch() -> bool:
-    from gateway.session_policy import active_policy
+    from hermes_agent.gateway.session_policy import active_policy
     return getattr(active_policy(), "source", None) in _CONFIG_DEFAULT_SOURCES
 
 
@@ -82,7 +82,7 @@ def launch_shows_reasoning(policy, authority) -> bool:
     """An unset session flag: ``display.show_reasoning`` for an Ink or Desktop launch, else off."""
     if getattr(policy, "source", None) not in _CONFIG_DEFAULT_SOURCES:
         return False
-    from gateway.display_config import local_display_config
+    from hermes_agent.gateway.display_config import local_display_config
     display = local_display_config(policy.config(authority, secrets=False).get("display"))
     return bool(display.get("show_reasoning", True))
 
@@ -141,7 +141,7 @@ def publish_progress(turn, event_type, name, preview, kwargs) -> None:
         return
     if event_type != "reasoning.available" and event_type not in _MOA_KEYS:
         return
-    from gateway.session_cli_turn import classic_cli_turn
+    from hermes_agent.gateway.session_cli_turn import classic_cli_turn
     if not (show_reasoning(turn) or (event_type != "reasoning.available" and classic_cli_turn(turn))):
         return
     if event_type == "reasoning.available":
@@ -177,7 +177,7 @@ def publish_control_if_changed(turn) -> None:
     gateway loop, which takes the publish ticket in order with the slash commands' publishes; the snapshot
     (three state.db meta reads on the shared connection lock) is read in a worker thread, because one read
     per tool across every running session saturated the loop. Revision-gated: other tools publish nothing."""
-    from gateway.session_control_actions import publish_async
+    from hermes_agent.gateway.session_control_actions import publish_async
     authority, canonical_id, _generation = turn._approval_owner
 
     async def republish():
@@ -250,7 +250,7 @@ def prompt_timeout_s(turn, kind) -> int | None:
     enforces (``approvals.timeout`` / the clarify timeout), so the classic CLI's modal shows the
     same countdown and gives up when the gateway does. ``None`` on a messaging turn (frame
     unchanged) and for an unlimited clarify wait."""
-    from gateway.run_turn_progress import local_viewer_turn
+    from hermes_agent.gateway.run_turn_progress import local_viewer_turn
     if not local_viewer_turn(turn):
         return None
     # Both readers fall back to their defaults themselves; they never raise.

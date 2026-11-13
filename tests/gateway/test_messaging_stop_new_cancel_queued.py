@@ -14,12 +14,12 @@ import pytest
 @pytest.mark.asyncio
 @pytest.mark.parametrize('command', ['/stop', '/new'])
 async def test_busy_stop_and_new_cancel_the_queued_messaging_followup(tmp_path, monkeypatch, command):
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.platforms.event import MessageEvent
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import SessionAuthority, initialize_session_authority
-    from gateway.session_ingress import admit_message
-    from gateway.session_ingress_context import native_callback
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import SessionAuthority, initialize_session_authority
+    from hermes_agent.gateway.session_ingress import admit_message
+    from hermes_agent.gateway.session_ingress_context import native_callback
     from hermes_constants import get_hermes_home
     from hermes_agent.hermes_state_runtime import list_session_admissions
     from plugins.platforms.discord.adapter import DiscordAdapter
@@ -66,6 +66,6 @@ async def test_busy_stop_and_new_cancel_the_queued_messaging_followup(tmp_path, 
         executed.append(event.text)
         return 'ran'
     monkeypatch.setattr(runner, '_handle_message', handle)
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_contract import SessionRef
     await SessionAuthority._drain(authority, SessionRef(authority.profile_id, owner))
     assert executed == []

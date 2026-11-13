@@ -2,8 +2,8 @@
 
 from unittest.mock import patch
 
-from gateway.config import GatewayConfig, Platform
-from gateway.session import SessionSource, SessionStore
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.session import SessionSource, SessionStore
 
 
 def test_nonboundary_repoint_keeps_cwd_but_new_discards_it(tmp_path, monkeypatch):
@@ -13,7 +13,7 @@ def test_nonboundary_repoint_keeps_cwd_but_new_discards_it(tmp_path, monkeypatch
         raise RuntimeError("SQLite disabled in test")
 
     monkeypatch.setattr(hermes_state, "SessionDB", no_sqlite)
-    with patch("gateway.session.SessionStore._ensure_loaded"):
+    with patch("hermes_agent.gateway.session.SessionStore._ensure_loaded"):
         store = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
     store._loaded = True
 

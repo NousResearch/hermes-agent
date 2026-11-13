@@ -21,11 +21,11 @@ def repo(tmp_path):
 
 @pytest.mark.asyncio
 async def test_created_session_snapshot_carries_inventory_for_frozen_toolsets(tmp_path, monkeypatch, repo):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     from hermes_cli import banner
     from hermes_agent.tui_gateway.contracts.registry import CANONICAL_METHODS
 
@@ -80,11 +80,11 @@ async def test_created_session_snapshot_carries_inventory_for_frozen_toolsets(tm
 async def test_cli_surface_snapshot_carries_main_cli_toolsets_and_startup_warnings(tmp_path, monkeypatch, repo):
     """``source: cli`` is the classic CLI surface: exactly main's ``_get_platform_tools(cfg, 'cli')`` and
     the warnings main's HermesCLI printed under its banner, computed in the process that runs the tools."""
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     from hermes_cli import banner
     from hermes_cli.tools_config import _get_platform_tools
 
@@ -121,11 +121,11 @@ async def test_cli_surface_counts_kanban_skills_like_main_cli_without_leaking(tm
     """Main's ``cmd_chat`` pins ``HERMES_KANBAN_BOARD`` before HermesCLI starts, so its banner lists
     ``environments: [kanban]`` skills. A CLI-surface snapshot counts them; other surfaces and the
     process-wide catalog do not."""
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     from hermes_cli import banner
     from tools.skills_tool import find_all_skills
 

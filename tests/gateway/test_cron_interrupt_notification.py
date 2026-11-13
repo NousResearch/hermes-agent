@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 import pytest
 
-from gateway.config import Platform
+from hermes_agent.gateway.config import Platform
 from tests.gateway.restart_test_helpers import make_restart_runner
 from tools import browser_session_lifecycle as bt_lifecycle
 
@@ -42,7 +42,7 @@ def _telegram_target(chat_id="123456"):
     return {"platform": "telegram", "chat_id": chat_id, "thread_id": None}
 
 def _bind_notifier(runner):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner._notify_interrupted_cron_jobs = (
         GatewayRunner._notify_interrupted_cron_jobs.__get__(runner, GatewayRunner)
@@ -224,8 +224,8 @@ class TestShutdownDeliversNoticeBeforeDisconnect:
         adapter.send = _tracking_send
         adapter.disconnect = _tracking_disconnect
 
-        with patch("gateway.status.remove_pid_file"), \
-             patch("gateway.status.publish_runtime_status"), \
+        with patch("hermes_agent.gateway.status.remove_pid_file"), \
+             patch("hermes_agent.gateway.status.publish_runtime_status"), \
              patch("hermes_agent.cron.scheduler.mark_job_run"), \
              patch("hermes_agent.cron.jobs.get_job", return_value=_telegram_job()), \
              patch("hermes_agent.cron.scheduler._resolve_delivery_targets",

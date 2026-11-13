@@ -1,9 +1,9 @@
 """Validate passive evidence against committed authority spans, never elect an owner."""
-from gateway.hosted_room_authority_history import TRANSFER_KINDS, at_sequence, read_history_locked, validate_history
+from hermes_agent.gateway.hosted_room_authority_history import TRANSFER_KINDS, at_sequence, read_history_locked, validate_history
 
 
 def source_prefix_locked(conn, room_id, authority, seq):
-    from gateway.hosted_room_work_records import WorkRecordPrefixError, digest
+    from hermes_agent.gateway.hosted_room_work_records import WorkRecordPrefixError, digest
     history = read_history_locked(conn, room_id, gateway_id=authority["gateway_id"], epoch=authority["epoch"])
     if history is None:
         raise WorkRecordPrefixError("successor work evidence has no verified lineage")
@@ -25,7 +25,7 @@ def source_prefix_locked(conn, room_id, authority, seq):
 
 
 def validate_provenance(record, spans):
-    from gateway.hosted_room_work_records import WorkRecordError
+    from hermes_agent.gateway.hosted_room_work_records import WorkRecordError
     # Execution generation remains an independent per-task counter.
     for task in record["tasks"]:
         at_sequence(spans, task["source_event_seq"])

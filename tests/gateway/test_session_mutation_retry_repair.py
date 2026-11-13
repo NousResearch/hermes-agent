@@ -2,8 +2,8 @@
 from types import SimpleNamespace
 
 import pytest
-from gateway.session_authority import LiveSession, SessionAuthority
-from gateway.session_controls import AuthorityConnection
+from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+from hermes_agent.gateway.session_controls import AuthorityConnection
 from hermes_agent.hermes_state import SessionDB
 import hermes_agent.hermes_state_runtime as rt
 
@@ -52,8 +52,8 @@ async def test_rewind_replay_never_evicts_a_later_admissions_running_agent(tmp_p
     agent in the real cache, so the interrupt RPC delivers Stop instead of latching it."""
     import threading
     from collections import OrderedDict
-    from gateway.run import GatewayRunner
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_contract import SessionRef
 
     class Agent:
         interrupts = 0

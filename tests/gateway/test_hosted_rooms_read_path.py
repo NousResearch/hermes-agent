@@ -1,6 +1,6 @@
 """Focused lock-behavior coverage for hosted Group Chat reads."""
 
-from gateway import hosted_rooms
+from hermes_agent.gateway import hosted_rooms
 
 
 def test_list_rooms_does_not_enter_a_write_transaction_or_prune(tmp_path, monkeypatch):

@@ -49,7 +49,7 @@ def resolve_relay_scope_cwds(
 
     if not session_cwd:
         try:
-            from gateway.session_context import get_session_env
+            from hermes_agent.gateway.session_context import get_session_env
 
             session_key = get_session_env("HERMES_SESSION_KEY", "")
             for key in dict.fromkeys(key for key in (session_key, session_id) if key):

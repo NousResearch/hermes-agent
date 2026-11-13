@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from gateway.config import Platform
-from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
 
 logger = logging.getLogger(__name__)
 

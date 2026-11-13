@@ -16,9 +16,9 @@ import queue
 import threading
 from typing import Any, Dict, Optional
 
-from gateway.platforms.base import AudioFormat, StreamingTTSHandle
+from hermes_agent.gateway.platforms.base import AudioFormat, StreamingTTSHandle
 
-logger = logging.getLogger("gateway.streaming_tts_consumer")
+logger = logging.getLogger("hermes_agent.gateway.streaming_tts_consumer")
 
 _ABORT = object()
 _DONE = object()

@@ -10,8 +10,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import status
-from gateway.status_scoped_locks import release_all_scoped_locks, release_scoped_lock
+from hermes_agent.gateway import status
+from hermes_agent.gateway.status_scoped_locks import release_all_scoped_locks, release_scoped_lock
 from datetime import UTC
 
 
@@ -266,7 +266,7 @@ class TestScopedGatewayPidQuery:
         monkeypatch.setattr(status, "_pid_exists", lambda pid: False)
         assert status.get_running_pid(pid_path) is None
         assert not pid_path.exists()
-        # gateway.lock is an ownership inode (gateway/runtime_ownership.py): a stale record
+        # gateway.lock is an ownership inode (hermes_agent/gateway/runtime_ownership.py): a stale record
         # is cleared through the PID file only; unlinking the lock would let a contender that
         # already opened it become a second owner.
         assert (profile_dir / "gateway.lock").exists()
@@ -531,7 +531,7 @@ class TestGatewayRuntimeStatus:
             status.write_runtime_status(
                 platform="telegram", platform_state="connected", error_code=None, error_message=None)
         else:
-            from gateway.platforms.base import BasePlatformAdapter
+            from hermes_agent.gateway.platforms.base import BasePlatformAdapter
             adapter = object.__new__(type("_Adapter", (BasePlatformAdapter,), {
                 m: (lambda *a, **k: None) for m in ("connect", "disconnect", "get_chat_info", "send")}))
             adapter._runtime_status_platform_key = "telegram"
@@ -815,7 +815,7 @@ class TestScopedLocks:
         }))
 
         # Post-#21561 the liveness probe routes through
-        # ``gateway.status._pid_exists`` (psutil-first, safe on Windows).
+        # ``hermes_agent.gateway.status._pid_exists`` (psutil-first, safe on Windows).
         monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
 
@@ -843,7 +843,7 @@ class TestScopedLocks:
         }))
 
         # Post-#21561 the liveness probe routes through
-        # ``gateway.status._pid_exists`` (psutil-first, safe on Windows),
+        # ``hermes_agent.gateway.status._pid_exists`` (psutil-first, safe on Windows),
         # not ``os.kill``.
         monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
@@ -1532,7 +1532,7 @@ class TestLaunchdPlistRespawnGovernance:
         """
         import re
 
-        from gateway.restart import LAUNCHD_GUI_EXIT_TIMEOUT_CLAMP_S, LAUNCHD_STOP_CLEANUP_RESERVE_S
+        from hermes_agent.gateway.restart import LAUNCHD_GUI_EXIT_TIMEOUT_CLAMP_S, LAUNCHD_STOP_CLEANUP_RESERVE_S
         from hermes_cli.gateway import generate_launchd_plist
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

@@ -32,7 +32,7 @@ def test_explicit_reload_updates_same_name_schema_and_retains_history(surface, m
     monkeypatch.setattr(mcp_tool, "_servers", {})
 
     if surface == "gateway":
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
         runner = GatewayRunner.__new__(GatewayRunner)
         runner._agent_cache_lock = threading.RLock()
         runner._agent_cache = {"conversation": (agent, 0)}

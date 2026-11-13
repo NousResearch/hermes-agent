@@ -3,7 +3,7 @@ not read: the whole command is sent just before the card, or, when it cannot be,
 
 import pytest
 
-from gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
 
 
 class _Chat(BasePlatformAdapter):
@@ -81,7 +81,7 @@ async def test_full_command_send_is_marked_interim_so_it_never_seals_the_live_re
 async def test_backticks_inside_a_short_command_cannot_close_the_card_fence(adapter_factory):
     """A ``` (or longer run) in the command would end the card's markdown fence early, and the rest
     would render as markdown (spoilers, links): the fence is longer than any run in the command."""
-    from gateway.platforms.base_exec_approval import render_exec_approval
+    from hermes_agent.gateway.platforms.base_exec_approval import render_exec_approval
 
     adapter = _Chat()
     if adapter_factory == "discord":
@@ -106,7 +106,7 @@ def test_a_long_backtick_run_the_preview_drops_cannot_push_the_card_past_the_cap
     widen the fence past Discord's 2,000-char cap (that card fell back to text and lost its buttons)."""
     import re
 
-    from gateway.platforms.base_exec_approval import render_exec_approval
+    from hermes_agent.gateway.platforms.base_exec_approval import render_exec_approval
     from plugins.platforms.discord.adapter import DiscordAdapter
 
     adapter = DiscordAdapter.__new__(DiscordAdapter)
@@ -126,7 +126,7 @@ def test_slack_fence_sits_on_its_own_line_so_the_commands_backticks_never_merge_
     """With the fence glued to the command, 20 leading backticks and a 21-tick fence render as one 41-tick run."""
     import re
 
-    from gateway.platforms.base_exec_approval import render_exec_approval
+    from hermes_agent.gateway.platforms.base_exec_approval import render_exec_approval
     from plugins.platforms.slack.adapter import SlackAdapter
 
     adapter = SlackAdapter.__new__(SlackAdapter)

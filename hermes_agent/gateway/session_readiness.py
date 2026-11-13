@@ -26,7 +26,7 @@ async def readiness(authority, actor, params, *, runtime):
             raise RuntimeStoreError('profile_mismatch')
 
     def probe():
-        from gateway.run import _profile_runtime_scope
+        from hermes_agent.gateway.run import _profile_runtime_scope
         from hermes_cli.main import _has_any_provider_configured
         from hermes_cli.runtime_readiness import check_runtime_readiness
         with _profile_runtime_scope(Path(authority.profile_id)):

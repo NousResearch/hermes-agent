@@ -2,7 +2,7 @@
 
 ``tools/audio_container.py`` is the single owner of container detection:
 the outbound TTS repair (``tools/tts_tool.py``), the inbound gateway audio
-cache (``gateway/platforms/base.py``), and Signal's ``_guess_extension``
+cache (``hermes_agent/gateway/platforms/base.py``), and Signal's ``_guess_extension``
 all delegate to it. These tests cover every magic-byte branch, the
 wrong-extension repair behaviour on the inbound cache path, and unknown
 passthrough.
@@ -94,9 +94,9 @@ class TestInboundCacheUsesSniffer:
         ],
     )
     def test_wrong_ext_repaired(self, tmp_path, data, claimed, expected_suffix):
-        from gateway.platforms.base import cache_audio_from_bytes
+        from hermes_agent.gateway.platforms.base import cache_audio_from_bytes
 
-        with patch("gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path):
+        with patch("hermes_agent.gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path):
             result = cache_audio_from_bytes(data, ext=claimed)
 
         saved = tmp_path / os.path.basename(result)
@@ -107,7 +107,7 @@ class TestInboundCacheUsesSniffer:
     @pytest.mark.asyncio
     async def test_cache_audio_from_url_sniffs_too(self, tmp_path, monkeypatch):
         """The URL download path routes through the same sniffer."""
-        from gateway.platforms import base
+        from hermes_agent.gateway.platforms import base
 
         monkeypatch.setattr(base, "AUDIO_CACHE_DIR", tmp_path)
 

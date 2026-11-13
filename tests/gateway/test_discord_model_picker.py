@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.platforms.base import utf16_len
+from hermes_agent.gateway.platforms.base import utf16_len
 from plugins.platforms.discord.adapter import ModelPickerView
 
 

@@ -6,9 +6,9 @@ reaches it, as the lost-turn pause notice already tells Slack users.
 import pytest
 
 from agent.i18n import t
-from gateway.config import Platform
-from gateway.session import SessionSource
-from gateway.slash_commands_session import discard_command_for
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.slash_commands_session import discard_command_for
 
 
 def _note(platform):
@@ -34,12 +34,12 @@ async def test_reset_reply_names_the_platform_discard_command(monkeypatch, platf
     from types import SimpleNamespace
     from unittest.mock import AsyncMock, MagicMock
 
-    import gateway.session_authorities as authorities
-    import gateway.slash_commands_session as session_commands
-    from gateway.config import GatewayConfig
-    from gateway.platforms.event import MessageEvent
-    from gateway.run import GatewayRunner
-    from gateway.session import SessionEntry, build_session_key
+    import hermes_agent.gateway.session_authorities as authorities
+    import hermes_agent.gateway.slash_commands_session as session_commands
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import SessionEntry, build_session_key
 
     source = SessionSource(platform=platform, chat_id="c1", chat_type="dm", user_id="u1")
     key = build_session_key(source)

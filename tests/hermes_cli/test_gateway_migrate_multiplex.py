@@ -80,7 +80,7 @@ def fleet(tmp_path, monkeypatch):
                 runtime["served_profiles"] = ["default", "coder", "ops"]
             runtime_path.write_text(json.dumps(runtime))
 
-    from gateway import status
+    from hermes_agent.gateway import status
     # The default gateway the fixture "starts" is this process; the served probe verifies identity.
     monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "hermes gateway run")
     monkeypatch.setattr(gm, "_installed_services", lambda home: _units(state.services.get(_name(home))))
@@ -396,8 +396,8 @@ def test_secondary_port_binder_is_notice_with_ingress_and_blocker_without(fleet,
 
 
 def test_serves_profile_prefix_is_read_from_adapter_classes():
-    from gateway.platforms.api_server import APIServerAdapter
-    from gateway.platforms.webhook import WebhookAdapter
+    from hermes_agent.gateway.platforms.api_server import APIServerAdapter
+    from hermes_agent.gateway.platforms.webhook import WebhookAdapter
     assert APIServerAdapter.serves_profile_prefix and WebhookAdapter.serves_profile_prefix
     assert gm.platform_serves_profile_prefix("api_server") is True
     assert gm.platform_serves_profile_prefix("webhook") is True

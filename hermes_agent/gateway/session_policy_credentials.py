@@ -154,7 +154,7 @@ def _owner_block(config, path):
 
 def _resolved(owner, block, config):
     """``(provider_identity, url)`` the route *block* at *owner* is actually sent to."""
-    from gateway.session_route_identity import resolved_route
+    from hermes_agent.gateway.session_route_identity import resolved_route
     if owner[0] == 'auxiliary':
         provider = str(block.get('provider') or '').strip().lower()
         if provider in _AUX_FOLLOWS_MAIN and not str(block.get('base_url') or '').strip():
@@ -246,7 +246,7 @@ def recover_config_secrets(authority, policy, skip=None):
     caller of a following session skips its followed sections: the live profile supplies them, so a key
     rotation there is not a revoked launch credential."""
     if skip is None:
-        from gateway.session_policy import FOLLOW_SECTIONS
+        from hermes_agent.gateway.session_policy import FOLLOW_SECTIONS
         skip = FOLLOW_SECTIONS if policy.follows_profile else ()
     ref = policy.config_secret_ref
     if not ref.startswith(PREFIX):
@@ -261,7 +261,7 @@ def recover_config_secrets(authority, policy, skip=None):
         cached = getattr(authority, '_local_config_secrets', {}).get(ref)
         if cached is not None:
             return {path: value for path, value in cached.items() if path[0] not in skip}
-        from gateway.run import _load_gateway_config
+        from hermes_agent.gateway.run import _load_gateway_config
         entries = [entry for entry in source['entries'] if entry[0][0] not in skip]
         config = _load_gateway_config(home / 'config.yaml') if any(path[0] is not None for path, _ in entries) else {}
         route = None  # computed on the first mismatch only: an unchanged source never needs it

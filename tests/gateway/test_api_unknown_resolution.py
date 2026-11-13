@@ -9,11 +9,11 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import GatewayConfig, PlatformConfig
-from gateway.platforms.api_server import APIServerAdapter
-from gateway.session import SessionStore
-from gateway.session_authority import initialize_session_authority
-from gateway.session_api import restore_api_session
+from hermes_agent.gateway.config import GatewayConfig, PlatformConfig
+from hermes_agent.gateway.platforms.api_server import APIServerAdapter
+from hermes_agent.gateway.session import SessionStore
+from hermes_agent.gateway.session_authority import initialize_session_authority
+from hermes_agent.gateway.session_api import restore_api_session
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import claim_session_input, list_session_admissions
 
@@ -57,7 +57,7 @@ async def _restarted_api_runs(tmp_path, monkeypatch, *, idempotent=True):
     executed = []
 
     async def answer(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
 
         executed.append(event.text)
         result = {"final_response": "ACK_" + event.text, "messages": []}
@@ -284,7 +284,7 @@ async def test_http_poll_reports_unknown_head_as_non_terminal_until_resolved(
     unknown (not finished), reads admission_id/execution_generation from that body and
     resolves it. ``interrupted`` is in TERMINAL_STATUSES and documented as terminal, so a
     poller cannot tell a paused head from a finished run if the projection reuses it."""
-    from gateway.platforms.api_server_run_idempotency import TERMINAL_STATUSES
+    from hermes_agent.gateway.platforms.api_server_run_idempotency import TERMINAL_STATUSES
 
     client, adapters, store, owner, unknown, _follower, executed, tasks = (
         await _restarted_api_runs(tmp_path, monkeypatch)

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 from hermes_agent.cron import scheduler
 from hermes_agent.cron import scheduler_preflight as sched_preflight
-import gateway.run as gateway_run
+import hermes_agent.gateway.run as gateway_run
 
 
 class _OneTickStopEvent:
@@ -84,7 +84,7 @@ def test_multiplex_housekeeping_scopes_primary_and_drains_each_profile(
         yield
 
     monkeypatch.setattr(gateway_run, "_profile_runtime_scope", fake_scope)
-    from gateway import run_profile_reconcile
+    from hermes_agent.gateway import run_profile_reconcile
     monkeypatch.setattr(run_profile_reconcile, "_mcp_config_reconciler", lambda runner: lambda: None)
     # The per-tick plugin update chore also binds every served profile's scope; this test
     # asserts the DRAIN's scope sequence, so keep the chore wrapper out of the recording.
@@ -177,7 +177,7 @@ def test_primary_drain_delivers_credentialless_satellite_queue_row_through_prima
     import hermes_yaml as yaml
 
     from hermes_agent.cron import delivery_queue
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     root = tmp_path / "root"
@@ -271,7 +271,7 @@ def test_the_watch_settles_after_the_drain_wrote_its_outcome(tmp_path, monkeypat
     """The drain's own status write wakes exactly one more (empty) pass; a stable queue
     never wakes it again, so the housekeeping thread does not spin on its own writes."""
     from hermes_agent.cron import delivery_queue
-    from gateway.run_delivery_queue_watch import DeliveryQueueWatch
+    from hermes_agent.gateway.run_delivery_queue_watch import DeliveryQueueWatch
 
     monkeypatch.setattr(delivery_queue, "DELIVERY_DB", tmp_path / "deliveries.db")
     passes = []

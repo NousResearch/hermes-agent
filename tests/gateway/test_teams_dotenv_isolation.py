@@ -250,7 +250,7 @@ class TestLoadGatewayConfigApiServerExplicitDisable:
         monkeypatch.setenv("API_SERVER_KEY", "test-key-0123456789abcdef")
         monkeypatch.chdir(tmp_path)
 
-        from gateway.config import Platform, load_gateway_config
+        from hermes_agent.gateway.config import Platform, load_gateway_config
 
         config = load_gateway_config()
         api_cfg = config.platforms.get(Platform.API_SERVER)

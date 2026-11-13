@@ -1,7 +1,7 @@
 """Physical worker liveness and cooperative Stop across every served authority."""
 import asyncio
 
-from gateway.session_authorities import all_authorities
+from hermes_agent.gateway.session_authorities import all_authorities
 
 
 def executing_sessions(authority):
@@ -38,9 +38,9 @@ def uncounted_runtime_work_units(runner, pid):
 
 def side_agents(authority):
     """``(thread, holder)`` for each detached side agent (/bg, /btw, preview restart) whose thread
-    has not unwound (``gateway/session_tui_side.py`` ``_spawn``). A stopped ``/btw`` whose fork
+    has not unwound (``hermes_agent/gateway/session_tui_side.py`` ``_spawn``). A stopped ``/btw`` whose fork
     is gone (``_SideQuestionStop.abandoned``) is no longer owner work."""
-    from gateway.session_tui_side import _abandoned
+    from hermes_agent.gateway.session_tui_side import _abandoned
     return [(thread, holder) for thread, holder in list(getattr(authority, '_side_agents', {}).items())
             if not _abandoned(holder)]
 
@@ -141,7 +141,7 @@ def start_turn_worker(runner, worker, agent_holder, run_sync):
 
 
 def track_turn_worker(runner, worker, agent_holder):
-    from gateway.session_authorities import active_authority
+    from hermes_agent.gateway.session_authorities import active_authority
     authority = active_authority(runner)
     if authority is not None:
         workers = getattr(authority, '_turn_workers', None)
@@ -162,7 +162,7 @@ def physical_workers(authority):
 
 
 def stop_authority_work(authority):
-    from gateway.run_runtime import stop_authority_turns
+    from hermes_agent.gateway.run_runtime import stop_authority_turns
     from agent.interrupt_compat import request_hard_interrupt
     stop_authority_turns(authority, in_process=True)
     for _, holder in [*physical_workers(authority), *side_agents(authority)]:

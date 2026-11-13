@@ -24,7 +24,7 @@ _REVIEW_VERBS = {'memory': {'pending': 'read', **_WRITES}, 'skills': {'pending':
 @pytest.mark.parametrize('subsystem', ['memory', 'skills'])
 def test_each_review_subcommand_the_cli_serves_keeps_its_reach_on_a_local_session(tmp_path, monkeypatch, subsystem):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    from gateway.session_commands import command_verdict
+    from hermes_agent.gateway.session_commands import command_verdict
     from hermes_cli.write_approval_commands import handle_pending_subcommand
     for verb, reach in _REVIEW_VERBS[subsystem].items():
         # The CLI answers it (an empty queue, an unknown id, an invalid switch value): it is a review verb.
@@ -36,7 +36,7 @@ def test_each_review_subcommand_the_cli_serves_keeps_its_reach_on_a_local_sessio
 
 def test_memory_has_no_diff_like_the_cli(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    from gateway.session_commands import command_verdict
+    from hermes_agent.gateway.session_commands import command_verdict
     from hermes_cli.write_approval_commands import handle_pending_subcommand
     assert handle_pending_subcommand('memory', ['diff', 'x']) is None
     assert command_verdict('memory', 'diff x') == 'refused'
@@ -48,16 +48,16 @@ def test_memory_has_no_diff_like_the_cli(tmp_path, monkeypatch):
 def test_memory_reads_only_its_first_word_like_the_cli(arg, reach):
     """Main's CLI and messaging handler split /memory on whitespace: an apostrophe or an unclosed
     quote later in the line is the argument's business, never a parse failure of the command."""
-    from gateway.session_commands import command_verdict
+    from hermes_agent.gateway.session_commands import command_verdict
     assert command_verdict('memory', arg) == reach
 
 
 @pytest.mark.parametrize(('arg', 'reach'), [
     ("pending it's", 'read'), ('diff "unclosed', 'read'), ("approve it's", 'control'), ("it's pending", 'refused')])
 def test_skills_reads_only_its_first_word_like_its_handler(arg, reach):
-    """The messaging /skills handler splits on whitespace too (gateway/slash_commands.py
+    """The messaging /skills handler splits on whitespace too (hermes_agent/gateway/slash_commands.py
     ``_handle_skills_command``): a quote later in the line is the argument's, not a parse failure."""
-    from gateway.session_commands import command_verdict
+    from hermes_agent.gateway.session_commands import command_verdict
     try:
         verdict = command_verdict('skills', arg)
     except ValueError as exc:
@@ -68,7 +68,7 @@ def test_skills_reads_only_its_first_word_like_its_handler(arg, reach):
 def test_kanban_with_an_unclosed_quote_is_refused_by_name():
     """/kanban parses with shlex (hermes_cli/kanban.py ``run_slash``), so an unclosed quote can't run
     there either: the client gets ``invalid_params`` naming the argument, not an internal error."""
-    from gateway.session_commands import command_verdict
+    from hermes_agent.gateway.session_commands import command_verdict
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     try:
         verdict = command_verdict('kanban', "show it's")

@@ -2,7 +2,7 @@
 
 import re
 
-from gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
 HEADER = "| name | value |\n|:---|---:|"
 ROWS = [f"| row{i} | {'y' * 40} |" for i in range(120)]

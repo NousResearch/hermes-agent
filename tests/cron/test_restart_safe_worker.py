@@ -1088,7 +1088,7 @@ def test_worker_delivery_queue_is_keyed_by_the_delivering_jobs_own_execution(
 
     # First call the standalone (non-queue) path makes after the guard; the
     # failure is reported as the delivery error string.
-    monkeypatch.setattr("gateway.config.load_gateway_config", _standalone)
+    monkeypatch.setattr("hermes_agent.gateway.config.load_gateway_config", _standalone)
     monkeypatch.setenv("_HERMES_CRON_EXTERNAL_WORKER", "exec-outer")
 
     # Own attempt: routed through the durable queue.
@@ -1156,8 +1156,8 @@ def test_managed_gateway_restart_preserves_active_worker_and_single_side_effect(
     from hermes_agent.cron import executions
     from hermes_agent.cron import scheduler
     from hermes_agent.cron.jobs import create_job, use_cron_store
-    from gateway.config import Platform, PlatformConfig
-    from gateway.status import _pid_exists
+    from hermes_agent.gateway.config import Platform, PlatformConfig
+    from hermes_agent.gateway.status import _pid_exists
     from tools import process_registry
 
     if not process_registry._systemd_run_user_scope_available():
@@ -1214,7 +1214,7 @@ def test_managed_gateway_restart_preserves_active_worker_and_single_side_effect(
     }
     gateway_config.get_home_channel = lambda _platform: None
     monkeypatch.setattr(
-        "gateway.config.load_gateway_config", lambda: gateway_config
+        "hermes_agent.gateway.config.load_gateway_config", lambda: gateway_config
     )
     monkeypatch.setattr(
         scheduler, "load_config", lambda: {"cron": {"wrap_response": False}}

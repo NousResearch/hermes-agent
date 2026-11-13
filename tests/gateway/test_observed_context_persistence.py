@@ -4,9 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.run import _OBSERVED_GROUP_CONTEXT_HEADER
-from gateway.run_turn_runner import TurnRunner
-from gateway.turn_context import TurnContext
+from hermes_agent.gateway.run import _OBSERVED_GROUP_CONTEXT_HEADER
+from hermes_agent.gateway.run_turn_runner import TurnRunner
+from hermes_agent.gateway.turn_context import TurnContext
 
 
 def test_observed_context_native_image_turn_persists_clean_multimodal_message(monkeypatch):

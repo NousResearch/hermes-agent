@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 # Keep the logger name run.py used so extracted log records are unchanged.
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 
 def _run_in_fresh_context(func: Callable[..., Any], /, *args: Any) -> Any:
@@ -124,7 +124,7 @@ def _acquire_singleton_lock(lock_path) -> tuple[Optional[object], str]:
     (caller falls back to config control).
     """
     try:
-        from gateway.status import _try_acquire_file_lock  # deferred; same package
+        from hermes_agent.gateway.status import _try_acquire_file_lock  # deferred; same package
     except ImportError:
         return None, "unavailable"
     try:
@@ -143,7 +143,7 @@ def _release_singleton_lock(handle) -> None:
     if handle is None:
         return
     with contextlib.suppress(Exception):
-        from gateway.status import _release_file_lock
+        from hermes_agent.gateway.status import _release_file_lock
 
         _release_file_lock(handle)
     with contextlib.suppress(Exception):

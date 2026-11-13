@@ -441,7 +441,7 @@ def _resolve_owner(task_id: str) -> str:
     try:
         from agent.delegation_context import is_delegated_child_context
         if is_delegated_child_context():
-            from gateway.session_context import get_session_env
+            from hermes_agent.gateway.session_context import get_session_env
             child_id = get_session_env("HERMES_SESSION_ID", "") or (task_id or "")
             owner = f"{owner}{_CHILD_OWNER_QUALIFIER}{child_id}"
     except Exception:

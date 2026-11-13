@@ -20,8 +20,8 @@ def _claim_after_read(authority, session_id):
 
 
 def _hosted(hosted_owner, tmp_path, monkeypatch):
-    from gateway.hosted_room_driver import TaskIdentity
-    from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+    from hermes_agent.gateway.hosted_room_driver import TaskIdentity
+    from hermes_agent.gateway.session_hosted_rpc import HostedRoomAuthorityRPC
     authority, loop, principal, agent = hosted_owner
     rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='member', profile='default',
                                  principal=principal, authorize=lambda *args: True)
@@ -36,9 +36,9 @@ def _hosted(hosted_owner, tmp_path, monkeypatch):
 
 
 def _cron(hosted_owner, tmp_path, monkeypatch):
-    from gateway import session_cron
-    from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import SessionActor
+    from hermes_agent.gateway import session_cron
+    from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_agent.gateway.session_contract import SessionActor
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import admit_session_input, begin_runtime_epoch
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))

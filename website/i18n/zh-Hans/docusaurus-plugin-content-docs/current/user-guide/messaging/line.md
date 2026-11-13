@@ -80,7 +80,7 @@ gateway:
       enabled: true
 ```
 
-这就够了 — `gateway/config.py` 中的捆绑插件扫描会自动识别 `plugins/platforms/line/`。无需编辑 `Platform.LINE` 枚举，无需注册 `_create_adapter`。
+这就够了 — `hermes_agent/gateway/config.py` 中的捆绑插件扫描会自动识别 `plugins/platforms/line/`。无需编辑 `Platform.LINE` 枚举，无需注册 `_create_adapter`。
 
 ---
 

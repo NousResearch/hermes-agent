@@ -11,10 +11,10 @@ the thread's own id (Discord) still cannot reach a channel-level route.
 import asyncio
 from pathlib import Path
 
-from gateway.config import GatewayConfig, Platform
-from gateway.kanban_watchers_notifier import _KanbanNotification, _notifier_collect
-from gateway.profile_routing import parse_profile_routes
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.kanban_watchers_notifier import _KanbanNotification, _notifier_collect
+from hermes_agent.gateway.profile_routing import parse_profile_routes
+from hermes_agent.gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb, kanban_db_connect as kbc, kanban_db_notify as kbn
 
 DM = "D_TEST"

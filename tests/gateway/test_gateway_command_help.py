@@ -2,9 +2,9 @@
 
 import pytest
 
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionSource
 
 
 def _make_event(text: str, platform: Platform) -> MessageEvent:
@@ -21,7 +21,7 @@ def _make_event(text: str, platform: Platform) -> MessageEvent:
 
 
 def _make_runner():
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     return object.__new__(GatewayRunner)
 

@@ -50,7 +50,7 @@ class GatewayDashboardMount:
     ``state`` is the listener's boundary state (``bound_host``, ``bound_port``, ``auth_required``,
     ``trusted_public_hosts``, ``gateway_runner``, ``session_authority``) — what the native WebSocket
     path checks, mirrored onto the dashboard app state once it is mounted. ``state.webapp`` (a
-    ``gateway.webapp_listener.WebappMount``) makes the mount serve the browser-hosted Desktop.
+    ``hermes_agent.gateway.webapp_listener.WebappMount``) makes the mount serve the browser-hosted Desktop.
     """
 
     def __init__(self, runner, state):
@@ -78,7 +78,7 @@ class GatewayDashboardMount:
         # with nothing set, and the gateway falls back to its private listener.
         token = None
         if webapp is not None:
-            from gateway.webapp_listener import browser_session_token
+            from hermes_agent.gateway.webapp_listener import browser_session_token
             token = browser_session_token(webapp.home)
         # Local clients authenticate with tickets minted on the owner-only control socket. The SPA
         # session token is a bearer credential any loopback peer (any OS user) could read from
@@ -90,7 +90,7 @@ class GatewayDashboardMount:
         elif hasattr(web.app.state, "listener_public_url"):
             delattr(web.app.state, "listener_public_url")
         if webapp is not None:  # before the gate looks for a sign-in provider
-            from gateway.webapp_listener import use_own_sign_in
+            from hermes_agent.gateway.webapp_listener import use_own_sign_in
             self._undo_own_sign_in = use_own_sign_in(webapp)
         web._configure_auth_gate(self._state.bound_host, False, None, None)
         web.app.state.gateway_runner = self.runner
@@ -212,7 +212,7 @@ def _listener_public_url(webapp) -> str | None:
 
 async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, webapp=None) -> GatewayAPIHandle:
     global _ACTIVE_RUNNER
-    from gateway.webapp_listener import dial_origin
+    from hermes_agent.gateway.webapp_listener import dial_origin
     from hermes_cli.web_server_boundary import (
         _dashboard_public_hosts, listener_auth_required, public_hosts_engage_gate, public_url_hosts,
         should_require_auth,
@@ -374,12 +374,12 @@ def _embedded_chat_enabled() -> bool:
 
 
 def _restart_wait_read(runner, scope) -> bool:
-    from gateway.drain_control import restart_wait_read
+    from hermes_agent.gateway.drain_control import restart_wait_read
     return scope['type'] == 'http' and restart_wait_read(runner, scope.get('method'), scope.get('path'))
 
 
 def _restart_wait_socket_ticket(runner, scope) -> bool:
-    from gateway.drain_control import restart_wait_socket_ticket
+    from hermes_agent.gateway.drain_control import restart_wait_socket_ticket
     return scope['type'] == 'http' and restart_wait_socket_ticket(
         runner, scope.get('method'), scope.get('path'), scope.get('query_string', b'').decode('latin-1'))
 
@@ -439,14 +439,14 @@ class GatewayRuntimeAPI:
             return
         # Capture before Uvicorn's proxy middleware rewrites scope.client (native grants, both kinds).
         scope['hermes.gateway_socket_peer'] = scope.get('client')
-        from gateway.run_idle_exit import attached_client, note_client_activity
+        from hermes_agent.gateway.run_idle_exit import attached_client, note_client_activity
         if scope['type'] != 'websocket' or scope['path'] != '/api/ws':
             note_client_activity(self.runner)  # dashboard/API traffic keeps an idle-exit gateway up
             return await self.app(scope, receive, send)
         original_receive = receive
         allow_draining = False
         admitted_in_wait = False
-        from gateway.drain_control import restart_wait_open
+        from hermes_agent.gateway.drain_control import restart_wait_open
 
         async def receive_admitted():
             message = await original_receive()
@@ -514,15 +514,15 @@ class GatewayRuntimeAPI:
         if refused():
             await ws.close(code=1013)
             return
-        from gateway.session_authorities import authority_for_profile_id
+        from hermes_agent.gateway.session_authorities import authority_for_profile_id
         authority = authority_for_profile_id(self.runner, grant['profile_id'])
         if authority is None:
             await ws.close(code=4403)
             return
         # The ticket names the served profile; this connection binds to that home's authority.
         scope['hermes.session_authority'] = authority
-        from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL
-        from gateway.session_authorities import owner_scope
+        from hermes_agent.gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL
+        from hermes_agent.gateway.session_authorities import owner_scope
         # Counted before the handler fetch yields: the ticket is already redeemed, so an idle check
         # in between would otherwise see no client and exit under this first connection.
         with attached_client(self.runner):

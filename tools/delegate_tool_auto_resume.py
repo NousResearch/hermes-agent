@@ -117,7 +117,7 @@ def gave_up(record: dict[str, Any]) -> Optional[str]:
 def _scheduler_runs() -> bool:
     """Whether this process is the gateway serving the bound profile, so its watcher will run the resume (a
     background child's completion route is this process's). A classic CLI parent has no scheduler: no promise."""
-    from gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.runtime_ownership import process_ownership
     from hermes_constants import get_hermes_home
     return process_ownership.owns(get_hermes_home())
 
@@ -586,7 +586,7 @@ def _give_up(record: dict[str, Any], reason: str) -> bool:
 
 
 def _insert_completion(conn, evt: dict[str, Any], result: dict[str, Any]) -> None:
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway.status import get_process_start_time
     now = time.time()
     task = {k: evt.get(k) for k in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch")}
     conn.execute(

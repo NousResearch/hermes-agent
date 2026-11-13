@@ -93,7 +93,7 @@ def test_replayed_history_carries_the_budget_stub_that_was_sent(agent_and_db, ca
     spilled = [cid for cid, content in live.items() if PERSISTED_OUTPUT_TAG in content]
     assert spilled, "the fixture must make the turn budget spill at least one result"
 
-    # The gateway's live-replay read (gateway/session_transcript.load_transcript).
+    # The gateway's live-replay read (hermes_agent/gateway/session_transcript.load_transcript).
     replay = db.get_messages_as_conversation(agent.session_id, repair_alternation=True)
     replayed = {m["tool_call_id"]: m["content"] for m in replay if m.get("role") == "tool"}
     assert replayed == live

@@ -299,7 +299,7 @@ def _desktop_page_vars():
     """Bind the session vars of a sessionless request from the desktop Connectors page. Only that
     page sends account-owned and account RPCs, so the surface comes from the request: the backend's
     ``HERMES_DESKTOP`` is absent on a URL or cloud backend and would name the caller ``tui``."""
-    from gateway.session_context import set_session_vars
+    from hermes_agent.gateway.session_context import set_session_vars
 
     tokens = set_session_vars(source="desktop", profile=_current_profile_name(), cron_session="")
     try:

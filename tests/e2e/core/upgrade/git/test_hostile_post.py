@@ -305,7 +305,7 @@ def _ns_update(host: NamespaceHost, w: G.World, *extra: str):
 
 
 def _identify(w: G.World) -> dict | None:
-    from gateway.control_socket import identify_gateway
+    from hermes_agent.gateway.control_socket import identify_gateway
 
     with contextlib.suppress(Exception):
         return identify_gateway(w.sb.hermes_home, timeout=5.0)

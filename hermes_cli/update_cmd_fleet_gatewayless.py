@@ -35,7 +35,7 @@ def host_owes_no_gateway_restart() -> bool:
     that went away without a clean stop, which is what an update that died mid-restart leaves
     behind; it keeps the obligation. Profiles that never ran a gateway have no record at all.
     """
-    from gateway.status import read_runtime_status
+    from hermes_agent.gateway.status import read_runtime_status
     from hermes_cli.update_inventory import collect_runtime_inventory
     from hermes_cli.update_receipt import _NOT_EXPECTED_STATES, _profile_homes
 

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 _EXTRA = {"allow_from": ["111"], "group_allow_from": ["222"], "group_allowed_chats": ["-1001"],
@@ -18,8 +18,8 @@ _EXTRA = {"allow_from": ["111"], "group_allow_from": ["222"], "group_allowed_cha
 
 def _wired_adapter(monkeypatch):
     """Real adapter + the real gateway auth callback, wired as ``GatewayRunner`` does."""
-    from gateway.pairing import PairingStore
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.pairing import PairingStore
+    from hermes_agent.gateway.run import GatewayRunner
 
     for key in ("GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS", "TELEGRAM_ALLOW_ALL_USERS",
                 "TELEGRAM_GROUP_ALLOWED_USERS", "TELEGRAM_GROUP_ALLOWED_CHATS"):

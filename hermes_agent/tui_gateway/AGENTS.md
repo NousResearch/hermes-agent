@@ -55,7 +55,7 @@ shape) and `gateway-contract.openrpc.json` are rendered by `scripts/gen_gateway_
 regenerate → `tsc` shows every consumer the field moved. `apps/shared/src/gateway-events.ts` only adds
 the client-local synthetic events and the `GatewayEvent` envelope on top.
 The native `hermes-gateway-v1` transport has a separate `CANONICAL_METHODS` catalog in
-`contracts/canonical*.py`, declared with `canonical_method(...)`. `gateway/session_controls.py::
+`contracts/canonical*.py`, declared with `canonical_method(...)`. `hermes_agent/gateway/session_controls.py::
 AuthorityConnection` validates parameters and successful results against it; unknown/missing
 parameter keys return `4001 invalid_params`. Reuse a standalone model only when its wire is
 identical: shared method names can carry different snapshots, admission receipts and producer
@@ -153,7 +153,7 @@ skills/bundles, argument completions); quick commands remain catalog-only. Share
 live in `hermes_agent/tui_gateway/command_discovery.py`, without importing the legacy server. Definitions
 come from `hermes_cli/commands.py` (`hermes_cli/AGENTS.md`).
 
-The canonical gateway exposes the same two discovery RPCs through `gateway/session_discovery.py`.
+The canonical gateway exposes the same two discovery RPCs through `hermes_agent/gateway/session_discovery.py`.
 It requires authenticated `session:read` capability and the authority's exact profile before any
 discovery. An optional named `profile` must resolve to that same home; a foreign selector returns
 `profile_mismatch`. Discovery runs off-loop in the authority's profile scope, without creating a
@@ -163,7 +163,7 @@ not an assertion that every listed slash execution command is implemented by the
 
 ## Canonical local slash execution
 
-`gateway/session_commands.py` adapts both `slash.exec({session_id, command})` and
+`hermes_agent/gateway/session_commands.py` adapts both `slash.exec({session_id, command})` and
 `command.dispatch({session_id, name, arg})` without loading the legacy server or
 slash worker. Optional `profile` must name the authority's exact profile. Only
 server-registered local sources belonging to the authenticated actor may dispatch;
@@ -182,7 +182,7 @@ Resolution itself does not start a turn or change the cached system prompt; the
 normal durable admission path owns FIFO, retries, approvals, and execution.
 
 `type: exec` quick commands and plugin slash commands require `session:control` and
-run through the messaging gateway's own dispatch (`gateway/run_inbound_hooks.py`: slash
+run through the messaging gateway's own dispatch (`hermes_agent/gateway/run_inbound_hooks.py`: slash
 access policy, 30 s sanitized-env exec with redacted output, plugin session env).
 All other commands return `unsupported_command`, including bundles, runtime/config
 mutation, approval/secret slash shortcuts, and lifecycle commands. Use the existing generation-bound control RPCs where
@@ -191,7 +191,7 @@ fallback is installed on the canonical transport.
 
 ## Canonical native projections
 
-`gateway/session_config.py` exposes profile-authorized `config.get` presentation
+`hermes_agent/gateway/session_config.py` exposes profile-authorized `config.get` presentation
 reads and `model.options` through the shared provider inventory. `full` contains
 display, approval and paste preferences plus voice record/submit settings, not
 provider/MCP/plugin credentials. Session reasoning/model selection comes from the

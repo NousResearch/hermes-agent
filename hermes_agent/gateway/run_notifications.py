@@ -1,8 +1,8 @@
 """Process/completion/update notifications, media delivery and async-delegation delivery for GatewayRunner.
 
-Split out of ``gateway/run.py``; bound onto ``GatewayRunner`` via the MRO.
-``gateway.run`` internals are imported lazily inside method bodies (import cycle),
-so ``patch("gateway.run.X")`` keeps intercepting them at call time.
+Split out of ``hermes_agent/gateway/run.py``; bound onto ``GatewayRunner`` via the MRO.
+``hermes_agent.gateway.run`` internals are imported lazily inside method bodies (import cycle),
+so ``patch("hermes_agent.gateway.run.X")`` keeps intercepting them at call time.
 """
 
 from __future__ import annotations
@@ -19,16 +19,16 @@ from typing import Any, Dict, Optional, cast
 
 from agent.i18n import t
 from agent.retry_utils import jittered_backoff
-from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
-from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionEntry, SessionSource, SessionStore
-from gateway.run_shutdown import _delivery_target_key, _log_suppressed, _notice_target_key, _send_error, _send_failed
-from gateway.run_notifications_update import GatewayUpdateNotificationsMixin
-from gateway.run_notifications_ownership import GatewayNotificationOwnershipMixin, _local_completion_card
+from hermes_agent.gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.session import SessionEntry, SessionSource, SessionStore
+from hermes_agent.gateway.run_shutdown import _delivery_target_key, _log_suppressed, _notice_target_key, _send_error, _send_failed
+from hermes_agent.gateway.run_notifications_update import GatewayUpdateNotificationsMixin
+from hermes_agent.gateway.run_notifications_ownership import GatewayNotificationOwnershipMixin, _local_completion_card
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 
 def _served_notice_target_key(profile: Optional[str], platform_value: str, chat_id, thread_id) -> tuple:
@@ -48,7 +48,7 @@ def _safe_delivery_transport(platform, config, adapters, *, profile: Optional[st
     The fan-out spans every served profile, so one profile's broken adapter must not abort the
     pass and starve every profile after it in dict order.
     """
-    from gateway.delivery import resolve_delivery_transport
+    from hermes_agent.gateway.delivery import resolve_delivery_transport
     try:
         return resolve_delivery_transport(platform, config, adapters)
     except Exception as exc:
@@ -113,7 +113,7 @@ def _mark_internal_notification(text: str) -> str:
 def _held_reason(source, platform: str, multiplexed: bool) -> str:
     """Why a completion has no transport, naming what is actually missing: the saved receiving bot
     is down, or the route never saved one (a row older than the column), which no reconnect fixes."""
-    from gateway.session_identity import identity_of
+    from hermes_agent.gateway.session_identity import identity_of
     identity = identity_of(source)
     runtime = getattr(source, "profile", None) or "default"
     if identity is not None and identity.multiplexed and not identity.transport_inferred:
@@ -192,8 +192,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
 
     async def _deliver_platform_notice(self, source, content: str) -> None:
         """Deliver a setup/operational notice using platform-specific privacy rules."""
-        from gateway.bot_peer_notices import automatic_notices_allowed
-        from gateway.run import _is_slack_ignored_channel
+        from hermes_agent.gateway.bot_peer_notices import automatic_notices_allowed
+        from hermes_agent.gateway.run import _is_slack_ignored_channel
         adapter = self._delivery_adapter_for(source) if automatic_notices_allowed(source) else None
         if not adapter:
             return
@@ -207,7 +207,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         adapter_config = getattr(adapter, "config", None)
         adapter_extra = getattr(adapter_config, "extra", None)
         if isinstance(adapter_extra, dict) and "notice_delivery" in adapter_extra:
-            from gateway.config import _normalize_choice
+            from hermes_agent.gateway.config import _normalize_choice
             notice_delivery = _normalize_choice(adapter_extra.get("notice_delivery"), {"public", "private"}, "public")
         else:
             notice_delivery = (
@@ -231,7 +231,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
     ) -> bool:
         """Deliver explicit attachments from an already-streamed response (text already delivered).
         Returns True when ``footer_line`` rode the last photo's caption (``runtime_footer``, #74547).
-        EXPLICIT-ONLY, unlike the non-streaming path in ``gateway/platforms/base.py``: a bare local
+        EXPLICIT-ONLY, unlike the non-streaming path in ``hermes_agent/gateway/platforms/base.py``: a bare local
         path in a streamed reply is shown text or stale inspected content, and promoting it sent
         files the model never asked for. MEDIA tags are NOT deduped against prior turns (a final-reply
         directive is a deliberate attach); stale auto-appended tags are deduped upstream.
@@ -240,22 +240,22 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         non-streaming chain turns into attachments. See #20834 and #141806.
         """
         from urllib.parse import quote as _quote
-        from gateway.runtime_footer import caption_landed, caption_with_footer
+        from hermes_agent.gateway.runtime_footer import caption_landed, caption_with_footer
         captioned = False
         with _log_suppressed(logging.WARNING, "Post-stream media extraction failed: %s"):
             # Capture [[as_document]] before extract_media strips it: images then go via send_document.
             force_document_attachments = "[[as_document]]" in response
-            from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
+            from hermes_agent.gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
             media_files, cleaned = adapter.extract_media(response)
             media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
-            from gateway.platforms.docker_media_paths import hand_back_unreadable_media
+            from hermes_agent.gateway.platforms.docker_media_paths import hand_back_unreadable_media
             await hand_back_unreadable_media([p for p, _ in media_files])
             # Strip image URLs (parity with the non-streaming chain); no extract_local_files here.
             # Do NOT deduplicate explicit MEDIA tags against prior turns here (#73771). This rescan is
             # already EXPLICIT-ONLY (see docstring): a MEDIA: directive in the final streamed reply is the
             # model deliberately attaching a file — including a user-requested resend. Stale auto-appended
             # tags are deduped upstream in _collect_auto_append_media_tags with history_media_paths. Mirrors
-            # the same filter removal on the non-streaming path in gateway/platforms/base.py. Bare local
+            # the same filter removal on the non-streaming path in hermes_agent/gateway/platforms/base.py. Bare local
             # paths in an already-streamed reply are text the user has seen (or stale inspected content),
             # not an attachment request.
             # A markdown/HTML image tag IS an attachment request, though — the non-streaming chain turns it
@@ -321,7 +321,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         textual to send. False: the send was REFUSED (flood control, dead transport) — the caller
         must leave the normal completion send as the fallback, or the user gets nothing. A connector
         DECLINE returns True: that destination is not approved and must not be re-sent."""
-        from gateway.run import _strip_response_attachments_for_direct_send
+        from hermes_agent.gateway.run import _strip_response_attachments_for_direct_send
         if text_already_delivered and session_key and getattr(stream_consumer, "delivery_uncertain", False) is True:
             # The stream counted a timed-out send as shown. The follow-up's result replaces this
             # turn's, so the completion path never sees the flag: ledger it now under THIS turn's
@@ -342,7 +342,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                     and not getattr(stream_consumer, "_turn_split_delivery", False)
                 ):
                     try:
-                        from gateway.run_turn_final_reconcile import TURN_REPLACED, edit_preview_to_final
+                        from hermes_agent.gateway.run_turn_final_reconcile import TURN_REPLACED, edit_preview_to_final
                         _edit_res = await edit_preview_to_final(
                             adapter, source.chat_id, _sc_msg_id, text_content, metadata,
                             still_current=getattr(stream_consumer, "_run_still_current", None))
@@ -360,7 +360,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                             # P5(b): a DECLINE is not "editing unavailable". The
                             # send below re-delivers the whole response to the
                             # chat the connector just refused.
-                            from gateway.relay.egress import declined_send
+                            from hermes_agent.gateway.relay.egress import declined_send
 
                             if declined_send(_edit_res):
                                 logger.warning(
@@ -417,8 +417,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
 
     async def _send_restart_notification(self) -> Optional[tuple[str, str, Optional[str]]]:
         """Notify the chat that initiated /restart that the gateway is back."""
-        from gateway.delivery import resolve_delivery_transport
-        from gateway.run import _hermes_home, _non_conversational_metadata
+        from hermes_agent.gateway.delivery import resolve_delivery_transport
+        from hermes_agent.gateway.run import _hermes_home, _non_conversational_metadata
         notify_path = _hermes_home / ".restart_notify.json"
         if not notify_path.exists():
             return None
@@ -511,7 +511,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
 
     async def _send_home_channel_message(self, platform, home, transport, message: str, failure_fmt: str) -> bool:
         """Best-effort send to one home channel; True on success, failures logged with ``failure_fmt``."""
-        from gateway.run import _non_conversational_metadata
+        from hermes_agent.gateway.run import _non_conversational_metadata
         try:
             metadata = self._thread_metadata_for_target(platform, home.chat_id, home.thread_id, adapter=transport.adapter)
             if transport.is_relay:
@@ -545,7 +545,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         one restarts first) notifies a home twice. The lock serializes a boot pass that outlived the
         restore gate against a concurrent reconnect replay.
         """
-        from gateway.run import _planned_restart_notification_path
+        from hermes_agent.gateway.run import _planned_restart_notification_path
         from utils import atomic_json_write
 
         if self._planned_restart_notice_lock is None:
@@ -665,7 +665,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 action = t("gateway.startup.db_then_restart", action=action, profile_arg=profile_arg)
             message = t("gateway.startup.db_unavailable", cause=failure.gloss, action=action)
         logger.warning("Broadcasting state.db failure warning to home channels: %s", error)
-        from gateway.warning_notifications import present_notification
+        from hermes_agent.gateway.warning_notifications import present_notification
         for platform, _platform_cfg, home, transport in self._home_channel_transports():
             await present_notification(
                 lambda: self._send_home_channel_message(
@@ -677,7 +677,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
 
         Prefer the persisted session-store origin; the active foreground event causes cross-topic bleed.
         """
-        from gateway.run import _parse_session_key
+        from hermes_agent.gateway.run import _parse_session_key
         session_key = str(evt.get("session_key") or "").strip()
         derived = {}
         if session_key:
@@ -688,7 +688,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                     return self._restored_source(entry)
             except Exception as exc:
                 logger.debug("Synthetic process-event session-store lookup failed for %s: %s", session_key, exc)
-            from gateway.session_detached import detached_live_source
+            from hermes_agent.gateway.session_detached import detached_live_source
             cached_source = detached_live_source(self, session_key) or self._get_cached_session_source(session_key)
             if cached_source is not None:
                 return cached_source
@@ -713,7 +713,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             # Reject dynamic pseudo-members: plugin platforms must be registered.
             if platform.value not in _BUILTIN_PLATFORM_VALUES:
                 try:
-                    from gateway.platform_registry import platform_registry
+                    from hermes_agent.gateway.platform_registry import platform_registry
                     if not platform_registry.is_registered(platform.value):
                         raise ValueError(platform_name)
                 except Exception:
@@ -749,7 +749,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
 
         See #9290.
         """
-        from gateway.run import _drain_gateway_watch_events, _format_gateway_process_notification
+        from hermes_agent.gateway.run import _drain_gateway_watch_events, _format_gateway_process_notification
         watch_events = _drain_gateway_watch_events(completion_queue)
         for evt in watch_events:
             next_retry_at = evt.get("_watch_next_retry_at")
@@ -765,7 +765,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 if self._load_background_notifications_mode() == "off":
                     continue
                 if evt.get("type") == "heartbeat":
-                    from gateway.session_automation import deliver_heartbeat
+                    from hermes_agent.gateway.session_automation import deliver_heartbeat
                     delivered = await deliver_heartbeat(self, evt)
                 else:
                     synth_text = _format_gateway_process_notification(evt)
@@ -820,7 +820,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         turn's event.complete the CLIENT owns the next turn on this stateless surface, so never
         self-post them as a new role=user prompt. Other watch events wake the session via self-post.
         """
-        from gateway.wake import deliver_wake, persist_delegation_delivery
+        from hermes_agent.gateway.wake import deliver_wake, persist_delegation_delivery
         scope = contextlib.nullcontext()
         if evt.get("type") == "async_delegation":
             info = "Async delegation completion — persisting delivery row for api_server session %s (no wake turn)"
@@ -838,7 +838,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             if served:
                 # The wake runs in the OWNING profile's scope, in-process (see ``deliver_wake``):
                 # the raw event carries no profile, so a completion scope was never installed.
-                from gateway.run import _async_profile_runtime_scope
+                from hermes_agent.gateway.run import _async_profile_runtime_scope
                 source = SessionSource(platform=Platform.API_SERVER, chat_id=raw_sid, profile=served)
                 scope = _async_profile_runtime_scope(self._resolve_profile_home_for_source(source))
             deliver = lambda: deliver_wake(adapter, text=_mark_internal_notification(synth_text), session_id=raw_sid, profile=served,
@@ -864,8 +864,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         """
         if not getattr(self.config, "multiplex_profiles", False):
             return None
-        from gateway.run import _multiplex_profile_homes
-        from gateway.wake import session_owned_by_profile
+        from hermes_agent.gateway.run import _multiplex_profile_homes
+        from hermes_agent.gateway.wake import session_owned_by_profile
         primary = getattr(self, "_primary_profile_name", None) or "default"
         hinted = str(getattr(self._build_process_event_source(evt), "profile", None) or "").strip()
         if hinted and hinted != primary:
@@ -879,9 +879,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         """Adapter for a synthetic-event platform: alias-aware transport resolver first (one
         Platform.RELAY adapter fronts N logical platforms; native wins), literal ``p.value`` scan as
         fallback for minimal runner stubs / exotic platform strings when the resolver can't run."""
-        from gateway.delivery import resolve_delivery_transport
-        from gateway.session_detached import detached_route_of
-        if detached_route_of(source):  # an old conversation's app viewers (gateway/session_detached.py)
+        from hermes_agent.gateway.delivery import resolve_delivery_transport
+        from hermes_agent.gateway.session_detached import detached_route_of
+        if detached_route_of(source):  # an old conversation's app viewers (hermes_agent/gateway/session_detached.py)
             return self._delivery_adapter_for(source)
         if source is not None:
             owner = self._transport_owner(source)
@@ -893,7 +893,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         # ``_delivery_adapter_for`` rules (a ``bot_profile`` route's runtime may own no adapter for this
         # platform, #139726). Otherwise one resolver with authz/kanban/cron: a secondary's own map, or the
         # primary's for a shared-bot satellite; a disconnected bot fails closed to ``{}``.
-        from gateway.session_identity import identity_of
+        from hermes_agent.gateway.session_identity import identity_of
         identity = identity_of(source)
         pinned = (identity is not None and identity.multiplexed and not identity.transport_inferred
                   and self._restored_transport_trusted(source, identity))
@@ -915,9 +915,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         """The relay a restored *source* was admitted through, proven by its route's last committed
         admission. Persisted origins omit relay trust, so a connector-stamped profile with no local
         route to borrow the primary relay by otherwise finds no adapter after a restart."""
-        from gateway.session_authorities import active_authority
-        from gateway.session_automation import committed_route_envelope
-        from gateway.session_envelope import restore_native
+        from hermes_agent.gateway.session_authorities import active_authority
+        from hermes_agent.gateway.session_automation import committed_route_envelope
+        from hermes_agent.gateway.session_envelope import restore_native
         from hermes_agent.hermes_state_runtime import RuntimeStoreError
         authority = active_authority(self)
         if authority is None:
@@ -944,9 +944,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         gateway route or a refused notice pinned to a permanently-gone session (``_watch_pin_gone``).
         Not transactional: a crash after acceptance can replay (at-least-once).
         """
-        from gateway.session_detached import follow_detached_pin
-        from gateway.session_local_recovery import restore_completion_route
-        from gateway.wake import WakeNotAccepted, adapter_supports_push, admit_internal_event
+        from hermes_agent.gateway.session_detached import follow_detached_pin
+        from hermes_agent.gateway.session_local_recovery import restore_completion_route
+        from hermes_agent.gateway.wake import WakeNotAccepted, adapter_supports_push, admit_internal_event
         restore_completion_route(self, str(evt.get("session_key") or ""))  # watch notices and heartbeats too
         queued, evt = evt, await follow_detached_pin(self, evt)  # the drain reads its verdict off *queued*
         source = await asyncio.to_thread(self._build_process_event_source, evt)
@@ -995,7 +995,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             if trigger_message_id:
                 metadata["original_trigger_message_id"] = trigger_message_id
             if getattr(source, "message_id", None):
-                from gateway.session_identity import replace_source
+                from hermes_agent.gateway.session_identity import replace_source
                 source = replace_source(source, message_id=None)
             synth_event = MessageEvent(
                 text=synth_text, message_type=MessageType.TEXT, source=source, internal=True,
@@ -1010,10 +1010,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             _prime = getattr(adapter, "prime_routing_cache", None)
             if callable(_prime):
                 _prime(synth_event)
-            from gateway.session_authorities import active_authority
+            from hermes_agent.gateway.session_authorities import active_authority
             authority = active_authority(self)
             if authority is not None:
-                from gateway.session_automation import admit_process_notice
+                from hermes_agent.gateway.session_automation import admit_process_notice
                 from hermes_agent.hermes_state_runtime import RuntimeStoreError
                 try:
                     await admit_process_notice(self, authority, adapter, synth_event, evt)
@@ -1025,7 +1025,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         except WakeNotAccepted as exc:
             # Permanent only on proof: a pin the authority's state shows gone (/new, #141562) or a
             # final code. An unowned or foreign-pinned refusal may still find its owner (d6635ffe03b).
-            from gateway.wake import PERMANENT_REFUSAL_REASONS
+            from hermes_agent.gateway.wake import PERMANENT_REFUSAL_REASONS
             pin_gone = await self._watch_pin_gone(evt, str(exc), log=not raise_not_accepted)
             exc.permanent = pin_gone or exc.reason in PERMANENT_REFUSAL_REASONS
             if pin_gone and not raise_not_accepted:
@@ -1105,7 +1105,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         """``_classify_completion_target``'s verdict and, on ``"deliver"``, the owning session it proved
         (a delegate child's pin resolved through ``model_config._delegate_from``) and the session delivery
         reaches (the owner, or its compression tip)."""
-        from gateway.run import _USER_BOUNDARY_END_REASONS
+        from hermes_agent.gateway.run import _USER_BOUNDARY_END_REASONS
         session_db = getattr(self, "_session_db", None)
         if session_db is None:
             return "retry", "", ""
@@ -1152,7 +1152,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
 
     async def _completion_delivery_ready(self, evt: dict) -> bool:
         """Unavailable owners/transports must not spend a durable delivery attempt."""
-        from gateway.wake import adapter_supports_push
+        from hermes_agent.gateway.wake import adapter_supports_push
 
         parent_session_id = str(evt.get("parent_session_id") or "").strip()
         if parent_session_id:
@@ -1260,7 +1260,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         The supervised ``_async_delegation_watcher`` and startup-recovered process watchers run under
         the ROOT scope, so a secondary profile's completion was looked up in the DEFAULT profile's
         state.db — classified ``terminal`` and dropped, its ledger row stranded ``pending`` forever."""
-        from gateway.run import _async_profile_runtime_scope
+        from hermes_agent.gateway.run import _async_profile_runtime_scope
         from hermes_constants import get_hermes_home_override
         source = self._build_process_event_source(evt)
         if source is None or not getattr(source, "profile", None):
@@ -1281,7 +1281,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
     async def _served_api_server_event_scope(self, evt: dict, raw_sid: str):
         """Scope of the served profile whose own store holds a raw api_server session (its events name no
         profile), else the launch profile's, as for any unrouted event."""
-        from gateway.run import _async_profile_runtime_scope
+        from hermes_agent.gateway.run import _async_profile_runtime_scope
         from hermes_agent.tui_gateway.launch_profile_policy import async_launch_profile_scope_if_multiplexed
         served = await asyncio.to_thread(self._served_api_server_wake_profile, evt, raw_sid)
         if served:
@@ -1307,13 +1307,13 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
     async def _deliver_completion_notification_scoped(
         self, synth_text: str, evt: dict, *, sibling_claims=(),
     ) -> Optional[bool]:
-        from gateway.session_local_recovery import restore_completion_route
-        from gateway.wake import WakeNotAccepted
+        from hermes_agent.gateway.session_local_recovery import restore_completion_route
+        from hermes_agent.gateway.wake import WakeNotAccepted
         from tools.process_registry_notifications import should_surface_notification
         if not should_surface_notification(evt):
             return None  # Suppressed noise is terminal, not a consumed process result.
         restore_completion_route(self, str(evt.get("session_key") or ""))
-        from gateway.session_detached import follow_detached_pin
+        from hermes_agent.gateway.session_detached import follow_detached_pin
         evt = await follow_detached_pin(self, evt)
         identity = self._completion_delivery_identity(evt)
         claim = self._CompletionClaim()
@@ -1323,7 +1323,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             if not claim.proceed:
                 return claim.early_result
             if getattr(self, 'session_authority', None) is not None:
-                from gateway.session_automation import completion_admission
+                from hermes_agent.gateway.session_automation import completion_admission
                 if completion_admission(self, evt) is not None:
                     accepted = True  # Lost ACK: finish durable claims, never infer again.
                     return True
@@ -1373,7 +1373,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
     @staticmethod
     def _format_coalesced_process_completions(entries: list[tuple[str, dict, asyncio.Future]]) -> str:
         """Build one bounded synthetic event from several redacted completions."""
-        from gateway.run import _redact_gateway_user_facing_secrets
+        from hermes_agent.gateway.run import _redact_gateway_user_facing_secrets
         lines = [
             f"[IMPORTANT: {len(entries)} background processes completed for this session.",
             "Treat these results as one completion batch and send at most one "
@@ -1421,7 +1421,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             if not entries:
                 return
             if getattr(self, 'session_authority', None) is not None:
-                from gateway.session_automation import completion_admission, producer_identity
+                from hermes_agent.gateway.session_automation import completion_admission, producer_identity
                 entries_to_deliver = [item for item in entries if completion_admission(self, item[1]) is None]
                 if not entries_to_deliver:
                     delivered = True
@@ -1527,7 +1527,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         Such events only carry ``session_key`` (the daemon worker lacks per-message routing
         metadata). Best-effort: a CLI-origin event (empty session_key) is left as-is and won't route.
         """
-        from gateway.run import _parse_session_key
+        from hermes_agent.gateway.run import _parse_session_key
         if evt.get("platform"):
             return  # already enriched
         parsed = _parse_session_key(evt.get("session_key", "") or "")
@@ -1549,8 +1549,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             return await self._deliver_async_delegation_group_scoped(group)
 
     async def _deliver_async_delegation_group_scoped(self, group: list[dict]) -> Optional[bool]:
-        from gateway.run import _format_gateway_process_notification
-        from gateway.session_local_recovery import restore_completion_route
+        from hermes_agent.gateway.run import _format_gateway_process_notification
+        from hermes_agent.gateway.session_local_recovery import restore_completion_route
         from tools.process_registry import process_registry as _pr
         restore_completion_route(self, str(group[0].get("session_key") or ""))
         # API delivery does not start a model turn, so there is nothing to coalesce.
@@ -1569,7 +1569,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             if not synth_text:
                 continue
             if getattr(self, 'session_authority', None) is not None:
-                from gateway.session_automation import completion_admission
+                from hermes_agent.gateway.session_automation import completion_admission
                 if completion_admission(self, evt) is not None:
                     acknowledged = await self._deliver_completion_notification(synth_text, evt) is True or acknowledged
                     continue
@@ -1612,7 +1612,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         )
         consolidated = "\n\n".join([header, *blocks])
         if getattr(self, 'session_authority', None) is not None:
-            from gateway.session_automation import producer_identity
+            from hermes_agent.gateway.session_automation import producer_identity
             from tools.process_registry_notifications import completion_resumes_parent, delegation_wakes_parent
             primary_evt = dict(primary_evt, _automation_identities=[
                 producer_identity(self, event) for event in [primary_evt, *(e for e, _ in siblings)]],
@@ -1653,7 +1653,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
 
     def _each_secondary_ledger(self, profile_homes, fn, verb: str) -> None:
         """Run ``fn`` (returns a completion count) once per SECONDARY profile, bound to that profile."""
-        from gateway.run import _profile_runtime_scope
+        from hermes_agent.gateway.run import _profile_runtime_scope
         primary = getattr(self, "_primary_profile_name", None)
         for profile_name, profile_home in profile_homes:
             if profile_name == primary:
@@ -1735,7 +1735,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
     @staticmethod
     def _redacted_output_tail(session, limit: int) -> str:
         """Last ``limit`` chars of process output through the secret redactors (unconditional floor)."""
-        from gateway.run import _redact_gateway_user_facing_secrets
+        from hermes_agent.gateway.run import _redact_gateway_user_facing_secrets
         from tools.ansi_strip import strip_ansi
         from tools.process_registry import transform_process_output
         new_output = strip_ansi(session.output_buffer[-limit:]) if session.output_buffer else ""
@@ -1761,7 +1761,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         return session_key in (getattr(adapter, "_active_sessions", None) or {})
 
     async def _send_watcher_message(self, platform_name: str, chat_id, thread_id, message_text: str, watcher: dict) -> None:
-        from gateway.run import _non_conversational_metadata
+        from hermes_agent.gateway.run import _non_conversational_metadata
         source = await asyncio.to_thread(self._build_process_event_source, watcher)
         adapter = self._resolve_injection_adapter(platform_name, source)
         if adapter and chat_id:
@@ -1774,7 +1774,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
     @staticmethod
     def _build_process_completion_event(watcher: dict, session, session_id: str) -> dict:
         """Build the synthetic ``completion`` event for an agent-notify watcher."""
-        from gateway.run import _redact_gateway_user_facing_secrets
+        from hermes_agent.gateway.run import _redact_gateway_user_facing_secrets
         from agent.redact import redact_terminal_output
         from tools.ansi_strip import strip_ansi
         from tools.process_registry import transform_process_output
@@ -1818,7 +1818,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         """Human-facing completion message. Every mode shares the one-line status header; the
         raw-output modes (all/result/error) append the bounded output tail under it instead of the
         old bracketed ``[Background process proc_… finished~ …]`` debug wrapper (#54266)."""
-        from gateway.run import _format_concise_process_notification, _redact_gateway_user_facing_secrets
+        from hermes_agent.gateway.run import _format_concise_process_notification, _redact_gateway_user_facing_secrets
         new_output = self._redacted_output_tail(session, 1000)
         _started = getattr(session, "started_at", None)
         _dur = max(0.0, time.time() - _started) if isinstance(_started, (int, float)) else None
@@ -1830,7 +1830,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         return t("gateway.background.final_output", header=header, output=new_output.strip()) if new_output.strip() else header
 
     def _format_process_running_message(self, session) -> str:
-        from gateway.run import _redact_gateway_user_facing_secrets, _shorten_command_for_display
+        from hermes_agent.gateway.run import _redact_gateway_user_facing_secrets, _shorten_command_for_display
         new_output = self._redacted_output_tail(session, 500)
         short_cmd = _shorten_command_for_display(_redact_gateway_user_facing_secrets(getattr(session, "command", "") or ""))
         header = t("gateway.background.still_running") + (f" — `{short_cmd}`" if short_cmd else "")
@@ -1940,7 +1940,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                         continue
                     if (getattr(self, 'session_authority', None) is not None
                             and self._completion_delivery_identity(completion_evt) is not None):
-                        from gateway.session_automation import completion_admission
+                        from hermes_agent.gateway.session_automation import completion_admission
                         try:
                             # The owning profile's authority, as on the delivery path.
                             async with self._completion_event_scope(completion_evt):
@@ -1968,7 +1968,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                     notify_mode == "error" and session.exit_code not in {0, None}
                 ):
                     message_text = self._format_process_final_message(session_id, session, notify_mode)
-                    from gateway.warning_notifications import present_notification
+                    from hermes_agent.gateway.warning_notifications import present_notification
                     # Non-zero exit is the automatic diagnostic; a clean completion is the requested result.
                     await present_notification(
                         lambda: self._send_watcher_message(platform_name, chat_id, thread_id, message_text, watcher),

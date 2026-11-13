@@ -13,10 +13,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-import gateway.run as gateway_run
+import hermes_agent.gateway.run as gateway_run
 import plugins.platforms.discord.adapter as discord_platform
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.session import build_session_context
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.session import build_session_context
 from plugins.platforms.discord.adapter import DiscordAdapter
 
 _BOT = SimpleNamespace(id=999)

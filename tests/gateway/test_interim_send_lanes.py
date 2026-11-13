@@ -17,12 +17,12 @@ silently swallowed by the seal tombstone.
 
 These tests pin the helper's contract and the adapter-level behavior for
 a heartbeat-shaped send; the lane wiring itself is a one-line metadata
-wrap per call site (grep `_interim_metadata(` in gateway/run.py).
+wrap per call site (grep `_interim_metadata(` in hermes_agent/gateway/run.py).
 """
 
 import pytest
 
-from gateway.run import _interim_metadata
+from hermes_agent.gateway.run import _interim_metadata
 from tests.gateway.relay.test_relay_live_cards import _connected_adapter
 
 

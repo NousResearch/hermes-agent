@@ -122,7 +122,7 @@ def _profile_home(name: Any) -> Path:
 def delegated_profile_scope(home: Any) -> Iterator[None]:
     """Run the block as profile ``home``: HERMES_HOME override, that profile's secret scope,
     multiplex semantics when it is not this process's own profile, and its terminal policy - the
-    binding a multiplexed gateway applies to a routed turn (gateway/AGENTS.md § Profile scope).
+    binding a multiplexed gateway applies to a routed turn (hermes_agent/gateway/AGENTS.md § Profile scope).
     A no-op for anything but a path (``None``: no profile route) and for the home already in effect."""
     from hermes_constants import get_hermes_home, get_routing_process_hermes_home, hermes_home_key
     if not isinstance(home, (str, Path)) or hermes_home_key(home) == hermes_home_key(get_hermes_home()):
@@ -131,7 +131,7 @@ def delegated_profile_scope(home: Any) -> Iterator[None]:
     from agent.secret_scope import (
         reset_multiplex_context, reset_secret_scope, set_multiplex_context, set_secret_scope,
     )
-    from gateway.hosted_room_execution_policy import bind_profile_routed, reset_profile_routed
+    from hermes_agent.gateway.hosted_room_execution_policy import bind_profile_routed, reset_profile_routed
     from hermes_cli.env_loader import hydrate_profile_secret_sources
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope

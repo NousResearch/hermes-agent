@@ -4,7 +4,7 @@ import threading
 
 import pytest
 
-from gateway.session_contract import Submission
+from hermes_agent.gateway.session_contract import Submission
 from hermes_agent.hermes_state_runtime import get_session_admission
 from tests.gateway.test_session_authority_cancel_settlement import _authority, ACTOR, REF
 from tests.waiting import async_wait_until
@@ -12,7 +12,7 @@ from tests.waiting import async_wait_until
 
 @pytest.mark.asyncio
 async def test_settlement_write_leaves_the_loop_free_and_publishes_in_order(tmp_path, monkeypatch):
-    from gateway import session_results
+    from hermes_agent.gateway import session_results
     db, authority = _authority(tmp_path, monkeypatch)
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
     loop_ran, writing, events, served_during_write = threading.Event(), threading.Event(), [], []
@@ -22,7 +22,7 @@ async def test_settlement_write_leaves_the_loop_free_and_publishes_in_order(tmp_
     async def execute(owner, ref, row):
         owner.pending_results[row['admission_id']] = {'result': {'final_response': 'done'}, 'usage': {}}
         return 'done'
-    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    monkeypatch.setattr('hermes_agent.gateway.session_finite.execute_finite_admission', execute)
     settle = session_results.settle_session_input
 
     def slow_settle(*args, **kwargs):

@@ -52,11 +52,11 @@ class ModelPeer(BaseHTTPRequestHandler):
 async def probe():
     import uvicorn
     import websockets
-    from gateway.config import Platform, PlatformConfig
-    from gateway.platforms.base import BasePlatformAdapter, SendResult
-    from gateway.platforms.event import MessageEvent
-    from gateway.run import GatewayRunner
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.config import Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import SessionSource
     from hermes_cli import web_server
     from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
     from hermes_agent.tui_gateway import server
@@ -92,8 +92,8 @@ async def probe():
             return {"id": chat_id}
 
     runner = GatewayRunner()
-    if importlib.util.find_spec("gateway.session_authority") is not None:
-        from gateway.session_authority import initialize_session_authority
+    if importlib.util.find_spec("hermes_agent.gateway.session_authority") is not None:
+        from hermes_agent.gateway.session_authority import initialize_session_authority
         await initialize_session_authority(runner, profile_id="default", instance_id="test-owner")
     adapter = CaptureAdapter()
     runner.adapters[Platform.TELEGRAM] = adapter
@@ -112,8 +112,8 @@ async def probe():
     assert isinstance(warm_agent, AIAgent), "Messaging warmup must retain a real live agent"
 
     api_handle = None
-    if importlib.util.find_spec("gateway.run_api") is not None:
-        from gateway.run_api import start_gateway_api
+    if importlib.util.find_spec("hermes_agent.gateway.run_api") is not None:
+        from hermes_agent.gateway.run_api import start_gateway_api
         api_handle = await start_gateway_api(runner)
         port = api_handle.socket.getsockname()[1]
     else:
@@ -170,7 +170,7 @@ async def probe():
                     receipt["ws_completed"] = "LOCAL_ACK_WS_SHARED" in json.dumps(terminal)
                     authority = getattr(runner, 'session_authority', None)
                     if authority is not None:
-                        from gateway.session_contract import SessionRef
+                        from hermes_agent.gateway.session_contract import SessionRef
                         receipt["same_agent"] = authority.agent(SessionRef('default', sid)) is warm_agent
                     else:
                         receipt["same_agent"] = server._sessions[sid].get("agent") is warm_agent
@@ -237,7 +237,7 @@ async def probe():
         Path(os.environ["HERMES_HOME"], "receipt.json").write_text(json.dumps(receipt, indent=2))
         Path(os.environ["HERMES_HOME"], "frames.json").write_text(json.dumps(frames, indent=2))
         if api_handle is not None:
-            from gateway.run_api import stop_gateway_api
+            from hermes_agent.gateway.run_api import stop_gateway_api
             await stop_gateway_api(api_handle)
         else:
             http.should_exit = True

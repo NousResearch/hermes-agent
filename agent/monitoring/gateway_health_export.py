@@ -130,7 +130,7 @@ def _supervision_mode() -> str:
 
 def _read_gateway_snapshot(config: dict[str, Any]):
     try:
-        from gateway.status import read_runtime_status
+        from hermes_agent.gateway.status import read_runtime_status
         runtime = read_runtime_status() or {}
     except Exception:
         runtime = {}

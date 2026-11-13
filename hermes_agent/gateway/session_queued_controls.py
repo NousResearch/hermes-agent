@@ -161,7 +161,7 @@ async def steer_queued(connection, ref, params):
             raise RuntimeStoreError('steer_unavailable', field='admission_id',
                                     detail='the running turn has no agent to take a steer yet')
         _register(authority, session_id, generation, admission_id)
-    from gateway.session_runtime_workers import tracked_write
+    from hermes_agent.gateway.session_runtime_workers import tracked_write
     try:
         # The storage wait runs with no lock held; the registration above is the claim's fence.
         committed, fresh = await tracked_write(authority, partial(
@@ -235,6 +235,6 @@ async def replace_queued(connection, ref, params):
             authority._settle_cancelled(ref, old_id)
         elif old['status'] == 'queued':
             authority.cancel_obligations.discard(old_id)  # refused: nothing committed
-    from gateway.session_ingress_media import release_admission_media
+    from hermes_agent.gateway.session_ingress_media import release_admission_media
     await asyncio.to_thread(release_admission_media, authority.db, old_id)
     return asdict(admitted)

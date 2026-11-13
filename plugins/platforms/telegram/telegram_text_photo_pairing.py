@@ -19,7 +19,7 @@ import functools
 import os
 from typing import Any, Optional
 
-from gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 from plugins.platforms.telegram.telegram_batching import adopt_routing
 from plugins.platforms.telegram.telegram_media_group import tracking_album_items
 

@@ -886,8 +886,8 @@ def test_grant_refresh_rejects_catalog_or_policy_drift(
     policy_changed,
     error_code,
 ):
-    from gateway.hosted_room_execution_policy import execution_policy_mapping
-    from gateway.hosted_room_peer import GatewayRoomCatalog, catalog_mapping
+    from hermes_agent.gateway.hosted_room_execution_policy import execution_policy_mapping
+    from hermes_agent.gateway.hosted_room_peer import GatewayRoomCatalog, catalog_mapping
 
     base_policy = execution_policy_mapping(
         target_profile="reviewer",
@@ -937,7 +937,7 @@ def test_grant_refresh_rejects_catalog_or_policy_drift(
 
 
 def test_grant_refresh_preserves_unchanged_catalog_and_policy():
-    from gateway.hosted_room_peer import GatewayRoomCatalog, catalog_mapping
+    from hermes_agent.gateway.hosted_room_peer import GatewayRoomCatalog, catalog_mapping
 
     raw_catalog = catalog_mapping(
             target_profile="default",
@@ -967,7 +967,7 @@ def test_grant_refresh_preserves_unchanged_catalog_and_policy():
 
 
 def test_grant_refresh_retries_old_grant_after_response_loss():
-    from gateway.hosted_room_peer import GatewayRoomCatalog, catalog_mapping
+    from hermes_agent.gateway.hosted_room_peer import GatewayRoomCatalog, catalog_mapping
 
     raw_catalog = catalog_mapping(
             target_profile="default",

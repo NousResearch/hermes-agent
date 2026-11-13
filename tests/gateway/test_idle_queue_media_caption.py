@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 from tests.gateway.test_queue_command import _make_runner, _make_source, _session_entry
 
 

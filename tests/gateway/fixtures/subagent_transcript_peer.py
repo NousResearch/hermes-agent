@@ -61,11 +61,11 @@ def seed(db, target):
 
 
 async def probe():
-    from gateway.run import GatewayRunner
-    from gateway.session_ancillary import physical_target
-    from gateway.session_authority import initialize_session_authority
-    from gateway.run_api import start_gateway_api, stop_gateway_api
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_ancillary import physical_target
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.run_api import start_gateway_api, stop_gateway_api
+    from hermes_agent.gateway.session_contract import SessionRef
     from hermes_cli import web_server
     from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
     from tests.gateway.fixtures.local_recovery_probe import rpc
@@ -92,7 +92,7 @@ async def probe():
         reply = await rpc(ws, 'session.transcript', session_id=sid, subagent_id=subagent_id, **extra)
         return reply.get('result', reply.get('error'))
 
-    from gateway import session_stored_reads
+    from hermes_agent.gateway import session_stored_reads
     full_reads, window = [0], session_stored_reads._window
 
     def counted(db, target, latest, after, *args, **kwargs):

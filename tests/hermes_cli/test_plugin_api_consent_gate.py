@@ -79,8 +79,8 @@ def daemon(_isolate_hermes_home, monkeypatch):
     from agent.secret_scope import is_multiplex_active, set_multiplex_active
     from hermes_cli import profiles
     from hermes_cli.plugin_host import PluginHost
-    from gateway.runtime_bootstrap import TicketStore
-    from gateway.session_authorities import SessionAuthorities
+    from hermes_agent.gateway.runtime_bootstrap import TicketStore
+    from hermes_agent.gateway.session_authorities import SessionAuthorities
     from hermes_constants import get_hermes_home
 
     launch = get_hermes_home().resolve()

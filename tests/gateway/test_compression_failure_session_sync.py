@@ -5,9 +5,9 @@ import types
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
-import gateway.run as gateway_run
-from gateway.config import Platform
-from gateway.session import SessionSource
+import hermes_agent.gateway.run as gateway_run
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.session import SessionSource
 
 
 SESSION_KEY = "agent:main:telegram:dm:12345"
@@ -132,7 +132,7 @@ def _install_compression_failure_agent(monkeypatch, agent_cls=_CompressionThenFa
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "off")
     monkeypatch.setenv("HERMES_AGENT_TIMEOUT", "0")
     monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
-    monkeypatch.setattr("gateway.stream_consumer.GatewayStreamConsumer", _StreamConsumer)
+    monkeypatch.setattr("hermes_agent.gateway.stream_consumer.GatewayStreamConsumer", _StreamConsumer)
 
     from hermes_cli import tools_config
 

@@ -58,7 +58,7 @@ def _planned_stop_markers(running_pids, profile_processes, service_gateway_pids)
 def _write_update_planned_stop_marker(profile_path: Path, pid: int) -> bool:
     """Write a planned-stop marker into a specific profile home."""
     try:
-        from gateway.status import _get_process_start_time
+        from hermes_agent.gateway.status import _get_process_start_time
         from utils import atomic_json_write
         atomic_json_write(
             _planned_stop_marker_path(profile_path),
@@ -75,7 +75,7 @@ def _wait_for_windows_update_gateway_exit(pids: list[int], *, timeout: float) ->
     """Wait for the given gateway PIDs to exit, returning survivors."""
     if not pids:
         return set()
-    from gateway.status import _pid_exists
+    from hermes_agent.gateway.status import _pid_exists
 
     def _alive(pid: int) -> bool:
         try:
@@ -106,7 +106,7 @@ def _self_and_non_gateway_ancestor_pids(psutil) -> set[int]:
         # would otherwise nominate itself. Same #87594 carve-out as _detect_venv_python_processes: a GATEWAY
         # ancestor is not "our own ancestry" in the interactive sense — it is the process the pause
         # machinery must see (the /update-from-gateway topology makes the updater the gateway's child).
-        from gateway.status import looks_like_gateway_command_line as _is_gw
+        from hermes_agent.gateway.status import looks_like_gateway_command_line as _is_gw
     skip: set[int] = {os.getpid()}
     with suppress(Exception):
         for anc in psutil.Process().parents():
@@ -258,7 +258,7 @@ def _hermes_holder_subcommand(cmdline: str) -> str | None:
     # ``python -c <src> … -m hermes_cli.main <subcommand>``: the entry token belongs to the argv the
     # inline source carries for a LATER spawn, not to this holder (#107002) -- unless the source is a
     # Hermes bootstrap running the entry point in this process (#124318).
-    from gateway.status_inline_source import command_line_runs_inline_source, inline_bootstrap_argv
+    from hermes_agent.gateway.status_inline_source import command_line_runs_inline_source, inline_bootstrap_argv
     normalized = [t.strip("\"'").replace("\\", "/") for t in tokens]
     if command_line_runs_inline_source(normalized):
         tokens = inline_bootstrap_argv(normalized)
@@ -521,7 +521,7 @@ def _orphaned_desktop_backend_pids(matches: list[tuple[int, str, str]]) -> list[
         try:
             proc = psutil.Process(int(pid))
             # Fingerprint from the SAME psutil handle, centisecond-quantized like
-            # gateway.status.get_process_start_time so pid_is_hermes round-trips at kill time.
+            # hermes_agent.gateway.status.get_process_start_time so pid_is_hermes round-trips at kill time.
             process_start_time = round(proc.create_time() * 100)
         except psutil.NoSuchProcess:
             continue  # exited during classification — nothing to reap
@@ -605,7 +605,7 @@ def _stop_process_trees(pids: list[int] | list[tuple[int, int]]) -> None:
 
     See #70026.
     """
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway.status import get_process_start_time
     from hermes_cli._subprocess_compat import pid_is_hermes, windows_hide_flags
     for entry in pids:
         pid, expected_start_time = entry if isinstance(entry, tuple) else (int(entry), get_process_start_time(int(entry)))
@@ -903,7 +903,7 @@ def _request_socket_pauses(running_pids, profile_processes, service_gateway_pids
             # its own graceful restart path (same drain as SIGUSR1/service restarts) and will release its
             # venv handles on the way out. No answer (older gateway, no socket) → the marker watcher /
             # force-kill fallback below behaves exactly as before this verb existed.
-            from gateway.control_socket import pause_gateway_for_update
+            from hermes_agent.gateway.control_socket import pause_gateway_for_update
             ack = pause_gateway_for_update(Path(proc.path))
             if ack and (ack.get("pausing") or ack.get("already_stopping")):
                 socket_acks.append(ack)
@@ -940,7 +940,7 @@ def _pause_windows_gateways_for_update() -> dict | None:
     if not _m()._is_windows():
         return None
     with _abort_on_error("Could not prepare Windows gateway pause for update"):
-        import gateway.status
+        import hermes_agent.gateway.status
         from hermes_cli.gateway import _capture_gateway_argv
     from hermes_cli import update_pause_record as pause_record
     with _abort_on_error("Could not read the gateways an earlier update paused"):
@@ -949,7 +949,7 @@ def _pause_windows_gateways_for_update() -> dict | None:
     if not running_pids:
         return _cold_start_pause_token(adopted, claims)
     unmapped_pids = [pid for pid in running_pids if pid not in profile_processes and pid not in service_gateway_pids]
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway.status import get_process_start_time
     from hermes_cli.update_fleet_scope import gateway_pid_home
     born = {int(pid): get_process_start_time(int(pid)) for pid in running_pids}  # the processes discovered
     # Snapshot unmapped gateways' argv *before* anything stops so resume (or a later launch) can replay it.
@@ -1025,7 +1025,7 @@ def _stop_windows_gateways(running_pids, profile_processes, service_gateway_pids
     The kill is authorized by each process's birth as discovered (*born*, a mapped gateway's
     strict PID-file identity first), never re-read after the drain: a PID that exited and was
     reused meanwhile reads its replacement's own birth. No discovered birth refuses the kill."""
-    from gateway.status import get_process_start_time, terminate_pid
+    from hermes_agent.gateway.status import get_process_start_time, terminate_pid
     from hermes_cli.update_cmd import _m
     mapped = [int(p) for p in running_pids if int(p) not in service_gateway_pids and int(p) in profile_processes]
     born = {**{int(k): v for k, v in (born or {}).items()},
@@ -1411,7 +1411,7 @@ def _unmapped_ready_filter(entry: dict, taken: set):
     captured (no key: a pre-durable-pause updater's token) keeps the argv-only match; a recorded
     ``home`` that is empty proves no runtime and is never matched."""
     import psutil
-    from gateway.status import _looks_like_gateway_process, _same_hermes_home, get_process_start_time
+    from hermes_agent.gateway.status import _looks_like_gateway_process, _same_hermes_home, get_process_start_time
     from hermes_cli.update_fleet_scope import gateway_pid_home
     tail, old = list(entry.get("argv") or [])[1:], int(entry.get("pid") or 0)
     home, old_ct = entry.get("home"), entry.get("ct")
@@ -1521,7 +1521,7 @@ def _verify_relaunched_gateways_alive(token: dict, profiles: dict, unmapped: lis
     A parent Job Object denying CREATE_BREAKAWAY_FROM_JOB can kill the gateway on updater teardown.
     Vouched PIDs are persisted so a death AFTER updater exit is reported by the next CLI invocation."""
     with _abort_on_error("Could not load Windows gateway liveness helpers"):
-        from gateway.status import _pid_exists
+        from hermes_agent.gateway.status import _pid_exists
         from hermes_cli import gateway_windows
         from hermes_cli.profiles import get_profile_dir
     deadline = _time.monotonic() + _relaunch_verify_timeout_s(profiles, unmapped, _pid_exists)

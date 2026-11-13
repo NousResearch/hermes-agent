@@ -23,7 +23,7 @@ from typing import List, Optional
 
 from hermes_constants import get_hermes_home, get_process_hermes_home
 
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 # A legitimate operator restart (or two) never trips; a ~10s respawn loop does
 # within a few cycles.

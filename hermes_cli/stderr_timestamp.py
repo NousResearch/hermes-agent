@@ -16,7 +16,7 @@ from typing import BinaryIO, Sequence, TextIO
 
 EXTERNAL_SUPERVISOR_FLAG = "--external-supervisor"
 _LAUNCHD_LABEL_ENV = "HERMES_LAUNCHD_LABEL"
-# gateway.restart.GATEWAY_FATAL_CONFIG_EXIT_CODE. This wrapper is a launcher boot
+# hermes_agent.gateway.restart.GATEWAY_FATAL_CONFIG_EXIT_CODE. This wrapper is a launcher boot
 # file: it runs from a source slice and stays stdlib-only.
 _GATEWAY_FATAL_CONFIG_EXIT_CODE = 78
 
@@ -74,7 +74,7 @@ def _install_signal_forwarders(proc: subprocess.Popen[bytes]) -> dict[int, objec
     # so `hermes update` signals us, not the gateway; an unforwarded SIGUSR1 kills the wrapper
     # (Python's default action), launchd tears the group down with SIGTERM and applies its
     # ~60 s crash back-off per sibling profile (#101426). SIGUSR2 is the gateway's
-    # faulthandler stack-dump request (gateway/run_startup.py); unforwarded it terminates
+    # faulthandler stack-dump request (hermes_agent/gateway/run_startup.py); unforwarded it terminates
     # the wrapper the same way instead of dumping stacks.
     forwarded = (
         signal.SIGTERM,
@@ -100,7 +100,7 @@ def _is_hermes_gateway_run_argv(command: Sequence[str]) -> bool:
     supervisor``; an arbitrary launchd child must not be marked as gateway-supervised (#87005).
     """
     try:
-        from gateway.status import looks_like_gateway_command_line
+        from hermes_agent.gateway.status import looks_like_gateway_command_line
     except Exception:
         return False
     return bool(looks_like_gateway_command_line(" ".join(str(part) for part in command)))
@@ -113,7 +113,7 @@ def _child_launchd_label_env(environ: Mapping[str, str] | None = None) -> dict[s
     interactive shell has none, the grandchild sees ``XPC_SERVICE_NAME=0``). Re-exporting the
     label lets the gateway resolve its job without it (the stop-drain cap reading the live
     ``ExitTimeOut``, the exit-75 restart route, the control-socket supervisor declaration — all
-    via ``gateway.restart.launchd_job_label``). Only ``ai.hermes.*`` labels are exported;
+    via ``hermes_agent.gateway.restart.launchd_job_label``). Only ``ai.hermes.*`` labels are exported;
     app-coalition labels are meaningless as a job identity.
     """
     env = os.environ if environ is None else environ

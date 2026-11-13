@@ -16,9 +16,9 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.run import GatewayRunner
-from gateway.session import SessionEntry, SessionSource, SessionStore
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionEntry, SessionSource, SessionStore
 
 
 ACTIVE_TURN_MAX_AGE_SECONDS = 60 * 60
@@ -476,7 +476,7 @@ async def test_unclean_restart_resumes_only_the_turn_left_in_flight(tmp_path):
 async def test_unclean_restart_delivers_a_persisted_unledgered_reply_instead_of_regenerating(tmp_path):
     """Killed after the reply was persisted but before it reached the delivery ledger: the stored
     reply is ledgered for this boot's sweep (marked, it may already be on screen), not resumed."""
-    from gateway.delivery_ledger import sweep_recoverable
+    from hermes_agent.gateway.delivery_ledger import sweep_recoverable
 
     runner, store = _db_runner(tmp_path)
     source = _turn(store, "replied", marked=True, reply="the stored answer")
@@ -508,7 +508,7 @@ async def test_unclean_restart_never_redelivers_a_reply_live_delivery_suppressed
     marker on a machinery turn, a muted diagnostic wake or a message the adapter reported as not
     addressed to the bot (and the finished turn is not resumed), the unexpected-silence notice for
     any other human turn, never the raw marker."""
-    from gateway.delivery_ledger import sweep_recoverable
+    from hermes_agent.gateway.delivery_ledger import sweep_recoverable
 
     (Path(os.environ["HERMES_HOME"]) / "config.yaml").write_text("display: {suppress_warning_notifications: true}\n", encoding="utf-8")
     runner, store = _db_runner(tmp_path)
@@ -528,7 +528,7 @@ async def test_turn_marker_start_survives_a_timezone_change_across_the_crash(tmp
     """The dead process's local zone is not the new one's (DST, container vs unit TZ): the marked
     turn still resumes, and the previous turn's answer persisted a minute before it is not re-sent
     (a naive wall-clock marker read in the new zone was 7 h off and dropped the turn as stale)."""
-    from gateway.delivery_ledger import sweep_recoverable
+    from hermes_agent.gateway.delivery_ledger import sweep_recoverable
 
     runner, store = _db_runner(tmp_path)
     source = _make_source("tz")

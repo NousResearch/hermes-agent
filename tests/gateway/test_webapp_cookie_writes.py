@@ -14,8 +14,8 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 
-from gateway.run_api import GatewayDashboardMount
-from gateway.webapp_listener import WebappMount
+from hermes_agent.gateway.run_api import GatewayDashboardMount
+from hermes_agent.gateway.webapp_listener import WebappMount
 
 WEBAPP = "http://hermes.lan:9120"
 SKIN = {"config": {"display": {"skin": "mono"}}}

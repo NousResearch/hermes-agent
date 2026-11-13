@@ -11,8 +11,8 @@ from unittest.mock import patch
 
 import pytest
 
-from gateway.config import Platform
-from gateway.platform_registry import PlatformEntry, platform_registry
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platform_registry import PlatformEntry, platform_registry
 from tools.send_message_tool import resolve_send_target, send_message_tool
 
 
@@ -77,7 +77,7 @@ def test_platform_parser_normalizes_and_validator_rejects(plugin_platform):
 def test_registered_plugin_rejects_unrecognized_opaque_target(plugin_platform):
     name, _entry, seen = plugin_platform
 
-    with patch("gateway.channel_directory.resolve_channel_name", return_value=None):
+    with patch("hermes_agent.gateway.channel_directory.resolve_channel_name", return_value=None):
         chat_id, thread_id, error = resolve_send_target(
             name, "dm:opaque-recipient"
         )
@@ -113,7 +113,7 @@ def test_plugin_validator_custom_diagnostic_blocks_delivery(plugin_platform):
     name, entry, seen = plugin_platform
     entry.validate_target_ref_fn = lambda _chat_id: "recipient is outside the allowlist"
 
-    with patch("gateway.channel_directory.resolve_channel_name", return_value=None):
+    with patch("hermes_agent.gateway.channel_directory.resolve_channel_name", return_value=None):
         chat_id, thread_id, error = resolve_send_target(name, "@alice@example.com")
 
     assert chat_id is None
@@ -136,9 +136,9 @@ def test_host_send_honors_sync_and_async_plugin_handlers(plugin_platform, async_
             return {"success": True, "platform": platform_name, "chat_id": chat_id}
         entry.send_message_handler = sync_handler
 
-    with patch("gateway.config.load_gateway_config", return_value=config), \
+    with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
          patch("tools.interrupt.is_interrupted", return_value=False), \
-         patch("gateway.mirror.mirror_to_session", return_value=True):
+         patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True):
         result = json.loads(send_message_tool({
             "target": f"{name}:@Alice@Example.COM",
             "message": "hello",
@@ -168,9 +168,9 @@ def test_cli_and_cron_share_plugin_target_normalization(plugin_platform, monkeyp
     )
 
     monkeypatch.setattr("hermes_cli.send_cmd._load_hermes_env", lambda: None)
-    with patch("gateway.config.load_gateway_config", return_value=config), \
+    with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
          patch("tools.interrupt.is_interrupted", return_value=False), \
-         patch("gateway.mirror.mirror_to_session", return_value=True), \
+         patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True), \
          pytest.raises(SystemExit) as exc:
         cmd_send(args)
     assert exc.value.code == 0
@@ -229,7 +229,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import patch
 from hermes_cli.plugins import discover_plugins
-from gateway.config import Platform
+from hermes_agent.gateway.config import Platform
 from tools.registry import registry
 from tools.send_message_tool import send_message_tool
 
@@ -237,9 +237,9 @@ discover_plugins()
 platform = Platform("fmsg")
 pconfig = SimpleNamespace(enabled=True, token=None, extra={})
 config = SimpleNamespace(platforms={platform: pconfig}, get_home_channel=lambda p: None)
-with patch("gateway.config.load_gateway_config", return_value=config), \
+with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
      patch("tools.interrupt.is_interrupted", return_value=False), \
-     patch("gateway.mirror.mirror_to_session", return_value=True):
+     patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True):
     host_send = json.loads(send_message_tool({"target": "fmsg:@Alice@Example.COM",
                                               "message": "hello", "subject": "hi"}))
 from hermes_agent.cron.scheduler_delivery import _resolve_single_delivery_target
@@ -272,7 +272,7 @@ def test_declared_target_syntax_and_standalone_policy_drive_send_routing():
     table: a third-party plugin declaring them gets the bundled platforms' semantics."""
     import asyncio
 
-    from gateway.platforms.send_targets import NOT_EXPLICIT, StandaloneSendPolicy
+    from hermes_agent.gateway.platforms.send_targets import NOT_EXPLICIT, StandaloneSendPolicy
     from tools.send_message_tool import _send_to_platform
 
     calls: list[dict] = []
@@ -292,7 +292,7 @@ def test_declared_target_syntax_and_standalone_policy_drive_send_routing():
         target_ref_syntax_fn=syntax, standalone_sender_fn=sender,
         standalone_send=StandaloneSendPolicy(label="Fixture", media=True, captionable=True)))
     try:
-        with patch("gateway.channel_directory.resolve_channel_name", return_value=None):
+        with patch("hermes_agent.gateway.channel_directory.resolve_channel_name", return_value=None):
             assert resolve_send_target(name, "room-1:th") == ("room-1", "th", None)
             # NOT_EXPLICIT skips the generic numeric rule; None falls through to it.
             assert resolve_send_target(name, "42") == ("42", None, None)

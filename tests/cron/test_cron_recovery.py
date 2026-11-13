@@ -4,10 +4,10 @@ import json
 from types import SimpleNamespace
 
 from hermes_agent.cron import jobs, scheduler
-from gateway import run, session_cron
-from gateway.session import SessionStore
-from gateway.session_authority import SessionAuthority
-from gateway.config import GatewayConfig
+from hermes_agent.gateway import run, session_cron
+from hermes_agent.gateway.session import SessionStore
+from hermes_agent.gateway.session_authority import SessionAuthority
+from hermes_agent.gateway.config import GatewayConfig
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import begin_runtime_epoch, claim_session_input, settle_session_input
 

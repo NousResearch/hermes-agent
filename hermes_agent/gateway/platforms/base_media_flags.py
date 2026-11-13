@@ -1,7 +1,7 @@
 """Per-attachment inlining flags shared by inbound media transformations."""
 from typing import Optional
 
-from gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.platforms.event import MessageEvent
 
 
 def pad_inline_flags(event: MessageEvent) -> list[Optional[bool]]:

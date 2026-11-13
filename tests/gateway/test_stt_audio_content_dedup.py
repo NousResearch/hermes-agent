@@ -5,11 +5,11 @@ from unittest.mock import call, patch
 
 import pytest
 
-from gateway.config import GatewayConfig
+from hermes_agent.gateway.config import GatewayConfig
 
 
 def _runner():
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = GatewayRunner.__new__(GatewayRunner)
     runner.config = GatewayConfig(stt_enabled=True)

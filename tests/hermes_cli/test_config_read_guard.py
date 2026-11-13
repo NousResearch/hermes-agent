@@ -12,8 +12,8 @@ Canonical owners:
     (merged + managed + env-expanded), ``read_raw_config()`` and
     ``read_user_config_raw()`` (the ONLY legal raw primitives: write-back
     round-trips + raw-file diagnostics).
-  * ``gateway/config.py`` — the gateway's ``load_gateway_config`` owner.
-  * ``gateway/run.py`` — ``_load_gateway_config()``'s monkeypatched-home
+  * ``hermes_agent/gateway/config.py`` — the gateway's ``load_gateway_config`` owner.
+  * ``hermes_agent/gateway/run.py`` — ``_load_gateway_config()``'s monkeypatched-home
     fallback path (delegates to ``read_raw_config`` when paths agree).
 
 Everything else must import one of those. If this test fails on your new
@@ -37,10 +37,10 @@ ALLOWLIST = {
     "hermes_cli/config.py",
     "gateway/config.py",
     # load_gateway_config()'s config.yaml phase lives here (extracted from
-    # gateway/config.py); same owner, same managed-overlay contract.
+    # hermes_agent/gateway/config.py); same owner, same managed-overlay contract.
     "gateway/config_loader.py",
     # _load_gateway_config()'s fallback path for tests that monkeypatch
-    # gateway.run._hermes_home (delegates to read_raw_config otherwise).
+    # hermes_agent.gateway.run._hermes_home (delegates to read_raw_config otherwise).
     "gateway/run.py",
     # Reads the MANAGED-scope config.yaml (/etc/hermes/...), not the user's —
     # it IS the overlay source; the canonical loaders call into it.

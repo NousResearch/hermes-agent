@@ -1,4 +1,4 @@
-"""Scoped-lock ownership and release, split from :mod:`gateway.status` (acquire stays there).
+"""Scoped-lock ownership and release, split from :mod:`hermes_agent.gateway.status` (acquire stays there).
 
 Helpers read status through the module at call time, preserving its patch seams.
 The acquire path imports the ownership check lazily to avoid an import cycle.
@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
-from gateway import status as _status
+from hermes_agent.gateway import status as _status
 
 
 def scoped_lock_pid_is_ours(record: dict[str, Any]) -> bool:
@@ -41,7 +41,7 @@ def _foreign_owner_is_live(existing: dict[str, Any]) -> bool:
     the same home kept a dead predecessor's token reserved for its whole life. No home, or a
     process-kind owner (setup worker, dashboard) that never takes that flock, stays live: unknown is
     not dead."""
-    from gateway.runtime_ownership import runtime_lock_held_elsewhere
+    from hermes_agent.gateway.runtime_ownership import runtime_lock_held_elsewhere
     home, metadata = existing.get("hermes_home"), existing.get("metadata")
     if not isinstance(home, str) or not home.strip():
         return True

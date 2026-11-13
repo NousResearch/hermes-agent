@@ -38,10 +38,10 @@ async def call_plugin_rpc(connection, ref, method, handler, params):
     if ref.session_id is not None and not isinstance(ref.session_id, str):
         raise RuntimeStoreError('invalid_params', field='session_id')
     if ref.session_id:
-        from gateway.session_busy_controls import authorize
+        from hermes_agent.gateway.session_busy_controls import authorize
         authorize(connection, ref, params, 'session:control')
     else:
-        from gateway.session_authorities import require_serving
+        from hermes_agent.gateway.session_authorities import require_serving
         require_serving(connection.authority)
         if 'session:control' not in connection.actor.capabilities:
             raise RuntimeStoreError('permission_denied')
@@ -59,8 +59,8 @@ def publish_session_event(session_id, event_type, payload) -> bool:
     """Publish on the event stream of the live session ``session_id`` names in the caller's profile;
     True when a live viewer took the frame (it is in the session's replay either way). False too when
     that profile's authority does not hold it: session ids are per-profile, so no other is searched."""
-    from gateway.run_api import _ACTIVE_RUNNER
-    from gateway.session_authorities import active_authority
+    from hermes_agent.gateway.run_api import _ACTIVE_RUNNER
+    from hermes_agent.gateway.session_authorities import active_authority
     authority = active_authority(_ACTIVE_RUNNER) if _ACTIVE_RUNNER is not None else None
     found = _live(authority, session_id) if authority is not None else None
     if found is None:
@@ -75,7 +75,7 @@ def _live(authority, session_id):
     sessions = authority.sessions
     if (live := sessions.get(session_id)) is not None:
         return session_id, live
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_contract import SessionRef
     for key, live in list(sessions.items()):
         with contextlib.suppress(KeyError):  # evicted since the listing
             if getattr(authority.agent(SessionRef(authority.profile_id, key)), 'session_id', None) == session_id:

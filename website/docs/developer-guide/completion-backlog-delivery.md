@@ -25,7 +25,7 @@ notifications, in their original order; they are not folded into completion batc
   status. Busy sessions requeue structured events, not rendered batch strings.
 - **Post-turn TUI safety net:** `hermes_agent/tui_gateway/prompt_turn.py` uses the same routing
   and rendering path. Desktop and dashboard chat clients share this backend.
-- **Messaging gateway:** `gateway/run_notifications.py` already uses its own
+- **Messaging gateway:** `hermes_agent/gateway/run_notifications.py` already uses its own
   route-keyed short-window batching. This interactive-backlog change does not
   replace that mechanism or alter adapter sends.
 - **Noninteractive/headless consumers:** this change does not create a new

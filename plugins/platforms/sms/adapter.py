@@ -20,14 +20,14 @@ import re
 import urllib.parse
 from typing import Any, Dict, Optional
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms.helpers import redact_phone, send_chunks, strip_markdown
-from gateway.platforms._shared import (
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.platforms.helpers import redact_phone, send_chunks, strip_markdown
+from hermes_agent.gateway.platforms._shared import (
     env_is_connected as _env_is_connected, get_scoped_secret as _get_scoped_secret, send_error
 )
-from gateway.platforms.send_targets import StandaloneSendPolicy
+from hermes_agent.gateway.platforms.send_targets import StandaloneSendPolicy
 
 try:
     import aiohttp
@@ -137,7 +137,7 @@ class SmsAdapter(BasePlatformAdapter):
         app.router.add_post("/webhooks/twilio", self._handle_webhook)
         app.router.add_get("/health", lambda _: web.Response(text="ok"))
         # Shared-listener mode (multiplex secondary): no bind; served at /p/<profile>/webhooks/twilio.
-        from gateway.platforms.shared_ingress import bind_listener
+        from hermes_agent.gateway.platforms.shared_ingress import bind_listener
         self._runner = await bind_listener(self, app, self._webhook_host, self._webhook_port, "/webhooks/twilio")
         self._http_session = _new_session(trust_env=gateway_trust_env())
         self._running = True
@@ -275,7 +275,7 @@ class SmsAdapter(BasePlatformAdapter):
         return _twiml_response()
 
 
-# -- Plugin registration (TWILIO_* env→PlatformConfig seeding stays in gateway/config.py)
+# -- Plugin registration (TWILIO_* env→PlatformConfig seeding stays in hermes_agent/gateway/config.py)
 
 # Standalone-send markdown stripping: looser than helpers.strip_markdown (no
 # word-boundary guards on underscores, ``[a-z]*`` fence tags) — kept for parity.
@@ -289,8 +289,8 @@ _SMS_MARKDOWN_SUBS = (
 
 # ────────────────────────────────────────────────────────────────────────── Plugin migration glue (#41112 /
 # #3823) Added when the SMS (Twilio) adapter moved from gateway/platforms/sms.py into this bundled plugin.
-# register() exposes the platform via the registry, replacing the Platform.SMS elif in gateway/run.py, the
-# _PLATFORM_CONNECTED_CHECKERS entry in gateway/config.py, the _PLATFORMS["sms"] static dict in
+# register() exposes the platform via the registry, replacing the Platform.SMS elif in hermes_agent/gateway/run.py, the
+# _PLATFORM_CONNECTED_CHECKERS entry in hermes_agent/gateway/config.py, the _PLATFORMS["sms"] static dict in
 # hermes_cli/gateway.py, and the _send_sms dispatch in tools/send_message_tool.py. TWILIO_*
 # env→PlatformConfig seeding lives in this plugin's gateway_env.py.
 # ──────────────────────────────────────────────────────────────────────────
@@ -310,7 +310,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     from_number = _get_scoped_secret("TWILIO_PHONE_NUMBER", "")  # scoped like account_sid: never the default's number
     if not account_sid or not auth_token or not from_number:
         return send_error("SMS not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER required)")
-    from gateway.platforms.base import describe_proxy_error, resolve_proxy_url, proxy_kwargs_for_aiohttp
+    from hermes_agent.gateway.platforms.base import describe_proxy_error, resolve_proxy_url, proxy_kwargs_for_aiohttp
     proxy = resolve_proxy_url()
     try:
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(proxy)
@@ -339,7 +339,7 @@ _PLATFORM_HINT = (
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
-    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
+    from . import gateway_env  # env -> GatewayConfig bridge (hermes_agent.gateway.config_env)
     ctx.register_platform(
         standalone_send=StandaloneSendPolicy(text_direct=True),
         name="sms", label="SMS (Twilio)", adapter_factory=SmsAdapter,

@@ -32,14 +32,14 @@ def _delegation_units(now: float) -> list[dict[str, Any]]:
 def _profile_units(runner, profile: str, units: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """What an ``unserve-profile`` of *profile* stops (``stop_authority_work``): its chat turns (session
     keys in its namespace) plus its authority's managed turns and cron runs. Delegations survive it."""
-    from gateway.session import _session_key_namespace
+    from hermes_agent.gateway.session import _session_key_namespace
 
     prefix = _session_key_namespace(profile) + ":"
     mine = [u for u in units if u.get("kind") == "chat" and str(u.get("session") or "").startswith(prefix)]
     home = (getattr(runner, "_served_profile_homes", None) or {}).get(profile)
     registry = getattr(runner, "session_authorities", None)
     authority = registry.for_home(home) if registry is not None and home is not None else None
-    from gateway.session_runtime_workers import managed_worker_units, side_agents
+    from hermes_agent.gateway.session_runtime_workers import managed_worker_units, side_agents
 
     crons = len(getattr(authority, "_cron_cancellations", None) or {})
     sides = len(side_agents(authority)) if authority is not None else 0

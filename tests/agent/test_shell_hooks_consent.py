@@ -198,7 +198,7 @@ class TestNeverPromptOutsideForegroundCLI:
     def test_gateway_registration_on_the_event_loop_never_prompts(self, tmp_path, monkeypatch, caplog):
         """The P0 shape: gateway startup and every secondary-profile load register from the loop
         thread; a prompt there froze the loop until the liveness watchdog exited 75."""
-        from gateway.run_startup import GatewayStartupMixin
+        from hermes_agent.gateway.run_startup import GatewayStartupMixin
         from hermes_cli import plugins
 
         script = _write_config_with_hook(tmp_path)

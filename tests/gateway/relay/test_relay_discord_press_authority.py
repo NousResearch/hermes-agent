@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 from tests.gateway.test_approval_requester_binding import write_approvers
 
 SESSION = "agent:main:discord:group:c1"
@@ -22,15 +22,15 @@ SESSION = "agent:main:discord:group:c1"
 
 @pytest.fixture(autouse=True)
 def _no_admitted_authors(monkeypatch):
-    from gateway.relay import admitted_authors
+    from hermes_agent.gateway.relay import admitted_authors
 
     monkeypatch.setattr(admitted_authors, "_admitted", type(admitted_authors._admitted)())
 
 
 @pytest.fixture
 def relay(monkeypatch):
-    import gateway.run as gateway_run
-    from gateway.relay.adapter import RelayAdapter
+    import hermes_agent.gateway.run as gateway_run
+    from hermes_agent.gateway.relay.adapter import RelayAdapter
     from tests.gateway.relay.stub_connector import StubConnector
     from tests.gateway.relay.test_relay_interactive import make_desc
     from tools import approval, clarify_gateway, slash_confirm
@@ -48,7 +48,7 @@ def relay(monkeypatch):
 
 
 def _no_admin_list(monkeypatch):
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     monkeypatch.setattr(gateway_run, "_gateway_runner_ref", lambda: SimpleNamespace(config=GatewayConfig(
         platforms={p: PlatformConfig(enabled=True) for p in (Platform.DISCORD, Platform.TELEGRAM)})))
@@ -56,7 +56,7 @@ def _no_admin_list(monkeypatch):
 
 async def _raise_as_alice(adapter, stub, kind):
     """Raise *kind* inside Alice's turn and post its card; returns (prompt_id, option, answered?)."""
-    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
     from tools import approval, clarify_gateway, slash_confirm
     from tools.approval_gateway_wait import _ApprovalEntry
 
@@ -90,7 +90,7 @@ async def _raise_as_alice(adapter, stub, kind):
 
 
 async def _discord_press(adapter, clicker, prompt_id, option):
-    from gateway.relay.ws_transport import PassthroughForward
+    from hermes_agent.gateway.relay.ws_transport import PassthroughForward
 
     body = json.dumps({"type": 3, "guild_id": "guild", "channel_id": "c1", "member": {"user": {"id": clicker}},
                        "data": {"custom_id": f"hp1:{prompt_id}:{option}"}}).encode()
@@ -99,7 +99,7 @@ async def _discord_press(adapter, clicker, prompt_id, option):
 
 
 async def _inbound_press(adapter, clicker, prompt_id, option):
-    from gateway.relay.ws_transport import _event_from_wire
+    from hermes_agent.gateway.relay.ws_transport import _event_from_wire
 
     await adapter._on_inbound(_event_from_wire({
         "text": f"/{option}", "message_type": "command",
@@ -160,7 +160,7 @@ async def test_inbound_lane_press_from_another_member_still_answers(relay, kind,
 
 
 def test_unadmitted_card_answer_settles_nothing_for_another_member(relay):
-    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
     from tools import approval
     from tools.approval_gateway_wait import _ApprovalEntry
 
@@ -186,7 +186,7 @@ def test_unadmitted_card_answer_settles_nothing_for_another_member(relay):
 async def test_discord_press_from_a_member_whose_messages_arrive_here_still_answers(relay, kind, monkeypatch):
     """``approvers: ["*"]``: a teammate the connector admitted (their Discord message reached this
     gateway) answers another member's prompt with a button, as before."""
-    from gateway.relay.ws_transport import _event_from_wire
+    from hermes_agent.gateway.relay.ws_transport import _event_from_wire
 
     adapter, stub = relay
     _no_admin_list(monkeypatch)

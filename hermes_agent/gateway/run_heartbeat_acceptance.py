@@ -6,7 +6,7 @@ The done callback retains the watch's profile ContextVars and manager claim.
 """
 import logging
 
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 
 async def resolve_heartbeat_owner(runner, event, entry):
@@ -47,11 +47,11 @@ def settle_heartbeat_attempt(event, manager):
 async def admit_heartbeat(runner, adapter, source, session_id, route):
     """Coalesce overdue ticks behind the canonical FIFO, not an adapter-local slot."""
     import json
-    from gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.platforms.event import MessageEvent
     from hermes_cli.heartbeat import HeartbeatManager
     from hermes_agent.hermes_state_runtime import list_session_admissions
 
-    from gateway.session_authorities import active_authority
+    from hermes_agent.gateway.session_authorities import active_authority
     authority = active_authority(runner)
     if authority is None:
         return

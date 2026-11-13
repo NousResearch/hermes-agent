@@ -23,7 +23,7 @@ TICK_SECONDS = 15
 
 def _session_route(unit: dict[str, Any]) -> dict[str, str]:
     """``set_session_vars`` kwargs that route a completion back to the parent conversation (its ledger row)."""
-    from gateway.run import _parse_session_key
+    from hermes_agent.gateway.run import _parse_session_key
     task = json.loads(unit.get("task_json") or "{}")
     key = str(unit.get("origin_session") or "")
     parsed = _parse_session_key(key) or {}
@@ -44,8 +44,8 @@ def _session_route(unit: dict[str, Any]) -> dict[str, str]:
 def _session_source(runner: Any, unit: dict[str, Any]) -> Any:
     """The parent conversation's ``SessionSource``, rebuilt from its ledger row the way a completion is routed."""
     if unit.get("origin_session_id") and not unit.get("origin_session"):
-        from gateway.config import Platform
-        from gateway.session import SessionSource
+        from hermes_agent.gateway.config import Platform
+        from hermes_agent.gateway.session import SessionSource
         return SessionSource(platform=Platform.API_SERVER, chat_id=str(unit["origin_session_id"]))
     return runner._build_process_event_source({"session_key": str(unit.get("origin_session") or "")})
 
@@ -75,9 +75,9 @@ def _stand_in_parent(runner: Any, db: Any, record: dict[str, Any], source: Any, 
 
 def _continue_as_parent(runner: Any, db: Any, record: dict[str, Any], unit: dict[str, Any], route: dict[str, str],
                         message: str) -> dict[str, Any]:
-    from gateway.session_authorities import active_authority
-    from gateway.session_local_recovery import restore_completion_route
-    from gateway.session_policy import policy_for_source, policy_scope
+    from hermes_agent.gateway.session_authorities import active_authority
+    from hermes_agent.gateway.session_local_recovery import restore_completion_route
+    from hermes_agent.gateway.session_policy import policy_for_source, policy_scope
     from tools.delegate_tool_auto_resume import STAND_IN_FAILED
     from tools.delegate_tool_continue import continue_subagent
     try:
@@ -103,7 +103,7 @@ def _continue_as_parent(runner: Any, db: Any, record: dict[str, Any], unit: dict
 def _start_continue(runner: Any, record: dict[str, Any], unit: dict[str, Any], message: str) -> Optional[str]:
     """Continue one claimed child; None once it is dispatched, else the refusal text. Runs on a worker thread in the
     profile's scope, inside a fresh context so the parent's routing binding never leaks into another task."""
-    from gateway.session_context import reset_session_vars, set_session_vars
+    from hermes_agent.gateway.session_context import reset_session_vars, set_session_vars
     from hermes_constants import get_hermes_home
     from hermes_agent.hermes_state_registry import acquire, release_or_close
     reset_session_vars()
@@ -138,7 +138,7 @@ def _capacity() -> int:
 
 def tick_profiles(runner: Any) -> list[str]:
     """One scheduler pass over every served profile, each under its own scope (blocking: run off the loop)."""
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
     from tools.delegate_tool_auto_resume import tick
     resumed: list[str] = []
     for name, home in _profile_homes(runner):

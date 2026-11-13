@@ -5,9 +5,9 @@ import hashlib
 import json
 import logging
 
-from gateway.config import Platform
-from gateway.session import SessionEntry, SessionSource, _is_path_unsafe
-from gateway.session_contract import SessionRef
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.session import SessionEntry, SessionSource, _is_path_unsafe
+from hermes_agent.gateway.session_contract import SessionRef
 from hermes_agent.hermes_state_runtime import RuntimeStoreError, _epoch, _json
 
 from hermes_agent.hermes_state_local import API_BINDING_PREFIX as _BINDING_PREFIX, API_DECLARED_PREFIX as _DECLARED_PREFIX
@@ -53,7 +53,7 @@ def continued_api_session(runner, session_id, request_id=None):
     """The session a new turn on a retained chain (``previous_response_id``, a named conversation)
     lands on: its stored id, or that id's next generation once the user deleted it (the history
     comes from the response store). An exact retry stays on the generation holding its identity."""
-    from gateway.session_authorities import active_authority
+    from hermes_agent.gateway.session_authorities import active_authority
     authority = active_authority(runner) if session_id else None
     return implicit_api_session(authority.db, session_id, request_id) if authority is not None else session_id
 
@@ -84,7 +84,7 @@ def _pin_api_identity(runner, source, *, transport_profile=None):
     """Pin the shared-listener identity on an API source: transport = the launch profile whose
     listener received ``/p/<name>/``, runtime = ``source.profile``. Returns the transport profile to
     persist; None outside multiplexing, where the launch adapter is the only one by construction."""
-    from gateway.session_identity import restore_identity
+    from hermes_agent.gateway.session_identity import restore_identity
     if transport_profile is None:
         transport_profile = getattr(runner, '_primary_profile_name', None) or 'default'
     identity = restore_identity(source, runner=runner, transport_profile=transport_profile)
@@ -110,7 +110,7 @@ async def run_steps_off_loop(authority, steps, *, orphaned=None):
     in admission order (``tracked_write(ordered=True)``): a held writer must not freeze every session.
     The whole drive is one tracked, shielded task, so a cancelled caller cannot separate a commit
     from the steps after it; ``orphaned(result)`` then runs when the drive completes."""
-    from gateway.session_runtime_workers import track_mutation, tracked_write
+    from hermes_agent.gateway.session_runtime_workers import track_mutation, tracked_write
 
     async def drive():
         result = error = None
@@ -164,14 +164,14 @@ def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=
         raise RuntimeStoreError('invalid_params')
     storage_source, title, room_identity, room_generation = 'api_server', None, None, 0
     if hosted_dispatch is not None:
-        from gateway.hosted_room_peer import HostedMemberDispatch
+        from hermes_agent.gateway.hosted_room_peer import HostedMemberDispatch
         dispatch = HostedMemberDispatch.from_mapping(hosted_dispatch)
         room_identity = [dispatch.home_install_id, dispatch.room_id, dispatch.member_id, dispatch.target_profile]
         room_generation, expected = hosted_member_session(authority.db, room_identity)
         if expected != session_id:
             raise RuntimeStoreError('admission_conflict')
         storage_source, title = 'bot_room', f'Group: {dispatch.room_id}'
-    from gateway.session_history_mount import is_history_mount
+    from hermes_agent.gateway.session_history_mount import is_history_mount
     if session_id in authority.sessions and not is_history_mount(authority.sessions[session_id]):
         if (authority.sessions[session_id].source.platform != Platform.API_SERVER
                 or authority.db.get_session(session_id)['source'] != storage_source):
@@ -185,7 +185,7 @@ def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=
                            user_id='api', chat_type='dm', profile=_served_profile(authority))
     transport_profile = _pin_api_identity(authority.runner, source)
     route = authority.runner.session_store._generate_session_key(source)
-    from gateway.session_lifecycle import _now
+    from hermes_agent.gateway.session_lifecycle import _now
     now = _now()
     entry = SessionEntry(route, session_id, now, now, origin=source, platform=Platform.API_SERVER,
                          transport_profile=transport_profile)
@@ -281,7 +281,7 @@ def _heal_replacement(conn, caller, holder):
 def reopen_api_session(authority, ref):
     """The drain's admitted turn reopens a finalized API row, as ``reopen_local_session`` does a
     local one: the binding keeps the route on it (``SessionStore._api_bound``). So does a turn of a
-    conversation its chat moved past (gateway/session_detached.py), whose row the chat's /new ended."""
+    conversation its chat moved past (hermes_agent/gateway/session_detached.py), whose row the chat's /new ended."""
     target = authority.physical_target(ref)
     row = authority.db.get_session(target)
     if row is not None and row.get('end_reason') is not None:
@@ -298,7 +298,7 @@ def api_storage_source(db, session_id, fallback):
 
 
 def restore_api_session(authority, session_id):
-    from gateway.session_authority import LiveSession
+    from hermes_agent.gateway.session_authority import LiveSession
     with authority.db._read_ctx() as conn:
         saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
                              (_BINDING_PREFIX + session_id,)).fetchone()
@@ -335,7 +335,7 @@ def restore_api_session(authority, session_id):
                 if not _heal_replacement(conn, session_id, current.session_id):
                     raise RuntimeStoreError('admission_conflict')
         store._entries[entry.session_key] = current if current is not None and current.session_id == target else entry
-    from gateway.session_history_mount import is_history_mount
+    from hermes_agent.gateway.session_history_mount import is_history_mount
     live = authority.sessions.get(session_id)
     if live is None:
         authority.sessions[session_id] = LiveSession(source, entry.session_key)

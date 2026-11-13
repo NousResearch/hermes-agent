@@ -9,7 +9,7 @@ The funnel clears every dict registered in _CONVERSATION_SCOPED_STATE plus
 the boundary security state, in one call.
 """
 
-from gateway.run import _CONVERSATION_SCOPED_STATE, GatewayRunner
+from hermes_agent.gateway.run import _CONVERSATION_SCOPED_STATE, GatewayRunner
 
 KEY = "agent:main:telegram:dm:777"
 OTHER = "agent:main:discord:dm:888"

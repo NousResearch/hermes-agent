@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway import session_ingress_media as media
+from hermes_agent.gateway import session_ingress_media as media
 from hermes_agent.hermes_state_runtime import RuntimeStoreError, admit_session_input, claim_session_input
 from hermes_agent.hermes_state_runtime import get_session_admission, settle_session_input
 from tests.gateway.test_native_media_budget import _authority, _staged, _submit
@@ -12,7 +12,7 @@ from tests.gateway.test_native_media_budget import _authority, _staged, _submit
 
 @pytest.mark.parametrize('reuse', ['captured', 'admitted'])
 def test_rejected_batch_keeps_an_alias_another_capture_reused(tmp_path, monkeypatch, reuse):
-    from gateway.platforms import base
+    from hermes_agent.gateway.platforms import base
     db, owner = _authority(tmp_path, monkeypatch)
     with db:
         monkeypatch.setattr(base, 'get_inbound_media_max_bytes', lambda: 3072)

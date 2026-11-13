@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import hosted_room_driver as driver
-from gateway import hosted_rooms as rooms
+from hermes_agent.gateway import hosted_room_driver as driver
+from hermes_agent.gateway import hosted_rooms as rooms
 from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService
 
 

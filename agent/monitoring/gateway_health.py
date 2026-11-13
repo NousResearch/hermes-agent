@@ -130,9 +130,9 @@ def _coerce_pid(raw: Any) -> Optional[int]:
 
 
 def _gateway_status(name: str, fallback: Callable[[], Any], /, **kwargs: Any) -> Any:
-    """Prefer ``gateway.status.<name>`` (the runtime-status contract); fall back to the local approximation."""
+    """Prefer ``hermes_agent.gateway.status.<name>`` (the runtime-status contract); fall back to the local approximation."""
     try:
-        from gateway import status
+        from hermes_agent.gateway import status
         return getattr(status, name)(**kwargs)
     except Exception:
         return fallback()
@@ -293,7 +293,7 @@ def _platform_events(
 
 def emit_runtime_status_transition(previous: Optional[dict[str, Any]], current: dict[str, Any]) -> None:
     """Emit immediate content-free gateway events for runtime status changes.  Called by
-    gateway.status.write_runtime_status after persisting; fully fail-open."""
+    hermes_agent.gateway.status.write_runtime_status after persisting; fully fail-open."""
     try:
         ctx = dict(profile=_safe_profile(), version=_safe_version())
         for ev in _lifecycle_events(previous, current, **ctx) + _platform_events(previous, current, **ctx):

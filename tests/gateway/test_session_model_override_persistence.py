@@ -19,8 +19,8 @@ from unittest.mock import patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.session import (
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.session import (
     SessionEntry,
     SessionSource,
     SessionStore,
@@ -87,7 +87,7 @@ def test_override_persists_and_survives_restart(store_factory, tmp_path):
 
 
 def _make_runner(store):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner._session_model_overrides = {}
@@ -105,7 +105,7 @@ def test_runner_rehydrates_override_after_restart(store_factory):
     # override map, credentials re-resolved via runtime provider resolution.
     runner = _make_runner(store_factory())
     with patch(
-        "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+        "hermes_agent.gateway.run._resolve_runtime_agent_kwargs_for_provider",
         return_value={
             "api_key": "sk-fresh-from-keychain",
             "api_mode": "responses",
@@ -151,7 +151,7 @@ def test_rehydrate_llamacpp_override_follows_live_managed_port(store_factory):
 
     runner = _make_runner(store_factory())
     with patch(
-        "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+        "hermes_agent.gateway.run._resolve_runtime_agent_kwargs_for_provider",
         return_value={"api_key": "local-key", "base_url": "http://127.0.0.1:18434/v1",
                       "provider": "custom", "requested_provider": "llamacpp"},
     ):
@@ -172,7 +172,7 @@ def test_rehydrate_opencode_override_heals_relay_url_for_rederived_wire(store_fa
 
     runner = _make_runner(store_factory())
     with patch(
-        "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+        "hermes_agent.gateway.run._resolve_runtime_agent_kwargs_for_provider",
         return_value={"api_key": "go-key", "api_mode": "chat_completions",
                       "base_url": "https://opencode.ai/zen/go/v1", "provider": "opencode-go"},
     ):
@@ -205,8 +205,8 @@ def test_codex_override_never_runs_on_the_default_providers_endpoint(store_facto
             raise nxt
         return dict(nxt)
 
-    with patch("gateway.run._resolve_runtime_agent_kwargs_for_provider", side_effect=_for_provider), \
-         patch("gateway.run._resolve_runtime_agent_kwargs", return_value=dict(nous)):
+    with patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs_for_provider", side_effect=_for_provider), \
+         patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", return_value=dict(nous)):
         model, runtime = runner._resolve_session_agent_runtime(
             session_key=session_key, user_config={"model": {"default": "openai/gpt-6-luna", "provider": "nous"}})
 

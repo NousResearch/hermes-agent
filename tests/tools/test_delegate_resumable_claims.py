@@ -218,7 +218,7 @@ def test_a_continue_that_fails_before_its_run_records_itself_hands_the_claim_bac
 
 @pytest.mark.parametrize("owner", ["dead", "alive"])
 def test_claim_reclaims_a_row_whose_owner_died_after_boot_recovery(owner):
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway.status import get_process_start_time
     from tools.delegate_tool import delegate_task
 
     parent = _parent()

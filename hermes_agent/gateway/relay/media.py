@@ -26,8 +26,8 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
-from gateway.platforms.event import clean_attachment_filename
-from gateway.relay.auth import make_upgrade_token
+from hermes_agent.gateway.platforms.event import clean_attachment_filename
+from hermes_agent.gateway.relay.auth import make_upgrade_token
 
 logger = logging.getLogger(__name__)
 
@@ -183,7 +183,7 @@ class RelayMediaClient:
                         return f"{self._base_url}/relay/media/{media_id}", "", False
                     return None, "connector answered without a media id", False
             except urllib.error.HTTPError as exc:
-                from gateway.relay.http_diagnostics import describe_http_error, read_error_body
+                from hermes_agent.gateway.relay.http_diagnostics import describe_http_error, read_error_body
 
                 # The exact bearer and secret are scrubbed even if a hop echoes them bare.
                 described = describe_http_error(exc, read_error_body(exc), secrets=(bearer, self._secret or ""))

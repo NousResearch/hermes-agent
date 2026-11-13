@@ -31,8 +31,8 @@ def refreshed_policy(policy, live, terminal, *, picked=(), mcp_only=False):
     flags, the *picked* policy edits) stay. *secrets* are the refreshed sections' private values, *replaced*
     the sections (``None``: terminal) whose stored private values they supersede. *policy* itself when
     nothing moved; a rotated private value alone (its redacted tree unchanged) moves it."""
-    from gateway.session_policy import _extract_config_secrets, present_sections
-    from gateway.session_policy_credentials import secrets_moved
+    from hermes_agent.gateway.session_policy import _extract_config_secrets, present_sections
+    from hermes_agent.gateway.session_policy_credentials import secrets_moved
     old, config = json.loads(policy.config_json), json.loads(policy.config_json)
     live, secrets, replaced = present_sections(live), {}, set()
     if mcp_only:
@@ -52,7 +52,7 @@ def refreshed_policy(policy, live, terminal, *, picked=(), mcp_only=False):
 
 def _settings(policy, config, live, picked):
     """Follow the config-derived settings into *config*; the toolsets they select."""
-    from gateway.session_policy import _resolve_toolsets, session_pinned
+    from hermes_agent.gateway.session_policy import _resolve_toolsets, session_pinned
     request = json.loads(policy.request_json)
     live_agent = live.get('agent') or {}
     agent = dict(config.get('agent') or {})
@@ -80,7 +80,7 @@ def _settings(policy, config, live, picked):
 
 
 def _terminal(policy, terminal, picked):
-    from gateway.session_policy import terminal_uses_host_cwd
+    from hermes_agent.gateway.session_policy import terminal_uses_host_cwd
     terminal, request = dict(terminal), json.loads(policy.request_json)
     # The session's own folder, where it now is, under build_policy's rule; a committed Move to project is
     # the user's pick on every backend (it rewrote the policy, never the launch request).
@@ -94,7 +94,7 @@ def _mcp_servers(policy, config, live, toolsets, secrets, replaced):
     allowlist, ``no_mcp`` and disabled entries respected): their definitions into *config*, private values split
     off as build_policy does (a managed worker binds this config, so it connects exactly these), and their
     names into the returned toolsets. An editor-MCP session keeps its frozen servers."""
-    from gateway.session_policy import _extract_config_secrets, _resolve_toolsets
+    from hermes_agent.gateway.session_policy import _extract_config_secrets, _resolve_toolsets
     from hermes_cli.tools_config import enabled_mcp_server_names
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     if policy.editor_mcp_json is not None:
@@ -138,8 +138,8 @@ def _prepare(authority, session_id, mcp_only=False, adopt_only=False):
     """Off the owner loop: the stored policy, its refresh from this profile home's files, and the generation
     it was derived at. None when the session takes no refresh or nothing moved. *adopt_only*: the adoption
     of a frozen Bot Chat alone, without the config-derived settings (a later open on the same attachment)."""
-    from gateway.session_local import load_profile_config
-    from gateway.session_policy import SURFACES, restore_policy
+    from hermes_agent.gateway.session_local import load_profile_config
+    from hermes_agent.gateway.session_policy import SURFACES, restore_policy
     from hermes_agent.hermes_state_local import local_receipt
     from hermes_agent.hermes_state_mutation_prepared import policy_picks
     from tools.terminal_scope import build_profile_terminal_scope
@@ -155,7 +155,7 @@ def _prepare(authority, session_id, mcp_only=False, adopt_only=False):
     base = old
     if not mcp_only:
         # Opening a Bot Chat an earlier build froze adopts it: it follows its profile from now on.
-        from gateway.session_local_migration import follow_bot_chat
+        from hermes_agent.gateway.session_local_migration import follow_bot_chat
         base = follow_bot_chat(authority, session_id, old, live, picked)
     if adopt_only:
         return None if base is old else (stored, old, base, {}, set(), generation)
@@ -168,8 +168,8 @@ def _rebind(authority, session_id, old, policy, fresh, replaced):
     refreshed sections' private values are the profile's current ones (the stored ones there are neither
     re-read nor checked: a rotated key is what the refresh picks up, not a revoked credential). A policy
     that follows its profile from this open on keeps none of its followed sections' frozen values."""
-    from gateway.session_policy import FOLLOW_SECTIONS, bind_launch_key, launch_key
-    from gateway.session_policy_credentials import recover_config_secrets
+    from hermes_agent.gateway.session_policy import FOLLOW_SECTIONS, bind_launch_key, launch_key
+    from hermes_agent.gateway.session_policy_credentials import recover_config_secrets
     skip = (*(FOLLOW_SECTIONS if policy.follows_profile else ()), *replaced)
     secrets = recover_config_secrets(authority, old, skip) if old.config_secret_ref else {}
     secrets.update(fresh)
@@ -207,7 +207,7 @@ async def commit_refresh(authority, ref, *, mcp_only=False, adopt_only=False):
     False when nothing moved. Raises the store's refusal (``session_busy`` while a turn runs or waits).
     One refresh per session at a time, run to its publication even when the caller is cancelled: a second
     waits for the first, then usually finds nothing moved."""
-    from gateway.session_runtime_workers import track_mutation
+    from hermes_agent.gateway.session_runtime_workers import track_mutation
     await refresh_settled(authority, ref.session_id)
     refreshes = _in_flight(authority)
     task = refreshes[ref.session_id] = track_mutation(authority, _commit_refresh(authority, ref, mcp_only, adopt_only))
@@ -217,7 +217,7 @@ async def commit_refresh(authority, ref, *, mcp_only=False, adopt_only=False):
 
 
 async def _commit_refresh(authority, ref, mcp_only, adopt_only=False):
-    from gateway.session_runtime_workers import tracked_write
+    from hermes_agent.gateway.session_runtime_workers import tracked_write
     from hermes_agent.hermes_state_mutation_prepared import commit_refreshed_policy
     prepared = await asyncio.to_thread(_prepare, authority, ref.session_id, mcp_only, adopt_only)
     # An MCP-only refresh never runs follow_bot_chat: it neither settles nor commits an adoption, so it
@@ -264,27 +264,27 @@ def drop_session_terminal(authority, ref):
     """The session's own cached terminal environments (keyed by its route, or its ids under per-session
     isolation): the terminal tool reuses one by key whatever backend built it. A profile-shared one stays.
     Its recorded cwd (keyed by its route or task id) goes too: it wins over the new binding's directory."""
-    from gateway.session_authorities import owner_scope
+    from hermes_agent.gateway.session_authorities import owner_scope
     from hermes_agent.hermes_state_local import local_receipt
     from tools.terminal_tool import _qualify_task_key, clear_session_cwd
     from tools.terminal_tool_lifecycle import cleanup_vm
     ids = {ref.session_id, local_receipt(authority.db, ref.session_id)['entry']['session_id']}
     route = authority.sessions[ref.session_id].route
-    from gateway.session_policy import unbind_turn_workspace
+    from hermes_agent.gateway.session_policy import unbind_turn_workspace
     with owner_scope(authority):
         keys = {_qualify_task_key(key) for key in (f'session:{route}', *ids)}
         for key in (route, *ids):
             # The turn's workspace binding goes with them: it wins over the new binding's cwd too.
             unbind_turn_workspace(key)
             clear_session_cwd(key)
-        from gateway.session_terminal_cwd import forget_turn_cwd
+        from hermes_agent.gateway.session_terminal_cwd import forget_turn_cwd
         forget_turn_cwd(authority.runner, route)  # its saved copy too, or the next turn restores it
     for key in keys:
         cleanup_vm(key)
 
 
 async def _publish(authority, ref, moved=False):
-    from gateway.session_local import local_session_info, publish_local_policy
+    from hermes_agent.gateway.session_local import local_session_info, publish_local_policy
     if moved:  # before the drain can run a turn on the new binding with the old environment
         try:
             await asyncio.to_thread(drop_session_terminal, authority, ref)

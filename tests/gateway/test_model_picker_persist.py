@@ -2,7 +2,7 @@
 
 #49066 made the typed ``/model <name>`` command persist the selected model to
 ``config.yaml`` by default. But the inline-keyboard picker callback
-(``_on_model_selected`` in ``gateway/slash_commands.py``) was left session-only:
+(``_on_model_selected`` in ``hermes_agent/gateway/slash_commands.py``) was left session-only:
 it hard-coded ``is_global=False`` and never wrote ``config.yaml``, so *tapping* a
 model in the Telegram/Discord picker silently reverted on the next launch while
 *typing* the same model persisted — a contradiction the same PR introduced.
@@ -25,10 +25,10 @@ import types
 import hermes_yaml as yaml
 import pytest
 
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource
 
 
 class _FakePickerAdapter:
@@ -100,7 +100,7 @@ def _stub_picker_dependencies(monkeypatch):
 
 def _setup_isolated_home(tmp_path, monkeypatch, model_yaml_value):
     """Write a config.yaml with the given ``model:`` value and stub heavy bits."""
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
@@ -208,7 +208,7 @@ async def test_multiplex_picker_global_persists_only_named_profile(
     tmp_path, monkeypatch
 ):
     """A named picker must not seed its global write from the default profile."""
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
     from agent.secret_scope import set_multiplex_active
 
     default_home = tmp_path / "default"
@@ -260,8 +260,8 @@ async def test_multiplex_picker_global_persists_only_named_profile(
 def _make_store_runner(adapter, sessions_dir, monkeypatch):
     """Bare runner with a real JSONL SessionStore (the durable /model override lives there)."""
     from hermes_agent import hermes_state
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
 
     def _no_sqlite(*_a, **_k):
         raise RuntimeError("SQLite disabled in test")
@@ -323,7 +323,7 @@ async def test_global_switch_keeps_session_override_when_config_write_fails(tmp_
     async def _disk_full(result, config_path):
         raise OSError("disk full")
 
-    monkeypatch.setattr("gateway.slash_commands_model._persist_model_switch_to_config", _disk_full)
+    monkeypatch.setattr("hermes_agent.gateway.slash_commands_model._persist_model_switch_to_config", _disk_full)
 
     confirmation = await _typed_global(runner)
 
@@ -369,7 +369,7 @@ async def test_global_switch_keeps_session_override_under_channel_override(tmp_p
     ``channel_overrides`` names a model, a ``--global`` pick must NOT drop the session override:
     config.yaml alone would lose to the channel model on the next turn while the confirmation
     claims the switch to gpt-5.5 (#100314 follow-up)."""
-    from gateway.config import ChannelOverride, GatewayConfig, PlatformConfig
+    from hermes_agent.gateway.config import ChannelOverride, GatewayConfig, PlatformConfig
 
     _setup_isolated_home(tmp_path, monkeypatch, {"default": "old-model", "provider": "openrouter"})
     runner = _make_store_runner(_FakePickerAdapter(), tmp_path / "sessions", monkeypatch)

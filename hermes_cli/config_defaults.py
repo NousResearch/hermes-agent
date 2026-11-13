@@ -923,7 +923,7 @@ DEFAULT_CONFIG = {
         # "separate" one message per tool (noisier). Needs tool_progress enabled. Per-platform:
         # display.platforms.<platform>.tool_progress_grouping.
         "tool_progress_grouping": "accumulate",
-        # Custom long-running status phrases. Defaults: gateway/assets/status_phrases.yaml.
+        # Custom long-running status phrases. Defaults: hermes_agent/gateway/assets/status_phrases.yaml.
         # `path`/`paths` = HERMES_HOME-relative YAML files/dirs (or conventional status_phrases.yaml
         # / status_phrases/*.yaml). Keys: status, generic. mode: "append" (default) | "replace".
         # Per-platform: display.platforms.<platform>.status_phrases.
@@ -979,7 +979,7 @@ DEFAULT_CONFIG = {
             "unicode_cols": 0,  # Hard override for terminal column width; 0 = derive from scale.
         },
     },
-    "webapp": {"enabled": False, "host": "127.0.0.1", "port": 9120, "public_url": ""},  # gateway/webapp_listener.py
+    "webapp": {"enabled": False, "host": "127.0.0.1", "port": 9120, "public_url": ""},  # hermes_agent/gateway/webapp_listener.py
     "dashboard": {
         # Visual theme: "default" | "midnight" | "ember" | "mono" | "cyberpunk" | "rose"
         "theme": "default",
@@ -2108,7 +2108,7 @@ DEFAULT_CONFIG = {
         # systemd/launchd revives the process instead of leaving a wedged-but-alive zombie.
         # Set to false to disable. See #69089.
         "loop_watchdog": True,
-        # Watchdog tuning (defaults mirror gateway/shutdown_watchdog.py): probe_interval = seconds
+        # Watchdog tuning (defaults mirror hermes_agent/gateway/shutdown_watchdog.py): probe_interval = seconds
         # between probes; probe_timeout = seconds before an unprocessed probe counts as a miss;
         # max_strikes = consecutive misses before hard-exit 75 (~90-120s of sustained loop block at
         # the defaults).
@@ -2162,7 +2162,7 @@ DEFAULT_CONFIG = {
         # AUTOMATIC path reads this: `hermes gateway migrate --multiplex` is explicit and proceeds.
         "auto_multiplex_migration": True,
         # Route inbound chats of the default profile's bots to another profile
-        # (gateway/profile_routing.py): [{profile, platform, chat_id|user_id|guild_id|...}].
+        # (hermes_agent/gateway/profile_routing.py): [{profile, platform, chat_id|user_id|guild_id|...}].
         # Most-specific match wins; only read by the multiplexing default gateway.
         "profile_routes": [],
         # Scale-to-zero idle TIMEOUT only. When an instance is opted in via the NAS "Labs" toggle
@@ -2189,7 +2189,7 @@ DEFAULT_CONFIG = {
         # Max bytes of inbound image/audio/video the gateway buffers into RAM and caches to disk.
         # Media is read fully into memory first, so unbounded uploads (Discord Nitro: 500 MB) or
         # huge remote URLs (incl. image URLs in agent replies) can OOM-kill constrained deployments.
-        # Enforced in gateway/platforms/base.py for every adapter. 0 = no cap. Default 128 MiB.
+        # Enforced in hermes_agent/gateway/platforms/base.py for every adapter. 0 = no cap. Default 128 MiB.
         "max_inbound_media_bytes": 134217728,
         # Let adapters read HTTP_PROXY/HTTPS_PROXY/NO_PROXY/SSL_CERT_FILE from the environment and
         # auto-detect generic/macOS system proxies. False when the gateway inherits a proxy it must
@@ -2216,7 +2216,7 @@ DEFAULT_CONFIG = {
         # Recency window in seconds; 600 covers a multi-tool turn. Bridged to
         # HERMES_MEDIA_TRUST_RECENT_SECONDS. Only consulted when strict is true.
         "trust_recent_files_seconds": 600,
-        "api_server": {  # OpenAI-compatible API server platform (gateway/platforms/api_server.py).
+        "api_server": {  # OpenAI-compatible API server platform (hermes_agent/gateway/platforms/api_server.py).
             # Max concurrent agent runs. Requests to /v1/chat/completions, /v1/responses, and
             # /v1/runs beyond this get HTTP 429 + Retry-After, bounding CPU/memory/LLM-quota
             # exhaustion from a request flood. 0 = no cap.

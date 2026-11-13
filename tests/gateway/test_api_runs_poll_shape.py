@@ -6,7 +6,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 @pytest.mark.asyncio
 async def test_canonical_run_poll_keeps_object_model_and_created_at(api, owner, monkeypatch):
-    from gateway.platforms import api_server_runs
+    from hermes_agent.gateway.platforms import api_server_runs
 
     async def no_execution(*args, **kwargs):
         pass

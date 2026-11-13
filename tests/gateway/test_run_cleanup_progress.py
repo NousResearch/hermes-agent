@@ -20,7 +20,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.config import Platform, PlatformConfig
 
 
 async def _fire_post_delivery_cb(cb):
@@ -32,8 +32,8 @@ async def _fire_post_delivery_cb(cb):
     result = cb()
     if _inspect.isawaitable(result):
         await result
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.session import SessionSource
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.session import SessionSource
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +94,7 @@ class NoDeleteAdapter(CleanupCaptureAdapter):
 
     async def delete_message(self, chat_id, message_id) -> bool:  # type: ignore[override]
         # Pretend to be an adapter whose platform doesn't support deletion:
-        # match the base class behavior exactly. gateway/run.py checks
+        # match the base class behavior exactly. hermes_agent/gateway/run.py checks
         # ``type(adapter).delete_message is BasePlatformAdapter.delete_message``
         # to detect this, so we re-assign at class body level below.
         raise AssertionError("should not be called — cleanup must skip this adapter")
@@ -132,7 +132,7 @@ class FailingAgent:
             cb("tool.started", "terminal", "pwd", {})
             time.sleep(0.2)
         # Empty final_response + failed=True is the shape the gateway
-        # actually returns on provider errors (see gateway/run.py where
+        # actually returns on provider errors (see hermes_agent/gateway/run.py where
         # failed keys are only propagated when final_response is empty).
         return {
             "final_response": "",
@@ -144,7 +144,7 @@ class FailingAgent:
 
 
 def _make_runner(adapter):
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
     runner = object.__new__(GatewayRunner)
     runner.adapters = {adapter.platform: adapter}
@@ -184,7 +184,7 @@ def _install_fakes(
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
     import tools.terminal_tool
 
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
 
     # Wire the per-platform cleanup_progress flag via the config loader the
@@ -306,7 +306,7 @@ class QueuedFollowupAgent:
         self.tools = []
 
     def run_conversation(self, message, conversation_history=None, task_id=None, **_kwargs):
-        from gateway.platforms.base import MessageEvent, MessageType
+        from hermes_agent.gateway.platforms.base import MessageEvent, MessageType
         cls = type(self)
         if message == "follow-up":
             cls.deleted_at_turn2_start = list(cls.adapter.deleted)
@@ -363,7 +363,7 @@ class HeldSendAdapter(CleanupCaptureAdapter):
 
 class HeldSendAgent(QueuedFollowupAgent):
     def run_conversation(self, message, conversation_history=None, task_id=None, **_kwargs):
-        from gateway.platforms.base import MessageEvent, MessageType
+        from hermes_agent.gateway.platforms.base import MessageEvent, MessageType
         from tests.waiting import wait_until
         cls, adapter = type(self), type(self).adapter
         if message == "follow-up":
@@ -403,8 +403,8 @@ async def test_progress_send_in_flight_at_handoff_never_leaves_a_bubble(monkeypa
 @pytest.mark.asyncio
 async def test_one_slow_delete_does_not_strand_the_other_bubbles(monkeypatch):
     """Cleanup runs under the post-delivery timeout; a hung delete must not use it all."""
-    from gateway import run_turn_bubble_cleanup as cleanup
-    from gateway.platforms.base_post_delivery import run_post_delivery_callback
+    from hermes_agent.gateway import run_turn_bubble_cleanup as cleanup
+    from hermes_agent.gateway.platforms.base_post_delivery import run_post_delivery_callback
 
     class HungFirstDelete(CleanupCaptureAdapter):
         async def delete_message(self, chat_id, message_id) -> bool:
@@ -425,7 +425,7 @@ async def test_one_slow_delete_does_not_strand_the_other_bubbles(monkeypatch):
 @pytest.mark.asyncio
 async def test_hung_sender_delays_the_followup_by_at_most_the_cap(monkeypatch):
     """A sender whose cancel-time flush never returns holds the handoff for the cap, not forever."""
-    from gateway import run_turn_bubble_cleanup as cleanup
+    from hermes_agent.gateway import run_turn_bubble_cleanup as cleanup
 
     async def _hung_sender():
         try:
@@ -445,7 +445,7 @@ async def test_hung_sender_delays_the_followup_by_at_most_the_cap(monkeypatch):
 @pytest.mark.asyncio
 async def test_cancelling_the_turn_during_the_sender_wait_starts_no_followup():
     """A cancel aimed at the turn (shutdown, /stop) while it waits on its senders must propagate."""
-    from gateway import run_turn_bubble_cleanup as cleanup
+    from hermes_agent.gateway import run_turn_bubble_cleanup as cleanup
 
     release = asyncio.Event()
 

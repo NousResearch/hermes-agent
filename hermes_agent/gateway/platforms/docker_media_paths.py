@@ -19,7 +19,7 @@ _WORKSPACE_KEY_RE = re.compile(r"^[0-9a-f]{16}$")
 
 
 def _scope():
-    from gateway.platforms.base import _docker_persistent_active, _tenv
+    from hermes_agent.gateway.platforms.base import _docker_persistent_active, _tenv
 
     return _tenv, _docker_persistent_active
 
@@ -98,7 +98,7 @@ def _session_mounted_workspace(workspace_key: str, workspace_cwd: str) -> list[P
     """The host dir a session bound to a workspace mounts at ``/workspace``, or nothing.
 
     A gateway turn runs with the session's own cwd as ``TERMINAL_CWD``
-    (``gateway.session_policy.build_policy``), and that cwd is also what
+    (``hermes_agent.gateway.session_policy.build_policy``), and that cwd is also what
     ``bind_turn_workspace`` registers and hashes into ``workspace_key``. So the
     mount is that cwd, never the profile's ``terminal.cwd``. A cwd whose digest
     is not ``workspace_key`` names some other container's mount: no root.
@@ -169,7 +169,7 @@ async def hand_back_unreadable_media(paths: list[str]) -> None:
     gateway while the container lives (teardown hands files back only on removal): give each one
     to the host user through the container itself; the sandbox keeps ``no-new-privileges``. Docker
     CLI calls block, so they run off the event loop (``to_thread`` carries the profile scope)."""
-    from gateway.platforms.base import _docker_env_active
+    from hermes_agent.gateway.platforms.base import _docker_env_active
     if not (unreadable := [p for p in paths if not os.access(p, os.R_OK)]) or not _docker_env_active():
         return
     await asyncio.to_thread(_hand_back_files, unreadable)

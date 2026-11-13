@@ -1,6 +1,6 @@
 """Unit tests for the generic-OIDC / Nous-Portal caller-identity token resolver.
 
-Covers gateway.relay._resolve_relay_identity_token() — the canonical resolver
+Covers hermes_agent.gateway.relay._resolve_relay_identity_token() — the canonical resolver
 shared by the runtime self-provision path and the `hermes gateway enroll` CLI.
 
 Three modes:
@@ -23,7 +23,7 @@ import json
 
 import pytest
 
-from gateway import relay
+from hermes_agent.gateway import relay
 
 
 @pytest.fixture(autouse=True)
@@ -36,7 +36,7 @@ def _clean_env(monkeypatch):
     ):
         monkeypatch.delenv(k, raising=False)
     # Never read config.yaml off disk by default.
-    monkeypatch.setattr("gateway.run._load_gateway_config", dict, raising=False)
+    monkeypatch.setattr("hermes_agent.gateway.run._load_gateway_config", dict, raising=False)
 
 
 def test_client_credentials_via_env(monkeypatch):
@@ -244,7 +244,7 @@ def test_partial_credentials_client_secret_only_raises_without_get(monkeypatch):
 def test_ambient_via_config_yaml(monkeypatch):
     """Ambient mode also engages when token_url comes from config.yaml, not env."""
     monkeypatch.setattr(
-        "gateway.run._load_gateway_config",
+        "hermes_agent.gateway.run._load_gateway_config",
         lambda: {"gateway": {"idp": {"token_url": "https://proxy.local/access-token"}}},
         raising=False,
     )

@@ -8,7 +8,7 @@ the compression segment. Real GatewayRunner, SessionAuthority and SQLite store.
 """
 import pytest
 
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.run import GatewayRunner
 
 
 @pytest.fixture(autouse=True)
@@ -19,10 +19,10 @@ def _home(tmp_path, monkeypatch):
 async def _compressed_chat(tmp_path):
     """A Telegram chat compressed once; the viewer resumes it by its segment id, as history pickers do."""
     import json
-    from gateway.config import GatewayConfig, Platform
-    from gateway.session import SessionSource
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.config import GatewayConfig, Platform
+    from hermes_agent.gateway.session import SessionSource
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     runner = GatewayRunner(GatewayConfig())
     authority = await initialize_session_authority(runner, profile_id='default', instance_id='owner')
     source = SessionSource(platform=Platform.TELEGRAM, chat_id='4242', user_id='u-4242', chat_type='dm')
@@ -153,7 +153,7 @@ async def test_a_cold_model_pick_resolves_against_the_chats_saved_provider(tmp_p
 async def test_a_messaging_chats_effort_wire_is_clamped_for_its_api_mode(tmp_path, monkeypatch):
     """A chat on the Codex app-server route displays ``ultra`` on the wire, as that route sends it;
     clamping without the route's api_mode showed ``max``."""
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
     monkeypatch.setattr(gateway_run, '_hermes_home', tmp_path)
     (tmp_path / 'config.yaml').write_text(
         'model:\n  default: gpt-5.6\n  provider: openai-codex\n  api_mode: codex_app_server\n')

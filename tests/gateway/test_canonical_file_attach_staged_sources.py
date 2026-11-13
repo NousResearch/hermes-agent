@@ -2,7 +2,7 @@
 
 The Webapp upload route publishes a browser file into its profile's ``uploads/`` and hands the renderer
 a ``staged_upload`` receipt (``hermes_cli/staged_uploads.py``). The browser is an attach client of the
-gateway, so that receipt arrives at ``gateway/session_ancillary.py::attach_file``, which copies it into
+gateway, so that receipt arrives at ``hermes_agent/gateway/session_ancillary.py::attach_file``, which copies it into
 the session's ``attachments/``. The receipt is only a claim: a deleted source profile, another
 backend's install, a missing source or an oversized file must never be copied, and a failed copy must
 leave the upload in place for a retry.
@@ -22,10 +22,10 @@ import pytest_asyncio
 
 async def _authority_with_old_desktop_chat(tmp_path, monkeypatch, cwd=None):
     """This home's session authority over a store holding one ended pre-gateway Desktop chat."""
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'gui': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
@@ -40,8 +40,8 @@ async def _authority_with_old_desktop_chat(tmp_path, monkeypatch, cwd=None):
 
 
 def _attach(authority, tickets, purpose, subject):
-    """Exactly gateway/run_api.py: redeem the minted host-scoped ticket and bind its operator."""
-    from gateway.session_controls import AuthorityConnection
+    """Exactly hermes_agent/gateway/run_api.py: redeem the minted host-scoped ticket and bind its operator."""
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     ticket = tickets.mint(profile_id=authority.profile_id, subject=subject, purpose=purpose, scope='host')
     grant = tickets.redeem(ticket, profile_id=None, purpose=purpose)
     identity = {'user_id': grant['subject'], 'provider': 'local', 'profile_id': grant['profile_id'],
@@ -53,7 +53,7 @@ def _attach(authority, tickets, purpose, subject):
 @pytest_asyncio.fixture
 async def owner(tmp_path, monkeypatch):
     """The profile's owner with one adopted chat open on a native connection, serving a sibling profile."""
-    from gateway.runtime_bootstrap import TicketStore
+    from hermes_agent.gateway.runtime_bootstrap import TicketStore
     from hermes_cli import install_identity
 
     monkeypatch.setattr(install_identity, '_INSTALL_ID_CACHE', {'root': None, 'value': None})
@@ -65,7 +65,7 @@ async def owner(tmp_path, monkeypatch):
     worker.mkdir(parents=True)
     (worker / 'config.yaml').write_text('{}\n', encoding='utf-8')
     # A multiplexer serves its sibling profiles; a host-scoped grant may take a pick from one.
-    from gateway.session_authorities import SessionAuthorities
+    from hermes_agent.gateway.session_authorities import SessionAuthorities
     served = SessionAuthorities(tmp_path, multiplexed=True)
     served.add(tmp_path, authority)
     served.add(worker, SimpleNamespace(profile_id=str(worker), retired=False))
@@ -177,7 +177,7 @@ async def home_in_workspace(request, tmp_path, monkeypatch):
     """A chat whose workspace holds the profile home: the user's home folder (where sessions start
     unless ``terminal.cwd`` says otherwise; a default profile home is ``~/.hermes``) or the profile
     home itself."""
-    from gateway.runtime_bootstrap import TicketStore
+    from hermes_agent.gateway.runtime_bootstrap import TicketStore
     from hermes_cli import install_identity
 
     monkeypatch.setattr(install_identity, '_INSTALL_ID_CACHE', {'root': None, 'value': None})

@@ -7,7 +7,7 @@ interactive setup menus.
 
 import os
 
-from gateway.platform_registry import PlatformEntry, platform_registry
+from hermes_agent.gateway.platform_registry import PlatformEntry, platform_registry
 
 
 def _register_irc_platform(**overrides):

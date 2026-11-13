@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.telegram import telegram_media_group
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from tests.gateway.test_telegram_documents import _make_file_obj, _make_message, _make_photo

@@ -361,7 +361,7 @@ class TestDeliveryPlatform:
         job = _job(deliver="local")
         with cron_jobs.use_cron_store(tmp_path):
             cron_jobs.save_jobs([job])
-            with patch("gateway.config.load_gateway_config",
+            with patch("hermes_agent.gateway.config.load_gateway_config",
                        side_effect=AssertionError("gateway config loaded")):
                 success, *_rest, agent_constructed = _run_job_patched(job, tmp_path)
 

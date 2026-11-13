@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-import gateway.run as gateway_run
+import hermes_agent.gateway.run as gateway_run
 
 
 def _write_config(home, body: str) -> None:

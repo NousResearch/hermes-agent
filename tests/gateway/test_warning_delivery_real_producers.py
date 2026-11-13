@@ -4,8 +4,8 @@ from unittest.mock import AsyncMock
 import json
 
 import pytest
-from gateway.config import PlatformConfig
-from gateway.platforms.base import SendResult
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.base import SendResult
 
 
 @pytest.fixture(params=[None, False, True, "override"])
@@ -74,7 +74,7 @@ async def test_slack_actual_upload_failure_keeps_caption_and_source_log(policy, 
 @pytest.mark.parametrize("setting", [None, False, True])
 async def test_discord_admin_alert_uses_owner_and_logical_destination(tmp_path, monkeypatch, setting):
     from pathlib import Path
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     from plugins.platforms.discord.adapter import DiscordAdapter
     from hermes_constants import get_hermes_home
     monkeypatch.setattr(Path, "home", lambda: tmp_path)

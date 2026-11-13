@@ -6,14 +6,14 @@ from contextvars import copy_context
 
 import pytest
 
-from gateway.run import (
+from hermes_agent.gateway.run import (
     GatewayRunner,
     _abandon_timed_out_gateway_turn,
     _reap_gateway_turn_processes,
     _watch_gateway_turn_inactivity,
 )
-from gateway.session_context import set_session_vars
-from gateway.session_state import SessionState
+from hermes_agent.gateway.session_context import set_session_vars
+from hermes_agent.gateway.session_state import SessionState
 from model_tools import handle_function_call
 from tools.approval_context import set_current_session_key
 from tools.process_registry import process_registry
@@ -348,7 +348,7 @@ def _run_wedged_worker(release: threading.Event, entered: threading.Event):
 def test_reaper_dumps_wedged_worker_stack_before_interrupt(monkeypatch, caplog):
     import logging
 
-    from gateway.run import _dump_wedged_turn_stacks
+    from hermes_agent.gateway.run import _dump_wedged_turn_stacks
 
     release = threading.Event()
     entered = threading.Event()
@@ -361,7 +361,7 @@ def test_reaper_dumps_wedged_worker_stack_before_interrupt(monkeypatch, caplog):
     worker.start()
     try:
         assert entered.wait(timeout=5.0)
-        with caplog.at_level(logging.ERROR, logger="gateway.run"):
+        with caplog.at_level(logging.ERROR, logger="hermes_agent.gateway.run"):
             _dump_wedged_turn_stacks("task-wedge-test")
         dumps = [
             r for r in caplog.records if "Wedged-turn stack dump" in r.getMessage()
@@ -378,7 +378,7 @@ def test_reaper_dumps_wedged_worker_stack_before_interrupt(monkeypatch, caplog):
 
 def test_abandon_timed_out_turn_dumps_stacks_before_interrupt(monkeypatch):
     """The dump hook runs inside the reaper, before the agent interrupt."""
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     order = []
     monkeypatch.setattr(
@@ -411,14 +411,14 @@ def test_abandon_timed_out_turn_dumps_stacks_before_interrupt(monkeypatch):
 
 
 def test_dump_wedged_turn_stacks_never_raises(monkeypatch):
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     monkeypatch.setattr(
         gateway_run.sys,
         "_current_frames",
         lambda: (_ for _ in ()).throw(RuntimeError("boom")),
     )
-    from gateway.run import _dump_wedged_turn_stacks
+    from hermes_agent.gateway.run import _dump_wedged_turn_stacks
 
     _dump_wedged_turn_stacks("t-no-raise")  # must not raise
 

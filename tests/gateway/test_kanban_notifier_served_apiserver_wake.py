@@ -20,10 +20,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.kanban_watchers_notifier import _adapter_for_subscription
-from gateway.profile_routing import parse_profile_routes
-from gateway.run import GatewayRunner, _profile_runtime_scope
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.kanban_watchers_notifier import _adapter_for_subscription
+from hermes_agent.gateway.profile_routing import parse_profile_routes
+from hermes_agent.gateway.run import GatewayRunner, _profile_runtime_scope
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
@@ -50,7 +50,7 @@ class RecordingApiServerAdapter:
         self.turns.append({"session_id": session_id, "text": text, "category": notification_category})
 
     async def send(self, chat_id, text, metadata=None):
-        from gateway.platforms.base import SendResult
+        from hermes_agent.gateway.platforms.base import SendResult
         return SendResult(success=False, error="API server uses HTTP request/response, not send()")
 
 
@@ -229,7 +229,7 @@ def test_served_profile_wake_runs_in_process_only_for_the_session_it_owns(served
 def test_internal_session_turn_targets_the_live_session_under_the_owner_profile(served, monkeypatch):
     """Adapter-level: the in-process turn binds the proven profile, adopts the compression tip,
     and never runs against a session the owner's store does not hold."""
-    from gateway.platforms.api_server import APIServerAdapter, _api_request_profile
+    from hermes_agent.gateway.platforms.api_server import APIServerAdapter, _api_request_profile
 
     parent, tip = "20260918_010000_parent", "20260918_020000_tip"
     db = SessionDB(served.builder / "state.db")

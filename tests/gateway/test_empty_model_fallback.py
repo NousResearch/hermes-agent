@@ -14,15 +14,15 @@ class TestGatewayEmptyModelFallback:
 
     def test_empty_model_filled_from_provider(self):
         """When config has no model but provider is openai-codex, use first codex model."""
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         runner = object.__new__(GatewayRunner)
         runner._session_model_overrides = {}
 
         # Mock _resolve_gateway_model to return empty string
         # Mock _resolve_runtime_agent_kwargs to return openai-codex provider
-        with patch("gateway.run._resolve_gateway_model", return_value=""), \
-             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={
+        with patch("hermes_agent.gateway.run._resolve_gateway_model", return_value=""), \
+             patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", return_value={
                  "provider": "openai-codex",
                  "api_key": "test-key",
                  "base_url": "https://chatgpt.com/backend-api/codex",
@@ -37,13 +37,13 @@ class TestGatewayEmptyModelFallback:
 
     def test_nonempty_model_not_overridden(self):
         """When config has a model set, don't override it."""
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         runner = object.__new__(GatewayRunner)
         runner._session_model_overrides = {}
 
-        with patch("gateway.run._resolve_gateway_model", return_value="gpt-5.4"), \
-             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={
+        with patch("hermes_agent.gateway.run._resolve_gateway_model", return_value="gpt-5.4"), \
+             patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", return_value={
                  "provider": "openai-codex",
                  "api_key": "test-key",
                  "base_url": "https://chatgpt.com/backend-api/codex",
@@ -55,13 +55,13 @@ class TestGatewayEmptyModelFallback:
 
     def test_empty_model_no_provider_stays_empty(self):
         """When both model and provider are empty, model stays empty."""
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         runner = object.__new__(GatewayRunner)
         runner._session_model_overrides = {}
 
-        with patch("gateway.run._resolve_gateway_model", return_value=""), \
-             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={
+        with patch("hermes_agent.gateway.run._resolve_gateway_model", return_value=""), \
+             patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", return_value={
                  "provider": "",
                  "api_key": "test-key",
                  "base_url": "https://example.com",
@@ -77,21 +77,21 @@ class TestResolveGatewayModel:
     """Test _resolve_gateway_model reads model from config correctly."""
 
     def test_returns_default_key(self):
-        from gateway.run import _resolve_gateway_model
+        from hermes_agent.gateway.run import _resolve_gateway_model
         assert _resolve_gateway_model({"model": {"default": "gpt-5.4"}}) == "gpt-5.4"
 
     def test_returns_model_key_fallback(self):
-        from gateway.run import _resolve_gateway_model
+        from hermes_agent.gateway.run import _resolve_gateway_model
         assert _resolve_gateway_model({"model": {"model": "gpt-5.4"}}) == "gpt-5.4"
 
     def test_returns_empty_when_missing(self):
-        from gateway.run import _resolve_gateway_model
+        from hermes_agent.gateway.run import _resolve_gateway_model
         assert _resolve_gateway_model({"model": {}}) == ""
 
     def test_returns_empty_when_no_model_section(self):
-        from gateway.run import _resolve_gateway_model
+        from hermes_agent.gateway.run import _resolve_gateway_model
         assert _resolve_gateway_model({}) == ""
 
     def test_string_model_config(self):
-        from gateway.run import _resolve_gateway_model
+        from hermes_agent.gateway.run import _resolve_gateway_model
         assert _resolve_gateway_model({"model": "my-model"}) == "my-model"

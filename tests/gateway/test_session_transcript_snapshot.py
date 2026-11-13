@@ -22,8 +22,8 @@ def _read_path(monkeypatch, db, mode):
 async def test_rows_appended_and_deleted_during_a_page_read_reset_the_next_poll(tmp_path, monkeypatch, mode):
     """A row appended after the poll started is on the page, then deleted before the state is stored: the
     cursor must vouch for the page's own generation, so the next poll resets instead of keeping it forever."""
-    from gateway import session_stored_reads
-    from gateway.session_local_recovery import transcript_target
+    from hermes_agent.gateway import session_stored_reads
+    from hermes_agent.gateway.session_local_recovery import transcript_target
     from tests.gateway.test_session_mutation_model_busy import _owner
 
     async def handle(event):
@@ -59,7 +59,7 @@ async def test_rows_appended_and_deleted_during_a_page_read_reset_the_next_poll(
 @pytest.mark.parametrize('mode', ['pooled', 'fallback'])
 async def test_a_held_row_deleted_while_its_page_is_read_is_not_kept(tmp_path, monkeypatch, mode):
     """The page holds a row a delete then removes before the cursor state is read: the reader never keeps it."""
-    from gateway import session_stored_reads
+    from hermes_agent.gateway import session_stored_reads
     with _session(tmp_path, monkeypatch) as (db, _authority, owner, ref, target):
         try:
             db.append_message(target, 'user', 'held')
@@ -86,7 +86,7 @@ async def test_a_fallback_read_that_never_settles_resets_from_the_first_page_unt
     """No pooled reader, and a write lands during the read and again during its retry: no page is proven
     against a cursor state, so the reply is ``reset`` with the first page, and the next poll resets again
     (its stored state matches no transcript) instead of continuing from it."""
-    from gateway import session_stored_reads
+    from hermes_agent.gateway import session_stored_reads
     with _session(tmp_path, monkeypatch) as (db, _authority, owner, ref, target):
         try:
             for n in range(3):
@@ -120,7 +120,7 @@ async def test_a_fallback_read_that_never_settles_resets_from_the_first_page_unt
 
 @pytest.mark.asyncio
 async def test_deleting_an_earlier_segments_rows_resets_the_poller(tmp_path, monkeypatch):
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_authority import initialize_session_authority
     store, db, runner = _legacy_owner(tmp_path, monkeypatch)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='owner')
     native = _native(authority, tmp_path, 'native')
@@ -141,7 +141,7 @@ async def test_deleting_an_earlier_segments_rows_resets_the_poller(tmp_path, mon
 
 @pytest.mark.asyncio
 async def test_a_reaction_on_an_earlier_segments_row_resets_the_poller(tmp_path, monkeypatch):
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_authority import initialize_session_authority
     store, db, runner = _legacy_owner(tmp_path, monkeypatch)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='owner')
     native = _native(authority, tmp_path, 'native')
@@ -259,8 +259,8 @@ async def test_a_rewrite_between_the_backfill_and_the_snapshot_still_reaches_the
     """A queued prompt's prologue rewrites its early row (``set_user_message_content``) after ``_poll``'s
     display-index backfill and before its read snapshot, so the snapshot sees the row with no
     ``display_order``. The poller must still end up holding what a fresh read shows."""
-    from gateway import session_stored_reads
-    from gateway.session_local_recovery import transcript_target
+    from hermes_agent.gateway import session_stored_reads
+    from hermes_agent.gateway.session_local_recovery import transcript_target
     from tests.gateway.test_session_mutation_model_busy import _owner
 
     async def handle(event):
@@ -301,7 +301,7 @@ async def test_an_append_past_the_resume_guard_leaves_the_poller_on_a_fresh_read
     ``sessions.max_resume_messages`` and a fresh read shows the tip segment only. A poller caught up on
     the whole lineage (or one page into it) must end up holding what a fresh read shows."""
     from hermes_agent import hermes_state
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_authority import initialize_session_authority
 
     store, db, runner = _legacy_owner(tmp_path, monkeypatch)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='owner')
@@ -329,7 +329,7 @@ async def test_a_newest_first_walk_restarts_when_the_lineage_crosses_the_resume_
     """A newest-first cursor names a slot of the read it came from: once two appends take the rotated
     lineage past the guard, the next page starts again from the newest (``reset``), as a fresh read does."""
     from hermes_agent import hermes_state
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_authority import initialize_session_authority
 
     store, db, runner = _legacy_owner(tmp_path, monkeypatch)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='owner')
@@ -403,7 +403,7 @@ async def test_a_newest_first_walk_of_a_tip_restarts_when_a_compaction_rotates_i
     newest (``reset``) and the walk ends holding what a fresh walk holds. Without a rotation the walk
     pages on (control)."""
     from hermes_agent import hermes_state
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_authority import initialize_session_authority
 
     store, db, runner = _legacy_owner(tmp_path, monkeypatch)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='owner')

@@ -5,7 +5,7 @@ function of durable room state, because a member turn's task id hashes its promp
 read as of the message that opened a discussion, so editing them mid-discussion never re-plans a turn that
 is already admitted; the edit applies from the next message. The same event carries the room's routing:
 ``everyone`` (every member gets a turn on an unaddressed message, the default) or ``lead`` (the lead picks
-who takes it; ``gateway/hosted_room_lead.py``).
+who takes it; ``hermes_agent/gateway/hosted_room_lead.py``).
 
 Scheduled posts are ordinary ``message.user`` events whose server-owned actor id names the cron job. Only
 this module mints that actor (``groups.send`` hard-codes ``desktop``), so a client cannot impersonate a job.
@@ -20,8 +20,8 @@ from collections.abc import Mapping
 from contextlib import closing
 from typing import Any
 
-from gateway import hosted_rooms
-from gateway.hosted_rooms_common import DbPath
+from hermes_agent.gateway import hosted_rooms
+from hermes_agent.gateway.hosted_rooms_common import DbPath
 
 MAX_PURPOSE_CHARS = 500
 MAX_NOTES_BYTES = 4 * 1024
@@ -146,7 +146,7 @@ def post_scheduled_message(
 ) -> dict[str, Any]:
     """Append one cron output to a room. Idempotent per ``run_key``: a retried delivery of the same run
     returns the original event instead of posting twice."""
-    from gateway.hosted_room_discussion import MAX_USER_TEXT_BYTES, validate_user_payload
+    from hermes_agent.gateway.hosted_room_discussion import MAX_USER_TEXT_BYTES, validate_user_payload
 
     state = _local_authority(db_path, room_id)
     digest = hashlib.sha256("\0".join((str(state["room_id"]), job_id, run_key, str(notice))).encode()).hexdigest()

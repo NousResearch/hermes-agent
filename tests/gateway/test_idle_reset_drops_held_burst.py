@@ -15,11 +15,11 @@ _WINDOW = 3.0  # the burst stays held well past the turn's end and the /new
 
 
 async def _rig(monkeypatch):
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.platforms.base import SendResult
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_results import execution_result
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.base import SendResult
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_results import execution_result
     from plugins.platforms.discord.adapter import DiscordAdapter
 
     monkeypatch.setenv('DISCORD_ALLOWED_USERS', '42')
@@ -52,9 +52,9 @@ async def _rig(monkeypatch):
 async def test_idle_command_after_a_turn_settles_the_held_text(monkeypatch, command, dropped, refused):
     """A refused /new (slash access allows this caller /status only) resets nothing, so it must not
     destroy the held text either: B still runs."""
-    from gateway.config import Platform, PlatformConfig
-    from gateway.platforms.event import MessageEvent
-    from gateway.session_ingress_burst import holds_busy_burst
+    from hermes_agent.gateway.config import Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.session_ingress_burst import holds_busy_burst
 
     adapter, authority, running, finish, executed = await _rig(monkeypatch)
     source = adapter.build_source(chat_id='dm-42', chat_type='dm', user_id='42')

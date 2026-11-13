@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import re
 
-from gateway.platforms.base import HTML_IMAGE_TAG_PATTERN, MD_IMAGE_TAG_PATTERN, BasePlatformAdapter
+from hermes_agent.gateway.platforms.base import HTML_IMAGE_TAG_PATTERN, MD_IMAGE_TAG_PATTERN, BasePlatformAdapter
 
 # A delivery directive still being typed on the open (last) line: "MEDIA:" the cleaner has not
 # stripped yet whose remainder can still become a path (MEDIA_TAG_CLEANUP_RE's openers: a quote,

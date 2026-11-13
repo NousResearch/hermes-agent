@@ -12,8 +12,8 @@ import pytest
 from aiohttp import web
 from aiohttp.abc import AbstractResolver
 
-from gateway.config import PlatformConfig
-from gateway.platforms.helpers import ssrf_checked_aiohttp_get
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.helpers import ssrf_checked_aiohttp_get
 from tools import url_safety
 
 PUBLIC_HOST = "redirector.test"
@@ -42,11 +42,11 @@ async def _mattermost_fetch(session, url):
         return "file-id"
 
     async def post_with_file(*args, **kwargs):
-        from gateway.platforms.base import SendResult
+        from hermes_agent.gateway.platforms.base import SendResult
         return SendResult(success=True, message_id="post-id")
 
     async def send(*args, **kwargs):
-        from gateway.platforms.base import SendResult
+        from hermes_agent.gateway.platforms.base import SendResult
         return SendResult(success=True, message_id="text-fallback")
     adapter._upload_file, adapter._post_with_file, adapter.send = upload, post_with_file, send
     await adapter.send_image("channel", url)

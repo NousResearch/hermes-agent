@@ -1,4 +1,4 @@
-"""Hot-serve invariants for ``gateway.multiplex_profiles`` (``gateway/run_profile_reconcile.py``).
+"""Hot-serve invariants for ``gateway.multiplex_profiles`` (``hermes_agent/gateway/run_profile_reconcile.py``).
 
 The multiplexer used to enumerate ``profiles/`` once at boot; these pin the runtime reconcile: a
 profile created afterwards is served, a deleted one is torn down and unrouted, a served profile whose
@@ -18,10 +18,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.run import GatewayRunner
-from gateway.run_profile_reconcile import profile_serve_signature
-from gateway.status import flush_runtime_status
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.run_profile_reconcile import profile_serve_signature
+from hermes_agent.gateway.status import flush_runtime_status
 
 
 class _Adapter:
@@ -81,8 +81,8 @@ def _runner(tmp_path, monkeypatch):
 def _boot(runner, home):
     """What ``start_gateway`` does before the runner exists: reserve every profile that exists now and
     freeze that set as the reservation the process owns."""
-    from gateway.run import _multiplex_profile_homes
-    from gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.run import _multiplex_profile_homes
+    from hermes_agent.gateway.runtime_ownership import process_ownership
     boot_set = _multiplex_profile_homes(runner.config)
     process_ownership.reserve([h for _n, h in boot_set])
     runner.config._runtime_profile_homes = tuple(boot_set)
@@ -90,7 +90,7 @@ def _boot(runner, home):
 
 @pytest.fixture(autouse=True)
 def _release_reservations():
-    from gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.runtime_ownership import process_ownership
     yield
     for reserved in process_ownership.homes:
         process_ownership.release(reserved)
@@ -118,7 +118,7 @@ async def test_opt_out_rescans_and_opt_in_waits_for_own_gateway_to_stop(tmp_path
     runner, home = _runner(tmp_path, monkeypatch)
     solo = _mkprofile(home, "solo", "DISCORD_BOT_TOKEN=solo-token\n")
     own_pids = {}
-    monkeypatch.setattr("gateway.status.live_gateway_pid_for_home", lambda h: own_pids.get(h))
+    monkeypatch.setattr("hermes_agent.gateway.status.live_gateway_pid_for_home", lambda h: own_pids.get(h))
     with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
         await runner._start_secondary_profile_adapters()
         adapter = runner._profile_adapters["solo"][Platform.DISCORD]
@@ -151,7 +151,7 @@ async def test_stalled_own_gateway_probe_never_wedges_the_loop_or_serves(tmp_pat
     the loop thread it parked shutdown_watchdog liveness probes until the multiplexer was
     hard-killed with exit 75. A stalled probe must leave the event loop turning, keep the
     profile unserved for that cycle, and the profile must serve once the probe answers."""
-    from gateway import run_profile_reconcile as reconcile_mod
+    from hermes_agent.gateway import run_profile_reconcile as reconcile_mod
 
     runner, home = _runner(tmp_path, monkeypatch)
     _mkprofile(home, "alpha", "DISCORD_BOT_TOKEN=alpha-token\n")
@@ -163,7 +163,7 @@ async def test_stalled_own_gateway_probe_never_wedges_the_loop_or_serves(tmp_pat
         def _stalling_probe(profile_home):
             released.wait(timeout=10)  # the control pipe that never answers
 
-        monkeypatch.setattr("gateway.status.live_gateway_pid_for_home", _stalling_probe)
+        monkeypatch.setattr("hermes_agent.gateway.status.live_gateway_pid_for_home", _stalling_probe)
         monkeypatch.setattr(reconcile_mod, "_OWN_GATEWAY_PROBE_TIMEOUT_SECS", 0.2)
 
         _mkprofile(home, "gamma", "DISCORD_BOT_TOKEN=gamma-token\n")
@@ -222,7 +222,7 @@ async def test_parked_profile_boot_and_reconcile(tmp_path, monkeypatch, caplog):
 
 @pytest.mark.asyncio
 async def test_profile_control_verbs_round_trip_and_refusals(tmp_path, monkeypatch):
-    from gateway import run_profile_reconcile as verbs
+    from hermes_agent.gateway import run_profile_reconcile as verbs
     runner, home = _runner(tmp_path, monkeypatch)
     secondary = _mkprofile(home, "worker", "DISCORD_BOT_TOKEN=worker-token\n")
     with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
@@ -251,8 +251,8 @@ async def test_profile_control_verbs_round_trip_and_refusals(tmp_path, monkeypat
 @pytest.mark.platforms("linux")
 @pytest.mark.asyncio
 async def test_profile_lifecycle_over_real_control_socket(tmp_path, monkeypatch):
-    from gateway.run_bootstrap import _start_gateway_start_control_socket
-    from gateway import control_socket
+    from hermes_agent.gateway.run_bootstrap import _start_gateway_start_control_socket
+    from hermes_agent.gateway import control_socket
     runner, home = _runner(tmp_path, monkeypatch)
     secondary = _mkprofile(home, "worker")
     with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
@@ -291,7 +291,7 @@ async def test_created_then_credentialed_profile_is_served_without_restart(tmp_p
         assert result["added"] == ["gamma"]
         assert _served_record(home) == ["default", "alpha", "gamma"]
         assert _reserved_names(runner) == ["alpha", "default", "gamma"]
-        from gateway.runtime_ownership import process_ownership
+        from hermes_agent.gateway.runtime_ownership import process_ownership
         assert process_ownership.owns(gamma_dir)
         assert "gamma" in runner.pairing_stores
         assert Platform.DISCORD not in runner._profile_adapters.get("gamma", {})
@@ -342,7 +342,7 @@ async def test_deleted_profile_is_torn_down_and_unrouted_others_untouched(tmp_pa
     assert _served_record(home) == ["default", "alpha"]
     # The reservation shrank with it: the next restart must not reserve a home that is gone.
     assert _reserved_names(runner) == ["alpha", "default"]
-    from gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.runtime_ownership import process_ownership
     assert not process_ownership.owns(gamma_dir)
     assert runner._profile_adapters["alpha"][Platform.DISCORD] is alpha_adapter
     assert alpha_adapter.disconnected is False
@@ -466,7 +466,7 @@ async def test_transient_start_failure_is_retried_on_next_reconcile(tmp_path, mo
         assert runner._profile_adapters["gamma"][Platform.DISCORD].token.strip().endswith("gamma-token")
 
         # The deliberate park stays distinct: a MultiplexConfigError is acknowledged, not retried.
-        from gateway.run import MultiplexConfigError
+        from hermes_agent.gateway.run import MultiplexConfigError
 
         _mkprofile(home, "delta", "DISCORD_BOT_TOKEN=delta-token\n")
         parked = []

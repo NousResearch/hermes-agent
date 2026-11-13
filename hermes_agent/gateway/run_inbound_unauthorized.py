@@ -17,7 +17,7 @@ import logging
 from collections import OrderedDict
 
 from agent.i18n import t
-from gateway.pairing import CODE_TTL_SECONDS, _allowlist_env_for_platform
+from hermes_agent.gateway.pairing import CODE_TTL_SECONDS, _allowlist_env_for_platform
 
 # Display names come from the stranger. Bound them and keep the mention/markdown surface small in
 # the owner's channel: a name is never a reason to render a link, mention or new section.
@@ -26,7 +26,7 @@ _MAX_SENDER_NAME_CHARS = 64
 # instead of growing the set without limit.
 _MAX_SEEN_SENDERS = 2048
 
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 
 def pairing_profile_arg(pairing_store) -> str:
@@ -57,7 +57,7 @@ def unauthorized_owner_hint(
     No pairing request is minted for an ignored sender (a configured allowlist means the owner chose
     to restrict access), so the ways in are the allowlist itself or switching the platform to
     pairing mode."""
-    from gateway.session import neutralize_untrusted_inline_text
+    from hermes_agent.gateway.session import neutralize_untrusted_inline_text
 
     safe_name = neutralize_untrusted_inline_text(user_name or "", max_chars=_MAX_SENDER_NAME_CHARS)
     # Mention and link sigils are stripped so a hostile display name cannot ping the channel or
@@ -103,7 +103,7 @@ class UnauthorizedOwnerNotifier:
                 # answer the unauthorized user, which the ignore behaviour exists to prevent.
                 return
             # Automatic operator diagnostic on the home channel; same boundary as the state.db warning.
-            from gateway.warning_notifications import present_notification
+            from hermes_agent.gateway.warning_notifications import present_notification
             await present_notification(
                 lambda: runner._send_home_channel_message(
                     platform, home, transport, f"⚠️ {hint}", "unauthorized-sender notice failed for %s:%s: %s",

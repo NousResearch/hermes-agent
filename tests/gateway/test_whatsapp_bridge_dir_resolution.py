@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway.platforms import whatsapp_common
+from hermes_agent.gateway.platforms import whatsapp_common
 
 
 def _seed_install_tree(install_bridge: Path) -> None:

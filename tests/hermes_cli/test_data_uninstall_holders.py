@@ -18,7 +18,7 @@ def test_unconfirmed_removal_never_contacts_the_gateway(layout, monkeypatch, mod
         calls.append(target)
         return {"pid": 42, "hermes_home": str(home), "supervisor": "systemd"}
 
-    monkeypatch.setattr("gateway.control_socket.identify_gateway", identify)
+    monkeypatch.setattr("hermes_agent.gateway.control_socket.identify_gateway", identify)
     monkeypatch.setattr("builtins.input", lambda *args: "no")
     args = SimpleNamespace(yes=mode != "cancel", dry_run=mode == "dry-run")
     if mode == "confirmed":
@@ -53,8 +53,8 @@ def test_manual_gateway_drains_over_real_control_transport_before_deletion(layou
     import subprocess
     import sys
     from threading import Event, Thread
-    from gateway.control_socket import GatewayControlServer
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway.control_socket import GatewayControlServer
+    from hermes_agent.gateway.status import get_process_start_time
 
     home, _, data = layout
     # A disposable child is the declared process. Control dispatch is real;
@@ -150,8 +150,8 @@ def test_named_profile_cannot_delete_data_served_by_the_default_multiplexer(layo
             return {"pid": 42, "hermes_home": str(home), "served_profiles": ["active"]}
         return None
 
-    monkeypatch.setattr("gateway.control_socket.identify_gateway", identify)
-    monkeypatch.setattr("gateway.control_socket.pause_gateway_for_update",
+    monkeypatch.setattr("hermes_agent.gateway.control_socket.identify_gateway", identify)
+    monkeypatch.setattr("hermes_agent.gateway.control_socket.pause_gateway_for_update",
                         lambda *args, **kwargs: pytest.fail("must not stop other profiles' gateway"))
     with pytest.raises(SystemExit):
         uninstall.run_data_uninstall(SimpleNamespace(yes=True))

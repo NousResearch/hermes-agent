@@ -141,7 +141,7 @@ class _LiveBotApiServer:
 
 
 def _make_adapter():
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
     from plugins.platforms.telegram.adapter import TelegramAdapter
 
     return TelegramAdapter(PlatformConfig(enabled=True, token="123456:TEST"))

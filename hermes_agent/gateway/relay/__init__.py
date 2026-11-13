@@ -25,7 +25,7 @@ import urllib.parse
 import urllib.request
 from typing import Callable, Optional
 
-logger = logging.getLogger("gateway.relay")
+logger = logging.getLogger("hermes_agent.gateway.relay")
 
 # Shape gate for ambient-endpoint token bodies (mode 1b in
 # _resolve_relay_identity_token): a JWT (3+ dotted segments) or a long opaque
@@ -68,7 +68,7 @@ _IDP_KEYS = ("token_url", "client_id", "client_secret", "scope")
 def _load_cfg() -> dict:
     """The full gateway config, or ``{}`` — config absence/parse must never crash boot."""
     try:
-        from gateway.run import _load_gateway_config  # late import to avoid cycle
+        from hermes_agent.gateway.run import _load_gateway_config  # late import to avoid cycle
 
         cfg = _load_gateway_config()
     except Exception:
@@ -87,7 +87,7 @@ def _launch_profile_scope():
 
     Self-provision runs at startup, before any turn binds a profile, and under multiplexing the
     Nous Portal and inference routing overrides only resolve inside a profile scope. The scope is
-    built from the profile's files like a turn's (``gateway.run._profile_runtime_scope``), not via
+    built from the profile's files like a turn's (``hermes_agent.gateway.run._profile_runtime_scope``), not via
     ``launch_profile_scope_if_multiplexed``, whose first entry freezes the launch env snapshot
     before startup has written ``GATEWAY_RELAY_*`` into ``os.environ``.
     """
@@ -95,7 +95,7 @@ def _launch_profile_scope():
 
     if not is_multiplex_active():
         return contextlib.nullcontext()
-    from gateway.run import _profile_runtime_scope  # late import to avoid cycle
+    from hermes_agent.gateway.run import _profile_runtime_scope  # late import to avoid cycle
     from hermes_constants import get_process_hermes_home
 
     return _profile_runtime_scope(get_process_hermes_home())
@@ -122,8 +122,8 @@ def relay_explicitly_disabled() -> bool:
     authoritative — a legacy ``gateway.json`` block is advisory for relay exactly as it
     is for every other platform, and an absent key keeps URL-only activation.
     """
-    from gateway.config import Platform, PlatformConfig
-    from gateway.config_loader import bridge_platform_shared_keys, merge_platform_sections, read_yaml_layers
+    from hermes_agent.gateway.config import Platform, PlatformConfig
+    from hermes_agent.gateway.config_loader import bridge_platform_shared_keys, merge_platform_sections, read_yaml_layers
     from hermes_constants import get_hermes_home
 
     try:
@@ -277,7 +277,7 @@ def relay_display_name() -> Optional[str]:
 
 def _connector_url(relay_dial_url: str, path: str) -> str:
     """``ws(s)://…/relay`` dial URL -> ``http(s)://…{path}`` connector route."""
-    from gateway.relay.media import media_base_url
+    from hermes_agent.gateway.relay.media import media_base_url
 
     return f"{media_base_url(relay_dial_url)}{path}"
 
@@ -397,7 +397,7 @@ def _post_provision(
         with _json_post(provision_url, access_token, body, timeout) as resp:
             payload = json.loads(resp.read().decode())
     except urllib.error.HTTPError as exc:
-        from gateway.relay import http_diagnostics as diag
+        from hermes_agent.gateway.relay import http_diagnostics as diag
 
         err_body = diag.read_error_body(exc)
         # Never log the identity token we sent, even if a hop echoes it back bare.
@@ -748,7 +748,7 @@ def send_relay_policy() -> bool:
         return False
 
     try:
-        from gateway.relay.auth import make_upgrade_token
+        from hermes_agent.gateway.relay.auth import make_upgrade_token
 
         token = make_upgrade_token(gateway_id, secret)
     except Exception as exc:
@@ -798,9 +798,9 @@ def register_relay_adapter(force: bool = False, url: Optional[str] = None) -> bo
     if not (force or resolved_url):
         return False
 
-    from gateway.platform_registry import PlatformEntry, platform_registry
-    from gateway.relay.adapter import RelayAdapter
-    from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+    from hermes_agent.gateway.platform_registry import PlatformEntry, platform_registry
+    from hermes_agent.gateway.relay.adapter import RelayAdapter
+    from hermes_agent.gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
 
     platform, bot_id = relay_platform_identity()
 
@@ -820,7 +820,7 @@ def register_relay_adapter(force: bool = False, url: Optional[str] = None) -> bo
         )
         transport = None
         if resolved_url:
-            from gateway.relay.ws_transport import WebSocketRelayTransport
+            from hermes_agent.gateway.relay.ws_transport import WebSocketRelayTransport
 
             gateway_id, upgrade_secret = relay_connection_auth()
             transport = WebSocketRelayTransport(

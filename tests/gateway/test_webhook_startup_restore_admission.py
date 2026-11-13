@@ -13,16 +13,16 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import PlatformConfig
-from gateway.platforms.webhook import WebhookAdapter
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.webhook import WebhookAdapter
 from tests.gateway.fixtures.webhook_route_authority import mount_authority
 from tests.gateway.session_claims import claim
 
 
 @pytest.mark.asyncio
 async def test_admitted_webhook_runs_through_startup_restore_gate(monkeypatch):
-    from gateway.session_contract import SessionRef
-    from gateway.session_ingress import execute_admission
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_ingress import execute_admission
     from hermes_agent.hermes_state_runtime import get_session_admission
 
     config = PlatformConfig(enabled=True, extra={

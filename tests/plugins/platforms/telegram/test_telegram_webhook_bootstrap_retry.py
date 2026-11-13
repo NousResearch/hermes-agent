@@ -13,7 +13,7 @@ pytest.importorskip("tornado")
 
 from telegram.ext import Application
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from tests.fakes.platforms.telegram_standin import TelegramStandin
 

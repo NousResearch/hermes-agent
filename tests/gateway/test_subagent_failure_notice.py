@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.turn_context import TurnContext
+from hermes_agent.gateway.turn_context import TurnContext
 from tools.delegate_tool import (
     SUBAGENT_FAILURE_STATUSES,
     _clean_error_text,
@@ -85,7 +85,7 @@ class TestFormatSubagentFailureLine:
 
 def _make_runner_and_captured(monkeypatch, run_still_current=True):
     """TurnRunner with a stub gateway runner; captures scheduled notices."""
-    from gateway import run as run_mod
+    from hermes_agent.gateway import run as run_mod
 
     captured: list[str] = []
 
@@ -107,7 +107,7 @@ def _make_runner_and_captured(monkeypatch, run_still_current=True):
         progress_queue=None,
         _loop_for_step=None,
     )
-    from gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
     return TurnRunner(_StubGatewayRunner(), ctx), captured
 
 

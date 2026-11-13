@@ -19,12 +19,12 @@ CHAT_PICKS = frozenset({'model', 'reasoning'})
 
 
 def is_chat_pick(live, operation):
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     return operation in CHAT_PICKS and live is not None and live.source.platform != Platform.LOCAL
 
 
 def _platform_key(live):
-    from gateway.run import _platform_config_key
+    from hermes_agent.gateway.run import _platform_config_key
     return _platform_config_key(live.source.platform)
 
 
@@ -36,8 +36,8 @@ def _apply_reasoning(runner, live, effort):
 async def _pick_model(authority, owner, live, payload, row):
     """The chat's ``/model <name> [--provider p]`` resolution, guarded like a LOCAL pick, then committed
     as its session override. Returns the receipt fields, or the guard's confirmation request."""
-    from gateway.session_mutation_model import _Route, _selection_guard_refusal, is_model_reset
-    from gateway.slash_commands_model import _ModelSwitchContext
+    from hermes_agent.gateway.session_mutation_model import _Route, _selection_guard_refusal, is_model_reset
+    from hermes_agent.gateway.slash_commands_model import _ModelSwitchContext
     from hermes_constants import get_hermes_home
     runner = authority.runner
     ctx = _ModelSwitchContext(session_key=live.route, source=live.source,
@@ -97,7 +97,7 @@ async def apply_chat_pick(authority, ref, owner, live, params, *, principal_id):
     result = {'session_id': ref.session_id, 'operation': operation, 'revision': row['runtime_revision'],
               'execution_generation': row['runtime_generation'], **fields}
     result = await asyncio.to_thread(commit_chat_pick, authority.db, **fenced, result=result)
-    from gateway.session_local import local_session_info
+    from hermes_agent.gateway.session_local import local_session_info
     # Every viewer repaints its model and reasoning pill, as after a LOCAL pick.
     live.event_stream.publish(owner.session_id, local_session_info(authority, owner), event_type='session.info')
     return result
@@ -107,8 +107,8 @@ def messaging_route_info(runner, live):
     """``model`` and the effort fields a messaging chat's next turn resolves, without building an agent
     or resolving credentials: session ``/model`` > ``channel_overrides`` > config.yaml, and the session
     ``/reasoning`` > per-model > global level (``_resolve_session_reasoning_config``)."""
-    from gateway.run import _load_gateway_config, _resolve_gateway_model
-    from gateway.session_local import effort_fields
+    from hermes_agent.gateway.run import _load_gateway_config, _resolve_gateway_model
+    from hermes_agent.gateway.session_local import effort_fields
     config = _load_gateway_config()
     block = config.get('model')
     block = block if isinstance(block, dict) else {}

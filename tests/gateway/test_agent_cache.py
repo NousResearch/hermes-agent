@@ -18,7 +18,7 @@ from tools import browser_session_lifecycle as bt_lifecycle
 
 def _make_runner():
     """Create a minimal GatewayRunner with just the cache infrastructure."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = GatewayRunner.__new__(GatewayRunner)
     runner._agent_cache = {}
@@ -29,7 +29,7 @@ class TestAgentConfigSignature:
     """Config signature produces stable, distinct keys."""
 
     def test_model_change_different_signature(self):
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         runtime = {"api_key": "sk-test12345678", "base_url": "https://openrouter.ai/api/v1",
                     "provider": "openrouter"}
@@ -39,7 +39,7 @@ class TestAgentConfigSignature:
 
     def test_same_token_prefix_different_full_token_changes_signature(self):
         """Tokens sharing a JWT-style prefix must not collide."""
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         rt1 = {
             "api_key": "eyJhbGci.token-for-account-a",
@@ -60,7 +60,7 @@ class TestAgentConfigSignature:
         assert sig1 != sig2
 
     def test_provider_change_different_signature(self):
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         rt1 = {"api_key": "sk-test12345678", "base_url": "https://openrouter.ai/api/v1", "provider": "openrouter"}
         rt2 = {"api_key": "sk-test12345678", "base_url": "https://api.anthropic.com", "provider": "anthropic"}
@@ -69,7 +69,7 @@ class TestAgentConfigSignature:
         assert sig1 != sig2
 
     def test_capability_change_different_signature(self):
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         runtime = {"api_key": "sk-test12345678", "base_url": "https://proxy.example/v1", "provider": "custom"}
         native = {**runtime, "capabilities": {"openai_native_compaction": True}}
@@ -80,7 +80,7 @@ class TestAgentConfigSignature:
 
     def test_default_gateway_runtime_forwards_filtered_capabilities(self, monkeypatch):
         """Configured provider capabilities must reach a newly created gateway agent."""
-        from gateway.run import _resolve_runtime_agent_kwargs
+        from hermes_agent.gateway.run import _resolve_runtime_agent_kwargs
         from hermes_cli import runtime_provider
 
         monkeypatch.setattr(
@@ -109,7 +109,7 @@ class TestAgentConfigSignature:
     # ---------------------------------------------------------------
 
     def test_compression_threshold_change_busts_cache(self):
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
         sig1 = GatewayRunner._agent_config_signature(
@@ -124,7 +124,7 @@ class TestAgentConfigSignature:
 
     def test_cache_keys_key_order_does_not_matter(self):
         """Signature must be stable regardless of dict key insertion order."""
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
         sig_a = GatewayRunner._agent_config_signature(
@@ -143,7 +143,7 @@ class TestExtractCacheBustingConfig:
 
     def test_missing_keys_yield_the_shipped_default(self):
         """An absent key carries the value in force — DEFAULT_CONFIG's — for every documented key."""
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         out = GatewayRunner._extract_cache_busting_config({})
         for section, key in GatewayRunner._CACHE_BUSTING_CONFIG_KEYS:
@@ -152,7 +152,7 @@ class TestExtractCacheBustingConfig:
     def test_explicit_cap_differs_from_absent(self):
         """Setting or clearing `threshold_tokens` rebuilds the cached agent (the signature changes), while
         absent and an explicit default build the same agent (the signature matches)."""
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         default_cap = DEFAULT_CONFIG["compression"]["threshold_tokens"]
         other_cap = (default_cap or 0) + 100_000
@@ -163,7 +163,7 @@ class TestExtractCacheBustingConfig:
     def test_legacy_checkpoints_bool_carries_defaults_for_the_other_keys(self):
         """`checkpoints: true` builds the agent with DEFAULT_CONFIG's limits (`_checkpoint_agent_kwargs`), so
         migrating to `checkpoints: {enabled: true}` must not change the signature."""
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         legacy = GatewayRunner._extract_cache_busting_config({"checkpoints": True})
         explicit = GatewayRunner._extract_cache_busting_config({"checkpoints": {"enabled": True}})
@@ -172,7 +172,7 @@ class TestExtractCacheBustingConfig:
             k: v for k, v in explicit.items() if k.startswith("checkpoints.")}
 
     def test_non_dict_section_treated_as_missing(self):
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         # compression is a string — should not crash; compression.* keys fall back to the shipped defaults
         out = GatewayRunner._extract_cache_busting_config(
@@ -183,7 +183,7 @@ class TestExtractCacheBustingConfig:
         assert out["model.context_length"] == 100_000
 
     def test_none_config_is_safe(self):
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         out = GatewayRunner._extract_cache_busting_config(None)
         for section, key in GatewayRunner._CACHE_BUSTING_CONFIG_KEYS:
@@ -191,7 +191,7 @@ class TestExtractCacheBustingConfig:
         assert "tools.registry_generation" in out
 
     def test_extract_includes_live_tool_registry_generation(self, monkeypatch):
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
         from tools.registry import registry
 
         monkeypatch.setattr(registry, "_generation", 12345)
@@ -205,7 +205,7 @@ class TestExtractCacheBustingConfig:
     @staticmethod
     def _provider_declared_keys(out):
         """``memory.*`` keys a provider added, excluding the config.yaml keys already documented."""
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         documented = {f"{s}.{k}" for s, k in GatewayRunner._CACHE_BUSTING_CONFIG_KEYS if s == "memory"}
         return sorted(k for k in out if k.startswith("memory.") and k not in documented)
@@ -214,7 +214,7 @@ class TestExtractCacheBustingConfig:
     def _install_fake_provider(monkeypatch, provider):
         """Route ``load_memory_provider`` to ``provider`` and start from an empty memo."""
         import plugins.memory as plugins_memory
-        from gateway.run_agent_cache import GatewayAgentCacheMixin
+        from hermes_agent.gateway.run_agent_cache import GatewayAgentCacheMixin
 
         calls = []
 
@@ -227,7 +227,7 @@ class TestExtractCacheBustingConfig:
         return calls
 
     def test_provider_identity_signature_enters_under_memory_prefix_and_is_re_read_from_one_instance(self, monkeypatch):
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
         from tests.agent.test_memory_provider import FakeMemoryProvider
 
         class IdentityProvider(FakeMemoryProvider):
@@ -251,7 +251,7 @@ class TestExtractCacheBustingConfig:
 
     @pytest.mark.parametrize("kind", ["no hook", "no provider", "raising hook"])
     def test_provider_contributes_nothing_without_a_working_identity_hook(self, monkeypatch, kind):
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
         from tests.agent.test_memory_provider import FakeMemoryProvider
 
         class BrokenProvider(FakeMemoryProvider):
@@ -297,7 +297,7 @@ class TestAgentCacheBoundedGrowth:
     def _bounded_runner(self):
         """Runner with an OrderedDict cache (matches real gateway init)."""
         from collections import OrderedDict
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         runner = GatewayRunner.__new__(GatewayRunner)
         runner._agent_cache = OrderedDict()
@@ -316,7 +316,7 @@ class TestAgentCacheBoundedGrowth:
 
     def test_cap_commits_memory_before_soft_release(self, monkeypatch):
         """LRU eviction commits the transcript before releasing clients."""
-        from gateway import run as gw_run
+        from hermes_agent.gateway import run as gw_run
 
         monkeypatch.setattr(gw_run, "_AGENT_CACHE_MAX_SIZE", 1)
         runner = self._bounded_runner()
@@ -359,7 +359,7 @@ class TestAgentCacheActiveSafety:
 
     def _runner(self):
         from collections import OrderedDict
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         runner = GatewayRunner.__new__(GatewayRunner)
         runner._agent_cache = OrderedDict()
@@ -383,7 +383,7 @@ class TestAgentCacheActiveSafety:
         one that happens to be mid-turn.  Better to let the cache stay
         transiently over cap and re-check on the next insert.
         """
-        from gateway import run as gw_run
+        from hermes_agent.gateway import run as gw_run
 
         monkeypatch.setattr(gw_run, "_AGENT_CACHE_MAX_SIZE", 2)
         runner = self._runner()
@@ -412,7 +412,7 @@ class TestAgentCacheActiveSafety:
 
     def test_idle_sweep_skips_active_agent(self, monkeypatch):
         """Idle-TTL sweep must not tear down an active agent even if 'stale'."""
-        from gateway import run as gw_run
+        from hermes_agent.gateway import run as gw_run
 
         monkeypatch.setattr(gw_run, "_AGENT_CACHE_IDLE_TTL_SECS", 0.01)
         runner = self._runner()
@@ -433,7 +433,7 @@ class TestAgentCacheSpilloverLive:
 
     def _runner(self):
         from collections import OrderedDict
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         runner = GatewayRunner.__new__(GatewayRunner)
         runner._agent_cache = OrderedDict()
@@ -454,7 +454,7 @@ class TestAgentCacheSpilloverLive:
 
     def test_fill_to_cap_then_spillover(self, monkeypatch):
         """Fill to cap with real agents, insert one more, oldest evicted."""
-        from gateway import run as gw_run
+        from hermes_agent.gateway import run as gw_run
 
         CAP = 8
         monkeypatch.setattr(gw_run, "_AGENT_CACHE_MAX_SIZE", CAP)
@@ -500,7 +500,7 @@ class TestAgentCacheIdleResume:
 
     def _runner(self):
         from collections import OrderedDict
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         runner = GatewayRunner.__new__(GatewayRunner)
         runner._agent_cache = OrderedDict()
@@ -619,12 +619,12 @@ class TestCachedAgentInactivityReset:
     def test_fresh_turn_resets_idle_clock(self):
         """interrupt_depth=0: clock resets so a post-idle turn gets a
         fresh 30-min inactivity window (guard for #9051)."""
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         agent = self._fake_agent(stale_seconds=1800.0)
         old_ts = agent._last_activity_ts
 
-        with patch("gateway.run.time") as mock_time:
+        with patch("hermes_agent.gateway.run.time") as mock_time:
             mock_time.time.return_value = _FAKE_NOW
             GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=0)
 
@@ -638,12 +638,12 @@ class TestCachedAgentInactivityReset:
     def test_fresh_turn_resets_provenance(self):
         """interrupt_depth=0: provenance resets with ts/desc (#72039)."""
         from agent.session_activity import ActivityProvenance
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         agent = self._fake_agent()
         assert agent._last_activity_provenance is ActivityProvenance.AGENT_COMPRESSION
 
-        with patch("gateway.run.time") as mock_time:
+        with patch("hermes_agent.gateway.run.time") as mock_time:
             mock_time.time.return_value = _FAKE_NOW
             GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=0)
 
@@ -652,7 +652,7 @@ class TestCachedAgentInactivityReset:
     def test_interrupt_turn_preserves_idle_clock(self):
         """interrupt_depth=1: clock preserved so accumulated stuck-turn
         idle time is not discarded by an interrupt-recursive re-entry (#15654)."""
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         agent = self._fake_agent(stale_seconds=1200.0)
         old_ts = agent._last_activity_ts
@@ -666,7 +666,7 @@ class TestCachedAgentInactivityReset:
 
     def test_interrupt_turn_preserves_desc(self):
         """interrupt_depth=1: desc preserved — it is semantically paired with ts."""
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         agent = self._fake_agent(stale_seconds=1200.0)
 
@@ -680,7 +680,7 @@ class TestCachedAgentInactivityReset:
     def test_interrupt_turn_preserves_provenance(self):
         """interrupt_depth=1: provenance preserved with ts/desc."""
         from agent.session_activity import ActivityProvenance
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         agent = self._fake_agent(stale_seconds=1200.0)
 
@@ -691,12 +691,12 @@ class TestCachedAgentInactivityReset:
     def test_fresh_turn_resets_flush_cursor(self):
         """interrupt_depth=0: _last_flushed_db_idx resets so new-turn
         messages are fully persisted to the session DB (#44327)."""
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         agent = self._fake_agent()
         agent._last_flushed_db_idx = 42  # stale from previous turn
 
-        with patch("gateway.run.time") as mock_time:
+        with patch("hermes_agent.gateway.run.time") as mock_time:
             mock_time.time.return_value = _FAKE_NOW
             GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=0)
 

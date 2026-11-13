@@ -6,13 +6,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import gateway.run as gateway_run
+import hermes_agent.gateway.run as gateway_run
 from agent.i18n import t
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.restart import (
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.restart import (
     DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT,
 )
-from gateway.session import SessionEntry, build_session_key
+from hermes_agent.gateway.session import SessionEntry, build_session_key
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 
 
@@ -28,7 +28,7 @@ async def test_restart_command_while_busy_requests_drain_without_interrupt(monke
     # test_restart_service_detection.py) — /.dockerenv on a containerized CI
     # runner would otherwise route via_service=True under this test.
     monkeypatch.setattr(
-        "gateway.restart.is_container_restart_context", lambda: False
+        "hermes_agent.gateway.restart.is_container_restart_context", lambda: False
     )
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)
@@ -425,8 +425,8 @@ async def test_drain_suppress_skips_home_channel_keeps_session_ping(tmp_path, mo
     "your task was interrupted, message me to resume" hint). This is the core
     drain-notification-suppression contract.
     """
-    from gateway.config import HomeChannel, Platform
-    import gateway.drain_control as dc
+    from hermes_agent.gateway.config import HomeChannel, Platform
+    import hermes_agent.gateway.drain_control as dc
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 

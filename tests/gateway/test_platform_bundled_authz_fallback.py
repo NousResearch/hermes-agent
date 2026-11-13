@@ -8,8 +8,8 @@ import dataclasses
 
 import pytest
 
-from gateway.config import Platform
-from gateway.platform_env import _BUNDLED_ENV_SIBLINGS, bundled_authz
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platform_env import _BUNDLED_ENV_SIBLINGS, bundled_authz
 
 _FIELDS = ("allowed_users_env", "allow_all_env", "allow_bots_env", "own_policy_env")
 
@@ -20,7 +20,7 @@ def _bundled_with_authz():
 
 
 def test_registered_entries_carry_exactly_the_file_declaration():
-    from gateway.platform_registry import platform_registry
+    from hermes_agent.gateway.platform_registry import platform_registry
     from hermes_cli.plugins import discover_plugins
 
     discover_plugins()
@@ -35,8 +35,8 @@ def test_registered_entries_carry_exactly_the_file_declaration():
 
 @pytest.mark.parametrize("name", ["telegram", "weixin"])
 def test_override_without_fields_still_gates_on_bundled_names(name, monkeypatch):
-    from gateway import pairing, run_startup
-    from gateway.platform_registry import platform_registry
+    from hermes_agent.gateway import pairing, run_startup
+    from hermes_agent.gateway.platform_registry import platform_registry
     from hermes_cli.plugins import discover_plugins
 
     discover_plugins()

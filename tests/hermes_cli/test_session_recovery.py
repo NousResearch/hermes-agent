@@ -651,7 +651,7 @@ def test_partial_recovery_clears_only_unreadable_system_prompt_refs(
 
 
 def _insert_delivery_obligations(path: Path, rows: list[tuple[object, ...]]) -> None:
-    from gateway.delivery_ledger import _initialize_schema
+    from hermes_agent.gateway.delivery_ledger import _initialize_schema
 
     conn = sqlite3.connect(str(path), isolation_level=None)
     try:

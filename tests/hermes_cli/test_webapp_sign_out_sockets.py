@@ -42,8 +42,8 @@ def webapp(tmp_path, monkeypatch):
 @pytest.fixture
 def sign_out(webapp, tmp_path):
     """The ``webapp-sign-out`` verb of a gateway serving *webapp*, asked over its control socket."""
-    from gateway.control_socket import GatewayControlServer
-    from gateway.webapp_listener import TOKEN_PATH, register_control_verbs
+    from hermes_agent.gateway.control_socket import GatewayControlServer
+    from hermes_agent.gateway.webapp_listener import TOKEN_PATH, register_control_verbs
 
     server = webapp.server
     home = tmp_path / ".hermes"

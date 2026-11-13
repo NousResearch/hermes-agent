@@ -2,7 +2,7 @@
 
 A TUI kept a session working in the background (``/new`` mid-turn) and polls this verb to tell the
 user when that session needs an answer. Clarify batches, sudo, secret and vault prompts are viewer
-requests (``gateway.session_server_requests``), not shared controls, so a status read from the
+requests (``hermes_agent.gateway.session_server_requests``), not shared controls, so a status read from the
 controls alone said ``working`` while the turn sat blocked on the question.
 """
 import asyncio
@@ -29,7 +29,7 @@ class _Peer:
 
 @pytest.mark.asyncio
 async def test_a_turn_blocked_on_a_viewer_request_reads_waiting(listing):
-    from gateway.session_server_requests import ask_viewer, withdraw
+    from hermes_agent.gateway.session_server_requests import ask_viewer, withdraw
 
     await listing.submit('hi')
     events = listing.authority.sessions['chat'].event_stream

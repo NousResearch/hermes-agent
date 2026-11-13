@@ -9,9 +9,9 @@ import json
 import logging
 import re
 
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session_contract import SessionRef
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.session_contract import SessionRef
 from hermes_agent.hermes_state_runtime import RuntimeStoreError, admit_session_input, list_session_admissions
 
 logger = logging.getLogger(__name__)
@@ -25,11 +25,11 @@ def producer_identity(runner, event):
 
 
 def completion_admission(runner, event):
-    from gateway.session_authorities import active_authority
+    from hermes_agent.gateway.session_authorities import active_authority
     authority = active_authority(runner)
     if authority is None:
         return None
-    from gateway.session_detached import route_entry
+    from hermes_agent.gateway.session_detached import route_entry
     entry = route_entry(authority, str(event.get('session_key') or ''))
     if entry is None:
         return None
@@ -47,8 +47,8 @@ async def deliver_heartbeat(runner, event):
     admit-and-withdraw (``admit_process_notice``): a completion that lands while this tick is on its
     way in withdraws it once it is in, and a tick checked after it sees it. True when admitted, None
     to drop it, False to requeue the original event."""
-    from gateway.run import _format_gateway_process_notification
-    from gateway.session_detached import follow_detached_pin
+    from hermes_agent.gateway.run import _format_gateway_process_notification
+    from hermes_agent.gateway.session_detached import follow_detached_pin
     async with _heartbeat_lock(runner):
         for _attempt in range(2):
             try:
@@ -74,7 +74,7 @@ async def deliver_heartbeat(runner, event):
 
 
 def _replaced_tick_claimed(runner, prepared):
-    from gateway.session_authorities import active_authority
+    from hermes_agent.gateway.session_authorities import active_authority
     from hermes_agent.hermes_state_runtime import get_session_admission
     replaced = prepared.get('_replaces')
     authority = active_authority(runner) if replaced else None
@@ -125,7 +125,7 @@ def _waiting_completion(authority, evt, event):
     tail folds: a completion never jumps ahead of, or behind, a prompt queued after it. The finishing
     process's own queued liveness ticks do not count as the tail: this completion withdraws them
     (``withdraw_process_ticks``); their admission ids ride the row as ``_skip`` for the write guard."""
-    from gateway.session_detached import route_entry
+    from hermes_agent.gateway.session_detached import route_entry
     entry = route_entry(authority, str(evt.get('session_key') or ''))
     if entry is None:
         return None
@@ -155,7 +155,7 @@ _FOLD_HEADER_RE = re.compile(r'\[IMPORTANT: \d+ background process results arriv
 
 
 def _fold_completion(event, waiting, identity):
-    from gateway.run_notifications import INTERNAL_NOTIFICATION_FOOTER, _mark_internal_notification
+    from hermes_agent.gateway.run_notifications import INTERNAL_NOTIFICATION_FOOTER, _mark_internal_notification
     from tools.process_registry_notifications import process_completion_display_text
     descriptor = _descriptor(waiting['payload'])
     identities = sorted({*(descriptor.get('identities') or [waiting['request_id']]),
@@ -184,8 +184,8 @@ async def prepare_heartbeat(runner, event):
     per tick. A queued tick that started or settled first ran with its own output, and this one
     queues behind it. A retry of a tick already admitted is dropped."""
     import asyncio
-    from gateway.session_authorities import active_authority
-    from gateway.session_detached import route_entry
+    from hermes_agent.gateway.session_authorities import active_authority
+    from hermes_agent.gateway.session_detached import route_entry
     authority = active_authority(runner)
     entry = route_entry(authority, str(event.get('session_key') or '')) if authority else None
     if entry is None:
@@ -269,9 +269,9 @@ async def withdraw_process_ticks(runner, event):
     a retry of it takes the lost-acknowledgement path, not this one. The caller holds the heartbeat
     lock (``admit_process_notice``)."""
     import asyncio
-    from gateway.session_authorities import active_authority
+    from hermes_agent.gateway.session_authorities import active_authority
     try:
-        from gateway.session_detached import route_entry
+        from hermes_agent.gateway.session_detached import route_entry
         authority = active_authority(runner)
         entry = route_entry(authority, str(event.get('session_key') or '')) if authority else None
         if entry is None:
@@ -343,7 +343,7 @@ def _queued_tick(row, process, route):
 
 async def _withdraw(authority, row):
     """Cancel the gateway's own queued automation *row*; False when it was claimed or settled first."""
-    from gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_contract import SessionActor
     # The row's own principal, with the operator access a LOCAL route requires of anyone but its viewer.
     actor = SessionActor(row['principal_id'], authority.profile_id,
                       frozenset({'session:submit', 'session:control', 'session:operator'}), 'producer-withdraw')
@@ -368,7 +368,7 @@ def _owned_by(db, session_id, current):
     completion pre-flight (``_lookup_completion_owner``), only ``model_config._delegate_from`` leads
     out of an execution transcript: ``parent_session_id`` also records compression and branches.
     Likewise a session closed at a user boundary (/new, a resume away) leads nowhere."""
-    from gateway.run import _USER_BOUNDARY_END_REASONS
+    from hermes_agent.gateway.run import _USER_BOUNDARY_END_REASONS
     lineage = [session_id]
     while lineage[-1] != current and db.get_compression_tip(lineage[-1]) != current:
         row = db.get_session(lineage[-1]) or {}
@@ -380,7 +380,7 @@ def _owned_by(db, session_id, current):
 
 
 def _owner(runner, event, authority):
-    from gateway.session_detached import route_entry
+    from hermes_agent.gateway.session_detached import route_entry
     route = event.metadata.get('gateway_session_key') or runner.session_store._generate_session_key(event.source)
     entry = route_entry(authority, route)
     if entry is None or entry.suspended:
@@ -411,7 +411,7 @@ def automation_display_metadata(metadata):
     or neither, kind from the closed producer set."""
     if 'display_kind' not in metadata and 'display_text' not in metadata:
         return {}
-    from gateway.response_filters import PRODUCER_CARD_KINDS
+    from hermes_agent.gateway.response_filters import PRODUCER_CARD_KINDS
     kind, text = metadata.get('display_kind'), metadata.get('display_text')
     if (kind not in PRODUCER_CARD_KINDS or not isinstance(text, str) or not text.strip()
             or len(text) > _DISPLAY_TEXT_LIMIT):
@@ -504,7 +504,7 @@ def wake_route_envelope(authority, entry, requester_user_id=None):
     its session key. There a predecessor's envelope is borrowed only for the producer's authenticated
     user, or a result could be addressed to the predecessor's last speaker.
     """
-    from gateway.session import is_shared_multi_user_session
+    from hermes_agent.gateway.session import is_shared_multi_user_session
     config = getattr(getattr(authority.runner, 'session_store', None), 'config', None)
     origin = getattr(entry, 'origin', None)
     shared = bool(origin is not None and is_shared_multi_user_session(
@@ -552,10 +552,10 @@ def snapshot_automation(authority, adapter, event, identity):
     notification = (automation_notification_metadata(event.metadata) | automation_display_metadata(event.metadata)
                     | _tick_metadata(event.metadata))
     entry = _owner(runner, event, authority)
-    from gateway.session_detached import detached_route_of
+    from hermes_agent.gateway.session_detached import detached_route_of
     if event.source.platform == Platform.LOCAL or detached_route_of(event.source):
         return snapshot_local_automation(authority, adapter, event, identity, entry)
-    from gateway.session_envelope import restore_native
+    from hermes_agent.gateway.session_envelope import restore_native
     owner = authority.logical_owner(entry.session_id)
     envelope = wake_route_envelope(authority, entry, event.metadata.get('requester_user_id'))
     if envelope is None:
@@ -577,7 +577,7 @@ def snapshot_automation(authority, adapter, event, identity):
     source.pop('message_id', None)
     if 'relay' in provenance:
         # The relay seal binds the source; restore_native verified it over the anchored source.
-        from gateway.session_ingress_context import reseal_relay
+        from hermes_agent.gateway.session_ingress_context import reseal_relay
         provenance = reseal_relay(adapter, source, provenance)
     # Producer timestamps and platform reply IDs change on retry. Neither belongs
     # in the identity/fingerprint of the same immutable completion.
@@ -595,10 +595,10 @@ def snapshot_automation(authority, adapter, event, identity):
 
 
 def check_automation_route(runner, payload, session_id, available_source, adapter):
-    from gateway.session_envelope import restore_native
+    from hermes_agent.gateway.session_envelope import restore_native
     event = restore_native(payload, runner)
     envelope = payload['native_text_v1']
-    from gateway.session_authorities import active_authority
+    from hermes_agent.gateway.session_authorities import active_authority
     authority = active_authority(runner)
     if authority is None:  # a late preflight for a profile this runtime no longer serves
         raise RuntimeStoreError('not_found')
@@ -613,15 +613,15 @@ def check_automation_route(runner, payload, session_id, available_source, adapte
 
 def _local_automation_owner(authority, adapter, event, entry):
     """``(ref, live)`` a local automation lands on. A conversation its chat moved past takes its
-    results as a Desktop session does (gateway/session_detached.py): its app viewers get them."""
-    from gateway.session_detached import detached_live, detached_route_of
+    results as a Desktop session does (hermes_agent/gateway/session_detached.py): its app viewers get them."""
+    from hermes_agent.gateway.session_detached import detached_live, detached_route_of
     if detached_route_of(event.source):
         found = detached_live(authority, entry.session_key)
         if (found is None or found[1].source is not event.source or not adapter.authorize_source(event.source)
                 or authority.runner._adapter_for_source(found[1].source) is not adapter):
             raise RuntimeStoreError('permission_denied')
         return found
-    from gateway.session_local_recovery import restore_local_session
+    from hermes_agent.gateway.session_local_recovery import restore_local_session
     ref = restore_local_session(authority, event.source.chat_id)
     live = authority.sessions[ref.session_id]
     if (live.source is not event.source or not adapter.authorize_source(event.source)
@@ -639,7 +639,7 @@ def snapshot_local_automation(authority, adapter, event, identity, entry):
     descriptor.update(_tick_metadata(event.metadata))
     if 'completion_wakes_parent' in event.metadata:
         # A failed async delegation: the parent must act on it, so it runs as a turn even when no viewer
-        # is attached (gateway/session_completion_notes.py). Only ``True`` is stored, so an older
+        # is attached (hermes_agent/gateway/session_completion_notes.py). Only ``True`` is stored, so an older
         # admission's fingerprint is unchanged.
         if event.metadata['completion_wakes_parent'] is not True:
             raise RuntimeStoreError('invalid_params')
@@ -667,7 +667,7 @@ def check_local_automation(authority, ref, row, *, route=None):
     route = route or (live.route if live is not None else None)
     payload = row['payload']
     descriptor = payload['local_automation_v1']
-    from gateway.session_detached import own_detached_key, route_entry
+    from hermes_agent.gateway.session_detached import own_detached_key, route_entry
     # Admitted while its chat was elsewhere: the conversation's own key, whichever route it is on now.
     admitted = descriptor.get('route') if own_detached_key(descriptor.get('route'), ref.session_id) else route
     if (not route or set(payload) != {'text', 'local_automation_v1'}
@@ -685,7 +685,7 @@ def restore_local_automation(authority, ref, row):
     check_local_automation(authority, ref, row)
     live = authority.sessions[ref.session_id]
     descriptor = row['payload']['local_automation_v1']
-    from gateway.session_detached import route_entry
+    from hermes_agent.gateway.session_detached import route_entry
     entry = route_entry(authority, live.route)
     event = MessageEvent(text=row['payload']['text'], source=live.source, internal=True,
         message_id=descriptor['identity'], metadata={'gateway_session_key': live.route,
@@ -706,18 +706,18 @@ async def admit_automation(authority, adapter, event, identity, replaces=None, f
     batch absorbs (``_fold_queued``), given the tick admission ids it may sit behind."""
     authority._require_admission_open()
     payload, entry = snapshot_automation(authority, adapter, event, identity)
-    from gateway.session_authority import LiveSession
+    from hermes_agent.gateway.session_authority import LiveSession
     sid = (payload.get('local_automation_v1') or payload['native_text_v1']['automation'])['owner']
     ref = SessionRef(authority.profile_id, sid)
     source, envelope = event.source, payload.get('native_text_v1')
     if envelope is not None and 'relay' in envelope['provenance']:
         # A restored origin carries no relay trust: bind the source the snapshot verified, or the
         # drain resolves no adapter for this session after a restart.
-        from gateway.session_envelope import restore_native_source
+        from hermes_agent.gateway.session_envelope import restore_native_source
         source = restore_native_source(payload, authority.runner)
     authority.sessions.setdefault(ref.session_id, LiveSession(source, entry.session_key))
     from functools import partial
-    from gateway.session_runtime_workers import tracked_write
+    from hermes_agent.gateway.session_runtime_workers import tracked_write
     admitted, replaced = partial(authority._admitted, ref, event), []
     if replaces is not None:
         def admitted(row, admitted=admitted):
@@ -741,7 +741,7 @@ def route_owner_lock(runner, session_id):
     rotation and ``move_route_wakes``: its drain refuses a wake on the rotated route, so it must not
     claim one the move has not taken yet."""
     import contextlib
-    from gateway.session_authorities import active_authority
+    from hermes_agent.gateway.session_authorities import active_authority
     authority = active_authority(runner)
     live = authority.sessions.get(authority.logical_owner(session_id)) if authority and session_id else None
     return live.mutation_lock if live is not None else contextlib.nullcontext()
@@ -753,17 +753,17 @@ async def move_route_wakes(runner, session_key, old_session_id):
     across /new. Left behind, the old drain refuses them (``admission_conflict``) and they stay
     queued forever. Completions pinned to the closed conversation are not moved (they fail closed,
     #55578), nor anything behind an ``unknown`` head (the operator's to resume)."""
-    from gateway.session_authorities import active_authority
+    from hermes_agent.gateway.session_authorities import active_authority
     authority = active_authority(runner)
     entry = runner.session_store.lookup_by_session_key(session_key) if authority is not None else None
     if entry is None or not old_session_id:
         return
     import asyncio
     from functools import partial
-    from gateway.session_authority import LiveSession
-    from gateway.session_contract import SessionActor
-    from gateway.session_detached import lane_source
-    from gateway.session_runtime_workers import tracked_write
+    from hermes_agent.gateway.session_authority import LiveSession
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_detached import lane_source
+    from hermes_agent.gateway.session_runtime_workers import tracked_write
     from hermes_agent.hermes_state_runtime import list_session_admissions
     old = SessionRef(authority.profile_id, authority.logical_owner(old_session_id))
     new = SessionRef(authority.profile_id, authority.logical_owner(entry.session_id))
@@ -785,7 +785,7 @@ async def move_route_wakes(runner, session_key, old_session_id):
             continue  # claimed meanwhile: it runs where it is
         payload = deepcopy(row['payload'])
         payload['native_text_v1']['automation']['owner'] = new.session_id
-        # The old conversation left the route at its rotation (gateway/session_detached.py).
+        # The old conversation left the route at its rotation (hermes_agent/gateway/session_detached.py).
         authority.sessions.setdefault(new.session_id, LiveSession(lane_source(authority.sessions[old.session_id].source),
                                                                   session_key))
         await tracked_write(authority, partial(
@@ -809,7 +809,7 @@ async def _reset_and_retarget_local(authority, runner, session_key, old_session_
     exhausted turn ran) still name the pre-reset transcript and are retargeted at the fresh one,
     in the same ordered worker step as the rotation; left stale, the drain refuses them
     (``admission_conflict``) and the Bot Chat's FIFO pauses for good, across restarts."""
-    from gateway.session_runtime_workers import tracked_write
+    from hermes_agent.gateway.session_runtime_workers import tracked_write
     from hermes_agent.hermes_state_runtime import retarget_local_automation
     live = authority.sessions[owner.session_id]
 
@@ -844,7 +844,7 @@ async def reset_and_rehome_messages(runner, session_key, old_session_id):
     (once, after its conversation cleanup and topic binding sync, also on failure) the fresh
     session's ``claim_gate`` is held, so no scheduler (a redelivery, a moved route wake, this
     move) starts a turn there against stale state; ``release()`` then schedules its FIFO."""
-    from gateway.session_authorities import active_authority
+    from hermes_agent.gateway.session_authorities import active_authority
     authority = active_authority(runner)
     old = SessionRef(authority.profile_id, authority.logical_owner(old_session_id)) if authority else None
     live = authority.sessions.get(old.session_id) if old and old_session_id else None
@@ -854,11 +854,11 @@ async def reset_and_rehome_messages(runner, session_key, old_session_id):
     if live is None:
         return await runner.async_session_store.reset_session(session_key), lambda: None
     import asyncio
-    from gateway.session_authority import LiveSession
-    from gateway.session_runtime_workers import tracked_write
+    from hermes_agent.gateway.session_authority import LiveSession
+    from hermes_agent.gateway.session_runtime_workers import tracked_write
     from hermes_agent.hermes_state_runtime import rehome_queued_inputs
 
-    from gateway.session_detached import lane_source
+    from hermes_agent.gateway.session_detached import lane_source
     chat_source = lane_source(live.source)  # the rotation detaches the old conversation off the route
 
     def rotate_and_move():
@@ -921,9 +921,9 @@ async def admit_route_wake(runner, adapter, source, text, producer, metadata=Non
     interrupts or races the admitted one. ``False`` when no authority serves the scope or the
     route holds no committed human turn to borrow provenance from: the caller keeps the adapter
     path (nothing is queued there either). Raises ``RuntimeStoreError`` on a refusal."""
-    from gateway.session_authorities import active_authority
-    from gateway.session_local_recovery import restore_completion_route
-    from gateway.session_detached import detached_live, detached_route_of, route_entry
+    from hermes_agent.gateway.session_authorities import active_authority
+    from hermes_agent.gateway.session_local_recovery import restore_completion_route
+    from hermes_agent.gateway.session_detached import detached_live, detached_route_of, route_entry
     authority = active_authority(runner)
     key = runner._session_key_for_source(source)
     restore_completion_route(runner, key)  # a closed local session boot left unrestored has no store entry yet
@@ -946,7 +946,7 @@ async def admit_route_wake(runner, adapter, source, text, producer, metadata=Non
                                                             **(metadata or {})})
         await authority.admit_automation(adapter, event, identity)
         return True
-    from gateway.session_envelope import restore_native
+    from hermes_agent.gateway.session_envelope import restore_native
     envelope = committed_route_envelope(authority, entry)
     if envelope is None:
         return False

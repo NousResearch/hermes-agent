@@ -1,15 +1,15 @@
 """Process completions that pile up behind a busy turn run as ONE queued turn, not one turn each."""
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent
-from gateway.run import GatewayRunner
-from gateway.session_authority import SessionAuthority, initialize_session_authority
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session_authority import SessionAuthority, initialize_session_authority
 from hermes_agent.hermes_state_runtime import list_session_admissions
 
 
 async def _discord_session(tmp_path, monkeypatch):
-    from gateway.session_ingress_context import native_callback, register_transport_home
+    from hermes_agent.gateway.session_ingress_context import native_callback, register_transport_home
     from hermes_agent.hermes_state import SessionDB
     from plugins.platforms.discord.adapter import DiscordAdapter
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
@@ -85,7 +85,7 @@ async def test_completions_queued_behind_a_turn_fold_into_one_turn(tmp_path, mon
 @pytest.mark.parametrize('stale_read', [False, True])
 async def test_a_prompt_queued_between_completions_keeps_them_apart(tmp_path, monkeypatch, stale_read):
     """``stale_read``: the prompt commits after the tail was read but before the fold is written."""
-    from gateway import session_automation
+    from hermes_agent.gateway import session_automation
     authority, human, complete, queued = await _discord_session(tmp_path, monkeypatch)
     try:
         await complete('proc_a')

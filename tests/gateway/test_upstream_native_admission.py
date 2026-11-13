@@ -15,10 +15,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
-from gateway.session_envelope import snapshot_native
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session_envelope import snapshot_native
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
@@ -67,7 +67,7 @@ async def test_upstream_authorized_adapter_admits_fresh_native_without_allowlist
 async def test_non_upstream_adapter_still_default_denies_without_allowlist(
     tmp_path, monkeypatch
 ):
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.session import SessionSource
 
     _clear_authz_env(monkeypatch)
     runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
@@ -95,8 +95,8 @@ async def test_upstream_authorized_a2a_input_admits_durally_with_provenance(
 ):
     """The live path: ``admit_native`` inside the adapter's ``native_callback`` context, i.e. the
     same provenance-bearing re-check the unified gateway runs for every A2A task (#139199)."""
-    from gateway.session_authority import SessionAuthority, initialize_session_authority
-    from gateway.session_ingress_context import native_callback, register_transport_home
+    from hermes_agent.gateway.session_authority import SessionAuthority, initialize_session_authority
+    from hermes_agent.gateway.session_ingress_context import native_callback, register_transport_home
     from hermes_constants import get_hermes_home
     from hermes_agent.hermes_state_runtime import list_session_admissions
     from plugins.platforms.a2a.adapter import A2AAdapter
@@ -135,8 +135,8 @@ async def test_same_principal_without_adapter_declaration_is_refused_by_native_a
     """The A2A peer admitted above, through real native admission on an adapter that does not
     declare ``authorization_is_upstream``, is still refused. A declaration stamped on the event's
     source (``forge``) changes nothing: only the adapter object is read."""
-    from gateway.session_authority import SessionAuthority, initialize_session_authority
-    from gateway.session_ingress_context import native_callback, register_transport_home
+    from hermes_agent.gateway.session_authority import SessionAuthority, initialize_session_authority
+    from hermes_agent.gateway.session_ingress_context import native_callback, register_transport_home
     from hermes_constants import get_hermes_home
     from plugins.platforms.a2a.adapter import A2AAdapter
 

@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
 import itertools
 
@@ -53,7 +53,7 @@ async def test_split_send_resumes_from_undelivered_tail_without_resending_head(m
     async def _penalty_elapses(_delay):  # the base retry sleep is mocked; model the window having passed
         adapter._telegram_send_cooldown_until.clear()
 
-    monkeypatch.setattr("gateway.platforms.base.asyncio.sleep", _penalty_elapses)
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base.asyncio.sleep", _penalty_elapses)
     content = _three_chunk_text()
     expected = adapter.truncate_message(adapter.format_message(content), adapter.MAX_MESSAGE_LENGTH)
     assert len(expected) >= 3

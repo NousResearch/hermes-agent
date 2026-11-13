@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 import hermes_agent.tui_gateway.server as srv
-from gateway import hosted_rooms
+from hermes_agent.gateway import hosted_rooms
 from hermes_agent.tui_gateway import methods_groups
 
 

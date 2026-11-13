@@ -19,7 +19,7 @@ import sys
 
 import pytest
 
-from gateway.platforms.webhook import WebhookAdapter
+from hermes_agent.gateway.platforms.webhook import WebhookAdapter
 
 
 @pytest.fixture()

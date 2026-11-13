@@ -43,9 +43,9 @@ async def test_shell_exec_refusal_names_a_sandboxed_terminal_backend(tmp_path, m
     session still runs. Monkeypatched: the session's policy lookup and local-source check."""
     from types import SimpleNamespace
 
-    from gateway import session_local, session_policy
-    from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway import session_local, session_policy
+    from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 

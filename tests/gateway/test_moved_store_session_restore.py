@@ -42,8 +42,8 @@ def _shutdown(runner):
 async def _serving(root, homes, home):
     """A multiplexed runner serving *homes*; yields *home*'s authority, every store closed and every
     home released on exit."""
-    from gateway.run_runtime import initialize_gateway_runtime
-    from gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.run_runtime import initialize_gateway_runtime
+    from hermes_agent.gateway.runtime_ownership import process_ownership
     runner = None
     process_ownership.reserve([h for _, h in homes])
     try:
@@ -68,7 +68,7 @@ def _rename_alpha(root, homes):
 
 @pytest.mark.asyncio
 async def test_moved_api_receipt_restores_only_under_its_own_profile(tmp_path, monkeypatch):
-    from gateway.session_api import bind_api_session, restore_api_session
+    from hermes_agent.gateway.session_api import bind_api_session, restore_api_session
     root, homes = _reserve_homes(tmp_path, monkeypatch)
     async with _serving(root, homes, homes[1][1]) as alpha:
         for sid in ('api-moved', 'api-sibling'):
@@ -86,7 +86,7 @@ async def test_moved_api_receipt_restores_only_under_its_own_profile(tmp_path, m
 
 @pytest.mark.asyncio
 async def test_renamed_profile_api_session_restores(tmp_path, monkeypatch):
-    from gateway.session_api import bind_api_session, declared_api_session, restore_api_session
+    from hermes_agent.gateway.session_api import bind_api_session, declared_api_session, restore_api_session
     root, homes = _reserve_homes(tmp_path, monkeypatch)
     async with _serving(root, homes, homes[1][1]) as alpha:
         alpha.db.create_session('api-renamed', source='api_server')
@@ -107,11 +107,11 @@ async def test_renamed_profile_api_session_restores(tmp_path, monkeypatch):
 async def test_renamed_profile_local_session_restores(tmp_path, monkeypatch):
     """A local (Desktop / Bot Chat) session of a renamed profile resumes under the new name and
     stays a native chat (its turns keep the routing label, not an adopted row's stored label)."""
-    from gateway.session_a2a import storage_source
-    from gateway.session_authorities import owner_scope
-    from gateway.session_contract import SessionActor
-    from gateway.session_local import create_local_session
-    from gateway.session_local_recovery import restore_local_session
+    from hermes_agent.gateway.session_a2a import storage_source
+    from hermes_agent.gateway.session_authorities import owner_scope
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_local_recovery import restore_local_session
     root, homes = _reserve_homes(tmp_path, monkeypatch)
     async with _serving(root, homes, homes[1][1]) as alpha:
         actor = SessionActor('owner', alpha.profile_id, frozenset({'session:create', 'session:read'}), 'socket')

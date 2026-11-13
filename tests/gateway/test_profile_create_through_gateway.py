@@ -1,4 +1,4 @@
-"""``hermes profile create`` through a live gateway process (real ``gateway.run``).
+"""``hermes profile create`` through a live gateway process (real ``hermes_agent.gateway.run``).
 
 * local: the CLI on the gateway's own home has the profile made by the gateway (this process's
   ``provision_profile`` is made to fail, so only the gateway can have made it), and a refused request (an

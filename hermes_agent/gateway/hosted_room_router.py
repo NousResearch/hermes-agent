@@ -19,7 +19,7 @@ from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from gateway.hosted_room_discussion import DiscussionMember, DiscussionRoom, _ValidatedEvent
+    from hermes_agent.gateway.hosted_room_discussion import DiscussionMember, DiscussionRoom, _ValidatedEvent
 
 ROUTED_EVENT_KIND = "room.routed"
 CONTINUED_EVENT_KIND = "room.continued"
@@ -47,7 +47,7 @@ def routed_responders(
 ) -> tuple[DiscussionMember, ...] | object | None:
     """Round-0 responders the router picked; ``ROUTE_PENDING`` while the message still waits for its
     ``room.routed``; None when this message is not routed (not an auto room, or a deterministic rule applies)."""
-    from gateway.hosted_room_lead import routes_through_lead
+    from hermes_agent.gateway.hosted_room_lead import routes_through_lead
 
     if context.get("routing") != "auto" or not routes_through_lead(discussion, room, events):
         return None
@@ -85,7 +85,7 @@ def continued_through(events: Sequence[_ValidatedEvent]) -> dict[str, int]:
 
 def validate_routed_event(kind: str, payload: Mapping[str, Any], actor: Mapping[str, Any],
                           room: DiscussionRoom) -> Mapping[str, Any]:
-    from gateway.hosted_room_discussion import (
+    from hermes_agent.gateway.hosted_room_discussion import (
         DiscussionValidationError, _exact_fields, _identifier, _require_gateway_actor)
 
     _exact_fields(payload, label=f"{kind} payload", required=ROUTED_FIELDS)
@@ -103,7 +103,7 @@ def validate_routed_event(kind: str, payload: Mapping[str, Any], actor: Mapping[
 
 def validate_continued_event(kind: str, payload: Mapping[str, Any], actor: Mapping[str, Any],
                              room: DiscussionRoom) -> Mapping[str, Any]:
-    from gateway.hosted_room_discussion import (
+    from hermes_agent.gateway.hosted_room_discussion import (
         _bounded_int, _exact_fields, _identifier, _require_gateway_actor)
 
     _exact_fields(payload, label=f"{kind} payload", required=CONTINUED_FIELDS)

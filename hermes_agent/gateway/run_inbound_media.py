@@ -1,4 +1,4 @@
-"""Inbound attachment re-homing for multiplexed gateways (moved out of ``gateway/run_inbound.py``)."""
+"""Inbound attachment re-homing for multiplexed gateways (moved out of ``hermes_agent/gateway/run_inbound.py``)."""
 
 from __future__ import annotations
 
@@ -6,10 +6,10 @@ import logging
 import shutil
 from pathlib import Path
 
-from gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.platforms.event import MessageEvent
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 
 def rehome_inbound_media(event: MessageEvent) -> None:

@@ -19,7 +19,7 @@ realistic per-process turn counts.
 import subprocess
 import sys
 
-from gateway.stream_consumer import GatewayStreamConsumer
+from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer
 
 _JS_SAFE_MAX = 2**53
 
@@ -39,7 +39,7 @@ class TestDraftIdRestartUniqueness:
         restart). Also implicitly proves the seed isn't wall-clock-locked:
         both processes start within the same second."""
         code = (
-            "from gateway.stream_consumer import GatewayStreamConsumer;"
+            "from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer;"
             "print(GatewayStreamConsumer._draft_id_counter)"
         )
         seeds = set()

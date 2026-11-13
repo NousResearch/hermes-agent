@@ -6,7 +6,7 @@ from __future__ import annotations
 import re
 from typing import Any, Union
 
-from gateway.platforms.send_targets import parse_nonempty, regex_groups_parser
+from hermes_agent.gateway.platforms.send_targets import parse_nonempty, regex_groups_parser
 
 # Usernames are 5-32 chars (letters, digits, underscores) with a leading "@"; 4-char legacy handles are tolerated.
 _TELEGRAM_USERNAME_RE = re.compile(r"@[A-Za-z0-9_]{4,32}")

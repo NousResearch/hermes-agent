@@ -18,11 +18,11 @@ def test_graph_boundary_commits_only_valid_notifications(tmp_path):
 async def probe(peer):
     import aiohttp
     import ipaddress
-    from gateway.config import Platform, PlatformConfig
-    from gateway.platforms.msgraph_webhook import MSGraphWebhookAdapter
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_envelope import restore_native
+    from hermes_agent.gateway.config import Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.msgraph_webhook import MSGraphWebhookAdapter
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_envelope import restore_native
     from hermes_agent.hermes_state_runtime import list_session_admissions
     from tests.waiting import async_wait_until
     runner = GatewayRunner()

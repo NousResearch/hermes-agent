@@ -38,10 +38,10 @@ async def _subgoal(connection, ref, params, action, args):
     """A criterion button on the session's goal manager. A goal that is gone or an index that no longer exists is a refusal the card shows; the typed /subgoal command reports the same cases as text."""
     from pathlib import Path
     from agent.i18n import t
-    from gateway.platforms.base import MessageEvent
-    from gateway.run import _profile_runtime_scope
-    from gateway.session_busy_controls import authorize
-    from gateway.session_local import authorize_local_source
+    from hermes_agent.gateway.platforms.base import MessageEvent
+    from hermes_agent.gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.session_busy_controls import authorize
+    from hermes_agent.gateway.session_local import authorize_local_source
     authority = connection.authority
     authorize(connection, ref, params, 'session:control')
     live = authority.sessions[ref.session_id]
@@ -118,12 +118,12 @@ async def publish_async(authority, session_id, *, only_if_present=False, only_if
 
 
 def _read_control_snapshot(authority, session_id, *, scoped=False):
-    from gateway.session_ancillary import control_snapshot
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_ancillary import control_snapshot
+    from hermes_agent.gateway.session_contract import SessionRef
     ref = SessionRef(authority.profile_id, session_id)
     if not scoped:
         return control_snapshot(authority, ref)
-    from gateway.session_authorities import owner_scope
+    from hermes_agent.gateway.session_authorities import owner_scope
     with owner_scope(authority):  # a worker thread inherits no profile scope it was not given
         return control_snapshot(authority, ref)
 
@@ -156,9 +156,9 @@ async def control(connection, ref, params):
         result = await _subgoal(connection, ref, scope, action, args)
         publish(connection.authority, ref.session_id)
     else:
-        from gateway.session_commands import execute_command
+        from hermes_agent.gateway.session_commands import execute_command
         name, arg = _ACTION_COMMANDS[action]
         result = await execute_command(connection, ref, {**scope, 'name': name, 'arg': arg}, dispatch=True)
-    from gateway.session_ancillary import read
+    from hermes_agent.gateway.session_ancillary import read
     snapshot = await read(connection, ref, scope, kind='control')
     return {**snapshot, 'dispatch': {key: result.get(key) for key in _ENVELOPE}}

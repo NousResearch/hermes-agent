@@ -93,7 +93,7 @@ def stamp_busy_arrival(adapter: Any, event: Any) -> None:
     if getattr(event, "_busy_arrival", None) is not None or getattr(event, "internal", False) or event.get_command():
         return
     try:
-        from gateway.session_identity import identity_of
+        from hermes_agent.gateway.session_identity import identity_of
 
         from .shared_metrics_gateway import _source_platform
 

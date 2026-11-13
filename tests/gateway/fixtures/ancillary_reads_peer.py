@@ -10,10 +10,10 @@ import weakref
 
 
 async def probe(mode):
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority
-    from gateway.run_api import start_gateway_api, stop_gateway_api
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.run_api import start_gateway_api, stop_gateway_api
+    from hermes_agent.gateway.session_contract import SessionRef
     from hermes_cli import web_server
     from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
     from tests.gateway.fixtures.local_recovery_probe import rpc
@@ -159,7 +159,7 @@ async def probe(mode):
                     tail = await rpc(ws, 'subagent.tail', session_id=sid, subagent_id='owned')
                     assert not tail['result']['available']
                     from dataclasses import replace
-                    from gateway.config import Platform
+                    from hermes_agent.gateway.config import Platform
                     adapter = runner.adapters[Platform.LOCAL]
                     policy = adapter.policies[live.source.chat_id]
                     adapter.policies[live.source.chat_id] = replace(policy, ignore_user_config=True)

@@ -16,4 +16,4 @@ def witness(self, *args, **kwargs):
 
 
 AIAgent.run_conversation = witness
-runpy.run_module('gateway.run', run_name='__main__')
+runpy.run_module('hermes_agent.gateway.run', run_name='__main__')

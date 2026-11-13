@@ -8,11 +8,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import session_policy
-from gateway.config import GatewayConfig, Platform
-from gateway.platforms.event import MessageEvent
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from hermes_agent.gateway import session_policy
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource
 from hermes_cli.cli_render import _prepend_note_to_message
 
 
@@ -67,9 +67,9 @@ _API_ONLY_PREFIXES = {
 @pytest.mark.asyncio
 @pytest.mark.parametrize('route', sorted(_API_ONLY_PREFIXES))
 async def test_cli_api_text_reaches_the_model_expanded_and_the_stored_row_keeps_the_content(project, monkeypatch, route):
-    from gateway.session_cli_turn import cli_turn_scope
-    from gateway.run_turn_runner import TurnRunner
-    from gateway.turn_context import TurnContext
+    from hermes_agent.gateway.session_cli_turn import cli_turn_scope
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.turn_context import TurnContext
     from tests.gateway.test_local_viewer_events_submit import _RecordingAgent, _gateway_runner
 
     typed = await _prepare(_runner(monkeypatch, 128_000), _event('read @file:notes.txt'))
@@ -117,7 +117,7 @@ async def test_a_refused_local_turn_answers_with_its_refusal(project, monkeypatc
     runner.session_store = object()
     runner._async_session_store = SimpleNamespace(_store=runner.session_store, load_transcript=lambda _sid: _history())
     runner._hmwa_run_session_hygiene = lambda *args: _history()
-    monkeypatch.setattr('gateway.run_turn_prepare.build_session_context', lambda *_args: None)
+    monkeypatch.setattr('hermes_agent.gateway.run_turn_prepare.build_session_context', lambda *_args: None)
     entry = SimpleNamespace(yolo=None, session_id='sid', session_key='key')
     reply, _tokens = await runner._hmwa_prepare_turn(_event(event.text), event.source, entry, 'key', 'key', 1)
     assert isinstance(reply, str) and 'refused' in reply
@@ -128,11 +128,11 @@ async def _history():
 
 
 def _managed(tmp_path, monkeypatch, text):
-    from gateway import session_managed_worker as managed
-    from gateway.session_local import _bypass_policy
+    from hermes_agent.gateway import session_managed_worker as managed
+    from hermes_agent.gateway.session_local import _bypass_policy
     policy = _bypass_policy({'cwd': str(tmp_path), 'model': 'fixture', 'provider': 'custom',
                              'base_url': 'http://127.0.0.1:9/v1', 'safe_mode': True}, private_secrets={})
-    monkeypatch.setattr('gateway.session_policy.launch_key', lambda *args: None)
+    monkeypatch.setattr('hermes_agent.gateway.session_policy.launch_key', lambda *args: None)
 
     async def _context_length(model, **kwargs):
         assert kwargs['api_key'] == ''  # never a launch secret for a metadata probe
@@ -170,9 +170,9 @@ def _managed(tmp_path, monkeypatch, text):
 
     monkeypatch.setattr(managed, '_worker_env', lambda authority: None)
     monkeypatch.setattr(managed, 'ManagedWorker', Worker)
-    monkeypatch.setattr('gateway.session_worker_spawn.acquire_process', _acquire)
-    monkeypatch.setattr('gateway.session_managed_worker_log.worker_log_path', lambda profile: None)
-    monkeypatch.setattr('gateway.session_runtime_workers.tracked_write', _tracked)
+    monkeypatch.setattr('hermes_agent.gateway.session_worker_spawn.acquire_process', _acquire)
+    monkeypatch.setattr('hermes_agent.gateway.session_managed_worker_log.worker_log_path', lambda profile: None)
+    monkeypatch.setattr('hermes_agent.gateway.session_runtime_workers.tracked_write', _tracked)
     live = SimpleNamespace(source=SimpleNamespace(user_id='u', chat_id='c', platform=None), route='managed-refs',
                            event_stream=SimpleNamespace(lock=threading.Lock(), publish=lambda *a, **k: None),
                            controls=SimpleNamespace(snapshot=lambda *a: None))
@@ -186,7 +186,7 @@ def _managed(tmp_path, monkeypatch, text):
 
 @pytest.mark.asyncio
 async def test_a_managed_worker_runs_the_expanded_text(tmp_path, monkeypatch):
-    from gateway.session_managed_worker import ManagedExecutionUnknown
+    from hermes_agent.gateway.session_managed_worker import ManagedExecutionUnknown
     (tmp_path / 'notes.txt').write_text('PROJECT-NOTES', encoding='utf-8')
     run, _authority, sent, _spawned = _managed(tmp_path, monkeypatch, 'read @file:notes.txt')
     with pytest.raises(ManagedExecutionUnknown):
@@ -219,7 +219,7 @@ async def test_a_bypass_session_expands_built_in_references_only(tmp_path, monke
         async def expand(self, target):
             return 'PLUGIN-RAN'
 
-    from gateway.session_managed_worker import ManagedExecutionUnknown
+    from hermes_agent.gateway.session_managed_worker import ManagedExecutionUnknown
     (tmp_path / 'notes.txt').write_text('PROJECT-NOTES', encoding='utf-8')
     register_context_reference_provider(Probe())
     try:

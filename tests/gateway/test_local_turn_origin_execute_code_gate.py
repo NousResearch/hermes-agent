@@ -15,14 +15,14 @@ from tests.waiting import async_wait_until
 
 @pytest.mark.asyncio
 async def test_only_the_viewers_own_turn_skips_the_whole_script_gate(tmp_path, monkeypatch):
-    from gateway.config import GatewayConfig
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_automation import admit_route_wake
-    from gateway.session_context import clear_session_vars, set_session_vars
-    from gateway.session_contract import SessionActor, Submission
-    from gateway.session_local import create_local_session
-    from gateway.session_policy import _ACTIVE_POLICY, policy_for_source
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_automation import admit_route_wake
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_contract import SessionActor, Submission
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_policy import _ACTIVE_POLICY, policy_for_source
     from hermes_agent.hermes_state import SessionDB
     from tools import approval as A
     from tools import approval_context
@@ -109,5 +109,5 @@ async def test_only_the_viewers_own_turn_skips_the_whole_script_gate(tmp_path, m
     ("native", {"text": "hi", "native_text_v1": {"source": {}}}, False),
 ], ids=["cli-submit", "operator-submit", "automation", "hosted-room-task", "messaging"])
 def test_viewer_input_is_only_a_session_submit_row(request_id, payload, viewer):
-    from gateway.session_operator import is_viewer_input
+    from hermes_agent.gateway.session_operator import is_viewer_input
     assert is_viewer_input({"request_id": request_id, "payload": payload}) is viewer

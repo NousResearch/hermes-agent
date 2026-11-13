@@ -58,7 +58,7 @@ def _standalone_send(
         logger.error("Job '%s': %s", job["id"], msg, exc_info=True)
         # An exception escaping the sender says nothing about what already went out, unless it
         # proves the request never left.
-        from gateway.platforms._shared import request_never_left
+        from hermes_agent.gateway.platforms._shared import request_never_left
         t.standalone_in_flight = t.standalone_in_flight or not request_never_left(e)
         return None, msg
 
@@ -122,7 +122,7 @@ def _queue_for_live_reconnect(t: _TargetDelivery, content: str, media_files: lis
     sender ran); a timeout, a lost answer or a partial send is NOT queued, so a replay cannot
     duplicate. The ledger carries text only; dropped attachments are reported."""
     try:
-        from gateway.delivery_ledger import (
+        from hermes_agent.gateway.delivery_ledger import (
             compute_obligation_id, is_reconnect_only, ledger_enabled, mark_failed, record_obligation)
         retryable_live_rejection = is_reconnect_only(t.live_error) or (
             t.live_retryable is True and t.live_error in _PRE_SEND_LIVE_REJECTIONS)

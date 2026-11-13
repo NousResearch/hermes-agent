@@ -38,7 +38,7 @@ def record_cron_delivery(platform: Any, chat_id: Any, text: str, send_result: An
            *(_field(send_result, "delivered_message_ids") or ()),
            *(raw.get("message_ids") or ()), raw.get("last_message_id"), *(raw.get("continuation_message_ids") or ()),
            *(raw.get("delivered_message_ids") or ())]
-    from gateway import rich_sent_store
+    from hermes_agent.gateway import rich_sent_store
     rich_sent_store.record_marker(_chat_key(platform, chat_id), ids, _CRON_MARKER, text.splitlines()[0])
 
 
@@ -61,7 +61,7 @@ def reply_pointer(reply_text: str, *, own_message: bool = False, replied_to: Opt
     """The prefix line for a reply to *reply_text*; cron deliveries are framed as reference-only.
     ``replied_to`` = ``(platform, chat_id, message_id)`` finds a later chunk of a split delivery."""
     if not reply_text.lstrip().startswith(CRON_DELIVERY_PREFIX) and replied_to and replied_to[2]:
-        from gateway import rich_sent_store
+        from hermes_agent.gateway import rich_sent_store
         platform, chat_id, message_id = replied_to
         header = rich_sent_store.lookup_marker(_chat_key(platform, chat_id), message_id, _CRON_MARKER)
         if header:

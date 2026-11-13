@@ -1,14 +1,14 @@
 """Tests for structured send-error classification (SendResult.error_kind).
 
 Covers the platform-neutral ``classify_send_error`` vocabulary in
-``gateway/platforms/base.py`` and its wiring into the Telegram adapter's
+``hermes_agent/gateway/platforms/base.py`` and its wiring into the Telegram adapter's
 ``send()`` failure path, so consumers can branch on a typed category instead
 of substring-matching the raw provider message.
 """
 
 import pytest
 
-from gateway.platforms.base import (
+from hermes_agent.gateway.platforms.base import (
     SEND_ERROR_KINDS,
     SendResult,
     classify_send_error,
@@ -63,7 +63,7 @@ def test_telegram_send_failure_populates_error_kind():
     import asyncio
     from unittest.mock import AsyncMock, MagicMock
 
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
     from plugins.platforms.telegram.adapter import TelegramAdapter
 
     cfg = PlatformConfig(enabled=True, token="fake-token", extra={})

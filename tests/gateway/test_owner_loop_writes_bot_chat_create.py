@@ -14,7 +14,7 @@ bot = lifecycle.bot  # the shared Bot Chat owner fixture
 
 
 async def _resolve(bot):
-    from gateway.session_bot import _target
+    from hermes_agent.gateway.session_bot import _target
     return (await _target(bot.authority, bot.owner))[0].session_id
 
 

@@ -8,8 +8,8 @@ from unittest.mock import patch
 
 import pytest
 
-from gateway.config import Platform
-from gateway.session import SessionEntry, build_session_key
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.session import SessionEntry, build_session_key
 from tests.gateway.test_status_command import _make_event, _make_runner, _make_source
 
 UNKNOWN = "acme.unknown-model-v1"
@@ -78,7 +78,7 @@ async def test_context_marks_a_resident_agents_fallback_window():
 
 @pytest.mark.asyncio
 async def test_context_marks_a_non_resident_sessions_defaulted_route():
-    from gateway.run import _GatewayModelContext
+    from hermes_agent.gateway.run import _GatewayModelContext
     runner = _runner()
     resolved = _GatewayModelContext(model=UNKNOWN, provider="bedrock", base_url=RUNTIME_URL,
                                     context_length=128_000, context_source="default")

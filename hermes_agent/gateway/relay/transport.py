@@ -12,8 +12,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Awaitable, Callable, Dict, Optional, Protocol, runtime_checkable
 
-from gateway.platforms.event import MessageEvent
-from gateway.relay.descriptor import CapabilityDescriptor
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.relay.descriptor import CapabilityDescriptor
 
 # Callback the transport invokes for each inbound normalized event: a task it returns is the
 # event's admission still running off the reader, and the frame is ACKed when that task succeeds.

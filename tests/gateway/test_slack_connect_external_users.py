@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.config import Platform, PlatformConfig
 
 
 def _ensure_slack_mock():
@@ -51,7 +51,7 @@ import plugins.platforms.slack.adapter as _slack_mod
 
 _slack_mod.SLACK_AVAILABLE = True
 
-from gateway.platforms.helpers import MessageDeduplicator
+from hermes_agent.gateway.platforms.helpers import MessageDeduplicator
 from plugins.platforms.slack.adapter import SlackAdapter
 
 BOT_USER_ID = "U_BOT_123"

@@ -6,7 +6,7 @@ The Bots roster lists the selected connection/profile's gateway rooms as ordinar
 
 ## Which group chats are gateway group chats
 
-One classifier, `groupExecutionMode`, reads `groups.capabilities`. The gateway (`gateway/session_group_controls.py`) answers directly or through the server used by remote connections (`hermes_agent/tui_gateway/methods_groups.py`); a standalone server may instead own its own group chats.
+One classifier, `groupExecutionMode`, reads `groups.capabilities`. The gateway (`hermes_agent/gateway/session_group_controls.py`) answers directly or through the server used by remote connections (`hermes_agent/tui_gateway/methods_groups.py`); a standalone server may instead own its own group chats.
 
 - **Gateway group chats:** an answer with `driver: true`, from either surface. Both run their own group chat driver, so these group chats keep working while Desktop is closed. An answer without a running driver is unavailable (below), but a group chat Desktop has already bound (opened from the gateway list, or earlier in this session) still opens and says its group driver is unavailable.
 - **Classic group chats through the migration gate:** only a server that reports no group chat driver and owns no group chats (`driver: false`, `persistent_process: false`), as on `main`. Desktop runs those group chats itself; no other capability answer makes the gate fall back to it. A group chat already routed to a Desktop-driven workspace does not enter this gate.

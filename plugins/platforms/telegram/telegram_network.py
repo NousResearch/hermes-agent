@@ -130,7 +130,7 @@ def build_ptb_requests(request_cls, *, fallback_ips: list[str], proxy_url: Optio
     descriptor budget (#82678). getUpdates keeps ``getupdates_keepalive_connections()`` sockets (see
     there for the per-OS reason). httpx ignores client ``limits`` when a custom ``transport`` is
     supplied (#58790), so they go to the transport too."""
-    from gateway.platforms._http_client_limits import platform_httpx_limits
+    from hermes_agent.gateway.platforms._http_client_limits import platform_httpx_limits
     verify = platform_ssl_context() if verify is None else verify
     kwargs = ptb_request_kwargs()
     ips = _cap_fallback_ips(fallback_ips) if not proxy_url else []
@@ -232,7 +232,7 @@ def _classic_key_exchange_context() -> ssl.SSLContext:
 
 
 def _resolve_proxy_url(target_hosts=None) -> str | None:
-    from gateway.platforms.base import resolve_proxy_url  # env vars + macOS system proxy
+    from hermes_agent.gateway.platforms.base import resolve_proxy_url  # env vars + macOS system proxy
     return resolve_proxy_url("TELEGRAM_PROXY", target_hosts=target_hosts)
 
 

@@ -41,7 +41,7 @@ def _live_serve_ledger_entry() -> dict:
     }
 
 def test_control_plane_argv_is_not_a_gateway():
-    from gateway.status import looks_like_gateway_command_line
+    from hermes_agent.gateway.status import looks_like_gateway_command_line
 
     serve = "C:\\Hermes\\.venv\\Scripts\\python.exe -m hermes_cli.main serve --host 127.0.0.1"
     run = "C:\\Hermes\\.venv\\Scripts\\python.exe -m hermes_cli.main gateway run"

@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 # Trigger the shared discord mock from tests/gateway/conftest.py before
 # importing the production module.
@@ -48,7 +48,7 @@ def _clear_component_auth_env(monkeypatch):
     # Pairing-specific tests override this with explicit mock values.
     mock_store = MagicMock()
     mock_store.is_approved.return_value = False
-    with patch("gateway.pairing.PairingStore", return_value=mock_store):
+    with patch("hermes_agent.gateway.pairing.PairingStore", return_value=mock_store):
         yield
 
 
@@ -258,7 +258,7 @@ def test_component_check_pairing_approved_user_passes(monkeypatch):
     mock_store = MagicMock()
     mock_store.is_approved.return_value = True
     # Override the autouse fixture's mock with approved=True
-    with patch("gateway.pairing.PairingStore", return_value=mock_store):
+    with patch("hermes_agent.gateway.pairing.PairingStore", return_value=mock_store):
         interaction = _interaction(11111)
         assert _component_check_auth(interaction, set(), set()) is True
     mock_store.is_approved.assert_called_once_with("discord", "11111")

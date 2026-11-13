@@ -17,12 +17,12 @@ logger = logging.getLogger(__name__)
 
 async def cold_review_history(runner, source):
     """``(session_id, transcript)`` of the session ``source`` belongs to: a local session's current
-    physical transcript (``gateway/session_refine.py`` reads the same one), else the messaging entry's."""
-    from gateway.session_refine import _local_session
+    physical transcript (``hermes_agent/gateway/session_refine.py`` reads the same one), else the messaging entry's."""
+    from hermes_agent.gateway.session_refine import _local_session
     authority, live = _local_session(runner, source)
     if live is not None:
-        from gateway.session_contract import SessionRef
-        from gateway.session_local_recovery import transcript_target
+        from hermes_agent.gateway.session_contract import SessionRef
+        from hermes_agent.gateway.session_local_recovery import transcript_target
 
         def load():
             target = transcript_target(authority, SessionRef(authority.profile_id, source.chat_id))
@@ -48,11 +48,11 @@ def cold_review_parent(runner, source, session_key, session_id):
     builds one, minus the turn-only prompt pieces), inside the session's policy scope. On exit only its
     own LLM clients are released: ``close()`` would tear down the session's terminal and browser, and the
     reviewer it dispatched is detached and builds its own clients."""
-    from gateway.run import _load_gateway_config, _platform_config_key
-    from gateway.session_api_turn import api_runtime_locked
-    from gateway.session_authorities import active_authority
-    from gateway.session_policy import policy_for_source, policy_scope, policy_turn_toolsets
-    from gateway.session_worker_construct import session_prefill, session_routing
+    from hermes_agent.gateway.run import _load_gateway_config, _platform_config_key
+    from hermes_agent.gateway.session_api_turn import api_runtime_locked
+    from hermes_agent.gateway.session_authorities import active_authority
+    from hermes_agent.gateway.session_policy import policy_for_source, policy_scope, policy_turn_toolsets
+    from hermes_agent.gateway.session_worker_construct import session_prefill, session_routing
     from run_agent import AIAgent
     policy = policy_for_source(runner, source)
     authority = active_authority(runner) if policy else None
@@ -105,7 +105,7 @@ def start_cold_refine(runner, source, session_key, session_id, history, focus):
     on the thread that built it."""
     from agent.async_utils import safe_schedule_threadsafe
     from agent.memory_provider import spawn_context_thread
-    from gateway.run import _interim_metadata, _non_conversational_metadata
+    from hermes_agent.gateway.run import _interim_metadata, _non_conversational_metadata
     loop = asyncio.get_running_loop()
     adapter = runner._delivery_adapter_for(source)
     metadata = _interim_metadata(_non_conversational_metadata(

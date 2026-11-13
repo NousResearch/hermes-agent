@@ -1,8 +1,8 @@
 """Stop/drain/restart, scale-to-zero and active-work accounting methods for GatewayRunner.
 
-Split out of ``gateway/run.py``; bound onto ``GatewayRunner`` via the MRO.
-``gateway.run`` internals are imported lazily inside method bodies (import cycle),
-so ``patch("gateway.run.X")`` keeps intercepting them at call time.
+Split out of ``hermes_agent/gateway/run.py``; bound onto ``GatewayRunner`` via the MRO.
+``hermes_agent.gateway.run`` internals are imported lazily inside method bodies (import cycle),
+so ``patch("hermes_agent.gateway.run.X")`` keeps intercepting them at call time.
 """
 
 from __future__ import annotations
@@ -22,24 +22,24 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from agent.i18n import t
-from gateway.config import Platform
-from gateway.restart import (
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE,
     effective_stop_drain_timeout, effective_stop_watchdog_delay, resolve_cron_drain_budget
 )
-from gateway.run_common import _UNSET
-from gateway.run_runtime import interrupt_side_agents, managed_turn_count, stop_managed_turns
-from gateway.session_runtime_workers import uncounted_runtime_work_units
-from gateway.run_shutdown_home_notice import (
+from hermes_agent.gateway.run_common import _UNSET
+from hermes_agent.gateway.run_runtime import interrupt_side_agents, managed_turn_count, stop_managed_turns
+from hermes_agent.gateway.session_runtime_workers import uncounted_runtime_work_units
+from hermes_agent.gateway.run_shutdown_home_notice import (
     HOME_NOTICE_MUTED,
     GatewayHomeShutdownNoticeMixin,
     settle_home_online_notice_debt,
 )
-from gateway.run_shutdown_session_end import GatewaySessionEndMixin
-from gateway.shutdown_watchdog import arm_shutdown_watchdog, resolve_shutdown_watchdog_delay
+from hermes_agent.gateway.run_shutdown_session_end import GatewaySessionEndMixin
+from hermes_agent.gateway.shutdown_watchdog import arm_shutdown_watchdog, resolve_shutdown_watchdog_delay
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("gateway.run")
+logger = logging.getLogger("hermes_agent.gateway.run")
 
 
 def _exit_with_failure_verdict(runner) -> bool:
@@ -125,7 +125,7 @@ subprocess.Popen(
 
 @contextmanager
 def _log_suppressed(level: int, msg: str, *args, exc_info: bool = False):
-    """``suppress(Exception)`` that logs the swallowed exception on ``gateway.run``.
+    """``suppress(Exception)`` that logs the swallowed exception on ``hermes_agent.gateway.run``.
 
     Without ``exc_info`` the exception is appended as the last ``%s`` argument (``msg % (*args, exc)``);
     with it the traceback is attached instead. Best-effort seams use this everywhere a failure must be
@@ -162,7 +162,7 @@ def _delivery_target_key(platform_value: str, chat_id, thread_id, *, profile: Op
     ONE notice per host restart. A positive Telegram chat id names the USER, though: the same id
     under two bot tokens is two conversations, so those stay keyed per served profile (#118233).
     """
-    from gateway.delivery import looks_like_telegram_private_chat_id
+    from hermes_agent.gateway.delivery import looks_like_telegram_private_chat_id
     if (profile and profile != "default" and platform_value == "telegram"
             and looks_like_telegram_private_chat_id(chat_id)):
         platform_value = f"{profile}:{platform_value}"
@@ -171,7 +171,7 @@ def _delivery_target_key(platform_value: str, chat_id, thread_id, *, profile: Op
 
 def _effective_watchdog_leash(runner: object) -> float:
     """Thread-watchdog leash for the stop in progress: effective drain + grace, clamped under
-    launchd's live ``ExitTimeOut`` minus the dump margin. Lives here (not in gateway.restart)
+    launchd's live ``ExitTimeOut`` minus the dump margin. Lives here (not in hermes_agent.gateway.restart)
     because restart.py cannot import shutdown_watchdog without a cycle."""
     return effective_stop_watchdog_delay(runner, resolve_shutdown_watchdog_delay(effective_stop_drain_timeout(runner)))
 
@@ -258,7 +258,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         snapshotting.
         """
         try:
-            from gateway.platforms.api_server_runs import api_worker_live_count
+            from hermes_agent.gateway.platforms.api_server_runs import api_worker_live_count
             return max(0, int(api_worker_live_count()))
         except Exception:
             return 0
@@ -306,7 +306,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
 
     def _interrupt_deferred_agent_workers(self, reason: str) -> int:
         """Request cancellation of detached executor-backed agent work."""
-        from gateway.run import _INTERRUPT_TOOL_REASON_GATEWAY_SHUTDOWN, request_hard_interrupt
+        from hermes_agent.gateway.run import _INTERRUPT_TOOL_REASON_GATEWAY_SHUTDOWN, request_hard_interrupt
         workers = getattr(self, "_deferred_agent_workers", None)
         if not isinstance(workers, dict):
             return 0
@@ -352,7 +352,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
     @staticmethod
     def _gateway_cfg_section(name: str) -> Optional[dict]:
         """``gateway.<name>`` from the user config when it is a dict, else None (never raises)."""
-        from gateway.run import _load_gateway_config
+        from hermes_agent.gateway.run import _load_gateway_config
         try:
             user_cfg = _load_gateway_config()
             gw = user_cfg.get("gateway") if isinstance(user_cfg, dict) else None
@@ -362,7 +362,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         return section if isinstance(section, dict) else None
 
     def _scale_to_zero_idle_timeout_seconds(self) -> float:
-        from gateway.scale_to_zero import parse_idle_timeout_seconds
+        from hermes_agent.gateway.scale_to_zero import parse_idle_timeout_seconds
         stz = self._gateway_cfg_section("scale_to_zero")
         return parse_idle_timeout_seconds(stz.get("idle_timeout_minutes") if stz else None)
 
@@ -372,7 +372,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         ``max_restarts <= 0`` disables it; ``max_gap_seconds`` is the longest spacing between
         restart-interrupted boots that still counts as one loop.
         """
-        from gateway import restart_loop_guard as _rlg
+        from hermes_agent.gateway import restart_loop_guard as _rlg
         rlg = self._gateway_cfg_section("restart_loop_guard") or {}
 
         def _int_or(key: str, default: int, positive: bool) -> int:
@@ -430,7 +430,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
 
     @staticmethod
     def _relay_wake_url_or_none():
-        from gateway.relay import relay_wake_url
+        from hermes_agent.gateway.relay import relay_wake_url
         try:
             return relay_wake_url()
         except Exception:
@@ -438,7 +438,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
 
     def _scale_to_zero_should_arm(self) -> bool:
         """Whether to start the idle watcher (D1/D11/§3.4(1))."""
-        from gateway.scale_to_zero import messaging_is_relay_only_or_absent, scale_to_zero_enabled, should_arm
+        from hermes_agent.gateway.scale_to_zero import messaging_is_relay_only_or_absent, scale_to_zero_enabled, should_arm
         return should_arm(
             enabled=scale_to_zero_enabled(),
             relay_only_or_absent=messaging_is_relay_only_or_absent(self._scale_to_zero_active_messaging_platforms()),
@@ -447,7 +447,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
 
     def _log_scale_to_zero_not_armed_reason(self) -> None:
         """One INFO line on why the idle watcher did NOT arm — only for an OPTED-IN instance."""
-        from gateway.scale_to_zero import messaging_is_relay_only_or_absent, scale_to_zero_enabled
+        from hermes_agent.gateway.scale_to_zero import messaging_is_relay_only_or_absent, scale_to_zero_enabled
         try:
             if not scale_to_zero_enabled():
                 return  # not opted in — normal, stay quiet
@@ -462,7 +462,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
             logger.debug("scale-to-zero: not-armed reason logging failed", exc_info=True)
 
     def _scale_to_zero_is_idle(self) -> bool:
-        from gateway.scale_to_zero import is_idle
+        from hermes_agent.gateway.scale_to_zero import is_idle
         # FULL work aggregate with fail-AWAKE reads: the drain counters swallow errors to 0, which a
         # suspend predicate would read as idle, so an unreadable source counts as work here.
 
@@ -478,7 +478,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         # An attached dashboard/desktop/TUI client (heartbeat mtime) is inbound activity — folded into
         # the inbound clock, not a conjunct, so a lingering marker cannot pin the box.
         last_inbound = self._last_inbound_at
-        from gateway.scale_to_zero import dashboard_client_last_seen
+        from hermes_agent.gateway.scale_to_zero import dashboard_client_last_seen
         seen = _read_or_awake("dashboard heartbeat", dashboard_client_last_seen, time.time())
         if seen is not None and seen > last_inbound:
             last_inbound = seen
@@ -518,7 +518,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         sees only INBOUND connections and would freeze mid-job. Without a flaps socket NAS brokers
         the stop through the stamped GATEWAY_RELAY_SLEEP_URL; with no lever at all the watcher
         abstains."""
-        from gateway.scale_to_zero import messaging_is_relay_only_or_absent
+        from hermes_agent.gateway.scale_to_zero import messaging_is_relay_only_or_absent
         await asyncio.sleep(min(interval, 30.0))  # let startup settle
         while self._running:
             try:
@@ -548,7 +548,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
                     continue
                 # Quiesce only when a suspend can follow: otherwise the re-dial after the socket
                 # close just clears the flip again.
-                from gateway.scale_to_zero import suspend_available
+                from hermes_agent.gateway.scale_to_zero import suspend_available
                 if not suspend_available():
                     if not self._scale_to_zero_no_suspend_logged:
                         self._scale_to_zero_no_suspend_logged = True
@@ -614,7 +614,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
 
         Called ONLY after a clean, acked go_dormant(), with the re-dial already held.
         """
-        from gateway.scale_to_zero import (
+        from hermes_agent.gateway.scale_to_zero import (
             brokered_sleep_url, request_brokered_suspend, self_suspend_available, suspend_self
         )
         try:
@@ -668,7 +668,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         nothing after a freeze while still spanning the full gap before one. That decoupling is
         what lets FLY_FREEZE_GRACE_S be sized for the slowest (largest-RAM) machine.
         """
-        from gateway.scale_to_zero import FLY_FREEZE_GRACE_S, FLY_FREEZE_GRACE_TICK_S
+        from hermes_agent.gateway.scale_to_zero import FLY_FREEZE_GRACE_S, FLY_FREEZE_GRACE_TICK_S
         deadline = time.time() + FLY_FREEZE_GRACE_S
         while time.time() < deadline:
             await asyncio.sleep(FLY_FREEZE_GRACE_TICK_S)
@@ -707,7 +707,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
             logger.debug("scale-to-zero: redial hold toggle failed", exc_info=True)
             return False
 
-    # External drain control: the dashboard writes/removes ``.drain_request.json`` (gateway/drain_control.py);
+    # External drain control: the dashboard writes/removes ``.drain_request.json`` (hermes_agent/gateway/drain_control.py);
     # the watcher flips between accepting and refusing NEW turns WITHOUT exiting (reversible).
     def _enter_external_drain(self) -> None:
         """Begin external drain: refuse NEW turns (in-flight ones are NOT interrupted). Idempotent."""
@@ -740,7 +740,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
 
     async def _drain_control_watcher(self, interval: float = 1.0) -> None:
         """Poll ``.drain_request.json`` at 1s: present -> enter drain, absent -> exit; a stale epoch = absent."""
-        from gateway.drain_control import drain_requested
+        from hermes_agent.gateway.drain_control import drain_requested
         while self._running:
             try:
                 # Off-thread: a synchronous marker read at 1s cadence can stall 30s+ under host I/O
@@ -763,7 +763,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         error_code: Optional[str] = None, error_message: Optional[str] = None,
         needs_attention: Optional[bool] = None, retrying_since: Any = _UNSET,
     ) -> None:
-        from gateway.run import _write_runtime_status_quiet
+        from hermes_agent.gateway.run import _write_runtime_status_quiet
         extra: dict[str, Any] = {}
         if needs_attention is not None:
             extra["needs_attention"] = needs_attention
@@ -855,7 +855,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         return snapshot, timed_out
 
     def _interrupt_running_agents(self, reason: str) -> None:
-        from gateway.run import _AGENT_PENDING_SENTINEL, _INTERRUPT_TOOL_REASON_GATEWAY_SHUTDOWN, request_hard_interrupt
+        from hermes_agent.gateway.run import _AGENT_PENDING_SENTINEL, _INTERRUPT_TOOL_REASON_GATEWAY_SHUTDOWN, request_hard_interrupt
         for session_key, agent in list(self._running_agents.items()):
             if agent is _AGENT_PENDING_SENTINEL:
                 continue
@@ -872,12 +872,12 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
                 logger.debug("Interrupted %d %s during shutdown", count, what)
 
     def _shutdown_interrupt_reason(self) -> str:
-        from gateway.run import _INTERRUPT_REASON_GATEWAY_RESTART, _INTERRUPT_REASON_GATEWAY_SHUTDOWN
+        from hermes_agent.gateway.run import _INTERRUPT_REASON_GATEWAY_RESTART, _INTERRUPT_REASON_GATEWAY_SHUTDOWN
         return _INTERRUPT_REASON_GATEWAY_RESTART if self._restart_requested else _INTERRUPT_REASON_GATEWAY_SHUTDOWN
 
     async def _mark_running_sessions_resume_pending(self, log_prefix: str) -> list:
         """Mark every non-pending running session resume_pending; returns the keys marked."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from hermes_agent.gateway.run import _AGENT_PENDING_SENTINEL
         reason = "restart_timeout" if self._restart_requested else "shutdown_timeout"
         marked: list[str] = []
         # Pre-mark sessions as resume_pending BEFORE the drain wait. If the process is killed by the service
@@ -968,7 +968,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
                             "Cron interrupt notice to %s:%s raised: %s", metadata=metadata,
                         ):
                             notified.add(dedup_key)
-                    from gateway.warning_notifications import present_notification
+                    from hermes_agent.gateway.warning_notifications import present_notification
                     await present_notification(send_notice, platform=platform)
         if notified:
             logger.info("Shutdown: delivered %d interrupted-cron-job notice(s)", len(notified))
@@ -978,7 +978,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         """``(source, platform_str, chat_id, thread_id, profile)``: persisted origin > cached source >
         parsed key. ``profile`` is the owning profile from the source or the ``agent:<profile>:`` key
         namespace (``None`` = default) so the notice leaves through that profile's bot."""
-        from gateway.run import _parse_session_key
+        from hermes_agent.gateway.run import _parse_session_key
         source = None
         try:
             if getattr(self, "session_store", None) is not None:
@@ -1014,7 +1014,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         """``adapter.send`` whose failure is debug-logged as ``fmt % (platform, chat, error)`` — ``fail_fmt``
         for success=False, ``raise_fmt`` (default ``fail_fmt``) for a raise; True only on a delivered send.
         Every shutdown notice races live turns, so it always carries the interim marker (#98432)."""
-        from gateway.run import _interim_metadata
+        from hermes_agent.gateway.run import _interim_metadata
         kw["metadata"] = _interim_metadata(kw.get("metadata"))
         try:
             result = await adapter.send(chat_id, msg, **kw)
@@ -1095,8 +1095,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
                 ):
                     notified.add(dedup_key)
                     delivered.add(dedup_key)
-            from gateway.warning_notifications import present_notification
-            from gateway.run import _async_profile_runtime_scope
+            from hermes_agent.gateway.warning_notifications import present_notification
+            from hermes_agent.gateway.run import _async_profile_runtime_scope
             scope = (_async_profile_runtime_scope(self._resolve_profile_home_for_source(source))
                      if source is not None else nullcontext())
             async with scope:
@@ -1145,7 +1145,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
                     "Shutdown transcript flush failed (%s); preserving %d in-memory message(s) to recovery snapshot",
                     _flush_err, len(_session_messages),
                 )
-                from gateway.shutdown_flush import flush_agent_history_to_file
+                from hermes_agent.gateway.shutdown_flush import flush_agent_history_to_file
                 flush_agent_history_to_file(getattr(agent, "session_id", None), _session_messages)
 
     async def _finalize_shutdown_agents(self, active_agents: dict[str, Any]) -> None:
@@ -1276,7 +1276,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
 
     # Stuck-loop (restart failure) counters
     def _stuck_loop_counts_path(self) -> Path:
-        from gateway.run import _hermes_home
+        from hermes_agent.gateway.run import _hermes_home
         return _hermes_home / self._STUCK_LOOP_FILE
 
     @staticmethod
@@ -1289,7 +1289,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
 
     def _increment_restart_failure_counts(self, active_session_keys: set) -> None:
         """Increment persisted restart-failure counters for active sessions; drop the rest (loop broken)."""
-        from gateway.stuck_loop_counts import increment_restart_failure_counts
+        from hermes_agent.gateway.stuck_loop_counts import increment_restart_failure_counts
         increment_restart_failure_counts(self._stuck_loop_counts_path(), active_session_keys)
 
     def _suspend_stuck_loop_sessions(self) -> int:
@@ -1321,7 +1321,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
 
     async def _clear_restart_failure_count(self, session_key: str) -> None:
         """Clear a completed session's restart-failure counter off-loop (atomic_json_write fsyncs)."""
-        from gateway.stuck_loop_counts import clear_restart_failure_count
+        from hermes_agent.gateway.stuck_loop_counts import clear_restart_failure_count
         path = self._stuck_loop_counts_path()
         if not path.exists():
             return
@@ -1339,7 +1339,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         named-profile gateway keeps that profile's home — only a multiplexer, or a process
         already on the default root, is the host.
         """
-        from gateway.config_loader import drop_bridged_env
+        from hermes_agent.gateway.config_loader import drop_bridged_env
         from hermes_constants import get_default_hermes_root, get_hermes_home
         from tools.environments.local import host_gateway_child_env, served_profile_child_env
 
@@ -1360,7 +1360,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
             # raw config re-read stand — it reads the UNSET flag as False, which is
             # wrong exactly when this process IS the default-on host (#120305).
             try:
-                from gateway import host_rendezvous as hr
+                from hermes_agent.gateway import host_rendezvous as hr
                 record = hr.read_record(hr.ROLE_GATEWAY)
                 if record is not None and hr.record_names_live_owner(record) and len(record.profiles) > 1:
                     multiplex = True
@@ -1368,7 +1368,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
                 multiplex = False
         if not on_default and not settled_multiplex and not multiplex:
             try:
-                from gateway.config import load_gateway_config
+                from hermes_agent.gateway.config import load_gateway_config
                 multiplex = bool(load_gateway_config().multiplex_profiles)
             except Exception:
                 multiplex = False
@@ -1430,7 +1430,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
                 )
 
     async def _launch_detached_restart_command(self) -> None:
-        from gateway.run import _resolve_hermes_bin
+        from hermes_agent.gateway.run import _resolve_hermes_bin
         import shutil
         import subprocess
         hermes_cmd = _resolve_hermes_bin()
@@ -1499,7 +1499,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         """Running chat agents with no activity for ``agent.gateway_timeout`` (0 when disabled);
         an unreadable activity summary means "not wedged".
         """
-        from gateway.run import _AGENT_PENDING_SENTINEL, _float_env
+        from hermes_agent.gateway.run import _AGENT_PENDING_SENTINEL, _float_env
         timeout = _float_env("HERMES_AGENT_TIMEOUT", 1800)
         if timeout <= 0:
             return 0
@@ -1549,7 +1549,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         ``kind`` ∈ ``chat`` (session turn), ``cron`` (job id + external worker pid when the run was handed to a
         restart-safe scope), ``managed`` (session + worker pid when a worker holds it), ``api`` / ``deferred``
         (count only). Best-effort: a source that can't be read is omitted, never raises."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from hermes_agent.gateway.run import _AGENT_PENDING_SENTINEL
         now = time.time()
         units: list = []
         for key, state in list(self._sessions_map().items()):
@@ -1656,7 +1656,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         self._restart_task_started = True
         # Refuse new turns; keep ``_running`` True so the active turn can still deliver its final response.
         self._draining = True
-        from gateway.drain_control import open_restart_wait
+        from hermes_agent.gateway.drain_control import open_restart_wait
         open_restart_wait(self)  # clients may still answer a turn parked on approval/clarify (#139041)
         # The restart's after-turn wait is a drain window too: pollers of GET /v1/runs/{id} must see
         # the boundary from the moment new turns are refused, not only once stop() begins (#115133).
@@ -1687,7 +1687,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
             return False
         if self._systemd_watchdog is not None:
             return True
-        from gateway.systemd_notify import SystemdWatchdog
+        from hermes_agent.gateway.systemd_notify import SystemdWatchdog
         watchdog = SystemdWatchdog(config_enabled=True)
         if not watchdog.start():
             return False
@@ -1802,7 +1802,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         self._running = False
         self._clear_plugin_message_injector()
         self._draining = True
-        from gateway.run_runtime import drain_gateway_runtime
+        from hermes_agent.gateway.run_runtime import drain_gateway_runtime
         await drain_gateway_runtime(self)
         self._mark_api_runs_shutdown_requested()
         # getattr-guards: shutdown-path test doubles may lack the room worker / systemd watchdog.
@@ -1831,7 +1831,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
 
     async def _stop_drain_active_work(self, timeout: float, ctx: GatewayShutdownMixin._StopContext) -> None:
         """Pre-mark resume_pending, drain agents/cron/API work into ``ctx``."""
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
         # Pre-mark resume_pending BEFORE the drain so a mid-drain SIGKILL still leaves a durable marker.
         _pre_drain_keys = await GatewayRunner._mark_running_sessions_resume_pending(
             self, "pre-drain mark_resume_pending"
@@ -1880,7 +1880,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
 
     async def _stop_interrupt_remaining_work(self, ctx: GatewayShutdownMixin._StopContext) -> None:
         """Drain timed out: mark resume_pending, interrupt, settle, kill tool subprocesses, notify cron."""
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
         logger.warning(
             "Gateway drain timed out after %.1fs with %d active agent(s), "
             "%d in-flight cron job(s), %d api_server run(s), and %d deferred agent worker(s); "
@@ -1956,7 +1956,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
 
     async def _stop_release_runtime_state(self, ctx: GatewayShutdownMixin._StopContext) -> None:
         """Cancel background tasks, flush pending messages, clear per-session state, final tool kill."""
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
         for _task in list(self._background_tasks):
             # _restart_task awaits _stop_task: cancelling it would tunnel into _stop_impl and skip _shutdown_event.set().
             if _task is self._stop_task or _task is self._restart_task:
@@ -1972,11 +1972,11 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
             self._release_running_agent_state(_session_key)
         # Flush pending messages before clearing: under FTS5 corruption they are the only surviving copy.
         with suppress(Exception):
-            from gateway.shutdown_flush import flush_pending_to_file
+            from hermes_agent.gateway.shutdown_flush import flush_pending_to_file
             flush_pending_to_file(dict(self._pending_messages), reason="shutdown")
         # The overflow FIFO tail lives in SessionState.conversation.queued_events — flush it too.
         with suppress(Exception):
-            from gateway.shutdown_flush import flush_overflow_to_file
+            from hermes_agent.gateway.shutdown_flush import flush_overflow_to_file
             flush_overflow_to_file(
                 {_k: list(_st.conversation.queued_events)
                  for _k, _st in dict(self.__dict__.get("_sessions") or {}).items() if _st.conversation.queued_events},
@@ -2008,7 +2008,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
 
     def _stop_quiesce_and_close_session_dbs(self, timeout: float, ctx: GatewayShutdownMixin._StopContext) -> None:
         """Quiesce the executor, then close SessionDB handles only if no worker is still live."""
-        from gateway.run import GatewayRunner, _EXECUTOR_QUIESCE_TIMEOUT
+        from hermes_agent.gateway.run import GatewayRunner, _EXECUTOR_QUIESCE_TIMEOUT
         # Quiesce the thread pool BEFORE closing session DBs: a late executor write after
         # SessionDB.close() checkpointed the WAL reopens the handle and splits the WAL generation
         # (close-time corruption). Clamped to the remaining watchdog leash minus 1s for the close.
@@ -2088,7 +2088,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
     async def _stop_persist_exit_state(self, ctx: GatewayShutdownMixin._StopContext) -> None:
         """Clean-shutdown marker, restart markers, terminal runtime status; process bootstrap
         releases PID/lock ownership after the writer drain."""
-        from gateway.run import _hermes_home, _shutdown_gateway_health_export
+        from hermes_agent.gateway.run import _hermes_home, _shutdown_gateway_health_export
         if getattr(self, "_startup_cleanup_only", False):  # start never ran: keep startup_failed + crash markers
             return _shutdown_gateway_health_export(self)
         # Clean-shutdown marker skips crash-turn recovery next boot; a timed-out drain left
@@ -2103,9 +2103,9 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         if ctx.active_agents:
             self._increment_restart_failure_counts(set(ctx.active_agents.keys()))
         if self._restart_requested and self._restart_command_source is None:
-            # One writer for the marker (gateway/restart_notice.py): the CLI restart stamps the same
+            # One writer for the marker (hermes_agent/gateway/restart_notice.py): the CLI restart stamps the same
             # file, and a rename on either side must not strand the other's write.
-            from gateway.restart_notice import write_planned_restart_marker
+            from hermes_agent.gateway.restart_notice import write_planned_restart_marker
             with _log_suppressed(logging.DEBUG, "Failed to write planned restart notification marker: %s"):
                 write_planned_restart_marker(
                     via_service=bool(self._restart_via_service),
@@ -2128,7 +2128,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         else:
             self._update_runtime_status("stopped", self._exit_reason)
         try:
-            from gateway.status import flush_runtime_status_async
+            from hermes_agent.gateway.status import flush_runtime_status_async
             # Never outlive the launchd exit budget (``_launchd_exit_timeout_s`` is set by the
             # supervised-restart path when it exists; a plain 2 s bound otherwise). The cap only
             # applies to signal-driven stops — a programmatic stop is not racing the supervisor.
@@ -2163,7 +2163,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
 
     async def _stop_impl(self) -> None:
         """Run every ``_stop_*`` phase under the thread-based shutdown watchdog."""
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
         # Thread-based watchdog (asyncio timeouts cannot recover a frozen loop): dumps stacks and
         # os._exit past drain+grace so the service manager revives us. Skipped under pytest.
         # Arm a plain OS thread at the start of stop(); if teardown never finishes within drain+grace it
@@ -2192,7 +2192,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
             await GatewayRunner._stop_drain_active_work(self, timeout, ctx)
             if ctx.timed_out:
                 await GatewayRunner._stop_interrupt_remaining_work(self, ctx)
-            from gateway.run_runtime import settle_gateway_runtime  # within what the leash has left
+            from hermes_agent.gateway.run_runtime import settle_gateway_runtime  # within what the leash has left
             await settle_gateway_runtime(self, _effective_watchdog_leash(self) - ctx.elapsed(), GatewayRunner._shutdown_interrupt_reason(self))
             await GatewayRunner._stop_finalize_agents_and_adapters(self, ctx)
             await GatewayRunner._stop_release_runtime_state(self, ctx)
@@ -2205,7 +2205,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         self, *, restart: bool = False, detached_restart: bool = False, service_restart: bool = False
     ) -> None:
         """Stop the gateway and disconnect all adapters."""
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
         # getattr-guard: shutdown-path tests build bare runners via object.__new__ that lack the
         # liveness-guard machinery.
         _stop_guards = getattr(self, "_stop_loop_liveness_guards", None)

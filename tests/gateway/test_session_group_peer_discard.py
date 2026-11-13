@@ -8,9 +8,9 @@ import time
 import pytest
 from aiohttp import web
 
-from gateway import hosted_room_driver as driver
-from gateway.platforms import api_server_room_grants
-from gateway.session_hosted_service import CanonicalHostedRoomService
+from hermes_agent.gateway import hosted_room_driver as driver
+from hermes_agent.gateway.platforms import api_server_room_grants
+from hermes_agent.gateway.session_hosted_service import CanonicalHostedRoomService
 from tests.gateway import test_session_group_peers as peers
 
 call, invite = peers.call, peers.invite
@@ -20,7 +20,7 @@ gateway, linked_peer = peers.gateway, peers.linked_peer  # the shared two-role g
 async def _never_admitted_deferred_turn(gateway, monkeypatch, linked_peer):
     """The home's POST of the turn was lost before the member's gateway admitted it (the member
     has no run for it), the home restarted, and the turn was deferred."""
-    from gateway.platforms import api_server_runs
+    from hermes_agent.gateway.platforms import api_server_runs
 
     async def inert(adapter, run, **kwargs):
         pass

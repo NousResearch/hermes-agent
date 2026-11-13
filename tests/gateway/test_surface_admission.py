@@ -15,9 +15,9 @@ from tests.gateway.fixtures.local_recovery_probe import Model, child_env, daemon
 
 
 async def _authority(tmp_path, monkeypatch, answer):
-    from gateway.config import GatewayConfig, Platform
-    from gateway.session import SessionSource, SessionStore
-    from gateway.session_authority import LiveSession, initialize_session_authority
+    from hermes_agent.gateway.config import GatewayConfig, Platform
+    from hermes_agent.gateway.session import SessionSource, SessionStore
+    from hermes_agent.gateway.session_authority import LiveSession, initialize_session_authority
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
@@ -31,8 +31,8 @@ async def _authority(tmp_path, monkeypatch, answer):
 
 @pytest.mark.asyncio
 async def test_surface_fields_are_admitted_and_scoped_to_their_own_turn(tmp_path, monkeypatch):
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_surface import surface_turn_note
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_surface import surface_turn_note
     from hermes_agent.hermes_state_runtime import list_session_admissions
     from tools.voice_live import VOICE_LIVE_TURN_NOTE
 
@@ -75,8 +75,8 @@ async def test_surface_fields_are_admitted_and_scoped_to_their_own_turn(tmp_path
 async def test_voice_turn_is_admitted_and_scoped_to_its_own_turn(tmp_path, monkeypatch):
     """A spoken voice-mode turn (TUI/Desktop ``voice_turn``) rides canonical admission to the turn
     that runs on ``auxiliary.voice_chat``; the next typed turn stays on the main model."""
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_surface import surface_turn_note, surface_voice_turn
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_surface import surface_turn_note, surface_voice_turn
     from hermes_agent.hermes_state_runtime import list_session_admissions
 
     seen = []

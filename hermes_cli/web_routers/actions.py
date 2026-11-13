@@ -198,7 +198,7 @@ async def gateway_drain(request: Request):
     transition (the marker IS the control channel). Idempotent on both sides;
     ``POST /api/gateway/restart`` is the force-override that supersedes a drain.
     """
-    from gateway.drain_control import clear_drain_request, drain_requested, write_drain_request
+    from hermes_agent.gateway.drain_control import clear_drain_request, drain_requested, write_drain_request
 
     try:
         body = await request.json()

@@ -1,4 +1,4 @@
-"""Tests for gateway.disk_status — the /api/status disk rollup (NS-656)."""
+"""Tests for hermes_agent.gateway.disk_status — the /api/status disk rollup (NS-656)."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from gateway import disk_status
-from gateway.disk_status import classify_disk_pressure, collect_disk_status
+from hermes_agent.gateway import disk_status
+from hermes_agent.gateway.disk_status import classify_disk_pressure, collect_disk_status
 
 _GB = 1024  # MB per GB, for readable fixtures
 

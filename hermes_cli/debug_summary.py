@@ -209,7 +209,7 @@ def _log_section(log_lines: int) -> list[str]:
         if snap.full_text is None:
             out.append(f"  {filename:<28} absent or empty")
             continue
-        loggers, excs, codes, scanned = _log_counts(snap.full_text)
+        loggers, excs, codes, scanned = _log_counts(snap.tail_text)
         levels = Counter()
         for (level, _logger), n in loggers.items():
             levels[level] += n

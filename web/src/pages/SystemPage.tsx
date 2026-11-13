@@ -590,7 +590,6 @@ export default function SystemPage() {
   // Unlike the fire-and-forget ops above, `debug share` produces shareable
   // paste URLs that are the whole point — so we surface them as real,
   // copyable links rather than a log tail.
-  const [shareRedact, setShareRedact] = useState(true);
   const [sharing, setSharing] = useState(false);
   const [shareResult, setShareResult] = useState<DebugShareResponse | null>(
     null,
@@ -616,7 +615,7 @@ export default function SystemPage() {
     setSharing(true);
     setShareResult(null);
     try {
-      const res = await api.runDebugShare({ redact: shareRedact });
+      const res = await api.runDebugShare();
       setShareResult(res);
       const n = Object.keys(res.urls).length;
       showToast(
@@ -630,7 +629,7 @@ export default function SystemPage() {
     } finally {
       setSharing(false);
     }
-  }, [shareRedact, showToast]);
+  }, [showToast]);
 
 
   // ── Update check / apply ───────────────────────────────────────────
@@ -1466,22 +1465,6 @@ export default function SystemPage() {
                 sharing={sharing}
                 onConfirm={() => void runDebugShare()}
               />
-            </div>
-
-            <div className="flex items-center gap-2.5">
-              <Checkbox
-                checked={shareRedact}
-                disabled={sharing}
-                id="share-redact"
-                onCheckedChange={(checked) => setShareRedact(checked === true)}
-              />
-
-              <Label
-                className="cursor-pointer select-none text-xs font-normal normal-case tracking-normal text-muted-foreground"
-                htmlFor="share-redact"
-              >
-                Redact credential-shaped tokens before upload (recommended)
-              </Label>
             </div>
 
             {shareResult && (

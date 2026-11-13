@@ -149,6 +149,21 @@ def test_nous_share_still_carries_redacted_log_tails(pii_home):
     assert _MESSAGE in envelope["files"]["report"]
 
 
+def test_lines_bounds_the_scanned_tail(tmp_path, monkeypatch):
+    """``--lines`` is the window the summary counts, as the help and docs say."""
+    from hermes_cli.debug_summary import collect_public_summary
+
+    logs = tmp_path / ".hermes" / "logs"
+    logs.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    (logs / "agent.log").write_text("".join(
+        f"2026-04-12 17:00:00,001 WARNING agent.conversation_loop: row {i}\n" for i in range(300)))
+
+    text = collect_public_summary(log_lines=50)
+    assert "50 lines scanned; WARNING 50" in text
+    assert "x50" in text and "x300" not in text
+
+
 def test_message_derived_names_never_reach_the_summary():
     """Identifier-shaped tokens from message text or a runtime-built logger name are not printed;
     real module paths and builtin exception names still are."""
@@ -194,3 +209,16 @@ def test_exception_check_keeps_real_classes_and_runs_no_module_code():
     assert _exception_label("openai.RateLimitError") == "openai.RateLimitError"
     assert _exception_label("asyncio.CancelledError") == "asyncio.CancelledError"
     assert _exception_label("agent.chat_completion_helpers.Jsmith42Error") == "(other)"
+
+
+def test_info_lines_and_unknown_logger_roots_name_nothing():
+    """INFO lines (where adapters log message text) are not mined, and a logger outside the known
+    roots (one named after an MCP server or a user) is counted as (other), never printed."""
+    from hermes_cli.debug_summary import _log_counts
+
+    log = (
+        "2026-04-12 17:00:00,001 INFO agent.conversation_loop: ConnectionResetError HTTP 502\n"
+        "2026-04-12 17:00:01,002 WARNING alice_private_server: x\n")
+    by_logger, exceptions, codes, _n = _log_counts(log)
+    assert {name for _level, name in by_logger} == {"(other)"}
+    assert not exceptions and not codes

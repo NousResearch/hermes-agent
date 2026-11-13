@@ -107,7 +107,9 @@ bytes through the public archive and installs the actual artifact before chat:
 
 The macOS smoke verifies the app's code signature again after the chat: a file
 the running app writes into its own bundle (a pyc) breaks the seal, and
-Gatekeeper then holds the next update behind a prompt.
+Gatekeeper then holds the next update behind a prompt. It then runs one command
+the way the backend starts its detached actions (`python -I`, which ignores the
+bytecode cache prefix) and verifies the signature once more.
 
 The universal envelope runs on both Windows architectures, verifying native
 slice selection. Windows assembly/staging is separate from feed publication;

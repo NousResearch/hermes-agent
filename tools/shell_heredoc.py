@@ -45,6 +45,10 @@ def _header_expansion_end(command: str, cursor: int) -> int | None:
         char = command[cursor]
         if char == "\n" or command.startswith("<<", cursor):
             return None
+        # A shell comment consumes apparent closers until the next line, which
+        # is outside the single-line substitutions we can classify as inert.
+        if char == "#" and quotes[-1] is None and command[cursor - 1] in " \t;|&()":
+            return None
         if char == "\\":
             cursor += 2
         elif char == "'" and quotes[-1] is None:

@@ -42,3 +42,10 @@ def test_executable_header_is_still_scanned_when_the_body_is_data(tmp_path, open
     command = f"{opener}\nprint('data')\nPY"
     assert strip_inert_heredoc_bodies(command) == opener + "\n\n"
     assert scan_gateway_lifecycle(command, cwd=str(tmp_path)) == (True, None)
+
+
+@pytest.mark.parametrize("expansion", ["$(", "<(", ">("])
+def test_commented_closer_does_not_hide_executable_substitution_lines(tmp_path, expansion):
+    command = f"cat > {expansion}printf sink # ) <<':'\nhermes gateway restart\n:\n) </dev/null"
+    assert strip_inert_heredoc_bodies(command) == command
+    assert scan_gateway_lifecycle(command, cwd=str(tmp_path)) == (True, None)

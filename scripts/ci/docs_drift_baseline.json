@@ -46,7 +46,6 @@
   "discord.dm_role_auth_guild",
   "discord.server_actions",
   "display.battery",
-  "display.busy_steer_ack_enabled",
   "display.cli_refresh_interval",
   "display.ephemeral_system_ttl",
   "display.final_response_markdown",

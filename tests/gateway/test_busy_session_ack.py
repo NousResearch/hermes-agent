@@ -424,6 +424,106 @@ class TestBusySessionAck:
         assert str(sys.maxsize) not in content
 
 
+class TestPerPlatformBusyAck:
+    """``display.platforms.<platform>.busy_ack_enabled: false`` hides every busy ack on that platform
+    only (an inbound-only email inbox stays silent while WhatsApp still acks); the follow-up is still
+    interrupted/queued/steered, and the hidden ack neither starts the 30s debounce window nor
+    consumes the one-time onboarding hint."""
+
+    @staticmethod
+    def _home(monkeypatch, tmp_path, display):
+        import gateway.run as _gr
+        import hermes_yaml as yaml
+
+        monkeypatch.delenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", raising=False)
+        monkeypatch.setattr(_gr, "_hermes_home", tmp_path)  # the real loader reads this config.yaml
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({"display": display}))
+        return tmp_path / "config.yaml"
+
+    @staticmethod
+    async def _follow_up(runner, platform, mode):
+        runner._busy_input_mode = mode
+        adapter = _make_adapter(platform.value)
+        runner.adapters[platform] = adapter
+        source = SessionSource(platform=platform, chat_id="c1", chat_type="dm", user_id="u1")
+        event = MessageEvent(text="follow-up", message_type=MessageType.TEXT, source=source,
+                             message_id=f"m-{platform.value}")
+        sk = build_session_key(source)
+        agent = MagicMock()
+        agent._active_children = []  # real list → not demoted to queue
+        agent.steer = MagicMock(return_value=True)
+        runner._running_agents[sk] = agent
+        assert await runner._handle_active_session_busy_message(event, sk) is True
+        return adapter, agent, event, sk
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ["interrupt", "queue"])
+    async def test_platform_off_silences_only_that_platform(self, monkeypatch, tmp_path, mode):
+        import hermes_yaml as yaml
+
+        config_path = self._home(monkeypatch, tmp_path, {"platforms": {"email": {"busy_ack_enabled": False}}})
+        runner, _sentinel = _make_runner()
+
+        adapter, agent, event, sk = await self._follow_up(runner, Platform.EMAIL, mode)
+
+        adapter._send_with_retry.assert_not_called()
+        assert adapter._pending_messages.get(sk) is event  # still the next turn
+        assert agent.interrupt.called is (mode == "interrupt")
+        assert runner._session_state(sk).turn.busy_ack_ts == 0.0  # no debounce window started
+        assert "onboarding" not in yaml.safe_load(config_path.read_text())  # hint kept for a real ack
+
+        wa_adapter, wa_agent, _wa_event, _wa_sk = await self._follow_up(runner, Platform.WHATSAPP, mode)
+
+        wa_adapter._send_with_retry.assert_called_once()
+        content = wa_adapter._send_with_retry.call_args.kwargs["content"]
+        assert ("Interrupting" if mode == "interrupt" else "Queued for the next turn") in content
+        assert wa_agent.interrupt.called is (mode == "interrupt")
+
+    @pytest.mark.asyncio
+    async def test_platform_value_beats_the_global(self, monkeypatch, tmp_path):
+        self._home(monkeypatch, tmp_path, {
+            "busy_ack_enabled": False, "platforms": {"whatsapp": {"busy_ack_enabled": True}}})
+        runner, _sentinel = _make_runner()
+
+        email, _agent, _event, _sk = await self._follow_up(runner, Platform.EMAIL, "interrupt")
+        whatsapp, _agent, _event, _sk = await self._follow_up(runner, Platform.WHATSAPP, "interrupt")
+
+        email._send_with_retry.assert_not_called()
+        whatsapp._send_with_retry.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("env_value, platform_value, acked", [("false", True, False), ("true", False, True)])
+    async def test_env_var_wins_over_the_platform_value(self, monkeypatch, tmp_path, env_value, platform_value, acked):
+        self._home(monkeypatch, tmp_path, {"platforms": {"email": {"busy_ack_enabled": platform_value}}})
+        monkeypatch.setenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", env_value)
+        runner, _sentinel = _make_runner()
+
+        adapter, agent, event, sk = await self._follow_up(runner, Platform.EMAIL, "interrupt")
+
+        assert adapter._send_with_retry.called is acked
+        agent.interrupt.assert_called_once_with("follow-up")
+        assert adapter._pending_messages.get(sk) is event
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("display", [
+        {"platforms": {"email": {"busy_ack_enabled": False}}},
+        {"platforms": {"email": {"busy_steer_ack_enabled": False}}},
+    ], ids=["busy_ack_off", "busy_steer_ack_off"])
+    async def test_steer_is_acked_only_when_both_toggles_allow(self, monkeypatch, tmp_path, display):
+        self._home(monkeypatch, tmp_path, display)
+        runner, _sentinel = _make_runner()
+
+        adapter, agent, _event, sk = await self._follow_up(runner, Platform.EMAIL, "steer")
+
+        agent.steer.assert_called_once()
+        assert sk not in adapter._pending_messages  # steered into the run, not replayed
+        adapter._send_with_retry.assert_not_called()
+
+        wa_adapter, _agent, _event, _sk = await self._follow_up(runner, Platform.WHATSAPP, "steer")
+        assert "Steered" in wa_adapter._send_with_retry.call_args.kwargs["content"]
+
+
 class TestBusySessionOnboardingHint:
     """First-touch hint appended to the busy-ack the first time it fires."""
 

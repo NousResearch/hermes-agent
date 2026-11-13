@@ -22,7 +22,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _run_gateway_import(
-    hermes_home: Path, initial_env: dict[str, str], routed_home: Path | None = None
+    hermes_home: Path, initial_env: dict[str, str], routed_home: Path | None = None,
+    probe: str = "",
 ) -> dict[str, str]:
     """Import gateway.run in a clean subprocess and return the post-import env.
 
@@ -61,7 +62,7 @@ def _run_gateway_import(
             if v is not None:
                 print(f"{{k}}={{v}}")
         """
-    )
+    ) + textwrap.dedent(probe)
     env = dict(initial_env)
     env["HERMES_HOME"] = str(hermes_home)
     # Keep interpreter paths plus the Windows bootstrap variables required by
@@ -244,3 +245,33 @@ def test_first_import_under_a_routed_override_bridges_the_process_home(tmp_path:
 
     assert env.get("HERMES_MAX_ITERATIONS") == "111"
     assert env.get("TERMINAL_CWD") == str(homes["launch"] / "work")
+
+
+_BUSY_ACK_PROBE = """
+from types import SimpleNamespace
+from gateway.config import Platform
+for _platform in (Platform.WHATSAPP, Platform.EMAIL):
+    _event = SimpleNamespace(source=SimpleNamespace(platform=_platform))
+    _acks = run.GatewayRunner._busy_ack_enabled(
+        object.__new__(run.GatewayRunner), _event, "probe", is_steer_mode=False)
+    print(f"ack_{_platform.value}={_acks}")
+"""
+
+
+@pytest.mark.parametrize("initial_env, whatsapp, email", [
+    ({}, "True", "False"),
+    ({"HERMES_GATEWAY_BUSY_ACK_ENABLED": "true"}, "True", "True"),
+    ({"HERMES_GATEWAY_BUSY_ACK_ENABLED": "false"}, "False", "False"),
+], ids=["config", "env_on", "env_off"])
+def test_busy_ack_global_does_not_pose_as_the_env_override(
+    hermes_home: Path, initial_env: dict[str, str], whatsapp: str, email: str
+) -> None:
+    """HERMES_GATEWAY_BUSY_ACK_ENABLED overrides every platform when set, so bridging
+    display.busy_ack_enabled into it would make the global beat display.platforms.<platform>:
+    a platform value must win over the global, and only a real env value overrides both."""
+    _write_config(hermes_home, display_cfg={
+        "busy_ack_enabled": False, "platforms": {"whatsapp": {"busy_ack_enabled": True}}})
+
+    env = _run_gateway_import(hermes_home, initial_env=initial_env, probe=_BUSY_ACK_PROBE)
+
+    assert (env.get("ack_whatsapp"), env.get("ack_email")) == (whatsapp, email)

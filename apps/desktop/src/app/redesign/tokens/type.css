@@ -35,8 +35,9 @@
   --portal-type-section-size: 0.9375rem;
   /* Row label, button, tab, input value (label 500, body 400). */
   --portal-type-body-size: 0.875rem;
-  /* Nav row, sidebar row, menu item, description (1036:7410). */
-  --portal-type-ui-size: 0.8125rem;
+  /* Nav row, sidebar row, menu item, description. Figma draws 13px (1036:7410); the designer asked
+     for 14 after seeing it in the app (2026-11-13). */
+  --portal-type-ui-size: 0.875rem;
   /* Timestamps, row meta, the composer's model row (906:19738). */
   --portal-type-meta-size: 0.75rem;
   /* Nav counts, tags, keycaps, the "You" label (1036:7434). */

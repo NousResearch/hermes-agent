@@ -1,10 +1,10 @@
 /* Redesigned transcript (Figma 491:40346 / 491:40652): the shared conversation
    column (app/chat/stage.css), 20px inside the composer's edges, 30px between
-   turns and 20px between the blocks of one reply. Type is 13/1.6 before the
-   user's text scale. Figma draws no code, tables, quotes or cards beyond the
+   turns and 20px between the blocks of one reply. Type is 14/1.6 before the
+   user's text scale (Figma draws 13; the designer asked for 14 in the app). Figma draws no code, tables, quotes or cards beyond the
    routine card (491:42439); those take the same fills, radii and ink. */
 :root[data-shell='portal'] [data-slot='aui_thread-content'] {
-  --conversation-text-base-size: 0.8125rem;
+  --conversation-text-base-size: 0.875rem;
   --conversation-tool-base-size: 0.75rem;
   --conversation-caption-base-size: 0.75rem;
   --conversation-base-line-height: 1.05rem;

@@ -677,7 +677,7 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-type-display-lg-size` | `1.875rem` | ″ | Panel title, sub-page H2, dialog and drawer title (1036:7476, 1038:7797). |
 | `--portal-type-section-size` | `0.9375rem` | ″ | Section heading, stat value (1036:7481). |
 | `--portal-type-body-size` | `0.875rem` | ″ | Row label, button, tab, input value (label 500, body 400). |
-| `--portal-type-ui-size` | `0.8125rem` | ″ | Nav row, sidebar row, menu item, description (1036:7410). |
+| `--portal-type-ui-size` | `0.875rem` | ″ | Nav row, sidebar row, menu item, description. Figma draws 13px (1036:7410); the designer asked for 14 after seeing it in the app (2026-11-13). |
 | `--portal-type-meta-size` | `0.75rem` | ″ | Timestamps, row meta, the composer's model row (906:19738). |
 | `--portal-type-micro-size` | `0.6875rem` | ″ | Nav counts, tags, keycaps, the "You" label (1036:7434). |
 | `--portal-type-caption-size` | `0.625rem` | ″ | UPPERCASE group labels, table headers, stat labels, menu labels (1036:7408). |

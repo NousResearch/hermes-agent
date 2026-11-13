@@ -559,7 +559,7 @@ class GatewayAuthorizationMixin:
             return None
         from gateway.session_identity import identity_of, restore_identity
         restore_identity(source, runner=self, transport_profile=getattr(entry, "transport_profile", None))
-        if (getattr(self.config, 'multiplex_profiles', False)
+        if (getattr(getattr(self, 'config', None), 'multiplex_profiles', False)
                 and not self._names_receiving_bot(source, identity_of(source))
                 and self._fronting_relay(source.platform, None) is not None):
             from gateway.session_native_recovery_routes import verified_restored_relay_source

@@ -68,6 +68,9 @@ _read_open_denied_fd_headroom = 0
 _fd_usage_lock = threading.Lock()
 _fd_usage_cache: tuple[float, Optional[int]] = (0.0, None)
 
+# Set once `import resource` has failed (Windows): see _fd_soft_limit.
+_resource_unavailable = False
+
 
 def _proc_fd_targets(pid: int) -> Iterator[tuple[str, str]]:
     """Yield ``(readlink target, fd path)`` for every entry in /proc/<pid>/fd (unreadable
@@ -95,9 +98,16 @@ def _open_fd_count() -> Optional[int]:
 
 def _fd_soft_limit() -> Optional[int]:
     """The process's soft RLIMIT_NOFILE, or None when there is no usable one."""
+    global _resource_unavailable
+    if _resource_unavailable:
+        return None
     try:
         import resource
     except ImportError:
+        # Python caches a successful import in sys.modules but not a failed one. On Windows
+        # `resource` does not exist, so without this flag every read-connection checkout
+        # re-walked sys.path under the import lock, from every reader thread at once (#143256).
+        _resource_unavailable = True
         return None
     try:
         soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)

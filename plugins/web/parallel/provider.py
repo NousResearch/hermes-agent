@@ -61,7 +61,7 @@ class ParallelWebSearchProvider(BaseWebSearchProvider):
             logger.info("Parallel search: '%s' (mode=%s, limit=%d)", query, mode, limit)
             response = _get_sync_client().beta.search(search_queries=[query], objective=query, mode=mode, max_results=min(limit, SEARCH_LIMIT_CAP))
             return search_ok([
-                web_hit(r.url or "", r.title or "", " ".join(r.excerpts or []), i + 1)
+                web_hit(r.url or "", r.title or "", " ".join(r.excerpts or []), i + 1, published_date=getattr(r, "publish_date", None))
                 for i, r in enumerate(response.results or [])
             ])
 

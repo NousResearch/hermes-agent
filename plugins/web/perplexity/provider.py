@@ -44,6 +44,7 @@ import httpx
 
 from agent.web_search_provider import WebSearchProvider
 from hermes_cli.version_info import hermes_user_agent
+from plugins.web._common import row_dates
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +122,7 @@ def _perplexity_request(endpoint: str, payload: dict[str, Any], gateway=None) ->
 
 
 def _normalize_search_results(response: dict[str, Any]) -> dict[str, Any]:
-    """Map Search API ``{results: [{title,url,snippet,...}]}`` to the tool shape."""
+    """Map Search API ``{results: [{title,url,snippet,date,last_updated}]}`` to the tool shape."""
     web_results = []
     for i, result in enumerate(response.get("results") or []):
         web_results.append(
@@ -130,6 +131,7 @@ def _normalize_search_results(response: dict[str, Any]) -> dict[str, Any]:
                 "url": result.get("url", "") or "",
                 "description": result.get("snippet", "") or "",
                 "position": i + 1,
+                **row_dates(result.get("date"), result.get("last_updated")),
             }
         )
     return {"success": True, "data": {"web": web_results}}

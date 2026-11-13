@@ -449,11 +449,13 @@ class CronAction(WireEnum):
     remove = "remove"
     pause = "pause"
     resume = "resume"
+    cancel = "cancel"
 
 
 class CronManageParams(Params):
     action: CronAction = CronAction.list
     name: str | None = None
+    reason: str | None = None  # cancel: recorded as the cancelled run's reason
     include_disabled: bool | str | None = None
     schedule: str | None = None
     prompt: str | None = None
@@ -510,7 +512,9 @@ class CronRemovedJob(Result):
 class CronManageResult(_Open):
     """Pass-through of ``tools/cronjob_tools.py::cronjob`` JSON: ``list`` → ``jobs``/``count``
     (+ ``scoped`` when profile-scoped); ``add`` → the created job's summary + ``job``; ``remove`` →
-    ``removed_job``; ``pause``/``resume`` → ``job``. A tool-level failure lands in ``error``."""
+    ``removed_job``; ``pause``/``resume`` → ``job``; ``cancel`` → ``job`` plus
+    ``cron/cancellation.py::cancel_run`` (``cancelled`` is false when no run was in flight).
+    A tool-level failure lands in ``error``."""
 
     success: bool | None = None
     error: str | None = None
@@ -531,10 +535,16 @@ class CronManageResult(_Open):
     message: str | None = None
     guidance: JsonValue | None = None
     removed_job: CronRemovedJob | None = None
+    cancelled: bool | None = None
+    execution_id: str | None = None
+    status: str | None = None
+    pid: int | None = None
+    detail: str | None = None
 
 
 method("cron.manage", params=CronManageParams, result=CronManageResult,
-       doc="List/add/remove/pause/resume cron jobs in the (optionally profile-scoped) cron store.")
+       doc="List/add/remove/pause/resume cron jobs, or cancel a job's live run, in the (optionally "
+           "profile-scoped) cron store.")
 
 
 # ── browser.manage ────────────────────────────────────────────────────────────────────────────

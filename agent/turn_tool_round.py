@@ -305,6 +305,7 @@ def stage_tool_call_message(
     # recovers any dropped-tool-call stall, so refresh that budget per stall.
     agent._post_tool_empty_retried = False
     agent._dropped_toolcall_retries = 0
+    agent._leaked_toolcall_retries = 0
 
     previous_msg = messages[-1] if messages else None
     current_interim_visible = agent._interim_assistant_visible_text(assistant_msg)

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import logging
 from typing import Any, Callable, Dict, Optional
 
+from agent.leaked_tool_call import find_leaked_tool_call, leaked_tool_call_nudge
 from agent.message_metadata import append_message
 from agent.reasoning_promotion import answer_in_reasoning_capability
 from agent.repetition_guard import STOP_PATH_MIN_CHARS, is_runaway_repetition
@@ -34,6 +35,9 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_thinking_prefill", "_empty_recovery_synthetic", "_empty_terminal_sentinel",
     "_dropped_toolcall_nudge",
 )
+# Re-prompts for a tool call left as text (see ``_reprompt_leaked_tool_call``); the pair reuses the
+# ``_dropped_toolcall_nudge`` flag, so persistence and compression already treat it as scaffolding.
+_LEAKED_TOOLCALL_MAX_RETRIES = 2
 
 
 @dataclass
@@ -103,6 +107,133 @@ def _absorb_continuation_fragments(final_response: Any, parts: Any, messages: An
     return _join_truncated_parts([*parts, (final_response, False)]), True
 
 
+def _append_nudge_pair(agent: Any, messages: Any, assistant_row: dict, nudge: str) -> None:
+    # Both halves of a re-prompt pair are ephemeral scaffolding: never persisted, and the
+    # finalization pop strips an unanswered tail pair.
+    assistant_row["_dropped_toolcall_nudge"] = True
+    append_message(messages, assistant_row)
+    append_message(messages, {"role": "user", "content": nudge, "_dropped_toolcall_nudge": True})
+    agent._session_messages = messages
+
+
+def _reprompt_dropped_tool_call(agent: Any, final_msg: dict, assistant_message: Any, finish_reason: Any,
+                                messages: Any, nudge: str) -> bool:
+    """Dropped tool-call recovery (seen with Claude via gateways): finish_reason="tool_calls" with
+    empty tool_calls would end the turn unstarted; re-prompt (max 3 CONSECUTIVE stalls). False
+    is a genuine turn end, which clears both tool-call stall budgets."""
+    if (
+        finish_reason == "tool_calls"
+        and not assistant_message.tool_calls
+        and getattr(agent, "_dropped_toolcall_retries", 0) < 3
+    ):
+        agent._dropped_toolcall_retries = getattr(agent, "_dropped_toolcall_retries", 0) + 1
+        logger.warning(
+            "finish_reason=tool_calls with empty tool_calls array "
+            "(narration only) — re-prompting to emit the call "
+            "(retry %d/3, model=%s provider=%s)",
+            agent._dropped_toolcall_retries, agent.model, agent.provider,
+        )
+        agent._emit_diagnostic_status(
+            "↻ Model signaled a tool call but sent none — "
+            f"re-prompting ({agent._dropped_toolcall_retries}/3)"
+        )
+        _append_nudge_pair(agent, messages, final_msg, nudge)
+        return True
+    agent._dropped_toolcall_retries = 0
+    agent._leaked_toolcall_retries = 0
+    return False
+
+
+def _reprompt_leaked_tool_call(agent: Any, assistant_message: Any, finish_reason: Any, messages: Any) -> bool:
+    """Chat-completions reply with no ``tool_calls`` but a call to an offered tool written as text
+    in its reasoning or content (local llama.cpp/vLLM tool parsers missing the markup).
+    Re-prompt, never execute the recovered text: bounded to ``_LEAKED_TOOLCALL_MAX_RETRIES``,
+    reset by a real tool round or a clean final answer. Past the budget the turn falls through to
+    the normal path, loudly. ``length`` stops keep the continuation path (markup cut mid-call)."""
+    if (
+        str(getattr(agent, "api_mode", "") or "chat_completions").strip().lower() != "chat_completions"
+        or assistant_message.tool_calls
+        or finish_reason == "length"
+        or not getattr(agent, "valid_tool_names", None)
+    ):
+        return False
+    for where, text in (("reasoning", agent._extract_reasoning(assistant_message)),
+                        ("reply", assistant_message.content)):
+        if leak := find_leaked_tool_call(text, agent.valid_tool_names):
+            break
+    else:
+        return False
+    retries = getattr(agent, "_leaked_toolcall_retries", 0)
+    if retries >= _LEAKED_TOOLCALL_MAX_RETRIES:
+        logger.warning(
+            "Model left a %s as text in the %s again after %d re-prompts — NOT executed; ending "
+            "the turn on the normal path (format=%s complete=%s model=%s provider=%s): %r",
+            leak.label, where, retries, leak.fmt, leak.complete, agent.model, agent.provider,
+            leak.snippet,
+        )
+        agent._emit_diagnostic_status(
+            f"⚠ Model wrote a {leak.label} as text instead of calling it — not executed"
+        )
+        return False
+    agent._leaked_toolcall_retries = retries + 1
+    logger.warning(
+        "Model wrote a %s as text in the %s with no structured tool_calls (format=%s "
+        "complete=%s finish_reason=%s) — re-prompting (%d/%d, model=%s provider=%s): %r",
+        leak.label, where, leak.fmt, leak.complete, finish_reason, agent._leaked_toolcall_retries,
+        _LEAKED_TOOLCALL_MAX_RETRIES, agent.model, agent.provider, leak.snippet,
+    )
+    agent._emit_diagnostic_status(
+        f"↻ Model wrote a {leak.label} as text — re-prompting "
+        f"({agent._leaked_toolcall_retries}/{_LEAKED_TOOLCALL_MAX_RETRIES})"
+    )
+    _append_nudge_pair(agent, messages, agent._build_assistant_message(assistant_message, finish_reason),
+                       leaked_tool_call_nudge(leak, where))
+    return True
+
+
+def _promote_reasoning_only_stop(agent: Any, assistant_message: Any, finish_reason: Any, messages: Any,
+                                 api_call_count: Any) -> Optional[str]:
+    """The reasoning to return as the answer on a reasoning-only clean stop, else None.
+
+    Trusted routes only (elsewhere reasoning is private and takes the ladder): some parsers (vLLM
+    nemotron_v3 past ~500K prompt tokens) file the whole answer as reasoning when the closing
+    delimiter is missing; ``stop`` means generation is complete, so promote it BEFORE the ladder.
+    ``length`` (cut off mid-thought) stays on the continuation path. The promoted text is RETURNED
+    as the answer but never written into the assistant row's ``content``: chain-of-thought stored
+    as ordinary content is indistinguishable from a real reply on every history surface (#111761).
+    The row keeps ``content`` empty with the text in its reasoning fields and carries the promoted
+    text as the ``api_content`` sidecar, so the next turn still replays it byte-identically.
+    Anthropic thinking (signed ``thinking`` block, or a plugin's ``*.native_assistant`` carrier of
+    native Claude turns) is a summary written by a separate model, never the answer: it takes the
+    empty-response continuation instead."""
+    _content = assistant_message.content
+    if not (
+        finish_reason == "stop"
+        and not assistant_message.tool_calls
+        and (_content is None or (isinstance(_content, str) and not _content.strip()))
+        and not any(
+            isinstance(d, dict) and (
+                (d.get("type") in ("thinking", "redacted_thinking") and (d.get("signature") or d.get("data")))
+                or str(d.get("type") or "").endswith(".native_assistant")
+            )
+            for d in getattr(assistant_message, "reasoning_details", None) or ()
+        )
+        and answer_in_reasoning_capability(agent)
+    ):
+        return None
+    promoted = agent._extract_reasoning(assistant_message) or None
+    if promoted:
+        # WARNING, not INFO: a model that keeps ending turns this way is stalled
+        # (planning monologue, zero tool calls) while the turn reports "complete".
+        logger.warning(
+            "Reasoning-only clean stop (%d chars) — returning the reasoning as the final "
+            "response (model=%s provider=%s api_calls=%d tool_turns=%d)",
+            len(promoted), agent.model, agent.provider, api_call_count,
+            sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")),
+        )
+    return promoted
+
+
 def finish_text_response(
     agent: Any, *, assistant_message: Any, response: Any, finish_reason: Any, messages: Any,
     api_messages: Any, conversation_history: Any, api_call_count: Any, user_message: Any,
@@ -134,43 +265,13 @@ def finish_text_response(
             result=result,
         )
 
-    # Reasoning-only clean stop on a trusted route (elsewhere reasoning is private and takes the
-    # ladder): some parsers (vLLM nemotron_v3 past ~500K prompt tokens) file the whole answer as
-    # reasoning when the closing delimiter is missing; ``stop`` means generation is complete, so
-    # promote it BEFORE the ladder. ``length`` (cut off mid-thought) stays on the continuation path.
-    # The promoted text is RETURNED as the answer but never written into the assistant
-    # row's ``content``: chain-of-thought stored as ordinary content is indistinguishable
-    # from a real reply on every history surface (#111761). The row keeps ``content``
-    # empty with the text in its reasoning fields and carries the promoted text as the
-    # ``api_content`` sidecar, so the next turn still replays it byte-identically.
-    # Anthropic thinking (signed ``thinking`` block, or a plugin's ``*.native_assistant`` carrier
-    # of native Claude turns) is a summary written by a separate model, never the answer: it
-    # takes the empty-response continuation below instead.
-    _content = assistant_message.content
-    _promoted = None
-    if (
-        finish_reason == "stop"
-        and not assistant_message.tool_calls
-        and (_content is None or (isinstance(_content, str) and not _content.strip()))
-        and not any(
-            isinstance(d, dict) and (
-                (d.get("type") in ("thinking", "redacted_thinking") and (d.get("signature") or d.get("data")))
-                or str(d.get("type") or "").endswith(".native_assistant")
-            )
-            for d in getattr(assistant_message, "reasoning_details", None) or ()
-        )
-        and answer_in_reasoning_capability(agent)
-    ):
-        _promoted = agent._extract_reasoning(assistant_message) or None
-        if _promoted:
-            # WARNING, not INFO: a model that keeps ending turns this way is stalled
-            # (planning monologue, zero tool calls) while the turn reports "complete".
-            logger.warning(
-                "Reasoning-only clean stop (%d chars) — returning the reasoning as the final "
-                "response (model=%s provider=%s api_calls=%d tool_turns=%d)",
-                len(_promoted), agent.model, agent.provider, api_call_count,
-                sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")),
-            )
+    # Checked before reasoning promotion and before prose is accepted: a call left as text
+    # would otherwise end the turn "complete" with the action never run.
+    if _reprompt_leaked_tool_call(agent, assistant_message, finish_reason, messages):
+        final_response = None
+        return _verdict("continue")
+
+    _promoted = _promote_reasoning_only_stop(agent, assistant_message, finish_reason, messages, api_call_count)
     final_response = _promoted or assistant_message.content or ""
     # Unmute: _mute_post_response from a housekeeping tool turn must not silence
     # empty-response warnings on the final response path.
@@ -329,39 +430,10 @@ def finish_text_response(
         # real reply; ``build_api_messages`` substitutes ``api_content`` on the wire.
         final_msg["api_content"] = final_response
 
-    # Dropped tool-call recovery (seen with Claude via gateways): finish_reason="tool_calls" with empty
-    # tool_calls would end the turn unstarted; re-prompt (max 3 CONSECUTIVE stalls).
-    if (
-        finish_reason == "tool_calls"
-        and not assistant_message.tool_calls
-        and getattr(agent, "_dropped_toolcall_retries", 0) < 3
-    ):
-        agent._dropped_toolcall_retries = getattr(agent, "_dropped_toolcall_retries", 0) + 1
-        logger.warning(
-            "finish_reason=tool_calls with empty tool_calls array "
-            "(narration only) — re-prompting to emit the call "
-            "(retry %d/3, model=%s provider=%s)",
-            agent._dropped_toolcall_retries, agent.model, agent.provider,
-        )
-        agent._emit_diagnostic_status(
-            "↻ Model signaled a tool call but sent none — "
-            f"re-prompting ({agent._dropped_toolcall_retries}/3)"
-        )
-        # Both halves of the re-prompt pair are ephemeral scaffolding: never persisted,
-        # and the finalization pop strips an unanswered tail pair.
-        final_msg["_dropped_toolcall_nudge"] = True
-        append_message(messages, final_msg)
-        append_message(messages, {
-            "role": "user",
-            "content": _DROPPED_TOOLCALL_NUDGE_CONTENT,
-            "_dropped_toolcall_nudge": True,
-        })
-        agent._session_messages = messages
+    if _reprompt_dropped_tool_call(agent, final_msg, assistant_message, finish_reason, messages,
+                                   _DROPPED_TOOLCALL_NUDGE_CONTENT):
         final_response = None
         return _verdict("continue")
-
-    # Genuine turn end (no dropped-tool-call mismatch): clear stall budget.
-    agent._dropped_toolcall_retries = 0
 
     # Pop prefill / empty-retry scaffolding before the final response or
     # verification follow-up; it must not become durable transcript.

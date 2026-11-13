@@ -1,21 +1,25 @@
 """OSC 7501 (Program Status Protocol) emitter for terminal agent monitors.
 
-Reports the CLI's live state (idle / working / blocked) to any attached
+Reports the CLI's live state (idle / working / blocked / done) to any attached
 terminal multiplexer or agent monitor (Herdr, etc.) through the OSC 7501
 escape sequence, so the agent shows up in agent lists without screen scraping.
 
-The protocol: ``ESC ] 7501 ; state=<state>:app=<app> ESC \\`` — where
-``<state>`` is one of ``idle`` / ``working`` / ``blocked`` / ``done``.
-Emitters must be silent on non-TTY stdout (pipes, files, API servers) and
-must never raise into the CLI loop.
+The protocol: ``ESC ] 7501 ; state=<state>:app=<app> BEL`` — where ``<state>``
+is one of ``idle`` / ``working`` / ``blocked`` / ``done``.
 
-Hermes reports ``app=hermes``. Reference:
-https://gist.github.com/agent-status/osc-7501 (Program Status Protocol).
+Writes go straight to the controlling terminal (``/dev/tty``), NOT
+``sys.stdout``: prompt_toolkit's ``patch_stdout`` StdoutProxy sanitizes
+unknown OSC sequences out of the stream, so a stdout write never reaches
+the pty. With no ``/dev/tty`` (pipes, files, detached CI, API servers)
+there is nowhere to report and the emitter stays silent. It must never
+raise into the CLI loop.
+
+Hermes reports ``app=hermes``. Reference: Program Status Protocol (OSC 7501).
 """
 
 from __future__ import annotations
 
-import sys
+import os
 import threading
 
 APP_ID = "hermes"
@@ -28,21 +32,27 @@ _VALID_STATES = frozenset({"idle", "working", "blocked", "done"})
 
 
 def _emit(state: str) -> None:
-    """Write the OSC 7501 sequence for ``state`` to the real stdout TTY."""
+    """Write the OSC 7501 sequence for ``state`` to the controlling terminal."""
     global _LAST_STATE
     if state not in _VALID_STATES:
         return
     try:
-        stdout = sys.stdout
-        if not hasattr(stdout, "isatty") or not stdout.isatty():
-            return  # piped/file/API-server stdout: monitors read the pty, not us
         with _LOCK:
             if _LAST_STATE == state:
                 return  # avoid duplicate sequences between turns
             _LAST_STATE = state
-            # OSC: ESC ] 7501 ; payload BEL (ST also valid; BEL is safest)
-            stdout.write(f"\x1b]7501;state={state}:app={APP_ID}\x07")
-            stdout.flush()
+            payload = f"\x1b]7501;state={state}:app={APP_ID}\x07"
+            # Direct fd write: patch_stdout's StdoutProxy strips OSC 7501 from
+            # sys.stdout before it reaches the pty, so bypass it for /dev/tty —
+            # the controlling terminal of the pty the monitor reads. BEL
+            # terminator (ST also valid; BEL is safest across emulators).
+            fd = os.open("/dev/tty", os.O_WRONLY)
+            try:
+                os.write(fd, payload.encode("utf-8"))
+            finally:
+                os.close(fd)
+    except OSError:
+        pass  # no controlling terminal: nowhere to report, stay silent
     except Exception:
         pass  # never let status reporting break the CLI
 

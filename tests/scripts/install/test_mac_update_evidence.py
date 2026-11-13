@@ -57,7 +57,11 @@ def test_collects_shipit_logs_new_crash_reports_and_installed_state(tmp_path):
     assert not list(copied.rglob("payload.bin"))
     assert "update.Xy" in (copied / "listing.txt").read_text()
     assert staged.is_file()
-    assert sorted(p.name for p in (out / "crash-reports").iterdir()) == ["Hermes Agent-after.ips", "ShipIt-after.ips"]
+    # The collector also reads the host's /Library/Logs/DiagnosticReports, where
+    # a CI runner's own tools can drop reports mid-test, so check only ours.
+    copied_reports = {p.name for p in (out / "crash-reports").iterdir()}
+    assert {"Hermes Agent-after.ips", "ShipIt-after.ips"} <= copied_reports
+    assert "Hermes Agent-before.ips" not in copied_reports
     assert (out / "hermes-logs/desktop.log").read_text() == "[updater] quitAndInstall\n"
     assert '"tag": "v0.22.0"' in (out / "installed-app.txt").read_text()
     assert "code object is not signed" in result.stdout

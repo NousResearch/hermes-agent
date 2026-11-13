@@ -113,8 +113,26 @@ def _installed(candidates: tuple[str, ...], allow_outdated: bool) -> Engine | No
     return None
 
 
-def installed_engine(backend: str = "auto", *, allow_outdated: bool = True) -> Engine | None:
-    """Boot may retain a prior PM pin and moves a pre-PM engine into PM's store once; it never downloads."""
+def installed_engine(backend: str = "auto", *, allow_outdated: bool = True,
+                     custom_executable: str | None = None) -> Engine | None:
+    """Boot may retain a prior PM pin and moves a pre-PM engine into PM's store once; it never downloads.
+
+    A user-supplied engine (``local_runtime.custom_executable`` or ``HERMES_LLAMACPP_SERVER``)
+    serves the supervised router from a non-PM binary: a fork build whose kernels the pinned
+    release lacks (custom quantizations such as PrismML ternary PQ2_0/PTQ1_0) or a CUDA 12.x
+    toolchain where the pinned 13.x build dies on older Ampere GPUs. Env wins over the config
+    value; a configured path that is missing fails loudly instead of booting nothing."""
+    custom = os.environ.get("HERMES_LLAMACPP_SERVER") or custom_executable
+    if custom:
+        binary = Path(custom).expanduser().resolve()
+        if binary.name.lower() not in ("llama-server", "llama-server.exe"):
+            raise BinaryResolutionError(
+                f"custom executable {custom} must be a llama-server binary, not {binary.name}")
+        if not binary.is_file():
+            raise BinaryResolutionError(
+                f"custom executable {custom} does not exist; point local_runtime.custom_executable "
+                f"(or HERMES_LLAMACPP_SERVER) at a llama-server binary or clear the setting")
+        return Engine("custom", "user", binary)
     vendor = None
     if backend == "auto":
         from hermes_cli.local_runtime.bootstrap import _detect_gpu_vendor

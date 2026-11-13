@@ -628,7 +628,34 @@ async def admit_managed(authority, ref, row, policy):
         result = workspace_unavailable_result(policy)
         authority.pending_results[row['admission_id']] = {'result': result, 'usage': {}}
         return result['final_response']
+    result = _unsupported_command_result(row)
+    if result is not None:
+        authority.pending_results[row['admission_id']] = {'result': result, 'usage': {}}
+        return result['final_response']
     return await execute_managed(authority, ref, row, policy)
+
+
+def _unsupported_command_result(row):
+    """The never-run result for a managed turn whose text is ``/moa``, else None. The worker runs the
+    session's frozen route and never binds a preset, so every route into it (raw ``prompt.submit``,
+    a queued row, a slash.exec that got past its own check) is refused here instead of handing the
+    worker the literal command. A finite prompt's exit code is its only verdict, so it fails."""
+    text = row['payload'].get('text')
+    if not isinstance(text, str):
+        return None
+    from gateway.platforms.event import MessageEvent
+    from hermes_cli.commands import resolve_command
+    name = MessageEvent(text=text).get_command()
+    command = resolve_command(name) if name else None
+    if command is None or command.name != 'moa':
+        return None
+    from agent.i18n import t
+    text = t('gateway.moa.managed_session')
+    if row['payload'].get('finite') is not True:
+        return {'final_response': text, 'messages': []}
+    from agent.turn_failure_copy import stamp_failure
+    return stamp_failure({'final_response': text, 'messages': [], 'api_calls': 0, 'tools': [],
+                          'failed': True, 'completed': False, 'error': text}, 'command_unavailable', False)
 
 
 async def _finalize_managed_refusal(authority, session_id, accepted):

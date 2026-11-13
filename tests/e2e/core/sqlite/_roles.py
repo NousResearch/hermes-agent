@@ -11,7 +11,7 @@ Tokens are single FTS words (``TK`` + alnum) so the test can look every acknowle
 through ``messages`` and through the FTS indexes.
 
 Journal-mode seam: with ``HERMES_E2E_SQLITE_VERSION_PIN`` set, the production version probe
-``hermes_state_wal.is_sqlite_wal_reset_vulnerable()`` reports that SQLite version instead of the linked one;
+``hermes_agent.hermes_state_wal.is_sqlite_wal_reset_vulnerable()`` reports that SQLite version instead of the linked one;
 the real range predicate and ``apply_wal_with_fallback`` then decide the journal mode as they would there.
 """
 
@@ -60,7 +60,7 @@ def _apply_sqlite_version_pin() -> None:
     pin = os.environ.get("HERMES_E2E_SQLITE_VERSION_PIN")
     if not pin:
         return
-    import hermes_state_wal
+    from hermes_agent import hermes_state_wal
 
     pinned = tuple(int(p) for p in pin.split("."))
     probe = hermes_state_wal.is_sqlite_wal_reset_vulnerable
@@ -110,7 +110,7 @@ def _stopping(stop_file: Path) -> bool:
 
 def role_writer(a: dict, out: Out) -> int:
     """Long-lived writer (gateway- or TUI-like): appends until told to stop, journaling intent + ack."""
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db_path, stop_file = Path(a["db"]), Path(a["stop"])
     tag = a["tag"]
@@ -162,7 +162,7 @@ def role_writer(a: dict, out: Out) -> int:
 def role_reader(a: dict, out: Out) -> int:
     """Dashboard-like reader: opens a writable SessionDB at startup and polls until stopped. Reports any
     per-session count that went DOWN (no compaction runs in this chamber) and its fd count per pass."""
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db_path, stop_file = Path(a["db"]), Path(a["stop"])
     db = _patient(a, out, "open", lambda: SessionDB(db_path=db_path))
@@ -198,7 +198,7 @@ def role_churn(a: dict, out: Out) -> int:
     """`hermes sessions list` / doctor / cron-guard shape: open, read, close — ``iterations`` times in one
     process, alternating the production SessionDB with a bare sqlite3 opener (sqlite3 shell, backup tool).
     The fd count must not grow with the number of cycles."""
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db_path = Path(a["db"])
     start_fds = _fd_count()
@@ -242,7 +242,7 @@ def role_opener(a: dict, out: Out) -> int:
                 return conn.execute("SELECT count(*) FROM messages").fetchone()[0]
             finally:
                 conn.close()
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
         db = SessionDB(db_path=db_path)
         try:
             return db.message_count()
@@ -272,7 +272,7 @@ def _raw_count(db_path: Path) -> int:
 
 def role_fts(a: dict, out: Out) -> int:
     """Maintenance pass: full FTS rebuild + optimize through SessionDB (cross-process admission)."""
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db = _patient(a, out, "open", lambda: SessionDB(db_path=Path(a["db"])))
     out.report(event="ready")
@@ -289,7 +289,7 @@ def role_fts(a: dict, out: Out) -> int:
 
 def role_repair(a: dict, out: Out) -> int:
     """`repair_state_db_schema` as the CLI/doctor/startup recovery calls it."""
-    from hermes_state_repair import repair_state_db_schema
+    from hermes_agent.hermes_state_repair import repair_state_db_schema
 
     db_path = Path(a["db"])
     try:
@@ -313,7 +313,7 @@ def role_agent(a: dict, out: Out) -> int:
     slash command does, and journals ``C <kept bases…>``. ``resume`` reloads history from state.db first
     (a fresh process resuming the session)."""
     from agent.conversation_compression_manual import compress_now, parse_compress_args
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from run_agent import AIAgent
 
     stop_file = Path(a["stop"])

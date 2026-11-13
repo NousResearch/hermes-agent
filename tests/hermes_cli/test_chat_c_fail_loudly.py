@@ -28,7 +28,7 @@ def isolated_home(tmp_path, monkeypatch):
     from hermes_cli import gateway_session_store
 
     def create_titled(title):
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
         db = SessionDB()
         try:
             sid = "local-" + "ab" * 32
@@ -75,7 +75,7 @@ class TestCreateTitledSession:
         sid = _create_titled_session("Bot Chat")
         assert sid, "should return a session id"
 
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         db = SessionDB()
         try:
@@ -90,7 +90,7 @@ class TestCreateTitledSession:
         sid = _create_titled_session("Bot Chat")
         assert sid
 
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         db = SessionDB()
         try:
@@ -181,7 +181,7 @@ class TestChatCFailLoudlyOnStderr:
         main_mod._resolve_continue_arg(args, use_tui=True)
 
         assert args.resume, "resume should be set to the new session id"
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         db = SessionDB()
         try:

@@ -14,8 +14,8 @@ from gateway.platforms.api_server import APIServerAdapter
 from gateway.session import SessionStore
 from gateway.session_authority import initialize_session_authority
 from gateway.session_api import restore_api_session
-from hermes_state import SessionDB
-from hermes_state_runtime import claim_session_input, list_session_admissions
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_runtime import claim_session_input, list_session_admissions
 
 
 _OWNER = ContextVar("test_api_unknown_owner", default="owner")

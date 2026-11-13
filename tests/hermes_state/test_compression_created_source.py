@@ -5,7 +5,7 @@ is the write that fills the column, and it carries the surface to the NULL root.
 """
 import pytest
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def _compress(db, parent_created, child):
@@ -30,7 +30,7 @@ def test_desktop_worker_heals_gui_to_desktop(tmp_path, child_created):
     """A managed Desktop worker's platform is the policy label ``gui``. The healed
     column is ``desktop``, the same surface the in-process agent and the insert stamp.
     An auxiliary-usage ``unknown`` placeholder is unset too, as in the creator upsert."""
-    import hermes_state_runtime as rt
+    import hermes_agent.hermes_state_runtime as rt
 
     db = SessionDB(db_path=tmp_path / "state.db")
     try:
@@ -92,7 +92,7 @@ def test_compressing_a_stamped_tip_stamps_its_legacy_root(tmp_path, root_created
 def test_unset_parent_behind_a_reset_edge_takes_the_fast_path(tmp_path):
     """A stamped chain whose root was reset from a legacy NULL row has nothing to stamp: the
     ancestor stamp returns after its two lookups instead of walking the chain on every write."""
-    from hermes_state_compression import stamp_compression_ancestors
+    from hermes_agent.hermes_state_compression import stamp_compression_ancestors
 
     db = SessionDB(db_path=tmp_path / "state.db")
     try:
@@ -179,7 +179,7 @@ def test_owner_start_skips_a_branch_child_of_an_unset_compression_parent(tmp_pat
     """A branch child is no continuation: the stamp never follows it, so it is no repair candidate
     either, and a later start does not walk its unset compression parent again."""
     from gateway.session_authority import backfill_compression_created_sources
-    from hermes_state_compression import _UNSTAMPED_EDGE_CHILD_SQL
+    from hermes_agent.hermes_state_compression import _UNSTAMPED_EDGE_CHILD_SQL
 
     db = SessionDB(db_path=tmp_path / "state.db")
     try:
@@ -200,7 +200,7 @@ def test_owner_start_skips_a_branch_child_of_an_unset_compression_parent(tmp_pat
 def test_unset_ancestor_probe_reads_only_the_walked_rows(tmp_path):
     """The fast path runs on every usage write of a stamped compression child: its final lookup
     must join the walked ids to sessions by key, never scan the table (ms per write at 30k rows)."""
-    from hermes_state_compression import _CHAIN_CAP, _UNSET_ANCESTOR_SQL
+    from hermes_agent.hermes_state_compression import _CHAIN_CAP, _UNSET_ANCESTOR_SQL
 
     db = SessionDB(db_path=tmp_path / "state.db")
     try:

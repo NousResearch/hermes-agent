@@ -92,7 +92,7 @@ class ProactivePruneMixin:
         next_rearm_tokens = after + runway
         if session_db and session_id:
             _cc_ = _cc()
-            from hermes_state_errors import HeldRowRewrittenError
+            from hermes_agent.hermes_state_errors import HeldRowRewrittenError
             model_config_patch = {_cc_.PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: next_rearm_tokens}
             StaleHeldHistory = _cc_.StaleHeldHistory
             _DB_PERSISTED_MARKER = _cc_._DB_PERSISTED_MARKER
@@ -158,7 +158,7 @@ class ProactivePruneMixin:
         rewrite = getattr(session_db, "rewrite_pruned_rows", None)
         if not callable(rewrite) or len(messages) != len(pruned_msgs):
             return None
-        from hermes_state_errors import PruneRowStaleError, PruneRowUnresolvedError
+        from hermes_agent.hermes_state_errors import PruneRowStaleError, PruneRowUnresolvedError
 
         _DB_PERSISTED_MARKER = _cc()._DB_PERSISTED_MARKER
         ignored = {_DB_PERSISTED_MARKER, "_row_id"}

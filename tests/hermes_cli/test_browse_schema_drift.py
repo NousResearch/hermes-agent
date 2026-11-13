@@ -16,8 +16,8 @@ import pytest
 from fastapi import HTTPException
 
 from hermes_cli.web_server_sessions import _open_session_db_at_path
-from hermes_state import SessionDB
-from hermes_state_common import SCHEMA_VERSION
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_common import SCHEMA_VERSION
 
 _ADDED_TABLES = ("runtime_epoch", "session_admissions", "worker_executions", "worker_receipts")
 _ADDED_COLUMNS = (("sessions", "runtime_revision"), ("sessions", "runtime_generation"),
@@ -179,7 +179,7 @@ def own_store_client(monkeypatch, _isolate_hermes_home):
         from starlette.testclient import TestClient
     except ImportError:
         pytest.skip("fastapi/starlette not installed")
-    import hermes_state
+    from hermes_agent import hermes_state
     from hermes_cli.web_routers import profiles as profiles_routes
     from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
     from hermes_constants import get_hermes_home
@@ -393,7 +393,7 @@ def _hold(home, seconds, purpose=""):
 def test_stuck_maintenance_holder_gets_busy_retry_not_a_gateway_remedy(tmp_path):
     """P2-1: when the holder is not a gateway and the store is still behind after the busy budget,
     the refusal says busy/retry and never tells the user to restart a gateway that is not running."""
-    from hermes_state_reconcile import BROWSE_RECONCILE_PURPOSE
+    from hermes_agent.hermes_state_reconcile import BROWSE_RECONCILE_PURPOSE
 
     home = _profile_home(tmp_path)
     path = _lagging_store_with_history(home, rows=10)
@@ -420,7 +420,7 @@ def test_gateway_boot_reserve_waits_out_a_browse_reconcile(tmp_path):
 
     from gateway.run_bootstrap import _reserve_waiting_out_browse_reconcile
     from gateway.runtime_ownership import OwnershipConflict, ProfileOwnership
-    from hermes_state_reconcile import BROWSE_RECONCILE_PURPOSE
+    from hermes_agent.hermes_state_reconcile import BROWSE_RECONCILE_PURPOSE
 
     home = _profile_home(tmp_path)
     holder = _hold(home, 1.0, BROWSE_RECONCILE_PURPOSE)
@@ -574,7 +574,7 @@ def test_slow_browse_reconcile_gives_up_inside_its_budget_and_boot_waits_it_out(
     import time
 
     import gateway.run_bootstrap as bootstrap
-    import hermes_state_reconcile as reconcile
+    import hermes_agent.hermes_state_reconcile as reconcile
     from gateway.runtime_ownership import ProfileOwnership
 
     budget_s = getattr(reconcile, "BROWSE_RECONCILE_BUDGET_S", 2.0)
@@ -662,7 +662,7 @@ def test_failed_column_reconcile_rolls_back_every_addition(tmp_path):
 def test_integrity_scan_runs_before_the_lock_is_taken(tmp_path, monkeypatch):
     """alt-glitch C1 / pastels m3: the full integrity scan is read-only and scales with file size.
     It must run BEFORE gateway.lock is reserved, so a booting gateway never waits on it."""
-    import hermes_state_reconcile as reconcile
+    import hermes_agent.hermes_state_reconcile as reconcile
     from gateway.runtime_ownership import OwnershipConflict, ProfileOwnership
 
     home = _profile_home(tmp_path)
@@ -782,7 +782,7 @@ def test_slow_integrity_scan_is_bounded_and_not_repeated_on_every_poll(tmp_path,
     """alt-glitch C1: the pre-lock scan still has a deadline (retryable 503, nothing written), and a
     sidebar polling the same unchanged store does not rescan the whole file on every request."""
     import hermes_cli.sqlite_safe_read as ssr
-    import hermes_state_reconcile as reconcile
+    import hermes_agent.hermes_state_reconcile as reconcile
 
     path = _lagging_store_with_history(_profile_home(tmp_path), rows=400)
     before = _file_state(path)
@@ -838,7 +838,7 @@ def test_boot_refuses_at_once_when_another_home_has_a_real_owner(tmp_path):
 
     from gateway.run_bootstrap import _reserve_waiting_out_browse_reconcile
     from gateway.runtime_ownership import OwnershipConflict, ProfileOwnership
-    from hermes_state_reconcile import BROWSE_RECONCILE_PURPOSE
+    from hermes_agent.hermes_state_reconcile import BROWSE_RECONCILE_PURPOSE
 
     owned_home = _profile_home(tmp_path, "alpha")
     browsed_home = _profile_home(tmp_path, "beta")
@@ -864,7 +864,7 @@ def test_budget_refusal_on_unowned_store_names_repair_not_a_gateway(tmp_path, mo
     the 503 must be actionable: name `hermes -p NAME sessions repair` (no time limit), say the
     history is untouched, and never tell a user with no gateway to restart one."""
     import hermes_cli.sqlite_safe_read as ssr
-    import hermes_state_reconcile as reconcile
+    import hermes_agent.hermes_state_reconcile as reconcile
 
     assert reconcile.BROWSE_INTEGRITY_BUDGET_S == reconcile.BROWSE_RECONCILE_BUDGET_S == 3.0
     path = _lagging_store_with_history(_profile_home(tmp_path), rows=400)
@@ -885,8 +885,8 @@ def test_budget_refusal_on_unowned_store_names_repair_not_a_gateway(tmp_path, mo
 
     # The named command really closes it: repair has no budget and catches the store up.
     monkeypatch.setattr(ssr, "connect_tracked", original)
-    from hermes_state_reconcile import repair_declarative_schema
-    import hermes_state_repair
+    from hermes_agent.hermes_state_reconcile import repair_declarative_schema
+    from hermes_agent import hermes_state_repair
     monkeypatch.setattr(hermes_state_repair, "_live_writer_holds_db", lambda _p: False)
     report = repair_declarative_schema(path, backup=False)
     assert report["repaired"], report
@@ -1000,8 +1000,8 @@ def test_every_raw_schema_catch_up_handles_an_old_indexed_column(tmp_path):
     """alt-glitch S1: three hand-ordered catch-ups (reconcile_state_schema, the repair snapshot and the
     browse DDL) each encoded the columns -> SCHEMA_SQL -> columns order. One apply_declared_schema
     now owns it; every raw caller catches an old store (indexed column missing) up the same way."""
-    import hermes_state_schema
-    from hermes_state_schema import reconcile_state_schema
+    from hermes_agent import hermes_state_schema
+    from hermes_agent.hermes_state_schema import reconcile_state_schema
 
     path = _lagging_store_with_history(_profile_home(tmp_path), rows=5)
     with closing(sqlite3.connect(path)) as conn:

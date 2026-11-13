@@ -630,7 +630,7 @@ class HostedRoomService:
     def route_authority(self, room_id: str) -> tuple[str, int]:
         """Check publication authority under peer_route_lock, including an in-progress Disband."""
         if room_id in self._disbanding_rooms:
-            from hermes_state_runtime import RuntimeStoreError
+            from hermes_agent.hermes_state_runtime import RuntimeStoreError
             # Stop can still fail: this temporary refusal must not owe a surviving route's revoke.
             raise RuntimeStoreError("room_disbanding_retry")
         return self._owned_authority(room_id)

@@ -605,7 +605,7 @@ class GatewayModelCommandsMixin:
             # mid-history-copy, since each append_message call a few lines down is independently
             # best-effort) leaves the branch permanently unroutable: unreachable by chat/thread lookup, and
             # unreachable via /resume's IDOR guard too (which requires the row's chat_id/thread_id to match
-            # the caller's). user_id is critical for the fallback lookup path (hermes_state.py:1994-2009)
+            # the caller's). user_id is critical for the fallback lookup path (hermes_agent/hermes_state.py:1994-2009)
             # that searches by the complete peer tuple when session_key doesn't match. origin_json and
             # display_name complete the identity (same shape as the reset path's db_create_kwargs in
             # gateway/session.py, #82633) so consumers that read routing/presentation data from state.db

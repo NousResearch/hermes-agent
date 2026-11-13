@@ -19,7 +19,7 @@ def scoped_lock_pid_is_ours(record: dict[str, Any]) -> bool:
     namespace's PID (often 1): from outside, that number is init or nothing, and the live owner
     reads as dead (#123081). A stamp from another namespace is never probed; a record with no
     stamp (written before it existed, or on a platform without namespaces) keeps the pid probe."""
-    from hermes_state_pidns import persistent_record_pidns_checkable
+    from hermes_agent.hermes_state_pidns import persistent_record_pidns_checkable
     return persistent_record_pidns_checkable(record.get("pidns"))
 
 

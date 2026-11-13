@@ -3,7 +3,7 @@ import functools
 import json
 import time
 
-from hermes_state_runtime import RuntimeStoreError, _json
+from hermes_agent.hermes_state_runtime import RuntimeStoreError, _json
 
 LEGACY_PREFIX = 'gateway.local_legacy.v1:'
 
@@ -108,14 +108,14 @@ def bind_legacy_target(db, conn, receipt):
     if row is None:
         raise RuntimeStoreError('not_found')
     validate_legacy_row(db, dict(row), subject=receipt['principal_id'])
-    from hermes_state_mutation_binding import BINDING_PREFIX, binding_names
+    from hermes_agent.hermes_state_mutation_binding import BINDING_PREFIX, binding_names
     imported = conn.execute('SELECT value FROM state_meta WHERE key=?', (BINDING_PREFIX + target,)).fetchone()
     if imported and not binding_names(imported[0], receipt['principal_id']):
         raise RuntimeStoreError('permission_denied')
-    from hermes_state_compression import _CHAIN_STEP_SQL
+    from hermes_agent.hermes_state_compression import _CHAIN_STEP_SQL
     if conn.execute(_CHAIN_STEP_SQL, (target,)).fetchone() is not None:
         raise RuntimeStoreError('admission_conflict')
-    from hermes_state_mutation_guards import require_idle
+    from hermes_agent.hermes_state_mutation_guards import require_idle
     require_idle(db, conn, [target])
     root = db._session_turn_lease_key_on_conn(conn, target)
     if conn.execute('SELECT 1 FROM session_turn_leases WHERE conversation_id=? AND expires_at>?',

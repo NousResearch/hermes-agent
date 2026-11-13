@@ -1,4 +1,4 @@
-from hermes_state import AsyncSessionDB, SessionDB
+from hermes_agent.hermes_state import AsyncSessionDB, SessionDB
 """Tests for gateway /status behavior and token persistence."""
 
 from datetime import datetime

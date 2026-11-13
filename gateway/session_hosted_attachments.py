@@ -7,7 +7,7 @@ import tempfile
 
 from gateway.hosted_room_attachments import HostedRoomAttachmentStore, MAX_ATTACHMENT_BYTES
 from gateway.session_ingress_media import HOSTED_DOCUMENT_LINE
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
 def _authorize(service, actor, params, capability):

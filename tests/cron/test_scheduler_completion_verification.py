@@ -72,7 +72,7 @@ def _run_booked_job(monkeypatch, tmp_path):
     db = _RecordingSessionDB()
     db.db_path = tmp_path / "state.db"
     owner = SimpleNamespace(db=db)
-    monkeypatch.setattr("hermes_state_registry.acquire", lambda _path: db)
+    monkeypatch.setattr("hermes_agent.hermes_state_registry.acquire", lambda _path: db)
     monkeypatch.setattr(run_agent, "AIAgent", _FakeCronAgent)
     monkeypatch.setattr(
         "hermes_constants.resolve_reasoning_config", lambda *_a, **_k: None

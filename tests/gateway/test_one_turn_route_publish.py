@@ -338,7 +338,7 @@ def test_an_alias_runs_on_the_endpoint_the_switch_resolved_when_the_config_chang
 
 def test_a_one_turn_override_carries_its_reasoning_level_for_that_admission_only():
     from gateway.session_cli_turn import admit_cli_turn, one_turn_reasoning
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     committed = admit_cli_turn({"model_override": {"model": "m", "provider": "p", "reasoning": "high"}})
     assert committed["cli_turn_v1"]["model_override"] == {"model": "m", "provider": "p", "reasoning": "high"}
     with pytest.raises(RuntimeStoreError):

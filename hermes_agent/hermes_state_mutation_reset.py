@@ -3,10 +3,10 @@ import json
 import uuid
 import time
 
-from hermes_state_local import POLICY_PREFIX
-from hermes_state_local_lineage import advance_local_target, validate_local_lineage
-from hermes_state_mutation_guards import require_target_advanceable
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_local import POLICY_PREFIX
+from hermes_agent.hermes_state_local_lineage import advance_local_target, validate_local_lineage
+from hermes_agent.hermes_state_mutation_guards import require_target_advanceable
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
 def reset_in_transaction(db, conn, session_id, payload):
@@ -16,7 +16,7 @@ def reset_in_transaction(db, conn, session_id, payload):
         raise RuntimeStoreError('runtime_coordination_required')
     receipt = json.loads(saved[0])
     target = validate_local_lineage(conn, receipt)
-    from hermes_state_runtime_workers import discard_orphan_workers_on_reset, runtime_lineage
+    from hermes_agent.hermes_state_runtime_workers import discard_orphan_workers_on_reset, runtime_lineage
     discard_orphan_workers_on_reset(conn, runtime_lineage(conn, session_id))
     require_target_advanceable(db, conn, list({session_id, target}))
     parent = conn.execute('SELECT * FROM sessions WHERE id=?', (target,)).fetchone()

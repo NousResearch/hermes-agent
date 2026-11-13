@@ -94,7 +94,7 @@ async def test_api_and_shared_listener_requests_to_a_parked_profile_are_retryabl
     from gateway.platforms.shared_ingress import dispatch_profile_ingress
     from gateway.run import _profile_runtime_scope
     from gateway.session_api_turn import admit_api_steps, admit_api_turn_async
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     homes = _homes(tmp_path, monkeypatch)
     runner = await _runner_with_beta_parked(tmp_path, monkeypatch, homes)
     api = SimpleNamespace(gateway_runner=runner)

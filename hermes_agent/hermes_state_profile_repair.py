@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
-from hermes_state_common import (
+from hermes_agent.hermes_state_common import (
     _id_chunks,
     _placeholders as _session_ids_placeholders,
     emit_session_deleted,
@@ -41,7 +41,7 @@ def session_key_profile(session_key: Any) -> Optional[str]:
     parts = session_key.split(":")
     if len(parts) < 3 or parts[0] != "agent" or not parts[1]:
         return None
-    from hermes_state_keys import profile_from_session_key_namespace
+    from hermes_agent.hermes_state_keys import profile_from_session_key_namespace
     return profile_from_session_key_namespace(parts[1])
 
 

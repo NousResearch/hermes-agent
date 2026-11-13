@@ -35,7 +35,7 @@ async def test_stored_picker_survives_upgrade_and_resumes_without_copying(tmp_pa
         db.release_compression_lock('old-tui', 'fixture')
     db.set_session_hidden('hidden', True)
     db.set_session_archived('archived', True)
-    from hermes_state_mutation_binding import BINDING_PREFIX
+    from hermes_agent.hermes_state_mutation_binding import BINDING_PREFIX
     db._write_sql('INSERT INTO state_meta(key,value) VALUES(?,?)',
                   (BINDING_PREFIX + 'imported-other', '["other-profile","other-user"]'))
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,

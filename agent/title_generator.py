@@ -768,7 +768,7 @@ def _kanban_task_title() -> Optional[str]:
         return None
     try:
         from hermes_cli import kanban_db, kanban_db_connect
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
         with kanban_db_connect.connect_closing() as conn:
             task = kanban_db.get_task(conn, task_id)
         title = " ".join((task.title or "").split()) if task is not None else ""

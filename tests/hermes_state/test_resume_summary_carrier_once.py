@@ -13,7 +13,7 @@ from agent.context_compressor import (
     _MERGED_SUMMARY_DELIMITER,
     _SUMMARY_END_MARKER,
 )
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def test_summary_carrier_does_not_show_its_message_twice(tmp_path):

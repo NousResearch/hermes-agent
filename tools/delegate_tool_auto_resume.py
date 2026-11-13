@@ -224,7 +224,7 @@ def _owes_any() -> bool:
     """With auto_resume off: does this profile's store hold a record still owed its one report? One read-only query
     per tick, so an idle disabled tick never writes (or creates) state.db."""
     from hermes_cli.sqlite_safe_read import connect_tracked
-    from hermes_state_holders import read_only_db_uri
+    from hermes_agent.hermes_state_holders import read_only_db_uri
     db = _db()
     if not db.exists():
         return False
@@ -276,7 +276,7 @@ def _unit_row(unit_id: Any) -> Optional[dict[str, Any]]:
 # ── verdicts ───────────────────────────────────────────────────────────────
 def _lineage(conn, parent_sid: str) -> tuple[set[str], Optional[dict[str, Any]]]:
     """``(ids of the parent's compression lineage, the live tip's session row or None)``, read on *conn*."""
-    from hermes_state_compression import _CHAIN_STEP_SQL, _walk_compression_chain
+    from hermes_agent.hermes_state_compression import _CHAIN_STEP_SQL, _walk_compression_chain
 
     def step(current):
         row = conn.execute(_CHAIN_STEP_SQL, (current,)).fetchone()
@@ -292,7 +292,7 @@ def _parent_ended(row: Optional[dict[str, Any]]) -> Optional[str]:
     reason = row.get("end_reason")
     if row.get("ended_at") is None or not reason:
         return None
-    from hermes_state_common import is_automatic_end_reason
+    from hermes_agent.hermes_state_common import is_automatic_end_reason
     return None if is_automatic_end_reason(reason) else f"its parent session ended ({reason})"
 
 
@@ -667,7 +667,7 @@ def supersede_for_session(*, session_key: str = "", origin_ui_session_id: str = 
     """A person stopped, reset or closed a conversation: its resumable children must not wake up later. Automatic
     cleanup (a gateway restart, an orphan reap) is not a decision about them and changes nothing. With
     ``auto_resume`` off it still cancels the promised ones, so turning it back on cannot wake them."""
-    from hermes_state_common import is_automatic_end_reason
+    from hermes_agent.hermes_state_common import is_automatic_end_reason
     if is_automatic_end_reason(reason.rsplit(":", 1)[-1]):
         return 0
     promised_only = "" if enabled() else f" AND {OWED_SQL}"

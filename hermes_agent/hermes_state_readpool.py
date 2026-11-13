@@ -13,10 +13,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Iterator, Optional
 
 if TYPE_CHECKING:  # pragma: no cover
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
 # caplog tests pin the "hermes_state" logger name.
-logger = logging.getLogger("hermes_state")
+logger = logging.getLogger("hermes_agent.hermes_state")
 
 # Ceiling on read-only connections ALIVE at once against one database FILE (idle
 # pooled + checked out, over every SessionDB on that file). One constant for both

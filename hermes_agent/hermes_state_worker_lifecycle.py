@@ -2,8 +2,8 @@
 import json
 import time
 
-from hermes_state_common import _MERGE_DISPLAY_META
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_common import _MERGE_DISPLAY_META
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
 _IDENTITY_FIELDS = frozenset({
@@ -50,7 +50,7 @@ def worker_end(db, conn, session_id, payload):
 
 
 def worker_lifecycle(db, conn, session_id, payload):
-    from hermes_state_sessions import classify_session_status
+    from hermes_agent.hermes_state_sessions import classify_session_status
     if payload:
         raise RuntimeStoreError('invalid_params')
     row = conn.execute("SELECT role,tool_calls IS NOT NULL AS has_tool_calls,finish_reason "
@@ -83,8 +83,8 @@ def worker_title_source(db, conn, session_id, payload):
 
 
 def worker_next_title(db, conn, session_id, payload):
-    from hermes_state_titles import _NUMBERED_TITLE_RE
-    from hermes_state_common import escape_like
+    from hermes_agent.hermes_state_titles import _NUMBERED_TITLE_RE
+    from hermes_agent.hermes_state_common import escape_like
     if set(payload) != {'base_title'} or not isinstance(payload['base_title'], str):
         raise RuntimeStoreError('invalid_params')
     title = conn.execute('SELECT title FROM sessions WHERE id=?', (session_id,)).fetchone()[0]
@@ -147,7 +147,7 @@ def worker_billing_route(db, conn, session_id, payload):
 
 
 def worker_api_content(db, conn, session_id, payload):
-    from hermes_state_messages import _scrub_surrogates
+    from hermes_agent.hermes_state_messages import _scrub_surrogates
     if set(payload) != {'content', 'api_content'} or not isinstance(payload['api_content'], str):
         raise RuntimeStoreError('invalid_params')
     value = conn.execute(
@@ -166,7 +166,7 @@ def _row_id(payload):
 
 def worker_message_api_content(db, conn, session_id, payload):
     """Row-addressed sidecar backfill, same guards as ``SessionDB.set_message_api_content``."""
-    from hermes_state_messages import _scrub_surrogates
+    from hermes_agent.hermes_state_messages import _scrub_surrogates
     if set(payload) != {'row_id', 'content', 'api_content'} or not isinstance(payload['api_content'], str):
         raise RuntimeStoreError('invalid_params')
     return {'value': conn.execute(
@@ -217,8 +217,8 @@ def insert_session_row_in_transaction(
     The ordinary constructor should delegate here too. Worker identity is
     validated before entry; this helper never opens or commits a DB.
     """
-    from hermes_state_sessions import _UPSERT_KEEP_EXISTING_SQL
-    from hermes_state_mutation_retirement import RETIRED_PREFIX
+    from hermes_agent.hermes_state_sessions import _UPSERT_KEEP_EXISTING_SQL
+    from hermes_agent.hermes_state_mutation_retirement import RETIRED_PREFIX
     # A delayed constructor/accounting backfill must not recreate a deleted session
     # beside its durable tombstone (the exact delete retry would then report a stale
     # success while a fresh delete collides with the existing marker).
@@ -293,5 +293,5 @@ def insert_session_row_in_transaction(
     if parent_session_id:
         self._inherit_parent_session_metadata(conn, session_id)
     # The upsert may have just filled a compression tip's created_source (update_token_counts).
-    from hermes_state_compression import stamp_compression_ancestors
+    from hermes_agent.hermes_state_compression import stamp_compression_ancestors
     stamp_compression_ancestors(conn, session_id)

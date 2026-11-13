@@ -787,7 +787,7 @@ def _record_argv() -> list[str]:
 
 
 def _build_pid_record() -> dict:
-    from hermes_state_pidns import pid_namespace_id  # ``pid`` is relative to its PID namespace (#123081)
+    from hermes_agent.hermes_state_pidns import pid_namespace_id  # ``pid`` is relative to its PID namespace (#123081)
     return {
         "pid": os.getpid(), "kind": _GATEWAY_KIND, "argv": _record_argv(),
         "start_time": _get_process_start_time(os.getpid()),

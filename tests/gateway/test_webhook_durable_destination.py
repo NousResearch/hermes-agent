@@ -143,7 +143,7 @@ async def test_exact_legacy_webhook_retry_keeps_receipt_without_inference():
         assert len(authority.db._read_all('SELECT admission_id FROM session_admissions')) == 1
         # Receipt compatibility cannot authorize an invented destination or changed input.
         from gateway.session_envelope import check_native_route, restore_native
-        from hermes_state_runtime import RuntimeStoreError
+        from hermes_agent.hermes_state_runtime import RuntimeStoreError
         event = restore_native(legacy)
         with pytest.raises(RuntimeStoreError):
             await check_native_route(authority.runner, legacy,
@@ -173,7 +173,7 @@ async def test_fenced_webhook_retry_only_observes_existing_receipt(fence):
         if fence == 'draining':
             authority.runner._draining = True
         else:
-            from hermes_state_runtime import begin_runtime_epoch
+            from hermes_agent.hermes_state_runtime import begin_runtime_epoch
             begin_runtime_epoch(authority.db, instance_id='replacement-owner')
         schedules = []
         authority._schedule = schedules.append

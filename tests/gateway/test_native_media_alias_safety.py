@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 
 from gateway import session_ingress_media as media
-from hermes_state_runtime import RuntimeStoreError, admit_session_input, claim_session_input
-from hermes_state_runtime import get_session_admission, settle_session_input
+from hermes_agent.hermes_state_runtime import RuntimeStoreError, admit_session_input, claim_session_input
+from hermes_agent.hermes_state_runtime import get_session_admission, settle_session_input
 from tests.gateway.test_native_media_budget import _authority, _staged, _submit
 
 

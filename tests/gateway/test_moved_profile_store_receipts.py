@@ -12,8 +12,8 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.session_contract import SessionActor, SessionRef
-from hermes_state_local import POLICY_PREFIX
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_local import POLICY_PREFIX
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 _CAPS = frozenset({'session:create', 'session:read', 'session:submit'})
 

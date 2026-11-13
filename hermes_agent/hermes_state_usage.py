@@ -13,7 +13,7 @@ import weakref
 from typing import Any, Dict, List, Optional, Tuple
 
 # caplog tests pin the "hermes_state" logger name.
-logger = logging.getLogger("hermes_state")
+logger = logging.getLogger("hermes_agent.hermes_state")
 
 _TOKEN_COUNTERS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
 
@@ -412,7 +412,7 @@ class SessionUsageMixin:
         # the creator upsert later replaces. An existing row keeps source and created_source,
         # including a NULL surface update_token_counts can still fill; the UPDATE below only
         # fills a NULL profile_name, without writing ``unknown`` anywhere.
-        from hermes_state_worker_lifecycle import insert_session_row_in_transaction
+        from hermes_agent.hermes_state_worker_lifecycle import insert_session_row_in_transaction
 
         def _write(conn):
             if conn.execute("SELECT 1 FROM sessions WHERE id=?", (session_id,)).fetchone() is None:

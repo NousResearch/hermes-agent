@@ -5,7 +5,7 @@ The operation lives in ``tools/connectors/live.py`` under the turn's session key
 import asyncio
 from functools import partial
 
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 METHODS = ('connection.respond', 'connectors.operation.status', 'connectors.operation.wake', 'connectors.connect')
 

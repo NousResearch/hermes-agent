@@ -295,7 +295,7 @@ def test_in_place_commit_preserves_seeded_telemetry_fields(caplog):
     from agent.conversation_compression import CompressionCommitFence, run_compress_context_with_progress_timeout
 
     with tempfile.TemporaryDirectory() as tmp:
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
         from run_agent import AIAgent
 
         db = SessionDB(db_path=Path(tmp) / "t.db")
@@ -374,7 +374,7 @@ def test_a_lock_contended_call_keeps_the_running_attempts_telemetry(tmp_path):
     contender logs its own ``lock_contended`` record from its seed."""
     import os
 
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / "state.db")
     db.create_session("S", source="cli")

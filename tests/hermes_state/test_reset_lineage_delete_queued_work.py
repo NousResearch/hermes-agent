@@ -9,9 +9,9 @@ import time
 
 import pytest
 
-from hermes_state import SessionDB
-import hermes_state_runtime as rt
-from hermes_state_local import POLICY_PREFIX
+from hermes_agent.hermes_state import SessionDB
+import hermes_agent.hermes_state_runtime as rt
+from hermes_agent.hermes_state_local import POLICY_PREFIX
 from tests.hermes_state.test_target_advance_fence import _local_session, _mutate
 
 OPERATIONS = {

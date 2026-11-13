@@ -23,7 +23,7 @@ async def probe(peer):
     from gateway.run import GatewayRunner
     from gateway.session_authority import initialize_session_authority
     from gateway.session_envelope import restore_native
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     from tests.waiting import async_wait_until
     runner = GatewayRunner()
     authority = await initialize_session_authority(runner, profile_id='default', instance_id='graph-test')

@@ -40,7 +40,7 @@ async def _handoff(runner, authority, sid, source):
     """The handoff watcher's repoint (``GatewayStartupMixin._handoff_repoint``) on the real store."""
     from gateway.run_startup import GatewayStartupMixin
     from gateway.session import AsyncSessionStore
-    from hermes_state import AsyncSessionDB
+    from hermes_agent.hermes_state import AsyncSessionDB
     route = runner.session_store._generate_session_key(source)
     gateway = SimpleNamespace(_session_db=AsyncSessionDB(authority.db), session_authority=authority,
                               async_session_store=AsyncSessionStore(runner.session_store))
@@ -50,7 +50,7 @@ async def _handoff(runner, authority, sid, source):
 
 def _as_an_older_build(monkeypatch):
     """An older build's repoint: the row's routing identity moves, its local receipt stays."""
-    import hermes_state_local
+    from hermes_agent import hermes_state_local
     for name in ('hand_off_conversations', 'release_receipts'):
         monkeypatch.setattr(hermes_state_local, name, lambda *_args: None, raising=False)
 
@@ -69,8 +69,8 @@ async def test_a_handed_off_bot_chat_opens_on_its_lane_after_a_restart(tmp_path,
     from gateway.session_local import create_local_session
     from gateway.session_local_recovery import transcript_target
     from gateway.session_local_title import resolve_titled_session
-    from hermes_state_local import POLICY_PREFIX, local_receipt
-    from hermes_state_local_migration import LEGACY_PREFIX
+    from hermes_agent.hermes_state_local import POLICY_PREFIX, local_receipt
+    from hermes_agent.hermes_state_local_migration import LEGACY_PREFIX
 
     runner = _Runner(tmp_path)
     warm = await initialize_session_authority(runner, profile_id='fixture', instance_id='warm')
@@ -135,7 +135,7 @@ async def test_a_receipt_whose_current_segment_is_still_local_is_never_released(
     from gateway.session_authority import initialize_session_authority
     from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
     runner = _Runner(tmp_path)
     warm = await initialize_session_authority(runner, profile_id='fixture', instance_id='warm')
     owner = SessionActor('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control'}), 'socket')
@@ -337,7 +337,7 @@ def _resume_gateway(runner, authority):
     """The platform's ``/resume`` handler (``GatewayRunner._handle_resume_command``) on the real store,
     run by an admin (``--all`` widens it to every titled conversation)."""
     from gateway.run import GatewayRunner
-    from hermes_state import AsyncSessionDB
+    from hermes_agent.hermes_state import AsyncSessionDB
     gateway = object.__new__(GatewayRunner)
     gateway.adapters, gateway.config, gateway._voice_mode, gateway._running_agents = {}, runner.config, {}, {}
     gateway._session_db, gateway.session_store = AsyncSessionDB(authority.db), runner.session_store
@@ -357,7 +357,7 @@ async def test_a_platform_resume_of_a_local_conversation_continues_its_current_h
     from gateway.session_contract import SessionActor, SessionRef
     from gateway.session_local import create_local_session
     from gateway.session_local_title import resolve_titled_session
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
     runner = _Runner(tmp_path)
     warm = await initialize_session_authority(runner, profile_id='fixture', instance_id='warm')
     owner = SessionActor('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control'}), 'socket')
@@ -395,7 +395,7 @@ async def test_a_moved_conversation_stays_writable_once_its_lane_is_taken_over(t
     from gateway.session_authority import initialize_session_authority
     from gateway.session_contract import SessionActor, SessionRef
     from gateway.session_local import create_local_session
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
     runner = _Runner(tmp_path)
     warm = await initialize_session_authority(runner, profile_id='fixture', instance_id='warm')
     owner = SessionActor('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control',
@@ -458,7 +458,7 @@ async def test_a_moved_conversation_mounted_by_startup_recovery_stays_writable_o
     from tests.gateway.test_command_bypass_active_session import _StubAdapter
     monkeypatch.setenv('TELEGRAM_ALLOWED_USERS', '42')
     monkeypatch.setattr('gateway.run._hermes_home', tmp_path)
-    monkeypatch.setattr('hermes_state.DEFAULT_DB_PATH', tmp_path / 'state.db')
+    monkeypatch.setattr('hermes_agent.hermes_state.DEFAULT_DB_PATH', tmp_path / 'state.db')
 
     def boot():
         runner = GatewayRunner(GatewayConfig(multiplex_profiles=False, sessions_dir=tmp_path / 'sessions'))
@@ -554,7 +554,7 @@ async def test_a_moved_receipt_with_a_malformed_lineage_never_stops_the_boot(tmp
     from gateway.session_authority import initialize_session_authority
     from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
-    from hermes_state_local import POLICY_PREFIX
+    from hermes_agent.hermes_state_local import POLICY_PREFIX
     runner = _Runner(tmp_path)
     warm = await initialize_session_authority(runner, profile_id='fixture', instance_id='warm')
     owner = SessionActor('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control'}), 'socket')
@@ -576,7 +576,7 @@ def _serve(tmp_path, monkeypatch):
     """A multiplexed gateway's homes: the default profile and a named ``bot`` profile, each with its
     own ``state.db``; ``bot`` delivers to a Telegram home channel."""
     from pathlib import Path
-    import hermes_state
+    from hermes_agent import hermes_state
     root = tmp_path / '.hermes'
     bot = root / 'profiles' / 'bot'
     bot.mkdir(parents=True, mode=0o700)
@@ -626,8 +626,8 @@ async def test_a_named_profiles_handed_off_bot_chat_opens_on_its_lane_after_a_re
     from gateway.session_local import create_local_session
     from gateway.session_local_recovery import transcript_target
     from gateway.session_local_title import resolve_titled_session
-    from hermes_state_local import POLICY_PREFIX
-    from hermes_state_local_migration import LEGACY_PREFIX
+    from hermes_agent.hermes_state_local import POLICY_PREFIX
+    from hermes_agent.hermes_state_local_migration import LEGACY_PREFIX
 
     root, bot = _serve(tmp_path, monkeypatch)
     process_ownership.reserve([root, bot])

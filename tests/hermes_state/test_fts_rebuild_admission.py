@@ -26,9 +26,9 @@ from pathlib import Path
 
 import pytest
 
-import hermes_state_common
-from hermes_state import SessionDB
-from hermes_state_common import FTS_STALE_KEY, _FTS_TRIGGERS
+from hermes_agent import hermes_state_common
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_common import FTS_STALE_KEY, _FTS_TRIGGERS
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX flock child-process harness"
@@ -328,7 +328,7 @@ class TestOrphanedHolderStalenessBreak:
     @pytest.mark.live_system_guard_bypass
     def test_repair_lock_breaks_orphaned_holder(self, tmp_path, monkeypatch):
         """_cross_process_repair_lock shares the same staleness break."""
-        import hermes_state
+        from hermes_agent import hermes_state
 
         monkeypatch.setattr(hermes_state, "_REPAIR_LOCK_TIMEOUT_SECONDS", 0.5)
         db_path = tmp_path / "state.db"
@@ -338,7 +338,7 @@ class TestOrphanedHolderStalenessBreak:
 import os, sys, time
 sys.path.insert(0, {str(Path(hermes_state_common.__file__).parent)!r})
 from pathlib import Path
-import hermes_state_repair
+from hermes_agent import hermes_state_repair
 
 lock_cm = hermes_state_repair._cross_process_repair_lock(Path({str(db_path)!r}))
 assert lock_cm.__enter__() is True
@@ -358,7 +358,7 @@ os._exit(1)
         grandchild = int(proc.stdout.readline().strip().split()[1])
         proc.wait(timeout=10)
         try:
-            import hermes_state_repair
+            from hermes_agent import hermes_state_repair
 
             with hermes_state_repair._cross_process_repair_lock(db_path) as holding:
                 assert holding is True
@@ -391,7 +391,7 @@ class TestNonContentionErrnoFailsFast:
         self, tmp_path, monkeypatch
     ):
         """Gateway-shaped: same SessionDB stays open and retries after deferral."""
-        import hermes_state_schema
+        from hermes_agent import hermes_state_schema
 
         monkeypatch.setattr(hermes_state_schema, "_FTS_STALE_RETRY_SECONDS", 0.0)
         db_path = tmp_path / "state.db"
@@ -447,7 +447,7 @@ class TestNonContentionErrnoFailsFast:
             raise OSError(errno.ENOTSUP, "no locks on this fs")
 
         monkeypatch.setattr(fcntl, "flock", _flock)
-        with caplog.at_level(logging.INFO, logger="hermes_state"):
+        with caplog.at_level(logging.INFO, logger="hermes_agent.hermes_state"):
             with hermes_state_common.fts_rebuild_admission(
                 tmp_path / "state.db"
             ) as admitted:
@@ -462,8 +462,8 @@ class TestNonContentionErrnoFailsFast:
         """Sibling site: the state.db repair lock shares the errno filter."""
         import fcntl
 
-        import hermes_state
-        import hermes_state_repair
+        from hermes_agent import hermes_state
+        from hermes_agent import hermes_state_repair
 
         monkeypatch.setattr(hermes_state, "_REPAIR_LOCK_TIMEOUT_SECONDS", 30.0)
 
@@ -513,7 +513,7 @@ class TestDeferredFtsRetryInProcess:
     def test_retry_is_non_blocking_while_live_holder_and_backs_off(
         self, tmp_path, fast_timeout, monkeypatch
     ):
-        import hermes_state_schema
+        from hermes_agent import hermes_state_schema
 
         db_path = tmp_path / "state.db"
         d = SessionDB(db_path=db_path)
@@ -571,8 +571,8 @@ class TestDeferredFtsRetryInProcess:
         and reaches shared-registry instances."""
         import threading
 
-        import hermes_state_registry
-        import hermes_state_schema
+        from hermes_agent import hermes_state_registry
+        from hermes_agent import hermes_state_schema
         import gateway.run as grun
 
         monkeypatch.setattr(hermes_state_schema, "_FTS_STALE_RETRY_SECONDS", 0.0)

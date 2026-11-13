@@ -12,7 +12,7 @@ import pytest
 
 from agent.context_compressor import _DB_PERSISTED_MARKER
 from agent.message_metadata import DB_ROW_SNAPSHOT, MESSAGE_UID
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 @pytest.fixture

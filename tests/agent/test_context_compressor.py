@@ -20,7 +20,7 @@ from agent.context_compressor import (
     _is_summary_access_or_quota_error,
 )
 from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from agent.auxiliary_client import CODEX_STREAM_STALL_MARKER
 import itertools
 

@@ -27,7 +27,7 @@ from gateway.session_envelope import prepare_native
 from gateway.session_ingress_context import (
     capture_provenance, native_callback, register_transport_home)
 
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
 class _FakeAdapter:
@@ -43,7 +43,7 @@ def _reserve_homes(tmp_path, monkeypatch, names=('beta',)):
     root.mkdir(mode=0o700)
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.setenv('HERMES_HOME', str(root))
-    import hermes_state
+    from hermes_agent import hermes_state
     monkeypatch.setattr(
         hermes_state, 'DEFAULT_DB_PATH', hermes_state._IMPORT_DEFAULT_DB_PATH)
     homes = [('default', root)]

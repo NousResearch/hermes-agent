@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from hermes_cli.web_routers import _common, analytics
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def _malformed_state_db(home: Path) -> Path:
@@ -29,7 +29,7 @@ def _malformed_state_db(home: Path) -> Path:
 
 def test_corrupt_store_polls_return_status_and_warn_once_per_interval(tmp_path, monkeypatch, caplog):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    import hermes_state
+    from hermes_agent import hermes_state
     db_path = _malformed_state_db(tmp_path)
     monkeypatch.setattr(hermes_state, "_default_db_path", lambda: db_path)
     monkeypatch.setattr(_common, "_corrupt_store_warned_at", {})
@@ -70,7 +70,7 @@ def test_corrupt_store_as_status_maps_replaced_store_errors_to_503_without_fix_n
     must come back as a structured 503 like the corrupt case, and the guidance must never tell the
     user to run `doctor --fix` while a holder is live (#110054). Busy/locked still propagates."""
     from fastapi import HTTPException
-    from hermes_state_errors import DeletedWalGenerationError, StateDbReplacedError
+    from hermes_agent.hermes_state_errors import DeletedWalGenerationError, StateDbReplacedError
 
     monkeypatch.setattr(_common, "_corrupt_store_warned_at", {})
     db_path = tmp_path / "state.db"

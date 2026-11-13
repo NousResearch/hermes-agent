@@ -14,7 +14,7 @@ import threading
 from contextlib import contextmanager
 from typing import Any, Iterable, Iterator, Optional
 
-from hermes_state_common import _placeholders
+from hermes_agent.hermes_state_common import _placeholders
 
 # The rows that can hold a compaction handoff (``ContextCompressor.classify_summary_content``'s prefixes,
 # the merged delimiter, or the stored flag) for each shown row: the row itself, or an earlier copy of its
@@ -240,7 +240,7 @@ class SessionStoredReadsMixin:
         A store without the display columns has no index: False.
 
         Storage interface: port as ``display_index_complete``."""
-        from hermes_state_messages import _DISPLAY_INDEX_MISSING_SQL
+        from hermes_agent.hermes_state_messages import _DISPLAY_INDEX_MISSING_SQL
         with self._read_ctx() as conn:
             columns = set(self._message_column_names(conn))
         if not {"display_order", "display_identity"} <= columns:
@@ -287,8 +287,8 @@ class SessionStoredReadsMixin:
         confirms each with ``compaction_summary``. A paged read shows a handoff once, at its first row.
 
         Storage interface: port as ``transcript_handoffs_shown_before``."""
-        from hermes_state_compaction_display import not_a_later_tool_copy_sql
-        from hermes_state_messages import DISPLAY_VISIBLE_SQL
+        from hermes_agent.hermes_state_compaction_display import not_a_later_tool_copy_sql
+        from hermes_agent.hermes_state_messages import DISPLAY_VISIBLE_SQL
         handoffs = list(handoffs)
         uids = sorted({uid for uid, _ in handoffs if uid})
         # Structured (content-block) carriers are matched by their stored encoding, as strings are.
@@ -397,7 +397,7 @@ class SessionStoredReadsMixin:
         filters the stored feed by (``hermes -c``'s rule: the same repo root, or at/under the folder).
 
         Storage interface: port as ``sessions_in_workspace``."""
-        from hermes_state_sessions import _workspace_key_clause
+        from hermes_agent.hermes_state_sessions import _workspace_key_clause
         clause, params = _workspace_key_clause(workspace)
         with self._read_ctx() as conn:
             rows = conn.execute(f"SELECT s.id FROM sessions s WHERE s.id IN (SELECT value FROM json_each(?)) AND {clause}",
@@ -414,8 +414,8 @@ class SessionStoredReadsMixin:
         decoded.
 
         Storage interface: port as ``picker_session_facts``."""
-        from hermes_state_common import _sql_preview_raw, _sql_session_last_active
-        from hermes_state_messages import DISPLAY_VISIBLE_SQL
+        from hermes_agent.hermes_state_common import _sql_preview_raw, _sql_session_last_active
+        from hermes_agent.hermes_state_messages import DISPLAY_VISIBLE_SQL
         unlisted_ids = list(unlisted_ids)
         with self._read_ctx() as conn:
             roots = {row['id']: dict(row) for row in conn.execute(
@@ -437,7 +437,7 @@ class SessionStoredReadsMixin:
         (``session_viewer_close._physical_target``'s rule). Ids with no session row are absent.
 
         Storage interface: port as ``current_segments``."""
-        from hermes_state_local import POLICY_PREFIX
+        from hermes_agent.hermes_state_local import POLICY_PREFIX
         with self._read_ctx() as conn:
             rows = conn.execute(
                 "SELECT s.id, s.end_reason, (SELECT json_extract(m.value, '$.entry.session_id') FROM state_meta m "
@@ -454,7 +454,7 @@ class SessionStoredReadsMixin:
         *marker_key*, newest ``started_at`` first (ties: id descending). The caller proves ownership.
 
         Storage interface: port as ``subagent_session_ids``."""
-        from hermes_state_common import _sql_json_extract
+        from hermes_agent.hermes_state_common import _sql_json_extract
         rows = self._read_all(
             "SELECT id FROM sessions WHERE source = 'subagent' AND "
             f"{_sql_json_extract('model_config', '$.' + marker_key)} = ? ORDER BY started_at DESC, id DESC",

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def _write_invalid_utf8_row(db_path: Path) -> None:

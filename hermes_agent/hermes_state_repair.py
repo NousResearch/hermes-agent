@@ -23,15 +23,15 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
 from hermes_agent.hermes_startup_watchdog import report_startup_progress
-from hermes_state_errors import is_disk_full_error
-from hermes_state_holders import read_only_db_uri
-from hermes_state_common import (
+from hermes_agent.hermes_state_errors import is_disk_full_error
+from hermes_agent.hermes_state_holders import read_only_db_uri
+from hermes_agent.hermes_state_common import (
     _acquire_db_flock, _clear_lock_holder_record, _describe_lock_holder, _read_lock_holder_record,
     is_advisory_lock_contention,
 )
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
-logger = logging.getLogger("hermes_state")
+logger = logging.getLogger("hermes_agent.hermes_state")
 
 _REPAIR_LOCK_POLL_SECONDS = 0.1
 # Snapshot copies are data transfer, not locking: bounded separately at 10 MiB/s (historical two-minute floor).
@@ -97,7 +97,7 @@ def _read_offline(db_path: Path, what: str, reader) -> Optional[str]:
 def _claim_repair_attempt(db_path: Path) -> bool:
     """Claim the one-shot per-process repair attempt for *db_path*: True for the first caller, False
     afterwards (bounds the repair/reopen loop and stops concurrent callers racing surgery on one file)."""
-    from hermes_state import _repair_attempt_lock, _repair_attempted_paths
+    from hermes_agent.hermes_state import _repair_attempt_lock, _repair_attempted_paths
     with _repair_attempt_lock:
         if str(db_path) in _repair_attempted_paths:
             return False
@@ -124,7 +124,7 @@ def _msvcrt_lock(handle, flag_name: str) -> None:
 
 def _try_lock_nonblocking(handle) -> None:
     """Take the advisory lock on *handle* without waiting (raises on contention)."""
-    from hermes_state import _IS_WINDOWS
+    from hermes_agent.hermes_state import _IS_WINDOWS
     if _IS_WINDOWS:
         _msvcrt_lock(handle, "LK_NBLCK")
     else:
@@ -134,7 +134,7 @@ def _try_lock_nonblocking(handle) -> None:
 
 def _release_lock_handle(handle, *, clear_record: bool = False) -> None:
     """Drop the advisory lock on *handle* (best effort) and close it."""
-    from hermes_state import _IS_WINDOWS
+    from hermes_agent.hermes_state import _IS_WINDOWS
     with contextlib.closing(handle), contextlib.suppress(OSError):  # best-effort release; always close
         if _IS_WINDOWS:
             _msvcrt_lock(handle, "LK_UNLCK")
@@ -178,7 +178,7 @@ def _cross_process_repair_lock(db_path: Path):
     a large DB, and an unbounded wait would hang the caller's open with no traceback (the failure shape of
     #36644).
     """
-    from hermes_state import _IS_WINDOWS, _REPAIR_LOCK_TIMEOUT_SECONDS
+    from hermes_agent.hermes_state import _IS_WINDOWS, _REPAIR_LOCK_TIMEOUT_SECONDS
     lock_path, handle = _open_lock_file(
         db_path, ".repair.lock", "repair", "skipping schema surgery rather than running it without cross-process authority.")
     if handle is None:
@@ -294,7 +294,7 @@ def _backup_free_space_error(db_path: Path) -> Optional[str]:
 def _repair_snapshot_timeout_seconds(source_path: Path) -> float:
     """Bound one SQLite snapshot by source size incl. sidecars (a WAL can hold committed rows not yet in the
     main file), so a healthy large-database copy is not cut off by the repair-lock timeout."""
-    from hermes_state import _REPAIR_LOCK_TIMEOUT_SECONDS
+    from hermes_agent.hermes_state import _REPAIR_LOCK_TIMEOUT_SECONDS
     source_bytes = 0
     for candidate in (source_path, *_sidecars(source_path)):
         with contextlib.suppress(FileNotFoundError):  # a sidecar may vanish mid-walk
@@ -618,7 +618,7 @@ def _reapply_durability_barriers(conn: sqlite3.Connection) -> bool:
     """Best-effort (re)application of the macOS write barriers; True if accepted.
     Call before ``VACUUM``/``REINDEX`` once the schema parses: a connection opened
     on a malformed schema could not take them at open time. Never raises."""
-    from hermes_state_wal import _apply_macos_checkpoint_barrier, _enforce_macos_synchronous_full
+    from hermes_agent.hermes_state_wal import _apply_macos_checkpoint_barrier, _enforce_macos_synchronous_full
     try:
         _apply_macos_checkpoint_barrier(conn)
         _enforce_macos_synchronous_full(conn)
@@ -631,7 +631,7 @@ def apply_durability_barriers(conn: sqlite3.Connection) -> bool:
     """Durability barriers for guest users of ``state.db`` that must inherit its owner's journal mode. Also
     applies the configured ``database.synchronous`` level, a per-connection pragma that otherwise only
     rides on the journal-mode setup path guests must not run."""
-    from hermes_state_wal import _apply_synchronous_pragma
+    from hermes_agent.hermes_state_wal import _apply_synchronous_pragma
     ok = _reapply_durability_barriers(conn)
     with contextlib.suppress(Exception):
         from hermes_cli.config import cfg_get, load_config_readonly  # local: avoids an import cycle
@@ -797,7 +797,7 @@ def _retired_cjk_snapshot_health(db_path: Path, conn: sqlite3.Connection) -> Opt
     """``_db_opens_cleanly`` for a store that still holds the retired CJK index, judged on a disposable copy
     with the index retired. A copy that cannot be made or does not fit the temporary volume yields
     ``HealthCheckUnavailable``; a source SQLite cannot read is still reported as damage."""
-    from hermes_state_fts import drop_retired_cjk_index
+    from hermes_agent.hermes_state_fts import drop_retired_cjk_index
 
     try:
         with tempfile.TemporaryDirectory(prefix="hermes-cjk-probe-") as tmp:
@@ -843,8 +843,8 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
 
     See #50502.
     """
-    from hermes_state import SessionDB
-    from hermes_state_fts import drop_retired_cjk_index, retired_cjk_index_present
+    from hermes_agent.hermes_state import SessionDB
+    from hermes_agent.hermes_state_fts import drop_retired_cjk_index, retired_cjk_index_present
     # ── Strategy 0.5: rebuild stale B-tree indexes (#63386) ── PRAGMA integrity_check can report "wrong #
     # of entries in index" when a B-tree index (e.g. idx_sessions_handoff_state) falls out of sync with its
     # base table. REINDEX rewrites the index b-tree from the canonical table rows using the existing index
@@ -919,7 +919,7 @@ def _live_writer_holds_db(db_path: Path) -> bool:
     WAL sidecar open, a deleted WAL generation, or an unknown/uninspectable holder fails CLOSED. The SQLite
     probe (``locking_mode=EXCLUSIVE`` + ``BEGIN IMMEDIATE``) is only an additional positive signal — it cannot
     see a ``journal_mode=DELETE`` reader and cannot run on a malformed file, which is why the scan comes first."""
-    import hermes_state_holders as _state_holders
+    import hermes_agent.hermes_state_holders as _state_holders
     return _state_holders.live_writer_holds_db(db_path, connect_repair_durable=_connect_repair_durable)
 
 
@@ -1008,7 +1008,7 @@ def _probe_journal_mode_for_repair(db_path: Path) -> Optional[str]:
     """Best-effort journal-mode probe: ``wal``/``delete``, or ``None`` when the file cannot be opened or
     probed (malformed header, concurrent opener's locks — both expected on the repair path); callers then
     fall back to ``database.journal_mode``."""
-    from hermes_state_wal import _on_disk_journal_mode
+    from hermes_agent.hermes_state_wal import _on_disk_journal_mode
     try:
         with _repair_conn(db_path) as conn:
             return _on_disk_journal_mode(conn)
@@ -1035,7 +1035,7 @@ def _restore_journal_mode_after_repair(db_path: Path, before_mode: Optional[str]
     The transactional promotion already leaves the destination in its pre-repair mode, so on that path this
     is mostly the WAL-companion re-assertion; the reopen is the hazard, not the mode. See #101064.
     """
-    from hermes_state_wal import apply_wal_with_fallback
+    from hermes_agent.hermes_state_wal import apply_wal_with_fallback
     try:
         if conn is None:
             with _repair_conn(db_path) as owned:
@@ -1134,7 +1134,7 @@ def _repair_state_db_schema_locked(
 
 def _unlink_db_triple(path: Path) -> Optional[str]:
     """Remove *path* and every SQLite sidecar; return any cleanup failure."""
-    from hermes_state import _IS_WINDOWS
+    from hermes_agent.hermes_state import _IS_WINDOWS
     failures: list[str] = []
     for victim in (path, *_sidecars(path)):
         for attempt in range(10):

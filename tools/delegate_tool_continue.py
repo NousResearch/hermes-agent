@@ -67,7 +67,7 @@ def _transcript_store(parent_agent: Any) -> Iterator[Any]:
     if not isinstance(db_path, (str, Path)):
         yield None
         return
-    from hermes_state_registry import acquire, release_or_close
+    from hermes_agent.hermes_state_registry import acquire, release_or_close
     db = acquire(db_path)
     try:
         yield db

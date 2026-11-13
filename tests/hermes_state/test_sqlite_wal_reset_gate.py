@@ -16,8 +16,8 @@ import time
 
 import pytest
 
-import hermes_state_wal
-from hermes_state_wal import apply_wal_with_fallback, is_sqlite_wal_reset_vulnerable
+from hermes_agent import hermes_state_wal
+from hermes_agent.hermes_state_wal import apply_wal_with_fallback, is_sqlite_wal_reset_vulnerable
 
 @pytest.fixture(autouse=True)
 def _reset_wal_reset_bug_warnings():
@@ -55,7 +55,7 @@ class TestApplyWalWalResetGate:
             hermes_state_wal, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
         )
         conn = sqlite3.connect(str(tmp_path / "fresh.db"))
-        with caplog.at_level("WARNING", logger="hermes_state"):
+        with caplog.at_level("WARNING", logger="hermes_agent.hermes_state"):
             mode = apply_wal_with_fallback(conn, db_label="fresh.db")
         assert mode == "delete"
         assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "delete"
@@ -81,7 +81,7 @@ class TestApplyWalWalResetGate:
 
         conn = sqlite3.connect(str(path), timeout=30.0)
         try:
-            with caplog.at_level("WARNING", logger="hermes_state"):
+            with caplog.at_level("WARNING", logger="hermes_agent.hermes_state"):
                 mode = apply_wal_with_fallback(conn, db_label="prior_wal.db")
             assert mode == "wal"
             assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
@@ -144,7 +144,7 @@ class TestNoDowngradeUnderConcurrentOpeners:
 
             conn = sqlite3.connect(str(db), timeout=30.0)
             try:
-                with caplog.at_level("WARNING", logger="hermes_state"):
+                with caplog.at_level("WARNING", logger="hermes_agent.hermes_state"):
                     mode = apply_wal_with_fallback(conn, db_label="live_wal.db")
                 # Asserted while the second opener still holds the DB:
                 assert holder.poll() is None, "holder must still be alive here"
@@ -206,7 +206,7 @@ class TestNoDowngradeUnderConcurrentOpeners:
                 # Sanity: the probe really is blocked right now.
                 with pytest.raises(sqlite3.OperationalError):
                     conn.execute("PRAGMA journal_mode").fetchone()
-                with caplog.at_level("WARNING", logger="hermes_state"):
+                with caplog.at_level("WARNING", logger="hermes_agent.hermes_state"):
                     mode = apply_wal_with_fallback(conn, db_label="locked_wal.db")
                 assert mode == "wal"
                 assert any(
@@ -238,7 +238,7 @@ class TestNoDowngradeUnderConcurrentOpeners:
         )
         conn = sqlite3.connect(str(tmp_path / "exclusive.db"))
         try:
-            with caplog.at_level("WARNING", logger="hermes_state"):
+            with caplog.at_level("WARNING", logger="hermes_agent.hermes_state"):
                 mode = apply_wal_with_fallback(conn, db_label="exclusive.db")
             assert mode == "delete"
             assert (
@@ -268,7 +268,7 @@ class TestNoDowngradeUnderConcurrentOpeners:
             str(tmp_path / "race.db"), factory=_FlipLockedConnection
         )
         try:
-            with caplog.at_level("WARNING", logger="hermes_state"):
+            with caplog.at_level("WARNING", logger="hermes_agent.hermes_state"):
                 mode = apply_wal_with_fallback(conn, db_label="race.db")
             assert mode == "delete"  # observed pre-flip mode, not a forced flip
             assert any(
@@ -346,7 +346,7 @@ class TestNoDowngradeUnderConcurrentOpeners:
             str(tmp_path / "nfs.db"), factory=_LockedProbeConnection
         )
         try:
-            with caplog.at_level(logging.WARNING, logger="hermes_state_wal"):
+            with caplog.at_level(logging.WARNING, logger="hermes_agent.hermes_state_wal"):
                 result = apply_wal_with_fallback(conn, db_label="nfs.db")
             # The set-pragma never ran (it would have raised "locking
             # protocol" above); the configured WAL mode is assumed instead.

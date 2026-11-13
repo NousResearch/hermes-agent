@@ -32,7 +32,7 @@ def tui_read(policy, name: str, arg: str):
 
 def _stored_id(authority, ref) -> str:
     with contextlib.suppress(Exception):
-        from hermes_state_local import local_receipt
+        from hermes_agent.hermes_state_local import local_receipt
         return local_receipt(authority.db, ref.session_id)['entry']['session_id'] or ref.session_id
     return ref.session_id
 
@@ -137,7 +137,7 @@ async def context_breakdown(connection, ref, params) -> dict:
     started, or reaped): the same categories from what the session froze (``_stored_breakdown``) beside
     its stored usage."""
     from gateway.session_busy_controls import authorize
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     if set(params) - {'session_id', 'profile'} or not isinstance(ref.session_id, str) or not ref.session_id:
         raise RuntimeStoreError('invalid_params')
     authorize(connection, ref, params, 'session:read')

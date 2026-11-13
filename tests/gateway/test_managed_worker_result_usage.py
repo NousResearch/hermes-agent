@@ -64,7 +64,7 @@ def test_worker_result_frame_carries_the_billing_block():
 
 
 def _usage_db(tmp_path):
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     return SessionDB(db_path=tmp_path / 'state.db')
 
 

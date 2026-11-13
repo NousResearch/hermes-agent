@@ -144,7 +144,7 @@ def _topic_mode_rig(tmp_path):
     """Topic-mode DM over a real SessionDB with real topic recovery; dispatch stops at the session seam."""
     from gateway.config import Platform
     from gateway.session import SessionSource, build_session_key
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from tests.gateway.test_telegram_topic_mode import _make_runner
 
     db = SessionDB(db_path=tmp_path / "state.db")

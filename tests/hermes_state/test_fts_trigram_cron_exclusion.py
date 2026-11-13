@@ -6,8 +6,8 @@ import sqlite3
 
 import pytest
 
-from hermes_state import SessionDB
-from hermes_state_common import FTS_TRIGRAM_SQL, SCHEMA_VERSION
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_common import FTS_TRIGRAM_SQL, SCHEMA_VERSION
 
 # The trigram cron-exclusion rebuild is the v30 data migration: a store one version behind IT, not one
 # behind the current SCHEMA_VERSION (later migrations do not re-run it).

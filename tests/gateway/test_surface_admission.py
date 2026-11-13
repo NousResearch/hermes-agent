@@ -33,7 +33,7 @@ async def _authority(tmp_path, monkeypatch, answer):
 async def test_surface_fields_are_admitted_and_scoped_to_their_own_turn(tmp_path, monkeypatch):
     from gateway.session_controls import AuthorityConnection
     from gateway.session_surface import surface_turn_note
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     from tools.voice_live import VOICE_LIVE_TURN_NOTE
 
     seen = []
@@ -77,7 +77,7 @@ async def test_voice_turn_is_admitted_and_scoped_to_its_own_turn(tmp_path, monke
     that runs on ``auxiliary.voice_chat``; the next typed turn stays on the main model."""
     from gateway.session_controls import AuthorityConnection
     from gateway.session_surface import surface_turn_note, surface_voice_turn
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
 
     seen = []
     async def answer(event):

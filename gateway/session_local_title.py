@@ -6,7 +6,7 @@ applies the classic CLI rule (``hermes_cli.main._resolve_session_by_name_or_id``
 """
 from __future__ import annotations
 
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
 def resolve_titled_session(authority, actor, name, *, missing_ok=False):
@@ -72,7 +72,7 @@ def resolve_latest_session(authority, actor, family, workspace=None):
 
 
 def validate_title(title):
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     try:
         cleaned = SessionDB.sanitize_title(title) if isinstance(title, str) else None
     except ValueError:

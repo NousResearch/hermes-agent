@@ -84,7 +84,7 @@ def _ticket(client, route, query):
 def _session_owned_file(home, profile, content):
     """Write the file outside the session owner's home: binding only the file's path
     would miss the owner's deletion."""
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     (home / "clip.mp4").write_bytes(content)
     db = SessionDB(db_path=profile / "state.db")

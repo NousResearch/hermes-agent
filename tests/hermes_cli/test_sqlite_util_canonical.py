@@ -117,7 +117,7 @@ def test_plugin_db_wal_goes_through_the_shared_fallback(monkeypatch, tmp_path):
     """A raw ``PRAGMA journal_mode=WAL`` bypasses the network-FS fallback and the WAL-reset-bug gate;
     plugin databases must obey the same rules as every core store."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    import hermes_state_wal
+    from hermes_agent import hermes_state_wal
     from plugins import plugin_storage
 
     seen = []

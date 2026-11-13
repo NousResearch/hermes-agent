@@ -16,7 +16,7 @@ import sqlite3
 from typing import Any, Optional, Sequence, cast
 
 from gateway.session import SessionEntry
-from hermes_state_errors import StateDbReplacedError
+from hermes_agent.hermes_state_errors import StateDbReplacedError
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")

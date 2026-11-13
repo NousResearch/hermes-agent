@@ -180,7 +180,7 @@ async def test_start_gateway_replace_reaps_old_gateway_children_posix(
     class _CleanExitRunner:
         def __init__(self, config):
             from gateway.session import SessionStore
-            from hermes_state import SessionDB
+            from hermes_agent.hermes_state import SessionDB
             from hermes_constants import get_hermes_home
             self.session_store = SessionStore(get_hermes_home() / 'sessions', config)
             self._session_db = SessionDB(get_hermes_home() / 'state.db')

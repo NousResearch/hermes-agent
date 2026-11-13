@@ -12,7 +12,7 @@ import pytest
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource, build_session_key
-from hermes_state import AsyncSessionDB, SessionDB
+from hermes_agent.hermes_state import AsyncSessionDB, SessionDB
 
 
 def _src(chat_id="67890", user_id="12345", thread_id="topic-b", chat_type="dm"):

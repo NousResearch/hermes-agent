@@ -109,7 +109,7 @@ async def test_delivery_resumes_a_creation_staged_without_the_follow_flag(home):
     from gateway.session_bot import _bot_chat_creation_id, _target
     from gateway.session_local import stage_local_session
     from gateway.session_local_recovery import restore_local_session
-    from hermes_state_local import commit_local_session
+    from hermes_agent.hermes_state_local import commit_local_session
     _profile(home, 'old-model', 1, 'old-key')
     store, runner, authority, owner = _owner(home)
     runner._peek_session_state = lambda key: None
@@ -134,7 +134,7 @@ async def test_cli_retries_a_titled_create_staged_without_the_follow_flag(home):
     resumes that request instead of being refused. The CLI then opens its titled Bot Chat, which
     follows the profile; the request it was created with stays as staged."""
     from gateway.session_local import stage_local_session
-    from hermes_state_local import commit_local_session, local_receipt
+    from hermes_agent.hermes_state_local import commit_local_session, local_receipt
     _profile(home, 'old-model', 1, 'old-key')
     store, runner, authority, owner = _owner(home)
     runner._peek_session_state = lambda key: None
@@ -239,7 +239,7 @@ async def test_adopting_a_bot_chat_with_no_profile_model_stays_openable(home, sh
     chat follows once the profile has a default.
     """
     from gateway.session_local_migration import resolve_local_target
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
     if shape == 'empty':
         (home / 'config.yaml').write_text('{}\n')
     else:
@@ -293,7 +293,7 @@ def _frozen_bot_chat(authority, actor, home, title='Bot Chat', **extra):
     from gateway.session_local import stage_local_session
     from gateway.session_local_recovery import restore_local_session
     from gateway.session_local_title import title_new_session
-    from hermes_state_local import commit_local_session
+    from hermes_agent.hermes_state_local import commit_local_session
     params = {'request_id': 'earlier-build', 'source': 'cli', 'cwd': str(home), **extra}
     receipt = stage_local_session(authority, actor, dict(params))
     commit_local_session(authority.db, epoch=authority.epoch, receipt=receipt)
@@ -320,7 +320,7 @@ async def test_opening_a_frozen_bot_chat_makes_it_follow(home, moved):
     """A Bot Chat an earlier build froze kept its old route after any open. The open now adopts
     it once, durably, and the creation request stays the exact-retry identity."""
     from gateway.session_local import stage_local_session
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
     _profile(home, 'old-model', 1, 'old-key')
     store, runner, authority, owner = _owner(home)
     runner._peek_session_state = lambda key: None
@@ -353,7 +353,7 @@ async def test_a_flipped_bot_chat_never_sends_its_frozen_key_to_the_profiles_new
     open, the profile's new endpoint gets no key until the profile names one, and the private-value
     reference is re-derived: a fresh owner recovers the chat's other secrets, no frozen model key."""
     from gateway.session_policy import policy_for_source
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
     aux = {'auxiliary': {'vision': {'provider': 'custom', 'api_key': 'aux-key'}}}
     _profile(home, 'old-model', 1, 'old-key', **aux)
     store, runner, authority, owner = _owner(home)
@@ -383,7 +383,7 @@ async def test_a_flipped_bot_chat_never_sends_its_frozen_key_to_the_profiles_new
 @pytest.mark.asyncio
 @pytest.mark.parametrize('kind', ['other-title', 'chose-frozen', 'safe-mode'])
 async def test_opening_leaves_other_chats_and_deliberate_freezes_frozen(home, kind):
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
     extra = {'other-title': {'title': 'Notes'}, 'chose-frozen': {'follow_profile_config': False},
              'safe-mode': {'safe_mode': True, 'model': 'old-model', 'provider': 'custom',
                            'base_url': 'http://127.0.0.1:1/v1'}}[kind]
@@ -520,9 +520,9 @@ async def test_a_route_pick_without_a_model_holds_on_a_following_create(home, pi
 async def test_a_busy_first_open_leaves_adoption_to_the_next_open_on_that_connection(home, monkeypatch, by):
     """Desktop keeps its connection: a warm reopen (``session.activate`` is ``session.resume``) must still
     adopt a chat whose first open found a turn running."""
-    import hermes_state_mutation_guards as guards
+    import hermes_agent.hermes_state_mutation_guards as guards
     from gateway.session_controls import AuthorityConnection
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     _profile(home, 'old-model', 1, 'old-key')
     store, runner, authority, owner = _owner(home)
     runner._peek_session_state = lambda key: None
@@ -641,10 +641,10 @@ def test_follows_profile_parses_each_frozen_blob_once_per_policy(monkeypatch):
 async def test_an_mcp_reload_keeps_a_busy_first_opens_adoption_pending(home, monkeypatch):
     """``reload.mcp`` refreshes only the MCP section (it never runs ``follow_bot_chat``): it must not
     forget an adoption a busy first open left pending, or the warm reopen returns early on the old route."""
-    import hermes_state_mutation_guards as guards
+    import hermes_agent.hermes_state_mutation_guards as guards
     from gateway.session_controls import AuthorityConnection
     from gateway.session_policy_refresh import commit_refresh
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     _profile(home, 'old-model', 1, 'old-key')
     store, runner, authority, owner = _owner(home)
     runner._peek_session_state = lambda key: None

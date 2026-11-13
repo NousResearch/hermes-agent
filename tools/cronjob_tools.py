@@ -508,7 +508,7 @@ def _run_session_usage(job_id: str, execution_id: Optional[str]) -> dict[str, An
     import sqlite3
 
     from hermes_constants import get_hermes_home
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     # A missing or locked state.db costs the notice its usage line, never the completion.
     try:
         db = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)

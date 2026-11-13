@@ -225,7 +225,7 @@ Mensaje del usuario → AIAgent._run_agent_loop()
 
 - **Herramientas auto-registradas**: Cada archivo de herramienta llama a `registry.register()` en el momento de importación. `model_tools.py` activa el descubrimiento importando todos los módulos de herramientas.
 - **Agrupación en toolsets**: Las herramientas se agrupan en toolsets (`web`, `terminal`, `file`, `browser`, etc.) que pueden habilitarse/deshabilitarse por plataforma.
-- **Persistencia de sesión**: Todas las conversaciones se almacenan en SQLite (`hermes_state.py`) con búsqueda de texto completo y títulos de sesión únicos.
+- **Persistencia de sesión**: Todas las conversaciones se almacenan en SQLite (`hermes_agent/hermes_state.py`) con búsqueda de texto completo y títulos de sesión únicos.
 - **Inyección efímera**: Los prompts del sistema y los mensajes de relleno se inyectan en el momento de la llamada API, nunca se persisten en la base de datos ni en los logs.
 - **Abstracción de proveedor**: El agente funciona con cualquier API compatible con OpenAI. La resolución del proveedor ocurre en el momento de la inicialización.
 - **Enrutamiento de proveedor**: Al usar OpenRouter, `provider_routing` en config.yaml controla la selección del proveedor.

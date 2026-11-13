@@ -39,7 +39,7 @@ def test_negative_retention_days_in_config_deletes_nothing(monkeypatch, tmp_path
     import cli
     import hermes_cli.config
     import hermes_constants
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     session_db = SessionDB(db_path=tmp_path / "state.db")
     try:

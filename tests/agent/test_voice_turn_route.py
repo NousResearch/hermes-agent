@@ -102,7 +102,7 @@ def test_session_runtime_view_preserves_requested_provider_during_voice_turn():
 
 
 def test_voice_usage_never_becomes_the_session_route(tmp_path):
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(tmp_path / "state.db")
     db.create_session("s1", source="cli", model="main-model")

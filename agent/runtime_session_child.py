@@ -27,7 +27,7 @@ class ChildSessionStore(RuntimeSessionStore):
     def create_session(self, session_id, source, **fields):
         # The owner created this row at reservation with its source, lineage and profile; only
         # the constructor facts are the child's to add.
-        from hermes_state_worker_lifecycle import _CONSTRUCTOR_CONFIG
+        from hermes_agent.hermes_state_worker_lifecycle import _CONSTRUCTOR_CONFIG
         config = {k: v for k, v in (fields.get('model_config') or {}).items() if k in _CONSTRUCTOR_CONFIG}
         return super().create_session(session_id, 'subagent', model=fields.get('model'),
                                       model_config=config or None, system_prompt=fields.get('system_prompt'))

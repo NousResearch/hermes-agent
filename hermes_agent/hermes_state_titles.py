@@ -8,7 +8,7 @@ import re
 from typing import Any, Dict, Optional
 
 from agent.message_sanitization import _sanitize_surrogates
-from hermes_state_common import (
+from hermes_agent.hermes_state_common import (
     _COMPRESSION_CHILD_SQL, _RECOVERABLE_END_REASONS, _RECOVERABLE_END_REASONS_SQL,
     _non_continuation_child_sql, escape_like as _escape_like,
 )
@@ -24,7 +24,7 @@ def bot_chat_title_released(archived: Any, auto_archived: Any, tip_end_reason: O
     return bool(archived) and not auto_archived and (tip_end_reason or "") not in _RECOVERABLE_END_REASONS
 
 # caplog tests pin the "hermes_state" logger name.
-logger = logging.getLogger("hermes_state")
+logger = logging.getLogger("hermes_agent.hermes_state")
 
 # ASCII controls (keeping \t \n \r for the whitespace collapse), then zero-width,
 # bidi override, object-replacement and interlinear-annotation code points.
@@ -62,7 +62,7 @@ class SessionTitlesMixin:
     def sanitize_title(title: Optional[str]) -> Optional[str]:
         """Strip control/zero-width/bidi chars (and lone surrogates sqlite3 cannot bind),
         collapse whitespace, normalize empty to None. ValueError past MAX_TITLE_LENGTH."""
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
         if not title:
             return None
         cleaned = _TITLE_INVISIBLE_RE.sub('', _TITLE_CONTROL_RE.sub('', _sanitize_surrogates(title)))
@@ -222,7 +222,7 @@ class SessionTitlesMixin:
         it is an ordinary archived conversation now, listed under Archived and back in the sidebar
         if the user unarchives it. The idle sweep, bulk archive and the reapers never call this.
         Returns the ids whose title was released."""
-        from hermes_state_sessions import _LINEAGE_CTE_SQL
+        from hermes_agent.hermes_state_sessions import _LINEAGE_CTE_SQL
         lineage = (session_id, session_id)
         # Visible reaped rows retire too: no reaper archives, so this call is always the user's.
         # A legacy accidental archive (old code, title + recoverable stamp kept) never comes here

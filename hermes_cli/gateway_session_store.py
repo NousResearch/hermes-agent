@@ -90,7 +90,7 @@ class GatewaySessionStore:
             if not path.exists():
                 return None
             try:
-                from hermes_state import SessionDB
+                from hermes_agent.hermes_state import SessionDB
                 self._reader = SurfaceLabelReader(SessionDB(db_path=path, read_only=True))
             except Exception as exc:  # health: allow BLE001 -- reads find nothing; retried on the next read
                 logger.debug("read-only state.db unavailable: %s", exc)
@@ -101,7 +101,7 @@ class GatewaySessionStore:
             raise AttributeError(name)
         if name in _READS:
             if name in {"sanitize_title", "session_yolo_enabled"}:
-                from hermes_state import SessionDB
+                from hermes_agent.hermes_state import SessionDB
                 return getattr(SessionDB, name)
             db = self._db()
             if db is None:
@@ -233,7 +233,7 @@ class GatewaySessionStore:
         from agent.context_compressor import history_before_user_originated_turn, retryable_user_text
         from agent.message_content import flatten_message_text
         from agent.session_persistence import _is_ephemeral_scaffolding
-        from hermes_state_rewind import (
+        from hermes_agent.hermes_state_rewind import (
             _HISTORY_CHANGED, RewindOutcome, RewindTargetUnavailableError, _comparison_content, _user_indices)
         snapshot = self.call("session.resume", session_id=session_id)
         durable = [m for m in snapshot.get("messages") or [] if not m.get("archived")]  # the live rows

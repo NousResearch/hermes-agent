@@ -32,7 +32,7 @@ async def headless(tmp_path, monkeypatch):
     # A following Bot Chat reads the profile config by path.
     monkeypatch.setattr(run, '_load_gateway_config',
                         lambda *_path: {'platform_toolsets': {'cli': []}, 'model': {'default': 'fixture'}})
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     store._db = SessionDB(db_path=tmp_path / 'state.db')
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
@@ -214,7 +214,7 @@ async def test_a_submit_only_delivery_never_moves_the_api_bot_chat(headless):
     from gateway.session_authorities import served_profile_name
     from gateway.session_bot import deliver
     from gateway.session_contract import SessionActor
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     db = headless.authority.db
     old = _api_bot_chat(db)
     actor = SessionActor('uid:1000', headless.authority.profile_id,

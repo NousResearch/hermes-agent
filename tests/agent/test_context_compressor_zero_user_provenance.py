@@ -18,7 +18,7 @@ from agent.context_compressor import (
 from agent.conversation_compression import (
     compress_context,
 )
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from tools.process_registry_notifications import format_process_notification
 from tools.todo_tool import TODO_INJECTION_HEADER
 

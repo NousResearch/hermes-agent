@@ -2,7 +2,7 @@
 import pytest
 
 from agent.title_generator import _persist_session_title
-from hermes_state_runtime import RuntimeStoreError, mutate_worker_execution
+from hermes_agent.hermes_state_runtime import RuntimeStoreError, mutate_worker_execution
 from tests.hermes_state.test_runtime_worker_lifecycle import setup_store
 
 

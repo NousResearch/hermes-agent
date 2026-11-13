@@ -14,7 +14,7 @@ import sys
 
 from agent.i18n import t
 from hermes_constants import get_hermes_home
-from hermes_state_ids import new_session_id
+from hermes_agent.hermes_state_ids import new_session_id
 from pathlib import Path
 from rich.console import Console
 from rich.markup import escape as _escape
@@ -114,7 +114,7 @@ def _reset_model_to_config_default(cli, silent: bool) -> None:
 def _apply_new_session_title(cli, title: str) -> Optional[str]:
     """Sanitize + persist a /new title; returns the stored title or None (untitled)."""
     from cli import _cprint
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     try:
         sanitized = SessionDB.sanitize_title(title)
     except ValueError as e:
@@ -245,7 +245,7 @@ class CLISessionMixin:
 
     def _restore_session_yolo(self, session_meta: dict, *, quiet: bool = False) -> None:
         """Re-arm the session row's persisted /yolo on every resume path (``tools.approval_yolo``)."""
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
         from tools.approval_yolo import restore_session_yolo
         if restore_session_yolo(self.session_id or "default", SessionDB.session_yolo_enabled(session_meta)):
             _dim_notice(self, t("cli.session.yolo_restored"), quiet)
@@ -379,7 +379,7 @@ class CLISessionMixin:
             return []
         try:
             from hermes_cli.session_listing import query_session_listing
-            from hermes_state_sessions import INTERNAL_LISTING_SOURCES
+            from hermes_agent.hermes_state_sessions import INTERNAL_LISTING_SOURCES
 
             return query_session_listing(
                 self._session_db, source="cli", current_session_id=self.session_id,
@@ -733,7 +733,7 @@ class CLISessionMixin:
         _db = getattr(self, "_session_db", None)
         _sid = getattr(self, "session_id", None)
         if _db and _sid:
-            from hermes_state import SessionExportTooLargeError
+            from hermes_agent.hermes_state import SessionExportTooLargeError
             try:
                 session_data = load_save_snapshot(_db, _sid, fmt)
             except SessionExportTooLargeError as e:

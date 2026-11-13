@@ -9,7 +9,7 @@ from agent.image_routing import build_native_content_parts
 from agent.session_persistence import _durable_content
 from agent.turn_context import build_api_messages
 from gateway.session_ingress_media import capture_native_media
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 _PNG = bytes.fromhex(
     "89504e470d0a1a0a0000000d49484452000000010000000108020000009077"

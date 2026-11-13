@@ -65,7 +65,7 @@ class TestCronRunJobGuard:
 
         from gateway.session_contract import SessionRef
         from gateway.session_cron import current_execution, execute
-        from hermes_state_registry import acquire, release
+        from hermes_agent.hermes_state_registry import acquire, release
 
         _write_corrupt_config(tmp_path)
         # Agent-backed run_job is now a client. Exercise the scheduler's guard

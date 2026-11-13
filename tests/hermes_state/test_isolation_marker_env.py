@@ -19,7 +19,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-import hermes_state_guard
+from hermes_agent import hermes_state_guard
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 

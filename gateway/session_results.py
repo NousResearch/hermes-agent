@@ -1,10 +1,10 @@
 """Exact execution results commit with settlement, before delivery/publication."""
 from contextvars import ContextVar
 
-from hermes_state_runtime import RuntimeStoreError, _admission, _epoch, settle_session_input
+from hermes_agent.hermes_state_runtime import RuntimeStoreError, _admission, _epoch, settle_session_input
 
 execution_result: ContextVar[dict | None] = ContextVar("execution_result", default=None)
-from hermes_state_terminal import RESULT_PREFIX as _RESULT_PREFIX, load_result
+from hermes_agent.hermes_state_terminal import RESULT_PREFIX as _RESULT_PREFIX, load_result
 
 
 def record_unexecuted_failure(reply, reason=None, error=None):
@@ -65,7 +65,7 @@ def prepare_result(row, response, outcome, result=None):
         value['failed' if outcome == 'failed' else 'interrupted'] = True
         value['completed'] = False
     # Compact before redacting, so the walk covers this turn's output, not every earlier turn.
-    from hermes_state_terminal import compact_result
+    from hermes_agent.hermes_state_terminal import compact_result
     return outcome, _redacted(compact_result(result, user_message=row['payload'].get('text')))
 
 
@@ -147,8 +147,8 @@ def close_discarded_turn(db, conn, row, notice=None, *, replace_after=None, disp
     the turn's error card from history (``agent.conversation_loop._failed_turn_display_metadata``)."""
     import time
     from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, PARTIAL_FAILED_TURN_NOTICE
-    from hermes_state_local_lineage import local_physical_target
-    from hermes_state_runtime import _canonical_chain
+    from hermes_agent.hermes_state_local_lineage import local_physical_target
+    from hermes_agent.hermes_state_runtime import _canonical_chain
     target = _canonical_chain(conn, local_physical_target(conn, row['target_session_id']))[-1]
     tail = conn.execute("SELECT role, tool_calls, id, display_kind FROM messages WHERE session_id=? AND active=1 "
                         "AND role NOT IN ('session_meta','system') ORDER BY id DESC LIMIT 1", (target,)).fetchone()

@@ -6,8 +6,8 @@ import pytest
 from gateway.session_api_turn import _settled_api_result
 from gateway.session_bot import _admission_outcome
 from gateway.session_results import _redacted, admission_result, finish_result, retain_result
-from hermes_state_runtime import _json, admit_session_input, claim_session_input, mutate_runtime_session
-from hermes_state_terminal import RESULT_PREFIX, compact_result, encode_result, load_result
+from hermes_agent.hermes_state_runtime import _json, admit_session_input, claim_session_input, mutate_runtime_session
+from hermes_agent.hermes_state_terminal import RESULT_PREFIX, compact_result, encode_result, load_result
 
 REPLY = 'x' * 2000
 
@@ -110,7 +110,7 @@ def test_a_deleted_session_keeps_the_exact_retry_reply(owner):
     assert retired['result']['final_response'] == REPLY and retired['result']['messages'] == []
     assert retired['usage'] == expected['usage']
     # Retirement decodes before compacting: its row is what it kept from a pre-LC-9 row, byte for byte.
-    from hermes_state_mutation_retirement import _TRANSCRIPT_FIELDS
+    from hermes_agent.hermes_state_mutation_retirement import _TRANSCRIPT_FIELDS
     kept = {**expected, 'result': {**{k: v for k, v in expected['result'].items() if k not in _TRANSCRIPT_FIELDS},
                                    'messages': []}}
     with owner.db._read_ctx() as conn:
@@ -121,7 +121,7 @@ def test_a_deleted_session_keeps_the_exact_retry_reply(owner):
 def test_every_raw_result_row_read_goes_through_the_decoder(owner, monkeypatch):
     """Delivery after settlement (finish_result) and retirement read stored rows too."""
     import gateway.session_results
-    import hermes_state_terminal
+    from hermes_agent import hermes_state_terminal
     seen = []
 
     def spy(text):
@@ -192,7 +192,7 @@ def test_any_stored_row_reads_back_as_the_pre_change_shape(owner, result, copies
     mutate_runtime_session(owner.db, epoch=owner.epoch, principal_id='human', session_id='r', request_id='del',
                            operation='delete', payload={}, expected_revision=snap['runtime_revision'],
                            expected_generation=snap['runtime_generation'])
-    from hermes_state_mutation_retirement import _TRANSCRIPT_FIELDS
+    from hermes_agent.hermes_state_mutation_retirement import _TRANSCRIPT_FIELDS
     kept = json.loads(_json({**expected, 'result': {
         **{k: v for k, v in expected['result'].items() if k not in _TRANSCRIPT_FIELDS}, 'messages': []}}))
     assert json.dumps(admission_result(owner.db, admission_id)) == json.dumps(kept)

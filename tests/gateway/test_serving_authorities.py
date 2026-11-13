@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.session_authorities import SessionAuthorities, serving_authorities
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
 class _Ledger:

@@ -11,7 +11,7 @@ import pytest
 from agent import codex_runtime, runtime_cwd
 from agent.transports import codex_app_server_session
 from agent.memory_provider import MemoryProvider
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from run_agent import AIAgent
 from tools import terminal_tool
 

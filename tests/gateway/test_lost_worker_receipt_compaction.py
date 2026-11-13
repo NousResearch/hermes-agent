@@ -9,8 +9,8 @@ from types import SimpleNamespace
 import psutil
 
 from hermes_cli.process_identity import worker_birth
-from hermes_state import SessionDB
-from hermes_state_runtime import (
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_runtime import (
     admit_session_input, begin_runtime_epoch, claim_session_input, mutate_worker_execution,
     recover_session_inputs, register_worker_execution,
 )
@@ -55,7 +55,7 @@ def test_lost_admission_worker_compacts_its_history_receipt(tmp_path):
 
 
 def test_reset_discarded_orphan_worker_compacts_its_history_receipt(tmp_path):
-    from hermes_state_runtime_workers import discard_orphan_workers_on_reset
+    from hermes_agent.hermes_state_runtime_workers import discard_orphan_workers_on_reset
     with closing(SessionDB(tmp_path / 'state.db')) as db:
         db.create_session('s', 'cli')
         db.append_messages_batch('s', [{'role': 'user', 'content': 'x' * 4000}])

@@ -462,7 +462,7 @@ async def test_under_a_session_authority_injection_enters_the_durable_fifo(monke
     admission into the session's FIFO; it never runs on the in-process adapter lane, and a
     refused admission is reported as not routed instead of falling back to that lane."""
     import gateway.session_authorities as authorities
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     adapter = SimpleNamespace(handle_message=AsyncMock())
     entry = _entry()

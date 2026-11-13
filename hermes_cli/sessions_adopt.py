@@ -23,11 +23,11 @@ def adoptable_sessions(path) -> list[dict]:
     The same eligibility the owner applies on resume (``validate_legacy_row``), read-only, so the
     count a dry run reports is what an adoption run attempts. A row the owner already bound is not
     offered again, which makes a second run a no-op."""
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from gateway.owner_identity import host_owner_subject
-    from hermes_state_local import POLICY_PREFIX
-    from hermes_state_local_migration import LEGACY_LOCAL_SOURCES, LEGACY_PREFIX, not_client_labels, validate_legacy_row
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_local import POLICY_PREFIX
+    from hermes_agent.hermes_state_local_migration import LEGACY_LOCAL_SOURCES, LEGACY_PREFIX, not_client_labels, validate_legacy_row
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     db = SessionDB(db_path=path, read_only=True)
     try:
@@ -106,8 +106,8 @@ def _refusal(exc) -> str:
 def _unreadable_store(exc: sqlite3.Error, store: str) -> str:
     """One line for a store adopt cannot read: what is wrong and what to run. Adopt opens the store
     read-only, so it neither upgrades a store from an older release nor waits out another writer."""
-    from hermes_state_errors import is_sqlite_lock_error
-    from hermes_state_repair import _schema_not_built
+    from hermes_agent.hermes_state_errors import is_sqlite_lock_error
+    from hermes_agent.hermes_state_repair import _schema_not_built
 
     if is_sqlite_lock_error(exc):
         return f'Error: {store} is locked by another program. Close that program, then run this command again.'

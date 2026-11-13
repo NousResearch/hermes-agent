@@ -10,7 +10,7 @@ from cli import HermesCLI
 
 
 def test_cli_session_store_is_the_gateway_store_and_opens_no_writer(monkeypatch):
-    import hermes_state_registry
+    from hermes_agent import hermes_state_registry
     from hermes_cli.gateway_session_store import GatewaySessionStore
 
     constructed = []

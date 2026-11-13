@@ -40,7 +40,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_state
+from hermes_agent import hermes_state
 from hermes_constants import (
     reset_hermes_home_override,
     set_hermes_home_override,
@@ -121,7 +121,7 @@ def profile_tripwire(tmp_path, monkeypatch):
        detectable.
     2. ``HERMES_HOME`` (env var AND the context-local override) pointed at
        the testprof home — the exact activation shape ``--profile`` uses.
-    3. ``hermes_state.DEFAULT_DB_PATH`` restored to its import-time snapshot.
+    3. ``hermes_agent.hermes_state.DEFAULT_DB_PATH`` restored to its import-time snapshot.
        The suite conftest deliberately re-points that constant at its own
        fake home, which trips the escape hatch in ``_default_db_path()``
        (a re-pointed constant wins over everything).  Closing the hatch

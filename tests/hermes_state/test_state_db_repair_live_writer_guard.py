@@ -28,11 +28,11 @@ from pathlib import Path
 
 import pytest
 
-import hermes_state
-import hermes_state_repair
-import hermes_state_holders
-from hermes_state import SessionDB
-from hermes_state_repair import repair_state_db_schema
+from hermes_agent import hermes_state
+from hermes_agent import hermes_state_repair
+from hermes_agent import hermes_state_holders
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_repair import repair_state_db_schema
 
 
 def _make_wal_db(tmp_path: Path) -> Path:
@@ -64,7 +64,7 @@ def test_repair_refuses_while_another_connection_holds_the_db(tmp_path):
     """Surgery under concurrent writers is what spread the corruption.
 
     Gated on ``requires_wal``: repair admission
-    (``hermes_state_holders.live_writer_holds_db``) first scans for foreign
+    (``hermes_agent.hermes_state_holders.live_writer_holds_db``) first scans for foreign
     holders — deleted sidecar generations, uninspectable Hermes processes —
     and then probes SQLite with ``PRAGMA locking_mode=EXCLUSIVE`` +
     ``BEGIN IMMEDIATE``, which a concurrent connection makes fail with

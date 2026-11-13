@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 from agent.conversation_compression import _publish_rotated_compaction
 from gateway.session_authority import SessionAuthority
-from hermes_state_runtime import list_session_admissions
+from hermes_agent.hermes_state_runtime import list_session_admissions
 
 schedule = SessionAuthority._schedule
 

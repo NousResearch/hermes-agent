@@ -81,7 +81,7 @@ async def test_stale_branch_starts_no_editor_server(owner):
 
 @pytest.mark.asyncio
 async def test_busy_branch_starts_no_editor_server(owner):
-    from hermes_state_runtime import admit_session_input
+    from hermes_agent.hermes_state_runtime import admit_session_input
     build, discovered, payload = owner
     authority, client, sid = await build()
     # A queued input: the branch commit's own idle rule refuses it (require_idle).

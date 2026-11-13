@@ -7,8 +7,8 @@ again). A pending receipt whose session row is gone with no deletion marker is s
 import asyncio
 from types import SimpleNamespace
 
-from hermes_state import SessionDB
-from hermes_state_runtime import begin_runtime_epoch
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 from tools.bot_live_delivery import _locked, _read, _write
 
 

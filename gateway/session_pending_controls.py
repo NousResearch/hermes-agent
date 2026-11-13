@@ -5,7 +5,7 @@ Secret/sudo prompts remain native; no response is published or journaled here.
 """
 from copy import deepcopy
 
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 from tools.approval import list_gateway_approvals, resolve_gateway_approval
 
 

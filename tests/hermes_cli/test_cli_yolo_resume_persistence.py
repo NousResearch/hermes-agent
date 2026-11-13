@@ -26,7 +26,7 @@ import pytest
 import tools.approval as approval_module
 from tools import approval_context
 from cli import HermesCLI
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 SESSION_ID = "yolo_persist_session"

@@ -13,7 +13,7 @@ async def test_scalar_model_config_creates_sessions(tmp_path, monkeypatch):
     from gateway.session_authority import initialize_session_authority
     from gateway.session_controls import AuthorityConnection
     from gateway.session_policy import restore_policy
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
 
     home = tmp_path / 'home'
     home.mkdir()

@@ -26,7 +26,7 @@ import time
 
 import pytest
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 IDLE_S = 6 * 3600  # mirror the TUI gateway's default session TTL

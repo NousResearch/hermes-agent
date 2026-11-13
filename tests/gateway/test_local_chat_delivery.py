@@ -14,7 +14,7 @@ from tests.gateway.test_session_end_delegations import _local
 
 
 def _admissions(authority, ref, needle):
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     rows = list_session_admissions(authority.db, session_id=ref.session_id, pending_only=False)
     return [row for row in rows if needle in str(row['payload'])]
 
@@ -37,7 +37,7 @@ def _overdue_heartbeat(session_id):
 
 
 def _heartbeat_admissions(authority, ref):
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     rows = list_session_admissions(authority.db, session_id=ref.session_id, pending_only=False)
     return [row for row in rows if row['payload'].get('local_automation_v1', {}).get('heartbeat')]
 

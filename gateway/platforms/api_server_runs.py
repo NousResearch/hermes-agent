@@ -736,7 +736,7 @@ async def _admit_run_to_authority(
     from gateway.platforms.api_server_authority_runs import run_admission, store_error_response
     from gateway.session_api_turn import admit_api_turn_async
     from gateway.session_contract import SessionRef
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     try:
         with self._profile_scope(launch.request_profile):
             launch.admission = await admit_api_turn_async(self, user_message=launch.user_message,
@@ -1415,7 +1415,7 @@ async def _handle_run_approval(self, request: web.Request, *, _api_server) -> we
 
 async def _respond_authority_run(self, run_id, body, *, kind, _api_server):
     from gateway.platforms.api_server_authority_runs import respond_run, store_error_response
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     try:
         result = await respond_run(self, run_id, body, kind=kind)
         return web.json_response({'run_id': run_id, **result})
@@ -1467,7 +1467,7 @@ async def _handle_steer_run(self, request: web.Request, *, _api_server) -> web.R
             code="invalid_steer_input", status=400)
     if owned is not None:
         from gateway.session_contract import SessionRef
-        from hermes_state_runtime import RuntimeStoreError
+        from hermes_agent.hermes_state_runtime import RuntimeStoreError
         authority, row = owned
         sid, latched = row['target_session_id'], False
         try:
@@ -1506,7 +1506,7 @@ async def _handle_stop_run(self, request: web.Request, *, _api_server) -> web.Re
     if (getattr(self.gateway_runner, 'session_authority', None) is not None
             and not (task is not None and status.get("delivery_id"))):
         from gateway.platforms.api_server_authority_runs import stop_run, store_error_response
-        from hermes_state_runtime import RuntimeStoreError
+        from hermes_agent.hermes_state_runtime import RuntimeStoreError
         try:
             return web.json_response(await stop_run(self, run_id))
         except RuntimeStoreError as exc:
@@ -1541,7 +1541,7 @@ async def _handle_resolve_unknown_run(
     except (ValueError, LookupError):  # bad JSON/UTF-8 (ValueError) or unknown charset: no body
         body = None
     from gateway.platforms.api_server_authority_runs import resolve_unknown_run, store_error_response
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     try:
         result = await resolve_unknown_run(self, run_id, body)
         return web.json_response({'run_id': run_id, **result})

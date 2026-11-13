@@ -14,7 +14,7 @@ import sqlite3
 
 import pytest
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from tests.e2e.core.platforms._drv_telegram import TelegramDriver
 from tests.e2e.core.platforms._helpers import Director, GatewayUnderTest
 from tests.fakes.fake_llm_provider import FakeLLMServer

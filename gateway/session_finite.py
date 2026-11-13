@@ -2,7 +2,7 @@
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 _finite_turn = ContextVar('finite_turn', default=None)
 _unattended_turn = ContextVar('unattended_turn', default=False)

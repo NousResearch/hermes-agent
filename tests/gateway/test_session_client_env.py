@@ -37,7 +37,7 @@ def _home(tmp_path, config=_CONFIG):
 def _create(owner, actor, home, request_id, **extra):
     from gateway.session_local import create_local_session
     from gateway.session_policy import restore_policy
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
     # A shell client attached through the gateway's own ticket (the gateway's proof it is on this host).
     ref = create_local_session(owner, actor, {'request_id': request_id, 'source': 'cli', 'cwd': str(home),
                                               'toolsets': [], **extra}, client_local=True)
@@ -123,7 +123,7 @@ async def test_each_session_resolves_its_own_clients_provider_request(tmp_path, 
 
 @pytest.mark.asyncio
 async def test_client_env_is_filtered_validated_and_never_echoed(tmp_path, monkeypatch):
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     home = _home(tmp_path)
     owner, connection = await _owner(home, monkeypatch)
     try:
@@ -143,7 +143,7 @@ async def test_client_env_is_filtered_validated_and_never_echoed(tmp_path, monke
 
 def _strip_new_policy_fields(db_path, session_id):
     """Rewrite a receipt into the exact shape a gateway before this change committed."""
-    from hermes_state_local import POLICY_PREFIX
+    from hermes_agent.hermes_state_local import POLICY_PREFIX
     conn = sqlite3.connect(db_path)
     try:
         key = POLICY_PREFIX + session_id
@@ -158,8 +158,8 @@ def _strip_new_policy_fields(db_path, session_id):
 @pytest.mark.asyncio
 async def test_exact_retry_of_a_session_created_before_client_env(tmp_path, monkeypatch):
     from gateway.session_local import create_local_session
-    from hermes_state_local import local_receipt
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     home = _home(tmp_path)
     owner, connection = await _owner(home, monkeypatch)
     params = {'request_id': 'old', 'source': 'cli', 'cwd': str(home), 'toolsets': []}
@@ -185,8 +185,8 @@ async def test_exact_retry_of_a_session_created_before_client_env(tmp_path, monk
 @pytest.mark.asyncio
 async def test_exact_retry_is_judged_by_the_committed_map_not_the_current_allowlist(tmp_path, monkeypatch):
     from gateway.session_local import create_local_session
-    from hermes_state_local import local_receipt
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     home = _home(tmp_path, _CONFIG + 'terminal: {client_env_passthrough: [GEM_HOME]}\n')
     owner, connection = await _owner(home, monkeypatch)
     env = {'GEM_HOME': '/gems', 'BUNDLE_PATH': '/bundle', 'PATH': '/client/bin'}
@@ -218,7 +218,7 @@ async def test_exact_retry_compares_the_complete_map_under_its_committed_rules(t
     must equal the committed map: a name those rules keep added, a stored one dropped or a value changed
     is a different request; a name they would have dropped is ignored, whatever the rules are now."""
     from gateway.session_local import create_local_session
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     home = _home(tmp_path, _CONFIG + 'terminal: {client_env_passthrough: [GEM_HOME]}\n')
     owner, connection = await _owner(home, monkeypatch)
     base = {'source': 'cli', 'cwd': str(home), 'toolsets': []}
@@ -253,8 +253,8 @@ async def test_overlapping_retries_across_an_allowlist_change_agree_with_sequent
     """Two creates of one request_id staged on either side of an allowlist edit: the transactional commit
     judges the loser by the winner's committed rules, exactly as a sequential retry would be."""
     from gateway.session_local import stage_local_session
-    from hermes_state_local import commit_local_session, local_receipt
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_local import commit_local_session, local_receipt
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     home = _home(tmp_path, _CONFIG + 'terminal: {client_env_passthrough: [GEM_HOME]}\n')
     owner, connection = await _owner(home, monkeypatch)
     env = {'GEM_HOME': '/gems', 'BUNDLE_PATH': '/bundle', 'PATH': '/client/bin'}
@@ -283,8 +283,8 @@ async def test_a_copied_staged_receipt_is_never_judged_by_its_own_filtered_map(t
     """An overlapping create's own ``client_env`` is owner memory on its staged receipt. A plain copy has lost
     it, and its filtered map (an allowlist edit dropped GEM_HOME) equals the winner's: the commit refuses it."""
     from gateway.session_local import stage_local_session
-    from hermes_state_local import commit_local_session
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_local import commit_local_session
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     home = _home(tmp_path, _CONFIG + 'terminal: {client_env_passthrough: [GEM_HOME]}\n')
     owner, connection = await _owner(home, monkeypatch)
 
@@ -352,8 +352,8 @@ async def test_host_values_apply_only_over_a_gateway_proven_local_attach(tmp_pat
     from gateway.session_policy import policy_scope, restore_policy
     from gateway.session_worker_construct import session_prefill
     from hermes_cli.runtime_provider import resolve_requested_provider
-    from hermes_state_local import local_receipt
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     from tools.environments.local import _make_run_env
     home = _home(tmp_path, 'platform_toolsets: {cli: []}\nmodel: {default: m}\n')  # no configured provider
     repo = tmp_path / 'repo'

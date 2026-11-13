@@ -22,7 +22,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter
 from hermes_cli.subcommands import peer as peer_mod
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 AUTHOR = {"id": "bot:cto", "name": "cto", "is_bot": True}
 

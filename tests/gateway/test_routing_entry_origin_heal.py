@@ -26,7 +26,7 @@ def _strip(db, store, key, row_sql=None):
 def topic(tmp_path):
     from gateway.config import Platform
     from gateway.session import SessionSource
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     db = SessionDB(tmp_path / 'state.db')
     source = SessionSource(platform=Platform.TELEGRAM, chat_id='-1001234567890', chat_type='group',
                            thread_id='600', user_id='111', chat_name='Forum')
@@ -68,7 +68,7 @@ def test_next_inbound_turn_fills_an_origin_nothing_else_can_restore(tmp_path, to
 def test_named_profile_route_heals_from_row_columns_under_multiplex(tmp_path):
     from gateway.config import Platform
     from gateway.session import SessionSource
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     db = SessionDB(tmp_path / 'state.db')
     store = _store(tmp_path, db, multiplex_profiles=True)
     source = SessionSource(platform=Platform.TELEGRAM, chat_id='-1001', chat_type='group',

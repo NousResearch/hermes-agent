@@ -22,7 +22,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "clamp-test-token")
     from hermes_cli import web_server
-    import hermes_state
+    from hermes_agent import hermes_state
 
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
     # The owner initializes storage, not GET requests or an unrelated lifespan.

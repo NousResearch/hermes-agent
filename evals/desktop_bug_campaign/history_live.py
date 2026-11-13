@@ -21,7 +21,7 @@ out.mkdir(parents=True, exist_ok=False)
 home = Path(tempfile.mkdtemp(prefix='history-'+tag+'-', dir=out))
 os.environ['HOME'] = str(home)
 os.environ['HERMES_HOME'] = str(home)
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from websockets.sync.client import connect
 
 items = [{'type': 'message', 'role': 'assistant', 'phase': 'final_answer', 'content': [{'type': 'output_text', 'text': 'HISTORY_SIDECAR_REPLY'}]}]

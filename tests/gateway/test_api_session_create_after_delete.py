@@ -16,7 +16,7 @@ _AUTH = {'Authorization': 'Bearer ' + _KEY}
 @pytest.mark.asyncio
 @pytest.mark.parametrize('past_horizon', [False, True], ids=['within-horizon', 'past-horizon'])
 async def test_creating_a_session_with_a_deleted_id_is_refused_by_name(api, owner, past_horizon):
-    from hermes_state_mutation_retirement import prune_retired_tombstones
+    from hermes_agent.hermes_state_mutation_retirement import prune_retired_tombstones
     api._api_key = _KEY
     app = web.Application()
     app.router.add_post('/api/sessions', api._handle_create_session)

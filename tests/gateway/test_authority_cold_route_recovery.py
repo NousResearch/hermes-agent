@@ -97,7 +97,7 @@ def _ref(sid, profile_id='fixture'):
 
 
 async def _refused(tmp_path, sid, reason='not_found', **cold_args):
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     cold = await _cold(tmp_path, **cold_args)
     with pytest.raises(RuntimeStoreError, match=reason):
         cold.authority.authorize(cold.actor, _ref(sid), 'session:read')
@@ -187,7 +187,7 @@ async def test_an_entry_without_an_origin_falls_back_to_the_row(tmp_path):
 async def test_a_row_with_neither_origin_nor_chat_id_cannot_be_rebuilt(tmp_path):
     cold = await _cold(tmp_path)
     cold.authority.db.create_session('hollow', source='telegram', session_key='agent:main:telegram:dm:x')
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     with pytest.raises(RuntimeStoreError, match='not_found'):
         cold.authority.authorize(cold.actor, _ref('hollow'), 'session:read')
     assert 'hollow' not in cold.authority.sessions
@@ -217,7 +217,7 @@ async def test_an_origin_that_contradicts_the_row_is_not_trusted(tmp_path):
 
 @pytest.mark.asyncio
 async def test_a_foreign_profile_ref_is_still_refused(tmp_path):
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     _seed(tmp_path, 'lane-foreign', _source())
     cold = await _cold(tmp_path)
     with pytest.raises(RuntimeStoreError, match='profile_mismatch'):
@@ -260,7 +260,7 @@ async def test_a_lane_of_another_profile_is_not_mounted_by_this_authority(tmp_pa
 
 @pytest.mark.asyncio
 async def test_a_draining_gateway_mounts_nothing(tmp_path):
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     _seed(tmp_path, 'lane-drain', _source())
     cold = await _cold(tmp_path)
     cold.authority.runner._draining = True

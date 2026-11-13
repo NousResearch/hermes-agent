@@ -37,7 +37,7 @@ def profile_env(tmp_path, monkeypatch):
 
 def _get_api_profiles(profile_env, monkeypatch) -> list:
     """Rows of a real ``GET /api/profiles`` against the isolated home."""
-    import hermes_state
+    from hermes_agent import hermes_state
     from starlette.testclient import TestClient
     from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", profile_env / "state.db")

@@ -13,8 +13,8 @@ import sqlite3
 
 from hermes_cli.doctor_report import Finding
 from hermes_cli.doctor_state import _state_db_health
-from hermes_state import SessionDB
-from hermes_state_repair import integrity_damage_is_structural, state_db_has_structural_damage
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_repair import integrity_damage_is_structural, state_db_has_structural_damage
 
 
 def test_integrity_damage_classifier_maps_tree_ids_through_rootpage():

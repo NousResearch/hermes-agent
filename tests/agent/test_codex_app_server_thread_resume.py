@@ -12,7 +12,7 @@ from pathlib import Path
 from agent.transports import codex_app_server_session as session_mod
 from agent.transports.codex_app_server import CodexAppServerError
 from agent.transports.codex_app_server_session import CodexAppServerSession, TurnResult
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 SID = "sess-codex-restart"
 

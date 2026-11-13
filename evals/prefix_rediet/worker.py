@@ -107,7 +107,7 @@ def fixtures():
     with open(os.path.join(workspace, "backup.sh"), "w") as f:
         f.write("#!/bin/sh\necho backing up\n")
     os.chmod(os.path.join(workspace, "backup.sh"), 0o755)
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     db = SessionDB()
     t = time.time() - 30 * 86400
     db.create_session("seed_shadow_vet", source="cli")

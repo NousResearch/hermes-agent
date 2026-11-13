@@ -15,7 +15,7 @@ compaction write path (not the read path) so paged display reads stay bounded
 in the size of the page, not the transcript.
 """
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def _carry_and_split(db, sid, reply_text):

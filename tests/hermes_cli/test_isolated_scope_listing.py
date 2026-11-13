@@ -42,7 +42,7 @@ def homes(monkeypatch, _isolate_hermes_home):
 
 
 def _seed(home, session_id):
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=home / "state.db")
     try:

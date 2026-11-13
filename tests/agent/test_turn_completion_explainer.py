@@ -202,7 +202,7 @@ def test_explanation_persistence_replaced_cause_forbids_inplace_repair():
 def test_deleted_wal_cause_is_plain_first_steps_not_a_forensic_runbook():
     """The WAL-generation runbook lives in the logger.error at hermes_state; the chat reply
     gives the two steps a user can take (stop, doctor) and points at the log."""
-    from hermes_state_errors import PERSISTENCE_ERROR_CAUSES
+    from hermes_agent.hermes_state_errors import PERSISTENCE_ERROR_CAUSES
 
     out = AIAgent._format_turn_completion_explanation(
         "session_persistence_failed", "deleted_wal"
@@ -272,7 +272,7 @@ def test_explanation_cause_ignored_for_other_reasons():
 def test_classify_persistence_error_categories():
     import sqlite3
 
-    from hermes_state import classify_persistence_error
+    from hermes_agent.hermes_state import classify_persistence_error
 
     assert classify_persistence_error(
         sqlite3.OperationalError("database is locked")
@@ -297,7 +297,7 @@ def test_classify_persistence_error_corruption_beats_disk_bucket():
     comment thread, v0.20.0 malformed-DB incident)."""
     import sqlite3
 
-    from hermes_state import classify_persistence_error
+    from hermes_agent.hermes_state import classify_persistence_error
 
     assert classify_persistence_error(
         sqlite3.DatabaseError("database disk image is malformed")
@@ -315,12 +315,12 @@ def test_classify_persistence_error_corruption_beats_disk_bucket():
 
 
 def test_classify_persistence_error_reuses_disk_full_markers():
-    """The disk bucket delegates to hermes_state_errors.is_disk_full_error, so
+    """The disk bucket delegates to hermes_agent.hermes_state_errors.is_disk_full_error, so
     every marker that helper recognizes (ENOSPC, 'not enough space', ...)
     must classify as 'disk' — the two classifiers can never drift apart."""
     import errno
 
-    from hermes_state import classify_persistence_error
+    from hermes_agent.hermes_state import classify_persistence_error
 
     assert classify_persistence_error("ENOSPC writing state.db") == "disk"
     assert classify_persistence_error(
@@ -336,9 +336,9 @@ def test_classify_persistence_error_compression_busy_is_distinct():
     storage damage — but its message contains neither 'locked' nor 'busy',
     so it must classify by exception type (and by phrase for RPC-wrapped
     strings). This is the exact failure mode of issue #81227."""
-    from hermes_state import SessionCompressionInProgressError
-    from hermes_state_errors import CompressionSessionBusyError
-    from hermes_state import classify_persistence_error
+    from hermes_agent.hermes_state import SessionCompressionInProgressError
+    from hermes_agent.hermes_state_errors import CompressionSessionBusyError
+    from hermes_agent.hermes_state import classify_persistence_error
 
     assert classify_persistence_error(
         SessionCompressionInProgressError(
@@ -358,8 +358,8 @@ def test_classify_persistence_error_compression_busy_is_distinct():
 
 
 def test_classify_persistence_error_turn_lease_lost_is_distinct():
-    from hermes_state import classify_persistence_error
-    from hermes_state_errors import SessionTurnLeaseLostError
+    from hermes_agent.hermes_state import classify_persistence_error
+    from hermes_agent.hermes_state_errors import SessionTurnLeaseLostError
 
     assert classify_persistence_error(
         SessionTurnLeaseLostError(
@@ -374,8 +374,8 @@ def test_classify_persistence_error_turn_lease_lost_is_distinct():
 def test_persistence_error_causes_tuple_matches_classifier():
     """PERSISTENCE_ERROR_CAUSES must cover every value the classifier can
     return (consumers like cron suppression iterate it)."""
-    from hermes_state import classify_persistence_error
-    from hermes_state_errors import PERSISTENCE_ERROR_CAUSES
+    from hermes_agent.hermes_state import classify_persistence_error
+    from hermes_agent.hermes_state_errors import PERSISTENCE_ERROR_CAUSES
 
     probes = (
         "database is locked",
@@ -399,8 +399,8 @@ def test_classify_persistence_error_fts_provenance_order():
     "provably FTS-only" (#97794 review)."""
     import sqlite3
 
-    from hermes_state import SessionDB, classify_persistence_error
-    from hermes_state_errors import SQLITE_CORRUPT_VTAB, is_fts_scoped_corruption_error
+    from hermes_agent.hermes_state import SessionDB, classify_persistence_error
+    from hermes_agent.hermes_state_errors import SQLITE_CORRUPT_VTAB, is_fts_scoped_corruption_error
 
     def _err(text, code=None, cls=sqlite3.DatabaseError):
         exc = cls(text)
@@ -532,6 +532,6 @@ def test_run_conversation_partial_stream_recovery_surfaces_explanation():
 
 def test_classify_persistence_error_quarantined_handle_is_corrupt() -> None:
     """A quarantined SessionDB raises the typed error; it stays in the corrupt bucket."""
-    from hermes_state import StateDbCorruptError, classify_persistence_error
+    from hermes_agent.hermes_state import StateDbCorruptError, classify_persistence_error
 
     assert classify_persistence_error(StateDbCorruptError("quarantined")) == "corrupt"

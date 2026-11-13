@@ -1,6 +1,6 @@
 """Control-only ownership for unbound legacy history; never an execution policy."""
 import json
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 BINDING_PREFIX = 'gateway.history_control.v1.'
 
@@ -10,13 +10,13 @@ def _history_row(row):
     (``legacy_history_row``: old ``desktop`` chats, ``oneshot``/``tool`` CLI runs and phone apps'
     self-labelled chats too) plus imports. A row resume can adopt must also take a sidebar edit
     (pin/archive/hide/rename)."""
-    from hermes_state_local_migration import legacy_history_row
+    from hermes_agent.hermes_state_local_migration import legacy_history_row
     return row['source'] == 'import' or legacy_history_row(dict(row))
 
 
 def _owner_user(row):
     """The row's owner identity; main's Desktop Nous-account label is not one (see validate_legacy_row)."""
-    from hermes_state_local_migration import legacy_account_label
+    from hermes_agent.hermes_state_local_migration import legacy_account_label
     return None if legacy_account_label(dict(row)) else row['user_id']
 
 

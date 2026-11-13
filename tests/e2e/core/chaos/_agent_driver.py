@@ -32,7 +32,7 @@ def main(spec_path: str) -> None:
     spec = json.loads(open(spec_path, encoding="utf-8").read())
 
     from hermes_cli.config import load_config
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from run_agent import AIAgent
 
     cfg = load_config()

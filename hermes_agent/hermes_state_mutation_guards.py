@@ -1,7 +1,7 @@
 """Transcript mutation guards evaluated on the receipt's writer connection."""
-from hermes_state_common import _ENDED_ROW_SQL, _ended_by_compression
-from hermes_state_errors import SessionCompressionInProgressError, SessionTurnLeaseLostError
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_common import _ENDED_ROW_SQL, _ended_by_compression
+from hermes_agent.hermes_state_errors import SessionCompressionInProgressError, SessionTurnLeaseLostError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 # What ``require_idle``'s transcript-guard check raises when a live turn lease or a
 # compression lock protects a target: the same retryable "busy" verdict as a running
@@ -68,7 +68,7 @@ def _continuation_edges(conn, sid):
     ``model_config``, so an inherited ``_branched_from``/``_delegate_from`` naming an older row
     does not make it a fork, and a delegate's continuation published by a canonical ``compress``
     carries no marker at all."""
-    from hermes_state_common import _non_continuation_child_sql
+    from hermes_agent.hermes_state_common import _non_continuation_child_sql
     edge = _non_continuation_child_sql('child.', 'parent.id')
     rows = conn.execute(
         'SELECT child.id FROM sessions parent JOIN sessions child ON child.parent_session_id=parent.id '
@@ -79,12 +79,12 @@ def _continuation_edges(conn, sid):
 
 
 def delete_targets(conn, session_id):
-    from hermes_state_sessions import _collect_delegate_child_ids
+    from hermes_agent.hermes_state_sessions import _collect_delegate_child_ids
     import json
-    from hermes_state_compression import _CHAIN_CAP
-    from hermes_state_local import POLICY_PREFIX
-    from hermes_state_local_lineage import validate_local_lineage
-    from hermes_state_local import local_lineage_owner
+    from hermes_agent.hermes_state_compression import _CHAIN_CAP
+    from hermes_agent.hermes_state_local import POLICY_PREFIX
+    from hermes_agent.hermes_state_local_lineage import validate_local_lineage
+    from hermes_agent.hermes_state_local import local_lineage_owner
     targets = {session_id}
     # A reset/compression segment of a local conversation is that conversation: the listing
     # shows one row for it, so its delete takes the creation id (policy, FIFO) and every segment.
@@ -108,7 +108,7 @@ def delete_targets(conn, session_id):
     # Delegates and continuations close over each other to a fixed point: a compressed
     # delegate's continuation (and its queued work) goes with it, or require_idle never sees it
     # and the delete orphans it.
-    from hermes_state_mutation_binding import same_history_owner
+    from hermes_agent.hermes_state_mutation_binding import same_history_owner
     anchor = dict.fromkeys(targets, session_id)
     frontier = list(targets)
     for _ in range(_CHAIN_CAP):

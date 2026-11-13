@@ -51,7 +51,7 @@ def test_compression_evicts_the_bodies_the_summary_replaced(tmp_path, monkeypatc
 
     from agent import conversation_compression
     from agent.conversation_compression import CompressionCommitFence
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / "state.db")
     db.create_session("S", source="cli")

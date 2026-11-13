@@ -87,7 +87,7 @@ def test_stale_profile_toolset_warns_and_the_session_is_created(store, monkeypat
 
 def test_explicit_unknown_toolset_is_still_refused(store, monkeypatch):
     from gateway.session_policy import build_policy
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     db, client = store
     _launch(monkeypatch, db, toolsets="terminal,bogus")
     params = _created(client)

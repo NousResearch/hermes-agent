@@ -84,7 +84,7 @@ def _stored_close(db, sid):
 async def test_a_dropped_viewer_ends_the_session_after_its_turn_settles(tmp_path, monkeypatch):
     import gateway.session_finite as finite
     import tools.async_delegation as delegation
-    from hermes_state_runtime import admit_session_input, list_session_admissions
+    from hermes_agent.hermes_state_runtime import admit_session_input, list_session_admissions
 
     armed = _capture_timers(monkeypatch)
     authority, finalized = await _owner(tmp_path, monkeypatch)
@@ -145,7 +145,7 @@ async def test_a_viewer_back_within_the_grace_keeps_the_session_open(tmp_path, m
 @pytest.mark.asyncio
 async def test_an_orphan_end_leaves_an_unknown_turn_for_its_user(tmp_path, monkeypatch):
     """Nobody closed the session, so nobody decided to drop the turn a hard-killed owner lost."""
-    from hermes_state_runtime import admit_session_input, claim_session_input, get_session_admission
+    from hermes_agent.hermes_state_runtime import admit_session_input, claim_session_input, get_session_admission
 
     armed = _capture_timers(monkeypatch)
     first, _ = await _owner(tmp_path, monkeypatch)
@@ -168,7 +168,7 @@ async def test_an_orphan_end_leaves_an_unknown_turn_for_its_user(tmp_path, monke
 
 @pytest.mark.asyncio
 async def test_boot_restores_only_open_sessions_and_an_ended_one_on_first_touch(tmp_path, monkeypatch):
-    from hermes_state_local import end_idle_local_session
+    from hermes_agent.hermes_state_local import end_idle_local_session
 
     first, _ = await _owner(tmp_path, monkeypatch)
     ended, live = _create(first, 'finished').session_id, _create(first, 'ongoing').session_id
@@ -185,7 +185,7 @@ async def test_boot_restores_only_open_sessions_and_an_ended_one_on_first_touch(
 @pytest.mark.parametrize('producer', ['delegation', 'process'])
 async def test_work_finishing_after_close_and_restart_is_noted_on_the_ended_session(tmp_path, monkeypatch, producer):
     """Boot leaves ended sessions unrestored, but not one whose background work has not reported yet."""
-    from hermes_state_local import end_idle_local_session
+    from hermes_agent.hermes_state_local import end_idle_local_session
     from tests.gateway.test_completion_admission import pending
     from tests.gateway.test_session_end_delegations import _local
     from tests.gateway.test_unviewed_completion_notes import _delegation_note, _process_event, _restart, _target
@@ -267,7 +267,7 @@ def test_the_startup_idle_probe_does_not_nest_its_read_context(tmp_path, monkeyp
     """
     from contextlib import contextmanager
     from gateway.session_viewer_close import _idle_s
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / 'state.db')
     db.create_session(session_id='s1', source='cli', model='m')
@@ -321,7 +321,7 @@ async def test_the_legacy_reap_opt_outs_hold_until_the_new_key_is_set(tmp_path, 
 async def test_a_session_left_with_queued_input_ends_after_boot_once_it_drains(tmp_path, monkeypatch):
     import gateway.session_finite as finite
     from gateway.session_local_recovery import recover_local_sessions
-    from hermes_state_runtime import admit_session_input, list_session_admissions
+    from hermes_agent.hermes_state_runtime import admit_session_input, list_session_admissions
 
     armed = _capture_timers(monkeypatch)
     _stale_rows(monkeypatch)
@@ -421,7 +421,7 @@ async def test_a_session_the_tui_keeps_live_is_only_orphaned_when_its_connection
 @pytest.mark.asyncio
 async def test_a_watch_match_after_close_and_restart_is_noted_on_the_ended_session(tmp_path, monkeypatch):
     import queue
-    from hermes_state_local import end_idle_local_session
+    from hermes_agent.hermes_state_local import end_idle_local_session
     from tests.gateway.test_session_end_delegations import _local
     from tests.gateway.test_unviewed_completion_notes import _delegation_note, _restart, _target
 

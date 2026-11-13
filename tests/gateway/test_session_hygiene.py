@@ -751,7 +751,7 @@ def _make_cooldown_runner(monkeypatch, tmp_path, agent_cls, session_db, session_
     """Scaffolding for the restart-persistence tests: a fresh GatewayRunner
     wired to a REAL AsyncSessionDB facade (not a MagicMock) so the hygiene
     cooldown check/write paths exercise the actual SQLite-backed methods."""
-    from hermes_state import AsyncSessionDB
+    from hermes_agent.hermes_state import AsyncSessionDB
 
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
@@ -843,7 +843,7 @@ async def test_hygiene_compression_cooldown_survives_gateway_restart(
     assert the second runner still honors the cooldown — i.e. it does not
     re-instantiate a compression agent for the same failing session.
     """
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     gateway_run = importlib.import_module("gateway.run")
     session_id = "sess-restart"
@@ -965,7 +965,7 @@ async def test_hygiene_fence_cancel_records_cooldown_without_abort_flag(
     That used to skip the abort-cooldown block, so the next turn immediately
     re-armed hygiene and waited up to the 600s ceiling behind a doomed attempt.
     """
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     session_id = "sess-fence-cancel"
 
@@ -1042,7 +1042,7 @@ async def test_hygiene_skips_when_compression_already_in_flight(
     monkeypatch, tmp_path
 ):
     """Do not spawn a sibling hygiene compressor while a lock is already held."""
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     session_id = "sess-in-flight"
 
@@ -1114,7 +1114,7 @@ def _turn_payload(runner):
 
 def _make_bound_runner(monkeypatch, tmp_path, agent_cls, cfg_text, transcript):
     """``_make_cooldown_runner`` with a >hard-limit transcript and a lowered hard limit."""
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / "state.db")
     db.create_session("sess-bound", "telegram")

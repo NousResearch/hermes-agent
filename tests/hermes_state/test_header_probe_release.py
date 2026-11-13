@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-import hermes_state_dbfile as dbfile
-import hermes_state_registry as registry
+import hermes_agent.hermes_state_dbfile as dbfile
+import hermes_agent.hermes_state_registry as registry
 
 
 @pytest.fixture(autouse=True)

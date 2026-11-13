@@ -13,7 +13,7 @@ async def test_admitted_completion_survives_a_transient_owner_read_after_compres
     from gateway.platforms.event import MessageEvent
     from gateway.session_contract import SessionRef
     from gateway.session_ingress import execute_admission
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     from tests.gateway.test_completion_admission import pending
 
     runner, _, authority, source = await _discord_owner(tmp_path, monkeypatch)
@@ -40,7 +40,7 @@ async def test_admitted_completion_survives_a_transient_owner_read_after_compres
     monkeypatch.setattr(runner, '_handle_message', turn)
     monkeypatch.setattr(runner, '_lookup_completion_owner', transient)
     ref = SessionRef(authority.profile_id, sid)
-    from hermes_state_runtime import claim_session_input, settle_session_input
+    from hermes_agent.hermes_state_runtime import claim_session_input, settle_session_input
     head = claim_session_input(authority.db, epoch=authority.epoch, session_id=sid)  # the human turn ran
     settle_session_input(authority.db, epoch=authority.epoch, admission_id=head['admission_id'],
                          generation=head['generation'], outcome='completed', result={})

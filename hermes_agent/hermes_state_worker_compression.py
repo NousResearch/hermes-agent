@@ -8,8 +8,8 @@ from functools import partial
 import math
 import time
 
-from hermes_state_runtime import RuntimeStoreError, _text
-from hermes_state_compression import _claim_lease_row
+from hermes_agent.hermes_state_runtime import RuntimeStoreError, _text
+from hermes_agent.hermes_state_compression import _claim_lease_row
 
 
 def _fields(payload, required, optional=()):
@@ -36,7 +36,7 @@ def worker_compression_lock(db, conn, sid, payload, *, action):
     if not 0.1 <= ttl <= 3600:
         raise RuntimeStoreError('invalid_params')
     if action == 'acquire':
-        from hermes_state import _compression_lock_holder_process_is_dead
+        from hermes_agent.hermes_state import _compression_lock_holder_process_is_dead
         value = _claim_lease_row(conn, 'compression_locks', 'session_id', sid, holder, now, now + ttl,
                                 lambda h, e: e < now or _compression_lock_holder_process_is_dead(h))[0]
     elif action == 'renew':
@@ -106,9 +106,9 @@ class CompressionSnapshot:
     Only read primitives are provided; this object cannot start/commit a write.
     Wire handlers below select concrete projections, not caller-named methods.
     """
-    from hermes_state_compression import SessionCompressionMixin as _C
-    from hermes_state_messages import SessionMessagesMixin as _M
-    from hermes_state_sessions import SessionSessionsMixin as _S
+    from hermes_agent.hermes_state_compression import SessionCompressionMixin as _C
+    from hermes_agent.hermes_state_messages import SessionMessagesMixin as _M
+    from hermes_agent.hermes_state_sessions import SessionSessionsMixin as _S
 
     get_compression_chain = _C.get_compression_chain
     get_compression_tip = _C.get_compression_tip
@@ -138,7 +138,7 @@ class CompressionSnapshot:
         return self.conn.execute(sql, params).fetchall()
 
     def get_session(self, sid):
-        from hermes_state_worker_context import worker_context
+        from hermes_agent.hermes_state_worker_context import worker_context
         return worker_context(self.db, self.conn, sid, {})['session']
 
     def authorize(self, assigned, target):
@@ -195,7 +195,7 @@ def worker_history(db, conn, sid, payload):
     rows = conn.execute(f'SELECT {"session_id, compacted, display_order, " if display else ""}{db._CONVERSATION_ROW_COLUMNS} FROM messages '
                         f'WHERE session_id IN ({",".join("?" for _ in ids)}){active} ORDER BY id', ids).fetchall()
     if display:  # the owner's display reads' rule: a message whose newest copy was removed stays hidden
-        from hermes_state_messages import SessionMessagesMixin
+        from hermes_agent.hermes_state_messages import SessionMessagesMixin
         rows = SessionMessagesMixin._with_removed_identities(view, rows, ids)
     if payload['include_compacted']:
         rows = db._dedupe_display_generations(rows, drop_removed=display)
@@ -232,7 +232,7 @@ def worker_watermark(db, conn, sid, payload):
 
 
 def _handoff_messages(conn, sid, messages):
-    from hermes_state_runtime import HANDOFF_MESSAGE_FIELDS
+    from hermes_agent.hermes_state_runtime import HANDOFF_MESSAGE_FIELDS
     if not isinstance(messages, list) or len(messages) > 1000:
         raise RuntimeStoreError('invalid_params')
     for msg in messages:
@@ -251,7 +251,7 @@ def _watermarks(payload):
 
 
 def worker_archive(db, conn, sid, payload):
-    from hermes_state_worker_context import SIDECAR_KEYS
+    from hermes_agent.hermes_state_worker_context import SIDECAR_KEYS
     _fields(payload, ('messages', 'model_config_patch', 'watermark', 'lock_holder', 'tail_count'),
             optional=('carried_messages', 'covered_ids', 'unresolved_held', 'held_for_cas'))
     _handoff_messages(conn, sid, payload['messages'])
@@ -284,7 +284,7 @@ def worker_archive(db, conn, sid, payload):
     value = archive_on_connection(db, conn, sid, payload['messages'], model_config_patch=patch,
         watermark=payload['watermark'], lock_holder=payload['lock_holder'], tail_count=payload['tail_count'],
         carried_messages=carried, covered_ids=covered, unresolved_held=unresolved, held_for_cas=cas)
-    from hermes_state_runtime import row_annotations
+    from hermes_agent.hermes_state_runtime import row_annotations
     return {'value': value, 'annotations': row_annotations(payload['messages'])}
 
 
@@ -309,7 +309,7 @@ def _migrate_worker_automation(db, conn, parent, child):
 
 
 def worker_publish(db, conn, sid, payload):
-    from hermes_state_sessions import _parse_model_config
+    from hermes_agent.hermes_state_sessions import _parse_model_config
     _fields(payload, ('child_session_id', 'source', 'messages', 'model', 'model_config', 'system_prompt',
                       'cwd', 'profile_name', 'compression_lock_holder', 'require_compression_lease',
                       'require_lease_refresh', 'lease_ttl_seconds', 'watermark', 'watermark_ceiling'))
@@ -352,14 +352,14 @@ def worker_publish(db, conn, sid, payload):
                  "WHERE json_extract(lineage_json,'$[#-1]')=? AND generation=? AND owner_epoch=? "
                  "AND status IN ('started','unknown')",
                  (child, sid, worker['generation'], worker['owner_epoch']))
-    from hermes_state_runtime import row_annotations
+    from hermes_agent.hermes_state_runtime import row_annotations
     return {'value': None, 'worker_assignment': {'parent': sid, 'session_id': child},
             'annotations': row_annotations(payload['messages'])}
 
 
 def worker_receipt_assignment(conn, execution_id, session_id, generation, sequence, digest):
     """Only an identical already-committed publication can retry its old assignment."""
-    from hermes_state_runtime import _worker_assignment
+    from hermes_agent.hermes_state_runtime import _worker_assignment
     receipt = conn.execute('SELECT payload_digest,result_json FROM worker_receipts WHERE execution_id=? AND sequence=?',
                            (execution_id, sequence)).fetchone()
     if receipt and receipt['payload_digest'] == digest:
@@ -381,7 +381,7 @@ def worker_claim_origin(db, params):
 
 def worker_retry_target(db, params):
     """Transport verification accepts old targets only for exact publication replay."""
-    from hermes_state_keys import admission_fingerprint
+    from hermes_agent.hermes_state_keys import admission_fingerprint
     if params.get('operation') != 'compression.publish':
         return params['session_id']
     digest = admission_fingerprint(canonical_target=params['session_id'],
@@ -392,7 +392,7 @@ def worker_retry_target(db, params):
     return row['session_id']
 
 
-from hermes_state_common import _COMPRESSION_LOCK_ROW_SQL as _LOCK_ROW_SQL, _ENDED_ROW_SQL, _ended_by_compression
+from hermes_agent.hermes_state_common import _COMPRESSION_LOCK_ROW_SQL as _LOCK_ROW_SQL, _ENDED_ROW_SQL, _ended_by_compression
 
 def reopen_on_connection(db, conn, session_id):
     if not _ended_by_compression(conn.execute(_ENDED_ROW_SQL, (session_id,)).fetchone()):
@@ -439,7 +439,7 @@ def worker_compression_append(db, conn, sid, payload):
     if not 0.1 <= _number(payload['turn_lease_ttl_seconds']) <= 3600:
         raise RuntimeStoreError('invalid_params')
     count = db._append_messages_in_transaction(conn, sid, **payload)
-    from hermes_state_runtime import row_annotations
+    from hermes_agent.hermes_state_runtime import row_annotations
     return {'count': count, 'annotations': row_annotations(payload['messages'])}
 
 

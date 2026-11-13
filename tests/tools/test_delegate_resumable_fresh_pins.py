@@ -15,7 +15,7 @@ from tests.tools.test_delegate_resumable_pins import _DEAD_PID, _repo
 @pytest.mark.parametrize("path", ["boot", "reclaim"])
 def test_pins_persisted_for_a_dead_owner_include_a_tree_added_after_the_sweep_memo(tmp_path, path):
     from hermes_constants import get_hermes_home
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from tools import delegate_tool_resumable as r
     repo = _repo(tmp_path / "repo")
     db = get_hermes_home() / "state.db"

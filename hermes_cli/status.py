@@ -274,7 +274,7 @@ def _render_sessions(ctx):
     # Gateway session count: state.db is the source of truth; fall back to sessions.json for
     # pre-migration installs.
     try:
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
         db = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)
         try:
             gateway_rows = db.list_gateway_sessions(active_only=True) or []

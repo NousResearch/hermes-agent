@@ -18,7 +18,7 @@ import asyncio
 import dataclasses
 from pathlib import Path
 
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 _CALLS = {
     "goal": frozenset({"state", "set", "pause", "resume", "clear", "mark_done", "add_subgoal", "remove_subgoal",

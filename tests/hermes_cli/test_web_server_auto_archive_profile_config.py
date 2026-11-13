@@ -32,7 +32,7 @@ def _write_config(home: Path, *, auto_archive_days: int) -> None:
 @pytest.fixture
 def two_profile_homes(tmp_path, monkeypatch):
     """Launch profile 'a' never archives; served profile 'b' archives immediately."""
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     home_a, home_b = tmp_path / "a", tmp_path / "b"
     _write_config(home_a, auto_archive_days=3650)
@@ -53,7 +53,7 @@ def two_profile_homes(tmp_path, monkeypatch):
 
 
 def _archived(db_path: Path) -> bool:
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=db_path)
     try:

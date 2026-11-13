@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import Any, Iterable
 
 from agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY
-from hermes_state_common import _sql_json_extract
+from hermes_agent.hermes_state_common import _sql_json_extract
 
 _ORIGINAL_VISIBLE_SQL = (
     f"COALESCE({_sql_json_extract('original.display_metadata', '$.' + MODEL_ONLY_DISPLAY_METADATA_KEY)}, 0) = 0")

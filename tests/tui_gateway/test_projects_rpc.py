@@ -554,7 +554,7 @@ def _create_project(home: Path, name: str, folder: Path, *, use: bool = False) -
 
 def _create_session(home: Path, session_id: str, cwd: Path) -> None:
     """Seed one message-bearing session in ``home``'s state.db."""
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=home / "state.db")
     try:
@@ -571,7 +571,7 @@ def _serving_launch_profile(launch_home: Path):
     Both the ambient override AND ``server._hermes_home`` point at it: once the process
     multiplexes, a launch-profile RPC binds the server's own launch home (#118538), so an
     override alone no longer stands in for "this backend was launched here"."""
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     token = set_hermes_home_override(launch_home)
     prev_db, prev_error, prev_home = server._db, server._db_error, server._hermes_home

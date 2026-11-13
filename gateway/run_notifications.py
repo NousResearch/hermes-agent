@@ -640,7 +640,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 logger.info("state.db recovered before the home-channel warning went out; not broadcasting")
                 return
         from hermes_constants import get_default_hermes_root, profile_cli_selector
-        from hermes_state import _default_db_path, classify_persistence_error
+        from hermes_agent.hermes_state import _default_db_path, classify_persistence_error
         cause = classify_persistence_error(error)
         # Copy-pasteable, so name the real store and pin the profile: a bare `hermes` follows
         # active_profile, which may be a different database (#105887).
@@ -654,7 +654,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             # restore advice above would be destructive on a healthy file (#97794).
             message = t("gateway.startup.db_fts_corrupt", profile_arg=profile_arg)
         else:
-            from hermes_state_user_copy import describe_storage_failure
+            from hermes_agent.hermes_state_user_copy import describe_storage_failure
             failure = describe_storage_failure(error)
             # The cause table owns the remedy: for a held retired-WAL generation a bare `doctor --fix`
             # is the second-writer trap this notice used to send users into (#110054). Its copy is
@@ -918,7 +918,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         from gateway.session_authorities import active_authority
         from gateway.session_automation import committed_route_envelope
         from gateway.session_envelope import restore_native
-        from hermes_state_runtime import RuntimeStoreError
+        from hermes_agent.hermes_state_runtime import RuntimeStoreError
         authority = active_authority(self)
         if authority is None:
             return None
@@ -1014,7 +1014,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             authority = active_authority(self)
             if authority is not None:
                 from gateway.session_automation import admit_process_notice
-                from hermes_state_runtime import RuntimeStoreError
+                from hermes_agent.hermes_state_runtime import RuntimeStoreError
                 try:
                     await admit_process_notice(self, authority, adapter, synth_event, evt)
                 except RuntimeStoreError as exc:

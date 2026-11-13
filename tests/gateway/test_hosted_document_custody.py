@@ -3,8 +3,8 @@ keeps the bytes a live hosted row still needs, and the row's own terminal releas
 import json
 
 from gateway.session_ingress_media import capture_native_media, release_admission_media
-from hermes_state import SessionDB
-from hermes_state_runtime import admit_session_input, begin_runtime_epoch, cancel_session_input
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_runtime import admit_session_input, begin_runtime_epoch, cancel_session_input
 
 
 def _document(tmp_path, name, data):

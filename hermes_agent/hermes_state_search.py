@@ -1,6 +1,6 @@
 """Full-text / trigram / CJK message search and FTS maintenance for SessionDB.
 
-Plain mixin for ``hermes_state.SessionDB`` (no ``__init__``/state of its own).
+Plain mixin for ``hermes_agent.hermes_state.SessionDB`` (no ``__init__``/state of its own).
 Must never import hermes_state (cycle); shared constants live in hermes_state_common.
 """
 
@@ -16,17 +16,17 @@ from functools import partial
 from typing import Any, Callable, Collection, Dict, List, Optional, Tuple
 
 from agent.skill_commands import describe_skill_invocation
-from hermes_state_errors import is_malformed_db_error
-from hermes_state_common import (
+from hermes_agent.hermes_state_errors import is_malformed_db_error
+from hermes_agent.hermes_state_common import (
     FTS_SQL, FTS_STALE_KEY, FTS_STORAGE_VERSION, FTS_TOOL_CONTENT_PREFIX_CHARS,
     FTS_TRIGRAM_EXCLUDED_SOURCES, FTS_TRIGRAM_SQL,
     MAX_FTS5_QUERY_CHARS, SCHEMA_VERSION,
     escape_like as _escape_like, fts_rebuild_admission, fts_trigram_session_sql, routed_sessions_setting,
 )
-from hermes_state_fts import fts_layout_current, fts_layout_drift
+from hermes_agent.hermes_state_fts import fts_layout_current, fts_layout_drift
 
 # Pre-split logger identity so log filtering/capture is unchanged.
-logger = logging.getLogger("hermes_state")
+logger = logging.getLogger("hermes_agent.hermes_state")
 
 
 @dataclass

@@ -1,6 +1,6 @@
 """Physical column history of the state.db tables the page-level salvage lane maps.
 
-``_reconcile_columns()`` (hermes_state_schema.py) upgrades a live store with
+``_reconcile_columns()`` (hermes_agent/hermes_state_schema.py) upgrades a live store with
 ``ALTER TABLE ADD COLUMN``, which APPENDS each newly declared column. A store
 therefore keeps its columns in the order they were *added*, which diverges
 from the order ``SCHEMA_SQL`` declares them whenever a later release inserts a

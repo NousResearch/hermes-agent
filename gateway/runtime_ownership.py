@@ -300,7 +300,7 @@ def reserve_waiting_out_transient_holders(ownership, homes, *, wait_s: float,
     *cancel* set (a worker thread's caller gave up) ends the wait at once and releases a grant
     that landed meanwhile, raising :class:`ReservationCancelled`: the caller may already have run
     its ownership cleanup, so nobody would ever release a home taken after it."""
-    from hermes_state_reconcile import BROWSE_RECONCILE_PURPOSE
+    from hermes_agent.hermes_state_reconcile import BROWSE_RECONCILE_PURPOSE
     cancel = threading.Event() if cancel is None else cancel
     deadline = time.monotonic() + wait_s
     logged = False

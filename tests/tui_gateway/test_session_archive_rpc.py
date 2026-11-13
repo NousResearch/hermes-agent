@@ -16,7 +16,7 @@ import pytest
 
 import tui_gateway.server as srv
 import tui_gateway.methods_session
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 @pytest.fixture

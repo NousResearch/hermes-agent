@@ -15,11 +15,11 @@ from types import SimpleNamespace
 
 import pytest
 
-import hermes_state_runtime as rt
+import hermes_agent.hermes_state_runtime as rt
 from gateway.session_authority import LiveSession, SessionAuthority
 from gateway.session_controls import AuthorityConnection
 from hermes_cli import sessions_cmd
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from tests.hermes_state.test_target_advance_fence import _local_session, _mutate
 
 pytestmark = pytest.mark.platforms("posix")  # the holder scan the old path refused on is POSIX-only
@@ -70,7 +70,7 @@ def owned_store(monkeypatch, tmp_path):
 def test_prune_under_the_live_owner_is_applied_by_the_owner_not_refused(owned_store, monkeypatch, capsys):
     from hermes_cli import gateway_client
     from hermes_cli import gateway_runtime
-    import hermes_state
+    from hermes_agent import hermes_state
     from hermes_cli.gateway_client import rpc_error
     store = owned_store
     holder = subprocess.Popen([sys.executable, '-c', _HOLDER, str(store.path)],

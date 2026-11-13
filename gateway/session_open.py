@@ -27,7 +27,7 @@ _UNBOUNDED_TURN_WAIT_S = 5.0
 def _reason(db, session_id):
     """``create`` while the conversation has no messages yet, else ``resume``. A local session's
     messages live on its current transcript (a reset moves them to a child row), named by its receipt."""
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
     try:
         target = local_receipt(db, session_id)['entry']['session_id']
     except Exception:  # health: allow BLE001 -- no readable receipt: the logical row is the transcript

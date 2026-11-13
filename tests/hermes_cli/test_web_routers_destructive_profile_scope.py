@@ -81,7 +81,7 @@ def client(monkeypatch, homes):
     except ImportError:
         pytest.skip("fastapi/starlette not installed")
 
-    import hermes_state
+    from hermes_agent import hermes_state
     from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", homes["launch"] / "state.db")

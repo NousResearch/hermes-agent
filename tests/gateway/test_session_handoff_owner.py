@@ -109,7 +109,7 @@ async def test_handoff_waits_for_durable_work_the_owner_has_no_task_for(tmp_path
     """A turn recovered ``unknown`` after an owner restart has no resident drain task, yet still owns
     the conversation: the request is refused, and so is the watcher's repoint of a row queued before
     the turn was admitted, so the route never moves while its outcome is unresolved."""
-    import hermes_state_runtime as rt
+    import hermes_agent.hermes_state_runtime as rt
     from tests.gateway.test_authority_cold_route_recovery import _source
     from tests.gateway.test_handoff_local_receipt import _handoff
     _telegram_home(tmp_path, monkeypatch)

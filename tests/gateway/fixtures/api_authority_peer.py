@@ -35,7 +35,7 @@ async def probe(peer):
     from gateway.session_authority import initialize_session_authority
     from gateway.session_contract import SessionRef
     from hermes_cli import web_server
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
 
     runner = GatewayRunner()
     await initialize_session_authority(runner, profile_id='default', instance_id='api-peer')

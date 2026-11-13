@@ -26,7 +26,7 @@ _OLD_CHATS = (('old-desktop', 'desktop', None), ('old-desktop-nous', 'desktop', 
 
 
 def _seed(home):
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     db = SessionDB(db_path=home / 'state.db')
     try:
         for sid, source, user_id in _OLD_CHATS:
@@ -98,7 +98,7 @@ def test_adopting_old_chats_lets_the_browser_login_continue_them(tmp_path, model
 
 
 def _seed_long_and_moved(home):
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     db = SessionDB(db_path=home / 'state.db')
     try:
         # The owner's resume reply always carries the whole history: this one is over the 8 MiB a
@@ -172,7 +172,7 @@ def test_adopt_names_the_upgrade_for_a_store_no_newer_hermes_has_opened(tmp_path
 def test_adopt_says_to_close_the_holder_of_a_locked_store(tmp_path, monkeypatch, capsys, argv):
     """Another process's exclusive lock on a rollback-journal store blocks the read. Adopt says the
     store is locked and to retry once what holds it is closed, and changes nothing."""
-    import hermes_state
+    from hermes_agent import hermes_state
 
     home = tmp_path / 'home'
     db = _rollback_journal_store(home)

@@ -44,7 +44,7 @@ def test_run_backup_prunes_older_default_named_zips_but_not_others(tmp_path, mon
 def test_import_restores_the_session_store_with_its_message_uids(tmp_path, monkeypatch):
     """A backup ships state.db as a SQLite snapshot and an import puts it back byte-for-byte: the durable
     message ids come back with the rows."""
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()

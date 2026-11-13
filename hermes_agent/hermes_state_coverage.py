@@ -12,8 +12,8 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from agent.message_metadata import DB_ROW_SNAPSHOT, MESSAGE_UID, message_uid_or_none
 from hermes_cli.timefmt import coerce_epoch
-from hermes_state_common import _id_chunks, _placeholders
-from hermes_state_messages import _parse_tool_calls
+from hermes_agent.hermes_state_common import _id_chunks, _placeholders
+from hermes_agent.hermes_state_messages import _parse_tool_calls
 
 
 def _text_of(content: Any) -> str:

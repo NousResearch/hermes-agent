@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import uuid
 
 from gateway.session_contract import SessionActor
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,7 @@ def _refusal(authority, tip, exc):
     peer nothing to act on. The full clause stays in gateway.log."""
     reason = exc.reason
     if reason == 'not_found' and not str(tip.get('chat_id') or '').startswith('local-'):
-        from hermes_state_local_migration import validate_legacy_row
+        from hermes_agent.hermes_state_local_migration import validate_legacy_row
         try:
             validate_legacy_row(authority.db, tip)
             reason, hint = 'bot_chat_unbound', 'open it once with `hermes chat -c "Bot Chat"` on that host'
@@ -105,7 +105,7 @@ def _reset_local_title_owner(db, title, include_hidden, source=None):
     if (row is None or row.get('end_reason') != 'session_reset' or row.get('archived')
             or (row.get('hidden') and not include_hidden) or (source and row.get('source') != source)):
         return []
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
     try:
         lineage = local_receipt(db, row['id']).get('lineage') or []
     except RuntimeStoreError:

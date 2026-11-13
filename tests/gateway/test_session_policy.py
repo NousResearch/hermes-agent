@@ -9,7 +9,7 @@ def test_policy_selects_surface_and_isolates_cwd(tmp_path):
     from gateway.session_policy import build_policy, policy_scope
     from agent.runtime_cwd import resolve_agent_cwd
     from tools.terminal_scope import terminal_env
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     cfg = {'platform_toolsets': {'cli': ['terminal']}}
     before = dict(os.environ)
@@ -53,7 +53,7 @@ async def test_launch_options_reach_the_owner_frozen_and_hooks_consented(tmp_pat
     from gateway.session_authority import initialize_session_authority
     from gateway.session_controls import AuthorityConnection
     from gateway.session_policy import restore_policy
-    from hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_local import local_receipt
     from agent import shell_hooks
     from hermes_cli.plugins import get_plugin_manager
 
@@ -126,7 +126,7 @@ def test_launch_policy_reaches_real_turn_runner(tmp_path):
 def test_launch_options_are_frozen_and_validated(tmp_path):
     from gateway.session_policy import build_policy
     from hermes_constants import parse_reasoning_effort
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     cfg = {'agent': {'max_turns': 8, 'reasoning_effort': 'low'}}
     params = dict(cwd=str(tmp_path), provider='custom', base_url='http://127.0.0.1:1234/v1',
                   model='fixture', reasoning='high', max_turns=3, ignore_rules=True)
@@ -303,7 +303,7 @@ def test_explicit_key_is_private_and_missing_after_restart_fails_closed(tmp_path
     from dataclasses import asdict
     from types import SimpleNamespace
     from gateway.session_policy import build_policy, bind_launch_key, launch_key
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     authority = SimpleNamespace(instance_id='owned', profile_id='profile', epoch=1)
     sibling = SimpleNamespace(instance_id='sibling', profile_id='profile', epoch=1)
     raw = 'UNIQUE-PRIVATE-LAUNCH-KEY'
@@ -491,7 +491,7 @@ def test_run_budget_is_a_frozen_launch_option(tmp_path):
     """`hermes chat --run-budget N` (main: AIAgent(run_budget_seconds=N)): frozen as the session's
     agent.run_budget_seconds; the profile's own value applies without the flag; junk is refused."""
     from gateway.session_policy import build_policy
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     cfg = {'agent': {'run_budget_seconds': 300}}
     assert build_policy(dict(cwd=str(tmp_path), run_budget=120), cfg).run_budget_seconds == 120.0
     assert build_policy(dict(cwd=str(tmp_path)), cfg).run_budget_seconds == 300.0
@@ -514,7 +514,7 @@ def test_run_budget_passes_the_session_create_contract():
 def test_verbose_is_a_frozen_launch_option(tmp_path):
     """`hermes chat -v` (main: AIAgent(quiet_mode=False)): the session agent's status lines are not quieted."""
     from gateway.session_policy import build_policy
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     assert build_policy(dict(cwd=str(tmp_path), verbose=True), {}).verbose is True
     assert build_policy(dict(cwd=str(tmp_path)), {}).verbose is False
     with pytest.raises(RuntimeStoreError, match='invalid_params'):

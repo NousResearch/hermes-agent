@@ -72,7 +72,7 @@ class TestOneShotDurableFlush:
         ``_finalize_single_query`` performs no durable write and the turn
         evaporates — this test fails.
         """
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db = SessionDB(db_path=Path(tmpdir) / "state.db")
@@ -105,7 +105,7 @@ class TestOneShotDurableFlush:
 
     def test_finalize_single_query_ends_session_row(self, monkeypatch):
         """The resumed/created one-shot session row is finalized on exit."""
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db = SessionDB(db_path=Path(tmpdir) / "state.db")
@@ -131,7 +131,7 @@ class TestOneShotDurableFlush:
 
     def test_flush_is_idempotent_for_already_persisted_turns(self, monkeypatch):
         """A turn the in-loop flush already wrote is not duplicated."""
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db = SessionDB(db_path=Path(tmpdir) / "state.db")
@@ -155,7 +155,7 @@ class TestOneShotDurableFlush:
 
     def test_flush_skips_handed_off_sessions(self):
         """A session handed off to the gateway is owned there (#88234)."""
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db = SessionDB(db_path=Path(tmpdir) / "state.db")
@@ -176,7 +176,7 @@ class TestOneShotDurableFlush:
 
     def test_flush_skips_persist_disabled_agents(self):
         """Persistence-isolated forks must never write the canonical store."""
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db = SessionDB(db_path=Path(tmpdir) / "state.db")

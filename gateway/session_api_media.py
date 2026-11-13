@@ -33,7 +33,7 @@ def commit_api_images(content):
     from gateway.platforms.base import get_image_cache_dir
     from gateway.platforms.base import get_inbound_media_max_bytes
     from gateway.session_ingress_media import capture_native_media, sniff_image_mime
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     # The bytes decide the committed type: SDKs often label JPEG bytes ``data:image/png`` and
     # main forwarded those to the provider; only bytes that are no supported image are refused.
     images = [(sniff_image_mime(decoded[1]), decoded[1])
@@ -113,7 +113,7 @@ def compact_settled_api_payloads(db, admission_id=None):
     ``payload_digest`` is untouched, so an exact retry still matches. Queued/started/unknown rows
     are never rewritten: they may still execute."""
     import json
-    from hermes_state_runtime import _json
+    from hermes_agent.hermes_state_runtime import _json
     # LIKE, not instr(): SQLite LIKE is ASCII case-insensitive, as ``_data_url_bytes`` is.
     candidates = ("SELECT admission_id FROM session_admissions WHERE status='terminal' AND principal_id='api' "
                   "AND ((json_type(payload_json, '$.api_turn_v1.media') IS NOT NULL "
@@ -153,7 +153,7 @@ def rehydrate_api_images(content, media):
     if not isinstance(content, list):
         return content
     from gateway.session_ingress_media import restore_native_media
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     by_digest = {reference['sha256']: reference for reference in media or ()}
     mimes = {ext: mime for mime, ext in _MIME_EXT.items()}
     parts = []

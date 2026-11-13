@@ -11,8 +11,8 @@ import time
 
 import pytest
 
-from hermes_state import SessionDB
-from hermes_state_local import API_BINDING_PREFIX, POLICY_PREFIX
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_local import API_BINDING_PREFIX, POLICY_PREFIX
 
 
 def _session_receipt(name, sid, platform, **extra):
@@ -269,8 +269,8 @@ class TestRekeyProfileState:
     def test_rekeys_local_policy_receipts(self, db):
         """The renamed profile's local-chat receipts move to the new name (route, entry key, origin);
         the minting home, the id and the lineage stay, and no legacy marker is written."""
-        from hermes_state_local import local_receipt
-        from hermes_state_local_migration import LEGACY_PREFIX
+        from hermes_agent.hermes_state_local import local_receipt
+        from hermes_agent.hermes_state_local_migration import LEGACY_PREFIX
 
         moved = _session_receipt("oldname", "local-a", "local", lineage=["local-a", "local-a-tip"])
         bystander = _session_receipt("oldname2", "local-b", "local")

@@ -11,7 +11,7 @@ import json
 import pytest
 
 from agent.runtime_session_store import RuntimeSessionStore
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from tools.session_search_tool import session_search
 
 

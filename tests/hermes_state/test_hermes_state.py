@@ -1,4 +1,4 @@
-"""Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
+"""Tests for hermes_agent/hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
 import contextlib
 import re
@@ -13,13 +13,13 @@ from unittest import mock
 
 import pytest
 
-import hermes_state
-import hermes_state_wal
-import hermes_state_common
-import hermes_state_schema
+from hermes_agent import hermes_state
+from hermes_agent import hermes_state_wal
+from hermes_agent import hermes_state_common
+from hermes_agent import hermes_state_schema
 from agent.session_activity import ActivityProvenance, build_activity_snapshot
-from hermes_state import SessionDB
-from hermes_state_common import FTS_SQL, FTS_STORAGE_VERSION, SCHEMA_SQL, SCHEMA_VERSION
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_common import FTS_SQL, FTS_STORAGE_VERSION, SCHEMA_SQL, SCHEMA_VERSION
 
 
 def _activity_snapshot(db, session_id):
@@ -161,7 +161,7 @@ class TestConnectionLifecycle:
         import subprocess
         import sys
 
-        from hermes_state_dbfile import iter_deleted_sqlite_sidecar_holders
+        from hermes_agent.hermes_state_dbfile import iter_deleted_sqlite_sidecar_holders
 
         db_path = tmp_path / "state.db"
         first = SessionDB(db_path=db_path)
@@ -650,7 +650,7 @@ class TestSessionLifecycle:
             kwargs["factory"] = _NoTrigramConnection
             return real_connect(*args, **kwargs)
 
-        monkeypatch.setattr("hermes_state.sqlite3.connect", connect_without_trigram)
+        monkeypatch.setattr("hermes_agent.hermes_state.sqlite3.connect", connect_without_trigram)
         db = SessionDB(db_path=db_path)
         try:
             db.create_session(session_id="s1", source="cli")
@@ -1022,7 +1022,7 @@ class TestFTS5Search:
 
     def test_sanitize_fts5_query_strips_dangerous_chars(self):
         """Unit test for _sanitize_fts5_query static method."""
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
         s = SessionDB._sanitize_fts5_query
         assert s('hello world') == 'hello world'
         assert '+' not in s('C++')
@@ -1074,7 +1074,7 @@ class TestCJKSearchFallback:
     """
 
     def test_cjk_detection_covers_all_ranges(self):
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
         f = SessionDB._contains_cjk
         # Chinese (CJK Unified Ideographs)
         assert f("记忆断裂") is True
@@ -1912,7 +1912,7 @@ class TestSanitizeTitle:
 class TestSchemaInit:
     def test_wal_mode(self, db):
         """Prefer WAL on fixed SQLite; DELETE on WAL-reset-vulnerable builds (#69784)."""
-        from hermes_state_wal import is_sqlite_wal_reset_vulnerable
+        from hermes_agent.hermes_state_wal import is_sqlite_wal_reset_vulnerable
 
         cursor = db._conn.execute("PRAGMA journal_mode")
         mode = cursor.fetchone()[0].lower()
@@ -1967,7 +1967,7 @@ class TestSchemaInit:
         This is the architectural invariant: SCHEMA_SQL declares the
         desired schema, _reconcile_columns ensures it matches reality.
         """
-        from hermes_state_common import SCHEMA_SQL
+        from hermes_agent.hermes_state_common import SCHEMA_SQL
 
         expected = SessionDB._parse_schema_columns(SCHEMA_SQL)
         for table_name, declared_cols in expected.items():
@@ -2007,7 +2007,7 @@ class TestAsyncDelegationsSchemaAgreement:
     def _canonical_shape(self):
         ref = __import__("sqlite3").connect(":memory:")
         try:
-            from hermes_state_common import SCHEMA_SQL
+            from hermes_agent.hermes_state_common import SCHEMA_SQL
 
             ref.executescript(SCHEMA_SQL)
             return self._table_info(ref), {
@@ -2024,7 +2024,7 @@ class TestAsyncDelegationsSchemaAgreement:
         pre-existing delegation row that must survive every opening order."""
         import sqlite3
 
-        from hermes_state_common import SCHEMA_SQL
+        from hermes_agent.hermes_state_common import SCHEMA_SQL
 
         legacy_sql = SCHEMA_SQL.replace(
             "    origin_session_id TEXT NOT NULL DEFAULT ''\n", ""
@@ -2187,7 +2187,7 @@ class TestReconcileColumnsErrorHandling:
                     "duplicate column name: last_read_at"
                 ),
             )
-            with caplog.at_level(logging.WARNING, logger="hermes_state"):
+            with caplog.at_level(logging.WARNING, logger="hermes_agent.hermes_state"):
                 stale._reconcile_columns(cursor)
         finally:
             conn.close()
@@ -2210,7 +2210,7 @@ class TestReconcileColumnsErrorHandling:
                     "Cannot add a NOT NULL column with default value NULL"
                 ),
             )
-            with caplog.at_level(logging.WARNING, logger="hermes_state"):
+            with caplog.at_level(logging.WARNING, logger="hermes_agent.hermes_state"):
                 stale._reconcile_columns(cursor)
         finally:
             conn.close()
@@ -2295,7 +2295,7 @@ class TestFtsRebuildLoopWithoutTrigram:
             conn.set_trace_callback(statements.append)
             return conn
 
-        monkeypatch.setattr("hermes_state.sqlite3.connect", connect)
+        monkeypatch.setattr("hermes_agent.hermes_state.sqlite3.connect", connect)
 
     @staticmethod
     def _rebuilds(statements):
@@ -2384,14 +2384,14 @@ class TestFtsRebuildLoopWithoutTrigram:
         that always works. Renaming a trigger without updating its DDL would
         otherwise silently reintroduce an unsatisfiable check.
         """
-        from hermes_state_common import (
+        from hermes_agent.hermes_state_common import (
             FTS_SQL,
             FTS_TRIGRAM_SQL,
             LEGACY_FTS_SQL,
             LEGACY_FTS_TRIGRAM_SQL,
             _FTS_TRIGGERS,
         )
-        from hermes_state_schema import _FTS_BASE_TRIGGERS, _FTS_TRIGRAM_TRIGGERS
+        from hermes_agent.hermes_state_schema import _FTS_BASE_TRIGGERS, _FTS_TRIGRAM_TRIGGERS
 
         # Exhaustive and disjoint: nothing may fall out of the classification.
         assert set(_FTS_BASE_TRIGGERS) | set(_FTS_TRIGRAM_TRIGGERS) == set(_FTS_TRIGGERS)
@@ -2886,7 +2886,7 @@ class TestListSessionsRich:
         ],
     )
     def test_rich_list_keeps_legacy_reset_children_visible(self, db, end_reason):
-        from hermes_state_common import _ephemeral_child_sql
+        from hermes_agent.hermes_state_common import _ephemeral_child_sql
 
         lane_key = "agent:main:telegram:dm:lane"
         parent_id = f"parent_{end_reason}"
@@ -3305,7 +3305,7 @@ class TestCompressionChainProjection:
         ``_COMPRESSION_LINEAGE_CTE``. Resuming a reset fork of a compression-ended parent must
         re-key only the fork: the CTE has to stop at the reset child exactly like
         ``get_compression_lineage`` does, or the real lineage's ancestors land on the fork's peer."""
-        import hermes_state_gateway as gateway_mod
+        import hermes_agent.hermes_state_gateway as gateway_mod
 
         t0 = time.time() - 3600
         db.create_session("root", "cli")
@@ -3716,7 +3716,7 @@ class TestVacuum:
 
     def test_auto_maintenance_freelist_ratio_exactly_at_threshold_skips(self, db, monkeypatch):
         """Gate is strictly greater-than: 25.0% reclaimable does not VACUUM."""
-        from hermes_state_common import AUTO_VACUUM_MIN_FREELIST_RATIO
+        from hermes_agent.hermes_state_common import AUTO_VACUUM_MIN_FREELIST_RATIO
 
         monkeypatch.setattr(db, "prune_sessions", lambda **_kwargs: 1)
         monkeypatch.setattr(db, "_freelist_ratio", lambda: AUTO_VACUUM_MIN_FREELIST_RATIO)
@@ -3756,7 +3756,7 @@ class TestVacuum:
 
     def test_freelist_ratio_reads_real_pragmas(self, db):
         """Real-DB check: freeing most of the file pushes the ratio past the gate."""
-        from hermes_state_common import AUTO_VACUUM_MIN_FREELIST_RATIO
+        from hermes_agent.hermes_state_common import AUTO_VACUUM_MIN_FREELIST_RATIO
 
         db.create_session(session_id="keep", source="cli")
         db.append_message(session_id="keep", role="user", content="hi")
@@ -4124,7 +4124,7 @@ class TestFTS5ToolCallMigration:
             assert len(session_db.search_messages("LEGACYARG")) == 1, \
                 "v23 optimize must index tool_calls JSON into FTS"
             # schema_version bumped once the FTS layer is v23
-            from hermes_state_common import SCHEMA_VERSION
+            from hermes_agent.hermes_state_common import SCHEMA_VERSION
             row = session_db._conn.execute(
                 "SELECT version FROM schema_version LIMIT 1"
             ).fetchone()
@@ -4396,7 +4396,7 @@ class TestFTSExternalContentMigration:
         Mirrors what happened when ``_ensure_fts_schema`` ran inside
         ``_execute_write`` and the process died before the marker writes.
         """
-        from hermes_state_common import FTS_SQL, FTS_TRIGRAM_SQL
+        from hermes_agent.hermes_state_common import FTS_SQL, FTS_TRIGRAM_SQL
 
         conn = db._conn
         db._drop_fts_triggers(conn)
@@ -4850,7 +4850,7 @@ class TestApplyWalProbe:
     def test_sets_wal_on_fresh_connection(self, tmp_path):
         """Probe sees 'delete', then set-pragma runs and returns 'wal'."""
         import sqlite3
-        from hermes_state_wal import apply_wal_with_fallback
+        from hermes_agent.hermes_state_wal import apply_wal_with_fallback
 
         class _TracingConn(sqlite3.Connection):
             def __init__(self, *a, **kw):
@@ -4883,7 +4883,7 @@ class TestApplyWalProbe:
         import sys
         import threading
         import sqlite3
-        from hermes_state_wal import apply_wal_with_fallback
+        from hermes_agent.hermes_state_wal import apply_wal_with_fallback
 
         db_path = tmp_path / "concurrent.db"
         errors = []
@@ -5212,7 +5212,7 @@ def test_peer_fallback_never_adopts_a_sibling_profiles_row(tmp_path, monkeypatch
     before the per-profile partition — must lose to the older own row, and
     with no own row recovery must return nothing rather than the sibling's.
     """
-    import hermes_state
+    from hermes_agent import hermes_state
 
     root = tmp_path / "hermes"
     root.mkdir()
@@ -5249,7 +5249,7 @@ def test_peer_fallback_reset_boundary_is_profile_fenced(tmp_path, monkeypatch):
     newer session_reset row used to suppress THIS profile's recoverable session.
     The profile's own reset must still fence.
     """
-    import hermes_state
+    from hermes_agent import hermes_state
 
     root = tmp_path / "hermes"
     root.mkdir()
@@ -5901,7 +5901,7 @@ class TestUnknownBlobColumnSurvivesRead:
     Every reader here does ``SELECT *``, so a BLOB column reaches the dict unfiltered. FastAPI's
     response encoder calls ``.decode()`` on any raw ``bytes`` value and dies with
     ``UnicodeDecodeError`` the moment the bytes are not valid utf-8 — this already happened for
-    the ``display_identity BLOB`` column (hermes_state_common.py) before it got an explicit pop;
+    the ``display_identity BLOB`` column (hermes_agent/hermes_state_common.py) before it got an explicit pop;
     the next binary column would repeat it with no reader-side defense. See #116510.
     """
 
@@ -6020,7 +6020,7 @@ class TestApplyDatabasePragmas:
 
     def test_honors_wal_autocheckpoint_from_config(self, tmp_path, monkeypatch):
         import sqlite3
-        from hermes_state import apply_database_pragmas
+        from hermes_agent.hermes_state import apply_database_pragmas
 
         conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
         try:
@@ -6033,7 +6033,7 @@ class TestApplyDatabasePragmas:
 
     def test_honors_journal_size_limit_from_config(self, tmp_path, monkeypatch):
         import sqlite3
-        from hermes_state import apply_database_pragmas
+        from hermes_agent.hermes_state import apply_database_pragmas
 
         conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
         try:
@@ -6050,7 +6050,7 @@ class TestApplyDatabasePragmas:
 
     def test_noop_when_database_section_missing(self, tmp_path, monkeypatch):
         import sqlite3
-        from hermes_state import apply_database_pragmas
+        from hermes_agent.hermes_state import apply_database_pragmas
 
         conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
         try:
@@ -6065,7 +6065,7 @@ class TestApplyDatabasePragmas:
         """journal_mode is owned by apply_wal_with_fallback — a database:
         journal_mode entry must NOT cause a second, unguarded mode switch."""
         import sqlite3
-        from hermes_state import apply_database_pragmas
+        from hermes_agent.hermes_state import apply_database_pragmas
 
         conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
         try:
@@ -6078,7 +6078,7 @@ class TestApplyDatabasePragmas:
 
     def test_ignores_non_integer_values(self, tmp_path, monkeypatch):
         import sqlite3
-        from hermes_state import apply_database_pragmas
+        from hermes_agent.hermes_state import apply_database_pragmas
 
         conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
         try:
@@ -6095,7 +6095,7 @@ class TestApplyDatabasePragmas:
     def test_ignores_non_integer_performance_values(self, tmp_path, monkeypatch):
         """Garbage cache_size/mmap_size/temp_store values must be rejected."""
         import sqlite3
-        from hermes_state import apply_database_pragmas
+        from hermes_agent.hermes_state import apply_database_pragmas
 
         conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
         try:
@@ -6211,7 +6211,7 @@ class TestFtsRebuildFinishWithoutTrigram:
             return real_connect(*args, **kwargs)
 
         monkeypatch.setattr(
-            "hermes_state.sqlite3.connect", connect_without_trigram
+            "hermes_agent.hermes_state.sqlite3.connect", connect_without_trigram
         )
         db = SessionDB(db_path=db_path)
         try:
@@ -6259,7 +6259,7 @@ class TestFtsRebuildFinishWithoutTrigram:
             return real_connect(*args, **kwargs)
 
         monkeypatch.setattr(
-            "hermes_state.sqlite3.connect", connect_without_trigram
+            "hermes_agent.hermes_state.sqlite3.connect", connect_without_trigram
         )
         db = SessionDB(db_path=db_path)
         try:
@@ -6341,7 +6341,7 @@ class TestPerformancePragmasEndToEnd:
     def test_configured_pragmas_reach_all_connection_types(
         self, tmp_path, monkeypatch
     ):
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         home = self._fresh_home(
             tmp_path,
@@ -6372,7 +6372,7 @@ class TestPerformancePragmasEndToEnd:
 
     def test_defaults_unchanged_without_config(self, tmp_path, monkeypatch):
         """No database: keys in config.yaml → SQLite defaults untouched."""
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         defaults = self._sqlite_defaults(tmp_path)
         home = self._fresh_home(tmp_path, monkeypatch, config_text=None)
@@ -6415,7 +6415,7 @@ class TestFts5SanitizerCharacterClass:
 
     @staticmethod
     def _sanitize(query):
-        from hermes_state_search import SessionSearchMixin
+        from hermes_agent.hermes_state_search import SessionSearchMixin
 
         return SessionSearchMixin._sanitize_fts5_query(query)
 

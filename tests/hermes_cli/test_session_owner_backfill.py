@@ -21,7 +21,7 @@ def client(monkeypatch, _isolate_hermes_home):
     except ImportError:
         pytest.skip("fastapi/starlette not installed")
 
-    import hermes_state
+    from hermes_agent import hermes_state
     from hermes_constants import get_hermes_home
     from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
@@ -34,7 +34,7 @@ def client(monkeypatch, _isolate_hermes_home):
 
 def _seed(db_path, rows):
     """Insert bare session rows the way a pre-ownership install left them."""
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=db_path)
     try:

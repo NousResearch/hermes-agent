@@ -30,7 +30,7 @@ _TERMINAL = frozenset({"settled", "failed", "cancelled", "ambiguous"})
 
 def _bot_chat_tip(home: Path) -> str | None:
     """Current Bot Chat tip id, or None when the profile has no store or no Bot Chat yet."""
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     if not (home / 'state.db').is_file():
         return None

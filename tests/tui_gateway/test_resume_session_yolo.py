@@ -9,7 +9,7 @@ from tui_gateway import server
 def test_session_yolo_toggle_survives_a_backend_restart(monkeypatch, tmp_path):
     """A session /yolo (Shift+Tab / the Desktop zap) is persisted on the row and re-armed when a fresh
     backend resumes it, including a toggle made before the row existed; switching it off persists too."""
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from tools.approval import clear_session, is_session_yolo_enabled
 
     db = SessionDB(db_path=tmp_path / "state.db")

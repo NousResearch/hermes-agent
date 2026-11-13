@@ -2,7 +2,7 @@
 import asyncio
 from pathlib import Path
 
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
 async def discover_commands(authority, actor, params, *, completion=False):

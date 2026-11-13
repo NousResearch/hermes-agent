@@ -21,12 +21,12 @@ import time
 
 import pytest
 
-import hermes_state
-import hermes_state_holders
-import hermes_state_schema
-from hermes_state import SessionDB
-from hermes_state_common import FTS_REBUILD_DEFERRAL_KEY, FTS_STALE_KEY, LEGACY_FTS_SQL, LEGACY_FTS_TRIGRAM_SQL, SCHEMA_SQL, _FTS_TRIGGERS
-from hermes_state_dbfile import _concrete_state_db_holder_pids, _is_inactive_orphan_desktop_holder
+from hermes_agent import hermes_state
+from hermes_agent import hermes_state_holders
+from hermes_agent import hermes_state_schema
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_common import FTS_REBUILD_DEFERRAL_KEY, FTS_STALE_KEY, LEGACY_FTS_SQL, LEGACY_FTS_TRIGRAM_SQL, SCHEMA_SQL, _FTS_TRIGGERS
+from hermes_agent.hermes_state_dbfile import _concrete_state_db_holder_pids, _is_inactive_orphan_desktop_holder
 
 
 @pytest.fixture
@@ -349,7 +349,7 @@ class TestRuntimeFtsRebuild:
         # Structural corruption quarantines the handle: the typed error wraps
         # the original (cause preserved, SQLite result code copied) and the
         # sticky flag is set, so later writes fail fast.
-        from hermes_state import StateDbCorruptError
+        from hermes_agent.hermes_state import StateDbCorruptError
 
         assert isinstance(caught.value, StateDbCorruptError)
         assert caught.value.__cause__ is structural
@@ -765,7 +765,7 @@ class TestRuntimeFtsRebuild:
         monkeypatch.setattr(hermes_state_schema.time, "time", lambda: clock[0])
 
         from hermes_cli.doctor_state import _render_state_db_stats
-        from hermes_state_dbfile import collect_state_db_stats
+        from hermes_agent.hermes_state_dbfile import collect_state_db_stats
 
         def doctor_blob():
             return " ".join(" ".join(row) for row in _render_state_db_stats(collect_state_db_stats(db_path))).lower()
@@ -946,7 +946,7 @@ class TestPhysicalCorruptionAcceptance:
         db = SessionDB(db_path=db_path)
         try:
             caplog.clear()
-            with caplog.at_level("WARNING", logger="hermes_state"):
+            with caplog.at_level("WARNING", logger="hermes_agent.hermes_state"):
                 with pytest.raises(sqlite3.DatabaseError) as caught:
                     db.append_message("s1", "user", "post-corruption write")
             # The genuine structural error propagated, not an FTS retry result.
@@ -965,14 +965,14 @@ class TestPhysicalCorruptionAcceptance:
             # Structural damage quarantines the handle: typed error, sticky
             # flag, later writes fail fast, and close() must not checkpoint
             # the WAL over a damaged page image (the #90950 page-1 clobber).
-            from hermes_state import StateDbCorruptError
+            from hermes_agent.hermes_state import StateDbCorruptError
 
             assert isinstance(caught.value, StateDbCorruptError)
             assert db._db_corrupt is True
             with pytest.raises(StateDbCorruptError):
                 db.append_message("s1", "user", "second write after corruption")
             caplog.clear()
-            with caplog.at_level("WARNING", logger="hermes_state"):
+            with caplog.at_level("WARNING", logger="hermes_agent.hermes_state"):
                 db.close()
             assert "Skipping the close-time WAL checkpoint" in caplog.text
         finally:

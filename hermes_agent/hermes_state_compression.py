@@ -11,13 +11,13 @@ import sqlite3
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from hermes_state_common import (
+from hermes_agent.hermes_state_common import (
     _BOUNDARY_END_REASONS, _COMPRESSION_LOCK_ROW_SQL as _LOCK_ROW_SQL, _ENDED_ROW_SQL, _ended_by_compression,
     _RESET_CHILD_SQL, _non_continuation_child_sql, _sql_json_extract, _sql_session_last_active,
     is_automatic_end_reason)
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
-logger = logging.getLogger("hermes_state")
+logger = logging.getLogger("hermes_agent.hermes_state")
 
 _COOLDOWN_ROW_SQL = (
     "SELECT compression_failure_cooldown_until, compression_failure_error FROM sessions WHERE id = ?"
@@ -330,7 +330,7 @@ class SessionCompressionMixin:
         """INSERT the compression child's ``sessions`` row copied from *parent*. Same contract as
         _insert_session_row's compression-fork backfill: the child stays on the parent's profile and keeps
         gateway routing/origin columns; no owner on either side -> this store's profile."""
-        from hermes_state_sessions import _parse_model_config
+        from hermes_agent.hermes_state_sessions import _parse_model_config
         # Pin/archive and the conversation keys are compression-lineage state; canonical branch/reset
         # verbs also publish through here, and their child is its own conversation.
         continuation = not any(k in (model_config or {}) for k in ("_branched_from", "_reset_from"))
@@ -410,7 +410,7 @@ class SessionCompressionMixin:
             watermark: Optional[int] = None, watermark_ceiling: Optional[int] = None) -> None:
         """:meth:`publish_compression_child` on the caller's write transaction (never commits). The
         owner and the worker/canonical-mutation verbs share this one body so they cannot drift."""
-        from hermes_state_errors import CompressionSessionBusyError
+        from hermes_agent.hermes_state_errors import CompressionSessionBusyError
         if require_lease_refresh and compression_lock_holder:
             conn.execute(
                 "UPDATE compression_locks SET expires_at = ? WHERE session_id = ? AND holder = ?",
@@ -478,7 +478,7 @@ class SessionCompressionMixin:
         # A child on a real surface stamps the chain's unset ancestors, so compressing a conversation
         # whose root predates write-time stamping lists it again under its surface.
         stamp_compression_ancestors(conn, child_session_id)
-        from hermes_state_local_lineage import advance_local_target
+        from hermes_agent.hermes_state_local_lineage import advance_local_target
         advance_local_target(conn, parent_session_id, child_session_id)
         if parent["archived"]:
             # A live continuation under an idle-sweep archive re-activates the chat; after the
@@ -654,7 +654,7 @@ class SessionCompressionMixin:
         """Try to atomically acquire the compression lock for ``session_id``. ``False``: another holder owns
         a live lock and the caller MUST NOT compress (its rotation would split the lineage). Expired
         locks and structured holders whose local ``pid=`` is dead are reclaimed transparently."""
-        from hermes_state import _compression_lock_holder_process_is_dead
+        from hermes_agent.hermes_state import _compression_lock_holder_process_is_dead
         if not session_id:
             return False
         now = time.time()
@@ -724,7 +724,7 @@ class SessionCompressionMixin:
         """Atomically acquire the cross-process turn lease for a conversation (keyed by the
         lineage root). The walk, the INSERT, and reclaim of expired or dead-local-PID leases
         share one write transaction."""
-        from hermes_state import _compression_lock_holder_process_is_dead
+        from hermes_agent.hermes_state import _compression_lock_holder_process_is_dead
         if not session_id or not holder:
             return False
         now = time.time()
@@ -755,7 +755,7 @@ class SessionCompressionMixin:
         retried at once with a longer write patience, and ``on_contended()`` is called instead,
         since the busy writer may be the holder's last flush. ``should_abort()`` True (e.g.
         ``/stop``) returns False at once."""
-        from hermes_state import classify_persistence_error
+        from hermes_agent.hermes_state import classify_persistence_error
         deadline = time.monotonic() + max(0.0, float(wait_seconds))
         patience = acquire_patience_s
         wait_started = None

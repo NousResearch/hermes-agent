@@ -1,7 +1,7 @@
 """A session's durable FIFO holds at most main's busy-queue cap of queued inputs (N62), paused or not (B2-07)."""
 import pytest
 
-from hermes_state_runtime import ADMISSION_QUEUE_MAX, RuntimeStoreError, list_session_admissions
+from hermes_agent.hermes_state_runtime import ADMISSION_QUEUE_MAX, RuntimeStoreError, list_session_admissions
 from tests.gateway.test_session_authority_cancel_settlement import _authority, _submit
 
 

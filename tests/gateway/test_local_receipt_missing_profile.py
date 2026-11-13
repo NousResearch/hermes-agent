@@ -26,7 +26,7 @@ async def test_secondary_receipt_restores_without_losing_its_owner(tmp_path, mon
     from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
     from gateway.session_local_recovery import restore_local_session
-    from hermes_state_local import POLICY_PREFIX, local_receipt
+    from hermes_agent.hermes_state_local import POLICY_PREFIX, local_receipt
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     root, homes = _reserve_homes(tmp_path, monkeypatch, names=('alpha',))
@@ -59,7 +59,7 @@ async def test_secondary_receipt_restores_without_losing_its_owner(tmp_path, mon
         await initialize_gateway_runtime(second)
         restored = second.session_authorities.for_home(home)
         if variant not in ('current', 'missing'):
-            from hermes_state_runtime import RuntimeStoreError
+            from hermes_agent.hermes_state_runtime import RuntimeStoreError
             assert ref.session_id not in restored.sessions
             with pytest.raises(RuntimeStoreError):
                 restore_local_session(restored, ref.session_id)

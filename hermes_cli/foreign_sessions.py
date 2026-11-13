@@ -15,7 +15,7 @@ from pathlib import Path
 from stat import S_ISREG
 from typing import Any, Dict, List, Optional, Tuple
 
-from hermes_state_ids import new_session_id
+from hermes_agent.hermes_state_ids import new_session_id
 
 # User-message texts that are really injected context wrappers, not typed input.
 _WRAPPER_TAG_RE = re.compile(

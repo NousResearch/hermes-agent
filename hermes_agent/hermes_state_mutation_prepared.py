@@ -1,9 +1,9 @@
 """Optimistic preparation snapshots revalidated inside the receipt transaction."""
 import json
-from hermes_state_local import POLICY_PREFIX
-from hermes_state_local_lineage import validate_local_lineage
-from hermes_state_mutation_guards import require_target_advanceable
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_local import POLICY_PREFIX
+from hermes_agent.hermes_state_local_lineage import validate_local_lineage
+from hermes_agent.hermes_state_mutation_guards import require_target_advanceable
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 # A model pick made while a turn ran, committed at the next turn boundary (gateway/session_deferred_pick.py).
 DEFERRED_PICK_PREFIX = 'gateway.deferred_pick.v1.'
@@ -31,7 +31,7 @@ def validate_prepared(db, conn, session_id, prepared):
 
 def _commit_policy(db, conn, session_id, prepared):
     """Write the prepared policy over the snapshot it was derived from and bump the generation."""
-    from hermes_state_runtime import _json
+    from hermes_agent.hermes_state_runtime import _json
     snapshot = validate_prepared(db, conn, session_id, prepared)
     saved = snapshot['receipt']
     saved['policy'] = prepared['policy']
@@ -42,7 +42,7 @@ def _commit_policy(db, conn, session_id, prepared):
 
 
 def model_in_transaction(db, conn, session_id, payload, prepared):
-    from hermes_state_runtime import _json
+    from hermes_agent.hermes_state_runtime import _json
     snapshot, generation = _commit_policy(db, conn, session_id, prepared)
     model = prepared['policy']['model']
     config = json.loads(prepared['policy']['config_json'])['model']
@@ -67,7 +67,7 @@ def model_in_transaction(db, conn, session_id, payload, prepared):
 
 
 def reasoning_in_transaction(db, conn, session_id, payload, prepared):
-    from hermes_state_runtime import _json
+    from hermes_agent.hermes_state_runtime import _json
     snapshot, generation = _commit_policy(db, conn, session_id, prepared)
     # This level is newer than any still waiting for a turn boundary, beside or inside a deferred model pick.
     key = DEFERRED_PICK_PREFIX + session_id
@@ -87,7 +87,7 @@ def workspace_in_transaction(db, conn, session_id, payload, prepared):
     """The policy (execution cwd + TERMINAL_CWD) and every row of the conversation move together:
     the sidebar groups by the row's cwd/git identity, which a move REPLACES (main's update_session_cwd
     with replace_git_meta), never merges."""
-    from hermes_state_local import local_conversation_ids
+    from hermes_agent.hermes_state_local import local_conversation_ids
     snapshot, generation = _commit_policy(db, conn, session_id, prepared)
     cwd, git = prepared['policy']['cwd'], prepared['git']
     rows = list(dict.fromkeys([*local_conversation_ids(conn, session_id), snapshot['target']]))
@@ -152,8 +152,8 @@ def policy_picks(db, session_id):
 def commit_refreshed_policy(db, *, epoch, session_id, old, new, generation):
     """The owner's config refresh of an idle session: *new* replaces exactly *old* at *generation* (a
     concurrent mutation or turn wins) and opens the next policy generation. Returns that generation."""
-    from hermes_state_mutation_guards import require_idle
-    from hermes_state_runtime import _epoch
+    from hermes_agent.hermes_state_mutation_guards import require_idle
+    from hermes_agent.hermes_state_runtime import _epoch
 
     def write(conn):
         _epoch(conn, epoch)

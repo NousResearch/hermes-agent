@@ -19,7 +19,7 @@ async def test_message_during_classic_wake_runs_after_it_not_inside_it(monkeypat
     from gateway.session_ingress import executing_admission
     from gateway.session_results import execution_result
     from gateway.wake import deliver_wake
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     from plugins.platforms.discord.adapter import DiscordAdapter
 
     monkeypatch.setenv('DISCORD_ALLOWED_USERS', '42')

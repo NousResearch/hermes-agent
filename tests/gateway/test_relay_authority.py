@@ -34,7 +34,7 @@ async def probe(peer):
     from gateway.session_contract import SessionRef
     from gateway.session_envelope import prepare_native, restore_native
     from hermes_cli import web_server
-    from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions
     from tests.waiting import async_wait_until
 
     sockets, outgoing, frames = [], [], []

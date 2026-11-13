@@ -60,7 +60,7 @@ async def test_finished_process_resumes_the_parent_with_no_viewer(tmp_path, monk
 async def test_row_ended_without_the_user_reopens_for_the_result(tmp_path, monkeypatch, reason):
     """The orphan reaper ends the row of a viewer that vanished (a sleeping laptop): that is not the
     user's close, so the result reopens the row and runs as the turn."""
-    from hermes_state_local import end_idle_local_session
+    from hermes_agent.hermes_state_local import end_idle_local_session
     runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
     try:
         route, target = authority.sessions[ref.session_id].route, _target(runner, authority, ref)
@@ -157,7 +157,7 @@ async def test_close_pending_across_a_restart_still_decides(tmp_path, monkeypatc
     from gateway.session_authority import initialize_session_authority
     from gateway.session_local_recovery import recover_local_sessions
     from gateway.session_viewer_close import _PendingClose, _store_and_settle
-    from hermes_state import AsyncSessionDB, SessionDB
+    from hermes_agent.hermes_state import AsyncSessionDB, SessionDB
     runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
     target = _target(runner, authority, ref)
     evt = _process_event(authority, ref, target, 'proc_pending_close')

@@ -6,18 +6,18 @@ not re-key idempotency digests, queued inputs, subscribers or uncertain claims.
 import json
 import time
 
-from hermes_state_local import POLICY_PREFIX
-from hermes_state_runtime import RuntimeStoreError, _epoch, _json
+from hermes_agent.hermes_state_local import POLICY_PREFIX
+from hermes_agent.hermes_state_runtime import RuntimeStoreError, _epoch, _json
 import itertools
 
 
 def validate_local_lineage(conn, receipt):
-    from hermes_state_compression import _CHAIN_STEP_SQL
-    from hermes_state_keys import local_identity
+    from hermes_agent.hermes_state_compression import _CHAIN_STEP_SQL
+    from hermes_agent.hermes_state_keys import local_identity
     if ('legacy_session_id' not in receipt and
             receipt['session_id'] != local_identity(receipt['profile_id'], receipt['principal_id'], receipt['request_id'])):
         raise RuntimeStoreError('storage_unavailable')
-    from hermes_state_local_migration import legacy_lineage_root
+    from hermes_agent.hermes_state_local_migration import legacy_lineage_root
     root = legacy_lineage_root(conn, receipt)
     lineage = receipt.get('lineage', [root])
     if (not isinstance(lineage, list) or not lineage or len(set(lineage)) != len(lineage)
@@ -75,7 +75,7 @@ def advance_local_target(conn, parent_session_id, child_session_id, *, entry=Non
     key = POLICY_PREFIX + logical_id
     raw = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
     if raw is None:
-        from hermes_state_local_migration import LEGACY_PREFIX
+        from hermes_agent.hermes_state_local_migration import LEGACY_PREFIX
         legacy = conn.execute('SELECT 1 FROM state_meta WHERE key=?', (LEGACY_PREFIX + logical_id,)).fetchone()
         if logical_id.startswith('local-') or legacy:
             raise RuntimeStoreError('storage_unavailable')
@@ -106,7 +106,7 @@ def _untracked_steps(conn, tip, lineage):
     chain: walk on from the last step until a walk finds nothing more. Each batch only adds ids never
     seen, so the walk ends; a step back into the lineage or an earlier batch is a cycle.
     """
-    from hermes_state_compression import _CHAIN_STEP_SQL, _walk_compression_chain
+    from hermes_agent.hermes_state_compression import _CHAIN_STEP_SQL, _walk_compression_chain
     steps, seen, current = [], {*lineage, tip}, tip
     while True:
         batch = _walk_compression_chain(current, lambda sid: conn.execute(_CHAIN_STEP_SQL, (sid,)).fetchone())[1:]
@@ -184,7 +184,7 @@ def reset_local_target(db, *, epoch, parent_session_id, entry):
         logical_id = receipt['session_id']
         if validate_local_lineage(conn, receipt) != parent_session_id:
             raise RuntimeStoreError('admission_conflict')
-        from hermes_state_mutation_guards import require_not_executing
+        from hermes_agent.hermes_state_mutation_guards import require_not_executing
         require_not_executing(conn, list({logical_id, parent_session_id}))
         policy = receipt['policy']
         db._publish_child_session_row(conn, parent, parent_session_id=parent_session_id,

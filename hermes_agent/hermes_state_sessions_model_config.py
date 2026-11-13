@@ -1,12 +1,12 @@
 """Conversation-wide ``sessions.model_config`` keys: read-modify-write at the compression tip and the
-key scan. Bodies of :class:`hermes_state_sessions.SessionSessionsMixin`'s two methods of the same names."""
+key scan. Bodies of :class:`hermes_agent.hermes_state_sessions.SessionSessionsMixin`'s two methods of the same names."""
 
 from __future__ import annotations
 
 import json
 from typing import Any, Callable, Optional
 
-from hermes_state_common import _sql_json_extract
+from hermes_agent.hermes_state_common import _sql_json_extract
 
 
 def update_conversation_model_config_value(db, session_id: str, key: str,
@@ -16,7 +16,7 @@ def update_conversation_model_config_value(db, session_id: str, key: str,
     copy, and a rotation cannot publish between finding the tip and writing it (the child would keep
     the old copy). ``update`` may run more than once (lock retry) and must be pure; returning None
     removes the key. Returns the id written, None when the row does not exist."""
-    from hermes_state_sessions import _parse_model_config
+    from hermes_agent.hermes_state_sessions import _parse_model_config
 
     def _do(conn) -> Optional[str]:
         tip = db._compression_tip_on(conn, session_id)

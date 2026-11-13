@@ -13,7 +13,7 @@ import pytest
 from fastapi import FastAPI
 
 from hermes_cli.web_routers.sessions import manage_router
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 AUTH = {'Authorization': 'Bearer legacy-token'}
 # Verbatim from v0.22.2: notifications.ts ``readableError`` and gateway-rpc.ts ``isOutOfSyncRpcParams``.
@@ -24,7 +24,7 @@ _OUT_OF_SYNC_RE = re.compile(r'out of sync \(different versions\)', re.IGNORECAS
 def _app(tmp_path, monkeypatch):
     from hermes_cli import web_server
     monkeypatch.setattr(web_server, '_SESSION_TOKEN', 'legacy-token')
-    monkeypatch.setattr('hermes_state._default_db_path', lambda: tmp_path / 'state.db')
+    monkeypatch.setattr('hermes_agent.hermes_state._default_db_path', lambda: tmp_path / 'state.db')
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     app = FastAPI()
     app.include_router(manage_router)

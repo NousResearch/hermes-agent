@@ -14,8 +14,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from hermes_state import SessionDB, StateDbCorruptError
-from hermes_state_wal import _on_disk_journal_mode
+from hermes_agent.hermes_state import SessionDB, StateDbCorruptError
+from hermes_agent.hermes_state_wal import _on_disk_journal_mode
 
 
 class _NotADbOnce:
@@ -41,7 +41,7 @@ class TestFailClosedAfterNotADb:
         try:
             db.create_session(session_id="s1", source="cli", model="test")
             reopen = MagicMock()
-            monkeypatch.setattr("hermes_state._connect_tracked_db", reopen)
+            monkeypatch.setattr("hermes_agent.hermes_state._connect_tracked_db", reopen)
             db._conn = _NotADbOnce(real_conn)
             with pytest.raises(sqlite3.DatabaseError, match="not a database") as excinfo:
                 db.create_session(session_id="s2", source="cli", model="test")

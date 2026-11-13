@@ -27,7 +27,7 @@ from tools.delegate_tool import (
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
 )
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def _make_mock_parent(depth=0):

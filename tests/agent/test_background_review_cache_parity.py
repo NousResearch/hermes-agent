@@ -493,7 +493,7 @@ def test_same_model_fork_inherits_parent_cache_scope_gateway_key(tmp_path):
         declared_conversation_scope,
         resolve_prompt_cache_scope,
     )
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / "state.db")
     try:
@@ -532,7 +532,7 @@ def test_same_model_fork_inherits_parent_cache_scope_rotated_lineage(tmp_path):
     import run_agent
     from agent.background_review import build_cache_parity_fork
     from agent.prompt_cache_scope import declared_conversation_scope, resolve_prompt_cache_scope
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / "state.db")
     try:

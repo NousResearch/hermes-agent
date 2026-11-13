@@ -29,7 +29,7 @@ import uuid
 
 import pytest
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 THREAD_ID = "54287"
 PEER = dict(

@@ -11,7 +11,7 @@ import pytest
 
 from gateway.config import HomeChannel, Platform
 from gateway.session import SessionStore, build_session_key
-from hermes_state import AsyncSessionDB
+from hermes_agent.hermes_state import AsyncSessionDB
 from tests.gateway.test_telegram_topic_mode import _make_event, _make_runner, _make_source
 
 CHAT = "208214988"

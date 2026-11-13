@@ -4,7 +4,7 @@ Identity and lineage remain owner-reserved. This is not arbitrary SessionDB RPC.
 """
 import json
 
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
 # model_config sidecars a worker may patch: every key the agent persists via

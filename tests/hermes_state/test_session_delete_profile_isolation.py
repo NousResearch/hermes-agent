@@ -11,7 +11,7 @@ temp HERMES_HOME — two profile databases, no mocks — and shows:
 
 from __future__ import annotations
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def _profile_db(home, name: str) -> SessionDB:

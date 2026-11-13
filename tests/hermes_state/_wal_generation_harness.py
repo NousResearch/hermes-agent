@@ -18,9 +18,9 @@ from pathlib import Path
 
 import pytest
 
-import hermes_state
-import hermes_state_wal
-from hermes_state import SessionDB
+from hermes_agent import hermes_state
+from hermes_agent import hermes_state_wal
+from hermes_agent.hermes_state import SessionDB
 
 
 def pin_wal(monkeypatch) -> None:

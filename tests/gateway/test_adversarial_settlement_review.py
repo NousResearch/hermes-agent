@@ -6,7 +6,7 @@ import threading
 import pytest
 
 from gateway.session_contract import Submission
-from hermes_state_runtime import RuntimeStoreError, begin_runtime_epoch, get_session_admission
+from hermes_agent.hermes_state_runtime import RuntimeStoreError, begin_runtime_epoch, get_session_admission
 from tests.gateway.test_session_authority_cancel_settlement import _authority, ACTOR, REF
 
 
@@ -87,7 +87,7 @@ async def test_discard_during_recovery_stamp_does_not_replay_head_or_lose_follow
 @pytest.mark.asyncio
 async def test_stale_owner_cannot_stamp_a_new_epoch_claim_unknown(tmp_path, monkeypatch):
     from gateway.session_settlement_recovery import recover_failed_settlement
-    from hermes_state_runtime import claim_session_input
+    from hermes_agent.hermes_state_runtime import claim_session_input
     db, authority = _authority(tmp_path, monkeypatch)
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
     with db:

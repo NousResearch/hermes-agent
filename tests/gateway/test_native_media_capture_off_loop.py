@@ -10,7 +10,7 @@ from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session_authority import SessionAuthority, initialize_session_authority
 from gateway.session_envelope import restore_native
-from hermes_state_runtime import get_session_admission
+from hermes_agent.hermes_state_runtime import get_session_admission
 from tests.waiting import async_wait_until
 
 CHAT = '15551234567@s.whatsapp.net'

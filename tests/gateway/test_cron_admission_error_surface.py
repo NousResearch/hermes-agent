@@ -20,7 +20,7 @@ async def _typed_turn_in_cron_session(owner, monkeypatch):
     from gateway.session import SessionSource
     from gateway.session_contract import SessionRef
     from gateway.session_local import LocalSessionAdapter
-    from hermes_state_runtime import admit_session_input, claim_session_input
+    from hermes_agent.hermes_state_runtime import admit_session_input, claim_session_input
 
     session_id = 'cron-session'
     owner.db.create_session(session_id, source='local')
@@ -65,7 +65,7 @@ async def test_cron_refusal_is_in_the_reopened_transcript(owner, monkeypatch, tm
     """Settlement commits the refusal as a failed-turn boundary carrying its error card, in the same
     write: a reopened chat redraws the card from history, not from the admission result."""
     from gateway.session_results import finish_result
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     row, response, outcome, captured = await _typed_turn_in_cron_session(owner, monkeypatch)
     settled, _response = finish_result(owner.db, epoch=owner.epoch, row=row, response=response,

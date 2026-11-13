@@ -319,7 +319,7 @@ MODEL_ONLY_DISPLAY_METADATA_KEY = "model_only"
 # agent/chat_completion_helpers.py) strip every top-level ``_``-prefixed key before the request leaves the
 # process, so this never reaches a strict OpenAI-compatible gateway. CONTRACT (#92231): the marker asserts
 # "this dict's CONTENT is durable as written". Loaded rows are stamped at materialization time
-# (hermes_state._rows_to_conversation), so any code that mutates a loaded or flushed dict's content in place
+# (hermes_agent.hermes_state._rows_to_conversation), so any code that mutates a loaded or flushed dict's content in place
 # and needs the change persisted MUST pop the marker (and invalidate _db_flush_scan_prefix if the dict may
 # sit inside the bounded-scan prefix) — see agent/turn_finalizer.py (fill-empty-tail) and
 # agent/context_compressor.py (micro-compaction defrag) for the two canonical pop sites. Mutating without

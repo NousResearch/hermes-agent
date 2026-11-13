@@ -12,8 +12,8 @@ from pathlib import Path
 from typing import Any
 
 from hermes_cli.timefmt import EPOCH_MAX, EPOCH_MIN
-from hermes_state_keys import CRON_PRINCIPAL_ID
-from hermes_state_pidns import persistent_record_pidns_checkable, pid_namespace_id
+from hermes_agent.hermes_state_keys import CRON_PRINCIPAL_ID
+from hermes_agent.hermes_state_pidns import persistent_record_pidns_checkable, pid_namespace_id
 from agent.skill_commands import AUTO_LOAD_SCAFFOLD_SQL_LIKE, SKILL_EXCERPT_JOINT, SKILL_SCAFFOLD_SQL_LIKE, describe_skill_invocation
 from agent.context_compressor import (LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX, _MERGED_PRIOR_CONTEXT_HEADER,
     _MERGED_SUMMARY_DELIMITER, _SUMMARY_END_MARKER)
@@ -1239,7 +1239,7 @@ END;
 # structural rebuild (FTS5 'rebuild' or `_recover_stale_fts`'s drop/recreate) must run in ONE at a time —
 # concurrent rebuilds corrupted state.db in production.  Gates `rebuild_fts()`, `_rebuild_fts_indexes()`,
 # `_recover_stale_fts()`; the chunked backfill (`fts_rebuild_step`) is deliberately NOT routed through it (it
-# claims progress under SQLite transaction authority).  Mirrors `hermes_state_repair._cross_process_repair_lock`:
+# claims progress under SQLite transaction authority).  Mirrors `hermes_agent.hermes_state_repair._cross_process_repair_lock`:
 # portable (msvcrt/flock), bounded wait, FAIL CLOSED; orphaned-fd holders (see `_acquire_db_flock`) are broken
 # only when provably dead, indeterminate liveness defers.  `<db>.fts_rebuild.lock` is distinct from
 # `<db>.repair.lock` (offline schema surgery, minutes in VACUUM).  Lives here: mixins cannot import hermes_state.
@@ -1254,7 +1254,7 @@ END;
 # `SessionSchemaMixin._rebuild_fts_indexes()` (via `_init_schema`), and
 # `SessionSchemaMixin._recover_stale_fts()`. The chunked deferred backfill (`fts_rebuild_step`) is
 # deliberately NOT routed through it — it claims progress under `_execute_write`'s SQLite transaction
-# authority and is intentionally multi-process. Semantics mirror `hermes_state_repair._cross_process_repair_lock`
+# authority and is intentionally multi-process. Semantics mirror `hermes_agent.hermes_state_repair._cross_process_repair_lock`
 # (the schema- surgery authority): portable (msvcrt on Windows, flock elsewhere), bounded wait, and FAIL
 # CLOSED — a caller that cannot acquire the lock must NOT rebuild. The kernel drops both lock types when the
 # holder dies — UNLESS a forked child inherited the lock fd (flock rides the open file description, which
@@ -1266,7 +1266,7 @@ END;
 # `<db>.repair.lock`: schema surgery runs on an EXCLUSIVE offline connection and can legitimately take
 # minutes in VACUUM, while runtime rebuilds run on live connections. The timeout is sized for a full
 # 'rebuild' of both indexes on a large DB.
-logger = logging.getLogger("hermes_state")
+logger = logging.getLogger("hermes_agent.hermes_state")
 
 _FTS_REBUILD_LOCK_TIMEOUT_SECONDS = 120.0
 _FTS_REBUILD_LOCK_POLL_SECONDS = 0.1

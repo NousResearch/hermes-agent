@@ -904,7 +904,7 @@ def test_sibling_claimed_by_other_consumer_is_not_double_delivered(
 @pytest.mark.parametrize("batch_size", [1, 2])
 def test_unavailable_delivery_preserves_budget_across_restarts(tmp_path, unavailable, batch_size):
     """Unavailable owners/transports cannot consume any sibling's durable attempts."""
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from tools import async_delegation
 
     events = [_async_event(f"deleg_unavailable_{i}") for i in range(batch_size)]

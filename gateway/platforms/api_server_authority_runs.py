@@ -3,7 +3,7 @@ from dataclasses import asdict
 
 from gateway.session_contract import SessionActor, SessionRef
 from gateway.session_results import admission_result
-from hermes_state_runtime import RuntimeStoreError, _row
+from hermes_agent.hermes_state_runtime import RuntimeStoreError, _row
 
 
 def _authority(adapter):

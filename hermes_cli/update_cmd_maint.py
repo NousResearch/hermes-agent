@@ -120,7 +120,7 @@ def _print_fts_optimize_available_notice() -> None:
 
     try:
         from hermes_constants import get_hermes_home
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
     except Exception:
         return
     db_path = get_hermes_home() / "state.db"
@@ -139,7 +139,7 @@ def _print_fts_optimize_available_notice() -> None:
     try:
         db = SessionDB(db_path=db_path, read_only=True)
         # read_only opens skip schema init; probe the stored layout directly.
-        from hermes_state_fts import fts_layout_drift
+        from hermes_agent.hermes_state_fts import fts_layout_drift
         drift = fts_layout_drift(db._conn)
         legacy_inline = db._db_has_legacy_inline_fts(db._conn)
         # Interrupted optimize-storage: v23 table shape but backfill markers / trash

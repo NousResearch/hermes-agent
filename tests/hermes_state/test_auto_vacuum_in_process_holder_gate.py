@@ -18,11 +18,11 @@ from __future__ import annotations
 
 import shutil
 
-import hermes_state_registry as registry
+import hermes_agent.hermes_state_registry as registry
 
 
 def _seed(path):
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=path)
     db.create_session("old", "cli")
@@ -47,7 +47,7 @@ def _make_prunable(db, session_id):
 
 def test_auto_vacuum_skips_while_a_live_sibling_holds_the_same_store(tmp_path):
     """Invariant: a genuinely LIVE sibling SessionDB for this path defers the VACUUM."""
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db_path = tmp_path / "state.db"
     _seed(db_path)

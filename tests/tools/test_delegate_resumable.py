@@ -194,7 +194,7 @@ def test_crashed_childs_worktree_survives_the_sweep_until_its_record_expires(tmp
     import sqlite3
 
     from hermes_cli.worktree_sweep import plan_sweep, run_sweep, sweep_settings
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from tools.async_delegation import recover_abandoned_delegations
     from tools.delegate_tool_resumable import _upsert
     from hermes_constants import get_hermes_home

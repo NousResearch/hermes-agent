@@ -19,7 +19,7 @@ async def probe(mode, peer):
     from gateway.run import GatewayRunner
     from gateway.session_authority import initialize_session_authority
     from gateway.session_envelope import snapshot_native
-    from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions
 
     class Adapter(BasePlatformAdapter):
         def __init__(self):
@@ -86,7 +86,7 @@ async def probe(mode, peer):
         return
     event = MessageEvent(text='TRUST_CALLBACK_INPUT', source=source, message_id='trust-1')
     # Pre-provenance ordinary inputs were accepted via the normal unscoped callback.
-    from hermes_state_runtime import admit_session_input
+    from hermes_agent.hermes_state_runtime import admit_session_input
     payload = snapshot_native(runner, event)
     ref = authority.register(source)
     identity = json.dumps([source.profile, source.platform.value, source.chat_id,

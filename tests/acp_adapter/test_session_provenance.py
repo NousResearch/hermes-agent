@@ -10,7 +10,7 @@ import time
 import pytest
 
 from hermes_agent.acp_adapter.provenance import build_session_provenance, session_provenance_meta
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 @pytest.fixture()

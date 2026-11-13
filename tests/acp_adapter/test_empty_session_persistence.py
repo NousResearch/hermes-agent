@@ -3,7 +3,7 @@ import json
 from types import SimpleNamespace
 
 from hermes_agent.acp_adapter.session import SessionManager
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def test_new_session_persists_only_when_content_exists(tmp_path):

@@ -126,7 +126,7 @@ async def test_a_prepared_branch_stamps_its_secret_reference_with_the_childs_ask
     """The prepared fork's durable config-secret reference hashes the policy the child is stored with
     (``ask``), never the parent's Don't Ask."""
     from dataclasses import asdict
-    import hermes_state_local
+    from hermes_agent import hermes_state_local
     from gateway import session_local_mcp, session_policy_credentials as creds
     from gateway.session_policy import build_policy
     parent = replace(build_policy({'source': 'acp', 'cwd': str(tmp_path), 'model': 'fixture'}, {}),

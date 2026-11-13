@@ -78,7 +78,7 @@ def session_owned_by_profile(config: Any, profile: Optional[str], session_id: An
         home = dict(_multiplex_profile_homes(config)).get(profile)
         if home is None:
             return False
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
         db = SessionDB(Path(home) / "state.db", read_only=True)
     except Exception as exc:
         logger.debug("wake: session ownership check unavailable for %s/%s: %s", profile, session_id, exc)
@@ -139,7 +139,7 @@ async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source:
         runner = getattr(adapter, "gateway_runner", None)
         if runner is not None:
             from gateway.session_automation import admit_route_wake
-            from hermes_state_runtime import RuntimeStoreError
+            from hermes_agent.hermes_state_runtime import RuntimeStoreError
             category = {"notification_category": notification_category} if notification_category != "result" else {}
             try:
                 if await admit_route_wake(runner, adapter, source, text, "kanban-wake", category):

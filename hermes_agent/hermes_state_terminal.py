@@ -7,7 +7,7 @@ Worker receipt reads additionally require the original private adoption proof.
 import hmac
 import json
 
-from hermes_state_runtime import ADMITTED_REQUEST_CONFLICT, RuntimeStoreError, _epoch, _json, _row, _secret_digest, _text, admission_fingerprint
+from hermes_agent.hermes_state_runtime import ADMITTED_REQUEST_CONFLICT, RuntimeStoreError, _epoch, _json, _row, _secret_digest, _text, admission_fingerprint
 
 RESULT_PREFIX = 'gateway.admission.result.v1.'
 ADMISSION_PREFIX = 'gateway.terminal_admission.v1.'
@@ -133,7 +133,7 @@ def retry_terminal_admission(db, *, epoch, principal_id, session_id, request_id,
         payload={'input': json.loads(_json(payload)), 'intent': intent})
     with db._read_ctx() as conn:
         _epoch(conn, epoch)
-        from hermes_state_mutation_retirement import RETIRED_PREFIX
+        from hermes_agent.hermes_state_mutation_retirement import RETIRED_PREFIX
         if not conn.execute('SELECT 1 FROM state_meta WHERE key=?', (RETIRED_PREFIX + session_id,)).fetchone():
             return None
         saved = conn.execute('SELECT value FROM state_meta WHERE key=?',

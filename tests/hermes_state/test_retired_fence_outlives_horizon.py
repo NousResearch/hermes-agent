@@ -6,9 +6,9 @@ from types import SimpleNamespace
 
 import pytest
 
-import hermes_state_runtime as rt
+import hermes_agent.hermes_state_runtime as rt
 from gateway.session_results import retain_result
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def _delete_8_days_ago(db, epoch, sid):
@@ -22,7 +22,7 @@ def _delete_8_days_ago(db, epoch, sid):
 
 
 def test_a_deleted_session_is_never_recreated_after_the_horizon(tmp_path):
-    from hermes_state_mutation_retirement import RETIRED_PREFIX
+    from hermes_agent.hermes_state_mutation_retirement import RETIRED_PREFIX
     with SessionDB(tmp_path / "state.db") as db:
         epoch = rt.begin_runtime_epoch(db, instance_id="owner")
         db.create_session("s", source="api_server")
@@ -54,7 +54,7 @@ def test_a_deleted_bot_chat_generation_is_never_reissued(tmp_path):
 
 
 def test_a_swept_session_fence_ages_out_at_the_horizon(tmp_path):
-    from hermes_state_mutation_retirement import RETIRED_PREFIX, prune_retired_tombstones
+    from hermes_agent.hermes_state_mutation_retirement import RETIRED_PREFIX, prune_retired_tombstones
     with SessionDB(tmp_path / "state.db") as db:
         epoch = rt.begin_runtime_epoch(db, instance_id="owner")
         db.create_session("swept", source="cron")
@@ -75,7 +75,7 @@ def test_a_swept_session_fence_ages_out_at_the_horizon(tmp_path):
 @pytest.mark.parametrize("sid, ages_out", [("user-42", True), ("api-0123456789abcdef", False)],
                          ids=["caller-named", "door-derived"])
 def test_a_swept_api_session_keeps_its_fence_only_when_a_door_derived_its_id(tmp_path, sid, ages_out):
-    from hermes_state_mutation_retirement import RETIRED_PREFIX, create_conflict, prune_retired_tombstones
+    from hermes_agent.hermes_state_mutation_retirement import RETIRED_PREFIX, create_conflict, prune_retired_tombstones
     with SessionDB(tmp_path / "state.db") as db:
         db.create_session(sid, source="api_server")
         db.end_session(sid, "test")
@@ -91,7 +91,7 @@ def test_a_permanent_marker_an_earlier_release_wrote_for_a_swept_api_session_sta
     delete (``{"retired_at"}`` only). The two can't be told apart, so the upgraded prune pass keeps
     both: a deleted id must never come back."""
     import json
-    from hermes_state_mutation_retirement import RETIRED_PREFIX, create_conflict, prune_retired_tombstones
+    from hermes_agent.hermes_state_mutation_retirement import RETIRED_PREFIX, create_conflict, prune_retired_tombstones
     with SessionDB(tmp_path / "state.db") as db:
         db.set_meta(RETIRED_PREFIX + "user-42", json.dumps({"retired_at": time.time() - 30 * 86400}))
         db._execute_write(lambda conn: prune_retired_tombstones(conn))

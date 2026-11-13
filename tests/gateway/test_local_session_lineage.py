@@ -13,8 +13,8 @@ async def test_local_lineage_transitions_preserve_owner_or_roll_back(tmp_path, m
     from gateway.session_authority import initialize_session_authority
     from gateway.session_contract import SessionActor, SessionRef
     from gateway.session_local import create_local_session
-    from hermes_state_local import local_receipt
-    from hermes_state_runtime import (RuntimeStoreError, admit_session_input, claim_session_input,
+    from hermes_agent.hermes_state_local import local_receipt
+    from hermes_agent.hermes_state_runtime import (RuntimeStoreError, admit_session_input, claim_session_input,
                                       get_session_admission, list_session_admissions)
 
     monkeypatch.setattr(run, '_load_gateway_config', dict)

@@ -4,7 +4,7 @@ import threading
 import time
 from collections import OrderedDict
 
-from hermes_state_runtime import RuntimeStoreError, _epoch, _json
+from hermes_agent.hermes_state_runtime import RuntimeStoreError, _epoch, _json
 
 POLICY_PREFIX = 'gateway.local_policy.v1:'
 API_BINDING_PREFIX = 'gateway.api.binding.v1.'
@@ -42,7 +42,7 @@ def commit_local_session(db, *, epoch, receipt):
             if not same:
                 raise RuntimeStoreError('invalid_params')
             return saved
-        from hermes_state_mutation_retirement import RETIRED_PREFIX
+        from hermes_agent.hermes_state_mutation_retirement import RETIRED_PREFIX
         if conn.execute('SELECT 1 FROM state_meta WHERE key=?', (RETIRED_PREFIX + sid,)).fetchone():
             # Deleted: its receipt was retired with the transcript; a create/cron retry must not
             # resurrect the row (and re-fire its prompt) under the same deterministic id.
@@ -53,7 +53,7 @@ def commit_local_session(db, *, epoch, receipt):
         if conn.execute("SELECT 1 FROM gateway_routing WHERE scope='' AND session_key=?", (route,)).fetchone():
             raise RuntimeStoreError('admission_conflict')
         if 'legacy_session_id' in receipt:
-            from hermes_state_local_migration import bind_legacy_target
+            from hermes_agent.hermes_state_local_migration import bind_legacy_target
             bind_legacy_target(db, conn, receipt)
         policy, entry = receipt['policy'], receipt['entry']
         from datetime import datetime
@@ -190,7 +190,7 @@ def moved_receipts(conn, target_ids=None):
 def release_receipts(conn, owners):
     """Retire *owners*' local receipts (creation policy and legacy binding): the row they guarded now
     belongs to a messaging lane, which restores it from its route like any other platform session."""
-    from hermes_state_local_migration import LEGACY_PREFIX
+    from hermes_agent.hermes_state_local_migration import LEGACY_PREFIX
     conn.executemany('DELETE FROM state_meta WHERE key IN (?,?)',
                      [(POLICY_PREFIX + owner, LEGACY_PREFIX + owner) for owner in owners])
 
@@ -256,7 +256,7 @@ def _title_follows_head(conn, owner, head):
     """The conversation's name (a Bot Chat's registry title included) moves to its head, over a
     title of lower provenance there (a generated one); a name of equal rank the head carries stays
     (``SessionDB._title_rank``: a pre-provenance title ranks as the user's)."""
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     row = conn.execute('SELECT title, title_source, hidden FROM sessions WHERE id=?', (owner,)).fetchone()
     if head == owner or row is None or not row[0]:
         return
@@ -311,7 +311,7 @@ def local_lineage_index(conn):
     transcript to a child, so every segment is one conversation. ``superseded`` holds the listable
     roots of earlier reset segments (filtered in SQL, before paging); ``heads`` maps the latest
     reset segment to ``(owner, lineage)`` for the row that represents the conversation. A delete
-    of that row removes the whole lineage (``hermes_state_mutation_guards.delete_targets``)."""
+    of that row removes the whole lineage (``hermes_agent.hermes_state_mutation_guards.delete_targets``)."""
     superseded, heads = set(), {}
     rows = conn.execute("SELECT value FROM state_meta WHERE key GLOB ? AND json_valid(value) "
                         "AND json_array_length(value, '$.lineage') > 1", (POLICY_PREFIX + '*',)).fetchall()

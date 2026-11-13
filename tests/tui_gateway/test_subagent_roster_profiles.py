@@ -12,7 +12,7 @@ ROUTE = "agent:main:telegram:dm:42"  # unmultiplexed / legacy route: identical i
 @pytest.fixture()
 def two_profiles(tmp_path, monkeypatch):
     from agent import secret_scope
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from tools import delegate_tool_registry as reg
     from tools.process_registry import process_registry
     from tui_gateway import launch_profile_policy, server

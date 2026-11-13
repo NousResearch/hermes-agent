@@ -7,11 +7,11 @@ import sqlite3
 import time
 from typing import Sequence
 
-from hermes_state_common import FTS_SQL, FTS_STALE_KEY, FTS_TRIGRAM_SQL, _FTS_TRIGGERS
-from hermes_state_errors import is_fts_scoped_corruption_error, is_sqlite_lock_error
+from hermes_agent.hermes_state_common import FTS_SQL, FTS_STALE_KEY, FTS_TRIGRAM_SQL, _FTS_TRIGGERS
+from hermes_agent.hermes_state_errors import is_fts_scoped_corruption_error, is_sqlite_lock_error
 
 # caplog tests pin the "hermes_state" logger name.
-logger = logging.getLogger("hermes_state")
+logger = logging.getLogger("hermes_agent.hermes_state")
 
 _FTS_DDL_TABLES = ("messages_fts", "messages_fts_trigram")
 
@@ -326,7 +326,7 @@ class SessionFtsSetupMixin:
         """Corruption SQLite identifies as FTS-scoped (SQLITE_CORRUPT_VTAB, or an ``fts5:``
         report naming ``messages_fts*`` on builds without result codes); a bare malformed
         image is structural. One rule, shared with ``classify_persistence_error`` and the
-        gateway transcript retry: see :func:`hermes_state_errors.is_fts_scoped_corruption_error`."""
+        gateway transcript retry: see :func:`hermes_agent.hermes_state_errors.is_fts_scoped_corruption_error`."""
         return is_fts_scoped_corruption_error(exc)
 
     def _enter_fts_fail_open(

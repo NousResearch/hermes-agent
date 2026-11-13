@@ -33,8 +33,8 @@ from pathlib import Path
 
 import pytest
 
-import hermes_state_repair
-from hermes_state import SessionDB
+from hermes_agent import hermes_state_repair
+from hermes_agent.hermes_state import SessionDB
 from hermes_cli.backup import (
     _safe_copy_db,
     create_quick_snapshot,

@@ -1078,7 +1078,7 @@ def _persisted_session_id(session_id: Optional[str]) -> Optional[str]:
     if not session_id:
         return None
     try:
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
         from hermes_constants import get_hermes_home
 
         state = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)
@@ -1170,7 +1170,7 @@ def _live_tui_session_key(session_key: str, profile: Optional[str]) -> str:
         except Exception:
             db_path = None
     try:
-        from hermes_state_registry import acquire, release_or_close
+        from hermes_agent.hermes_state_registry import acquire, release_or_close
         db = acquire(db_path)
         try:
             return db.resolve_resume_session_id(session_key) or session_key

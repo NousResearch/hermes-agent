@@ -15,7 +15,7 @@ def child(repo, case, account):
     os.environ['HOME'] = str(account)
     os.environ['HERMES_HOME'] = str(home)
     sys.path.insert(0, str(repo))
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     import tools.session_search_tool as search
     from tools.registry import registry
 

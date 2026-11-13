@@ -1,6 +1,6 @@
 """A settled turn result stores this turn's output and accounting, never per-session copies."""
 from gateway.session_results import admission_result, finish_result
-from hermes_state_runtime import admit_session_input, claim_session_input
+from hermes_agent.hermes_state_runtime import admit_session_input, claim_session_input
 
 
 def test_stored_result_is_bounded_and_redaction_skips_earlier_turns(owner, monkeypatch):

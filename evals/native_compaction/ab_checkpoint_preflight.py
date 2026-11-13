@@ -191,7 +191,7 @@ def scenario_capture(wire: _FakeResponses, *, usage_after: int, reload_history: 
 
 
 def scenario_restore(wire: _FakeResponses, tmp: Path) -> dict:
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     wire.requests.clear()
     wire.script[:] = [

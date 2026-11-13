@@ -12,7 +12,7 @@ from pathlib import Path
 
 from hermes_cli.session_recovery import recover_session_database
 from hermes_cli.timefmt import coerce_epoch
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 
 def _damaged_source(path: Path) -> list[float]:

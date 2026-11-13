@@ -149,7 +149,7 @@ def provenance_meta(db_path: Path, acp_session_id: str, session_id: str) -> dict
     """``_meta.hermes.sessionProvenance`` for the editor's id, the logical session's current
     compression tip and its lineage (``hermes_agent/acp_adapter/provenance.py``). Blocking."""
     from hermes_agent.acp_adapter.provenance import session_provenance_meta
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     if not Path(db_path).exists():
         return None
     try:

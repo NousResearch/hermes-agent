@@ -189,7 +189,7 @@ def test_show_status_reports_gateway_session_last_activity(monkeypatch, capsys, 
     from hermes_cli import status as status_mod
     import hermes_cli.auth as auth_mod
     import hermes_cli.gateway as gateway_mod
-    import hermes_state
+    from hermes_agent import hermes_state
     import time
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

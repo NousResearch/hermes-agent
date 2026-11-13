@@ -23,7 +23,7 @@ from aiohttp import web
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter
 from hermes_cli.subcommands import peer as peer_cmd
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 API_KEY = "sk-peer-e2e-key-123456"
 

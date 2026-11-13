@@ -607,12 +607,12 @@ def _start_gateway_resolve_terminal_cwd() -> None:
 
 
 # A browse that catches a lagging state.db up holds the profile's gateway.lock only for the drift
-# re-check and the additive DDL, cut off at hermes_state_reconcile.BROWSE_RECONCILE_BUDGET_S by a
+# re-check and the additive DDL, cut off at hermes_agent.hermes_state_reconcile.BROWSE_RECONCILE_BUDGET_S by a
 # sqlite progress handler. Its integrity scan (which scales with file size) runs BEFORE the lock, so
 # a large store never extends this window. A gateway booting in it waits it out, with margin for lock
 # publication and the drift probes, instead of exiting as if another gateway owned the profile.
 def _browse_reconcile_reserve_wait_s() -> float:
-    from hermes_state_reconcile import BROWSE_RECONCILE_BUDGET_S
+    from hermes_agent.hermes_state_reconcile import BROWSE_RECONCILE_BUDGET_S
     return BROWSE_RECONCILE_BUDGET_S + 2.0
 
 

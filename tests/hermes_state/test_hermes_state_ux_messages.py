@@ -1,7 +1,7 @@
 """Plain-language contracts for hermes_state user-facing errors (CLI UX message campaign, cluster D)."""
 
-import hermes_state
-from hermes_state import format_session_db_unavailable
+from hermes_agent import hermes_state
+from hermes_agent.hermes_state import format_session_db_unavailable
 
 
 

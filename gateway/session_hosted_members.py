@@ -10,7 +10,7 @@ member naming it is refused, so one bad entry never takes the rest of the roster
 import logging
 from pathlib import Path
 
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
 

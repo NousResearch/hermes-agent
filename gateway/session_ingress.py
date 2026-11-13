@@ -11,7 +11,7 @@ from gateway.session_producer_lifecycle import (
     close_observed_turn, close_producer_turn, close_settled_turn, producer_turn)
 from hermes_cli.observability.shared_metrics_busy import (
     busy_turn_started, note_busy_admitted, note_busy_parked, settle_busy_arrival)
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +75,7 @@ async def admit_message(authority, event):
         adopters[receipt.admission_id] = event
     # A drain already running can claim, run and settle the row before this caller resumes; one
     # that settled it already sent (or owes) the reply itself and resolves no waiter registered now.
-    from hermes_state_runtime import get_session_admission
+    from hermes_agent.hermes_state_runtime import get_session_admission
     row = get_session_admission(authority.db, admission_id=receipt.admission_id)
     status = 'terminal' if row is None else row['status']  # None: deleted with its chat, nothing owed
     note_busy_admitted(event, receipt.admission_id, status, None if row is None else row.get('outcome'))

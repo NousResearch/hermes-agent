@@ -13,7 +13,7 @@ def test_hosted_document_captured_for_a_new_turn_survives_a_concurrent_release(h
     from gateway.hosted_room_driver import TaskIdentity
     from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
     from gateway.session_ingress_media import release_unheld_media
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
 
     authority, loop, principal, _ = hosted_owner
     rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='member', profile='default',

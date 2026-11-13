@@ -341,7 +341,7 @@ def test_run_status_reports_waiting_for_approval_while_a_prompt_is_pending(api, 
     """GET /v1/runs/{id} said `running` while an approval was pending; the documented run state
     (and main's in-memory run store) is `waiting_for_approval`, which UIs key their prompt on."""
     from gateway.platforms.api_server_authority_runs import run_projection
-    from hermes_state_runtime import claim_session_input
+    from hermes_agent.hermes_state_runtime import claim_session_input
     _, ref, _ = admit_api_turn(api, session_id='approval-status', request_id='run_wait', user_message='hello',
                                conversation_history=[])
     row = claim_session_input(owner.db, epoch=owner.epoch, session_id=ref.session_id)

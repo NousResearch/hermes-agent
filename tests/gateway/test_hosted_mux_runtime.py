@@ -87,7 +87,7 @@ def test_secondary_owner_transport_routes_both_directions_through_mux(mux):
     from gateway import hosted_room_driver as tasks
     from gateway.hosted_room_attachments import HostedRoomAttachmentStore
     from gateway.session_ingress_media import restore_native_media
-    from hermes_state_runtime import list_session_admissions, RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import list_session_admissions, RuntimeStoreError
 
     runner, homes, loop, _ = mux
     # Isolate routing from startup: construct the real per-profile services directly.
@@ -181,7 +181,7 @@ def test_room_coordinator_submits_once_to_destination_authority(mux, monkeypatch
     from gateway.session_authority import SessionAuthority
     from gateway.session_hosted_service import ensure_hosted_service
     from hermes_constants import get_hermes_home
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
 
     runner, homes, _, call = mux
     executed = []
@@ -229,7 +229,7 @@ def test_startup_preserves_queued_work_until_ready(mux, monkeypatch):
     from gateway.session_authorities import owner_scope
     from gateway.session_authority import SessionAuthority
     from gateway.session_hosted_service import CanonicalHostedRoomService, ensure_hosted_service
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
 
     runner, homes, loop, call = mux
     source = runner.session_authorities.require(homes['alpha'])

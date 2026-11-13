@@ -314,7 +314,7 @@ class TestDaemonOneshotTurns:
     def test_unattended_finite_turn_approves_execute_code_but_plain_finite_stays_single_query(self, monkeypatch):
         from unittest.mock import patch as mock_patch
         from gateway.session_finite import admit_finite, finite_turn_scope
-        from hermes_state_runtime import RuntimeStoreError
+        from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
         for key in ("HERMES_SINGLE_QUERY_SESSION", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK", "HERMES_YOLO_MODE"):
             monkeypatch.delenv(key, raising=False)

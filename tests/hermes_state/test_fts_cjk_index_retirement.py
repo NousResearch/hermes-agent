@@ -6,9 +6,9 @@ import sqlite3
 
 import pytest
 
-import hermes_state
+from hermes_agent import hermes_state
 from hermes_cli import sessions_cmd
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 _CJK_TRIGGERS = ("messages_fts_cjk_insert", "messages_fts_cjk_delete", "messages_fts_cjk_update")
 

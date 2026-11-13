@@ -12,9 +12,9 @@ from agent.context_compressor import _DB_PERSISTED_MARKER
 from agent.message_metadata import (
     ABSORBED_MESSAGE_UIDS, CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, RESTORED_FROM_STORE, TOOL_CALL_UIDS, TYPED_ASK,
     copy_identity_fields, message_uid_or_none)
-from hermes_state_common import _id_chunks, _placeholders
-from hermes_state_identity import _fill_missing_tool_call_uids, _restore_row_identity
-from hermes_state_messages import _MESSAGE_WRITE_COLUMNS, SessionMessagesMixin
+from hermes_agent.hermes_state_common import _id_chunks, _placeholders
+from hermes_agent.hermes_state_identity import _fill_missing_tool_call_uids, _restore_row_identity
+from hermes_agent.hermes_state_messages import _MESSAGE_WRITE_COLUMNS, SessionMessagesMixin
 
 
 # Durable payload columns a row-addressed rewrite may change: every INSERT column except row identity,

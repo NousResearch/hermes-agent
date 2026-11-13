@@ -87,14 +87,14 @@ def _make_agent_in_context(sid: str, key: str, **kwargs):
 def _profile_session_db(profile_home):
     """``(db, owns)``: a DEDICATED handle on ``profile_home``'s state.db, else the shared launch db."""
     if profile_home:
-        from hermes_state_registry import acquire
+        from hermes_agent.hermes_state_registry import acquire
         return acquire(Path(profile_home) / "state.db"), True
     return _get_db(), False
 
 
 def _release_db(db) -> None:
     with contextlib.suppress(Exception):
-        from hermes_state_registry import release_or_close
+        from hermes_agent.hermes_state_registry import release_or_close
         release_or_close(db)
 
 
@@ -122,7 +122,7 @@ def _session_row_summary(row: dict, *, tip_row: dict | None = None, resolved_id=
             **({} if db is None else _live_count_field(db, row["id"] if resolved_id is None else resolved_id))}
 
 
-from hermes_state_sessions import INTERNAL_LISTING_SOURCES
+from hermes_agent.hermes_state_sessions import INTERNAL_LISTING_SOURCES
 
 
 # Hidden from human listings (kanban workers, tool integrations, one-shot runs); see INTERNAL_LISTING_SOURCES.
@@ -266,7 +266,7 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
             db.set_auto_title(new_key, title, source=title_source)
         sync_flushed_message_markers(history, rows)
     except Exception as exc:
-        from hermes_state_errors import is_disk_full_error
+        from hermes_agent.hermes_state_errors import is_disk_full_error
         if compensate and not is_disk_full_error(exc):
             try:
                 db.discard_unadmitted_session(new_key)
@@ -493,7 +493,7 @@ def _unarchive_recoverable(db, session_id: str) -> bool:
     the rare write escalates to a short-lived registry writer instead of writing on the reader."""
     if not getattr(db, "read_only", False):
         return db.unarchive_recoverable_session(session_id)
-    from hermes_state_registry import acquire
+    from hermes_agent.hermes_state_registry import acquire
     try:
         wdb = acquire(db.db_path)
     except Exception:
@@ -846,7 +846,7 @@ def _resume_guard(ctx: _Resume) -> dict | None:
     from hermes_cli.kanban_resume_guard import kanban_resume_refusal
     if (kanban_refusal := kanban_resume_refusal(ctx.db, ctx.target)) is not None:
         return _err(ctx.rid, 4132, kanban_refusal)
-    from hermes_state import SessionResumeTooLargeError, resolved_max_resume_messages
+    from hermes_agent.hermes_state import SessionResumeTooLargeError, resolved_max_resume_messages
     tip_only = ctx.lazy or ctx.omit_messages or (ctx.defer_history and not ctx.eager_build)
     try:
         if callable(safety_check := getattr(ctx.db, "assert_resume_safe", None)):
@@ -1062,7 +1062,7 @@ def _(rid, params: dict) -> dict:
             live = _find_live_session_by_key(ctx.target, ctx.profile_home)
         if live is not None:
             return _resume_reuse_live(ctx, *live)
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
         from tools.approval_yolo import restore_session_yolo  # a fresh backend starts with an empty set
         restore_session_yolo(ctx.target, SessionDB.session_yolo_enabled(ctx.found))
         if ctx.lazy:
@@ -1168,7 +1168,7 @@ def _(rid, params: dict, session: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """Delete a stored session + transcripts; refused while live here (FK trips on the agent's next flush)."""
     from agent.onboarding_record import delete_chat
-    from hermes_state_errors import SessionActiveWriteGuardError  # body runs on server.py globals
+    from hermes_agent.hermes_state_errors import SessionActiveWriteGuardError  # body runs on server.py globals
 
     if not (target := params.get("session_id", "")):
         return _err(rid, 4006, "session_id required")
@@ -2147,7 +2147,7 @@ def _(rid, params: dict, session: dict) -> dict:
     if _session_uses_compute_host(session):
         return _save_via_compute_host(rid, params)
     from hermes_cli.session_export import load_save_snapshot, render_session_for_save
-    from hermes_state import SessionExportTooLargeError
+    from hermes_agent.hermes_state import SessionExportTooLargeError
     # As CLI/messaging /save json, under the SESSION's profile config + home (runs unscoped); a failed read falls back.
     try:
         with _session_profile_runtime_scope(session, hydrate_secrets=False), _session_db(session) as db:

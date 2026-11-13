@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 OLD, LIVE = "20260819_180933_c53aa488", "20260829_143124_a736cc"
 PEER = dict(user_id="410541755", session_key="agent:main:telegram:dm:410541755", chat_id="410541755",

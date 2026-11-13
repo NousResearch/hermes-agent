@@ -125,7 +125,7 @@ def test_corrupt_breadcrumb_returns_none(hermes_home, monkeypatch, no_terminal_e
 # ------------------------------------------------------------- resolution
 
 def _make_session(home: Path, session_id: str):
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=home / "state.db")
     db.create_session(session_id, "cli")
@@ -149,7 +149,7 @@ def test_resolve_projects_through_compression_chain(hermes_home, monkeypatch, no
     _make_session(hermes_home, "20260815_100000_parent")
     tb.write_breadcrumb("20260815_100000_parent")
 
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     monkeypatch.setattr(
         SessionDB,

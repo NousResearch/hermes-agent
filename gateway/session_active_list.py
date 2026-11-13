@@ -9,7 +9,7 @@ turn that was still running. Rows keep ``server._session_live_item``'s shape; ``
 """
 from __future__ import annotations
 
-from hermes_state_runtime import RuntimeStoreError
+from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 
 def _status(live, handle, pending) -> str:
@@ -30,7 +30,7 @@ async def active_list(connection, ref, params):
     if 'session:read' not in connection.actor.capabilities:
         raise RuntimeStoreError('permission_denied')
     from gateway.session_live_listing import live_entries
-    from hermes_state_sessions import INTERNAL_LISTING_SOURCES
+    from hermes_agent.hermes_state_sessions import INTERNAL_LISTING_SOURCES
     current = str(params.get('current_session_id') or '')
     rows = []
     for entry in await live_entries(connection.authority, connection.actor):

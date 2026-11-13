@@ -12,8 +12,8 @@ async def test_reserved_worker_persists_while_runtime_drains(tmp_path):
     from gateway.session_worker import worker_request
     from gateway.session_worker_reservation import reserve_admission_worker
     from tests.gateway.test_worker_admission_reservation import hello
-    from hermes_state import SessionDB
-    from hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input, RuntimeStoreError
+    from hermes_agent.hermes_state import SessionDB
+    from hermes_agent.hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input, RuntimeStoreError
     db = SessionDB(tmp_path / 'state.db')
     process = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'], stdin=subprocess.PIPE,  # noqa: ASYNC220 -- Popen returns immediately; the test drives the child through its handle
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

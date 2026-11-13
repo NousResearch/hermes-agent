@@ -16,7 +16,7 @@ from pathlib import Path
 
 def schema_drift_reason(path: Path):
     """Return a missing declared table/column, not a corruption diagnosis."""
-    from hermes_state_schema import schema_read_probe_statements
+    from hermes_agent.hermes_state_schema import schema_read_probe_statements
     from hermes_cli.sqlite_safe_read import connect_tracked
 
     with closing(connect_tracked(path.resolve().as_uri() + '?mode=ro', uri=True, tracking_path=path)) as conn:
@@ -24,7 +24,7 @@ def schema_drift_reason(path: Path):
             for statement in schema_read_probe_statements():
                 conn.execute(statement).fetchone()
         except sqlite3.OperationalError as exc:
-            from hermes_state_repair import _schema_not_built
+            from hermes_agent.hermes_state_repair import _schema_not_built
             if _schema_not_built(exc):
                 return str(exc)
             raise
@@ -32,11 +32,11 @@ def schema_drift_reason(path: Path):
 
 
 def _reconcile_snapshot(path, guard):
-    from hermes_state_repair import (
+    from hermes_agent.hermes_state_repair import (
         _copy_database_snapshot, _db_opens_cleanly, _repair_conn,
         _repair_scratch_space_error, _unlink_db_triple,
     )
-    from hermes_state_schema import apply_declared_schema
+    from hermes_agent.hermes_state_schema import apply_declared_schema
 
     scratch = path.with_name(path.name + '.reconcile-scratch')
     if error := _repair_scratch_space_error(path):
@@ -67,7 +67,7 @@ def _require_history_tables(conn):
 
 
 def _reconcile_locked(path, backup, report):
-    from hermes_state_repair import (
+    from hermes_agent.hermes_state_repair import (
         _backup_db_file, _db_opens_cleanly, _exclusive_repair_db_guard,
         _live_writer_holds_db,
     )
@@ -126,7 +126,7 @@ class DeclarativeDriftError(RuntimeError):
 
 def is_declarative_drift_error(exc: BaseException) -> bool:
     """``no such table/column`` from a schema read probe: drift, never corruption."""
-    from hermes_state_repair import _schema_not_built
+    from hermes_agent.hermes_state_repair import _schema_not_built
     return isinstance(exc, sqlite3.OperationalError) and _schema_not_built(exc)
 
 
@@ -167,7 +167,7 @@ def _lockless_gateway_holder(path: Path) -> str | None:
     multiplexer serves named profiles without reserving their per-profile lock, so the lock alone
     misses it. Only holders whose command line is a Hermes ``gateway`` run count; plain readers
     (Desktop, sibling browses, CLI reads) are not owners. Returns a description, else None."""
-    from hermes_state_holders import _looks_like_hermes, _read_proc_argv, describe_holder_pid, foreign_state_db_holders
+    from hermes_agent.hermes_state_holders import _looks_like_hermes, _read_proc_argv, describe_holder_pid, foreign_state_db_holders
     for pid, _target in foreign_state_db_holders(path):
         if pid <= 0:
             continue
@@ -225,8 +225,8 @@ def _apply_additive_schema(path: Path, budget: _Budget | None = None) -> None:
     the shared reconciler could not add (it logs and continues) or an expired budget rolls the
     store back to exactly what it was, never a partial upgrade."""
     from hermes_cli.sqlite_safe_read import connect_tracked
-    from hermes_state_repair import _reapply_durability_barriers, _schema_not_built
-    from hermes_state_schema import apply_declared_schema, schema_read_probe_statements
+    from hermes_agent.hermes_state_repair import _reapply_durability_barriers, _schema_not_built
+    from hermes_agent.hermes_state_schema import apply_declared_schema, schema_read_probe_statements
 
     budget = budget or _Budget(BROWSE_RECONCILE_BUDGET_S)
     budget.check()
@@ -283,7 +283,7 @@ def _integrity_problem(path: Path, budget: _Budget):
     except sqlite3.DatabaseError as exc:
         if budget.expired:
             raise BrowseBudgetExceeded('integrity check exceeded the browse time budget') from exc
-        from hermes_state_errors import is_malformed_db_error
+        from hermes_agent.hermes_state_errors import is_malformed_db_error
         if is_malformed_db_error(exc):
             return str(exc)
         raise
@@ -371,7 +371,7 @@ def _verify_clean_before_lock(path: Path, too_slow):
     the scan vouches for. Raises :class:`CorruptStoreError` for a damaged store (latched, so polls do
     not rescan it) and ``too_slow()`` when the scan cannot finish in its budget (remembered for the
     same signature, so a polling sidebar does not rescan a multi-GB file every few seconds)."""
-    from hermes_state_health import STORAGE_CORRUPT, mark_storage_corrupt, storage_corrupt_reason, storage_state
+    from hermes_agent.hermes_state_health import STORAGE_CORRUPT, mark_storage_corrupt, storage_corrupt_reason, storage_state
     if storage_state(path) == STORAGE_CORRUPT:
         raise CorruptStoreError(storage_corrupt_reason(path) or 'latched corrupt')
     key = str(path.resolve())
@@ -500,7 +500,7 @@ def reconcile_drift_for_browse(path: Path) -> bool:
 def repair_declarative_schema(path: Path, *, backup: bool = True):
     """Reuse repair's snapshot/SQLite exclusion beneath the runtime owner lock."""
     from gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
-    from hermes_state_repair import _cross_process_repair_lock
+    from hermes_agent.hermes_state_repair import _cross_process_repair_lock
 
     report = {'repaired': False, 'strategy': None, 'backup_path': None, 'error': None}
     try:

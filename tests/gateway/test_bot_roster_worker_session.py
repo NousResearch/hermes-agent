@@ -19,7 +19,7 @@ import pytest
 
 from gateway.session_contract import SessionActor
 from gateway.session_group_controls import _bot_sessions, _read_bot_sessions, _sibling_sessions
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 READER = SessionActor('uid:desk', 'alpha', frozenset({'session:operator'}), 'transport:test')
 

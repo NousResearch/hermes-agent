@@ -13,7 +13,7 @@ import time
 
 import pytest
 
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from tools.tool_result_storage import (
     _build_persisted_message,
     cleanup_spillover_cache,
@@ -160,8 +160,8 @@ def test_canonical_delete_retires_the_spill_for_collection(_home):
     """The web/gateway DELETE goes through ``mutate_runtime_session(operation='delete')``, not
     ``delete_session``: the deletion fence records the pointer, the owner's post-delete
     collection unlinks it."""
-    import hermes_state_runtime as rt
-    from hermes_state_media import collect_retired_media
+    import hermes_agent.hermes_state_runtime as rt
+    from hermes_agent.hermes_state_media import collect_retired_media
     db = SessionDB(db_path=_home / "state.db")
     try:
         _aged_session(db, "s_web", "web.txt")

@@ -105,7 +105,7 @@ def _start_continue(runner: Any, record: dict[str, Any], unit: dict[str, Any], m
     profile's scope, inside a fresh context so the parent's routing binding never leaks into another task."""
     from gateway.session_context import reset_session_vars, set_session_vars
     from hermes_constants import get_hermes_home
-    from hermes_state_registry import acquire, release_or_close
+    from hermes_agent.hermes_state_registry import acquire, release_or_close
     reset_session_vars()
     route = _session_route(unit)
     # An api_server parent has no push channel: its result is persisted for its next request, as at dispatch.

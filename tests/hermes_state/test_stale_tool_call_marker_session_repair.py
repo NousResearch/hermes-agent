@@ -13,7 +13,7 @@ fix, so resuming a polluted session doesn't re-teach the model to keep
 emitting the marker. Unaffected sessions pass through unchanged.
 """
 
-from hermes_state import (
+from hermes_agent.hermes_state import (
     _is_stale_tool_call_marker_message,
     _strip_stale_tool_call_markers,
 )
@@ -93,7 +93,7 @@ class TestGetMessagesAsConversationStripsStaleMarkers:
     def test_polluted_session_resumes_without_marker(self):
         import tempfile
         from pathlib import Path
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmp:
             db = SessionDB(db_path=Path(tmp) / "t.db")
@@ -119,7 +119,7 @@ class TestGetMessagesAsConversationStripsStaleMarkers:
     def test_clean_session_resumes_unaffected(self):
         import tempfile
         from pathlib import Path
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmp:
             db = SessionDB(db_path=Path(tmp) / "t.db")
@@ -155,7 +155,7 @@ class TestPurgeStaleToolCallMarkers:
     def test_dry_run_reports_without_writing(self):
         import tempfile
         from pathlib import Path
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmp:
             db = SessionDB(db_path=Path(tmp) / "t.db")
@@ -178,7 +178,7 @@ class TestPurgeStaleToolCallMarkers:
     def test_purge_clears_content_keeps_tool_calls(self):
         import tempfile
         from pathlib import Path
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmp:
             db = SessionDB(db_path=Path(tmp) / "t.db")
@@ -210,7 +210,7 @@ class TestPurgeStaleToolCallMarkers:
     def test_no_backup_when_flag_false(self):
         import tempfile
         from pathlib import Path
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmp:
             db = SessionDB(db_path=Path(tmp) / "t.db")
@@ -229,7 +229,7 @@ class TestPurgeStaleToolCallMarkers:
     def test_dry_run_never_backs_up(self):
         import tempfile
         from pathlib import Path
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmp:
             db = SessionDB(db_path=Path(tmp) / "t.db")
@@ -246,7 +246,7 @@ class TestPurgeStaleToolCallMarkers:
     def test_no_affected_rows_on_clean_db(self):
         import tempfile
         from pathlib import Path
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmp:
             db = SessionDB(db_path=Path(tmp) / "t.db")

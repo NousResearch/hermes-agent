@@ -25,7 +25,7 @@ def test_authenticated_owner_transport_rechecks_source_and_cold_binding(hosted_o
         owner_request,
     )
     from gateway.hosted_room_driver import TaskIdentity
-    from hermes_state_runtime import list_session_admissions, RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import list_session_admissions, RuntimeStoreError
     authority, loop, _, _ = hosted_owner
     source, target = tmp_path / 'source', tmp_path / 'target'
     source.mkdir(mode=0o700)
@@ -100,8 +100,8 @@ class _SourceTask:
         from gateway import hosted_room_driver as tasks
         from gateway.hosted_rooms import create_room, local_authority_gateway_id
         from gateway.hosted_room_attachments import HostedRoomAttachmentStore
-        from hermes_state import SessionDB
-        from hermes_state_runtime import begin_runtime_epoch
+        from hermes_agent.hermes_state import SessionDB
+        from hermes_agent.hermes_state_runtime import begin_runtime_epoch
         import gateway.run
         monkeypatch.setenv('HERMES_HOME', str(tmp_path))
         self.homes = {'other': str(tmp_path / 'profiles' / 'other')}
@@ -139,7 +139,7 @@ def test_large_cjk_prompt_crosses_owner_sockets_once(hosted_owner, tmp_path, mon
     """A legal source prompt plus chunked files reaches one fenced target admission."""
     from gateway import session_hosted_transport as transport
     from gateway.session_contract import SessionRef
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     authority, loop, _, _ = hosted_owner
     target = tmp_path / 'profiles' / 'other'
     target.mkdir(parents=True, mode=0o700)
@@ -186,7 +186,7 @@ def test_large_cjk_prompt_crosses_owner_sockets_once(hosted_owner, tmp_path, mon
 
 
 def test_prompt_digest_preserves_source_fences_and_legacy_input(tmp_path, monkeypatch):
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     source = _SourceTask(tmp_path, monkeypatch, b'file')
     with source.db:
         service, params = source.service, source.params
@@ -208,7 +208,7 @@ def test_prompt_digest_preserves_source_fences_and_legacy_input(tmp_path, monkey
 
 def test_source_attestation_binds_bytes_to_task_member_and_current_home(tmp_path, monkeypatch):
     import base64
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     from tui_gateway.hosted_room_driver import HostedRoomBinding
     from gateway.session_hosted_transport import _CHUNK_BYTES
     source = _SourceTask(tmp_path, monkeypatch, b'owned source bytes' * 4000)
@@ -264,7 +264,7 @@ def test_source_chunk_reads_only_the_requested_slice(tmp_path, monkeypatch):
     import hashlib
     from gateway.hosted_room_attachments import HostedRoomAttachmentStore
     from gateway import session_hosted_transport as transport
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     source = _SourceTask(tmp_path, monkeypatch, bytes(range(256)) * (4 * transport._CHUNK_BYTES // 256 + 1),
                          name='blob.bin', mime='application/octet-stream')
     with source.db:
@@ -339,7 +339,7 @@ def test_preflight_verifies_by_attested_digest_and_refuses_changed_source_bytes(
     from gateway import session_hosted_transport as transport
     from gateway.session_hosted_transport import HostedRoomOwnerRPC, check_remote_hosted_admission
     from gateway.session_contract import SessionRef
-    from hermes_state_runtime import list_session_admissions, RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import list_session_admissions, RuntimeStoreError
     authority, loop, _, _ = hosted_owner
     target_home = tmp_path / 'profiles' / 'other'
     target_home.mkdir(parents=True, mode=0o700)
@@ -400,7 +400,7 @@ def test_preflight_refuses_a_retained_document_corrupted_or_missing_at_the_desti
     from gateway import session_hosted_transport as transport
     from gateway.session_hosted_transport import HostedRoomOwnerRPC, check_remote_hosted_admission
     from gateway.session_contract import SessionRef
-    from hermes_state_runtime import list_session_admissions, RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import list_session_admissions, RuntimeStoreError
     authority, loop, _, _ = hosted_owner
     target_home = tmp_path / 'profiles' / 'other'
     target_home.mkdir(parents=True, mode=0o700)

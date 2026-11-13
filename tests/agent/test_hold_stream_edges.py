@@ -104,7 +104,7 @@ def _assistant_commentary(request: dict) -> list:
 def test_held_commentary_stays_out_of_history_but_in_the_model_context():
     from gateway.session_controls import display_projection
     from hermes_cli import plugins
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     home = Path(os.environ["HERMES_HOME"])
     with FakeLLMServer(redactor_turn() + [Text("ok")]) as server:

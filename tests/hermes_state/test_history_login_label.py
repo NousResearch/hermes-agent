@@ -11,8 +11,8 @@ claim one — and never to anything that itself reads as a subject.
 import pytest
 
 from gateway.session_contract import SessionActor
-from hermes_state import SessionDB
-from hermes_state_mutation_binding import _login_label, authorize_history
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_mutation_binding import _login_label, authorize_history
 
 LOGIN = 'auth:v1:["basic","","e2e"]'
 

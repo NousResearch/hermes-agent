@@ -22,8 +22,8 @@ _AUTH = {'Authorization': 'Bearer ' + _API_KEY}
 async def test_a_deleted_chain_continues_on_a_new_generation(api, owner, path, continuation):
     from gateway.session_authority import SessionAuthority
     from gateway.session_results import execution_result
-    from hermes_state_mutation_retirement import prune_retired_tombstones
-    from hermes_state_runtime import begin_runtime_epoch
+    from hermes_agent.hermes_state_mutation_retirement import prune_retired_tombstones
+    from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 
     async def handle(event):
         execution_result.get()['result'] = {'final_response': 'ok', 'messages': []}

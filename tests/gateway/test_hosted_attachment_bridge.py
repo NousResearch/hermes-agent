@@ -9,7 +9,7 @@ def test_authorized_upload_send_download_and_task_consumption(tmp_path):
     from gateway.session_hosted_attachments import upload, download, submission_payload
     from gateway import hosted_rooms
     hosted_rooms.create_room(tmp_path / "state.db", room_id="room", name="Room", members=[], authority_gateway_id="gateway")
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     allowed = [True]
     def authorize(subject, room_id):
         if not allowed[0] or subject != 'owner' or room_id != 'room':
@@ -42,7 +42,7 @@ def test_rpc_accepts_only_bound_manifest_after_producer_authorization(hosted_own
     from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
     from gateway.hosted_room_driver import TaskIdentity
     from gateway.hosted_room_attachments import HostedRoomAttachmentStore
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     authority, loop, principal, _ = hosted_owner
     rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='member', profile='default', principal=principal, authorize=lambda *args: True)
     coords = dict(profile='default', source='bot_room')

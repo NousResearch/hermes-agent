@@ -152,7 +152,7 @@ async def discard_lost_turns(authority, session_id) -> str:
     the TUI queue and ``hermes sessions discard`` use. Never replays the input; the saved
     followers run once it commits."""
     from gateway.session_contract import SessionRef
-    from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions
     rows = await asyncio.to_thread(list_session_admissions, authority.db, session_id=session_id)
     lost = [row for row in rows if row['status'] == 'unknown']
     if not lost:
@@ -176,7 +176,7 @@ async def paused_followers(runner, session_id) -> int:
     resume button, so unsaid they look lost. Counted after the route rotated: nothing can join the
     old queue from then on, so the count includes a message admitted while the reset ran."""
     from gateway.session_authorities import active_authority
-    from hermes_state_runtime import list_session_admissions
+    from hermes_agent.hermes_state_runtime import list_session_admissions
     authority = active_authority(runner)
     if authority is None or not session_id:
         return 0
@@ -352,7 +352,7 @@ class GatewaySessionCommandsMixin:
 
     async def _reset_titled_header(self, header: str, session_id: str, title_arg: str) -> str:
         """``/new <title>``: titled header on success, else the header plus a rejection note."""
-        from hermes_state import SessionDB
+        from hermes_agent.hermes_state import SessionDB
         note = ""
         try:
             sanitized = SessionDB.sanitize_title(title_arg)
@@ -632,8 +632,8 @@ class GatewaySessionCommandsMixin:
         transcript changed since the read refuses both."""
         from gateway import session_retry_admission as retry_admission
         from gateway.session_ingress_context import carry_callback
-        from hermes_state_rewind import RewindTargetUnavailableError
-        from hermes_state_runtime import RuntimeStoreError
+        from hermes_agent.hermes_state_rewind import RewindTargetUnavailableError
+        from hermes_agent.hermes_state_runtime import RuntimeStoreError
         session_id = session_entry.session_id
         if composite:
             # The carrier-aware rewind, planned on the same snapshot: archive the carrier, keep its scaffold.
@@ -652,7 +652,7 @@ class GatewaySessionCommandsMixin:
             resend_text = plan.live_text
 
             def write(conn):
-                from hermes_state_mutation_transcript import rewind_in_transaction
+                from hermes_agent.hermes_state_mutation_transcript import rewind_in_transaction
                 rewind_in_transaction(db, conn, session_id, plan.target_row_id, preserve_compaction_handoff=True,
                                       expected_active_ids=plan.expected_active_ids,
                                       expected_target_content=plan.expected_target_content)
@@ -712,8 +712,8 @@ class GatewaySessionCommandsMixin:
         authority = active_authority(self)
         if authority is None:
             return None
-        import hermes_state_runtime
-        from hermes_state_runtime import RuntimeStoreError
+        from hermes_agent import hermes_state_runtime
+        from hermes_agent.hermes_state_runtime import RuntimeStoreError
         try:
             authority._require_admission_open()
         except RuntimeStoreError:
@@ -1043,7 +1043,7 @@ class GatewaySessionCommandsMixin:
         # Never trust path separators from chat input; the filename is only echoed to the platform.
         filename = parts[1] if len(parts) > 1 else default_save_filename(session_id, fmt)
         filename = os.path.basename(filename) or default_save_filename(session_id, fmt)
-        from hermes_state import SessionExportTooLargeError
+        from hermes_agent.hermes_state import SessionExportTooLargeError
         try:
             # One off-loop hop for the cap check + read; the helper is shared with the CLI and TUI /save.
             export_data = await asyncio.to_thread(load_save_snapshot, self._session_db._db, session_id, fmt)
@@ -1104,7 +1104,7 @@ class GatewaySessionCommandsMixin:
                 return t("gateway.title.current_with_title", session_id=session_id, title=title)
             return t("gateway.title.current_no_title", session_id=session_id)
         try:
-            from hermes_state import SessionDB
+            from hermes_agent.hermes_state import SessionDB
             sanitized = SessionDB.sanitize_title(title_arg)
         except ValueError as e:
             return t("gateway.shared.warn_passthrough", error=e)

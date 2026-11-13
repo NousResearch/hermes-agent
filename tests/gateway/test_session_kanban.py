@@ -10,7 +10,7 @@ def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
     from hermes_cli import kanban_db as kb
     from hermes_cli.kanban_db_connect import connect
     from gateway.session_contract import SessionActor
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     monkeypatch.setenv('HERMES_KANBAN_HOME', str(tmp_path))
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setenv('HOME', str(tmp_path / 'home'))
@@ -106,7 +106,7 @@ def test_claim_reclaimed_before_admission_marker_is_refused(tmp_path, monkeypatc
     from hermes_cli import kanban_db as kb
     from hermes_cli.kanban_db_connect import connect
     from gateway.session_contract import SessionActor
-    from hermes_state_runtime import RuntimeStoreError
+    from hermes_agent.hermes_state_runtime import RuntimeStoreError
     monkeypatch.setenv('HERMES_KANBAN_HOME', str(tmp_path))
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setenv('HOME', str(tmp_path / 'home'))

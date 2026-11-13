@@ -1,4 +1,4 @@
-"""state.db file-level health helpers, split out of ``hermes_state.py``.
+"""state.db file-level health helpers, split out of ``hermes_agent/hermes_state.py``.
 
 Header probes (application_id / zeroed-file detection), deleted-WAL-sidecar
 holder scans, quarantine of zeroed databases, ``collect_state_db_stats`` and
@@ -24,14 +24,14 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from hermes_state_holders import canonical_sqlite_path, read_only_db_uri
-from hermes_state_common import (
+from hermes_agent.hermes_state_holders import canonical_sqlite_path, read_only_db_uri
+from hermes_agent.hermes_state_common import (
     FTS_REBUILD_DEFERRAL_KEY, path_is_under, stat_db_file_identity as _stat_db_file_identity
 )
-from hermes_state_lockguard import own_descriptors
+from hermes_agent.hermes_state_lockguard import own_descriptors
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
-logger = logging.getLogger("hermes_state")
+logger = logging.getLogger("hermes_agent.hermes_state")
 
 
 def _prepare_connection_retirement():
@@ -87,7 +87,7 @@ def _pread_db_range(db_path: Path, offset: int, length: int) -> Optional[bytes]:
     """Lock-safe raw read of a possibly-live SQLite database: POSIX preads from a cached,
     never-closed fd (rebound when the path names a new inode); Windows reads plainly, since
     advisory-lock cancellation is a POSIX-only hazard."""
-    from hermes_state import _IS_WINDOWS
+    from hermes_agent.hermes_state import _IS_WINDOWS
     if _IS_WINDOWS:
         with contextlib.suppress(OSError), db_path.open("rb") as handle:
             handle.seek(offset)
@@ -182,7 +182,7 @@ def _pread_db_header(db_path: Path, length: int) -> Optional[bytes]:
 
 def _read_sqlite_application_id(db_path: Path) -> Optional[int]:
     """application_id from the SQLite header, via the lock-safe :func:`_pread_db_header`."""
-    from hermes_state_errors import _STATE_DB_APPLICATION_ID_OFFSET
+    from hermes_agent.hermes_state_errors import _STATE_DB_APPLICATION_ID_OFFSET
     end = _STATE_DB_APPLICATION_ID_OFFSET + 4
     header = _pread_db_header(db_path, end)
     if header is None or len(header) < end or header[:16] != b"SQLite format 3\x00":
@@ -449,8 +449,8 @@ def iter_deleted_sqlite_sidecar_holders(db_path) -> list[tuple[int, str]]:
 def refuse_deleted_wal_generation(db_path) -> None:
     """Raise if any process holds a deleted WAL/SHM generation for *db_path*; called
     *before* ``sqlite3.connect`` so a second opener cannot mint a replacement WAL inode."""
-    from hermes_state import DeletedWalGenerationError
-    from hermes_state_errors import _DELETED_WAL_GENERATION_MSG
+    from hermes_agent.hermes_state import DeletedWalGenerationError
+    from hermes_agent.hermes_state_errors import _DELETED_WAL_GENERATION_MSG
     if not iter_deleted_sqlite_sidecar_holders(db_path):
         return
     logger.error(_DELETED_WAL_GENERATION_MSG)
@@ -486,7 +486,7 @@ class RetiredGenerationCaptureError(RuntimeError):
 def _fsync_path(path: Path) -> None:
     """fsync a file or directory we own. Never used on the live database: opening and closing a
     descriptor on a file SQLite has locked would cancel this process's POSIX advisory locks."""
-    from hermes_state import _IS_WINDOWS
+    from hermes_agent.hermes_state import _IS_WINDOWS
     if _IS_WINDOWS:
         return  # directories cannot be opened; file writes fsync their own handle
     fd = os.open(path, os.O_RDONLY)
@@ -553,7 +553,7 @@ def _parse_sqlite_header(header: bytes) -> dict[str, Any]:
     if len(header) < _SQLITE_HEADER_BYTES or header[:16] != b"SQLite format 3\x00":
         return {"valid": False}
     raw_page_size = struct.unpack(">H", header[16:18])[0]
-    from hermes_state_errors import _STATE_DB_APPLICATION_ID_OFFSET
+    from hermes_agent.hermes_state_errors import _STATE_DB_APPLICATION_ID_OFFSET
     fields = {"change_counter": 24, "page_count": 28, "user_version": 60,
               "application_id": _STATE_DB_APPLICATION_ID_OFFSET, "version_valid_for": 92}
     parsed = {name: struct.unpack(">I", header[off:off + 4])[0] for name, off in fields.items()}
@@ -661,7 +661,7 @@ def _connect_tracked_db(path, tracking_path=None, **kwargs):
         logger.debug("hermes_cli.sqlite_safe_read unavailable; opening %s untracked "
                      "(byte-probe guard inactive in this install)", path)
         return sqlite3.connect(str(path), **kwargs)
-    # Open through THIS module's sqlite3.connect so tests patching hermes_state.sqlite3.connect keep control.
+    # Open through THIS module's sqlite3.connect so tests patching hermes_agent.hermes_state.sqlite3.connect keep control.
     return connect_tracked(path, tracking_path=tracking_path, connect_fn=sqlite3.connect, **kwargs)
 
 
@@ -798,7 +798,7 @@ def collect_state_db_stats(db_path: Path) -> dict[str, Any]:
     Deliberately does NOT instantiate :class:`SessionDB` — its constructor runs DDL.
     ``wal_size_bytes`` is 0 when the sidecar is absent; ``fts_storage_version`` None means the
     legacy inline layout; ``fts_rebuild_deferral`` is the durable blocked-repair diagnostic."""
-    from hermes_state import _connect_tracked_db
+    from hermes_agent.hermes_state import _connect_tracked_db
     stats: dict[str, Any] = dict.fromkeys((
         "page_count", "page_size", "freelist_count", "logical_size_bytes", "wal_size_bytes", "journal_mode",
         "messages", "sessions", "fts_tables", "fts_storage_version", "fts_storage_upgrade_needed",
@@ -851,7 +851,7 @@ def collect_state_db_stats(db_path: Path) -> dict[str, Any]:
         # Raw state_meta reads — cheap, and independent of SessionDB.
         stats["fts_storage_version"] = _meta_int("fts_storage_version")
         with contextlib.suppress(Exception):
-            from hermes_state_fts import fts_layout_drift
+            from hermes_agent.hermes_state_fts import fts_layout_drift
             stats["fts_storage_upgrade_needed"] = bool(fts_layout_drift(conn.cursor()))
         with contextlib.suppress(Exception):
             # Demoted old-index tables still awaiting teardown: an optimize-storage run stopped after its backfill.

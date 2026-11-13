@@ -1,13 +1,13 @@
 """Commit a prepared summary, physical target, generation and receipt atomically."""
 import uuid
-from hermes_state_mutation_prepared import validate_prepared
+from hermes_agent.hermes_state_mutation_prepared import validate_prepared
 
 
 def compress_in_transaction(db, conn, session_id, payload, prepared):
     snapshot = validate_prepared(db, conn, session_id, prepared)
     policy = snapshot['receipt']['policy']
     target = snapshot['target']
-    from hermes_state_worker_compression import archive_on_connection, publish_on_connection
+    from hermes_agent.hermes_state_worker_compression import archive_on_connection, publish_on_connection
     # No worker/turn/compactor can be active: validate_prepared checks those
     # obligations on this exact connection. No separate legacy transaction runs.
     if prepared['in_place']:

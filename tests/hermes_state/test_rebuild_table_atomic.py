@@ -12,7 +12,7 @@ import sqlite3
 
 import pytest
 
-from hermes_state_schema import SessionSchemaMixin
+from hermes_agent.hermes_state_schema import SessionSchemaMixin
 
 DDL = "CREATE TABLE t (a INTEGER, b TEXT, c INTEGER NOT NULL DEFAULT 0)"
 COPY = "INSERT INTO t (a, b) SELECT a, b FROM t_legacy"

@@ -1,6 +1,6 @@
 """Where a first-run onboarding run lives: one ``onboarding_run`` key in the session's
 ``sessions.model_config`` (no schema change; a compression rotation carries it, see
-``hermes_state_compression._CONVERSATION_MODEL_CONFIG_KEYS``).
+``hermes_agent.hermes_state_compression._CONVERSATION_MODEL_CONFIG_KEYS``).
 
 ``advance`` is the one writer after ``start``: load, ``onboarding_flow.apply``, save, and when the
 run ends write the install-level flag in the root config so the next launch does not reopen it.

@@ -8,8 +8,8 @@ from gateway.session import SessionSource
 from gateway.session_authority import LiveSession, SessionAuthority
 from gateway.session_contract import SessionActor
 from gateway.session_local_title import resolve_titled_session
-from hermes_state import SessionDB
-from hermes_state_runtime import RuntimeStoreError, begin_runtime_epoch
+from hermes_agent.hermes_state import SessionDB
+from hermes_agent.hermes_state_runtime import RuntimeStoreError, begin_runtime_epoch
 
 
 def _authority(db):

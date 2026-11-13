@@ -93,7 +93,7 @@ def default_db_path() -> Path:
 
 def _connect_readonly(db_path: Path) -> sqlite3.Connection:
     from hermes_cli.sqlite_safe_read import connect_tracked
-    from hermes_state_holders import read_only_db_uri
+    from hermes_agent.hermes_state_holders import read_only_db_uri
     return connect_tracked(read_only_db_uri(db_path), uri=True, tracking_path=db_path)
 
 

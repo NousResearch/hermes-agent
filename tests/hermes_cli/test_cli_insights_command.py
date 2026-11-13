@@ -33,7 +33,7 @@ def _run_show_insights(command: str):
     cli_obj = HermesCLI.__new__(HermesCLI)
     db = MagicMock()
     _InsightsEngineStub.calls = []
-    with patch("hermes_state.SessionDB", return_value=db), \
+    with patch("hermes_agent.hermes_state.SessionDB", return_value=db), \
          patch("agent.insights.InsightsEngine", _InsightsEngineStub):
         cli_obj._show_insights(command)
     return _InsightsEngineStub.calls, db
@@ -60,7 +60,7 @@ def test_insights_skips_open_when_store_missing(capsys, existing_store):
     existing_store.unlink()
     for run in (lambda: HermesCLI.__new__(HermesCLI)._show_insights("/insights 7"),
                 lambda: cmd_insights(SimpleNamespace(days=30, source=None))):
-        with patch("hermes_state.SessionDB") as ctor:
+        with patch("hermes_agent.hermes_state.SessionDB") as ctor:
             run()
         ctor.assert_not_called()
     assert "No session data yet." in capsys.readouterr().out
@@ -69,7 +69,7 @@ def test_insights_skips_open_when_store_missing(capsys, existing_store):
 def test_show_insights_opens_read_only(existing_store):
     cli_obj = HermesCLI.__new__(HermesCLI)
     db = MagicMock()
-    with patch("hermes_state.SessionDB", return_value=db) as ctor, \
+    with patch("hermes_agent.hermes_state.SessionDB", return_value=db) as ctor, \
          patch("agent.insights.InsightsEngine", _InsightsEngineStub):
         _InsightsEngineStub.calls = []
         cli_obj._show_insights("/insights 7")
@@ -79,7 +79,7 @@ def test_show_insights_opens_read_only(existing_store):
 
 def test_subcommand_insights_opens_read_only(existing_store):
     db = MagicMock()
-    with patch("hermes_state.SessionDB", return_value=db) as ctor, \
+    with patch("hermes_agent.hermes_state.SessionDB", return_value=db) as ctor, \
          patch("agent.insights.InsightsEngine", _InsightsEngineStub):
         cmd_insights(SimpleNamespace(days=30, source=None))
     ctor.assert_called_once_with(db_path=existing_store, read_only=True)
@@ -88,7 +88,7 @@ def test_subcommand_insights_opens_read_only(existing_store):
 
 def test_subcommand_insights_closes_database_when_generation_fails(capsys):
     db = MagicMock()
-    with patch("hermes_state.SessionDB", return_value=db), \
+    with patch("hermes_agent.hermes_state.SessionDB", return_value=db), \
          patch("agent.insights.InsightsEngine", side_effect=RuntimeError("boom")):
         cmd_insights(SimpleNamespace(days=30, source=None))
 

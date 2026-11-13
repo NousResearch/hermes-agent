@@ -77,7 +77,7 @@ def test_a_claimed_trial_carries_inference_outside_the_desktop_too(portal, monke
 
 
 def _chat(db_path, model: str) -> None:
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path)
     db.create_session("s1", "desktop", model=model)

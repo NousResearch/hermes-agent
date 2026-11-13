@@ -382,7 +382,7 @@ def _unreadable_ownership(_db, _sid):
     ],
 )
 def test_ownership_exit_records_the_session_the_attempt_ran_in(caplog, tmp_path, ownership_patch, expected):
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     agent = _Agent(_compressor())
     agent._session_db = SessionDB(db_path=tmp_path / "state.db")
@@ -404,7 +404,7 @@ def test_session_backed_commit_keeps_the_attempts_own_record(caplog, tmp_path, m
     """The commit's memory flush ends the engine session, and that resets the compressor's telemetry
     before the record is emitted (#118580). The record must still describe this attempt and name the
     session it started in, in both commit modes."""
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from run_agent import AIAgent
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
@@ -434,7 +434,7 @@ def test_committed_effect_includes_the_retained_partial_compression_tail(
     caplog, tmp_path, monkeypatch, in_place,
 ):
     from agent.model_metadata import estimate_messages_tokens_rough
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
     from run_agent import AIAgent
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")

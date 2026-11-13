@@ -20,7 +20,7 @@ import pytest
 
 from agent import side_question_lease
 from agent.side_question_lease import redeem_side_question
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from run_agent import AIAgent
 
 SIDE_PROMPT = "Suggest the user's next prompt in one line."

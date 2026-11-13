@@ -4,9 +4,9 @@ Usage: python -I -B scripts/tool_store_pins.py REPO STORE
 (on success prints the pinned Python major.minor)
 
 scripts/run_tests.sh asks this before sharing the account's tool store with a
-faked HOME. facts.json selects ONE entry per package, not one per version:
-provisioning a checkout with other pins re-points the account's own runtime at
-them and pulls the selection from under a concurrent run on the store's pins.
+faked HOME. facts.json selects ONE entry per package and keeps other checkouts'
+pins only as history: provisioning a checkout with other pins downloads into
+and re-records the account's live store under a concurrent run on its pins.
 So share only when every tool `pm install` would provision here (cmd_install's
 roots, developer tools, defaults and the venv's deps) passes PM's own installed-at-the-pin lookup
 without an exec-bit heal, and records the env this checkout's package code

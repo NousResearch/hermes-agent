@@ -4,27 +4,7 @@ name: flower-shop
 repo: https://github.com/k-reeeee/hermes-flower-shop
 sha: "2ca5f77a566c62b30146efccec5ebb82c44a0c52"
 title: Flower Shop
-description: >-
-  An AI business operating workspace inside Hermes Desktop for a small flower
-  shop: a business manager plus sales, inventory, production, finance, and
-  logistics agents work from one SQLite record of orders, stock, production,
-  deliveries, and money. Agents propose, the owner approves - order confirmation,
-  stock receipts, adjustments, wastage, payments, and expenses create a pending
-  approval decided by the owner from an inline chat card or the Approvals inbox (an
-  opt-in chat relay, off by default, still confirmed through Hermes' approval prompt). Includes Overview, Orders, Inventory and recipes, Production board,
-  a read-only low-poly 3D Shop Floor fed by live production state, Delivery,
-  Finance estimates labelled as estimates, an AI Team page, and a guided setup
-  with removable demo data. The repo also ships an optional matching Hermes
-  skin (a light and a dark variant) that the setup offers but never applies on
-  its own.
-  Not flower-specific: the same shape - one record of what was ordered,
-  stocked, made, shipped and paid, agents that propose, an owner who
-  approves - fits any small physical business. Disclosure - all business data stays in one local
-  SQLite database under the Hermes plugin-data directory; the plugin makes no
-  network calls, stores no credentials, runs no shell commands, and sends no
-  telemetry. Not an accounting ledger: finance figures are operational estimates
-  plus recorded payments and expenses. Single shop, single user; no WhatsApp
-  parsing, no bouquet canvas, no multi-branch support.
+description: "An AI business operating workspace inside Hermes Desktop for a small flower shop: a business manager plus sales, inventory, production, finance, and logistics agents work from one SQLite record of orders, stock, production, deliveries, and money. Agents propose, the owner approves - order confirmation, stock receipts, adjustments, wastage, payments, and expenses create a pending approval decided by the owner from an inline chat card or the Approvals inbox (an opt-in chat relay, off by default, still confirmed through Hermes' approval prompt). Includes Overview, Orders, Inventory and recipes, Production board, a read-only low-poly 3D Shop Floor fed by live production state, Delivery, Finance estimates labelled as estimates, an AI Team page, and a guided setup with removable demo data. The repo also ships an optional matching Hermes skin (a light and a dark variant) that the setup offers but never applies on its own. Not flower-specific: the same shape - one record of what was ordered, stocked, made, shipped and paid, agents that propose, an owner who approves - fits any small physical business. Disclosure - all business data stays in one local SQLite database under the Hermes plugin-data directory; the plugin makes no network calls, stores no credentials, runs no shell commands, and sends no telemetry. Not an accounting ledger: finance figures are operational estimates plus recorded payments and expenses. Single shop, single user; no WhatsApp parsing, no bouquet canvas, no multi-branch support. Disclosure — all business data stays in one local SQLite database under the Hermes plugin-data directory; the plugin makes no network calls, stores no credentials, runs no shell commands and sends no telemetry; choosing its theme copies two bundled skin files into the Hermes skins directory and reads the active skin setting, and the skin switches only when the owner clicks; assistant profiles are created only when the owner clicks Create on the Desktop team step; design references must be image files in the plugin's uploads folder, which the local dashboard serves; approving from chat is off by default and, when turned on, every decision still goes through Hermes' approval prompt. Finance figures are operational estimates plus recorded payments and expenses, not an accounting ledger; single shop, single user."
 maintainer: k-reeeee
 tier: community
 category: desktop

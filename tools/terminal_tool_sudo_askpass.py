@@ -220,8 +220,10 @@ def has_background_sudo(command: str | None) -> bool:
     """True when a counted sudo may still ask after the command's shell has exited.
 
     That is a counted sudo followed by a background ``&`` in the same list, or one inside a
-    group, subshell or function body with a background ``&`` anywhere after it. It errs toward
-    True: a miss would stop serving a backgrounded sudo that the stdin form still feeds.
+    group, subshell or function body with a background ``&`` anywhere after it. A command with
+    a ``case`` or ``coproc`` word counts too, because the list tracking below does not model
+    them. It errs toward True: a miss would stop serving a backgrounded sudo that the stdin
+    form still feeds.
     """
     from tools.terminal_tool_sudo import _rewrite_real_sudo_invocations, _scan_shell
 
@@ -230,10 +232,13 @@ def has_background_sudo(command: str | None) -> bool:
     marked, count = _rewrite_real_sudo_invocations(command, askpass=True)
     if not count:
         return False
+    events = list(_scan_shell(marked))
+    if any(kind == "word" and marked[start:end] in ("case", "coproc") for kind, start, end, _ in events):
+        return True
     prefix_word = SUDO_ASKPASS_PREFIX.strip()
     depth = 0
     in_list = in_group = False
-    for kind, start, end, _ in _scan_shell(marked):
+    for kind, start, end, _ in events:
         text = marked[start:end]
         if kind == "op":
             if text == "(":

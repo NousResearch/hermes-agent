@@ -642,6 +642,21 @@ def test_live_backgrounded_sudo_is_served_after_the_shell_exits(tmp_path):
     wait_until(lambda: not list(tmp_path.glob("hermes-sudo.*")), timeout=8, what="askpass dir removed")
 
 
+@_needs_posix_shell
+@pytest.mark.parametrize("body", [
+    "case x in x) sleep 3; {sudo} id -u > {out} 2>&1;; esac &",
+    "coproc {{ sleep 3; {sudo} id -u > {out} 2>&1; }}",
+])
+def test_live_backgrounded_sudo_in_case_or_coproc_is_served_after_the_shell_exits(live_env, body):
+    env, sudo, temp_dir = live_env
+    out = temp_dir.parent / "out"
+    rc, output = _run(env, body.format(sudo=sudo, out=out))
+    assert rc == 0, output
+    wait_until(lambda: out.exists() and out.read_text().strip() == str(os.getuid()), timeout=10,
+               what="backgrounded sudo authenticated")
+    wait_until(lambda: not list(temp_dir.glob("hermes-sudo.*")), timeout=8, what="askpass dir removed")
+
+
 @pytest.mark.parametrize(("command", "expected"), [
     ("sudo a", False),
     ("sudo a && sudo b", False),
@@ -659,6 +674,8 @@ def test_live_backgrounded_sudo_is_served_after_the_shell_exits(tmp_path):
     ("f() { :; sudo a; }; f &", True),
     ("( sudo a; sleep 1 & )", True),
     ("echo hi &", False),
+    ("case x in x) sleep 3; sudo a;; esac &", True),
+    ("coproc { sleep 3; sudo a; }", True),
 ])
 def test_has_background_sudo_table(command, expected):
     assert askpass.has_background_sudo(command) is expected

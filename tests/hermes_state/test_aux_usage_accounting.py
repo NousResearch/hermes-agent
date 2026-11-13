@@ -309,3 +309,47 @@ class TestInsightsAuxTotals:
         models = {m["model"] for m in report["models"]}
         assert {"main-model", "glm-5"} <= models
 
+
+
+class TestAuxCostStatus:
+    """Aux rows carry the pricing verdict (status/source), not just the amount."""
+
+    @staticmethod
+    def _record(db, estimate):
+        from unittest.mock import patch
+
+        from agent.aux_accounting import (
+            record_aux_usage,
+            reset_accounting_context,
+            set_accounting_context,
+        )
+
+        db.create_session("s1", source="cli")
+        token = set_accounting_context(db, "s1")
+        try:
+            with patch("agent.usage_pricing.estimate_usage_cost", estimate):
+                record_aux_usage(_mk_response(), "title_generation", provider="opencode-zen")
+        finally:
+            reset_accounting_context(token)
+        return _usage_rows(db, "s1")[0]
+
+    def test_estimated_status_and_source_are_recorded(self, db):
+        from decimal import Decimal
+
+        from agent.usage_pricing import CostResult
+
+        row = self._record(db, lambda *a, **k: CostResult(
+            amount_usd=Decimal("0.001249"), status="estimated",
+            source="provider_models_api", label="~$0.0012"))
+        assert row["estimated_cost_usd"] == pytest.approx(0.001249)
+        assert row["cost_status"] == "estimated"
+        assert row["cost_source"] == "provider_models_api"
+
+    def test_failed_estimation_leaves_status_and_source_null(self, db):
+        def _boom(*a, **k):
+            raise RuntimeError("pricing lookup failed")
+
+        row = self._record(db, _boom)
+        assert row["estimated_cost_usd"] == 0.0
+        assert row["cost_status"] is None
+        assert row["cost_source"] is None

@@ -1,0 +1,32 @@
+name: bae
+title: bae
+repo: https://github.com/jarrett-del/bae
+sha: b06db8b8ae50cde848b7ddee941c5221e663429b
+description: "Your eBay sidekick for Hermes Agent: drop in item photos and quick notes to draft accurate listings, strip generic AI filler from existing Magical Listings, check active comps alongside your own past sales, and preview real net profit after Final Value Fees, Promoted Listings ad rates, and July 2026 USPS 139 dimensional weight before anything goes live. Includes a 4-station Seller Desk (/bae) and 350px Side Pane in Desktop and Webapp, built-in Casual C2C and Pro Store sample tours, Seller Hub Draft CRLF CSV export, inkFrog and myFitment CSV migration, category playbooks, Best Offer floor triage, bin-sorted packing lists, and zero-token scheduled checks. Every live eBay write waits for your explicit approval token. Disclosure — makes zero network calls in sample-tour or offline CSV mode; when connected via hermes auth add hermes-ebay-ops:ebay, calls api.ebay.com, apiz.ebay.com, and apim.ebay.com exclusively through Hermes's OAuth broker; reads local photo paths passed to ebay_stage_listing and CSV files passed to ebay_import_migration_csv; writes only inside its own Hermes plugin data folder (SQLite ledgers and exported draft CSVs); runs no shell commands or background daemons; typing in the Seller Desk dock submits your prompt to a visible Hermes conversation."
+maintainer: jarrett-del
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+platforms: [linux, macos]
+image: https://raw.githubusercontent.com/jarrett-del/bae/b06db8b8ae50cde848b7ddee941c5221e663429b/docs/images/banner.jpg
+screenshots:
+  - https://raw.githubusercontent.com/jarrett-del/bae/b06db8b8ae50cde848b7ddee941c5221e663429b/docs/images/listings-catalog.png
+  - https://raw.githubusercontent.com/jarrett-del/bae/b06db8b8ae50cde848b7ddee941c5221e663429b/docs/images/morning-ops.png
+  - https://raw.githubusercontent.com/jarrett-del/bae/b06db8b8ae50cde848b7ddee941c5221e663429b/docs/images/listing-bench.png
+  - https://raw.githubusercontent.com/jarrett-del/bae/b06db8b8ae50cde848b7ddee941c5221e663429b/docs/images/setup-and-logs.png
+  - https://raw.githubusercontent.com/jarrett-del/bae/b06db8b8ae50cde848b7ddee941c5221e663429b/docs/images/side-pane.png
+capabilities:
+  provides_tools:
+    - ebay_stage_listing
+    - ebay_audit_active_listing
+    - ebay_check_comps
+    - ebay_confirm_action
+    - ebay_export_draft_csv
+    - ebay_triage_offers
+    - ebay_lookup_bin
+    - ebay_import_migration_csv
+    - ebay_diagnose_stale
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

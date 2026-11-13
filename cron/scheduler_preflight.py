@@ -152,6 +152,14 @@ def _primary_profile_routes_for_current_home() -> list:
     home never holds the platform credentials itself (giving it a token of its own is a
     ``duplicate_credential`` fatal).
     """
+    return _primary_route_tables_for_current_home()[0]
+
+
+def _primary_route_tables_for_current_home():
+    """``(this profile's routes, the shared bot's dispatch routes for every profile)`` from ONE
+    read of the primary home's routes, so a send is never judged against a satellite table and a
+    dispatch table from different reads. ``([], [])`` if this IS the primary home; ``([], None)``
+    if the read fails — no route then lends the shared bot (fail closed)."""
     try:
         from hermes_constants import get_default_hermes_root, get_hermes_home
         primary_home = get_default_hermes_root()
@@ -160,16 +168,15 @@ def _primary_profile_routes_for_current_home() -> list:
             primary_home.expanduser().resolve(strict=False)
             == current_home.expanduser().resolve(strict=False)
         ):
-            return []  # this IS the primary home — nothing to consult
+            return [], []  # this IS the primary home — nothing to consult
 
         from hermes_cli.profiles import profile_matches_home
-        return [
-            route for route in _primary_routes(primary_home)
-            if route.enabled and profile_matches_home(route.profile)
-        ]
+        routes = _primary_routes(primary_home)
+        return ([route for route in routes if route.enabled and profile_matches_home(route.profile)],
+                [route for route in routes if route.enabled and route.bot_profile is None])
     except Exception:
         logger.debug("primary-gateway profile-route lookup unavailable", exc_info=True)
-        return []
+        return [], None
 
 
 def _primary_routes(primary_home) -> list:
@@ -199,21 +206,6 @@ def _primary_routes(primary_home) -> list:
     return parse_profile_routes(routes_raw)
 
 
-def _primary_dispatch_routes_for_current_home() -> list:
-    """The routes the primary's shared bot dispatches by (enabled, no ``bot_profile``), for every
-    profile; ``[]`` if this IS the primary home or the lookup fails."""
-    try:
-        from hermes_constants import get_default_hermes_root, get_hermes_home
-        primary_home = get_default_hermes_root()
-        if (primary_home.expanduser().resolve(strict=False)
-                == _sched.Path(get_hermes_home()).expanduser().resolve(strict=False)):
-            return []
-        return [r for r in _primary_routes(primary_home) if r.enabled and r.bot_profile is None]
-    except Exception:
-        logger.debug("primary-gateway dispatch-route lookup unavailable", exc_info=True)
-        return []
-
-
 def _delivery_platform_routed_from_primary_gateway(platform_name: str) -> bool:
     """True when the primary gateway routes this platform to the profile being served.
 
@@ -236,8 +228,10 @@ class SharedRouteAdapters:
     resolves the PRIMARY adapter iff the inbound route matcher (``ProfileRoute.matches``) accepts
     the target; anything else (unmatched target, disabled route, other profile, or target-less
     ``get(platform)``) is a miss — fail closed, never the default bot. ``dispatch_routes`` are the
-    shared bot's routes for every profile (default: the primary home's); a hit also needs the most
-    specific of them matching the target to name the same profile, as dispatch would pick it.
+    shared bot's routes for every profile (default: the primary home's; ``None`` — the read failed —
+    refuses every target); a hit also needs the most specific of them matching the target to name
+    the same profile, as dispatch would pick it. Build cron's view with
+    ``shared_route_adapters_for_current_home`` so both tables come from one read.
 
     See #101113.
     """
@@ -245,14 +239,15 @@ class SharedRouteAdapters:
     def __init__(self, primary_adapters, routes, dispatch_routes=None) -> None:
         self._primary = dict(primary_adapters or {})
         self._routes = list(routes or [])
-        self._dispatch_routes = list(
-            _primary_dispatch_routes_for_current_home() if dispatch_routes is None else dispatch_routes)
+        if dispatch_routes is None:
+            dispatch_routes = _primary_route_tables_for_current_home()[1]
+        self._dispatch_routes = None if dispatch_routes is None else list(dispatch_routes)
 
     def __bool__(self) -> bool:
         return bool(self._primary) and bool(self._routes)
 
     def get(self, platform, target=None, default=None):
-        if not target:
+        if not target or self._dispatch_routes is None:
             return default
         adapter = self._primary.get(platform)
         if adapter is None:
@@ -302,6 +297,13 @@ class SharedRouteAdapters:
             matched = {**matched, "user_id": matched["chat_id"]}
         return next((r for r in candidates
                      if r.matches(str(route.platform), **{**matched, "guild_id": r.guild_id})), route)
+
+
+def shared_route_adapters_for_current_home(primary_adapters) -> SharedRouteAdapters:
+    """Cron's view of the primary's bots for the profile being served, with its own routes and the
+    dispatch routes taken from one read; falsy when no route maps here (or the read failed)."""
+    routes, dispatch_routes = _primary_route_tables_for_current_home()
+    return SharedRouteAdapters(primary_adapters, routes, dispatch_routes=dispatch_routes)
 
 
 def has_credential_platform(adapters, owned=None) -> bool:

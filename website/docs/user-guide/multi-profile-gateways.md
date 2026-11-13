@@ -892,6 +892,14 @@ channel id is that thread. A thread other than the turn's own qualifies only if
 the most specific route matching it names the profile, the same route inbound
 dispatch picks. A chat route therefore does not cover a topic or thread that a
 more specific route pins to another profile. This holds for cron delivery too.
+One known gap: a Discord thread addressed by its own channel id is matched on
+that id alone, without its parent channel or guild, so a `chat_id` route on the
+thread's id qualifies it even when dispatch would hand the thread to another
+profile through its parent channel's route (a `guild_id + chat_id` route, or a
+`chat_id` route listed earlier at the same specificity). Don't give a profile a route on a thread whose parent channel is
+routed to another profile.
+If the primary's route table cannot be read, cron delivery through the shared
+bot is refused for every target until it can.
 A Google Chat send without a thread replies under the space's last inbound
 thread, so once a route pins any thread of a space to another profile, a
 routed profile's thread-less sends to that space are refused; name the thread

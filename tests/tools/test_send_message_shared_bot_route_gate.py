@@ -335,6 +335,76 @@ def test_cron_shared_view_does_not_reach_a_thread_pinned_to_another_profile(tmp_
     assert shared.get(platform, {"chat_id": chat}) is primary
 
 
+def test_cron_shared_view_refuses_every_target_when_the_route_read_fails(tmp_path, monkeypatch):
+    """A route-read error must not look like "no other profile has routes": cron's view then lends
+    the shared bot for nothing, not by the satellite's routes alone (which would admit a topic a
+    more specific route pins to another profile)."""
+    import hermes_yaml as yaml
+    from cron import scheduler_preflight
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    chat, own, pinned = _CHAT_SCOPED["telegram"]
+    root = tmp_path / "root"
+    (root / "profiles" / "sec").mkdir(parents=True)
+    (root / "config.yaml").write_text(yaml.safe_dump({"gateway": {
+        "multiplex_profiles": True, "profile_routes": _sibling_pinned_routes("telegram", chat, pinned)}}),
+        encoding="utf-8")
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    real_read, reads = scheduler_preflight._primary_routes, []
+
+    def read_once_then_fail(home):
+        reads.append(home)
+        if len(reads) > 1:
+            raise OSError("config.yaml rewritten mid-read")
+        return real_read(home)
+
+    monkeypatch.setattr(scheduler_preflight, "_primary_routes", read_once_then_fail)
+    primary = object()
+    token = set_hermes_home_override(str(root / "profiles" / "sec"))
+    try:
+        sec_routes = scheduler_preflight._primary_profile_routes_for_current_home()
+        assert [r.profile for r in sec_routes] == ["sec"]
+        # the satellite's routes came from a read that succeeded; the default dispatch read raises
+        shared = scheduler_preflight.SharedRouteAdapters({Platform.TELEGRAM: primary}, sec_routes)
+    finally:
+        reset_hermes_home_override(token)
+    for thread in (pinned, own, None):
+        assert shared.get(Platform.TELEGRAM, {"chat_id": chat, "thread_id": thread}) is None
+
+
+def test_cron_shared_view_is_built_from_one_route_read(tmp_path, monkeypatch):
+    """``shared_route_adapters_for_current_home`` reads the routes once: a failing read refuses
+    every target, a good one keeps the satellite's chat and refuses the topic pinned elsewhere."""
+    import hermes_yaml as yaml
+    from cron import scheduler_preflight
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    chat, own, pinned = _CHAT_SCOPED["telegram"]
+    root = tmp_path / "root"
+    (root / "profiles" / "sec").mkdir(parents=True)
+    (root / "config.yaml").write_text(yaml.safe_dump({"gateway": {
+        "multiplex_profiles": True, "profile_routes": _sibling_pinned_routes("telegram", chat, pinned)}}),
+        encoding="utf-8")
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    real_read, reads = scheduler_preflight._primary_routes, []
+    monkeypatch.setattr(scheduler_preflight, "_primary_routes",
+                        lambda home: reads.append(home) or real_read(home))
+    primary = object()
+    token = set_hermes_home_override(str(root / "profiles" / "sec"))
+    try:
+        good = scheduler_preflight.shared_route_adapters_for_current_home({Platform.TELEGRAM: primary})
+        assert len(reads) == 1
+        monkeypatch.setattr(scheduler_preflight, "_primary_routes",
+                            lambda home: (_ for _ in ()).throw(OSError("unreadable")))
+        failed = scheduler_preflight.shared_route_adapters_for_current_home({Platform.TELEGRAM: primary})
+    finally:
+        reset_hermes_home_override(token)
+    assert good.get(Platform.TELEGRAM, {"chat_id": chat, "thread_id": own}) is primary
+    assert good.get(Platform.TELEGRAM, {"chat_id": chat, "thread_id": pinned}) is None
+    assert not failed
+    assert failed.get(Platform.TELEGRAM, {"chat_id": chat, "thread_id": own}) is None
+
+
 @pytest.mark.parametrize("in_turn", [True, False], ids=["in-turn", "no-origin"])
 def test_google_chat_space_top_level_refused_when_another_profile_owns_a_thread(satellite, in_turn):
     """Outside cron, a thread-less Google Chat send replies under the space's last inbound thread

@@ -21,6 +21,16 @@ export const favoriteModelKey = modelVisibilityKey
  */
 export const $favoriteModels = atom<string[]>(storedStringArray(STORAGE_KEY))
 
+// Chat windows share localStorage, but each renderer owns its own atom.
+// Read the latest value without persisting it again (no cross-window echo).
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', event => {
+    if (event.storageArea === window.localStorage && (event.key === STORAGE_KEY || event.key === null)) {
+      $favoriteModels.set(storedStringArray(STORAGE_KEY))
+    }
+  })
+}
+
 /** Whether a provider/model pair is currently a favorite. */
 export function isModelFavorite(provider: string, model: string): boolean {
   return $favoriteModels.get().includes(favoriteModelKey(provider, model))

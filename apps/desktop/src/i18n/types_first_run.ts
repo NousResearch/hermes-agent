@@ -42,6 +42,16 @@ export interface FirstRunCopy {
     setUp: string
     notNow: string
   }
+  /** The compact checklist shown once when first-run setup ends: three places to go next.
+   *  The command-palette row's key hint (⌘K / Ctrl K) is rendered by the component. */
+  nextMoves: {
+    title: string
+    subtitle: string
+    palette: string
+    bots: string
+    plugins: string
+    done: string
+  }
   /** The first-run intro typed into the empty setup chat, two lines. The backend's scripted
    *  greeting (_GREETINGS in agent/onboarding_text.py) is the two joined: keep them equal. */
   intro: {

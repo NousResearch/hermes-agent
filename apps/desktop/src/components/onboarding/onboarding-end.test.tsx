@@ -3,10 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesConnection } from '@/global'
 import { writeKey } from '@/lib/storage'
+import { $commandPaletteOpen } from '@/store/command-palette'
 import { $localModelOfferPending, LOCAL_MODEL_PENDING_KEY } from '@/store/local-model-offer'
 import { $localSetupEligibility } from '@/store/local-setup-offer'
 import { markOnboardingDecided } from '@/store/onboarding-presence'
 import { $onboardingSettleFrom } from '@/store/onboarding-run'
+import { $routeRequest } from '@/store/recovery-requests'
 import { $connection } from '@/store/session'
 import type { LocalCatalogModel } from '@/types/hermes'
 
@@ -59,6 +61,8 @@ afterEach(() => {
   vi.restoreAllMocks()
   window.localStorage.clear()
   $onboardingSettleFrom.set(null)
+  $routeRequest.set(null)
+  $commandPaletteOpen.set(false)
   $connection.set(null)
 })
 
@@ -67,6 +71,8 @@ describe('OnboardingEnd', () => {
     render(<OnboardingEnd />)
 
     act(() => $onboardingSettleFrom.set(Date.now()))
+    // The moves checklist is an open dialog, so the app is not quiet until it is dismissed.
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }))
     await act(() => vi.advanceTimersByTimeAsync(4 * 60_000))
     expect(screen.queryByText(TITLE)).toBeNull()
 
@@ -105,5 +111,43 @@ describe('OnboardingEnd', () => {
     act(() => $connection.set({ ...LOCAL, mode: 'remote' }))
     await act(() => vi.advanceTimersByTimeAsync(0))
     expect($localModelOfferPending.get()).toBe(false)
+  })
+
+  it('shows the next-3-moves checklist when the run ends and each row navigates', () => {
+    render(<OnboardingEnd />)
+
+    act(() => $onboardingSettleFrom.set(Date.now()))
+
+    expect(screen.getByText('Your next 3 moves')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /Meet your Bots/ }))
+    expect($routeRequest.get()?.path).toBe('/agents')
+  })
+
+  it('routes the plugins row of the moves checklist to capabilities', () => {
+    render(<OnboardingEnd />)
+    act(() => $onboardingSettleFrom.set(Date.now()))
+
+    fireEvent.click(screen.getByRole('button', { name: /Browse plugins/ }))
+    expect($routeRequest.get()?.path).toBe('/capabilities')
+  })
+
+  it('opens the command palette from the moves checklist', () => {
+    render(<OnboardingEnd />)
+    act(() => $onboardingSettleFrom.set(Date.now()))
+
+    fireEvent.click(screen.getByRole('button', { name: /Summon the command palette/ }))
+    expect($commandPaletteOpen.get()).toBe(true)
+    expect(screen.queryByText('Your next 3 moves')).toBeNull()
+  })
+
+  it('shows the moves checklist only once per install', () => {
+    render(<OnboardingEnd />)
+    act(() => $onboardingSettleFrom.set(Date.now()))
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }))
+
+    act(() => $onboardingSettleFrom.set(null))
+    act(() => $onboardingSettleFrom.set(Date.now()))
+    expect(screen.queryByText('Your next 3 moves')).toBeNull()
   })
 })

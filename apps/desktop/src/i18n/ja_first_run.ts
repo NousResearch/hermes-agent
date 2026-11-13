@@ -37,6 +37,14 @@ export const jaFirstRun: FirstRunCopy = {
     setUp: 'セットアップする',
     notNow: '今はしない'
   },
+  nextMoves: {
+    title: '次にやること 3 つ',
+    subtitle: 'どれか選んでください — ここから直接開けます。',
+    palette: 'コマンドパレットを開く',
+    bots: 'Bots に顔合わせする',
+    plugins: 'プラグインを見る（Kanban はここ）',
+    done: '完了'
+  },
   intro: {
     greeting: 'こんにちは、Hermes です。',
     plan: 'まずはあなたに合わせて設定しましょう。そのあと、何かすごいものを作りましょう。'

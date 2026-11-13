@@ -170,13 +170,17 @@ _BILLING_ERROR_CODES = frozenset({
     "insufficient_credits_for_paid_model",
 })
 
+# DashScope's per-minute token (TPM) throttle, coded ``Throttling.AllocationQuota`` or, on its
+# OpenAI-compatible wire, ``insufficient_quota``: https://www.alibabacloud.com/help/en/model-studio/error-code#token-limit
+_ALLOCATED_QUOTA_THROTTLE = "allocated quota exceeded"
+
 # Transient rate limiting. Bedrock "Throttling error: Too many tokens" also
 # contains an overflow phrase; rate limit is matched first so throttle wins.
 _RATE_LIMIT_PATTERNS = (
     "rate limit", "rate_limit", "too many requests", "throttled", "requests per minute",
     "tokens per minute", "requests per day", "try again in", "please retry after",
     *_RESOURCE_EXHAUSTED_PATTERNS, "rate increased too quickly", "throttlingexception", "too many concurrent requests",
-    "servicequotaexceededexception", "throttling",
+    "servicequotaexceededexception", "throttling", _ALLOCATED_QUOTA_THROTTLE,
 )
 
 # Server busy, credential fine: back off on the same key, never rotate. Z.AI/
@@ -1246,7 +1250,8 @@ def _status_429(c: _Ctx) -> Verdict:
     # A structured billing code is decisive: LiteLLM stamps
     # ``terminal_quota_exhausted`` (a hard cap, not throttling) on 429s, and
     # this handler always returns, so _by_error_code never sees the code.
-    if c.code in _BILLING_ERROR_CODES:
+    # DashScope is the exception: its per-minute token throttle also carries ``insufficient_quota`` (#151622).
+    if c.code in _BILLING_ERROR_CODES and _ALLOCATED_QUOTA_THROTTLE not in c.msg:
         return _V_BILLING
     # Z.AI/Zhipu reuse 429 for server-wide overload: back off on the same
     # key instead of burning the pool (#14038).

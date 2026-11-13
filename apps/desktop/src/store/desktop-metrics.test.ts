@@ -5,6 +5,7 @@ import { $workspaceMode } from '@/components/pane-shell/workspace-scope'
 
 import {
   bindDesktopMetrics,
+  captureDesktopMetricsGate,
   closeOnboardingStep,
   completeFlow,
   configPatchKeys,
@@ -26,7 +27,6 @@ import {
   resetDesktopMetricsForTests,
   routeArea,
   setDesktopBotCount,
-  setDesktopMetricsGate,
   settingsArea,
   slowFrameBucket,
   tickDesktopMetrics,
@@ -34,6 +34,7 @@ import {
   trackDesktopVisibleTime,
   trackFlow
 } from './desktop-metrics'
+import { immediateMetricsLocks, setMetricsGate } from './desktop-metrics-test-locks'
 
 type Call = [string, Record<string, unknown>]
 
@@ -53,10 +54,10 @@ function requester(result: Record<string, unknown> = { ok: true }) {
   return { calls, request }
 }
 
-// One record per (connection, profile); the tests' single profile owns the only one.
+// The aggregate record, excluding the independent frame journals and revocation token.
 const stored = () => {
   const key = Array.from({ length: window.localStorage.length }, (_, i) => window.localStorage.key(i) ?? '').find(k =>
-    k.startsWith(`${DESKTOP_METRICS_STATE_KEY}:`)
+    k.startsWith(`${DESKTOP_METRICS_STATE_KEY}:`) && !k.slice(DESKTOP_METRICS_STATE_KEY.length + 1).includes(':')
   )
 
   return key ? window.localStorage.getItem(key) : null
@@ -77,6 +78,7 @@ let bridge: {
 }
 
 beforeEach(() => {
+  immediateMetricsLocks()
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(DAY1)
   window.localStorage.clear()
@@ -92,6 +94,7 @@ beforeEach(() => {
 
 afterEach(() => {
   resetDesktopMetricsForTests()
+  vi.unstubAllGlobals()
   vi.useRealTimers()
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
 })
@@ -126,7 +129,7 @@ describe('consent gate', () => {
   it('collection off: nothing is persisted and nothing is sent', async () => {
     const { calls, request } = requester()
 
-    setDesktopMetricsGate('off')
+    await setMetricsGate(captureDesktopMetricsGate, 'off')
     bindDesktopMetrics(request)
     exerciseEverything()
     vi.setSystemTime(DAY2)
@@ -151,18 +154,18 @@ describe('consent gate', () => {
   })
 
   it('turning collection off purges the local record and drops anything queued', async () => {
-    setDesktopMetricsGate('on')
+    await setMetricsGate(captureDesktopMetricsGate, 'on')
     recordFeatureUse('projects') // queued: no gateway bound yet
     recordAction('session.new', 'shortcut')
     expect(stored()).not.toBeNull()
 
-    setDesktopMetricsGate('off')
+    await setMetricsGate(captureDesktopMetricsGate, 'off')
     expect(stored()).toBeNull()
 
     const { calls, request } = requester()
 
     bindDesktopMetrics(request)
-    setDesktopMetricsGate('on')
+    await setMetricsGate(captureDesktopMetricsGate, 'on')
     await flush()
 
     expect(calls).toEqual([])
@@ -173,7 +176,7 @@ describe('feature use', () => {
   it('counts each area once per UTC day', async () => {
     const { calls, request } = requester()
 
-    setDesktopMetricsGate('on')
+    await setMetricsGate(captureDesktopMetricsGate, 'on')
     bindDesktopMetrics(request)
     recordFeatureUse('terminal_pane')
     recordFeatureUse('terminal_pane')
@@ -204,7 +207,7 @@ describe('friction', () => {
   it('buckets slow frames and caps them per day', async () => {
     const { calls, request } = requester()
 
-    setDesktopMetricsGate('on')
+    await setMetricsGate(captureDesktopMetricsGate, 'on')
     bindDesktopMetrics(request)
 
     expect(slowFrameBucket(80)).toBeNull()
@@ -230,7 +233,7 @@ describe('friction', () => {
     vi.useFakeTimers({ now: DAY1 })
     const { calls, request } = requester()
 
-    setDesktopMetricsGate('on')
+    await setMetricsGate(captureDesktopMetricsGate, 'on')
     bindDesktopMetrics(request)
 
     noteBackendDrop(null)
@@ -249,7 +252,7 @@ describe('friction', () => {
     bridge.takeRendererCrashes.mockResolvedValueOnce({ reasons: ['oom', 'crash'] })
     const { calls, request } = requester()
 
-    setDesktopMetricsGate('on')
+    await setMetricsGate(captureDesktopMetricsGate, 'on')
     bindDesktopMetrics(request)
     await flush()
     await flush()
@@ -264,7 +267,7 @@ describe('onboarding', () => {
   it('sends each step event once per install and calls a step left open by an earlier launch abandoned', async () => {
     const { calls, request } = requester()
 
-    setDesktopMetricsGate('on')
+    await setMetricsGate(captureDesktopMetricsGate, 'on')
     bindDesktopMetrics(request)
     recordOnboarding('provider_setup', 'reached')
     recordOnboarding('provider_setup', 'reached')
@@ -278,7 +281,7 @@ describe('onboarding', () => {
     const next = await import('./desktop-metrics')
     const second = requester()
 
-    next.setDesktopMetricsGate('on')
+    await setMetricsGate(next.captureDesktopMetricsGate, 'on')
     next.bindDesktopMetrics(second.request)
     await flush()
 
@@ -291,7 +294,7 @@ describe('daily report: action use + mode use', () => {
   it('aggregates presses and mode time locally and sends one report per finished day', async () => {
     const { calls, request } = requester()
 
-    setDesktopMetricsGate('on')
+    await setMetricsGate(captureDesktopMetricsGate, 'on')
     bindDesktopMetrics(request)
 
     recordAction('composer.send', 'click', DAY1)
@@ -344,7 +347,7 @@ describe('daily report: action use + mode use', () => {
   it('keeps a finished day the backend did not record, for a retry', async () => {
     const { calls, request } = requester({ recorded: false })
 
-    setDesktopMetricsGate('on')
+    await setMetricsGate(captureDesktopMetricsGate, 'on')
     bindDesktopMetrics(request)
     recordAction('composer.send', 'shortcut')
     vi.setSystemTime(DAY2)
@@ -362,7 +365,7 @@ describe('long frames', () => {
   it('counts every long frame per bucket, uncapped, and reports the day once with its visible time', async () => {
     const { calls, request } = requester()
 
-    setDesktopMetricsGate('on')
+    await setMetricsGate(captureDesktopMetricsGate, 'on')
     bindDesktopMetrics(request)
     recordLongFrames(Array.from({ length: 300 }, () => 120))
     recordLongFrames([40, 70, 300, 6000])
@@ -391,7 +394,9 @@ describe('long frames', () => {
       { bucket: 'gte_5s', count: 1 }
     ])
     expect(daily[0]![1].visible_ms).toBe(90 * 60_000)
-    expect(JSON.parse(stored()!).today.frames).toEqual({})
+    tickDesktopMetrics()
+    await flush()
+    expect(calls.filter(([method]) => method === 'shared_metrics.desktop_long_frames')).toHaveLength(1)
   })
 
   it('an older backend without the histogram method still gets the daily report, and the day clears', async () => {
@@ -407,7 +412,7 @@ describe('long frames', () => {
       return { recorded: true } as never
     })
 
-    setDesktopMetricsGate('on')
+    await setMetricsGate(captureDesktopMetricsGate, 'on')
     bindDesktopMetrics(request)
     recordAction('composer.send', 'click')
     recordLongFrames([120])
@@ -435,7 +440,7 @@ describe('long frames', () => {
       return { recorded: method !== 'shared_metrics.desktop_long_frames' || ++frames > 1 } as never
     })
 
-    setDesktopMetricsGate('on')
+    await setMetricsGate(captureDesktopMetricsGate, 'on')
     bindDesktopMetrics(request)
     recordAction('composer.send', 'click')
     trackDesktopVisibleTime(11 * 60_000)
@@ -458,7 +463,7 @@ describe('long frames', () => {
   it('collection off: no frame is counted, persisted or sent', async () => {
     const { calls, request } = requester()
 
-    setDesktopMetricsGate('off')
+    await setMetricsGate(captureDesktopMetricsGate, 'off')
     bindDesktopMetrics(request)
     recordLongFrames(Array.from({ length: 300 }, () => 120))
     trackDesktopVisibleTime(11 * 60_000)
@@ -477,7 +482,7 @@ describe('dislike signals', () => {
   it('rage click: three clicks on one action inside a second, once per burst', async () => {
     const { calls, request } = requester()
 
-    setDesktopMetricsGate('on')
+    await setMetricsGate(captureDesktopMetricsGate, 'on')
     bindDesktopMetrics(request)
 
     for (const at of [0, 200, 400, 600, 800]) {
@@ -495,7 +500,7 @@ describe('dislike signals', () => {
   it('quick close: an area closed within 5s of opening', async () => {
     const { calls, request } = requester()
 
-    setDesktopMetricsGate('on')
+    await setMetricsGate(captureDesktopMetricsGate, 'on')
     bindDesktopMetrics(request)
     trackArea('terminal_pane', true, DAY1)
     trackArea('terminal_pane', false, DAY1 + 2000)
@@ -511,7 +516,7 @@ describe('dislike signals', () => {
   it('cancelled: a flow closed without completing; a completed one is not', async () => {
     const { calls, request } = requester()
 
-    setDesktopMetricsGate('on')
+    await setMetricsGate(captureDesktopMetricsGate, 'on')
     bindDesktopMetrics(request)
     trackFlow('model_picker', true)
     completeFlow('model_picker')
@@ -526,7 +531,7 @@ describe('dislike signals', () => {
   it('settings: sends only the config keys, never the values; feature toggles only on the off edge', async () => {
     const { calls, request } = requester()
 
-    setDesktopMetricsGate('on')
+    await setMetricsGate(captureDesktopMetricsGate, 'on')
     bindDesktopMetrics(request)
     recordSettingsSaved(
       {
@@ -553,7 +558,7 @@ describe('dislike signals', () => {
   it('caps each signal per day', async () => {
     const { calls, request } = requester()
 
-    setDesktopMetricsGate('on')
+    await setMetricsGate(captureDesktopMetricsGate, 'on')
     bindDesktopMetrics(request)
 
     for (let i = 0; i < 100; i++) {
@@ -571,7 +576,7 @@ describe('per profile, per window', () => {
     const b = requester()
 
     bindDesktopMetrics(a.request, 'local|alpha')
-    setDesktopMetricsGate('on')
+    await setMetricsGate(captureDesktopMetricsGate, 'on')
     recordFeatureUse('terminal_pane')
     recordAction('view.toggleSidebar', 'shortcut')
 
@@ -582,13 +587,13 @@ describe('per profile, per window', () => {
     await flush()
     expect(b.calls).toEqual([])
 
-    setDesktopMetricsGate('on')
+    await setMetricsGate(captureDesktopMetricsGate, 'on')
     recordFeatureUse('terminal_pane')
     await flush()
     expect(b.calls).toEqual([['shared_metrics.desktop_feature_use', { area: 'terminal_pane' }]])
 
     bindDesktopMetrics(a.request, 'local|alpha')
-    setDesktopMetricsGate('on')
+    await setMetricsGate(captureDesktopMetricsGate, 'on')
     await flush()
     expect(a.calls.filter(([m]) => m === 'shared_metrics.desktop_daily').map(([, p]) => p.actions)).toEqual([
       [{ action: 'view.toggleSidebar', count: 1, via: 'shortcut' }]
@@ -599,12 +604,12 @@ describe('per profile, per window', () => {
     const w1 = await import('./desktop-metrics')
 
     w1.bindDesktopMetrics(null, 'local|default')
-    w1.setDesktopMetricsGate('on')
+    await setMetricsGate(w1.captureDesktopMetricsGate, 'on')
     vi.resetModules()
     const w2 = await import('./desktop-metrics')
 
     w2.bindDesktopMetrics(null, 'local|default')
-    w2.setDesktopMetricsGate('on')
+    await setMetricsGate(w2.captureDesktopMetricsGate, 'on')
 
     w1.recordAction('composer.send', 'shortcut')
     w2.recordAction('composer.send', 'shortcut')
@@ -618,7 +623,7 @@ describe('per profile, per window', () => {
   it('never keeps a plugin action id: unknown presses and rage-click targets are `other`', async () => {
     const { calls, request } = requester()
 
-    setDesktopMetricsGate('on')
+    await setMetricsGate(captureDesktopMetricsGate, 'on')
     bindDesktopMetrics(request)
 
     for (const at of [0, 100, 200]) {
@@ -635,7 +640,7 @@ describe('per profile, per window', () => {
     const { calls, request } = requester()
 
     bindDesktopMetrics(request)
-    setDesktopMetricsGate('off', false) // first-run offer not answered yet
+    await setMetricsGate(captureDesktopMetricsGate, 'off', false) // first-run offer not answered yet
     recordOnboarding('guide', 'reached')
     recordOnboarding('guide', 'completed')
     recordOnboarding('provider_oauth', 'reached')
@@ -644,7 +649,7 @@ describe('per profile, per window', () => {
     expect(calls).toEqual([])
     expect(stored()).toBeNull()
 
-    setDesktopMetricsGate('on')
+    await setMetricsGate(captureDesktopMetricsGate, 'on')
     await flush()
     expect(calls.map(([, p]) => `${p.step}:${p.event}`)).toEqual([
       'guide:reached',
@@ -653,14 +658,14 @@ describe('per profile, per window', () => {
     ])
     expect(JSON.parse(stored()!).onboarding.open).toEqual({})
 
-    setDesktopMetricsGate('off')
+    await setMetricsGate(captureDesktopMetricsGate, 'off')
     resetDesktopMetricsForTests()
     const later = requester()
 
     bindDesktopMetrics(later.request)
-    setDesktopMetricsGate('off') // a decided no
+    await setMetricsGate(captureDesktopMetricsGate, 'off') // a decided no
     recordOnboarding('guide', 'reached')
-    setDesktopMetricsGate('on')
+    await setMetricsGate(captureDesktopMetricsGate, 'on')
     await flush()
     expect(later.calls).toEqual([])
   })

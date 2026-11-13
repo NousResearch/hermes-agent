@@ -129,7 +129,7 @@ def test_network_fstypes_cover_nfs_and_smb_variants(tmp_path):
         f"{600 + i} 25 0:{60 + i} / /mnt/{fs.replace('.', '_')} rw - {fs} srv:/x rw"
         for i, fs in enumerate(("nfs", "nfs4", "cifs", "smb3", "fuse.sshfs"))]
     mi = tmp_path / "mountinfo"
-    mi.write_text("\n".join(rows) + "\n")
+    mi.write_text("\n".join(rows) + "\n", encoding="utf-8")
     for fs in ("nfs", "nfs4", "cifs", "smb3", "fuse_sshfs"):
         assert hermes_state_wal._detect_network_fs(f"/mnt/{fs}/home", mountinfo_path=str(mi)) is True
     assert hermes_state_wal._detect_network_fs("/home/user/.hermes", mountinfo_path=str(mi)) is False

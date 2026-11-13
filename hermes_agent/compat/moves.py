@@ -76,8 +76,11 @@ MOVES: dict[str, str] = {
     "hermes_state_worker_compression": "hermes_agent.hermes_state_worker_compression",
     "hermes_state_worker_context": "hermes_agent.hermes_state_worker_context",
     "hermes_state_worker_lifecycle": "hermes_agent.hermes_state_worker_lifecycle",
+    "model_tools": "hermes_agent.model_tools",
     "registration_lifecycle": "hermes_agent.registration_lifecycle",
+    "tools": "hermes_agent.tools",
     "toolset_distributions": "hermes_agent.toolset_distributions",
+    "toolsets": "hermes_agent.toolsets",
     "trajectory_compressor": "hermes_agent.trajectory_compressor",
     "tui_gateway": "hermes_agent.tui_gateway",
 }

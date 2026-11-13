@@ -770,7 +770,9 @@ class TestSkillTextDescription:
 
     def test_description_tells_model_to_close_its_own_tab(self):
         description = bu_cli._dynamic_schema_overrides()["description"]
+        assert "returns the tab's targetId" in description
         assert "close_tab(" in description
+        assert "finally block" in description
         assert "never close tabs you did not open" in description
 
 

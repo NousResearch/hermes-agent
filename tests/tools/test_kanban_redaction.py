@@ -7,6 +7,7 @@ test_kanban_tools.py.
 """
 from __future__ import annotations
 
+import json
 
 import pytest
 
@@ -159,6 +160,7 @@ def test_kanban_create_body_scrubbed_api_key(worker_env):
     called redact_sensitive_text(force=True)."""
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
     secret = "sk-" + "a" * 30
     out = json.loads(kt._handle_create({
         "title": f"rotate {secret} now",
@@ -166,7 +168,7 @@ def test_kanban_create_body_scrubbed_api_key(worker_env):
         "body": f"complete using {secret}",
     }))
     assert out["ok"] is True
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         task = kb.get_task(conn, out["task_id"])
     finally:
@@ -186,6 +188,7 @@ def test_kanban_create_secret_free_body_passthrough(worker_env):
     """A secret-free body must pass through byte-for-byte."""
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
     body = "Investigate the flaky e2e suite and report findings."
     out = json.loads(kt._handle_create({
         "title": "plain task",
@@ -193,7 +196,7 @@ def test_kanban_create_secret_free_body_passthrough(worker_env):
         "body": body,
     }))
     assert out["ok"] is True
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         task = kb.get_task(conn, out["task_id"])
     finally:

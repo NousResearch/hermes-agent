@@ -6,6 +6,8 @@ takes the SSH backend down (#80284, #133436). ``tmp_path`` stands in for the sha
 import gc
 import os
 import stat
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -171,3 +173,64 @@ def test_private_xdg_runtime_dir_is_preferred_over_the_shared_root(shared_root, 
     assert control_dir == xdg / "hermes-ssh"
     assert _mode(control_dir) == 0o700
     assert not any(shared_root.iterdir())
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("mode", [0o755, 0o1777])
+def test_shared_xdg_runtime_dir_is_not_trusted(shared_root, tmp_path, monkeypatch, make_env, mode):
+    """A mis-set ``$XDG_RUNTIME_DIR`` naming a group/world-accessible dir (sudo -E, a shared /run
+    path) is skipped like the gateway's control socket skips it: other users can see or pre-create
+    names in it, so it is no stronger than the shared root it would otherwise outrank."""
+    xdg = tmp_path / "shared-run"
+    xdg.mkdir()
+    xdg.chmod(mode)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(xdg))
+
+    control_dir = make_env().control_dir
+
+    assert not (xdg / "hermes-ssh").exists()
+    assert control_dir == shared_root / f"hermes-ssh-{os.getuid()}"  # windows-footgun: ok — posix-only test
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("suffix", ["/", "/."])
+def test_trailing_component_does_not_trust_symlinked_xdg_runtime_dir(monkeypatch, suffix):
+    """POSIX lstat() follows a final symlink with / or /. appended; a mutable
+    shared-parent link must not masquerade as a real private runtime directory."""
+    # Keep both candidates under the actual 64-byte macOS ControlPath budget.
+    with tempfile.TemporaryDirectory(prefix="hxdg-", dir="/tmp") as root_name:
+        root = Path(root_name)
+        private = root / "private"
+        private.mkdir(mode=0o700)
+        private.chmod(0o700)
+        link = root / "runtime-link"
+        link.symlink_to(private, target_is_directory=True)
+        monkeypatch.setenv("XDG_RUNTIME_DIR", f"{link}{suffix}")
+        monkeypatch.setattr(ssh_mod, "socket_safe_tmpdir", lambda: str(root))
+        monkeypatch.setattr(ssh_mod, "_SHORT_TMP_ROOT", str(root))
+        monkeypatch.setattr(ssh_mod, "_ensure_ssh_available", lambda: None)
+        monkeypatch.setattr(ssh_mod.SSHEnvironment, "_establish_connection", lambda self: None)
+        assert len(os.fsencode(link / "hermes-ssh")) <= ssh_mod._CONTROL_DIR_MAX_BYTES
+
+        env = ssh_mod.SSHEnvironment(host="h", user="u", probe_only=True)
+        try:
+            assert env.control_dir == root / f"hermes-ssh-{os.getuid()}"  # windows-footgun: ok — posix-only test
+            assert not (private / "hermes-ssh").exists()
+        finally:
+            env.cleanup()
+
+
+@pytest.mark.platforms("posix")
+def test_xdg_runtime_dir_owned_by_another_user_is_not_trusted(shared_root, tmp_path, monkeypatch, make_env):
+    """``sudo -E`` keeps the invoking user's ``$XDG_RUNTIME_DIR``: 0700, but its owner is not us and can
+    swap a ``hermes-ssh`` leaf we create there."""
+    xdg = tmp_path / "run-user"
+    xdg.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(xdg))
+    real_uid = os.getuid()  # windows-footgun: ok — posix-only test
+    monkeypatch.setattr(os, "getuid", lambda: real_uid + 1)
+
+    control_dir = make_env().control_dir
+
+    assert not (xdg / "hermes-ssh").exists()
+    assert control_dir.parent == shared_root

@@ -26,6 +26,8 @@ async def localize_inbound_media(event, get_media_client) -> None:
             if not isinstance(url, str) or not url:
                 continue
             if client is None:
+                # No connector origin to classify against: drop anything that could be
+                # a re-host (it would 401 downstream) rather than guess.
                 if "/relay/media/" not in url:
                     localized.append((url, mime, name, inlined))
                 continue
@@ -33,7 +35,7 @@ async def localize_inbound_media(event, get_media_client) -> None:
             got = await client.download_with_name(url, suggested_name=name or None)
             if got:
                 localized.append((got[0], mime, got[1], inlined))
-            elif "/relay/media/" not in url:
+            elif not client.is_relay_media_url(url):
                 # A public URL still has value as a URL; a dead re-host does not.
                 localized.append((url, mime, name, inlined))
         legacy_unflagged = not getattr(event, "media_text_inlined", None)

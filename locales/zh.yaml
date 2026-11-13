@@ -647,8 +647,6 @@ gateway:
     media_delivery_failed_with_name: "⚠️ 无法发送{kind}附件（{file_name}）。"
     delivery_failed_retry: "⚠️ 多次尝试后消息仍发送失败。请重试——你的请求已处理，但响应无法送达。"
     plain_fallback_prefix: "（响应格式化失败，以下为纯文本：）\n\n{content}"
-    turn_error_no_details: "无可用详情"
-    turn_error_detailed: "抱歉，我遇到了一个错误（{error_type}）。\n{error_detail}\n请重试，或用 /reset 开始新会话。"
     turn_error: "抱歉，我遇到了一个错误。"
     context_injection_refused: "上下文注入已被拒绝。"
     no_home_channel: "📬 {platform} 尚未设置主频道。主频道是 Hermes 投递定时任务结果和跨平台消息的地方。\n\n输入 {sethome_cmd} 将此聊天设为主频道，或忽略以跳过。"

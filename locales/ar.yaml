@@ -647,8 +647,6 @@ gateway:
     media_delivery_failed_with_name: "⚠️ تعذّر إرسال المرفق من نوع {kind} ({file_name})."
     delivery_failed_retry: "⚠️ فشل إرسال الرسالة بعد محاولات متعددة. يُرجى المحاولة مجددًا — تمت معالجة طلبك لكن تعذّر إرسال الرد."
     plain_fallback_prefix: "(فشل تنسيق الرد، نص عادي:)\n\n{content}"
-    turn_error_no_details: "لا تتوفر تفاصيل"
-    turn_error_detailed: "عذرًا، واجهت خطأ ({error_type}).\n{error_detail}\nحاول مجددًا أو استخدم /reset لبدء جلسة جديدة."
     turn_error: "عذرًا، واجهت خطأ."
     context_injection_refused: "رُفض حقن السياق."
     no_home_channel: "📬 لم تُحدَّد قناة رئيسية لـ {platform}. القناة الرئيسية هي المكان الذي يرسل إليه Hermes نتائج المهام المجدولة والرسائل العابرة للمنصات.\n\nاكتب {sethome_cmd} لجعل هذه المحادثة قناتك الرئيسية، أو تجاهل هذا للتخطّي."

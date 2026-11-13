@@ -647,8 +647,6 @@ gateway:
     media_delivery_failed_with_name: "⚠️ {kind} eki iletilemedi ({file_name})."
     delivery_failed_retry: "⚠️ Mesaj birkaç denemeye rağmen iletilemedi. Lütfen yeniden deneyin — isteğiniz işlendi ancak yanıt gönderilemedi."
     plain_fallback_prefix: "(Yanıt biçimlendirilemedi, düz metin:)\n\n{content}"
-    turn_error_no_details: "ayrıntı yok"
-    turn_error_detailed: "Üzgünüm, bir hatayla karşılaştım ({error_type}).\n{error_detail}\nYeniden deneyin veya yeni bir oturum başlatmak için /reset kullanın."
     turn_error: "Üzgünüm, bir hatayla karşılaştım."
     context_injection_refused: "Bağlam eklemesi reddedildi."
     no_home_channel: "📬 {platform} için ana kanal ayarlanmamış. Ana kanal, Hermes'in cron işi sonuçlarını ve platformlar arası mesajları ilettiği yerdir.\n\nBu sohbeti ana kanalınız yapmak için {sethome_cmd} yazın veya atlamak için yoksayın."

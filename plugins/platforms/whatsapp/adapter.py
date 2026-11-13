@@ -20,7 +20,7 @@ from gateway.platforms._shared import (
 from gateway.platforms.send_targets import StandaloneSendPolicy, regex_stripped_parser
 from hermes_cli._subprocess_compat import windows_detach_flags
 from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
-from hermes_constants import (find_node_executable, get_hermes_dir, with_hermes_node_path)
+from hermes_constants import (ensure_private_store, find_node_executable, get_hermes_dir, with_hermes_node_path)
 
 _IS_WINDOWS = platform.system() == "Windows"
 
@@ -247,12 +247,87 @@ def _write_bridge_pidfile(session_path: Path, pid: int, port: Optional[int] = No
         (session_path / "bridge.pid").write_text(text, encoding="utf-8")
 
 
-def _spawn_bridge_process(argv: list, log_fh, env: dict) -> subprocess.Popen:
+def _spawn_bridge_process(argv: list, log_fh, env: dict, umask: int = -1) -> subprocess.Popen:
     """Start the Node bridge as an owned child. It leads its own session (so a container stop
     reaches it directly, #127047) and dies with this process however this process dies: a SIGKILLed
-    or OOM-killed gateway no longer leaves its bridge serving the port and the WhatsApp session."""
+    or OOM-killed gateway no longer leaves its bridge serving the port and the WhatsApp session.
+    ``umask`` is the session store's (``ensure_private_store``): Baileys writes creds.json and the
+    signal keys at the process umask."""
     return spawn_owned(argv, purpose="whatsapp-bridge", stdin=subprocess.DEVNULL, stdout=log_fh,
-                       stderr=log_fh, env=env, creationflags=windows_detach_flags())
+                       stderr=log_fh, env=env, creationflags=windows_detach_flags(), umask=umask)
+
+
+def _owner_only_opener(path, flags):
+    """``open(opener=)`` creating 0600. The fchmod covers the inode actually handed to the bridge:
+    connect()'s path-based tighten runs before the reaps and port wait, and a pre-update gateway past a
+    failed (non-fatal) session lock can recreate bridge.log at the umask default in that window."""
+    fd = os.open(path, flags, 0o600)
+    if hasattr(os, "fchmod"):
+        with suppress(OSError):
+            os.fchmod(fd, 0o600)
+    return fd
+
+
+def _tighten_bridge_log(path: Path, *, private: bool) -> None:
+    """bridge.log sits outside the private store, and an adopted bridge keeps appending to the one an
+    older version left at the umask default, so it is tightened before the reuse check."""
+    if private:
+        with suppress(OSError):
+            os.chmod(path, 0o600)
+
+
+def _open_bridge_log(path: Path, *, private: bool):
+    """Long-lived append handle handed to the bridge as stdout/stderr; it carries the QR pairing payloads."""
+    return open(path, "a", encoding="utf-8", opener=_owner_only_opener if private else None)
+
+
+def _bridge_config_fingerprint(bridge_env: dict, package_hash: str = "") -> str:
+    """16-hex digest over the bridge-consumed keys of a spawn env plus the package.json hash its
+    node_modules were installed from: identifies everything a bridge bakes in at startup."""
+    import hashlib
+    digest = hashlib.sha256()
+    # _ensure_bridge_deps() reinstalls on package.json drift, but a running bridge keeps the modules it loaded.
+    digest.update(b"package.json\x00" + package_hash.encode("utf-8") + b"\x00")
+    for key in _BRIDGE_CONSUMED_ENV:
+        digest.update(key.encode("utf-8"))
+        # Presence marker: bridge.js treats an unset key differently from "" (an unset
+        # WHATSAPP_REPLY_PREFIX means the default prefix, "" means none).
+        if key in bridge_env:
+            digest.update(b"\x01" + str(bridge_env[key]).encode("utf-8"))
+        else:
+            digest.update(b"\x00")
+        digest.update(b"\x00")
+    return digest.hexdigest()[:16]
+
+
+def _write_bridge_fingerprint(session_path: Path, fingerprint: str) -> None:
+    """Record the spawn config of the bridge next to ``bridge.pid``; adoption compares against it.
+
+    Deliberately NOT removed by ``disconnect()`` or the pidfile reaper: an adopted bridge keeps
+    running with the recorded config, and the next gateway start needs the record to tell a
+    matching bridge from one serving a stale policy/allowlist (#126824). A missing record just
+    makes adoption fail closed (treated as stale, like a missing ``scriptHash``).
+    """
+    with suppress(OSError):
+        (session_path / _BRIDGE_FINGERPRINT_FILE).write_text(fingerprint, encoding="utf-8")
+
+
+def _fmt_uptime(seconds) -> str:
+    """Compact ``2d 16h``-style rendering of bridge uptime seconds ('' when unknown)."""
+    try:
+        secs = int(float(seconds))
+    except (TypeError, ValueError):
+        return ""
+    days, rem = divmod(max(secs, 0), 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m"
+    return f"{rem}s"
 
 
 def _terminate_bridge_process(proc, *, force: bool = False) -> None:
@@ -519,6 +594,14 @@ _BRIDGE_PASSTHROUGH_ENV = (
     "WHATSAPP_FORWARD_OWNER_MESSAGES", "WHATSAPP_MAX_MESSAGE_LENGTH",
     "WHATSAPP_CHUNK_DELAY_MS", "WHATSAPP_SEND_TIMEOUT_MS",
 )
+# Everything a bridge bakes in at startup and never re-reads: the passthrough env plus the keys
+# _bridge_env() resolves itself (mode mirrors the --mode argv). Adoption must verify all of it,
+# or a policy/allowlist edit lands only after the bridge is killed by hand (#126824).
+_BRIDGE_CONSUMED_ENV = _BRIDGE_PASSTHROUGH_ENV + (
+    "WHATSAPP_MODE", "WHATSAPP_REPLY_PREFIX", "WHATSAPP_SEND_READ_RECEIPTS",
+    "HERMES_IMAGE_CACHE_DIR", "HERMES_AUDIO_CACHE_DIR", "HERMES_DOCUMENT_CACHE_DIR",
+)
+_BRIDGE_FINGERPRINT_FILE = "bridge.env-fingerprint"
 _TEXT_INJECT_EXTS = {".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log", ".py", ".js", ".ts", ".html", ".css"}
 _MAX_TEXT_INJECT_BYTES = 100 * 1024  # matches Telegram/Discord/Slack
 _NATIVE_MEDIA_TYPES = {"location": MessageType.LOCATION, "live_location": MessageType.LOCATION, "sticker": MessageType.STICKER}
@@ -659,8 +742,24 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._http_session = aiohttp.ClientSession(headers=_bridge_auth_headers(self._bridge_token))
         self._poll_task = asyncio.create_task(self._poll_messages())
 
+    def _bridge_package_hash(self) -> str:
+        return _file_content_hash(Path(self._bridge_script).parent / "package.json")
+
+    def _adopted_config_matches(self) -> bool:
+        """Adopt only a bridge spawned with the env this adapter would use now.
+
+        bridge.js reads its policy/allowlist env once at startup, so a config edit reaches a
+        running bridge only through a restart; without this check an adopted bridge keeps gating
+        DMs with the allowlist it was spawned with (#126824). A missing record is stale by
+        definition — the same policy as a missing ``scriptHash``.
+        """
+        recorded = ""
+        with suppress(OSError):
+            recorded = (self._session_path / _BRIDGE_FINGERPRINT_FILE).read_text(encoding="utf-8-sig").strip()
+        return bool(recorded) and recorded == _bridge_config_fingerprint(self._bridge_env(), self._bridge_package_hash())
+
     async def _reuse_running_bridge(self, bridge_path: Path) -> bool:
-        """Adopt a connected bridge serving the on-disk bridge.js + same read-receipt config; else say why it restarts."""
+        """Adopt a connected bridge serving the on-disk bridge.js + the spawn config it was launched with; else say why it restarts."""
         import aiohttp
         self._foreign_bridge_session = None
         self._bridge_probe_timed_out = False
@@ -688,13 +787,19 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 print(f"[{self.name}] Bridge found but not connected (status: {bridge_status}), restarting")
                 return False
             running_hash, disk_hash = data.get("scriptHash", ""), _bridge_source_hash(bridge_path)
-            if running_hash and disk_hash and running_hash == disk_hash and bool(data.get("sendReadReceipts", False)) == self._send_read_receipts:
-                print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
+            receipts_match = bool(data.get("sendReadReceipts", False)) == self._send_read_receipts
+            if running_hash and disk_hash and running_hash == disk_hash and receipts_match and self._adopted_config_matches():
+                print(f"[{self.name}] Using existing bridge (status: {bridge_status}, uptime: {_fmt_uptime(data.get('uptime')) or 'unknown'})")
                 self._mark_connected()
                 self._attach_to_bridge(None)  # Not managed by us
                 self._wire_plugin_handlers(None)
                 return True
-            stale_reason = f"running={running_hash or 'unversioned'}, disk={disk_hash}" if running_hash != disk_hash else "send_read_receipts config changed"
+            if running_hash != disk_hash or not (running_hash and disk_hash):
+                stale_reason = f"running={running_hash or 'unversioned'}, disk={disk_hash}"
+            elif not receipts_match:
+                stale_reason = "send_read_receipts config changed"
+            else:
+                stale_reason = "config changed"  # policy/allowlist/env the running bridge baked in at spawn
             print(f"[{self.name}] Running bridge is stale ({stale_reason}), restarting")
         except TimeoutError:
             self._bridge_probe_timed_out = True  # something holds the port but gave no identity; connect() leaves it
@@ -708,10 +813,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     def _bridge_env(self) -> dict:
         """Subprocess env: the adapter's EFFECTIVE profile policy + profile-resolved WHATSAPP_* values + cache dirs."""
-        # with_hermes_node_path() copies os.environ when called with no arg: under a multiplexed secondary
-        # that copy carries the DEFAULT profile's WHATSAPP_* values, so every bridge-consumed key is
-        # re-resolved from this profile (dropped on a scoped miss), never inherited from the launch env.
-        bridge_env = with_hermes_node_path()
+        # The bridge is a networked Node process with third-party deps: it starts from the scrubbed
+        # child env, never Hermes' credentials. Under a multiplexed secondary the launch env carries the
+        # DEFAULT profile's WHATSAPP_* values, so every bridge-consumed key is re-resolved from this
+        # profile (dropped on a scoped miss), never inherited from the launch env.
+        from tools.environments.local import hermes_subprocess_env
+        bridge_env = with_hermes_node_path(hermes_subprocess_env())
         reply_prefix = _wenv("WHATSAPP_REPLY_PREFIX")
         if reply_prefix:
             bridge_env["WHATSAPP_REPLY_PREFIX"] = reply_prefix
@@ -860,8 +967,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         try:
             if not self._ensure_bridge_deps(bridge_path.parent):
                 return False
-            self._session_path.mkdir(parents=True, exist_ok=True)
+            # The session holds the account's keys and bridge.log its QR pairing payloads (#80090).
+            store_umask = ensure_private_store(self._session_path, home=self._profile_home)
             self._bridge_token = _load_or_create_bridge_token(self._session_path)
+            _tighten_bridge_log(self._session_path.parent / "bridge.log", private=store_umask >= 0)
             # A secondary adopts or reaps only a bridge its own pidfile identifies; the default keeps
             # its historical adopt-or-clear-the-port path. A bridge this version started dies with
             # its gateway (spawn_owned), so what is adopted here is one a pre-update gateway or
@@ -898,14 +1007,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             self._bridge_token = _load_or_create_bridge_token(self._session_path, rotate=True)
             # Bridge output goes to a log file so QR codes, errors, and reconnection messages survive for troubleshooting.
             self._bridge_log = self._session_path.parent / "bridge.log"
-            self._bridge_log_fh = bridge_log_fh = open(self._bridge_log, "a", encoding="utf-8")  # noqa: ASYNC230 -- long-lived log handle handed to the bridge subprocess
+            self._bridge_log_fh = bridge_log_fh = _open_bridge_log(self._bridge_log, private=store_umask >= 0)
             node = find_node_executable("node")
             if node is None:
                 raise RuntimeError("Node.js is no longer available; run `hermes pm install`")
+            bridge_env = self._bridge_env()
             self._bridge_process = _spawn_bridge_process(
                 [node, str(bridge_path), "--port", str(self._bridge_port), "--session", str(self._session_path),
-                 "--mode", _wenv("WHATSAPP_MODE", "self-chat")], bridge_log_fh, self._bridge_env())
+                 "--mode", _wenv("WHATSAPP_MODE", "self-chat")], bridge_log_fh, bridge_env, store_umask)
             _write_bridge_pidfile(self._session_path, self._bridge_process.pid, self._bridge_port)
+            _write_bridge_fingerprint(self._session_path, _bridge_config_fingerprint(bridge_env, self._bridge_package_hash()))
             if not await self._wait_for_bridge():
                 return False
             self._attach_to_bridge(self._bridge_process)

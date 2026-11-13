@@ -44,5 +44,8 @@ def record_acceptance(conn, task_id, acceptance):
     _append_event(conn, task_id, "pr_acceptance", receipt, run_id=snapshot[0])
     if not receipt["ok"]:
         detail = f"PR acceptance {receipt['classification']}: {receipt.get('detail', '')} {receipt['recovery']}"
-        conn.execute("UPDATE tasks SET last_failure_error=? WHERE id=?", (detail, task_id))
+        conn.execute(
+            "UPDATE tasks SET last_failure_error=?, last_failure_run_id=? WHERE id=?",
+            (detail, snapshot[0], task_id),
+        )
     return receipt["ok"]

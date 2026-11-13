@@ -16,7 +16,12 @@ const ref = <T>(current: T) => ({ current })
 
 const buildCtx = (appended: Msg[]) =>
   ({
-    composer: { dequeue: () => undefined, queueEditRef: ref<null | number>(null), sendQueued: vi.fn(), setInput: vi.fn() },
+    composer: {
+      dequeue: () => undefined,
+      queueEditRef: ref<null | number>(null),
+      sendQueued: vi.fn(),
+      setInput: vi.fn()
+    },
     gateway: { gw: { request: vi.fn(async () => null) }, rpc: vi.fn(async () => null) },
     session: {
       STARTUP_RESUME_ID: '',

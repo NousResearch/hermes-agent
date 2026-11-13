@@ -5,7 +5,8 @@ export const arPluginPreviewAccess: PluginPreviewAccessTranslations = {
   previewScriptPromptTitle: (plugin: string) => `هل تسمح لـ ${plugin} بتشغيل نصوص برمجية على هذه الصفحة؟`,
   previewScriptPromptBody: (plugin: string, origin: string) =>
     `يريد ${plugin} تشغيل JavaScript في متصفح المعاينة على ${origin}.`,
-  previewScriptPromptRisk: 'يمكن للنصوص البرمجية قراءة كل شيء على ذلك الموقع وتغييره، بما في ذلك صفحات الحسابات التي سجّلت الدخول إليها هناك.',
+  previewScriptPromptRisk:
+    'يمكن للنصوص البرمجية قراءة كل شيء على ذلك الموقع وتغييره، بما في ذلك صفحات الحسابات التي سجّلت الدخول إليها هناك.',
   previewScriptPromptRevokeHint: 'ينطبق على هذا الموقع فقط. يمكنك إلغاؤه من المهارات ▸ الإضافات.',
   previewScriptAllow: 'السماح على هذا الموقع',
   previewScriptDeny: 'عدم السماح',

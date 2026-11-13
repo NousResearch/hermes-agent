@@ -57,24 +57,29 @@ it.each([
   let produced = 0
   const cancel = vi.fn()
 
-  const body = new ReadableStream<Uint8Array>({
-    pull(controller) {
-      if (produced === total) {
-        controller.close()
+  const body = new ReadableStream<Uint8Array>(
+    {
+      pull(controller) {
+        if (produced === total) {
+          controller.close()
 
-        return
-      }
+          return
+        }
 
-      const size = Math.min(total - produced, produced === limit ? 1 : 64 * 1024)
-      controller.enqueue(new Uint8Array(size).fill(produced === 0 ? 7 : 9))
-      produced += size
+        const size = Math.min(total - produced, produced === limit ? 1 : 64 * 1024)
+        controller.enqueue(new Uint8Array(size).fill(produced === 0 ? 7 : 9))
+        produced += size
+      },
+      cancel
     },
-    cancel
-  }, { highWaterMark: 0 })
+    { highWaterMark: 0 }
+  )
 
   const headers = new Headers({ 'content-type': 'image/png' })
 
-  if (declaredLength !== null) {headers.set('content-length', declaredLength)}
+  if (declaredLength !== null) {
+    headers.set('content-length', declaredLength)
+  }
   const response = new Response(body, { headers })
   const fetchMock = vi.fn().mockResolvedValue(response)
   vi.stubGlobal('fetch', fetchMock)
@@ -101,7 +106,9 @@ it.each([
     expect(create).not.toHaveBeenCalled()
     expect(clicked).toEqual([])
     expect($notifications.get().at(-1)).toMatchObject({
-      kind: 'error', title: 'Download failed', message: expect.stringMatching(/exceeds.*MiB/i)
+      kind: 'error',
+      title: 'Download failed',
+      message: expect.stringMatching(/exceeds.*MiB/i)
     })
   } else {
     expect(produced).toBe(limit)
@@ -128,7 +135,11 @@ it.each([
     expect(revoke).toHaveBeenCalledWith(objectUrl)
   }
 
-  const directUrls = [`${window.location.origin}/same-origin.png`, 'blob:https://images.example/local', 'data:image/png;base64,AA==']
+  const directUrls = [
+    `${window.location.origin}/same-origin.png`,
+    'blob:https://images.example/local',
+    'data:image/png;base64,AA=='
+  ]
 
   for (const directUrl of directUrls) {
     await expect(win.hermesDesktop.saveImageFromUrl(directUrl)).resolves.toBe(true)
@@ -145,26 +156,33 @@ it.each(['headers', 'body'])('times out stalled image %s within one whole-downlo
   const cancel = vi.fn(() => new Promise<void>(() => undefined))
 
   const body = new ReadableStream<Uint8Array>({
-    start(controller) {controller.enqueue(new Uint8Array([7]))},
+    start(controller) {
+      controller.enqueue(new Uint8Array([7]))
+    },
     cancel
   })
 
   const response = new Response(body, { headers: { 'content-type': 'image/png' } })
 
-  const fetchMock = vi.fn((_url: URL, init: RequestInit) => new Promise<Response>((resolve, reject) => {
-    init.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+  const fetchMock = vi.fn(
+    (_url: URL, init: RequestInit) =>
+      new Promise<Response>((resolve, reject) => {
+        init.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
 
-    if (phase === 'body') {
-      window.setTimeout(() => resolve(response), BROWSER_IMAGE_DOWNLOAD_TIMEOUT_MS / 2)
-    }
-  }))
+        if (phase === 'body') {
+          window.setTimeout(() => resolve(response), BROWSER_IMAGE_DOWNLOAD_TIMEOUT_MS / 2)
+        }
+      })
+  )
 
   vi.stubGlobal('fetch', fetchMock)
   const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
   const create = vi.spyOn(URL, 'createObjectURL')
   expect(installBrowserDesktopBridge()).toBe(true)
   let saved: boolean | undefined
-  void win.hermesDesktop.saveImageFromUrl('https://images.example/slow.png').then(result => {saved = result})
+  void win.hermesDesktop.saveImageFromUrl('https://images.example/slow.png').then(result => {
+    saved = result
+  })
   const signal = fetchMock.mock.calls[0][1].signal
   await vi.advanceTimersByTimeAsync(BROWSER_IMAGE_DOWNLOAD_TIMEOUT_MS - 1)
   expect(saved).toBeUndefined()
@@ -174,7 +192,9 @@ it.each(['headers', 'body'])('times out stalled image %s within one whole-downlo
   expect(body.locked).toBe(false)
   expect(cancel).toHaveBeenCalledTimes(phase === 'body' ? 1 : 0)
   expect($notifications.get().at(-1)).toMatchObject({
-    kind: 'error', title: 'Download failed', message: expect.stringMatching(/timed out/i)
+    kind: 'error',
+    title: 'Download failed',
+    message: expect.stringMatching(/timed out/i)
   })
   expect(click).not.toHaveBeenCalled()
   expect(create).not.toHaveBeenCalled()
@@ -205,7 +225,9 @@ it('surfaces CORS and HTTP download failures without clicking a navigation link'
   const cancel = vi.fn()
   const deniedBody = new ReadableStream<Uint8Array>({ cancel })
 
-  const fetchMock = vi.fn().mockRejectedValueOnce(new TypeError('Failed to fetch'))
+  const fetchMock = vi
+    .fn()
+    .mockRejectedValueOnce(new TypeError('Failed to fetch'))
     .mockResolvedValueOnce(new Response(deniedBody, { status: 403 }))
 
   vi.stubGlobal('fetch', fetchMock)

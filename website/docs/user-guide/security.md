@@ -64,6 +64,99 @@ The full set of keys:
 Setting `approvals.mode: off` disables all safety prompts. Use only in trusted environments (CI/CD, containers, etc.).
 :::
 
+### Managed host approval policy
+
+An operator can install a version-1 host policy at the **OS account's** home
+under `.local/state/hermes/host-policy/policy.json`. This is separate from
+`HERMES_HOME`, profile configuration, `HOME`, and XDG overrides. The directory
+must be owner-only (`0700`), the file owner-only (`0600`), with no symlink
+components. Use the reviewed deployment flow rather than editing live settings
+from an agent session. This is cooperative same-account policy, not an OS sandbox
+against arbitrary programs running with the same account's permissions.
+Managed authority support is currently POSIX-only (macOS/Linux). An installed
+authority on Windows is refused until account-token/DACL protection is qualified;
+an absent authority still preserves the existing unmanaged behavior.
+
+The shared host document includes `version`, a nonempty `revision`, `admission`,
+and an `approvals` object. The following is the approvals object, not a complete
+deployable host document:
+
+```json
+{
+  "mode": "manual",
+  "cron_mode": "deny",
+  "single_query_mode": "deny",
+  "unattended_mode": "deny",
+  "subagent_auto_approve": false,
+  "allow_standing_grants": false,
+  "overrides": []
+}
+```
+
+Omitted approval fields take these restrictive defaults. Types are strict:
+booleans are not strings, unattended modes are exactly `deny` or `approve`, and
+unknown fields are rejected. Approval constraints apply whenever a valid host
+policy is installed, even when its **worker admission** mode is disabled or
+observe-only. An absent authority preserves unmanaged behavior. An invalid or
+unreadable installed policy blocks governed actions, including otherwise-fast
+isolation paths; it never silently switches to unmanaged behavior.
+
+The host policy bounds all profiles and hosted-room/session policies. A profile
+or room can tighten the effective mode (`manual` is stricter than `smart`, which
+is stricter than `off`), but cannot relax it without an authorized exception.
+Similarly, profile unattended `approve`, process/session YOLO, automatic child
+approvals, and standing grants do not override the host policy. Rejected
+relaxations are reported in decision provenance; the normal stricter approval
+gate still runs. A benign command remains benign: `manual` is not a requirement
+to ask about every shell command.
+
+Managed headless contexts deny flagged actions when nobody can answer; a stale
+gateway marker is not an approver. A registered answerable API bridge can still
+request approval. Delegated workers use the host-bounded child policy rather
+than inheriting the parent's apparent human presence. Unchanged valid-policy
+exceptions still apply for isolated backends and local-viewer `execute_code`.
+Hardline floors retain their existing scope, and user deny rules remain
+non-bypassable, including inside isolated containers.
+
+Only installation of an owner-reviewed host policy authorizes exceptions; no
+session command or model-visible API mints one. Each `overrides` entry requires:
+
+- `id`, `profile`, `session_key`, and `reason`: nonempty strings. `profile` is the
+  absolute canonical profile home, and `session_key` matches one exact session.
+- `issued_at` and `expires_at`: finite Unix timestamps, with a positive lifetime
+  no longer than 24 hours. The exception applies only within that window.
+- `allow`: a nonempty list of unique permissions selected from `yolo`,
+  `profile_mode`, `hosted_room`, `standing_grants`, `subagent_auto_approve`, and
+  `unattended_approve`.
+
+Exceptions do not bypass hardline/user-deny floors. An unattended approval
+exception permits an explicit profile `approve`; it does not force a profile
+configured to deny into approval. A child-approval permission likewise bounds
+the profile's `delegation.subagent_auto_approve` opt-in.
+
+Standing grants are disabled by default. With `allow_standing_grants: true`,
+new managed **session** grants are bound to their profile and policy
+revision/content fingerprint; old unmanaged grants are not imported. Changing
+the policy invalidates those session grants. Persistent allowlist grants are
+honored/saved only during an applicable bounded `standing_grants` exception;
+outside one, an `always` answer is at most an allowed session grant, not a new
+permanent authorization. Managed unattended denials outrank standing grants.
+Unmanaged allowlist persistence is unchanged.
+
+Every governed guard result contains allowlisted `approval_policy` metadata
+(source, revision/content digest, profile/session scope, mode, active exception
+IDs, rejected relaxation sources, and error state). The read-only
+`tools.approval_host_policy.approval_policy_status()` diagnostic exposes the same
+effective-policy metadata without commands, exception reasons, credentials, or
+conversation content. A prepared terminal approval can be reused only while
+its policy and active exception scope still match; a denial remains denied.
+
+New host policy is read at approval boundaries without rewriting tool
+definitions or an existing conversation's cached prefix. A deployed file alone
+does not prove every running binary supports enforcement: drain old workers,
+verify runtime/session provenance, and start fresh sessions where required
+before claiming fleet-wide adoption.
+
 ### YOLO Mode
 
 YOLO mode bypasses **all** dangerous command approval prompts for the current session. It can be activated three ways:

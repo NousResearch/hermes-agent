@@ -37,6 +37,12 @@ from tools.approval_floors import (
     _user_deny_block_result,
 )
 from tools.approval_gateway_wait import _await_gateway_decision
+from tools.approval_host_policy import (
+    bypass_allowed, clear_session_grants, constrain_presence, current_policy, managed_approval_gate,
+    managed_child_mode, managed_prompt_kwargs, managed_unattended_contexts, permanent_grants_allowed,
+    persistence_permissions, prepared_guard_allowed, record_session_grant, session_grant_matches,
+    standing_grants_allowed,
+)
 from tools.approval_provenance import allowlisted_result, preapproved_result
 from tools.approval_prompt import _present_with_selected_transport, _transport_choice, prompt_dangerous_approval
 from tools.approval_smart import _smart_verdict
@@ -321,6 +327,7 @@ def submit_pending(session_key: str, approval: dict):
 
 def approve_session(session_key: str, pattern_key: str):
     """Approve a pattern for this session only."""
+    record_session_grant(session_key, pattern_key)
     with _lock:
         _session_approved.setdefault(session_key, set()).add(pattern_key)
 
@@ -359,6 +366,7 @@ def clear_session(session_key: str) -> None:
     """Remove all approval and yolo state for a given session."""
     if not session_key:
         return
+    clear_session_grants(session_key)
     with _lock:
         _session_approved.pop(session_key, None)
         _session_yolo.discard(session_key)
@@ -398,10 +406,8 @@ def is_current_session_yolo_enabled() -> bool:
 def _yolo_active() -> bool:
     """CLI ``--yolo`` (process-scoped, frozen at import) or gateway ``/yolo``
     (session-scoped). Hardline / deny-rule floors run BEFORE this everywhere."""
-    if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
-        return True
     from gateway.session_finite import unattended_turn
-    return unattended_turn()
+    return bypass_allowed(_YOLO_MODE_FROZEN or is_current_session_yolo_enabled() or unattended_turn())
 
 
 def _permanent_set() -> set:
@@ -444,13 +450,17 @@ def _approval_scope(session_key: str, pattern_key: str) -> str | None:
     decision and its provenance label cannot disagree when a grant is revoked concurrently.
     Accepts the canonical key and the legacy regex-derived key so existing command_allowlist
     entries survive key migrations."""
+    if not standing_grants_allowed():
+        return None
     aliases = _approval_key_aliases(pattern_key)
+    allow_permanent = permanent_grants_allowed()
+    session_aliases = {alias for alias in aliases if session_grant_matches(session_key, alias)}
     with _lock:
         permanent = _permanent_set()
         session = _session_approved.get(session_key, set())
-        if any(alias in permanent for alias in aliases):
+        if allow_permanent and any(alias in permanent for alias in aliases):
             return "permanent"
-        if any(alias in session for alias in aliases):
+        if session_aliases.intersection(session):
             return "session"
     return None
 
@@ -462,6 +472,8 @@ def is_approved(session_key: str, pattern_key: str) -> bool:
 
 def _is_permanently_approved(pattern_key: str) -> bool:
     """Permanent approval only, with compatibility for migrated pattern keys."""
+    if not permanent_grants_allowed():
+        return False
     aliases = _approval_key_aliases(pattern_key)
     with _lock:
         return any(alias in _permanent_set() for alias in aliases)
@@ -483,11 +495,13 @@ def load_permanent(patterns: set):
 
 def _persist_choice(session_key: str, choice: str, keys: list[str]) -> None:
     """Persist a human ``session``/``always`` choice for each pattern key. ``once`` persists nothing."""
+    if not standing_grants_allowed():
+        return
     for key in keys:
         if choice not in ("session", "always"):
             continue
         approve_session(session_key, key)
-        if choice == "always":
+        if choice == "always" and permanent_grants_allowed():
             approve_permanent(key)
             # Pass only this process's grants, taken against the baseline of the same snapshot. A
             # check that syncs a hand removal before the save runs advances the baseline, so a
@@ -590,7 +604,10 @@ def is_approval_bypass_active_for_session(session_key: str) -> bool:
     """Canonical three-source bypass check: process ``--yolo`` (frozen at import), the
     session-scoped gateway ``/yolo`` toggle, ``approvals.mode: off``. Pure bypass
     sub-expression only — hardline blocklist / permanent allowlist are the caller's job."""
-    return (_YOLO_MODE_FROZEN or is_session_yolo_enabled(session_key) or approval_context._get_approval_mode() == "off")
+    policy = current_policy(session_key)
+    mode = policy.mode if policy is not None else approval_context._get_approval_mode()
+    return (bypass_allowed(_YOLO_MODE_FROZEN or is_session_yolo_enabled(session_key), session_key)
+            or (mode == "off" and not (policy is not None and policy.error)))
 
 
 def is_approval_bypass_active() -> bool:
@@ -704,6 +721,8 @@ class _Unattended:
 
     def mode(self) -> str:
         # Looked up on the defining module at call time so tests patching the getters keep working.
+        if self.name == "subagent":
+            return managed_child_mode()
         return getattr(approval_context, f"_get_{self.name}_approval_mode")()
 
     def block_message(self, subject: str, *, noun: str, advice: str) -> str:
@@ -743,7 +762,7 @@ def _unattended_contexts() -> list[_Unattended]:
             f"({_get_session_platform()}) with no user present to approve it",
             "on unattended platforms", "sessions on this surface are intentionally trusted",
         ))
-    return contexts
+    return managed_unattended_contexts(contexts)
 
 
 def _command_findings(command: str) -> list[tuple[str, str]]:
@@ -948,7 +967,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         if result is not None:
             return result
     pending_body = pending_body() if pending_body else None
-    allow_permanent = not smart_denied
+    allow_session, allow_permanent = persistence_permissions(smart_denied)
 
     def deny(template: str, outcome: str, **fmt) -> dict:
         breaker = ""
@@ -971,7 +990,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     if spec.transport:
         attempt = _present_with_selected_transport(
             command=command, description=description, pattern_key=pattern_key, pattern_keys=pattern_keys,
-            session_key=session_key, allow_session=not smart_denied, allow_permanent=allow_permanent,
+            session_key=session_key, allow_session=allow_session, allow_permanent=allow_permanent,
             surface=approval_context.gateway_approval_surface() if (is_gateway or is_ask) else "cli",
         )
         choice, denied = _transport_choice(attempt, pattern_key=pattern_key, description=description)
@@ -997,8 +1016,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             data = {
                 "command": display_command, "pattern_key": pattern_key,
                 "pattern_keys": pattern_keys, "description": display_description,
-                "allow_permanent": not smart_denied,
-                "allow_session": not smart_denied,
+                "allow_permanent": allow_permanent,
+                "allow_session": allow_session,
             }
             if smart_denied:
                 data["smart_denied"] = True
@@ -1048,7 +1067,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                        pattern_keys=list(pattern_keys), session_key=session_key, surface="cli")
     approval_context._fire_approval_hook("pre_approval_request", **hook_kwargs)
     choice = prompt_dangerous_approval(prompt_command, prompt_description, allow_permanent=allow_permanent,
-                                       smart_denied=smart_denied, approval_callback=approval_callback)
+                                       smart_denied=smart_denied, approval_callback=approval_callback,
+                                       **managed_prompt_kwargs())
     approval_context._fire_approval_hook("post_approval_response", **hook_kwargs, choice=choice)
     if choice == "timeout":
         return deny(spec.cli_timeout, "timeout")
@@ -1098,9 +1118,10 @@ def _presence(approval_callback=None) -> tuple:
         # POST -> 202 lane has no reader, so a registered callback there answers nothing either
         # — resolve from approvals.unattended_mode, never a pending no one can answer.
         is_ask = False
-    return approval_callback, is_cli, is_gateway, is_ask
+    return constrain_presence(approval_callback, is_cli, is_gateway, is_ask)
 
 
+@managed_approval_gate
 def _run_approval_gate(
     *, pattern_key: str, description: str, display_target: str, approval_callback=None,
     subject: str = "", noun: str = "flagged actions",
@@ -1230,6 +1251,7 @@ def _floor_block(command: str, *, sudo_guard: bool = False) -> dict | None:
     return _user_deny_block(command)
 
 
+@managed_approval_gate
 def check_dangerous_command(command: str, env_type: str,
                             approval_callback=None,
                             has_host_access: bool = False) -> dict:
@@ -1291,6 +1313,7 @@ def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", ap
 
 # --- Combined pre-exec guard (floors + dangerous command detection) ------------------------------------------------
 
+@managed_approval_gate
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None,
                              has_host_access: bool = False) -> dict:
@@ -1306,7 +1329,7 @@ def check_all_command_guards(command: str, env_type: str,
 
     from agent.terminal_approval_batch import consume_prepared_guard
     prepared = consume_prepared_guard(command, env_type, has_host_access)
-    if prepared is not None:
+    if prepared is not None and prepared_guard_allowed(prepared):
         return prepared
 
     approval_mode = approval_context._get_approval_mode()
@@ -1360,6 +1383,7 @@ def _is_local_viewer_turn() -> bool:
             and _gateway_notify_cb(get_current_session_key()) is not None)
 
 
+@managed_approval_gate
 def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = False) -> dict:
     """Approve an execute_code script before its child process is spawned.
 

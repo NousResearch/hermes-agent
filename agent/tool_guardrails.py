@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from collections import deque
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Mapping
@@ -314,6 +315,7 @@ class ToolCallGuardrailController:
 
     def __init__(self, config: ToolCallGuardrailConfig | None = None):
         self.config = config or ToolCallGuardrailConfig()
+        self._cap_lock = threading.Lock()
         self.reset_for_turn()
 
     def reset_for_turn(self) -> None:
@@ -565,11 +567,12 @@ class ToolCallGuardrailController:
         if spec is None:
             return None
         cap_field, count_attr, code = spec
-        cap, count = getattr(self.config.loop_caps, cap_field), getattr(self, count_attr)
-        increment = 1 if tool_name == "web_search" else (_subagent_spawn_count(args) if cap else 0)
-        if increment and cap and count >= cap:
-            return self._decide("block", code, tool_name, count, signature, cap=cap)
-        setattr(self, count_attr, count + increment)
+        with self._cap_lock:
+            cap, count = getattr(self.config.loop_caps, cap_field), getattr(self, count_attr)
+            increment = 1 if tool_name == "web_search" else (_subagent_spawn_count(args) if cap else 0)
+            if increment and cap and count + increment > cap:
+                return self._decide("block", code, tool_name, count, signature, cap=cap)
+            setattr(self, count_attr, count + increment)
         return None
 
 

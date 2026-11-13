@@ -312,6 +312,10 @@ _PARENT_FINALIZATION_LOCK_GUARD = threading.Lock()
 _PARENT_FINALIZATION_FALLBACK_LOCK = threading.RLock()
 _CHILD_CONSTRUCTION_LOCK = threading.RLock()
 
+from tools.delegate_tool_admission import admitted_construction
+
+
+@admitted_construction
 def _build_child_preserving_parent_tools(**kwargs):
     """Build a child without leaking its resolved toolset into the parent."""
     from tools.delegate_tool import _build_child_agent

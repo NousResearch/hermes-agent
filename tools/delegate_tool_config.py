@@ -51,6 +51,9 @@ def _subagent_auto_deny(command: str, description: str, **kwargs) -> str:
 
 def _subagent_auto_approve(command: str, description: str, **kwargs) -> str:
     """Auto-approve (opt-in YOLO via delegation.subagent_auto_approve): returns 'once'."""
+    from tools.approval_host_policy import subagent_auto_approve_allowed
+    if not subagent_auto_approve_allowed(requested=True):
+        return _subagent_auto_deny(command, description, **kwargs)
     logger.warning("Subagent auto-approved dangerous command: %s (%s)", command, description)
     return "once"
 

@@ -1879,6 +1879,7 @@ export const jaOverrides = {
     color: 'カラー…',
     colorFor: 'カラー',
     openInNewWindow: '新しいウィンドウで開く',
+    openInNewWindowHint: 'Shift+クリックでゲートウェイを新しいウィンドウで開きます',
     setAsDefault: 'デフォルトに設定',
     defaultProfile: 'デフォルトのプロファイル',
     defaultSet: name => `${name} をデフォルトに設定しました`,

@@ -409,6 +409,56 @@ def get_task(
             "runs": [asdict(r) for r in kanban_db.list_runs(conn, task_id, state_type=run_state_type, state_name=run_state_name)]}
 
 
+# --- Orca worktree badge (ORCA-06) ------------------------------------------------
+# State + reveal for the kanban card's Orca badge. Both handlers delegate to
+# plugins/kanban/dashboard/orca_worktree.py, which never raises — every
+# failure mode (Orca not installed, runtime socket down, unknown id) comes
+# back as a structured 200 payload with state "unknown" / ok=false so the
+# polling badge degrades instead of error-bannering the board.
+
+def _load_orca_worktree():
+    """Import orca_worktree by file path.
+
+    The plugin host loads plugin_api.py via importlib spec (not as a package
+    member), so a plain sibling import would depend on sys.path luck. The
+    file-location import is deterministic in the gateway, the CLI, and the
+    test harness alike; the module is cached in sys.modules after first load.
+    """
+    mod_name = "kanban_dashboard_orca_worktree"
+    # Local imports: plugin_api's module-level import list stays untouched
+    # (this file is also exec'd by importlib-spec test harnesses).
+    import importlib.util
+    import sys
+    mod = sys.modules.get(mod_name)
+    if mod is None:
+        spec = importlib.util.spec_from_file_location(
+                mod_name, Path(__file__).resolve().parent / "orca_worktree.py")
+        if spec is None or spec.loader is None:  # pragma: no cover — static type guard
+            raise ImportError("cannot load orca_worktree.py from the dashboard plugin directory")
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[mod_name] = mod
+        spec.loader.exec_module(mod)
+    return mod
+
+
+@router.get("/orca/worktree-status")
+def orca_worktree_status(
+    worktree_id: Optional[str] = Query(None, description="Orca worktree link stored on the task (tasks.worktree_id)"),
+):
+    """Badge state for one Orca worktree link: active / idle / complete / unknown."""
+    return _load_orca_worktree().get_worktree_status(worktree_id)
+
+
+class OrcaRevealBody(BaseModel):
+    worktree_id: Optional[str] = None  # validated identifier; blank = bad request payload
+
+
+@router.post("/orca/worktree-reveal")
+def orca_worktree_reveal(payload: OrcaRevealBody):
+    """Focus the linked worktree in the Orca UI (worktree.activate RPC)."""
+    return _load_orca_worktree().reveal_worktree(payload.worktree_id)
+
+
 # --- POST /tasks ------------------------------------------------------------
 
 class CreateTaskBody(BaseModel):
@@ -430,6 +480,7 @@ class CreateTaskBody(BaseModel):
     provider_override: Optional[str] = None
     reasoning_effort: Optional[str] = None  # none|minimal|…|ultra; None inherits the profile's level
     project_id: Optional[str] = None  # None inherits the board's scoped project (if any)
+    worktree_id: Optional[str] = None  # Orca worktree link (ORCA-06); validated identifier, blank = no link
 
 
 @router.post("/tasks")
@@ -549,6 +600,10 @@ class UpdateTaskBody(BaseModel):
     clear_model_override: bool = False
     reasoning_effort: Optional[str] = None
     clear_reasoning_effort: bool = False
+    # Orca worktree link (ORCA-06). None = not sent; "" or clear_worktree_id
+    # explicitly clears the link (PATCH None means "field not sent").
+    worktree_id: Optional[str] = None
+    clear_worktree_id: bool = False
 
 
 class BulkTaskBody(BaseModel):
@@ -710,6 +765,14 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
             _set_priority(conn, task_id, payload.priority, board)
         if payload.title is not None or payload.body is not None:
             _patch_title_body(conn, task_id, payload, board)
+        if payload.worktree_id is not None or payload.clear_worktree_id:
+            # "" (or clear_worktree_id) clears the link; a value sets/replaces it.
+            # edit_task is tri-state: None would leave the link untouched.
+            with _map_errors(400, ValueError):
+                _require_ok(kanban_db.edit_task(
+                    conn, task_id,
+                    worktree_id="" if payload.clear_worktree_id else payload.worktree_id,
+                    board=board))
         updated = kanban_db.get_task(conn, task_id)
         return {"task": _task_dict(
             updated, current_run_started_at=kanban_db.current_run_started_ats(conn, [task_id]).get(task_id)

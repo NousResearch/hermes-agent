@@ -205,6 +205,9 @@ _SPECS = [
                   "the worker). Requires --model."),
         _arg("--completion-contract", metavar="CONTRACT",
              help="local-only (default), OWNER/REPO for publication, or exact GitHub PR URL; required CI gates done."),
+        _arg("--worktree-id", metavar="ID",
+             help="Orca worktree id to link this task to (kanban<->orca auto-link). "
+                  "A non-empty string identifier when present."),
         _arg("--goal", action="store_true", dest="goal_mode",
              help="Run the worker in a goal loop: after each turn a judge checks the "
                   "response against the card title/body and, if not done, the worker "
@@ -310,6 +313,8 @@ _SPECS = [
         _arg("--body", help="Replace the task body"),
         _arg("--priority", type=int, help="Replace the task priority"),
         _arg("--result", help="Backfilled task result text for a done task"),
+        _arg("--worktree-id", metavar="ID",
+             help="Set/replace the linked Orca worktree id; an empty value clears the link"),
         *_STEP_HANDOFF,
     ], help="Edit task fields or recovery fields on an already-completed task"),
     _cmd("block", [

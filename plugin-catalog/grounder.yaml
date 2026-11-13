@@ -10,7 +10,7 @@ docs_url: https://github.com/grounder-labs/grounder-hermes-plugin#readme
 version: "0.7.2"
 title: Grounder
 known_issues:
-  - "The first load in a profile sets web.search_backend and web.extract_backend to grounder, replacing any backend chosen for them, once. Pick another in hermes tools and that choice stands"
+  - "The first load in a profile sets web.search_backend and web.extract_backend to `grounder`, replacing any backend chosen for them, once. Pick another in hermes tools and that choice stands"
   - "/search is registered only while Grounder is the web search backend; a switch made in hermes tools takes effect at the next start"
   - "Usage context (the model's name and two random session and prompt tokens on each search) is off by default. hermes config set web.grounder.share_usage_context true, then restart Hermes, turns it on and registers the post_api_request hook"
   - "With no search key, the first load writes the public GROUNDER_OAUTH_CLIENT_ID to the profile's .env, because Hermes turns the web tools off when the selected backend is not ready"

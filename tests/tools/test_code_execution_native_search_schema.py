@@ -38,3 +38,21 @@ def test_client_search_schema_keeps_python_helper(backend, enabled):
     assert "web_search(query" in description
     assert "server-side web_search tool" not in description
     assert "cannot execute native search" not in description
+
+def test_native_search_schema_never_advertises_a_disabled_search_tool():
+    """Native guidance requires a search tool in the session's enabled set."""
+    (get_hermes_home() / "config.yaml").write_text(
+        "web:\n  search_backend: openai-native\n",
+        encoding="utf-8",
+    )
+
+    with_search = build_execute_code_schema({"terminal", "web_search"}, mode="project")["description"]
+    assert "web_search(query" not in with_search
+    assert "server-side web_search tool" in with_search
+
+    without_search = build_execute_code_schema({"terminal"}, mode="project")["description"]
+    assert "terminal(command" in without_search
+    assert "web_search(query" not in without_search
+    assert "server-side web_search tool" not in without_search
+    assert "Call that tool directly" not in without_search
+    assert "hermes_tools.web_search cannot execute native search" not in without_search

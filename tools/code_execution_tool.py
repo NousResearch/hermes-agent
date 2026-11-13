@@ -895,7 +895,7 @@ def build_execute_code_schema(enabled_sandbox_tools: set | None = None,
     # Native search executes at the Responses endpoint, not through Python RPC.
     # Advertising the RPC helper makes models bypass the transport's native swap.
     from tools.web_tools import _get_search_backend
-    native_search = _get_search_backend() == "openai-native"
+    native_search = "web_search" in enabled_sandbox_tools and _get_search_backend() == "openai-native"
     if native_search:
         enabled_sandbox_tools = set(enabled_sandbox_tools) - {"web_search"}
     if mode is None:

@@ -194,11 +194,61 @@ def _ask_keep_local_changes(changes: _LocalChanges) -> bool:
     return response not in {"n", "no"}
 
 
+def _preserve_before_discard(git_cmd: list[str], cwd: Path, changes: _LocalChanges) -> str:
+    """Durable copy of exactly what a declined discard is about to delete.
+
+    Declining to keep local changes is an explicit answer, but it is irreversible in THIS checkout:
+    the edits may be a lane's only copy living in a shared working tree whose row already reads
+    done (the dirty-tree hazard the K-Team worker briefs name). Before the reset, write both halves
+    to ``HERMES_HOME/backups`` — outside the tree the discard wipes: a ``git diff HEAD`` patch for
+    the tracked/staged edits (apply it back with ``git apply``) and a copy of each colliding
+    untracked entry.
+
+    Deliberately NOT a stash entry: the decline contract is that no autostash is ever left behind
+    (an orphaned one is exactly what the update's orphan warning has to chase), so the copy is a
+    plain file the recovery path can name without touching ``git stash list``.
+
+    Returns a human-readable description of where the copy went ("" when nothing needed saving).
+    """
+    import shutil
+
+    from hermes_cli.update_cmd_git import _git_run
+    from hermes_constants import get_hermes_home
+
+    target = Path(get_hermes_home()) / "backups" / f"update-discard-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
+    where: list[str] = []
+    if changes.tracked:
+        diff = _git_run(git_cmd, ["diff", "HEAD", "--binary"], cwd)
+        text = diff.stdout or ""
+        if text.strip():
+            target.mkdir(parents=True, exist_ok=True)
+            patch = target / "tracked.patch"
+            patch.write_text(text, encoding="utf-8", errors="surrogateescape")
+            where.append(f"tracked edits in {patch} (restore with `git apply`)")
+    if changes.stash_untracked:
+        saved = 0
+        for rel in changes.stash_untracked:
+            source = Path(cwd) / rel
+            if not source.is_file():
+                continue
+            destination = target / "untracked" / rel
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+            saved += 1
+        if saved:
+            where.append(f"{saved} untracked file(s) under {target / 'untracked'}")
+    return "; ".join(where)
+
+
 def _discard_local_changes_before_update(
         git_cmd: list[str], cwd: Path, changes: _LocalChanges, *, checkout_move=None) -> None:
-    """Delete exactly what would have been stashed: tracked edits and the colliding untracked entries."""
+    """Delete exactly what would have been stashed: tracked edits and the colliding untracked entries.
+
+    A recovery copy is written first (``_preserve_before_discard``): the delete stays, the loss
+    becomes recoverable."""
     from hermes_cli.update_cmd_git import _git_run, _no_move
     from hermes_cli.update_receipt import record_step
+    preserved = _preserve_before_discard(git_cmd, cwd, changes)
     with (checkout_move or _no_move)(revert=True):  # every tracked change goes back to HEAD
         if changes.tracked:
             _git_run(git_cmd, ["reset", "--hard", "HEAD"], cwd, check=True)
@@ -206,7 +256,11 @@ def _discard_local_changes_before_update(
             _git_run(git_cmd, ["clean", "-f", "-d", "--", *(_literal(p) for p in changes.stash_untracked)],
                      cwd, check=True)
     print("→ Discarded local changes (you chose not to keep them).")
-    record_step("local_changes_stash", True, "discarded before update (user declined keeping them)")
+    if preserved:
+        print(f"→ Recovery copy kept: {preserved}")
+    record_step("local_changes_stash", True,
+                "discarded before update (user declined keeping them)"
+                + (f"; recovery copy: {preserved}" if preserved else ""))
 
 
 def _stash_local_changes_if_needed(

@@ -730,3 +730,57 @@ def test_unrequested_park_is_never_reported_as_update_complete(monkeypatch, tmp_
 
     stash_mod._park_stashed_changes(stash_ref)
     assert stash_mod._unrestored_autostash_notice() is None
+
+def test_declining_local_changes_still_leaves_a_durable_recovery_copy(tmp_path, monkeypatch):
+    """A deliberate discard must still be recoverable.
+
+    ``hermes update`` deletes the tracked edits and the colliding untracked
+    entries when the user declines to keep them. In this workspace that delete is
+    the "hygiene sweep" worker briefs warn about: a lane's only copy lives in the
+    shared working tree while its row already reads done. Declining must keep a
+    durable copy outside the tree it is about to wipe.
+    """
+    from hermes_cli import update_cmd_stash as stash_mod
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def run(*args):
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+
+    run("init")
+    run("config", "user.email", "t@example.invalid")
+    run("config", "user.name", "t")
+    (repo / "tracked.txt").write_text("base\n", encoding="utf-8")
+    run("add", "-A")
+    run("commit", "-qm", "base")
+
+    (repo / "tracked.txt").write_text("base\nPRECIOUS-TRACKED-WORK\n", encoding="utf-8")
+    (repo / "collide.txt").write_text("PRECIOUS-UNTRACKED-WORK\n", encoding="utf-8")
+
+    changes = stash_mod._scan_local_changes(["git"], repo, ("collide.txt",))
+    assert changes is not None and changes.needs_moving
+    stash_mod._discard_local_changes_before_update(["git"], repo, changes)
+
+    # the discard happened
+    assert (repo / "tracked.txt").read_text(encoding="utf-8") == "base\n"
+    assert not (repo / "collide.txt").exists()
+
+    # ... and both halves of the work are still recoverable, without leaving an autostash behind
+    # (the decline contract: an orphaned entry is exactly what the update's orphan warning chases)
+    log = subprocess.run(["git", "stash", "list"], cwd=repo, capture_output=True, text=True, check=False).stdout
+    assert log.strip() == "", log
+
+    patches = list((home / "backups").glob("update-discard-*/tracked.patch"))
+    assert patches, list((home / "backups").rglob("*")) if (home / "backups").exists() else []
+    assert "PRECIOUS-TRACKED-WORK" in patches[0].read_text(encoding="utf-8", errors="surrogateescape")
+
+    copies = list((home / "backups").glob("update-discard-*/untracked/collide.txt"))
+    assert copies, list((home / "backups").rglob("*")) if (home / "backups").exists() else []
+    assert "PRECIOUS-UNTRACKED-WORK" in copies[0].read_text(encoding="utf-8")
+
+    # the tracked copy is a real patch: it applies back onto the discarded tree
+    subprocess.run(["git", "apply", "--check", str(patches[0])], cwd=repo, check=True)

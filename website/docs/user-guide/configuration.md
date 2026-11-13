@@ -83,6 +83,8 @@ When Hermes itself writes a credential for a config field, the value goes to the
 
 The path segment is only added when it is something other than `/v1`. A plugin task key that is not all lowercase (`My_Task`) also gets `_<HASH>`, so it never shares a variable with `my_task`. `<HASH>` is 8 hex characters derived from the exact endpoint URL (or provider name), so endpoints whose names look alike, such as `my-host.com` and `my.host.com`, never share a variable. Hermes refuses to overwrite a variable that another endpoint in `config.yaml` already reads with a different key. A value you type as a reference (`hermes config set model.api_key '${MY_KEY}'`) is stored as you typed it. These variables are always stripped from terminal and subprocess environments, even when `env_passthrough` lists them or `inherit_credentials` is on. With a remote config backend, which does not share `.env` between hosts, values are stored as given.
 
+A running gateway re-reads `.env` at the start of every turn, so its next message uses a newly saved key without a restart. A process that read `.env` only at startup and is not driven by gateway turns picks the key up after `/reload` or a restart; until then, an auxiliary task whose key was just saved sends the unexpanded `${VAR}` text as the key.
+
 Inline credentials already in `config.yaml` still work and are not migrated, but they are discouraged. Move one by hand with `hermes config set <field> <value>`, which rewrites it as a reference.
 
 :::tip Org deployments

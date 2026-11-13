@@ -1,10 +1,11 @@
-"""A relayed Discord interaction that is not a prompt button answers a prompt only as an unadmitted sender.
+"""A relayed Discord interaction answers a prompt as admitted only for a sender the connector admitted.
 
 Discord application commands (``/approve``, ``/deny``) and component presses with a plain custom_id
 travel the relay's passthrough lane, which the connector forwards to every gateway of the tenant
-without its per-author check. They reach the runner as typed commands, so the runner's typed-answer
-checks must treat their sender as not admitted, exactly as a prompt button press is: under
-``approvals.approvers: ["*"]`` only the requester, a listed approver or an admin answers.
+without its per-author check, and reach the runner as typed commands, possibly rebuilt (``/queue``,
+``/steer``), rewritten by a plugin or merged. The runner's typed-answer checks judge the sender, not
+the event: a relayed Discord sender whose messages never reached this gateway is not admitted, so
+under ``approvals.approvers: ["*"]`` only the requester, a listed approver or an admin answers.
 
 Real path: authenticated WS reader -> relay adapter -> GatewayRunner with its SQLite authority.
 """
@@ -28,6 +29,13 @@ def _frame(interaction_type, user, data):
     return {"type": "passthrough_forward", "bufferId": f"b-{user}", "forward": {
         "platform": "discord", "botId": "app", "method": "POST", "path": "/interactions", "headers": [],
         "bodyB64": base64.b64encode(json.dumps(body).encode()).decode()}}
+
+
+@pytest.fixture(autouse=True)
+def _no_admitted_authors(monkeypatch):
+    from gateway.relay import admitted_authors
+
+    monkeypatch.setattr(admitted_authors, "_admitted", type(admitted_authors._admitted)())
 
 
 @pytest_asyncio.fixture
@@ -123,12 +131,13 @@ async def test_discord_approve_command_from_the_requester_still_approves(gateway
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["slash_confirm", "clarify"])
-@pytest.mark.parametrize(("sender", "relayed_interaction", "refused"), [
-    ("mallory", True, True), ("alice", True, False), ("mallory", False, False)])
-async def test_typed_answer_from_a_discord_interaction_is_unadmitted(gateway, kind, sender, relayed_interaction,
-                                                                     refused):
-    """The runner's typed slash-confirm and clarify checks: a relayed Discord interaction's sender is not
-    admitted, a relayed message's sender is (``approvers: ["*"]``, any admitted member answers)."""
+@pytest.mark.parametrize(("sender", "delivered_here", "refused"), [
+    ("mallory", False, True), ("alice", False, False), ("mallory", True, False)])
+async def test_typed_answer_from_an_unadmitted_discord_sender_is_refused(gateway, kind, sender, delivered_here,
+                                                                         refused):
+    """The runner's typed slash-confirm and clarify checks: a relayed Discord sender is admitted once
+    the connector delivered their message here (``approvers: ["*"]``, any admitted member answers)."""
+    from gateway.relay.admitted_authors import note_delivered
     from gateway.config import Platform
     from gateway.platforms.event import MessageEvent
     from gateway.session import SessionSource
@@ -148,7 +157,9 @@ async def test_typed_answer_from_a_discord_interaction_is_unadmitted(gateway, ki
         clear_session_vars(tokens)
     event = MessageEvent(text="red", source=SessionSource(
         platform=Platform.DISCORD, chat_id=THREAD, chat_type="thread", thread_id=THREAD, user_id=sender,
-        delivered_via_upstream_relay=True), unadmitted_author=relayed_interaction)
+        delivered_via_upstream_relay=True))
+    if delivered_here:
+        note_delivered(event.source)
     try:
         if kind == "slash_confirm":
             refusal = runner._refused_slash_confirm(event, session_key, "cf1")
@@ -184,25 +195,49 @@ async def test_a_pre_gateway_dispatch_rewrite_keeps_the_interaction_unadmitted(g
     assert entry.result is None
 
 
-@pytest.mark.parametrize("interaction_first", [True, False])
-def test_a_merge_with_an_interaction_stays_unadmitted_in_either_order(interaction_first):
-    """Busy-ingress coalescing (``merge_pending_message_event``) and the text debounce
-    (``absorb_reply_expected``) fold two inputs into one event: one unadmitted input taints it."""
-    from gateway.approval_actor import answer_admitted
+def test_admission_follows_the_sender_through_rebuilds_and_merges():
+    """``/queue`` and ``/steer`` rebuild the event from its source, a plugin rewrite copies it, a merge
+    of two senders clears its user: none of them changes who the connector admitted."""
+    import dataclasses
+
     from gateway.config import Platform
-    from gateway.platforms.base import merge_pending_message_event
     from gateway.platforms.event import MessageEvent
+    from gateway.relay.admitted_authors import answer_admitted, note_delivered
     from gateway.session import SessionSource
 
-    def make(text, unadmitted):
-        return MessageEvent(text=text, unadmitted_author=unadmitted, source=SessionSource(
-            platform=Platform.DISCORD, chat_id=THREAD, chat_type="thread", user_id="mallory"))
+    def relayed(user, platform=Platform.DISCORD):
+        return SessionSource(platform=platform, chat_id=THREAD, chat_type="thread", user_id=user,
+                             delivered_via_upstream_relay=True)
 
-    first, second = (make("injected", True), make("ordinary", False))[::1 if interaction_first else -1]
-    pending = {"k": first}
-    merge_pending_message_event(pending, "k", second, merge_text=True)
-    assert pending["k"] is first and answer_admitted(first) is False
+    note_delivered(relayed("alice"))
+    interaction = MessageEvent(text="/queue /approve", source=relayed("mallory"))
+    rebuilt = MessageEvent(text="/approve", source=interaction.source)
+    assert [answer_admitted(e) for e in (interaction, rebuilt, dataclasses.replace(rebuilt, text="/approve"))] == [
+        False, False, False]
+    merged = MessageEvent(text="hi", source=relayed("alice"))
+    merged.absorb_turn_input(interaction)
+    assert merged.sender_id() == "" and answer_admitted(merged) is False
+    assert answer_admitted(MessageEvent(text="/approve", source=relayed("alice"))) is True
+    # Other relayed platforms and native adapters are admitted by their own lanes, unchanged.
+    assert answer_admitted(MessageEvent(text="/approve", source=relayed("mallory", Platform.TELEGRAM))) is True
+    assert answer_admitted(MessageEvent(text="/approve", source=SessionSource(
+        platform=Platform.DISCORD, chat_id=THREAD, chat_type="thread", user_id="mallory"))) is True
 
-    head, tail = (make("injected", True), make("ordinary", False))[::1 if interaction_first else -1]
-    head.absorb_reply_expected(tail)
-    assert answer_admitted(head) is False
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["/queue /approve", "/steer /approve"])
+async def test_a_follow_up_rebuilt_from_a_discord_interaction_does_not_approve(gateway, monkeypatch, command):
+    """A busy session turns ``/queue`` / a fallback ``/steer`` into a rebuilt follow-up event."""
+    from tests.waiting import async_wait_until
+
+    runner, transport, adapter = gateway
+    key = _thread_session_key(runner)
+    entry = _alice_approval(key)
+    monkeypatch.setattr(runner, "_is_session_running", lambda _session_key: True)
+    replies = adapter.send.await_count
+
+    await transport._handle_frame(json.dumps(_frame(3, "mallory", {"custom_id": command})))
+
+    # The queued acknowledgement, then the rebuilt /approve's own answer.
+    await async_wait_until(lambda: adapter.send.await_count >= replies + 2 or entry.event.is_set(), timeout=15)
+    assert entry.result is None

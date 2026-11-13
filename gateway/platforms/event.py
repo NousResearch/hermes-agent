@@ -137,9 +137,6 @@ class MessageEvent:
     # unknown). For adapters whose ``media_urls`` are random cache names (relay); the name is
     # display data only, never a path. Appended for positional compat.
     media_filenames: list[str] = field(default_factory=list)
-    # The sender skipped an upstream per-author check (a relayed Discord interaction): it answers a
-    # prompt only as unadmitted (``approval_actor.answer_admitted``). A merge keeps it. Appended.
-    unadmitted_author: bool = False
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
@@ -160,9 +157,7 @@ class MessageEvent:
             event = getattr(event, "_rewritten_from", None)
 
     def absorb_reply_expected(self, other: "MessageEvent") -> None:
-        """One turn now answers *other* too: an addressed message wins, then an unknown one. An
-        unadmitted sender's input leaves the merged event unadmitted."""
-        self.unadmitted_author = self.unadmitted_author or other.unadmitted_author
+        """One turn now answers *other* too: an addressed message wins, then an unknown one."""
         if self.reply_expected is not True and other.reply_expected is not False:
             self.reply_expected = other.reply_expected
 

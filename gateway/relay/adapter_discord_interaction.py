@@ -194,9 +194,7 @@ class RelayDiscordInteractionMixin:
             # connector resolved a specific profile for it.
             profile=getattr(forward, "profile", None),
         )
-        # The connector forwards an interaction to every gateway of the tenant without the per-author
-        # check it runs on messages: it answers a prompt only as an unadmitted sender (``may_answer``).
-        event = MessageEvent(text=text, message_type=message_type, source=source, unadmitted_author=True)
+        event = MessageEvent(text=text, message_type=message_type, source=source)
         if itype == 3:
             # A component press whose custom_id is a Hermes prompt token
             # (hp1:<prompt_id>:<option_id>) becomes a STRUCTURED prompt answer;

@@ -320,7 +320,22 @@ class _Collector:
         task = self.kb.get_task(conn, sub["task_id"])
         logger.debug("kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
                      len(events), sub["task_id"], slug, old_cursor, cursor)
-        return {"sub": sub, "old_cursor": old_cursor, "cursor": cursor, "events": events, "task": task, "board": slug}
+        handoffs = {}
+        if platform == "telegram":
+            import json
+            for ev in events:
+                if ev.kind not in {"completed", "review_requested"}:
+                    continue
+                row = conn.execute("SELECT summary, metadata FROM task_runs WHERE id = ? AND task_id = ?",
+                                   (getattr(ev, "run_id", None), sub["task_id"])).fetchone()
+                if row:
+                    try:
+                        metadata = json.loads(row["metadata"] or "{}")
+                    except (ValueError, TypeError):
+                        metadata = {}
+                    handoffs[ev.id] = {"summary": row["summary"], "metadata": metadata}
+        return {"sub": sub, "old_cursor": old_cursor, "cursor": cursor, "events": events, "task": task,
+                "board": slug, "handoffs": handoffs}
 
     def collect_board(self, slug: str) -> None:
         """Claim events on one board, appending delivery dicts to ``deliveries``."""
@@ -680,10 +695,16 @@ class _KanbanNotification:
         metadata: dict[str, Any] = dict(delivery_metadata) if isinstance(delivery_metadata, dict) else {}
         if sub.get("thread_id") and not metadata.get("thread_id"):
             metadata["thread_id"] = sub["thread_id"]
+        # Internal durable checkpoints are not transport routing metadata.
+        metadata = {k: v for k, v in metadata.items() if not k.startswith("task_status_")}
         _send_res = None
         async def send_ping():
             nonlocal _send_res
-            _send_res = await adapter.send(sub["chat_id"], msg, metadata=metadata)
+            if self.platform_str == "telegram" and callable(getattr(adapter, "edit_message", None)):
+                from gateway.kanban_task_status import send_status
+                await send_status(self, ev, metadata)
+            else:
+                _send_res = await adapter.send(sub["chat_id"], msg, metadata=metadata)
         if not await present_notification(send_ping, platform=self.platform_str, diagnostic=diagnostic_event(ev)):
             return False
         # SendResult(success=False) without an exception is a FAILED delivery
@@ -712,6 +733,8 @@ class _KanbanNotification:
         """Send every text ping; False when a send failed (claim already rewound/dropped)."""
         for ev in self.d["events"]:
             msg = self.format_event(ev)
+            if self.platform_str == "telegram" and ev.kind == "unblocked":
+                msg = "Recovery dispatched; success not yet verified"
             if msg is None:
                 continue
             # Non-push adapters (api_server) always report SendResult(success=False)
@@ -738,6 +761,10 @@ class _KanbanNotification:
                 ))
                 self.clear_failures()
             except Exception as exc:
+                from gateway.kanban_task_status import StatusDeferred
+                if isinstance(exc, StatusDeferred):
+                    await self.rewind()
+                    return False
                 await self.delivery_failed(
                     "kanban notifier: send failed for %s on %s (attempt %d/%d): %s", (self.task_id, self.platform_str),
                     "kanban notifier: dropping subscription %s on %s after %d consecutive send failures", exc, False,

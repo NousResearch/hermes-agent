@@ -425,6 +425,22 @@ def advance_notify_cursor(
         )
 
 
+def record_notify_status(
+    conn: sqlite3.Connection, *, task_id: str, platform: str, chat_id: str,
+    thread_id: Optional[str] = None, state: dict,
+) -> None:
+    """Merge private status checkpoints without replacing routing/approval metadata."""
+    key = _sub_key(task_id, platform, chat_id, thread_id)
+    with _kb.write_txn(conn):
+        row = conn.execute("SELECT delivery_metadata FROM kanban_notify_subs " + _SUB_KEY_WHERE, key).fetchone()
+        if row is None:
+            raise RuntimeError("notification subscription disappeared")
+        metadata = _decode_notify_delivery_metadata(row["delivery_metadata"])
+        metadata.update({k: v for k, v in state.items() if k.startswith("task_status_")})
+        conn.execute("UPDATE kanban_notify_subs SET delivery_metadata = ? " + _SUB_KEY_WHERE,
+                     (_encode_notify_delivery_metadata(metadata), *key))
+
+
 def record_notify_ping(
     conn: sqlite3.Connection, *, task_id: str, platform: str, chat_id: str,
     thread_id: Optional[str] = None, event_id: int,

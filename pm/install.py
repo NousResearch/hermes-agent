@@ -391,9 +391,16 @@ def _refresh_recorded_env(package, facts, store, entry, previous, target, *, sel
     """An entry's env is derived from the package code, not its bytes: when the code changes it (a
     variable renamed or retired), re-record it so stores installed earlier match what admission
     compares against. The recorded digest still vouches for the bytes, so nothing is re-fetched.
-    ``select`` re-records it regardless, making this pin the store's selection again."""
+    ``select`` re-records it regardless, making this pin the store's selection again. In the shared
+    writable store a pin this checkout does not own yet is re-recorded too: depending on a row makes
+    it an owner, or another checkout's upgrade drops the row and gc deletes the entry (#149497).
+    A build-owned store (``prepare_tools``) keeps its facts byte-identical on a hit."""
+    from pm.lock import install_owner
+
     env = package.env(entry, target)
-    if select or facts.env_for(package.name, store.root) != env:
+    unclaimed = (install_owner() not in (previous.get("owners") or ())
+                 and store.root == Store(paths.writable_store_root()).root)
+    if select or unclaimed or facts.env_for(package.name, store.root) != env:
         facts.record(package.name, previous["version"], previous["entry"], env, store.root,
                      target=previous.get("target"), artifacts=previous.get("artifacts"),
                      digest=previous.get("digest"))
@@ -420,13 +427,8 @@ def _refresh_found_env(package, location, target, operation) -> None:
                          if row["entry"] == entry.name), None)
         if previous is None:
             return
-        selected = facts.selected(package.name, previous)
-        if install_owner() in (previous.get("owners") or ()):
-            _refresh_recorded_env(package, selected, store, entry, previous, target)
-        else:
-            selected.record(package.name, previous["version"], previous["entry"],
-                            package.env(entry, target), store.root, target=previous.get("target"),
-                            artifacts=previous.get("artifacts"), digest=previous.get("digest"))
+        _refresh_recorded_env(package, facts.selected(package.name, previous), store, entry,
+                              previous, target)
 
 
 def _copy_verified_source(package, lockfile, copy_from, staged, version, target) -> None:

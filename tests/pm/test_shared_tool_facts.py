@@ -140,3 +140,26 @@ def test_cache_hit_on_this_checkouts_pin_selects_it_for_builds(tmp_path, monkeyp
                           lock=locks["A"]).entries["python"].version == "1.0"
     prune_staged_store(root, ["python"])
     assert entry.is_dir()
+
+
+def test_cache_hit_on_another_checkouts_install_of_the_same_pin_claims_it(tmp_path, monkeypatch):
+    """B waits on the install lock while A installs the pin both lock, then B's install hits A's
+    entry: B must own that row, or A's later upgrade drops it and gc deletes B's tool."""
+    root = tmp_path / "tools"
+    root.mkdir()
+    target = current_target()
+    package = get_package("python")
+    monkeypatch.setattr(paths, "store_root", lambda: root)
+    monkeypatch.setattr(paths, "writable_store_root", lambda: root)
+    monkeypatch.setattr(environments, "installs_root", lambda: tmp_path / "installs")
+    lock = _pin(tmp_path / "shared.json", "python", "1.0", "1" * 64, target)
+
+    monkeypatch.setattr(pm_lock, "install_owner", lambda: "A")
+    entry, _ = _publish(root, "python", "1.0", "1" * 64, target, digest=True)
+    monkeypatch.setattr(pm_lock, "install_owner", lambda: "B")
+    assert install._install(package, lock, Facts(root / "facts.json"), Store(root), target) == entry
+
+    monkeypatch.setattr(pm_lock, "install_owner", lambda: "A")
+    _publish(root, "python", "2.0", "2" * 64, target, digest=True)
+    cli._gc_store(Store(root), Facts(root / "facts.json"))
+    assert entry.is_dir()

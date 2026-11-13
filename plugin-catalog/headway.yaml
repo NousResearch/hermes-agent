@@ -1,0 +1,38 @@
+name: headway
+title: Headway
+repo: https://github.com/hanii090/headway-hermes-plugin
+sha: d43e24318d8198a373b8fff147f56d0a4367301a
+description: >-
+  Proof-of-progress circuit breaker: different commands are not necessarily progress.
+  Watches local terminal, file-mutation, and read/search calls for unchanged bounded
+  workspace fingerprints, no new normalized result evidence, and no expanded read
+  coverage. Injects a structured recovery packet after configurable no-progress streaks;
+  optional enforce mode blocks subsequent same-class calls without executing them.
+  Distinct from exact/near-identical argument guards, consecutive-failure escalation,
+  tqdm rendering cleanup, and undo/snapshot plugins. Registers tool_execution middleware,
+  pre_llm_call, /headway status/reset/mode, hermes headway status, and optional read-only
+  dashboard API; no model-facing tools or Desktop pane. Stores atomic session/workspace
+  JSON under Hermes plugin data dir. No network, credentials, self-updater, core patches,
+  shell, or git use in production code; scripts/demo.py alone uses subprocess for real
+  local terminal commands. Large-file/total/file-count sampling is bounded and can miss
+  changes; remote/external side effects are not claimed as observed progress.
+maintainer: hanii090
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/hanii090/headway-hermes-plugin#readme
+version: "0.1.0"
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - "Bounded head/tail and total-size/file-count sampling may miss workspace changes."
+  - "Only local filesystem state is measured; non-local TERMINAL_ENV backends are skipped and external side effects are outside scope."
+  - "Non-string tool results are preserved; advisory packets are appended only to string results."
+  - "No Desktop pane; optional read-only dashboard API only. No multi-process state locking."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware:
+    - tool_execution
+  requires_env: []

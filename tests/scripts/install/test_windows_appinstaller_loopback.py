@@ -20,22 +20,22 @@ FAMILY = "microsoft.desktopappinstaller_8wekyb3d8bbwe"
 FAKE_CHECKNETISOLATION = r"""
 $global:exempt = [System.Collections.Generic.List[string]]::new()
 $global:calls = [System.Collections.Generic.List[string]]::new()
-$global:refuse = REFUSE
+$global:refuse = 'REFUSE'
 function CheckNetIsolation.exe {
     $global:calls.Add($args -join ' ')
     switch ($args[1]) {
         '-s' { foreach ($name in $global:exempt) { '    Name: ' + $name } }
-        '-a' { if (-not $global:refuse) { $global:exempt.Add($args[2].Substring(3)) } }
-        '-d' { [void]$global:exempt.Remove($args[2].Substring(3)) }
+        '-a' { if ($global:refuse -ne '-a') { $global:exempt.Add($args[2].Substring(3)) } }
+        '-d' { if ($global:refuse -ne '-d') { [void]$global:exempt.Remove($args[2].Substring(3)) } }
     }
 }
 """
 
 
-def _run(body: str, *, refuse: bool = False) -> subprocess.CompletedProcess:
+def _run(body: str, *, refuse: str = "") -> subprocess.CompletedProcess:
     powershell = shutil.which("powershell")
     assert powershell, "Windows PowerShell 5.1 is part of every supported Windows"
-    script = (FAKE_CHECKNETISOLATION.replace("REFUSE", "$true" if refuse else "$false")
+    script = (FAKE_CHECKNETISOLATION.replace("REFUSE", refuse)
               + body.replace("HELPER", str(HELPER)).replace("FAMILY", FAMILY))
     encoded = base64.b64encode(script.encode("utf-16-le")).decode()
     return subprocess.run([powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
@@ -62,6 +62,13 @@ $again = & 'HELPER' -Action Add
 
 
 def test_leg_fails_when_the_exemption_does_not_take(tmp_path):
-    result = _run("& 'HELPER' -Action Add", refuse=True)
+    result = _run("& 'HELPER' -Action Add", refuse="-a")
     assert result.returncode != 0
     assert "Could not exempt App Installer from loopback isolation" in result.stdout + result.stderr
+
+
+def test_leg_fails_when_the_exemption_is_not_removed(tmp_path):
+    # Windows PowerShell 5.1 ignores a native command's exit code, so the helper re-reads the list.
+    result = _run("$global:exempt.Add('FAMILY'); & 'HELPER' -Action Remove", refuse="-d")
+    assert result.returncode != 0
+    assert "Could not remove App Installer's loopback exemption" in result.stdout + result.stderr

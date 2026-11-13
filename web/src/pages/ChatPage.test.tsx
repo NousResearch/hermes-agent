@@ -30,6 +30,8 @@ class FakeWebglAddon {
 }
 
 class FakeTerminal {
+  static instances: FakeTerminal[] = [];
+  dataHandler: ((data: string) => void) | null = null;
   options: Record<string, unknown>;
   rows = 24;
   cols = 80;
@@ -40,6 +42,7 @@ class FakeTerminal {
 
   constructor(options: Record<string, unknown>) {
     this.options = options;
+    FakeTerminal.instances.push(this);
   }
 
   attachCustomKeyEventHandler() {
@@ -64,7 +67,8 @@ class FakeTerminal {
 
   loadAddon() {}
 
-  onData() {
+  onData(handler: (data: string) => void) {
+    this.dataHandler = handler;
     return { dispose() {} };
   }
 
@@ -214,6 +218,7 @@ async function render(ui: ReactNode) {
 
 beforeEach(() => {
   FakeWebSocket.instances = [];
+  FakeTerminal.instances = [];
   webglInstances.length = 0;
   maybeReloadForLoopbackWsAuthFailure.mockClear();
   apiMocks.buildWsUrl.mockReset();
@@ -587,6 +592,149 @@ describe("ChatPage", () => {
     await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2), {
       timeout: 3000,
     });
+  });
+
+  // #145511: keystrokes typed before the socket is attached used to vanish.
+  const sentText = (socket: FakeWebSocket) =>
+    socket.send.mock.calls
+      .map(([data]) => data as string)
+      .filter((data) => !data.startsWith("\x1b[RESIZE:"));
+
+  it("delivers keystrokes typed while the PTY socket is still connecting (#145511)", async () => {
+    vi.useFakeTimers();
+    try {
+      const { default: ChatPage } = await import("./ChatPage");
+      await render(
+        <MemoryRouter initialEntries={["/chat"]}>
+          <ChatPage isActive />
+        </MemoryRouter>,
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      const socket = FakeWebSocket.instances[0];
+      const term = FakeTerminal.instances.at(-1);
+
+      act(() => {
+        term?.dataHandler?.("æ");
+        term?.dataHandler?.("ø");
+      });
+      expect(sentText(socket)).toEqual([]);
+
+      await act(async () => socket.onopen?.());
+      // Held until the post-open delay so the server can attach the PTY.
+      expect(sentText(socket)).toEqual([]);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(150);
+      });
+      expect(sentText(socket)).toEqual(["æ", "ø"]);
+
+      act(() => term?.dataHandler?.("å"));
+      expect(sentText(socket)).toEqual(["æ", "ø", "å"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps held keystrokes ahead of a key typed during the post-open delay", async () => {
+    vi.useFakeTimers();
+    try {
+      const { default: ChatPage } = await import("./ChatPage");
+      await render(
+        <MemoryRouter initialEntries={["/chat"]}>
+          <ChatPage isActive />
+        </MemoryRouter>,
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      const socket = FakeWebSocket.instances[0];
+      const term = FakeTerminal.instances.at(-1);
+
+      act(() => term?.dataHandler?.("a"));
+      await act(async () => socket.onopen?.());
+      act(() => term?.dataHandler?.("b"));
+
+      expect(sentText(socket)).toEqual(["a", "b"]);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(150);
+      });
+      expect(sentText(socket)).toEqual(["a", "b"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("carries keystrokes typed during a transient drop to the reconnected socket", async () => {
+    vi.useFakeTimers();
+    try {
+      const { default: ChatPage } = await import("./ChatPage");
+      await render(
+        <MemoryRouter initialEntries={["/chat"]}>
+          <ChatPage isActive />
+        </MemoryRouter>,
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      const first = FakeWebSocket.instances[0];
+      await act(async () => first.onopen?.());
+
+      await act(async () => {
+        first.readyState = 3;
+        first.onclose?.({ code: 1006, reason: "", wasClean: false });
+      });
+      act(() => FakeTerminal.instances.at(-1)?.dataHandler?.("x"));
+      expect(sentText(first)).toEqual([]);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(250);
+      });
+      expect(FakeWebSocket.instances).toHaveLength(2);
+      const second = FakeWebSocket.instances[1];
+
+      await act(async () => second.onopen?.());
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(150);
+      });
+      expect(sentText(second)).toEqual(["x"]);
+      expect(sentText(first)).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops keystrokes typed after the agent process ended", async () => {
+    vi.useFakeTimers();
+    try {
+      const { default: ChatPage } = await import("./ChatPage");
+      await render(
+        <MemoryRouter initialEntries={["/chat"]}>
+          <ChatPage isActive />
+        </MemoryRouter>,
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      const socket = FakeWebSocket.instances[0];
+      await act(async () => socket.onopen?.());
+      await act(async () => {
+        socket.readyState = 3;
+        socket.onclose?.({ code: 4410, reason: "", wasClean: true });
+      });
+
+      act(() => FakeTerminal.instances.at(-1)?.dataHandler?.("lost"));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+
+      expect(FakeWebSocket.instances).toHaveLength(1);
+      expect(sentText(socket)).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("attaches visualViewport keyboard-inset listeners only while the chat tab is active", async () => {

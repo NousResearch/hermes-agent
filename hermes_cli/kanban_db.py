@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from hermes_cli.kanban_db_review import default_reviewer_profile, prior_reviewer
 from hermes_cli.kanban_workflow import DEFAULT_STATUSES as VALID_STATUSES
 from toolsets import get_toolset_names
 from utils import unlink_files_older_than
@@ -3312,13 +3313,17 @@ def request_review(
                     "override) instead of clearing the live run's claim",
                 )
             if reviewer is None:
-                reviewer = _prior_reviewer(conn, task_id)
+                reviewer = prior_reviewer(conn, task_id)
                 if reviewer is False:
                     return _ret(
                         False, "re-review has no durable reviewer provenance (the "
                         "latest changes_requested event is missing or "
                         "malformed); pass reviewer= explicitly",
                     )
+                if reviewer is None:
+                    # FIRST review: the configured reviewer owns it, never the
+                    # profile that wrote the work (see kanban_db_review).
+                    reviewer = default_reviewer_profile()
             reviewer = _canonical_assignee(reviewer)
             # The actor is the run that did the work. ``assignee`` is the actor
             # only while a worker holds the card; on a never-claimed card it is
@@ -3337,6 +3342,11 @@ def request_review(
                 implementer = arow["profile"] if arow else None
             if implementer is None and trow["assignee"] != reviewer:
                 implementer = trow["assignee"]
+            # The same defect wearing a name: an explicit reviewer that IS the
+            # profile which wrote the card still means the author grades itself.
+            # Fall back to the configured reviewer rather than trust the label.
+            if reviewer is not None and implementer is not None and reviewer == implementer:
+                reviewer = default_reviewer_profile() or reviewer
             assignee_sql = ", assignee = ?" if reviewer is not None else ""
             run_guard = "" if expected_run_id is None else " AND current_run_id = ?"
             params: tuple[Any, ...] = (
@@ -3383,22 +3393,6 @@ def request_review(
             _discard_staged_copies(staged_copies, staged_copies[0].parent)
         raise
     return _ret(True)
-
-
-def _prior_reviewer(conn: sqlite3.Connection, task_id: str):
-    """Reviewer recorded by the latest ``changes_requested`` run's event.
-    ``None`` = first review (no such run); ``False`` = a run exists but its
-    provenance is missing/malformed."""
-    changes_run = conn.execute(
-        "SELECT id FROM task_runs "
-        "WHERE task_id = ? AND outcome = 'changes_requested' "
-        "ORDER BY id DESC LIMIT 1", (task_id,),
-    ).fetchone()
-    if changes_run is None:
-        return None
-    changes_event = _latest_event(conn, task_id, "changes_requested", changes_run["id"])
-    reviewer = _json_dict(_row_get(changes_event, "payload")).get("reviewer")
-    return reviewer if isinstance(reviewer, str) and reviewer.strip() else False
 
 
 def _nonblank_str(value: Any) -> Optional[str]:

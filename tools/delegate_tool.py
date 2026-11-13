@@ -909,7 +909,7 @@ DELEGATE_TASK_SCHEMA = {
                 "For 'continue': the child's next instruction.",
             ),
         },
-        "required": [],
+        "required": ["goal"],
     },
 }
 

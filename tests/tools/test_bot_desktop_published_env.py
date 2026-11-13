@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -123,12 +123,33 @@ def test_dropped_keys_are_logged_once_by_name_without_their_value(home, backend,
     assert not any(v in m for m in messages for v in EXTRA_LINES.values())
 
 
-def test_the_key_set_matches_what_launcher_sh_writes():
-    """New on this change: the constant and the launcher's printf line must not drift apart."""
-    launcher = Path(sandbox_host.__file__).with_name("launcher.sh").read_text()
-    lines = [line for line in launcher.splitlines() if "printf" in line and "DISPLAY=%s" in line]
-    assert len(lines) == 1
-    assert tuple(re.findall(r"([A-Z_]+)=%s", lines[0])) == tuple(sandbox_host.PUBLISHED_KEYS)
+@pytest.mark.platforms("linux")
+def test_every_line_the_launcher_writes_is_read_back(tmp_path, home, caplog):
+    """The real launcher.sh, X and Xfce stubbed out: the env file it publishes survives the read-back whole."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    stubs = {"Xvnc": "exec sleep 3", "dbus-run-session": 'shift; DBUS_SESSION_BUS_ADDRESS=unix:path=/run/bus exec "$@"'}
+    for name in ("xdpyinfo", "setxkbmap", "xsetroot", "xset", "xauth", "xfsettingsd", "xfwm4", "xprop", "xfdesktop",
+                 "xfce4-panel"):
+        stubs[name] = "exit 0"
+    for name, body in stubs.items():
+        (bindir / name).write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+        (bindir / name).chmod(0o755)
+    for tool in ("mkdir", "sed", "cat", "printf", "dirname", "bash", "sh", "rm", "ln", "touch", "chmod", "od", "tr",
+                 "awk", "grep", "seq", "sleep", "kill", "mv"):
+        if (real := shutil.which(tool)) and not (bindir / tool).exists():
+            (bindir / tool).symlink_to(real)
+    env_file = tmp_path / "env"
+    subprocess.run(["bash", str(Path(sandbox_host.__file__).with_name("launcher.sh"))], check=True, timeout=30,
+                   stdin=subprocess.DEVNULL, capture_output=True,
+                   env={"PATH": str(bindir), "HOME": str(tmp_path), "HERMES_BD_PROFILE": "t",
+                        "HERMES_BD_DISPLAY_NUM": "99", "HERMES_BD_SOCKET": str(tmp_path / "rfb.sock"),
+                        "HERMES_BD_XAUTH": str(tmp_path / "Xauthority"), "HERMES_BD_ENV_FILE": str(env_file),
+                        "HERMES_BD_CONFIG_HOME": str(tmp_path / "xdg")})
+    written = dict(line.split("=", 1) for line in env_file.read_text(encoding="utf-8").splitlines())
+    with caplog.at_level(logging.WARNING, logger=sandbox_host.logger.name):
+        assert sandbox_host.parse_published(env_file.read_text(encoding="utf-8")) == written
+    assert written["DISPLAY"] == ":99" and not caplog.records
 
 
 # ---- agent-machine sinks (sandbox-hosted screen) ------------------------------------------------------------

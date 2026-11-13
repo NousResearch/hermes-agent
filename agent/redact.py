@@ -862,7 +862,7 @@ def _mask_prefix_match(m: "re.Match[str]", mask) -> str:
     glued = m.start() > 0 and m.string[m.start() - 1] in "-_"
     token = m.group(1)
     # Google OAuth prefixes are distinctive even when base64url separators break every long run.
-    if glued and not token.startswith(("GOCSPX-", "ya29.")) and not _is_opaque_prefixed_token(token):
+    if glued and not token.startswith(("GOCSPX-", "ya29.", "1//0")) and not _is_opaque_prefixed_token(token):
         return m.group(0)
     return mask(token)
 

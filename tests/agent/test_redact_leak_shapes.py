@@ -226,6 +226,22 @@ class TestGoogleOAuthCredentials:
         token = "ya29.a0AfH6SM_q7z-P2mX9vL_k4n-Rt8wYb1c-Df6gHj3s_A0x"
         _assert_masked(f"msg='log{separator}{token}'", token)
 
+    @pytest.mark.parametrize("separator", ["-", "_"])
+    def test_refresh_token_glued_to_identifier_is_masked(self, separator):
+        token = "1//0g_A-x_B-y_C-z_D-w_E-v"  # base64url separators leave no 16-alphanumeric run
+        _assert_masked(f"msg='log{separator}{token}'", token)
+
+    @pytest.mark.parametrize("split", ["\x1b", "\u200b"])
+    def test_refresh_token_split_by_control_char_is_masked(self, split):
+        token = self.REFRESH[:8] + split + self.REFRESH[8:]
+        for out in _both_modes(f"token {token} end"):
+            assert self.REFRESH[8:] not in out, out
+
+    @pytest.mark.parametrize("text", ["see /usr/lib/\x1bfoo/bar.so", "https://example.com/a\u200b/b/c",
+                                      "v1//\x1bapi/" + "a" * 24])
+    def test_paths_with_control_chars_kept(self, text):
+        _assert_unchanged(text)
+
     @pytest.mark.parametrize("text", ["GOCSPX-short", "ya29.short", "ya29.c.short", "notGOCSPX-" + "A" * 24, "mya29." + "A" * 24])
     def test_short_or_embedded_lookalikes_kept(self, text):
         _assert_unchanged(text)

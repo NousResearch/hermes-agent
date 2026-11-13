@@ -37,6 +37,14 @@ optional_env:
     description: "Only answer group messages that mention the bot (true/false, default: false)"
     prompt: "Require mention in groups? (true/false)"
     password: false
+  - name: SIGNAL_HISTORY_BACKFILL
+    description: "With require_mention, attach unmentioned group messages to the next mentioned turn (true/false, default: true)"
+    prompt: "Backfill group history on mention? (true/false)"
+    password: false
+  - name: SIGNAL_HISTORY_BACKFILL_LIMIT
+    description: "Max unmentioned group messages kept per group for backfill (default: 50, 0 disables)"
+    prompt: "History backfill limit"
+    password: false
   - name: SIGNAL_IGNORE_STORIES
     description: "Ignore Signal stories (true/false, default: true)"
     prompt: "Ignore stories? (true/false)"

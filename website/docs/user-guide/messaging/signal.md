@@ -141,6 +141,18 @@ Group access is controlled by the `SIGNAL_GROUP_ALLOWED_USERS` env var:
 | Set with group IDs | Only listed groups are monitored (e.g., `groupId1,groupId2`). |
 | Set to `*` | The bot responds in any group it's a member of. |
 
+### Group History Backfill
+
+With `require_mention: true` (or `SIGNAL_REQUIRE_MENTION=true`) the bot only answers group messages that mention it. The messages in between are not lost: Hermes keeps them in memory (per group, up to `history_backfill_limit`, default 50) and hands them to the next turn that mentions the bot as a `[Recent channel messages]` block, the same way Discord backfill works. Taking the block clears the buffer, so a message is attached at most once. It is dropped without reaching the agent if the mentioned message is a slash command (commands do not carry the block) or the gateway restarts first (the buffer is in memory only).
+
+```yaml
+platforms:
+  signal:
+    extra:
+      history_backfill: true       # default; or SIGNAL_HISTORY_BACKFILL=false to turn it off
+      history_backfill_limit: 50   # max buffered messages per group
+```
+
 ---
 
 ## Features
@@ -259,4 +271,6 @@ The adapter monitors the SSE connection and automatically reconnects if:
 | `SIGNAL_ALLOWED_USERS` | No | — | Comma-separated phone numbers/UUIDs |
 | `SIGNAL_GROUP_ALLOWED_USERS` | No | — | Group IDs to monitor, or `*` for all (omit to disable groups) |
 | `SIGNAL_ALLOW_ALL_USERS` | No | `false` | Allow any user to interact (skip allowlist) |
+| `SIGNAL_HISTORY_BACKFILL` | No | `true` | With `require_mention`, attach unmentioned group messages to the next mentioned turn (`history_backfill`) |
+| `SIGNAL_HISTORY_BACKFILL_LIMIT` | No | `50` | Max unmentioned messages kept per group (`history_backfill_limit`; `0` disables) |
 | `SIGNAL_HOME_CHANNEL` | No | — | Default delivery target for cron jobs |

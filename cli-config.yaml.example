@@ -1541,6 +1541,14 @@ platform_toolsets:
 #       # Omit either key to preserve Slack's default for that preview type.
 #       unfurl_links: false
 #       unfurl_media: false
+#   signal:
+#     extra:
+#       # With require_mention, group messages that don't mention the bot are kept in
+#       # memory (per group) and attached to the next mentioned message as a
+#       # [Recent channel messages] block. Default true; set false (or
+#       # SIGNAL_HISTORY_BACKFILL=false) to turn it off. No effect without require_mention.
+#       history_backfill: true
+#       history_backfill_limit: 50   # Max buffered messages per group (default 50; 0 disables)
 #   webhook:
 #     extra:
 #       # Route scripts default to a 30 second timeout. Scripts must live under

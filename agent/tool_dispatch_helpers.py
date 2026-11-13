@@ -455,9 +455,11 @@ def make_tool_result_message(
     """Build a tool-result message: OpenAI ``name`` (wire format) plus internal ``tool_name``
     (session DB). High-risk tool content (web_extract, web_search, browser_*, mcp_*) is
     wrapped in untrusted-data delimiters — the defense against indirect prompt injection.
+    No tool's content can carry the /steer marker: it is relabelled before anything else.
     """
     # Replay-recovery callers bypass the executor's canonical-id helper, so normalize here too.
     tool_call_id = _normalize_tool_call_id(tool_call_id)
+    content = _neutralize_steer_marker(content)
     # Elision notice is appended to the RAW content first, THEN wrapped, so it sits inside
     # the untrusted block next to the data it describes — once, at construction (cache-safe).
     wrapped = _maybe_wrap_untrusted(name, _maybe_append_elision_notice(name, content))
@@ -487,6 +489,12 @@ _UNTRUSTED_WRAP_MIN_CHARS = 32
 
 # Case-insensitive so a differently-cased tag can't forge or prematurely close the boundary.
 _DELIMITER_TOKEN_RE = re.compile(r"untrusted_tool_result", re.IGNORECASE)
+
+# The /steer marker's name (prompt_builder.STEER_MARKER_OPEN/CLOSE) in any case or separators. STEER_CHANNEL_NOTE
+# gives that exact marker the user's authority, and a genuine steer is never tool content (steer_user_row), so
+# in a result it can only be forged — by a page, a file or an MCP server. The relabel stays readable and is final.
+_STEER_MARKER_IN_RESULT_RE = re.compile(r"OUT[\W_]*OF[\W_]*BAND[\W_]*USER[\W_]*MESSAGE(?! \(quoted\))", re.IGNORECASE)
+_STEER_MARKER_RELABEL = "out-of-band user message (quoted)"
 
 
 def _is_untrusted_tool(name: Optional[str]) -> bool:
@@ -567,6 +575,19 @@ def _neutralize_delimiters(content: str) -> str:
     """Defang embedded ``untrusted_tool_result`` tokens so poisoned content can't close the
     trust boundary early (hyphens keep it readable but non-matching)."""
     return _DELIMITER_TOKEN_RE.sub("untrusted-tool-result", content)
+
+
+def _neutralize_steer_marker(content: Any) -> Any:
+    """Relabel a forged /steer marker in any tool's result: a string, or the text parts of a
+    multimodal list (outer list rebuilt). Non-text content is returned unchanged."""
+    if isinstance(content, str):
+        return _STEER_MARKER_IN_RESULT_RE.sub(_STEER_MARKER_RELABEL, content)
+    if isinstance(content, list):
+        return [
+            {**item, "text": _neutralize_steer_marker(item["text"])} if _is_text_item(item) else item
+            for item in content
+        ]
+    return content
 
 
 def _maybe_wrap_untrusted(name: str, content: Any) -> Any:

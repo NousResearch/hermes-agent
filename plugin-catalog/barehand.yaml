@@ -3,14 +3,7 @@ title: Barehand
 repo: https://github.com/mrv777/barehand
 sha: 20b74e03a085a67d59f4287d0e61b5fed6bbb217
 subdir: barehand
-description: Lets an agent operate a machine with no OS, network or agent on it (firmware menus, boot loaders, installers,
-  rescue shells such as grub>) through the screen and keyboard alone. It provides a computer_use provider for QEMU
-  virtual machines over QMP (or a VNC console), a barehand_machine tool, a hermes barehand CLI, a skill and a flight
-  recorder. `hermes barehand up` starts local qemu processes that keep running after Hermes exits until `hermes
-  barehand down`; no API key reaches them and the plugin makes no network calls. In recorded runs a model installed
-  Debian 13 from the network installer (it repaired a grub> prompt on first boot from the installer's rescue mode)
-  and Ubuntu Server 26.04 (it finished the stalled installer by hand) on blank aarch64 machines. `hermes barehand
-  demo` replays a bundled recording. Evidence and the full disclosure are in the README and docs/results.
+description: "Lets an agent operate a machine with no OS, network or agent on it (firmware menus, boot loaders, installers, rescue shells such as grub>) through the screen and keyboard alone. It provides a computer_use provider for QEMU virtual machines over QMP (or a VNC console), a barehand_machine tool, a hermes barehand CLI, a skill and a flight recorder. In recorded runs a model installed Debian 13 from the network installer (it repaired a grub> prompt on first boot from the installer's rescue mode) and Ubuntu Server 26.04 (it finished the stalled installer by hand) on blank aarch64 machines. `hermes barehand demo` replays a bundled recording. Evidence is in the README and docs/results. Disclosure — `hermes barehand up` starts local qemu-system/qemu-img processes that keep running after Hermes exits until `hermes barehand down`. The guest has QEMU user-mode (NAT) networking and can reach whatever the host can. QMP is unauthenticated on a 0700 unix socket (or a loopback TCP port fallback). The optional VNC transport is unencrypted. The flight recorder is on by default and stores screenshots and key chords (typed text as length only) under the plugin data dir. `barehand_machine` runs status, snapshot_list, snapshot_save under a new name, calibrate_text (types a fixed ASCII test line) and wait_for_text without an approval prompt."
 maintainer: mrv777
 tier: community
 category: tools

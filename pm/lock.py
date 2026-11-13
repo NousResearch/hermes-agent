@@ -263,21 +263,8 @@ class Facts:
         on_disk = _read(self.path, strict=True)["packages"]
         for key, value in self._packages.items():
             on_disk.setdefault(key, value)
-        if "entry" in fact and isinstance(on_disk.get(name), dict):
-            old = on_disk[name]
-            variants = [old]
-            if isinstance(old.get("previous"), list):
-                variants.extend(old["previous"])
-            # A re-pin to the same entry replaces its old identity; other
-            # published entries remain available to sibling installs.
-            history = {
-                row["entry"]: {k: v for k, v in row.items() if k != "previous"}
-                for row in variants
-                if isinstance(row, dict) and isinstance(row.get("entry"), str)
-                and row["entry"] != fact["entry"]
-            }
-            if history:
-                fact = {**fact, "previous": list(history.values())}
+        if "entry" in fact:
+            fact = _with_history(fact, on_disk.get(name))
         self._packages = on_disk
         self._packages[name] = fact
         _write(self.path, {"schema": SCHEMA, "packages": self._packages})
@@ -335,9 +322,69 @@ class Facts:
         packages = _read(self.path, strict=True)["packages"]
         self.retain(set(packages) - set(names))
 
+    def drop_dead_history(self, live) -> None:
+        """Forget other installs' pins once ``live(owner)`` says no owning checkout remains.
+
+        The selected record is never dropped."""
+        packages = _read(self.path, strict=True)["packages"]
+        changed = False
+        for fact in packages.values():
+            history = fact.get("previous") if isinstance(fact, dict) else None
+            if not isinstance(history, list):
+                continue
+            kept = [row for row in history
+                    if isinstance(row, dict) and any(map(live, row.get("owners") or []))]
+            if kept != history:
+                changed = True
+                if kept:
+                    fact["previous"] = kept
+                else:
+                    del fact["previous"]
+        if changed:
+            _write(self.path, {"schema": SCHEMA, "packages": packages})
+        self._packages = packages
+
     def entries_in_use(self) -> set[str]:
         return {fact["entry"] for name in self._packages
                 for fact in self.variants(name)}
+
+
+def install_owner() -> str:
+    """The key of the checkout recording a tool pin (its ``installs/<key>`` state dir)."""
+    from pm.environments import install_key
+    from pm.paths import repo_root
+
+    return install_key(repo_root())
+
+
+def _with_history(fact: dict, old) -> dict:
+    """Keep other installs' pins beside the new selection; drop this install's superseded one.
+
+    Every checkout on a machine shares one store, so the top-level row (what older readers see)
+    is the last writer's selection and ``previous`` holds the entries other checkouts still pin
+    (#149497). Each row names the checkouts that pinned it: re-recording moves this checkout's
+    claim, so its own upgrade leaves no history behind and gc can reclaim the old entry."""
+    owner = install_owner()
+    rows = [old, *(old.get("previous") or [])] if isinstance(old, dict) and "entry" in old else []
+    owners: list[str] = [owner]
+    history: dict[str, dict] = {}
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("entry"), str):
+            continue
+        claims = row.get("owners")
+        if row["entry"] == fact["entry"]:
+            owners += [o for o in claims or [] if o not in owners]
+            continue
+        # An unclaimed row (written before per-install history) cannot prove any install
+        # still pins it: drop it, as before, and its install re-records on its next setup.
+        claims = [o for o in claims if o != owner] if isinstance(claims, list) else []
+        if claims:
+            history.setdefault(row["entry"], {**{k: v for k, v in row.items() if k != "previous"},
+                                              "owners": claims})
+    fact = {**fact, "owners": owners}
+    if history:
+        fact["previous"] = list(history.values())
+    return fact
 
 
 def _templatize(env: dict, store_root: Path) -> dict:

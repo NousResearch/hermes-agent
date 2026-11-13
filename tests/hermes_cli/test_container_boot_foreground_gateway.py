@@ -20,6 +20,8 @@ _WRAPPER = ["/init", "/opt/hermes/docker/main-wrapper.sh"]
         (["-p", "coder", "gateway", "run", "--no-supervise"], False, False),
         (["-p", "gateway", "gateway", "run", "--no-supervise"], False, False),  # profile named gateway
         (["-p", "solo", "gateway", "run", "--no-supervise"], False, True),  # standalone: serves only solo
+        (["gateway", "-p", "coder", "run", "--no-supervise"], False, False),  # -p after `gateway`
+        (["gateway", "--no-supervise"], False, True),  # argparse rejects it: no foreground gateway
         (["gateway", "run"], False, True),  # bare run redirects to s6: the slot IS the gateway
         (["gateway", "status"], True, True),
     ],
@@ -32,6 +34,7 @@ def test_foreground_gateway_cmd_leaves_s6_root_slot_down(tmp_path, monkeypatch, 
         (profile / "SOUL.md").write_text("x", encoding="utf-8")
         if standalone:
             (profile / "config.yaml").write_text("gateway:\n  standalone: true\n", encoding="utf-8")
+            (profile / "gateway_state.json").write_text(json.dumps({"desired_state": "running"}), encoding="utf-8")
     (home / "gateway_state.json").write_text(
         json.dumps({"gateway_state": "stopped", "desired_state": "running"}), encoding="utf-8")
     if env_opt_out:
@@ -44,3 +47,23 @@ def test_foreground_gateway_cmd_leaves_s6_root_slot_down(tmp_path, monkeypatch, 
     assert actions[0].profile == "default"
     assert actions[0].action == ("started" if slot_up else "registered")
     assert (scandir / "gateway-default" / "down").exists() is not slot_up
+    # solo's own slot boots from its saved intent, unless the CMD already runs solo in the foreground.
+    solo_up = cmd[:2] != ["-p", "solo"]
+    assert [a.action for a in actions if a.profile == "solo"] == ["started" if solo_up else "registered"]
+
+
+def test_boot_notice_says_the_foreground_gateway_serves_folded_profiles(tmp_path, monkeypatch, caplog):
+    home = tmp_path / "data"
+    coder = home / "profiles" / "coder"
+    coder.mkdir(parents=True)
+    (coder / "SOUL.md").write_text("x", encoding="utf-8")
+    (coder / "gateway_state.json").write_text(json.dumps({"desired_state": "running"}), encoding="utf-8")
+    monkeypatch.delenv("HERMES_GATEWAY_NO_SUPERVISE", raising=False)
+    caplog.set_level("WARNING")
+
+    actions = reconcile_profile_gateways(hermes_home=home, scandir=tmp_path / "scan",
+                                         container_argv=_WRAPPER + ["gateway", "run", "--no-supervise"])
+
+    assert actions[0].action == "registered"
+    assert "foreground gateway (the container CMD) serves them" in caplog.text
+    assert "was started instead" not in caplog.text

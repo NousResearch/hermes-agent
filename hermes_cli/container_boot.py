@@ -134,7 +134,7 @@ def reconcile_profile_gateways(
     if foreground is not None and foreground not in standalone:
         default_should_start = False
     if folded and default_prior_state not in _AUTOSTART_STATES:
-        log.warning("%s", boot_notice(folded))
+        log.warning("%s", boot_notice(folded, foreground=not default_should_start))
     if not dry_run:
         _cleanup_stale_runtime_files(hermes_home)
         _register_service(scandir, "default", start=default_should_start)
@@ -143,7 +143,8 @@ def reconcile_profile_gateways(
 
     for name, entry, prior_state in named:
         # Registered down unless standalone: any other started named slot IS a second gateway on this host.
-        should_start = name in standalone and prior_state in _AUTOSTART_STATES
+        # ...and a standalone profile the CMD already serves in the foreground stays down too.
+        should_start = name in standalone and prior_state in _AUTOSTART_STATES and name != foreground
         if not dry_run:
             _cleanup_stale_runtime_files(entry)
             _register_service(scandir, name, start=should_start)
@@ -154,11 +155,15 @@ def reconcile_profile_gateways(
     return actions
 
 
-def boot_notice(folded: Sequence[str]) -> str:
-    """One line naming the profiles whose autostart intent the root slot took over."""
+def boot_notice(folded: Sequence[str], *, foreground: bool = False) -> str:
+    """One line naming the profiles whose autostart intent the root slot took over, or, when the
+    container CMD is itself the foreground gateway, that it serves them and the root slot stays down."""
+    served_by = ("the foreground gateway (the container CMD) serves them, so the ROOT slot (gateway-default) "
+                 "stays down" if foreground else
+                 "the ROOT slot (gateway-default) was started instead and multiplexes them")
     return ("reconcile: profile gateway(s) " + ", ".join(sorted(folded)) +
-            " asked to autostart; one gateway per container serves every non-standalone profile, so the ROOT "
-            "slot (gateway-default) was started instead and multiplexes them.")
+            " asked to autostart; one gateway per container serves every non-standalone profile, so " +
+            served_by + ".")
 
 
 def _maybe_migrate_legacy_gateway_run_state(
@@ -240,24 +245,25 @@ def _is_legacy_gateway_run_request(argv: Sequence[str]) -> bool:
 
 def _foreground_gateway_profile(argv: Sequence[str], hermes_home: Path) -> str | None:
     """The profile a container CMD's own foreground gateway serves, or None when the CMD runs no
-    gateway outside s6. Foreground means ``--no-supervise`` or HERMES_GATEWAY_NO_SUPERVISE on
-    ``gateway run`` or bare ``gateway`` (which runs too); the profile is ``-p``/``--profile``,
-    else the sticky ``active_profile`` the unsupervised run follows (#22502)."""
-    from hermes_cli._parser import command_argv
+    gateway outside s6. Foreground means ``gateway run`` with ``--no-supervise`` or
+    HERMES_GATEWAY_NO_SUPERVISE, parsed as the CLI does: the profile is ``-p``/``--profile``
+    wherever it sits, else the sticky ``active_profile`` the unsupervised run follows (#22502)."""
+    import shlex
+
+    from gateway.status import looks_like_gateway_command_line
+    from hermes_cli._parser import command_argv, scan_profile_flag
     args = _strip_container_argv_prefix(argv)
-    command = command_argv(args)  # past global flags and their values (`-p gateway gateway run`)
-    if command[:1] != ["gateway"]:
+    if not looks_like_gateway_command_line(shlex.join(["hermes", *args])):
         return None
-    sub = next((a for a in command[1:] if not a.startswith("-")), None)
-    no_supervise = "--no-supervise" in args or \
-        os.environ.get("HERMES_GATEWAY_NO_SUPERVISE", "").lower() in ("1", "true", "yes")
-    if sub not in (None, "run") or not no_supervise:
+    profile, consumed, index = scan_profile_flag(args)
+    if index is not None:  # stripped before argparse, as main._apply_profile_override does
+        args = args[:index] + args[index + consumed:]
+    # Bare `gateway` also runs, but argparse only accepts `--no-supervise` on `gateway run`.
+    flag_opt_out = command_argv(args)[:2] == ["gateway", "run"] and "--no-supervise" in args
+    if not flag_opt_out and os.environ.get("HERMES_GATEWAY_NO_SUPERVISE", "").lower() not in ("1", "true", "yes"):
         return None
-    for i, arg in enumerate(args):
-        if arg in ("-p", "--profile") and i + 1 < len(args):
-            return args[i + 1].strip().casefold()
-        if arg.startswith("--profile="):
-            return arg.split("=", 1)[1].strip().casefold()
+    if profile is not None:
+        return profile
     from hermes_cli.profiles import get_active_profile
     return get_active_profile(hermes_home)
 
@@ -399,7 +405,7 @@ def main() -> int:
     actions = reconcile_profile_gateways(hermes_home=hermes_home, scandir=scandir)
     folded = [a.profile for a in actions if a.profile != "default" and a.folded_into_root]
     if folded:
-        print(boot_notice(folded))
+        print(boot_notice(folded, foreground=actions[0].action != "started"))
     for a in actions:
         print(f"reconcile: profile={a.profile} prior_state={a.prior_state} action={a.action}")
     return 0

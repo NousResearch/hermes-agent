@@ -467,7 +467,9 @@ hermes webhook subscribe github-issues \
 
 此命令返回 webhook URL 和自动生成的 HMAC secret。将你的服务配置为 POST 到该 URL。
 
-新订阅默认固定为 `--signature generic`（带时间戳的 V2 或 Standard Webhooks）；对自行签名的服务商请传 `--signature github`、`gitlab` 或 `linear`。更新已有订阅时保留其固定方案。在仪表盘中重新保存已有路由同样保留其固定方案；MCP 事件订阅首次创建时固定为 `generic`。
+新订阅默认固定为 `--signature generic`（带时间戳的 V2 或 Standard Webhooks）；对自行签名的服务商请传 `--signature github`、`gitlab` 或 `linear`。更新已有订阅时保留其固定方案。在仪表盘中重新保存已有路由时，若未带 `signature` 同样保留其固定方案（显式选择则替换）；MCP 事件订阅首次创建时固定为 `generic`。
+
+仪表盘的**新建订阅**表单（Web 仪表盘与桌面应用）以**签名**下拉框提供同样的选择，默认 `generic`；GitHub、GitLab 或 Linear 投递的路由请选择对应方案。通过 API 时，`POST /api/webhooks` 接受可选的 `signature`（`generic`、`github`、`gitlab` 或 `linear`，其他值返回 `422`）：不带该字段的新路由固定为 `generic`，不带该字段重新 POST 时保留已存储的固定方案。
 
 ### 列出订阅
 

@@ -3223,6 +3223,14 @@ export const esOverrides = {
     fieldSkillsPlaceholder: 'nombres de skills separados por comas (opcional)',
     fieldDeliver: 'Entregar a',
     fieldDeliverOnly: 'Entregar solo la carga útil',
+    fieldSignature: 'Firma',
+    fieldSignatureHint: 'El único esquema de firma que acepta esta ruta. Las entregas de GitHub, GitLab y Linear necesitan su propio esquema.',
+    signatureOptions: {
+      generic: 'Genérica (con marca de tiempo)',
+      github: 'GitHub',
+      gitlab: 'GitLab',
+      linear: 'Linear'
+    },
     fieldPrompt: 'Prompt',
     fieldPromptPlaceholder: 'Instrucciones para el agente cuando se active este webhook (opcional)',
     nameRequired: 'Nombre obligatorio',

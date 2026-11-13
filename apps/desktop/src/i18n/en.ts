@@ -2791,6 +2791,14 @@ export const en: Translations = {
     fieldSkillsPlaceholder: 'comma-separated skill names (optional)',
     fieldDeliver: 'Deliver to',
     fieldDeliverOnly: 'Deliver payload only',
+    fieldSignature: 'Signature',
+    fieldSignatureHint: 'The only signature scheme this route accepts. GitHub, GitLab and Linear deliveries need their own pin.',
+    signatureOptions: {
+      generic: 'Generic (timestamped)',
+      github: 'GitHub',
+      gitlab: 'GitLab',
+      linear: 'Linear'
+    },
     fieldPrompt: 'Prompt',
     fieldPromptPlaceholder: 'Instructions for the agent when this webhook fires (optional)',
     nameRequired: 'Name required',

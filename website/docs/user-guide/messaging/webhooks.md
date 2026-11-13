@@ -515,7 +515,9 @@ hermes webhook subscribe github-issues \
 
 This returns the webhook URL and an auto-generated HMAC secret. Configure your service to POST to that URL.
 
-New subscriptions are pinned to `--signature generic` (timestamp-bound V2 or Standard Webhooks) unless you pass `--signature github`, `gitlab` or `linear` for a provider that signs its own way. Updating an existing subscription keeps its pin. A dashboard re-save of an existing route keeps its pin too, and MCP event subscriptions are pinned to `generic` when first created.
+New subscriptions are pinned to `--signature generic` (timestamp-bound V2 or Standard Webhooks) unless you pass `--signature github`, `gitlab` or `linear` for a provider that signs its own way. Updating an existing subscription keeps its pin. A dashboard re-save of an existing route that omits `signature` keeps its pin too (an explicit pick replaces it), and MCP event subscriptions are pinned to `generic` when first created.
+
+The dashboard's **New subscription** form (web dashboard and desktop app) has the same choice as a **Signature** select, defaulting to `generic`; pick GitHub, GitLab or Linear for routes those services deliver to. Through the API, `POST /api/webhooks` takes an optional `signature` (`generic`, `github`, `gitlab` or `linear`; anything else is a `422`): a new route without it is pinned to `generic`, and a re-POST without it keeps the stored pin.
 
 ### List subscriptions
 

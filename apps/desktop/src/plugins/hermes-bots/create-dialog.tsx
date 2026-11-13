@@ -168,11 +168,6 @@ function requestOnTarget<T>(target: string, method: string, params: Record<strin
     : host.request(method, params)
 }
 
-/** Delete a draft profile the New Agent dialog minted, on the `target` it was
- *  created on: a remote connection (`cli.exec`) or '' for local. Fire-and-forget
- *  with a toast. A cancel while profiles.create is still in flight is caught by
- *  that flight itself (the dialog's draftGenRef), since the draft is only
- *  recorded once the RPC returns (#141623). */
 /** Pins the Configure model action to the connection the bot was created on.
  *  An unknown owner (legacy remote gateway) or a host without per-profile
  *  routing keeps the unscoped row the active gateway resolves. */
@@ -182,33 +177,19 @@ function creationOwnerFields(owner: string, remote: boolean): Partial<RosterRow>
   return remote ? { ...scoped, remoteSource: true } : scoped
 }
 
-/** The latest draft create or delete per owner connection + name. Each new
- *  op waits only for the entry it found when it started, so waits point
- *  backwards and cannot cycle; a retired create settles only after its own
- *  delete, so a name typed again after a rename never races either. */
-const draftOps = new Map<string, Promise<unknown>>()
-
-function activeConnection() {
-  return String(host.state?.connectionId?.get?.() || '')
-}
-
-function trackDraftOp<T>(key: string, op: Promise<T>): Promise<T> {
-  const forget = () => draftOps.get(key) === op && draftOps.delete(key)
-  draftOps.set(key, op)
-  op.then(forget, forget)
-
-  return op
-}
-
-function discardDraftProfile(draft: string, target: string, owner: string) {
+/** Delete a draft profile the New Agent dialog minted, on the `target` it was
+ *  created on: a remote connection (`cli.exec`) or '' for local. Fire-and-forget
+ *  with a toast. A cancel while profiles.create is still in flight is caught by
+ *  that flight itself (the dialog's draftGenRef), since the draft is only
+ *  recorded once the RPC returns (#141623). */
+function discardDraftProfile(draft: string, target: string) {
   const discard = target
     ? requestOnTarget(target, 'cli.exec', { argv: ['profile', 'delete', draft, '--yes'] })
     : deleteBot({ name: draft })
 
-  // A failed delete still settles: the recreate then fails visibly as a duplicate.
-  return trackDraftOp(`${owner}::${draft}`, Promise.resolve(discard)
+  void Promise.resolve(discard)
     .then(() => host.notify({ kind: 'success', message: `Draft agent "${draft}" discarded` }))
-    .catch(err => host.notifyError(err, `Could not clean up draft profile "${draft}"`)))
+    .catch(err => host.notifyError(err, `Could not clean up draft profile "${draft}"`))
 }
 
 /** The live Capabilities surface needs a real profile. Materialize it whenever
@@ -287,29 +268,46 @@ function useDraftProfile() {
   const [caps, setCaps] = useState<CapabilityCatalog | null>(null)
   const createdRef = useRef<null | string>(null)
   const flightRef = useRef<Promise<null | string> | null>(null)
+  // The name the in-flight create is minting; a different name replaces it.
+  const flightSlugRef = useRef('')
   const [createdForCaps, setCreatedForCaps] = useState<null | string>(null)
   const draftGenRef = useRef(0)
   const draftTargetRef = useRef('')
   const draftOwnerRef = useRef('')
   const draftWarningRef = useRef<{ generation: number; message: string; title: string } | null>(null)
+  // Keys the MCP setup buttons: bumping it drops their forms and pending flows.
+  const [setupGen, setSetupGen] = useState(0)
 
-  const discardDraft = () => {
-    const draft = createdRef.current
-    draftGenRef.current += 1
-    draftWarningRef.current = null
-    createdRef.current = flightRef.current = null
-    setCreatedForCaps(null)
-    // Completed setup belongs to the deleted draft, not its replacement.
+  // Pending and completed MCP setup belongs to the old name's draft, never
+  // its replacement: drop the buttons' flows and un-install draft-only rows.
+  const retireSetup = () => {
+    setSetupGen(gen => gen + 1)
     setCaps(prev => prev?.mcp.some(m => m.installedInDraft) ? {
       ...prev,
       mcp: prev.mcp.map(m => m.installedInDraft
         ? { ...m, installed: false, enabled: false, installedInDraft: false }
         : m)
     } : prev)
+  }
+
+  // Drops the draft itself. Its setup was already retired by the rename that
+  // made it stale, and retiring again here would remount the very button
+  // whose click is replacing the draft.
+  const replaceDraft = () => {
+    const draft = createdRef.current
+    draftGenRef.current += 1
+    draftWarningRef.current = null
+    createdRef.current = flightRef.current = null
+    setCreatedForCaps(null)
 
     if (draft) {
-      discardDraftProfile(draft, draftTargetRef.current, draftOwnerRef.current)
+      discardDraftProfile(draft, draftTargetRef.current)
     }
+  }
+
+  const discardDraft = () => {
+    replaceDraft()
+    retireSetup()
   }
 
   useEffect(
@@ -320,16 +318,17 @@ function useDraftProfile() {
     []
   )
 
+  // A rename retires the draft's setup but not the draft: it is deleted only
+  // once replaced, so renaming back reuses it instead of racing its delete.
   const renameDraft = (next: string, slug: string, setName: (name: string) => void) => {
-    // Only a draft (or its in-flight create) has setup to retire.
     if ((createdRef.current || flightRef.current) && botProfileIdentity(next, '').slug !== slug) {
-      discardDraft()
+      retireSetup()
     }
 
     setName(next)
   }
 
-  return { caps, setCaps, createdRef, flightRef, createdForCaps, setCreatedForCaps, discardDraft, renameDraft, draftGenRef, draftTargetRef, draftOwnerRef, draftWarningRef }
+  return { caps, setCaps, createdRef, flightRef, flightSlugRef, createdForCaps, setCreatedForCaps, discardDraft, replaceDraft, renameDraft, draftGenRef, draftTargetRef, draftOwnerRef, draftWarningRef, setupGen }
 }
 
 export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: CreateAgentDialogProps) {
@@ -337,7 +336,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
   const b = useBots()
   const [name, setName] = useState('')
 
-  const { caps, setCaps, createdRef, flightRef, createdForCaps, setCreatedForCaps, discardDraft, renameDraft, draftGenRef, draftTargetRef, draftOwnerRef, draftWarningRef } = useDraftProfile()
+  const { caps, setCaps, createdRef, flightRef, flightSlugRef, createdForCaps, setCreatedForCaps, discardDraft, replaceDraft, renameDraft, draftGenRef, draftTargetRef, draftOwnerRef, draftWarningRef, setupGen } = useDraftProfile()
 
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
@@ -536,10 +535,10 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
   // in-flight creation promise so simultaneous MCP setup / Create clicks fire
   // ONE profiles.create. A failed flight clears its slot so a retry can run.
   const ensureAgentCreated = (): Promise<null | string> => {
-    // Renamed since the draft materialized? The old draft is orphaned —
-    // discard it and create fresh under the new slug.
-    if (createdRef.current && createdRef.current !== slug) {
-      discardDraft()
+    // Renamed since the draft materialized (or started)? The old draft is
+    // orphaned — discard it and create fresh under the new slug.
+    if ((createdRef.current || flightRef.current) && (createdRef.current || flightSlugRef.current) !== slug) {
+      replaceDraft()
     }
 
     // A recorded draft can still be applying its initial capability picks.
@@ -565,20 +564,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
     const machine = (connections || []).find(c => c.id === targetId)?.label
     const warningTitle = targetId ? `${slug} — ${machine ? `${machine} (${targetId})` : targetId}` : slug
 
-    const key = `${targetId}::${slug}`
-    const previous = draftOps.get(key)
-
-    // Retired while waiting, or the active gateway this local create would
-    // reach is no longer the owner it was keyed and labelled for.
-    const staleAfterWait = () => generation !== draftGenRef.current || (!target && activeConnection() !== targetId)
-
     const flight = singleFlight(flightRef, async () => {
-      await previous?.catch(() => undefined)
-
-      if (staleAfterWait()) {
-        return null
-      }
-
       const result = await requestForTarget<ProfilesCreateResult>('profiles.create', {
         name: slug,
         description: descriptionText,
@@ -616,7 +602,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
 
       // Discarded mid-create: delete the profile this flight minted, configure nothing.
       if (generation !== draftGenRef.current) {
-        await discardDraftProfile(slug, target, targetId)
+        discardDraftProfile(slug, target)
 
         return null
       }
@@ -701,7 +687,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
       return slug
     })
 
-    trackDraftOp(key, flight)
+    flightSlugRef.current = slug
 
     return flight
   }
@@ -1162,7 +1148,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
                                 <McpSetupButton
                                   ensureProfile={ensureAgentCreated}
                                   entry={m}
-                                  key={draftGenRef.current}
+                                  key={setupGen}
                                   onDone={() => {
                                     // Setup done: mark installed so the row's
                                     // checkbox un-disables, and enable it.
@@ -1188,7 +1174,8 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
                                       mcp: true
                                     }))
                                   }}
-                                  profile={createdRef.current}
+                                  // A renamed-away draft is not this name's profile.
+                                  profile={createdRef.current === slug ? slug : null}
                                 />
                               ) : null}
                               {m.description ? (

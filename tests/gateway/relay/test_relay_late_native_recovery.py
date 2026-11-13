@@ -67,6 +67,8 @@ async def test_late_relay_connection_recovers_durable_queue(tmp_path, monkeypatc
                     await async_wait_until(lambda: turns and connector.replies('late-chat'), timeout=20,
                                            what='late reconnect drains the acknowledged queue')
                     assert turns == ['late connection']
+                    await async_wait_until(lambda: [row['status'] for row in _rows(authority)] == ['terminal'],
+                                           timeout=10, what='the recovered admission settles')
                     assert connector.replies('late-chat')[-1]['metadata']['user_id'] == 'late-owner'
         finally:
             authority.db.close()
@@ -87,28 +89,53 @@ def _fail_first_recovery(monkeypatch, run_runtime):
     monkeypatch.setattr(routes, '_RECOVERY_RETRY_DELAYS', (0,))
 
 
-def test_latest_session_admission_reads_newest_first_and_stops_at_the_first_match():
-    """A restored lane reads only its newest native envelope, not the session's whole history."""
+def _admissions_db(statuses):
     import contextlib
     import sqlite3
 
-    from hermes_state_runtime import latest_session_admission
+    from hermes_state_common import SCHEMA_SQL
 
     conn = sqlite3.connect(':memory:')
     conn.row_factory = sqlite3.Row
-    conn.execute('CREATE TABLE session_admissions (target_session_id, seq, payload_json, payload_digest, lineage_json)')
-    payloads = [{'native_text_v1': {'n': n}} for n in range(50)] + [{'automation': True}]
-    conn.executemany('INSERT INTO session_admissions VALUES (?, ?, ?, ?, ?)',
-                     [('s1', seq, json.dumps(p), '', '[]') for seq, p in enumerate(payloads)])
-    db = type('Db', (), {'_read_ctx': lambda self: contextlib.nullcontext(conn)})()
-    seen = []
+    conn.executescript(SCHEMA_SQL)
+    conn.executemany(
+        "INSERT INTO session_admissions (seq, admission_id, request_id, principal_id, target_session_id, lineage_json,"
+        " payload_json, payload_digest, intent, status, owner_epoch, generation)"
+        " VALUES (?, ?, ?, 'p', 's1', '[]', ?, '', 'queue', ?, 1, 1)",
+        [(seq, f'a{seq}', f'r{seq}', json.dumps({'native_text_v1': {'n': seq}} if status else {'automation': True}),
+          status or 'terminal') for seq, status in enumerate(statuses, 1)])
+    return conn, type('Db', (), {'_read_ctx': lambda self: contextlib.nullcontext(conn)})()
 
-    def accept(payload):
-        seen.append(payload)
+
+def _vm_steps(conn, db, accept):
+    from hermes_state_runtime import latest_session_admission
+
+    steps = [0]
+
+    def tick():
+        steps[0] += 1
+
+    conn.set_progress_handler(tick, 1)
+    row = latest_session_admission(db, session_id='s1', accept=accept)
+    conn.set_progress_handler(None, 1)
+    return row, steps[0]
+
+
+def test_latest_session_admission_reads_only_the_newest_rows():
+    """A restored lane reads its newest native envelope with work that does not grow with the
+    session's history, across every admission status, and closes its cursors."""
+    from hermes_state_runtime import latest_session_admission
+
+    def native(payload):
         return 'native_text_v1' in payload
 
-    row = latest_session_admission(db, session_id='s1', accept=accept)
-
-    assert row['payload'] == {'native_text_v1': {'n': 49}}
-    assert len(seen) == 2  # the newer non-native row, then the newest native one
-    assert latest_session_admission(db, session_id='other', accept=accept) is None
+    work = []
+    for size in (100, 5000):
+        conn, db = _admissions_db(['terminal'] * size + ['queued', None])
+        row, steps = _vm_steps(conn, db, native)
+        assert row['payload'] == {'native_text_v1': {'n': size + 1}} and row['status'] == 'queued'
+        work.append(steps)
+    assert work[1] < work[0] * 2, f'lookup work grew with history: {work}'
+    conn, db = _admissions_db(['queued', 'terminal', 'unknown', 'started'])
+    assert latest_session_admission(db, session_id='s1', accept=native)['payload'] == {'native_text_v1': {'n': 4}}
+    assert latest_session_admission(db, session_id='other', accept=native) is None

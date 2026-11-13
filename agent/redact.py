@@ -1907,7 +1907,8 @@ _LOG_UNSAFE_CHARS = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]")
 # Same class minus "\n": the appended traceback/stack keeps its line structure.
 _EXC_UNSAFE_CHARS = re.compile(r"[\x00-\x09\x0b-\x1f\x7f\x85\u2028\u2029]")
 # hermes_cli/logs.py _TS_RE (searched anywhere in a line) makes any stamped line a record.
-_LOG_LINE_STAMP = re.compile(r"(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})")
+# Zero-width context so overlapping stamps ("12:00:2026-07-09 12:00:00") are all broken.
+_LOG_LINE_STAMP = re.compile(r"(?<=\d{4}-\d{2}-\d{2})[T ](?=\d{2}:\d{2}:\d{2})")
 
 
 class RedactingFormatter(logging.Formatter):
@@ -1922,7 +1923,7 @@ class RedactingFormatter(logging.Formatter):
         first, *rest = _EXC_UNSAFE_CHARS.sub(" ", formatted).split("\n")
         # Traceback lines carry exception text; break their stamps so `hermes logs` keeps them
         # as continuation lines of this record.
-        return "\n".join([first, *(_LOG_LINE_STAMP.sub(r"\1_\2", line) for line in rest)])
+        return "\n".join([first, *(_LOG_LINE_STAMP.sub("_", line) for line in rest)])
 
     def formatMessage(self, record: logging.LogRecord) -> str:
         from hermes_logging import display_record  # lazy: hermes_logging imports this module lazily

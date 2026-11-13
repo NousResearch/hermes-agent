@@ -12,6 +12,7 @@ import hashlib
 import json
 import logging
 import sqlite3
+import subprocess
 import time
 import uuid
 from collections.abc import Callable, Generator
@@ -39,6 +40,7 @@ def _retirement_scope(labels: dict[str, str]) -> str:
 class ReuseLease:
     token: str
     lock: _FileLock
+    previous: "ReuseLease | None" = None
 
 
 class ReuseOwners:
@@ -101,13 +103,16 @@ class ReuseOwners:
         with self.transaction() as db:
             db.execute("UPDATE containers SET container_id=? WHERE name=?", (container_id, name))
 
-    def claim(self, container_id: str, start: Callable[[], bool]) -> ReuseLease | None:
+    def claim(self, container_id: str, start: Callable[[], bool], *, docker: str | None = None) -> ReuseLease | None:
         lease = self._lease()
         claimed = False
         try:
             with self.transaction() as db:
                 row = db.execute("SELECT name FROM containers WHERE container_id=? AND retired=0",
                                  (container_id,)).fetchone()
+            if row is None and docker is not None:
+                name = self._recover_unfinished(docker, container_id)
+                row = (name,) if name is not None else None
             if row is None:
                 return None
             name = row[0]
@@ -132,26 +137,68 @@ class ReuseOwners:
                 self.release(lease)
 
     def release(self, lease: ReuseLease, *, failed_creation: bool = False) -> None:
+        leases = []
+        current: ReuseLease | None = lease
+        while current is not None:
+            leases.append(current)
+            current = current.previous
+        with self.transaction() as db:
+            if failed_creation:
+                # Keep failed runs discoverable by name even if finish never committed.
+                db.execute("UPDATE containers SET superseded=COALESCE(superseded, ?) "
+                           "WHERE name=(SELECT name FROM owners WHERE token=?)",
+                           (time.time(), lease.token))
+            for held in leases:
+                db.execute("DELETE FROM owners WHERE token=?", (held.token,))
+        # Rollback must retain kernel exclusion, including a deferred recovery handoff.
         try:
-            with self.transaction() as db:
-                if failed_creation:
-                    # Keep failed runs discoverable by name even if finish never committed.
-                    db.execute("UPDATE containers SET superseded=COALESCE(superseded, ?) "
-                               "WHERE name=(SELECT name FROM owners WHERE token=?)",
-                               (time.time(), lease.token))
-                db.execute("DELETE FROM owners WHERE token=?", (lease.token,))
-            # The lease lock file is the abandonment evidence: it may only vanish once
-            # the row is committed. On a failed transaction both survive, so a retry can
-            # still release (or the reaper keeps protecting) the container.
-            lease.lock.path.unlink(missing_ok=True)
+            for held in leases:
+                held.lock.path.unlink(missing_ok=True)
         finally:
-            lease.lock.__exit__(None, None, None)
+            for held in leases:
+                held.lock.__exit__(None, None, None)
 
     def supersede(self, labels: dict[str, str], fingerprint: str) -> None:
         scope = _retirement_scope(labels)
         with self.transaction() as db:
+            db.execute("UPDATE containers SET superseded=NULL WHERE scope=? AND fingerprint=? "
+                       "AND container_id IS NOT NULL AND retired=0", (scope, fingerprint))
             db.execute("UPDATE containers SET superseded=COALESCE(superseded, ?) "
                        "WHERE scope=? AND fingerprint<>? AND retired=0", (time.time(), scope, fingerprint))
+
+    def _recover_unfinished(self, docker: str, container_id: str) -> str | None:
+        """Bind a known reservation to its verified container only after its creator died."""
+        try:
+            result = run_capture([docker, "inspect", "--format", "{{json .}}", container_id],
+                                 timeout=10, check=True)
+            record = json.loads(result.stdout)
+            name = record["Name"].removeprefix("/")
+            labels = record["Config"]["Labels"]
+            fingerprint = labels.get("hermes-runtime-fingerprint")
+            if (record["Id"] != container_id or labels.get(OWNER_LABEL) != self.namespace
+                    or not isinstance(fingerprint, str) or not fingerprint):
+                return None
+            with ExitStack() as locks:
+                locks.enter_context(self._container_guard(name))
+                with self.transaction() as db:
+                    row = db.execute("SELECT 1 FROM containers WHERE name=? AND container_id IS NULL "
+                                     "AND fingerprint=? AND retired=0", (name, fingerprint)).fetchone()
+                    if row is None or not self._owners_abandoned(db, name, locks):
+                        return None
+                    stale_paths = [self.path.parent / (token + ".lock")
+                                   for (token,) in db.execute("SELECT token FROM owners WHERE name=?", (name,))]
+                    db.execute("UPDATE containers SET container_id=? WHERE name=?", (container_id, name))
+                    db.execute("DELETE FROM owners WHERE name=?", (name,))
+            # Close abandoned handles before unlinking, including on Windows.
+            for path in stale_paths:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError as exc:
+                    logger.warning("Recovered Docker owner but could not remove stale receipt %s: %s", path, exc)
+            return name
+        except (OSError, subprocess.SubprocessError, ValueError, TypeError, KeyError, AttributeError, RuntimeError) as exc:
+            logger.debug("Cannot recover unfinished Docker reservation %s: %s", container_id, exc)
+            return None
 
     def reap(self, docker: str, max_age_seconds: int, profile: str | None) -> int:
         removed = 0
@@ -203,8 +250,6 @@ class ReuseOwners:
         return True
 
     def _remove(self, docker: str, target: str, name: str, fingerprint: str) -> bool:
-        import subprocess
-
         try:
             result = run_capture([docker, "inspect", "--format", "{{json .}}", target], timeout=10, check=True)
         except (OSError, subprocess.SubprocessError) as exc:

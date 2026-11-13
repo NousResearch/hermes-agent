@@ -32,9 +32,11 @@ def test_valid_profile_filter_reaps_its_superseded_container(monkeypatch, length
 
 
 def test_failed_label_staging_does_not_keep_an_owner_receipt(monkeypatch, tmp_path):
-    _stateful_docker(monkeypatch)
+    containers, _ = _stateful_docker(monkeypatch)
     env = _make_dummy_env(persistent_filesystem=True)
     store = env._reuse_owners
+    original_id = env._container_id
+    original_lease = env._reuse_lease
     invalid_home = tmp_path / "not-a-directory"
     invalid_home.write_text("fixture")
     env._snap_compat = True
@@ -43,7 +45,9 @@ def test_failed_label_staging_does_not_keep_an_owner_receipt(monkeypatch, tmp_pa
         assert env._recreate_container() is False
         with store.transaction() as db:
             owners = db.execute("SELECT token FROM owners").fetchall()
-        assert owners == [], "a staging failure must release its unassigned ownership reservation"
+        assert owners == [(original_lease.token,)], "only the original live owner may remain"
+        assert env._reuse_lease is original_lease
+        assert containers[original_id]["state"] == "running"
     finally:
         env.cleanup()
         assert env.wait_for_cleanup()

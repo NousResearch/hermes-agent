@@ -39,6 +39,7 @@ from tools.environments.docker_egress import (
 from tools.environments.docker_ownership import (
     hand_back_sandbox_files, reclaim_sandbox_files, strip_sandbox_privileges)
 from tools.environments.docker_reuse_owners import OWNER_LABEL, ReuseLease, ReuseOwners, reap_owned_containers
+from tools.environments.docker_runtime_env import snapshot_env_files, stage_env_files
 from tools.environments.path_utils import sanitize_task_id_for_path
 from tools.environments.remote_common import (
     bash_argv, client_env_with, load_hermes_env_vars, prepend_unset, resolve_passthrough_env, run_capture)
@@ -455,6 +456,7 @@ def _runtime_reuse_fingerprint(
     image: str, all_run_args: list[str], *, workdir: str = "/root",
     client_env: dict[str, str] | None = None, init: bool = True,
     owner_namespace: str = "",
+    env_file_contents: dict[str, bytes] | None = None,
 ) -> str:
     """Stable label for the final immutable ``docker run`` configuration.
 
@@ -481,7 +483,8 @@ def _runtime_reuse_fingerprint(
             index += 1
         if kind == "env-file":
             try:
-                contents = Path(value).read_bytes()
+                contents = (env_file_contents[value] if env_file_contents is not None
+                            else Path(value).read_bytes())
             except OSError as exc:
                 raise RuntimeError(f"Cannot read Docker env file {value!r}") from exc
             env_files.append(hashlib.sha256(contents).hexdigest())
@@ -1150,7 +1153,7 @@ class DockerEnvironment(BaseEnvironment):
                 try:
                     # A sibling may still use it; plain rm atomically refuses
                     # a running container instead of killing its work.
-                    run_capture([self._docker_exe, "rm", container_id], timeout=30)
+                    self._remove_legacy_container(container_id)
                 except (subprocess.TimeoutExpired, OSError) as e:
                     logger.warning("Failed to remove mismatched container %s: %s", container_id[:12], e)
                 return False
@@ -1170,7 +1173,7 @@ class DockerEnvironment(BaseEnvironment):
                     "container — removing it and starting fresh (task=%s, profile=%s).",
                     container_id[:12], actual_mode or "unknown", task_label, profile_name)
                 try:
-                    run_capture([self._docker_exe, "rm", container_id], timeout=30)
+                    self._remove_legacy_container(container_id)
                 except (subprocess.TimeoutExpired, OSError) as e:
                     logger.warning("Failed to remove mismatched container %s: %s", container_id[:12], e)
                 return False
@@ -1202,7 +1205,7 @@ class DockerEnvironment(BaseEnvironment):
         owners = getattr(self, "_reuse_owners", None)
         if owners is not None:
             try:
-                lease = owners.claim(container_id, start)
+                lease = owners.claim(container_id, start, docker=self._docker_exe)
             except (sqlite3.Error, OSError) as exc:
                 # A busy ownership database reads as no-reuse: the caller continues to
                 # the next candidate instead of aborting the whole attach.
@@ -1217,6 +1220,7 @@ class DockerEnvironment(BaseEnvironment):
         return True
 
     def _refresh_runtime_fingerprint(self) -> None:
+        self._env_file_contents = snapshot_env_files(self._all_run_args)
         # An explicit shared key opts into the first creator's configuration.
         if _ENVIRONMENT_LABEL_KEY not in self._labels:
             self._runtime_fp = ""
@@ -1225,8 +1229,18 @@ class DockerEnvironment(BaseEnvironment):
             self._image, self._all_run_args, workdir=self._create_cwd,
             client_env=self._run_client_env,
             init=not (self._image_uses_s6_init or self._snap_compat),
-            owner_namespace=self._labels.get(OWNER_LABEL, ""))
+            owner_namespace=self._labels.get(OWNER_LABEL, ""),
+            env_file_contents=self._env_file_contents)
         self._labels[_RUNTIME_LABEL_KEY] = self._runtime_fp
+
+    def _remove_legacy_container(self, container_id: str) -> None:
+        owner = _docker_query(
+            [self._docker_exe, "inspect", "--format",
+             f'{{{{index .Config.Labels "{OWNER_LABEL}"}}}}', container_id],
+            timeout=10, fail="Docker ownership probe failed: %s")
+        if owner is None or owner.returncode != 0 or owner.stdout.strip() not in ("", "<no value>"):
+            return  # Managed or unprovable state requires the ownership-aware reaper.
+        run_capture([self._docker_exe, "rm", container_id], timeout=30)
 
     def _adopt_reuse_image(self, image: str) -> None:
         """Bind proof and recovery to the image the existing image policy keeps."""
@@ -1268,7 +1282,8 @@ class DockerEnvironment(BaseEnvironment):
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             return e
 
-    def _run_command(self, name: str, workdir: str, runtime_label_file: str) -> list[str]:
+    def _run_command(self, name: str, workdir: str, runtime_label_file: str,
+                     run_args: list[str] | None = None) -> list[str]:
         """``docker run -d`` argv for a fresh ``sleep infinity`` container (idle reaper handles
         lifetime). s6-overlay images already provide PID 1, so ``--init`` is skipped for them."""
         label_args = [arg for k, v in self._labels.items() if k != _RUNTIME_LABEL_KEY
@@ -1283,7 +1298,7 @@ class DockerEnvironment(BaseEnvironment):
             *label_args,
             "--label-file", runtime_label_file,
             "-w", workdir,
-            *self._all_run_args,
+            *(self._all_run_args if run_args is None else run_args),
             self._image,
             "sleep", "infinity"]
 
@@ -1306,7 +1321,8 @@ class DockerEnvironment(BaseEnvironment):
             with tempfile.TemporaryDirectory(prefix="hermes-docker-label-", dir=label_parent) as label_dir:
                 label_file = Path(label_dir) / "runtime.label"
                 label_file.write_text(f"{_RUNTIME_LABEL_KEY}={self._runtime_fp}\n", encoding="utf-8")
-                run_cmd = self._run_command(container_name, cwd, str(label_file))
+                run_args = stage_env_files(self._all_run_args, self._env_file_contents, Path(label_dir))
+                run_cmd = self._run_command(container_name, cwd, str(label_file), run_args)
                 logger.debug("Starting container: %s", ' '.join(run_cmd))
                 result = run_capture(
                     run_cmd, timeout=120, check=True,  # image pull may take a while
@@ -1330,7 +1346,12 @@ class DockerEnvironment(BaseEnvironment):
                 logger.warning("Failed to remove orphaned container %s", container_name, exc_info=True)
             finally:
                 if owners is not None and lease is not None:
-                    owners.release(lease, failed_creation=True)
+                    try:
+                        owners.release(lease, failed_creation=True)
+                    except (sqlite3.Error, OSError):
+                        lease.previous = self._reuse_lease
+                        self._reuse_lease = lease
+                        raise
             if isinstance(e, subprocess.CalledProcessError):
                 raise EnvironmentConnectionError(
                     f"Docker run failed (exit {e.returncode}): {detail or e}",
@@ -1423,14 +1444,6 @@ class DockerEnvironment(BaseEnvironment):
         errors propagate to the terminal's degraded result; other recovery failures return False."""
         logger.warning("Container %s appears to be gone — attempting recovery", (self._container_id or "")[:12])
         lease = getattr(self, "_reuse_lease", None)
-        try:
-            self._release_runtime_owner(lease)
-        except (sqlite3.Error, OSError) as exc:
-            # A busy ownership database must not escape into recovery, and the lease is
-            # kept: the next run retries the release instead of orphans the row.
-            logger.error("Recovery: ownership database busy, deferring recreation: %s", exc)
-            return False
-        self._reuse_lease = None
         # Keep the last ID until replacement succeeds, so a later command can
         # observe Docker's missing-container error and retry transient recovery.
 
@@ -1442,6 +1455,7 @@ class DockerEnvironment(BaseEnvironment):
                 self._labels.get(_EGRESS_LABEL_KEY, "off"), self._network)
         except (RuntimeError, OSError, UnicodeError, sqlite3.Error) as exc:
             logger.error("Recovery: cannot verify the saved Docker configuration: %s", exc)
+            self._release_missing_runtime_owner(lease)
             return False
 
         if not reused:
@@ -1453,7 +1467,19 @@ class DockerEnvironment(BaseEnvironment):
                 self._container_id = self._docker_run(self.cwd)
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, sqlite3.Error) as e:
                 logger.error("Recovery: failed to create new container: %s", e)
+                self._release_missing_runtime_owner(lease)
                 return False
+
+        replacement = getattr(self, "_reuse_lease", None)
+        if lease is not None and replacement is not None and replacement is not lease:
+            replacement.previous = lease
+            try:
+                self._release_runtime_owner(lease)
+            except (sqlite3.Error, OSError) as exc:
+                # Keep failed releases reachable and locked until cleanup can retry.
+                logger.warning("Recovery: deferring previous Docker owner release: %s", exc)
+            else:
+                replacement.previous = None
 
         try:
             self._snapshot_ready = False
@@ -1470,6 +1496,22 @@ class DockerEnvironment(BaseEnvironment):
         owners = getattr(self, "_reuse_owners", None)
         if owners is not None and lease is not None:
             owners.release(lease)
+
+    def _release_missing_runtime_owner(self, lease: ReuseLease | None) -> None:
+        if lease is None or not self._container_id:
+            return
+        probe = _docker_query([self._docker_exe, "inspect", "--format", "{{json .}}", self._container_id],
+                              timeout=10, fail="Recovery: container absence probe failed: %s")
+        if (probe is None or probe.returncode == 0
+                or "no such container" not in ((probe.stdout or "") + (probe.stderr or "")).lower()):
+            return
+        try:
+            self._release_runtime_owner(lease)
+        except (sqlite3.Error, OSError) as exc:
+            logger.warning("Recovery: retaining missing container's owner until registry repair: %s", exc)
+        else:
+            if self._reuse_lease is lease:
+                self._reuse_lease = None
 
     def execute(self, command: str, cwd: str = "", **kwargs) -> dict:
         """Execute a command; if the container was removed out-of-band (idle reaper,

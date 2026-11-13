@@ -489,7 +489,8 @@ def replay_mutation_receipt(conn, key, digest):
 def mutate_runtime_session(db, *, epoch: int, principal_id: str, session_id: str,
                            request_id: str, expected_revision: int,
                            operation: str, payload: dict, expected_generation: int | None = None,
-                           _live_guard=None, _authorize_write=None, _prepare_only=False, _prepared=None) -> dict:
+                           _live_guard=None, _authorize_write=None, _prepare_only=False, _prepared=None,
+                           _branch_context=None) -> dict:
     """Commit a closed metadata edit and its retry receipt in the same transaction.
 
     Caller authorizes the principal and resolves the canonical session. These
@@ -539,7 +540,8 @@ def mutate_runtime_session(db, *, epoch: int, principal_id: str, session_id: str
                 from hermes_state_mutation_guards import require_idle
                 require_idle(db, conn, list({session_id, snapshot['target']}))
             return {'snapshot': snapshot}, None
-        affected, projection = apply_action(db, conn, session_id, operation, payload, prepared=_prepared)
+        affected, projection = apply_action(db, conn, session_id, operation, payload, prepared=_prepared,
+                                            context=_branch_context)
         event = None
         if operation == 'delete':
             event = SessionGoneEvent(tuple(projection.get('deleted_ids') or (session_id,)), 'delete')

@@ -1,0 +1,18 @@
+name: trackbuddy-parcel-tracker
+title: Package Tracker
+repo: https://github.com/afzalbuilds/trackbuddy-parcel-tracker
+sha: a95471e38d8c67eca44c2f3e11d6a5d8c308441a
+version: "1.1.0"
+description: "Track parcels and ocean containers from chat: DHL, FedEx, UPS, Amazon Shipping, GOFO, SPX Express, USPS and 1,000+ postal and cross-border carriers through 17TRACK, plus Maersk containers and bills of lading. Five workflow skills (single lookup, container tracking, bulk report, delivery-exception triage, cost estimate) drive nine tracking Actors on Apify's hosted MCP server (Streamable HTTP at https://mcp.apify.com). Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only, no local code. Disclosure: every tool call goes to mcp.apify.com and starts a pay-per-result Actor run billed to the user's own Apify account (about USD 0.005 to 0.04 per tracked shipment plus USD 0.005 per run); tracking numbers are sent to Apify, looked up on the carriers' public tracking pages, and the results are kept in the user's Apify datasets. Apify sign-in is OAuth, which Hermes runs only for a server in the user's own config, so the README has the user add the same-name server with `hermes mcp add package-tracking --auth oauth`. The package marks the server untrusted, so Hermes asks before each lookup and refuses them in unattended runs. No telemetry. The tool set is served by the remote server at runtime and is not covered by the pinned sha. Independent tool, not affiliated with the carriers."
+maintainer: Imzlab Technologies
+tier: community
+category: tools
+docs_url: https://github.com/afzalbuilds/trackbuddy-parcel-tracker#readme
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

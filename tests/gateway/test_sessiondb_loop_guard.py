@@ -1,4 +1,4 @@
-"""``HERMES_SESSIONDB_LOOP_GUARD``: SessionDB storage calls made on an event-loop thread are flagged.
+"""``gateway.sessiondb_loop_guard`` (config.yaml): SessionDB storage calls made on an event-loop thread are flagged.
 
 The guard is off (nothing wrapped) unless installed; ``raise`` fails the call on a loop thread and
 leaves worker threads alone. The composed test runs a real owner through a cron fire and an inbound
@@ -92,14 +92,25 @@ def test_raise_mode_refuses_on_the_loop_thread_and_allows_workers(tmp_path):
         db.close()
 
 
-def test_env_installs_the_guard(monkeypatch):
-    monkeypatch.setenv(guard.ENV, 'warn')
+def test_gateway_startup_installs_the_guard_from_config_yaml(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from gateway import run
+    from gateway.run_startup_liveness import start_loop_liveness_guards
+    (tmp_path / 'config.yaml').write_text('gateway:\n  sessiondb_loop_guard: warn\n', encoding='utf-8')
+    monkeypatch.setattr(run, '_hermes_home', tmp_path)
+    owner = SimpleNamespace(config=SimpleNamespace(loop_watchdog=False))
+    loop = asyncio.new_event_loop()
     try:
-        guard.install_from_env()
+        start_loop_liveness_guards(owner, loop)
         from hermes_state import SessionDB
         assert SessionDB._loop_guard_installed and guard._state['mode'] == 'warn'
+        guard.uninstall()
+        (tmp_path / 'config.yaml').write_text('gateway: {}\n', encoding='utf-8')
+        start_loop_liveness_guards(owner, loop)
+        assert not getattr(SessionDB, '_loop_guard_installed', False)  # unset: nothing wrapped
     finally:
         guard.uninstall()
+        loop.close()
 
 
 @pytest.mark.asyncio

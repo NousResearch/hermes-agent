@@ -14,6 +14,8 @@ from contextlib import ExitStack, suppress
 import logging
 import re
 import shutil
+from collections import Counter
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -33,7 +35,7 @@ from tools.skill_manager_guards import (
     _validate_delete_target, _is_background_review, _refusal as _err)
 from tools.skill_manager_batch import (
     _PATCH_EITHER_OR, _PATCH_NEEDS_NEW_STRING, _PATCH_NEEDS_OLD_STRING, _op_shape_error, _skill_manage_batch)
-from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
+from tools.skills_guard import _determine_verdict, scan_skill, should_allow_install, format_scan_report
 
 logger = logging.getLogger(__name__)
 
@@ -52,20 +54,53 @@ _replaying_background_write: _ctxvars.ContextVar[bool] = _ctxvars.ContextVar(
     "replaying_background_write", default=False)
 
 
+def _background_origin() -> bool:
+    return _is_background_review() or _replaying_background_write.get()
+
+
 def _scan_required() -> bool:
     """Opt-in for foreground writes, always on for the background-review fork: the fork's whitelist
     is memory+skills, so the terminal() rationale for the opt-in does not apply to it."""
-    return (_guard_agent_created_enabled() or _is_background_review()
-            or _replaying_background_write.get())
+    return _guard_agent_created_enabled() or _background_origin()
 
 
-def _security_scan_skill(skill_dir: Path) -> Optional[str]:
+def _finding_key(f) -> tuple[str, str, str]:
+    return (f.file, f.pattern_id, f.match)  # not the line: an edit above a finding moves it
+
+
+def _scan_baseline(skill_dir: Path) -> tuple[Optional[Counter], Optional[str]]:
+    """Pre-write findings for a background-origin write, so only findings the write introduces block
+    it (bundled skills already carry flagged examples the fork did not write). (baseline, error)."""
+    if not _background_origin():
+        return None, None
+    try:
+        return Counter(_finding_key(f) for f in scan_skill(skill_dir, source="agent-created").findings), None
+    except Exception as e:  # a required scan that cannot finish must not allow the write
+        logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
+        return None, f"Security scan could not complete, so this skill was blocked: {e}"
+
+
+def _introduced_findings(result, baseline: Counter):
+    remaining = Counter(baseline)
+    new = []
+    for f in result.findings:
+        if remaining[_finding_key(f)] > 0:
+            remaining[_finding_key(f)] -= 1
+        else:
+            new.append(f)
+    return replace(result, findings=new, verdict=_determine_verdict(new))
+
+
+def _security_scan_skill(skill_dir: Path, baseline: Optional[Counter] = None) -> Optional[str]:
     """Post-write scan; error string if blocked, else None. An "ask" verdict
-    (dangerous findings) is surfaced as an error so the agent can retry without them."""
+    (dangerous findings) is surfaced as an error so the agent can retry without them.
+    With a *baseline*, only findings absent from it count."""
     if not _scan_required():
         return None
     try:
         result = scan_skill(skill_dir, source="agent-created")
+        if baseline is not None:
+            result = _introduced_findings(result, baseline)
         allowed, reason = should_allow_install(result)
         if allowed is None:
             logger.warning("Agent-created skill blocked (dangerous findings): %s", reason)
@@ -429,10 +464,13 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
         original = target.read_text(encoding="utf-8-sig")
     if target == skill_dir / "SKILL.md" and (err := _description_budget_error(content, before=original)):
         return _err(err)
+    baseline, scan_error = _scan_baseline(skill_dir)
+    if scan_error:
+        return _err(scan_error)
     from hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(target.parent)
     atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
-    scan_error = _security_scan_skill(skill_dir)
+    scan_error = _security_scan_skill(skill_dir, baseline)
     if not scan_error:
         return None
     if original is not None:

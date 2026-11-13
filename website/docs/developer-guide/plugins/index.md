@@ -1259,7 +1259,8 @@ returns the on-disk catalog only.
 
 A plugin that reads or writes a path the model chose (an attachment, an export target, a file to
 summarise) should refuse the same paths Hermes's own file tools refuse: credential stores, the
-skills-hub cache, project `.env` files and anything outside `HERMES_WRITE_SAFE_ROOT`. Call these
+skills-hub cache, project `.env` files, device and `/proc` process files, and anything outside
+`HERMES_WRITE_SAFE_ROOT`. Call these
 instead of keeping your own denylist:
 
 | Import | What it gives you |

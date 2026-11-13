@@ -258,6 +258,82 @@ def _stash_local_changes_if_needed(
     return stash_ref
 
 
+def _tracked_names(git_cmd) -> Optional[set[str]]:
+    """Tracked paths that differ from HEAD, or None when git cannot say.
+
+    ``merge --ff-only`` names these as "would be overwritten". Untracked files
+    are a different error and stay out of this set.
+    """
+    from hermes_cli.update_cmd import _git_run
+
+    diff = _git_run(git_cmd, ["diff", "--name-only", "HEAD"])
+    if diff.returncode != 0:
+        return None
+    return {line.strip() for line in diff.stdout.splitlines() if line.strip()}
+
+
+def _stash_tracked_names(git_cmd, ref: str) -> Optional[set[str]]:
+    """Tracked paths stored in stash commit *ref*, or None when git cannot say."""
+    from hermes_cli.update_cmd import _git_run
+
+    show = _git_run(git_cmd, ["stash", "show", "--name-only", ref])
+    if show.returncode != 0:
+        return None
+    return {line.strip() for line in show.stdout.splitlines() if line.strip()}
+
+
+def _park_tracked_leftover_for_ff(git_cmd) -> str:
+    """Save a tracked leftover that blocks ``merge --ff-only``, then match HEAD.
+
+    ``git stash push`` can exit 0 ("Saved working directory and index state")
+    and leave the path modified. HEAD is still an ancestor of the target, so
+    that is not divergence. The bytes go into a new autostash first. Reset
+    runs only when every path that is still dirty is in that stash; otherwise
+    the worktree is left alone.
+
+    Returns ``retry`` when the worktree matches HEAD, ``untouched`` when
+    nothing safe to clear was saved, ``reset`` when a reset ran and a tracked
+    path still differs from HEAD.
+    """
+    from hermes_cli.update_cmd import _git_run, _m
+
+    dirty = _tracked_names(git_cmd)
+    if not dirty:
+        return "untouched"
+    cwd = Path(_m().PROJECT_ROOT)
+    prev_probe = _git_run(git_cmd, ["rev-parse", "--verify", "refs/stash"])
+    prev = (prev_probe.stdout or "").strip()
+    name = datetime.now(UTC).strftime(f"{_AUTOSTASH_NAME_PREFIX}%Y%m%d-%H%M%S")
+    try:
+        ref = _push_stash(git_cmd, cwd, name, prev)
+    except subprocess.CalledProcessError:
+        return "untouched"
+    if not ref or ref == prev:
+        return "untouched"
+    still = _tracked_names(git_cmd)
+    if not still:
+        _note_parked_leftover(ref)
+        return "retry"
+    saved = _stash_tracked_names(git_cmd, ref)
+    # A path still dirty and absent from the stash is not ours to delete.
+    if saved is None or not still <= saved:
+        short = ref[:12]
+        print(f"→ Left the tracked leftover in place (stash {short} does not hold every dirty path).")
+        return "untouched"
+    _reset_hard(git_cmd, cwd)
+    if _tracked_names(git_cmd):
+        short = ref[:12]
+        print(f"→ Stashed a tracked leftover (stash {short}) but the worktree is still dirty.")
+        return "reset"
+    _note_parked_leftover(ref)
+    return "retry"
+
+
+def _note_parked_leftover(ref: str) -> None:
+    short = ref[:12]
+    print(f"→ Parked a tracked leftover that blocked the fast-forward (stash {short}).")
+
+
 def _push_stash(git_cmd: list[str], cwd: Path, stash_name: str, prev_stash: str, leave=()) -> str:
     """``git stash push``; the stash commit. Raises when nothing was saved; resets tracked leftovers
     when a push saved everything but could not clean up. Untracked entries in *leave* stay on disk

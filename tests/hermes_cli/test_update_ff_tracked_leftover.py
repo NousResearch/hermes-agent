@@ -8,11 +8,12 @@ once. A reset that did not first stash those bytes would delete them.
 """
 
 import subprocess
+from pathlib import Path
 
 import pytest
 
 import hermes_cli.main as cli_main
-from hermes_cli import update_cmd
+from hermes_cli import update_cmd, update_cmd_git, update_cmd_stash
 
 _TRACKED = "plugin-catalog/board-insights.yaml"
 
@@ -70,3 +71,46 @@ def test_fast_forward_refusal_does_not_stash_a_clean_tree(tmp_path, monkeypatch)
     assert _git(repo, "stash", "list") == ""
     assert _git(repo, "rev-parse", "HEAD").strip() == old
     assert (repo / _TRACKED).read_text() == "upstream-old\n"
+
+
+def _stash_push_leaves_the_file(monkeypatch):
+    """``stash push`` exits 0 and the tracked path is modified again afterwards."""
+    real = update_cmd_git._git_run
+
+    def leave_dirty(git_cmd, args, cwd=None, **kwargs):
+        result = real(git_cmd, args, cwd=cwd, **kwargs)
+        if list(args)[:2] == ["stash", "push"] and result.returncode == 0 and cwd is not None:
+            (Path(cwd) / _TRACKED).write_text("mine\n")
+        return result
+
+    monkeypatch.setattr(update_cmd_git, "_git_run", leave_dirty)
+
+
+def test_fast_forward_retries_when_stash_exits_zero_and_leaves_the_file(
+        tmp_path, monkeypatch):
+    """The bytes survive in the autostash, then the fast-forward runs."""
+    repo, old, new = _ancestor_checkout(tmp_path)
+    (repo / _TRACKED).write_text("mine\n")
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", repo)
+    _stash_push_leaves_the_file(monkeypatch)
+
+    update_cmd._move_checkout_to(["git"], "main", "origin/main", new, old)
+
+    assert _git(repo, "rev-parse", "HEAD").strip() == new
+    assert (repo / _TRACKED).read_text() == "upstream-new\n"
+    assert "mine" in _git(repo, "stash", "show", "-p")
+
+
+def test_fast_forward_keeps_bytes_the_new_stash_does_not_list(tmp_path, monkeypatch):
+    """A dirty path missing from the stash is not reset, and the pull stops."""
+    repo, old, new = _ancestor_checkout(tmp_path)
+    (repo / _TRACKED).write_text("mine\n")
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", repo)
+    _stash_push_leaves_the_file(monkeypatch)
+    monkeypatch.setattr(update_cmd_stash, "_stash_tracked_names", lambda *_a, **_k: set())
+
+    with pytest.raises(SystemExit):
+        update_cmd._move_checkout_to(["git"], "main", "origin/main", new, old)
+
+    assert (repo / _TRACKED).read_text() == "mine\n"
+    assert _git(repo, "rev-parse", "HEAD").strip() == old

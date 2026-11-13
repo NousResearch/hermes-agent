@@ -1,0 +1,27 @@
+name: aeorank
+title: "AEORank — SEO, AEO & GEO Audit Engine"
+repo: https://github.com/aizaloapp/aeorank
+sha: 42581d724f482e85230658bd72a7b032f3943a38
+description: >-
+  Live 62-rule Technical SEO, Answer Engine Optimization (AEO) and Generative Engine
+  Optimization (GEO) diagnostics, RFC 9727 api-catalog checks, /llms.txt validation,
+  entity sameAs gap analysis, and agent patch packs through the hosted AEORank Streamable
+  HTTP MCP server plus one workflow skill. Portable Agent Plugins v1 package (plugin.json +
+  mcp.json + skills/), no Python or Desktop runtime code. All five MCP tools (lookup_rule,
+  list_entity_sources, search_knowledge_playbooks, run_sandbox_audit,
+  generate_agent_patch_pack) run keyless at $0 with no account or API key. Disclosure —
+  hosted Streamable HTTP connector to mcp.aeorank.app/mcp (aeorank.app); target website
+  URLs and language preferences passed to audit tools are sent to aeorank.app for live
+  DOM/HTTP inspection; the repository also contains an optional standalone Node.js CLI
+  (bin/aeorank-mcp.js) for npm users that Hermes does not load or execute.
+maintainer: aizaloapp
+tier: community
+category: web
+docs_url: https://aeorank.app/learn
+version: "2.2.1"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -406,8 +406,11 @@ def test_shared_group_home_keeps_group_access_and_setgid(tmp_path):
         assert registry_mode & 0o060 == 0o060
         assert registry_mode & 0o007 == 0
         # Linux hands a setgid parent's bit to a new subdirectory; macOS does not (its
-        # directories take the parent's group anyway). Set it so both hosts test the strip.
+        # directories take the parent's group anyway). Set it so both hosts test the strip,
+        # under our own group: macOS drops setgid on chmod when the owner isn't in the group
+        # (a CI basetemp under root:wheel /private/var/tmp).
         entries = _read_entries(registry, strict=True)
+        os.chown(runtime, -1, os.getgid())
         os.chmod(runtime, 0o2777)
         _write_entries(registry, entries)
         assert stat.S_IMODE(os.stat(runtime).st_mode) == 0o2770

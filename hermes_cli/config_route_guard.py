@@ -69,6 +69,8 @@ def drop_carried_route_state(old: Any, new: Any, config: dict) -> None:
             carried_url = False
     if carried_url:
         return  # same endpoint: its credentials stay paired with it
+    if _route_of(new.get("provider"), "")[0] == "custom" and same_base_url_origin(old_route[1], base_url):
+        return  # bare custom's key binds to its URL's origin (#130410), as clear_aux_credentials_on_route_change
     fields = _CARRIED_CREDENTIAL_FIELDS[2:] if old_route == ("", "") else _CARRIED_CREDENTIAL_FIELDS
     from hermes_cli.config import _expand_env_vars
     for key in fields:

@@ -157,6 +157,19 @@ def test_wizard_custom_endpoint_sends_no_old_key(home, seed):
     assert _resolved_vision() == ("custom", "m", "https://b.example/v1", None, None)
 
 
+@pytest.mark.parametrize("new_url, kept", [("https://a.example/v2", True), ("http://a.example/v1", False),
+                                           ("https://a.example:8443/v1", False)],
+                         ids=["same_origin_path", "http_downgrade", "other_port"])
+def test_aux_picker_custom_url_binds_key_env_to_origin(home, new_url, kept):
+    """``hermes model``'s custom aux endpoint keeps a key only across a path change on one origin (#130410)."""
+    from hermes_cli.main_provider_setup import _save_aux_choice
+    _seed(home, {"provider": "custom", "model": "m", "base_url": "https://a.example/v1", "key_env": "OLD_ENDPOINT_KEY"})
+
+    _save_aux_choice("vision", provider="custom", model="m", base_url=new_url, api_key="")
+
+    assert _resolved_vision()[2:4] == (new_url, OLD_SECRET if kept else None)
+
+
 def _put_config(config: dict) -> None:
     import asyncio
     from hermes_cli.web_routers.config_env import ConfigUpdate, update_config
@@ -282,3 +295,32 @@ def test_dashboard_config_form_delegation_url_change_never_runs_on_parent_key(ho
         override_api_mode=creds["api_mode"], override_acp_command=None, override_acp_args=None)
 
     assert (runtime["base_url"], runtime["api_key"]) != ("https://b.example/v1", "parent-key")
+
+
+@pytest.mark.parametrize("new_url, kept", [("https://a.example/v2", True), ("http://a.example/v1", False),
+                                           ("https://a.example:8443/v1", False), ("https://b.example/v1", False)],
+                         ids=["same_origin_path", "http_downgrade", "other_port", "other_host"])
+def test_dashboard_config_form_url_edit_binds_key_to_origin(home, new_url, kept):
+    """The settings form follows the origin rule the aux assignment and the ``hermes model`` picker use."""
+    import asyncio
+    from hermes_cli.web_routers.config_env import get_config
+    _seed(home, {"provider": "custom", "model": "m", "base_url": "https://a.example/v1", "api_key": OLD_SECRET})
+    form = asyncio.run(get_config())
+    form["auxiliary"]["vision"]["base_url"] = new_url
+
+    _put_config(form)
+
+    assert _resolved_vision()[2:4] == (new_url, OLD_SECRET if kept else None)
+
+
+def test_dashboard_config_form_same_origin_provider_switch_drops_key(home):
+    """The origin exception is bare custom's: a switch to a named provider on one origin still drops the key."""
+    import asyncio
+    from hermes_cli.web_routers.config_env import get_config
+    _seed(home, {"provider": "custom", "model": "m", "base_url": "https://a.example/v1", "api_key": OLD_SECRET})
+    form = asyncio.run(get_config())
+    form["auxiliary"]["vision"].update(provider="openrouter", base_url="https://a.example/v2")
+
+    _put_config(form)
+
+    assert _resolved_vision()[3] is None

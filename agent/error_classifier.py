@@ -783,6 +783,10 @@ _PROVIDER_CODE_VERDICTS: dict[str, dict[str, Verdict]] = {
 _400_VALIDATION_CODES = {"unknown_parameter", "unsupported_parameter"}
 _5XX_VALIDATION_CODES = _400_VALIDATION_CODES | {"invalid_request_error"}
 _400_VALIDATION_PATTERNS = tuple(p for p in _REQUEST_VALIDATION_PATTERNS if p != "invalid_request_error")
+# 400 wordings that name no reason, so they read as a bare 400: overflow on a large session, format
+# error on a small one. StepFun answers an input + output reservation past the window with
+# "The input you provided is invalid [code=30003]", the same body it uses for a malformed request.
+_UNNAMED_REJECTION_PATTERNS = ("the input you provided is invalid",)
 
 
 # ── Classification pipeline ─────────────────────────────────────────────
@@ -1443,7 +1447,8 @@ def _classify_400(c: _Ctx) -> Verdict:
     # Generic 400 + large session → probable overflow (Anthropic can return a
     # bare "Error"); proxy shapes are read so a descriptive rejection isn't "bare".
     body_msg = next((m for m in (str(x or "").strip().lower() for x in _body_message_candidates(c.body)) if m), "")
-    is_generic = len(body_msg) < 30 or body_msg in {"error", ""}
+    is_generic = len(body_msg) < 30 or body_msg in {"error", ""} or any(
+        p in body_msg for p in _UNNAMED_REJECTION_PATTERNS)
     if is_generic and c.large_session(0.4, 80000, 80):
         return _V_CONTEXT_OVERFLOW
     return _V_FORMAT_ERROR

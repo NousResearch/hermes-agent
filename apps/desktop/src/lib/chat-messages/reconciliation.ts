@@ -375,15 +375,24 @@ function persistedTailErrorMatches(
 ): boolean {
   const local = currentMessages[localIndex]
   const visibleUser = (message: ChatMessage) => message.role === 'user' && !message.hidden
+  // After a later turn the card sits mid-transcript; its user row's rowId names the stored turn.
+  const localUser = currentMessages.slice(0, localIndex).findLast(visibleUser)
+  const laterTurn = currentMessages.slice(localIndex + 1).some(visibleUser)
 
-  if (currentMessages.slice(localIndex + 1).some(visibleUser)) {
+  const storedUserIndex = !laterTurn
+    ? mergedNextMessages.findLastIndex(visibleUser)
+    : localUser?.rowId === undefined
+      ? -1
+      : mergedNextMessages.findIndex(message => visibleUser(message) && message.rowId === localUser.rowId)
+
+  if (laterTurn && storedUserIndex === -1) {
     return false
   }
 
-  const storedUserIndex = mergedNextMessages.findLastIndex(visibleUser)
+  const turnEnd = mergedNextMessages.findIndex((message, index) => index > storedUserIndex && visibleUser(message))
 
   return mergedNextMessages
-    .slice(storedUserIndex + 1)
+    .slice(storedUserIndex + 1, turnEnd === -1 ? undefined : turnEnd)
     .some(
       message =>
         message.role === 'assistant' &&

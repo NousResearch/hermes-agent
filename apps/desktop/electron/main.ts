@@ -434,6 +434,7 @@ import {
   localRouteFallbackProfiles,
   undialedSshRouteSeeds
 } from './plugin-profile-routes'
+import { createPooledBackendRecovery, createSshReuseProbe, releaseSshTransport } from './pooled-ssh-dispatch-recovery'
 import { createPortalSession, resolvePortalBaseUrl } from './portal-session'
 import { readPreUpdateBackupEnabled } from './pre-update-backup-config'
 import { registerPreparedSubmissions } from './prepared-submissions'
@@ -7083,7 +7084,8 @@ async function hasLiveOauthSession(baseUrl) {
 }
 
 const clearRemovedOauthJars = createRemovedConnectionCookieCleaner({
-  sessionFor: partition => (partition === OAUTH_SESSION_PARTITION ? getOauthSession() : app.isReady() ? session.fromPartition(partition) : null),
+  sessionFor: partition =>
+    partition === OAUTH_SESSION_PARTITION ? getOauthSession() : app.isReady() ? session.fromPartition(partition) : null,
   clearMirror: (partition, url) => remoteSessionCookies.clear(partition, url),
   v1RemoteUrl: () => readDesktopConnectionConfig()?.remote?.url,
   sharedUrls: () => [resolvePortalBaseUrl(), ...connectionConfigUrls(readDesktopConnectionConfig())]
@@ -8960,6 +8962,7 @@ async function buildRemoteConnection(
 }
 
 const sshConnections = new Map<string, any>()
+const sshObservedOwnerScopes = new Set<string>()
 
 const sshIsolatedKeepalives = createSshIsolatedKeepaliveRegistry({
   log: chunk => sshRememberLog(chunk)
@@ -9162,6 +9165,28 @@ const sshBootstrapCoordinator = createBootstrapCoordinator()
 
 const sshTeardowns = createSshTeardownTracker()
 
+const pooledBackendRecovery = createPooledBackendRecovery({
+  pool: backendPool,
+  sshStates: sshConnections,
+  scopeFor: sshScopeKey,
+  proveStopped: state =>
+    state.remotePlatform === 'Linux' || state.remotePlatform === 'Darwin'
+      ? remoteLifecycle.isOwnedDashboardStopped(state.ssh, { ...state, profile: state.remoteProfile || '' })
+      : Promise.resolve(false),
+  markRecovery: scope => sshObservedOwnerScopes.add(scope),
+  retireEntry: async key => {
+    rememberLog(`Retiring pooled remote backend "${key}" after permitted probe recovery.`)
+    await stopPoolBackend(key)
+  },
+  releaseTransport: async (scope, state) => {
+    sshConnections.delete(scope)
+    sshIsolatedKeepalives.stop(scope)
+    terminalIpc.disposeTerminalSessionsForSshScope(scope)
+    await sshTeardowns.track(state.ssh, () => releaseSshTransport(state))
+  },
+  drain: (scope, cleanup) => sshBootstrapCoordinator.cancelAndWait(scope, cleanup)
+})
+
 function sshScopeKey(profile) {
   return connectionScopeKey(profile) || ''
 }
@@ -9174,22 +9199,11 @@ function sshRememberLog(chunk) {
   rememberLog(redactSecrets(String(chunk == null ? '' : chunk)))
 }
 
-async function sshProbeReuseProof(baseUrl, token, spawnNonce) {
-  try {
-    const proof: any = await fetchJson(`${baseUrl}/api/ssh/ownership`, token)
-
-    return remoteLifecycle.classifySshReuseProof(proof, spawnNonce)
-  } catch (error: any) {
-    if (/^(401|403|404):/.test(String(error?.message || ''))) {
-      return 'authenticated-stale'
-    }
-
-    throw error
-  }
-}
+const sshProbeReuseProof = createSshReuseProbe(fetchJson, remoteLifecycle.classifySshReuseProof)
 
 async function teardownSshConnection(profile) {
   const scope = sshScopeKey(profile)
+  sshObservedOwnerScopes.delete(scope)
   sshIsolatedKeepalives.stop(scope)
   const state = sshConnections.get(scope)
 
@@ -9437,6 +9451,15 @@ async function rollbackSshBootstrapResult(ssh, result, profile, sshConfig, bound
   const cleanupErrors: string[] = []
   const scope = sshScopeKey(profile)
 
+  if (result.reused) {
+    await releaseSshTransport({ ...result, ssh }, { preserveMaster: sshConnections.get(scope)?.ssh === ssh })
+    throw Object.assign(new Error('Refusing to terminate a reused SSH owner after failed bootstrap publication.'), {
+      code: 'managed-update-bootstrap-fence-failed',
+      unsafeManagedBootstrap: true,
+      cause: boundaryError
+    })
+  }
+
   try {
     const expected = {
       ownershipId: result.ownershipId,
@@ -9552,6 +9575,9 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
       remoteHermesPath: sshConfig.remoteHermesPath || '',
       ownershipId: sshOwnershipKey(profile),
       reuseToken: reuseToken || '',
+      automaticRecovery: true,
+      requireOwnerRecord: sshObservedOwnerScopes.has(scope),
+      onOwnerObserved: () => sshObservedOwnerScopes.add(scope),
       forward: (localPort, remotePort) => ssh.forward(localPort, remotePort),
       cancelForward: (localPort, remotePort) => ssh.cancelForward(localPort, remotePort),
       pickLocalPort,
@@ -9566,20 +9592,6 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
     if (created) {
       try {
         await ssh.close()
-      } catch {
-        void 0
-      }
-    } else {
-      // The cached master was reused but the lifecycle probe against it
-      // failed ("Could not verify the existing SSH backend"). Keeping the
-      // stale entry means every subsequent boot re-attempts through the same
-      // wedged master/tunnel and fails identically until the user re-enters
-      // the connection details (whose changed fingerprint forces a teardown).
-      // Tear it down now so the next attempt — automatic retry included —
-      // bootstraps a fresh master, which is exactly what manual re-entry
-      // did (#82679).
-      try {
-        await teardownSshConnection(profile)
       } catch {
         void 0
       }
@@ -9610,6 +9622,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
     publish: () => {
       persistSshConnectionToken(profile, source, result.token, metadata.registryConnectionId)
       removeForceCleanup()
+      sshObservedOwnerScopes.add(scope)
       sshConnections.set(scope, {
         ssh,
         fingerprint,
@@ -10538,24 +10551,7 @@ async function ensureRegistryBackend(
         currentConnectionPromise: () => backendPool.get(key)?.connectionPromise || null,
         probe: (connection, requestPath, options) => fetchJsonForBackend(connection, requestPath, options),
         reconnect: () => ensureRegistryBackend(id, profile, '', { passive }),
-        retire: async (error: any) => {
-          // A late failure from an old descriptor must never tear down a newer
-          // entry that another caller has already installed.
-          if (backendPool.get(key) !== existing) {
-            return
-          }
-
-          rememberLog(
-            `Pooled remote backend "${key}" failed its dispatch probe (${error?.message || error}); reconnecting on demand.`
-          )
-          await stopPoolBackend(key)
-
-          if (source.kind === 'ssh') {
-            // Teardown runs INSIDE the bootstrap drain barrier so a reconnect
-            // cannot start a new SSH bootstrap into a dying scope (#106935).
-            await sshBootstrapCoordinator.cancelAndWait(key, () => teardownSshConnection(key))
-          }
-        }
+        ...pooledBackendRecovery(key, existing, source.kind === 'ssh')
       })
     )
   }
@@ -13931,14 +13927,14 @@ ipcMain.handle('hermes:connection:revalidate', async () => {
   })
 })
 
-// Pooled remote descriptors get the same treatment as the primary: they have no
-// child process to signal their host's death, so nothing else can retire a dead
-// one.
+// Background probes retire SSH descriptors only after a stopped-owner proof.
 function revalidatePool() {
   return revalidatePooledRemoteBackends({
     entries: backendPool.entries(),
     log: rememberLog,
     probe: (connection, path, options) => fetchJsonForBackend(connection, path, options),
+    currentEntry: key => backendPool.get(key),
+    canRetire: (key, entry, connection) => pooledBackendRecovery(key, entry, connection ? connection.remoteKind === 'ssh' : sshConnections.has(sshScopeKey(key))).canRetire(),
     stopBackend: stopPoolBackend,
     tracker: pooledRemoteLiveness
   })
@@ -13976,11 +13972,15 @@ function revalidateSuspectPoolAfterResume() {
       probe: (connection, path, options) => fetchJsonForBackend(connection, path, options),
       rebuild: poolKey => redialPoolBackendAfterResume(poolKey),
       retire: async poolKey => {
-        await stopPoolBackend(poolKey)
-        // The pool key doubles as the SSH scope for registry SSH backends and
-        // resolves through sshScopeKey() for bare-profile remotes; both
-        // teardown calls no-op when the scope holds no SSH state.
-        await sshBootstrapCoordinator.cancelAndWait(poolKey, () => teardownSshConnection(poolKey))
+        const entry = backendPool.get(poolKey)
+
+        if (!entry) {return}
+        const connection = await entry.connectionPromise.catch(() => null)
+        const recovery = pooledBackendRecovery(poolKey, entry, connection?.remoteKind === 'ssh')
+
+        if (!(await recovery.canRetire())) {throw new Error('The remote owner is not confirmed stopped; keeping its work.')}
+
+        await recovery.retire()
       },
       tracker: remoteLiveness
     })

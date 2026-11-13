@@ -30,6 +30,7 @@ export interface RemoteLivenessFailure {
 interface RemoteConnectionDescriptor {
   baseUrl?: null | string
   mode?: null | string
+  remoteKind?: null | string
 }
 
 export interface RevalidateRemoteConnectionOptions<TConnection extends RemoteConnectionDescriptor> {
@@ -81,6 +82,7 @@ export class RemoteRevalidationCoordinator {
 }
 
 interface EnsureHealthyPooledRemoteBackendForDispatchOptions<TConnection extends RemoteConnectionDescriptor> {
+  canRetire?: (connection: TConnection | undefined, error: unknown) => Promise<boolean>
   connectionPromise: Promise<TConnection>
   currentConnectionPromise: () => null | Promise<TConnection>
   probe: (connection: TConnection, path: string, options: { timeoutMs: number }) => Promise<unknown>
@@ -91,19 +93,22 @@ interface EnsureHealthyPooledRemoteBackendForDispatchOptions<TConnection extends
 /**
  * Gate dispatch through a cheap health probe of the exact cached descriptor.
  *
- * A failed descriptor is retired before reconnecting, while identity checks
+ * The caller may refuse retirement when a failed probe cannot prove the remote
+ * owner stopped. Dispatch then rejects, retaining the descriptor for a later
+ * healthy probe rather than returning an unverified endpoint. Identity checks
  * prevent a late probe from tearing down a replacement installed by another
  * caller. The caller should single-flight this function per cached promise so
  * concurrent dispatches share one retire/reconnect sequence.
  */
 export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection extends RemoteConnectionDescriptor>({
+  canRetire,
   connectionPromise,
   currentConnectionPromise,
   probe,
   reconnect,
   retire
 }: EnsureHealthyPooledRemoteBackendForDispatchOptions<TConnection>): Promise<TConnection> {
-  let connection: TConnection
+  let connection: TConnection | undefined
 
   try {
     connection = await connectionPromise
@@ -130,6 +135,16 @@ export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection ex
     }
   } catch (error) {
     if (currentConnectionPromise() === connectionPromise) {
+      const permitted = canRetire ? await canRetire(connection, error) : true
+
+      if (currentConnectionPromise() !== connectionPromise) {
+        return reconnect()
+      }
+
+      if (!permitted) {
+        throw error
+      }
+
       await retire(error)
     }
 
@@ -205,9 +220,15 @@ export interface PooledRemoteEntry<TConnection extends RemoteConnectionDescripto
 
 export interface RevalidatePooledRemoteBackendsOptions<TConnection extends RemoteConnectionDescriptor> {
   entries: Iterable<[string, PooledRemoteEntry<TConnection>]>
+  currentEntry?: (profile: string) => PooledRemoteEntry<TConnection> | undefined
+  canRetire?: (
+    profile: string,
+    entry: PooledRemoteEntry<TConnection>,
+    connection: TConnection | undefined
+  ) => Promise<boolean>
   log: (message: string) => void
   probe: (connection: TConnection, path: string, options: { timeoutMs: number }) => Promise<unknown>
-  stopBackend: (profile: string) => void
+  stopBackend: (profile: string) => Promise<void> | void
   tracker: RemoteLivenessTracker
 }
 
@@ -223,6 +244,8 @@ export interface RevalidatePooledRemoteBackendsOptions<TConnection extends Remot
  */
 export async function revalidatePooledRemoteBackends<TConnection extends RemoteConnectionDescriptor>({
   entries,
+  currentEntry,
+  canRetire,
   log,
   probe,
   stopBackend,
@@ -234,13 +257,14 @@ export async function revalidatePooledRemoteBackends<TConnection extends RemoteC
   await Promise.all(
     remotes.map(async ([profile, entry]) => {
       const baseUrl = String(entry.remoteBaseUrl).replace(/\/+$/, '')
+      let connection: TConnection | undefined
 
       try {
         if (!entry.connectionPromise) {
           throw new Error('Remote backend descriptor is unavailable.')
         }
 
-        const connection = await entry.connectionPromise
+        connection = await entry.connectionPromise
         await probe(connection, '/api/status', { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS })
         tracker.recordSuccess(baseUrl)
       } catch {
@@ -254,8 +278,18 @@ export async function revalidatePooledRemoteBackends<TConnection extends RemoteC
           return
         }
 
+        if (currentEntry && currentEntry(profile) !== entry) {
+          return
+        }
+
+        const permitted = canRetire ? await canRetire(profile, entry, connection) : true
+
+        if (!permitted || (currentEntry && currentEntry(profile) !== entry)) {
+          return
+        }
+
         log(`Pooled remote backend for profile "${profile}" failed liveness probe; dropping stale descriptor.`)
-        stopBackend(profile)
+        await stopBackend(profile)
         dropped.push(profile)
       }
     })

@@ -1,0 +1,31 @@
+name: ao-bridge
+repo: https://github.com/wesleymatosdev/hermes-ao-bridge
+sha: fb26915d84143ac8f689abf5dbac967857737962
+title: AO Bridge
+description: 'Agent Orchestrator bridge for the Hermes web dashboard: a Kanban board
+  over the local AO daemon where every AO project''s sessions render as cards across
+  Queued/Running/Review/Blocked/Done/Archive columns mapped from live session state.
+  Live updates over WebSocket (server polls the daemon, pushes on change; poll fallback).
+  Spawn workers into any registered project (project + harness + name + prompt), send
+  user-authored messages to running sessions, kill sessions (with confirmation), search
+  and status-filter instantly client-side, and click a card for a read-only detail
+  sheet (metadata + bounded transcript tail + canonical ao:// link). Third-party
+  dashboard plugin: adds a dashboard tab plus a backend API router at /api/plugins/ao-bridge/
+  that talks only to the local AO daemon REST API (loopback, no secrets, no external calls).
+  Pair with the ao gateway platform plugin if you want spawned workers chatting back.'
+maintainer: wesleymatosdev
+tier: community
+category: automation
+version: "0.2.0"
+screenshots:
+  - https://raw.githubusercontent.com/wesleymatosdev/hermes-ao-bridge/fb26915d84143ac8f689abf5dbac967857737962/docs/screenshots/ao-bridge-board.png
+  - https://raw.githubusercontent.com/wesleymatosdev/hermes-ao-bridge/fb26915d84143ac8f689abf5dbac967857737962/docs/screenshots/ao-bridge-spawn-form.png
+  - https://raw.githubusercontent.com/wesleymatosdev/hermes-ao-bridge/fb26915d84143ac8f689abf5dbac967857737962/docs/screenshots/ao-bridge-message-sheet.png
+  - https://raw.githubusercontent.com/wesleymatosdev/hermes-ao-bridge/fb26915d84143ac8f689abf5dbac967857737962/docs/screenshots/ao-bridge-detail.png
+  - https://raw.githubusercontent.com/wesleymatosdev/hermes-ao-bridge/fb26915d84143ac8f689abf5dbac967857737962/docs/screenshots/ao-bridge-live-search.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -47,23 +47,6 @@ function openContextMenu(target: HTMLElement) {
 }
 
 describe('statusbar item visibility', () => {
-  it('hides the route/toggle items out of the box and keeps status items', () => {
-    bar([
-      item('cron', 'Cron'),
-      item('webhooks', 'Webhooks'),
-      item('agents', 'Agents'),
-      item('terminal', 'Terminal'),
-      item('approval-mode', 'Approvals'),
-      item('gateway-health', 'Gateway')
-    ])
-
-    for (const label of ['Cron', 'Webhooks', 'Agents', 'Terminal', 'Approvals']) {
-      expect(screen.queryByText(label)).toBeNull()
-    }
-
-    expect(screen.getByText('Gateway')).toBeTruthy()
-  })
-
   it('shows an item once the user enables it from the bar context menu', async () => {
     const statusbar = bar([item('cron', 'Cron'), item('gateway-health', 'Gateway')])
 
@@ -93,27 +76,6 @@ describe('statusbar item visibility', () => {
     bar([{ id: 'plugin-thing', label: 'Plugin thing', variant: 'action' }])
 
     expect(screen.getByText('Plugin thing')).toBeTruthy()
-  })
-
-  it('starts the per-turn session readouts hidden and restores them from the menu', async () => {
-    const statusbar = bar([
-      item('running-timer', 'Turn timer', { variant: 'text' }),
-      item('context-usage', 'Context meter', { variant: 'menu' }),
-      item('session-timer', 'Session timer', { variant: 'text' }),
-      item('gateway-health', 'Gateway')
-    ])
-
-    for (const label of ['Turn timer', 'Context meter', 'Session timer']) {
-      expect(screen.queryByText(label)).toBeNull()
-    }
-
-    openContextMenu(statusbar)
-
-    const row = await screen.findByRole('menuitemcheckbox', { name: 'Session timer' })
-    fireEvent.click(row)
-
-    expect($statusbarHiddenIds.get()).not.toContain('session-timer')
-    expect(within(statusbar).getByText('Session timer')).toBeTruthy()
   })
 })
 

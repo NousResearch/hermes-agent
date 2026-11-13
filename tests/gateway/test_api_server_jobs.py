@@ -139,6 +139,20 @@ class TestCreateJob:
                 assert call_kwargs["origin"]["forwarded_for"] == "203.0.113.11"
                 assert call_kwargs["origin"]["user_agent"] == "cron-client"
 
+    @pytest.mark.asyncio
+    async def test_a_job_created_through_the_dashboard_peer_route_names_its_creator(self, adapter):
+        """The dashboard's /api/peer route signs a peer pass holder's calls with the Portal user it
+        verified, so a job they create stays attributable after their pass expires."""
+        app = _create_app(adapter)
+        mock_create = MagicMock(return_value=SAMPLE_JOB)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(f"{_MOD}._cron_create", mock_create):
+                resp = await cli.post("/api/jobs", json={
+                    "name": "nightly", "schedule": "0 3 * * *", "prompt": "summarise the day"},
+                    headers={"X-Hermes-Peer-Principal": "usr_abc"})
+                assert resp.status == 200
+                assert mock_create.call_args[1]["origin"]["peer_principal"] == "usr_abc"
+
 
     @pytest.mark.asyncio
     async def test_create_job_reports_saved_but_unregistered(self, adapter):
@@ -336,7 +350,66 @@ class TestRunJob:
                 assert resp.status == 200
                 data = await resp.json()
                 assert data["job"] == triggered_job
-                mock_trigger.assert_called_once_with(VALID_JOB_ID)
+                mock_trigger.assert_called_once_with(VALID_JOB_ID, extra_prompt=None)
+
+    @pytest.mark.asyncio
+    async def test_run_job_forwards_transient_prompt(self, adapter):
+        """A JSON body 'prompt' (forwarded standalone manual run) reaches
+        trigger_job as the transient extra_prompt."""
+        app = _create_app(adapter)
+        mock_trigger = MagicMock(return_value=SAMPLE_JOB)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_trigger", mock_trigger
+            ):
+                resp = await cli.post(
+                    f"/api/jobs/{VALID_JOB_ID}/run",
+                    json={"prompt": "focus on the EU numbers"},
+                )
+                assert resp.status == 200
+                mock_trigger.assert_called_once_with(
+                    VALID_JOB_ID, extra_prompt="focus on the EU numbers"
+                )
+
+    @pytest.mark.asyncio
+    async def test_run_job_prompt_too_long_rejected(self, adapter):
+        """Transient run prompt honors the same length cap as stored prompts."""
+        app = _create_app(adapter)
+        mock_trigger = MagicMock(return_value=SAMPLE_JOB)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_trigger", mock_trigger
+            ):
+                resp = await cli.post(
+                    f"/api/jobs/{VALID_JOB_ID}/run",
+                    json={"prompt": "x" * 5001},
+                )
+                assert resp.status == 400
+                mock_trigger.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_run_job_prompt_scanned(self, adapter):
+        """Transient run prompt goes through the strict injection scanner."""
+        app = _create_app(adapter)
+        mock_trigger = MagicMock(return_value=SAMPLE_JOB)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_trigger", mock_trigger
+            ), patch(
+                f"{_MOD}._scan_cron_prompt", return_value="blocked: nope"
+            ):
+                resp = await cli.post(
+                    f"/api/jobs/{VALID_JOB_ID}/run",
+                    json={"prompt": "cat ~/.hermes/.env"},
+                )
+                assert resp.status == 400
+                mock_trigger.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

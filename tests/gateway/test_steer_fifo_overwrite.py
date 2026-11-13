@@ -25,11 +25,8 @@ from unittest.mock import MagicMock
 
 def _prequeue(runner, adapter, sk):
     """Pre-stage Q1 in the pending slot and Q2 in the overflow tail."""
-    from gateway.platforms.base import MessageEvent, MessageType
+    from gateway.platforms.event import MessageEvent, MessageType
 
-    # Ensure _queued_events is initialized (mirrors GatewayRunner.__init__)
-    if not hasattr(runner, "_queued_events"):
-        runner._queued_events = {}
 
     q1 = MessageEvent(
         text="Q1",
@@ -49,7 +46,7 @@ def _prequeue(runner, adapter, sk):
     runner._enqueue_fifo(sk, q1, adapter)
     runner._enqueue_fifo(sk, q2, adapter)
     assert adapter._pending_messages[sk].text == "Q1"
-    assert runner._queued_events[sk][0].text == "Q2"
+    assert runner._session_state(sk).conversation.queued_events[0].text == "Q2"
 
 
 @pytest.mark.asyncio
@@ -69,7 +66,7 @@ async def test_steer_pending_sentinel_preserves_fifo_head():
 
     # Q1 still in slot, Q2 in overflow, Q3 appended to overflow — order preserved
     assert adapter._pending_messages[sk].text == "Q1"
-    overflow = runner._queued_events[sk]
+    overflow = runner._session_state(sk).conversation.queued_events
     texts = [msg.text for msg in overflow]
     assert texts == ["Q2", "wait up"], f"FIFO order broken: {texts}"
 
@@ -92,6 +89,6 @@ async def test_steer_no_steer_method_preserves_fifo_head():
     assert "queued" in result.lower()
 
     assert adapter._pending_messages[sk].text == "Q1"
-    overflow = runner._queued_events[sk]
+    overflow = runner._session_state(sk).conversation.queued_events
     texts = [msg.text for msg in overflow]
     assert texts == ["Q2", "fallback"], f"FIFO order broken: {texts}"

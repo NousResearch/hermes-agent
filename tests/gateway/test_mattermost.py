@@ -2,11 +2,12 @@
 import json
 import os
 import time
+from types import SimpleNamespace
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import MessageType
+from gateway.platforms.event import MessageType
 from gateway.run import (
     _resolve_gateway_display_bool,
     _resolve_progress_thread_id,
@@ -299,6 +300,23 @@ class TestMattermostWebSocketParsing:
         assert msg_event.text == "Hello from Matrix!"
         assert msg_event.message_id == "post_abc"
 
+    @pytest.mark.asyncio
+    async def test_known_peer_bot_is_marked_on_the_inbound_source(self):
+        """Regression for #137027: configured peer bots must enter the loop guard."""
+        self.adapter.config.extra["bot_users"] = ["peer_bot"]
+        self.adapter._download_attachments = AsyncMock(return_value=([], []))
+        post_data = {
+            "id": "post_from_peer", "user_id": "peer_bot", "channel_id": "dm_456", "message": "ping",
+        }
+        event = {
+            "event": "posted",
+            "data": {"post": json.dumps(post_data), "channel_type": "D", "sender_name": "@peer"},
+        }
+
+        await self.adapter._handle_ws_event(event)
+
+        assert self.adapter.handle_message.await_args.args[0].source.is_bot is True
+
 
     @pytest.mark.asyncio
     async def test_ignore_system_posts(self):
@@ -410,7 +428,12 @@ class TestMattermostFileUpload:
         # Mock the download (GET)
         mock_dl_resp = AsyncMock()
         mock_dl_resp.status = 200
-        mock_dl_resp.read = AsyncMock(return_value=b"\x89PNG\x00fake-image-data")
+        mock_dl_resp.headers = {}
+
+        async def _body(_size):
+            yield b"\x89PNG\x00fake-image-data"
+
+        mock_dl_resp.content = MagicMock(iter_chunked=_body)
         mock_dl_resp.content_type = "image/png"
         mock_dl_resp.__aenter__ = AsyncMock(return_value=mock_dl_resp)
         mock_dl_resp.__aexit__ = AsyncMock(return_value=False)
@@ -594,3 +617,158 @@ async def test_mattermost_top_level_channel_post_is_thread_root():
     assert msg_event.message_id == "top_post_123"
 
 
+# ---------------------------------------------------------------------------
+# Multiplex secondary-profile scope
+# ---------------------------------------------------------------------------
+#
+# __init__'s url/reply_mode, validate_mattermost_config's url,
+# _standalone_send's url, and _handle_ws_event's require_mention/
+# free_response_channels/allowed_channels, all previously read raw
+# os.getenv unconditionally (only MATTERMOST_TOKEN was already scoped).
+# _apply_yaml_config also wrote MATTERMOST_REQUIRE_MENTION/
+# MATTERMOST_FREE_RESPONSE_CHANNELS/MATTERMOST_ALLOWED_CHANNELS into the
+# process-global os.environ unconditionally. Under multiplex, os.environ
+# holds the DEFAULT profile's YAML-to-env bridge output -- a secondary
+# profile with its own (different or absent) Mattermost config would
+# silently connect to the default profile's server, or have its
+# mention-gating/channel-allowlist decisions driven by the default
+# profile's settings. Mirrors the LINE/DingTalk/IRC fix for #98738.
+
+@pytest.fixture
+def multiplex_scope():
+    """Install multiplex + a secondary-profile secret scope; restore after."""
+    tokens = []
+
+    def install(scope=None):
+        from agent.secret_scope import set_multiplex_active, set_secret_scope
+
+        set_multiplex_active(True)
+        tokens.append(set_secret_scope(scope or {}))
+        return tokens[-1]
+
+    yield install
+
+    from agent.secret_scope import reset_secret_scope, set_multiplex_active
+
+    for token in reversed(tokens):
+        reset_secret_scope(token)
+    set_multiplex_active(False)
+
+
+@pytest.fixture
+def default_profile_env(monkeypatch):
+    """The default profile's YAML-to-env bridge output in os.environ."""
+    monkeypatch.setenv("MATTERMOST_URL", "https://default.example.com")
+    monkeypatch.setenv("MATTERMOST_REPLY_MODE", "thread")
+    monkeypatch.setenv("MATTERMOST_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("MATTERMOST_FREE_RESPONSE_CHANNELS", "chan_default")
+    monkeypatch.setenv("MATTERMOST_ALLOWED_CHANNELS", "chan_default")
+
+
+class TestMultiplexProfileScope:
+
+    @pytest.mark.asyncio
+    async def test_ws_event_gating_uses_scoped_settings_not_default(
+        self, monkeypatch
+    ):
+        """A secondary profile's own require_mention/free_response_channels/
+        allowed_channels (installed via the scope) must gate its messages --
+        not the default profile's bridged settings."""
+        from agent.secret_scope import (
+            reset_secret_scope,
+            set_multiplex_active,
+            set_secret_scope,
+        )
+        from plugins.platforms.mattermost.adapter import MattermostAdapter
+
+        monkeypatch.setenv("MATTERMOST_REQUIRE_MENTION", "true")
+        monkeypatch.delenv("MATTERMOST_FREE_RESPONSE_CHANNELS", raising=False)
+
+        adapter = _make_adapter()
+        adapter._bot_user_id = "bot_user_id"
+        adapter._bot_username = "hermes-bot"
+        adapter.handle_message = AsyncMock()
+
+        post_data = {
+            "id": "post_scoped",
+            "user_id": "user_123",
+            "channel_id": "chan_456",
+            "message": "hello with no mention",
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "O",
+                "sender_name": "@alice",
+            },
+        }
+
+        set_multiplex_active(True)
+        token = set_secret_scope({"MATTERMOST_REQUIRE_MENTION": "false"})
+        try:
+            await adapter._handle_ws_event(event)
+        finally:
+            reset_secret_scope(token)
+            set_multiplex_active(False)
+
+        # The profile's own scope disables require_mention -- the message
+        # must be dispatched even without an @mention, despite the default
+        # profile's env bridge saying require_mention=true.
+        assert adapter.handle_message.called
+
+    def test_apply_yaml_config_scoped_skips_env_write_and_seeds_extra(
+        self, multiplex_scope
+    ):
+        from plugins.platforms.mattermost.adapter import _apply_yaml_config
+
+        multiplex_scope()
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MATTERMOST_REQUIRE_MENTION", None)
+            seeded = _apply_yaml_config({}, {"require_mention": False, "allowed_channels": ["c1"]})
+            assert seeded == {"require_mention": False, "allowed_channels": ["c1"]}
+            # Under a secondary profile's scope the env bridge must be
+            # skipped -- writing here would leak into every other profile's
+            # os.environ.
+            assert "MATTERMOST_REQUIRE_MENTION" not in os.environ
+
+
+def test_bot_turn_does_not_publish_runtime_status():
+    """#137027: a provider-fallback diagnostic must not become a peer-bot message."""
+    from gateway.run_turn_runner import TurnRunner
+
+    turn_runner = object.__new__(TurnRunner)
+    turn_runner._schedule = MagicMock()
+    turn_runner._ctx = SimpleNamespace(
+        mute_notification_reply=False,
+        source=SimpleNamespace(platform=Platform.MATTERMOST, is_bot=True),
+        _status_adapter=object(),
+        _run_still_current=lambda: True,
+        user_config={},
+        _status_chat_id="dm_456",
+        _status_thread_metadata=None,
+        _cleanup_progress=False,
+    )
+
+    turn_runner._status_callback_sync("warn", "⚠️ Model fallback: unavailable")
+
+    turn_runner._schedule.assert_not_called()
+
+
+def test_configured_mattermost_bot_is_authorized(monkeypatch):
+    """#137027: peer bots use Mattermost's registered bot-admission policy."""
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource
+
+    for name in ("MATTERMOST_ALLOW_BOTS", "MATTERMOST_ALLOWED_USERS", "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS"):
+        monkeypatch.delenv(name, raising=False)
+    runner = object.__new__(GatewayRunner)
+    runner.pairing_store = SimpleNamespace(is_approved=lambda *_a, **_kw: False)
+    source = SessionSource(
+        platform=Platform.MATTERMOST, chat_id="dm_456", chat_type="dm", user_id="peer_bot",
+        user_name="Peer Bot", is_bot=True,
+    )
+
+    assert runner._is_user_authorized(source) is False
+    monkeypatch.setenv("MATTERMOST_ALLOW_BOTS", "mentions")
+    assert runner._is_user_authorized(source) is True

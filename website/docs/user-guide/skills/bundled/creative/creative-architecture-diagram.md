@@ -21,7 +21,7 @@ Dark-themed SVG architecture/cloud/infra diagrams as HTML.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `architecture`, `diagrams`, `SVG`, `HTML`, `visualization`, `infrastructure`, `cloud` |
-| Related skills | [`concept-diagrams`](/docs/user-guide/skills/optional/creative/creative-concept-diagrams), [`excalidraw`](/docs/user-guide/skills/bundled/creative/creative-excalidraw) |
+| Related skills | [`concept-diagrams`](../../optional/creative/creative-concept-diagrams.md), [`excalidraw`](../../optional/creative/creative-excalidraw.md) |
 
 ## Reference: full SKILL.md
 

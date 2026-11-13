@@ -64,8 +64,11 @@ hermes webhook subscribe <name> \
   --skills "skill1,skill2" \
   --deliver telegram \
   --deliver-chat-id "12345" \
-  --secret "optional-custom-secret"
+  --secret "optional-custom-secret" \
+  --signature generic
 ```
+
+`--signature` pins the scheme the route accepts: `generic` (default for new routes; `X-Webhook-Signature-V2` + `X-Webhook-Timestamp` or Standard Webhooks), `github`, `gitlab` or `linear`. GitHub, GitLab and Linear senders need their provider value or every delivery gets 401.
 
 Returns the webhook URL and HMAC secret. The user configures their service to POST to that URL.
 
@@ -118,6 +121,7 @@ If no prompt is specified, the full JSON payload is dumped into the agent prompt
 ```bash
 hermes webhook subscribe github-issues \
   --events "issues" \
+  --signature github \
   --prompt "New GitHub issue #{issue.number}: {issue.title}\n\nAction: {action}\nAuthor: {issue.user.login}\nBody:\n{issue.body}\n\nPlease triage this issue." \
   --deliver telegram \
   --deliver-chat-id "-100123456789"
@@ -133,6 +137,7 @@ Then in GitHub repo Settings → Webhooks → Add webhook:
 ```bash
 hermes webhook subscribe github-prs \
   --events "pull_request" \
+  --signature github \
   --prompt "PR #{pull_request.number} {action}: {pull_request.title}\nBy: {pull_request.user.login}\nBranch: {pull_request.head.ref}\n\n{pull_request.body}" \
   --skills "github-code-review" \
   --deliver github_comment
@@ -151,6 +156,7 @@ hermes webhook subscribe stripe-payments \
 ```bash
 hermes webhook subscribe ci-builds \
   --events "pipeline" \
+  --signature gitlab \
   --prompt "Build {object_attributes.status} on {project.name} branch {object_attributes.ref}\nCommit: {commit.message}" \
   --deliver discord \
   --deliver-chat-id "1234567890"
@@ -186,6 +192,10 @@ The POST returns `200 OK` on successful delivery, `502` on target failure — so
 
 Requires `--deliver` to be a real target (telegram, discord, slack, github_comment, etc.) — `--deliver log` is rejected because log-only direct delivery is pointless.
 
+### Let the user reply to a delivery
+
+Each event runs in its own session, so by default the agent in the target chat has no record of what a route delivered ("what are you referring to?"). Add `--mirror-to-session` and each delivered message is also written into that chat's session as `[Webhook delivery: <route>]` + the text. Off by default: the text enters the conversation as if the user had sent it (on `--deliver-only` routes it is the raw payload), so only use it for sources the user trusts. Skipped when the chat has no session yet.
+
 ## Security
 
 - Each subscription gets an auto-generated HMAC-SHA256 secret (or provide your own with `--secret`)
@@ -207,6 +217,6 @@ If webhooks aren't working:
 1. **Is the gateway running?** Check with `systemctl --user status hermes-gateway` or `ps aux | grep gateway`
 2. **Is the webhook server listening?** `curl http://localhost:8644/health` should return `{"status": "ok"}`
 3. **Check gateway logs:** `grep webhook ~/.hermes/logs/gateway.log | tail -20`
-4. **Signature mismatch?** Verify the secret in your service matches the one from `hermes webhook list`. GitHub sends `X-Hub-Signature-256`, GitLab sends `X-Gitlab-Token`.
+4. **Signature mismatch?** Verify the secret in your service matches the one from `hermes webhook list`. GitHub sends `X-Hub-Signature-256`, GitLab sends `X-Gitlab-Token`. A route pinned with `--signature` rejects every other scheme: re-run `subscribe` with the `--signature` matching the sender.
 5. **Firewall/NAT?** The webhook URL must be reachable from the service. For local development, use a tunnel (ngrok, cloudflared).
 6. **Wrong event type?** Check `--events` filter matches what the service sends. Use `hermes webhook test <name>` to verify the route works.

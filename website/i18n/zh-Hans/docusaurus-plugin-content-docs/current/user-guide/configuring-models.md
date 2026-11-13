@@ -7,12 +7,12 @@ sidebar_position: 3
 Hermes 使用两类模型槽位：
 
 - **主模型** — agent 的思考核心。每条用户消息、每个工具调用循环、每次流式响应都经由该模型处理。
-- **辅助模型** — agent 卸载给较小模型的边缘任务。包括上下文压缩、视觉（图像分析）、网页摘要、审批评分、MCP 工具路由、会话标题生成和技能搜索。每项任务有独立槽位，可单独覆盖。
+- **辅助模型** — agent 卸载出去的边缘任务，例如上下文压缩、视觉（图像分析）、审批评分、会话标题生成、`/review` 审查和语音对话回复。每项任务有独立槽位，可单独覆盖；仪表板提供的槽位见[设置辅助模型](#setting-auxiliary-models)。
 
 本页介绍如何通过仪表板配置上述两类模型。如需使用配置文件或 CLI，请跳至底部的[其他方法](#alternative-methods)。
 
 :::tip 最快路径：Nous Portal
-[Nous Portal](/user-guide/features/tool-gateway) 在单一订阅下提供 300+ 个模型。全新安装后，运行 `hermes setup --portal` 即可登录并一键将 Nous 设为提供商。使用 `hermes portal info` 查看当前配置。
+[Nous Portal](./features/tool-gateway.md) 在单一订阅下提供 300+ 个模型。全新安装后，运行 `hermes setup --portal` 即可登录并一键将 Nous 设为提供商。使用 `hermes portal info` 查看当前配置。
 :::
 
 ## Models 页面
@@ -41,9 +41,9 @@ Hermes 使用两类模型槽位：
 
 选择模型后点击 **Switch**，Hermes 会将其写入 `~/.hermes/config.yaml` 的 `model` 部分。**此操作仅对新会话生效** — 已打开的聊天标签页将继续使用启动时的模型。如需在当前聊天中热切换，请在聊天内使用 `/model` 斜杠命令。
 
-## 设置辅助模型
+## 设置辅助模型 {#setting-auxiliary-models}
 
-点击 **Show auxiliary** 展开 11 个任务槽位：
+点击 **Show auxiliary** 展开辅助任务列表，每项任务一行（插件可注册更多任务）：
 
 ![辅助面板展开状态](/img/docs/dashboard-models/auxiliary-expanded.png)
 
@@ -57,9 +57,11 @@ Hermes 使用两类模型槽位：
 | **Vision（视觉）** | 当主模型是不支持视觉的编程模型时（如 Kimi、DeepSeek）。将其指向 `google/gemini-2.5-flash` 或 `gpt-4o-mini`。 |
 | **Compression（压缩）** | 当你在用 Opus/M2.7 的推理 token 来摘要上下文时。快速聊天模型以 1/50 的成本即可完成此工作。 |
 | **Approval（审批）** | 用于 `approval_mode: smart` — 由快速/廉价模型（haiku、flash、gpt-5-mini）决定是否自动批准低风险命令。此处使用昂贵模型是浪费。 |
-| **Web Extract（网页提取）** | 当你大量使用 `web_extract` 时。逻辑同压缩 — 摘要任务不需要推理能力。 |
-| **Skills Hub（技能中心）** | `hermes skills search` 使用此槽位。通常保持 `auto` 即可。 |
+| **Review（审查）** | `/review` 审查子 agent。`auto` 使用主模型；可固定一个单独的（通常更强的）模型用于审查。参见[子智能体委派](./features/delegation.md)。 |
 | **MCP** | MCP 工具路由。通常保持 `auto` 即可。 |
+| **Voice Chat（语音对话）** | 语音对话回复。通常选用比主模型更快的模型；语音轮次默认关闭推理，GPT-Live 语音对话不使用此槽位。参见[语音模式](./features/voice-mode.md)。 |
+
+更多 `config.yaml` 中的辅助模型选项（包括仪表板未列出的任务），见[辅助模型](./configuration.md#auxiliary-models)。
 
 ### 单任务覆盖
 
@@ -78,8 +80,8 @@ Hermes 使用两类模型槽位：
 下拉菜单包含：
 
 - **Main model** — 与点击主行上的 Change 效果相同。
-- **All auxiliary tasks** — 将此模型分配给全部 11 个辅助槽位。适合将所有边缘任务统一切换到廉价 flash 模型的场景。
-- **单项任务选项** — Vision、Web Extract、Compression 等。每项任务当前分配的模型标记为 `current`。
+- **All auxiliary tasks** — 将此模型一次性分配给页面上的所有辅助槽位。适合将所有边缘任务统一切换到廉价 flash 模型的场景。
+- **单项任务选项** — Vision、Review、Compression 等。每项任务当前分配的模型标记为 `current`。
 
 当模型卡片当前已分配到某个槽位时，会显示 `main` 或 `aux · <task>` 标签，方便一眼看出历史模型的使用情况。
 
@@ -186,7 +188,7 @@ hermes config set model.aliases.fav anthropic/claude-opus-4.6
 hermes config set model.aliases.grok x-ai/grok-4
 ```
 
-然后在聊天中使用 `/model fav` 或 `/model grok`。用户别名会覆盖内置短名称（`sonnet`、`kimi`、`opus` 等）。完整参考请见[自定义模型别名](/reference/slash-commands#custom-model-aliases)。
+然后在聊天中使用 `/model fav` 或 `/model grok`。用户别名会覆盖内置短名称（`sonnet`、`kimi`、`opus` 等）。完整参考请见[自定义模型别名](../reference/slash-commands.md#custom-model-aliases)。
 
 ### `hermes model` 子命令
 
@@ -194,7 +196,9 @@ hermes config set model.aliases.grok x-ai/grok-4
 hermes model            # 交互式提供商 + 模型选择器（切换默认值的标准方式）
 ```
 
-`hermes model` 引导你选择提供商、完成认证（OAuth 流程会打开浏览器；API key 提供商会提示输入密钥），然后从该提供商的精选目录中选择具体模型。选择结果写入 `~/.hermes/config.yaml` 的 `model.provider` 和 `model.model` 字段。
+`hermes model` 引导你选择提供商、完成认证（OAuth 流程会打开浏览器；API key 提供商会提示输入密钥），然后从该提供商的精选目录中选择具体模型。选择结果写入 `~/.hermes/config.yaml` 的 `model.provider` 和 `model.model` 字段。保存新模型后会紧接一步推理强度选择（`minimal` … `ultra`、**Disable reasoning**，或 **Skip** 保留当前值），写入 `agent.reasoning_effort`；目录标记为无推理控制的模型会跳过该步。提供商列表中还有 **Reasoning effort for the current model...** 一行，可只更改推理强度。
+
+**Configure auxiliary models...** 打开各辅助任务（视觉、压缩、审批、委派等）的侧模型选择器。每个任务在选完提供商 → 模型后同样会进入推理强度步骤，存为 `auxiliary.<task>.reasoning_effort`（或 `delegation.reasoning_effort`），并多一行 **Provider default** 把强度交给提供商决定。设计上没有 `reasoning_effort` 键的任务（MoA 槽位、记忆查询改写）会跳过该步。
 
 如需在不启动选择器的情况下列出提供商/模型，请使用仪表板或下方的 REST 端点。查看 CLI 当前实际使用的配置：`hermes config get model` 和 `hermes status`。
 

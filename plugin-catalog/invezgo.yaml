@@ -1,0 +1,138 @@
+name: invezgo
+title: Invezgo
+repo: https://github.com/Invezgo/invezgo-hermes
+sha: a6d8ef4c934fe3e2a2d4bae9ad67576707650d6d
+description: >-
+  Indonesia Stock Exchange (IDX/BEI) market data from the Invezgo API: company profiles, price and
+  indicator charts, intraday and order book, running trade, broker summary and inventory, broker and
+  sector stalker, sector rotation, shareholder composition (KSEI, >1%, >5%, insiders), financial
+  statements, key stats, corporate calendar, news, disclosures and a formula screener, plus read access
+  to the user's own Invezgo portfolio, watchlists, journal and trades. Tools are generated from the
+  bundled OpenAPI spec (spec.json) at load time. Disclosure: every tool call is an HTTPS request to
+  api.invezgo.com with the user's Invezgo API key and counts against their plan quota; results,
+  including personal portfolio data, enter the session context and reach the user's model provider.
+  Read-only by default; 18 write tools (watchlists, journals, trades, alerts, saved screeners) are
+  registered only when INVEZGO_ALLOW_WRITE=1. No background processes, shell commands, stored files
+  or telemetry.
+maintainer: Invezgo
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+docs_url: https://invezgo.com
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - invezgo_alerts_create
+    - invezgo_alerts_delete
+    - invezgo_alerts_list
+    - invezgo_alerts_test
+    - invezgo_alerts_update
+    - invezgo_analysis_broker_stalker
+    - invezgo_analysis_broker_stalker_list
+    - invezgo_analysis_disclosure
+    - invezgo_analysis_financial_statement
+    - invezgo_analysis_financial_statement_chart
+    - invezgo_analysis_flow_of_funds
+    - invezgo_analysis_free_float
+    - invezgo_analysis_get_advance_chart
+    - invezgo_analysis_get_broker_list
+    - invezgo_analysis_get_calendar
+    - invezgo_analysis_get_index_chart
+    - invezgo_analysis_get_index_list
+    - invezgo_analysis_get_indicator_chart
+    - invezgo_analysis_get_intraday_chart
+    - invezgo_analysis_get_intraday_data
+    - invezgo_analysis_get_intraday_index
+    - invezgo_analysis_get_multi_time_chart
+    - invezgo_analysis_get_order_book
+    - invezgo_analysis_get_order_queue
+    - invezgo_analysis_get_stock_list
+    - invezgo_analysis_information
+    - invezgo_analysis_insider
+    - invezgo_analysis_insider_chart
+    - invezgo_analysis_intraday_inventory_chart
+    - invezgo_analysis_inventory_broker_chart
+    - invezgo_analysis_inventory_stock_chart
+    - invezgo_analysis_keystat
+    - invezgo_analysis_keystat_chart
+    - invezgo_analysis_momentum_chart
+    - invezgo_analysis_news
+    - invezgo_analysis_notation
+    - invezgo_analysis_price_diary
+    - invezgo_analysis_price_seasonality
+    - invezgo_analysis_price_table
+    - invezgo_analysis_sankey_chart
+    - invezgo_analysis_sector_rotation
+    - invezgo_analysis_sector_stalker
+    - invezgo_analysis_shareholder
+    - invezgo_analysis_shareholder_above
+    - invezgo_analysis_shareholder_above_chart
+    - invezgo_analysis_shareholder_classification
+    - invezgo_analysis_shareholder_classify_table
+    - invezgo_analysis_shareholder_detail
+    - invezgo_analysis_shareholder_high
+    - invezgo_analysis_shareholder_ksei
+    - invezgo_analysis_shareholder_number
+    - invezgo_analysis_shareholder_one
+    - invezgo_analysis_shareholder_one_chart
+    - invezgo_analysis_shareholder_one_detail
+    - invezgo_analysis_shareholder_relation
+    - invezgo_analysis_stock_running_trade
+    - invezgo_analysis_summary_broker
+    - invezgo_analysis_summary_broker_chart
+    - invezgo_analysis_summary_stock
+    - invezgo_analysis_summary_stock_chart
+    - invezgo_analysis_suspend
+    - invezgo_analysis_time_table
+    - invezgo_analysis_top_accumulation
+    - invezgo_analysis_top_change
+    - invezgo_analysis_top_foreign
+    - invezgo_analysis_top_ritel
+    - invezgo_analysis_uma
+    - invezgo_batch_get_intraday_data_batch
+    - invezgo_batch_get_intraday_index_batch
+    - invezgo_batch_get_order_book_batch
+    - invezgo_journals_add_transaction
+    - invezgo_journals_delete_watchlists
+    - invezgo_journals_get_transactions_summary
+    - invezgo_journals_list_transactions
+    - invezgo_portfolios_list_portfolio
+    - invezgo_portfolios_portfolio_summary
+    - invezgo_posts_get_category_posts
+    - invezgo_posts_get_comment
+    - invezgo_posts_get_favorite
+    - invezgo_posts_get_like
+    - invezgo_posts_get_post_by_id
+    - invezgo_posts_get_posts
+    - invezgo_posts_get_stock_category_posts
+    - invezgo_posts_get_stock_posts
+    - invezgo_posts_get_voters
+    - invezgo_screener_delete
+    - invezgo_screener_list
+    - invezgo_screener_save
+    - invezgo_screener_screen
+    - invezgo_screener_update
+    - invezgo_search_search
+    - invezgo_search_search_stock
+    - invezgo_search_search_user
+    - invezgo_trades_delete_watchlists
+    - invezgo_trades_get_summary_chart
+    - invezgo_trades_get_transactions_summary
+    - invezgo_trades_list_transactions
+    - invezgo_trades_update_note_watchlist
+    - invezgo_usage_usage_api
+    - invezgo_usage_usage_logs
+    - invezgo_watchlists_add_group_watchlist
+    - invezgo_watchlists_add_watchlist
+    - invezgo_watchlists_delete_group_watchlist
+    - invezgo_watchlists_delete_watchlists
+    - invezgo_watchlists_list_group_watchlist
+    - invezgo_watchlists_list_watchlist
+    - invezgo_watchlists_update_group_watchlist
+    - invezgo_watchlists_update_note_watchlist
+    - invezgo_watchlists_update_watchlist
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - INVEZGO_API_KEY

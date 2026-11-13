@@ -1,0 +1,34 @@
+name: adeptory
+title: Adeptory
+repo: https://github.com/brefledev/adeptory
+sha: de3c35e8f53572ee60e759723f493fb35d801faa
+subdir: ''
+image: https://raw.githubusercontent.com/brefledev/adeptory/dacb27ec6a800d2e7215dff7645685a7515adb13/docs/assets/adeptory-hero.webp
+screenshots:
+  - https://raw.githubusercontent.com/brefledev/adeptory/dacb27ec6a800d2e7215dff7645685a7515adb13/docs/assets/native-grant-operations.png
+readme: true
+description: "Builds specialist Hermes profiles with researched knowledge, searchable libraries, working procedures, and a roadmap for useful tools. Disclosure — Adeptory builds a separate Hermes profile for each specialist: it stages a profile distribution (its SOUL.md, a minimal config.yaml naming your current model provider, its library, and a copy of the Adeptory plugin) that you install with `hermes profile install`, and it later runs `hermes -p <that profile> plugins disable/enable adeptory` and writes its build plan into that profile's library. While a build you started is active, it forces the model to keep calling tools, rewrites `todo_list`/`clarify` arguments to its saved plan and question, and blocks other tools until its task list is shown. On first use it can ask your permission and then run `hermes config set plugins.entries.adeptory.allow_gateway_injection true` so it may start AI replies to your build requests."
+maintainer: brefledev
+tier: community
+category: tools
+requires_hermes: '>=0.23.1'
+version: '0.1.0'
+platforms: [windows]
+capabilities:
+  provides_tools:
+    - adeptory_build
+    - adeptory_library
+    - adeptory_propose
+    - adeptory_source
+    - adeptory_lookup
+    - adeptory_note
+    - adeptory_check
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+    - post_tool_call
+    - on_session_end
+  provides_middleware:
+    - llm_request
+    - tool_request
+  requires_env: []

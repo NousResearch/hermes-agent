@@ -1,3 +1,4 @@
+import type { GatewayEvent } from '@hermes/shared'
 import { useCallback } from 'react'
 
 import { gatewayEventCompletedFileDiff } from '@/lib/gateway-events'
@@ -6,18 +7,24 @@ import { reachablePreviewUrl } from '@/lib/preview-reach'
 import {
   $previewTabs,
   beginPreviewServerRestart,
-  closePreviewMatching,
-  closeRightRail,
+  closeAgentPreview,
   completePreviewServerRestart,
   openPreview,
   progressPreviewServerRestart,
+  renderedHtmlTarget,
   requestPreviewReload
 } from '@/store/preview'
+import type { PreviewOwner } from '@/store/preview-ownership'
 import { $activeSessionId, $currentCwd } from '@/store/session'
-import { $focusedRuntimeId, $sessionTiles } from '@/store/session-states'
-import type { RpcEvent } from '@/types/hermes'
+import { $focusedStoredSessionId } from '@/store/session-focus'
+import {
+  $focusedRuntimeId,
+  $sessionTiles,
+  previewScopeForRuntime,
+  storedSessionIdForRuntimeId
+} from '@/store/session-states'
 
-type EventHandler = (event: RpcEvent) => void
+type EventHandler = (event: GatewayEvent) => void
 
 interface PreviewRoutingOptions {
   baseHandleGatewayEvent: EventHandler
@@ -35,6 +42,21 @@ function sessionIsOnScreen(sessionId: string): boolean {
     sessionId === $activeSessionId.get() ||
     $sessionTiles.get().some(tile => tile.runtimeId === sessionId)
   )
+}
+
+/** The stored id whose drawer an agent's preview event belongs to: the session
+ *  that ran the tool, not whichever one holds focus (#73890). A runtime with no
+ *  stored id yet is a fresh draft, whose tabs are ownerless until adopted. */
+function previewOwnerForEvent(sessionId: string | undefined): null | string {
+  return sessionId ? storedSessionIdForRuntimeId(sessionId) : $focusedStoredSessionId.get()
+}
+
+/** The full identity an agent's close acts for: its stored id, the runtime
+ *  (its pending tabs) and its profile (the only pins it may close). */
+function previewCloserForEvent(sessionId: string | undefined): PreviewOwner {
+  return sessionId
+    ? { profile: previewScopeForRuntime(sessionId), runtimeId: sessionId, sessionId: previewOwnerForEvent(sessionId) }
+    : previewOwnerForEvent(sessionId)
 }
 
 export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestGateway }: PreviewRoutingOptions) {
@@ -100,7 +122,14 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
               const url = resolved.kind === 'url' ? await reachablePreviewUrl(resolved.url) : resolved.url
               const reached = url === resolved.url ? resolved : { ...resolved, label: resolved.label || target, url }
 
-              openPreview(trimmedLabel ? { ...reached, label: trimmedLabel } : reached, 'tool-result')
+              openPreview(
+                renderedHtmlTarget(trimmedLabel ? { ...reached, label: trimmedLabel } : reached),
+                previewOwnerForEvent(event.session_id),
+                // The runtime that ran the tool, should its stored id lag.
+                event.session_id || undefined,
+                // Its profile: another profile's pinned Browser is not its to navigate.
+                event.session_id ? previewScopeForRuntime(event.session_id) : undefined
+              )
             }
           )
         }
@@ -119,13 +148,11 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
           return
         }
 
+        const owner = previewCloserForEvent(event.session_id)
+
         if (!target) {
-          closeRightRail()
+          closeAgentPreview(owner, [])
 
-          return
-        }
-
-        if (closePreviewMatching(target)) {
           return
         }
 
@@ -141,7 +168,7 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
               }
             }
 
-            closePreviewMatching(...candidates)
+            closeAgentPreview(owner, candidates)
           }
         )
 

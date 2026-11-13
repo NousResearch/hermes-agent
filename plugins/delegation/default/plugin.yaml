@@ -1,0 +1,5 @@
+name: default
+version: 1.0.0
+description: "Default delegation strategy: every delegate_task subagent follows the delegation section of config.yaml (delegation.provider / model / base_url ...), else inherits the parent's model and credentials."
+author: NousResearch
+kind: backend

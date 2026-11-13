@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { getMemoryProviderOAuthStatus, startMemoryProviderOAuth } from '@/hermes'
 import { Check, ExternalLink, Loader2 } from '@/lib/icons'
+import { refreshMemoryStatus } from '@/store/memory-status'
 import { notifyError } from '@/store/notifications'
 import type { MemoryProviderOAuthStatus } from '@/types/hermes'
 
@@ -12,7 +13,7 @@ const POLL_TIMEOUT_MS = 120_000
 // Small connect affordance rendered under the provider dropdown. Capability is
 // backend-driven: the status route 404s for providers without an oauth_flow
 // module, so non-OAuth providers render nothing.
-export function MemoryConnect({ profile = null, provider }: { profile?: null | string; provider: string }) {
+export function MemoryConnect({ profile, provider }: { profile?: string; provider: string }) {
   const [capable, setCapable] = useState<'no' | 'unknown' | 'yes'>('unknown')
   const [connected, setConnected] = useState(false)
   const [auth, setAuth] = useState<MemoryProviderOAuthStatus['auth']>(null)
@@ -107,6 +108,7 @@ export function MemoryConnect({ profile = null, provider }: { profile?: null | s
             setDetail(next.detail || 'Connection failed.')
           } else {
             setPhase('idle')
+            refreshMemoryStatus()
           }
         } catch {
           // Transient poll failure — keep trying until the deadline.

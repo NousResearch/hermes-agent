@@ -16,7 +16,7 @@ If you don't have a public URL or just want to get started quickly, check out [B
 :::
 
 :::info Reference docs
-For the full webhook platform reference (all config options, delivery types, dynamic subscriptions, security model) see [Webhooks](/user-guide/messaging/webhooks).
+For the full webhook platform reference (all config options, delivery types, dynamic subscriptions, security model) see [Webhooks](../user-guide/messaging/webhooks.md).
 :::
 
 :::warning Prompt injection risk
@@ -49,6 +49,7 @@ platforms:
       routes:
         github-pr-review:
           secret: "your-webhook-secret-here"   # must match the GitHub webhook secret exactly
+          signature: github                    # accept only X-Hub-Signature-256 on this route
           events:
             - pull_request
 
@@ -88,7 +89,7 @@ platforms:
 | `deliver_extra.pr_number` | Resolves to the PR number from the payload. |
 
 :::note The payload does not contain code
-The GitHub webhook payload includes PR metadata (title, description, branch names, URLs) but **not the diff**. The prompt above instructs the agent to run `gh pr diff` to fetch the actual changes. The default `hermes-webhook` toolset is deliberately constrained (web search/extract, vision, clarify — **no terminal**) because webhook payloads can carry untrusted content. To let this route run `gh`, add a per-route toolset grant: `toolsets: ["terminal", "web"]` on the route config — see [Per-route toolsets](/docs/user-guide/messaging/webhooks#per-route-toolsets).
+The GitHub webhook payload includes PR metadata (title, description, branch names, URLs) but **not the diff**. The prompt above instructs the agent to run `gh pr diff` to fetch the actual changes. The default `hermes-webhook` toolset is deliberately constrained (web search/extract, vision, clarify — **no terminal**) because webhook payloads can carry untrusted content. To let this route run `gh`, add a per-route toolset grant: `toolsets: ["terminal", "web"]` on the route config — see [Per-route toolsets](../user-guide/messaging/webhooks.md#per-route-toolsets).
 :::
 
 ---
@@ -204,7 +205,7 @@ For high-volume repositories, you can still filter upstream with a GitHub Action
 
 ## Using a skill for consistent review style
 
-Load a [Hermes skill](/user-guide/features/skills) to give the agent a consistent review persona. Add `skills` to your route inside `platforms.webhook.extra.routes` in `config.yaml`:
+Load a [Hermes skill](../user-guide/features/skills.md) to give the agent a consistent review persona. Add `skills` to your route inside `platforms.webhook.extra.routes` in `config.yaml`:
 
 ```yaml
 platforms:
@@ -214,6 +215,7 @@ platforms:
       routes:
         github-pr-review:
           secret: "your-webhook-secret-here"
+          signature: github
           events: [pull_request]
           prompt: |
             A pull request event was received (action: {action}).
@@ -264,11 +266,12 @@ Valid `deliver` values: `log` · `github_comment` · `telegram` · `discord` · 
 
 ## GitLab support
 
-The same adapter works with GitLab. GitLab uses `X-Gitlab-Token` for authentication (plain string match, not HMAC) — Hermes handles both automatically.
+The same adapter works with GitLab. GitLab authenticates with `X-Gitlab-Token` (plain string match, not HMAC) or, when a signing token is configured, a Standard Webhooks `webhook-signature`. Change the route's pin to `signature: gitlab`: a route left at `signature: github` rejects every GitLab delivery with `401`, even with the correct secret.
 
 For event filtering, GitLab sets `X-GitLab-Event` to values like `Merge Request Hook`, `Push Hook`, `Pipeline Hook`. Use the exact header value in `events`:
 
 ```yaml
+signature: gitlab
 events:
   - Merge Request Hook
 ```
@@ -282,7 +285,7 @@ GitLab payload fields differ from GitHub's — e.g. `{object_attributes.title}` 
 - **Never use `INSECURE_NO_AUTH`** in production — it disables signature validation entirely. It is only for local development.
 - **Rotate your webhook secret** periodically and update it in both GitHub (webhook settings) and your `config.yaml`.
 - **Rate limiting** is 30 req/min per route by default (configurable via `extra.rate_limit`). Exceeding it returns `429`.
-- **Duplicate deliveries** (webhook retries) are deduplicated via a 1-hour idempotency cache. The cache key is `X-GitHub-Delivery` if present, then `X-Request-ID`, then a millisecond timestamp. When neither delivery ID header is set, retries are **not** deduplicated.
+- **Duplicate deliveries** (webhook retries) are deduplicated via a 1-hour idempotency cache. The cache key is `X-GitHub-Delivery` if present, then `X-Request-ID`, then a random per-request ID. When neither delivery ID header is set, retries are **not** deduplicated.
 - **Prompt injection:** PR titles, descriptions, and commit messages are attacker-controlled. Malicious PRs could attempt to manipulate the agent's actions. Run the gateway in a sandboxed environment (Docker, VM) when exposed to the public internet.
 
 ---
@@ -331,6 +334,6 @@ platforms:
 ## What's Next?
 
 - **[Cron-Based PR Reviews](./github-pr-review-agent.md)** — poll for PRs on a schedule, no public endpoint needed
-- **[Webhook Reference](/user-guide/messaging/webhooks)** — full config reference for the webhook platform
-- **[Build a Plugin](/developer-guide/plugins)** — package review logic into a shareable plugin
-- **[Profiles](/user-guide/profiles)** — run a dedicated reviewer profile with its own memory and config
+- **[Webhook Reference](../user-guide/messaging/webhooks.md)** — full config reference for the webhook platform
+- **[Build a Plugin](../developer-guide/plugins/index.md)** — package review logic into a shareable plugin
+- **[Profiles](../user-guide/profiles.md)** — run a dedicated reviewer profile with its own memory and config

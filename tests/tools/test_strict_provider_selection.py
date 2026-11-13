@@ -212,7 +212,7 @@ class TestSttStrictSelection:
 
         with patch.object(tt, "_load_stt_config", return_value={"openai": {"api_key": "sk-direct"}}), \
              patch("tools.tool_backend_helpers.read_selection", return_value="nous"), \
-             patch.object(tt, "resolve_managed_tool_gateway", return_value=MANAGED):
+             patch("tools.managed_tool_gateway.resolve_managed_tool_gateway", return_value=MANAGED):
             api_key, base_url = tt._resolve_openai_audio_client_config()
         assert api_key == "managed-token"
         assert base_url.startswith("https://gateway.nousresearch.com")
@@ -222,8 +222,8 @@ class TestSttStrictSelection:
 
         with patch.object(tt, "_load_stt_config", return_value={}), \
              patch("tools.tool_backend_helpers.read_selection", return_value="openai"), \
-             patch.object(tt, "resolve_openai_audio_api_key", return_value=""), \
-             patch.object(tt, "resolve_managed_tool_gateway") as gw:
+             patch("tools.tool_backend_helpers.resolve_openai_audio_api_key", return_value=""), \
+             patch("tools.managed_tool_gateway.resolve_managed_tool_gateway") as gw:
             with pytest.raises(ValueError) as exc:
                 tt._resolve_openai_audio_client_config()
         gw.assert_not_called()
@@ -235,8 +235,8 @@ class TestSttStrictSelection:
 
         with patch.object(tt, "_load_stt_config", return_value={}), \
              patch("tools.tool_backend_helpers.read_selection", return_value=None), \
-             patch.object(tt, "resolve_openai_audio_api_key", return_value="sk-env"):
-            api_key, base_url = tt._resolve_openai_audio_client_config()
+             patch("tools.tool_backend_helpers.resolve_openai_audio_api_key", return_value="sk-env"):
+            api_key, _base_url = tt._resolve_openai_audio_client_config()
         assert api_key == "sk-env"
 
 
@@ -281,41 +281,6 @@ class TestBrowserUseStrictSelection:
 
 
 # ---------------------------------------------------------------------------
-# Camofox: selection over env var
-# ---------------------------------------------------------------------------
-
-
-class TestCamofoxSelection:
-    def test_camofox_selection_activates_mode(self, monkeypatch):
-        from tools import browser_camofox as bc
-
-        monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
-        with patch.object(bc, "_config_cdp_url", return_value=""), \
-             patch("tools.tool_backend_helpers.read_selection", return_value="camofox"):
-            assert bc.is_camofox_mode() is True
-
-    def test_other_selection_beats_camofox_url_env(self, monkeypatch):
-        """CAMOFOX_URL is the ADDRESS, not the choice: an explicit different
-        browser selection wins."""
-        from tools import browser_camofox as bc
-
-        monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
-        with patch.object(bc, "_config_cdp_url", return_value=""), \
-             patch.object(bc, "get_camofox_url", return_value="http://localhost:9377"), \
-             patch("tools.tool_backend_helpers.read_selection", return_value="local"):
-            assert bc.is_camofox_mode() is False
-
-    def test_never_configured_env_url_still_activates(self, monkeypatch):
-        from tools import browser_camofox as bc
-
-        monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
-        with patch.object(bc, "_config_cdp_url", return_value=""), \
-             patch.object(bc, "get_camofox_url", return_value="http://localhost:9377"), \
-             patch("tools.tool_backend_helpers.read_selection", return_value=None):
-            assert bc.is_camofox_mode() is True
-
-
-# ---------------------------------------------------------------------------
 # tools_config writers: one provider string per row, no use_gateway writes
 # ---------------------------------------------------------------------------
 
@@ -334,9 +299,9 @@ class TestWriteProviderConfig:
         from hermes_cli.tools_config import _write_provider_config
 
         config = {"web": {"backend": "nous", "use_gateway": True}}
-        provider = {"name": "Tavily", "web_backend": "tavily"}
+        provider = {"name": "Keenable", "web_backend": "keenable"}
         _write_provider_config(provider, config, managed_feature=None)
-        assert config["web"]["backend"] == "tavily"
+        assert config["web"]["backend"] == "keenable"
         assert "use_gateway" not in config["web"]
 
     def test_managed_image_row_persists_nous_provider(self):

@@ -23,77 +23,30 @@ pytest.importorskip("mcp.client.auth.oauth2", reason="MCP SDK 1.26.0+ required")
 import tools.mcp_oauth as mo
 
 
-def _free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
-def _wait_listening(port: int) -> None:
-    for _ in range(200):
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=0.2):
-                return
-        except OSError:
-            time.sleep(0.02)
-    raise AssertionError("callback listener never bound")
-
-
-@pytest.mark.parametrize("preconnect_first", [True, False])
-def test_idle_preconnect_does_not_delay_the_code(monkeypatch, preconnect_first):
-    monkeypatch.setattr(mo.sys, "stdin", io.StringIO())  # paste reader sees EOF; the HTTP listener is under test
-    port = _free_port()
-    out: dict = {}
-
-    def run():
-        async def main():
-            with mo.force_interactive_oauth():
-                return await mo._make_callback_waiter(port, timeout=30)()
-        out["result"] = asyncio.run(main())
-        out["returned_at"] = time.monotonic()
-
-    waiter = threading.Thread(target=run, daemon=True)
-    waiter.start()
-    _wait_listening(port)
-
-    idle = []
-
-    def preconnect():  # the browser's speculative socket: connects, sends nothing, stays open
-        idle.append(socket.create_connection(("127.0.0.1", port), timeout=5))
-
-    if preconnect_first:
-        preconnect()  # the accept queue is FIFO: the server takes this socket ahead of the real request
-    sent_at = time.monotonic()
-    conn = HTTPConnection("127.0.0.1", port, timeout=5)
-    conn.request("GET", "/callback?code=abc&state=xyz")
-    assert conn.getresponse().status == 200
-    conn.close()
-    if not preconnect_first:
-        preconnect()  # accepted right after the callback was served
-
-    try:
-        waiter.join(timeout=8)
-        assert not waiter.is_alive(), "waiter still blocked on the idle preconnect"
-        assert out["result"].code == "abc"
-        assert out["returned_at"] - sent_at < 5  # bounded by the handler's read timeout, far inside a 60 s code lifetime
-    finally:
-        for s in idle:
-            s.close()
-
-
 @contextmanager
-def _running_waiter(monkeypatch, timeout=10):
+def _running_waiter(monkeypatch, timeout=10, hold_cleanup=None):
     """Run the production waiter on its own loop thread; yields ``(server, out)`` once it is listening.
 
-    ``out`` gets ``result`` or ``error`` and ``returned_at``. Port 0: the OS picks a free port."""
+    ``out`` gets ``result`` or ``error`` and ``returned_at``. Port 0: the OS picks a free port.
+    ``hold_cleanup``: an Event the listener's real ``shutdown()`` waits for, so a test can connect after
+    the callback without racing the listener closing."""
     monkeypatch.setattr(mo.sys, "stdin", io.StringIO())  # paste reader sees EOF; the HTTP listener is under test
     started, done, servers, out = threading.Event(), threading.Event(), [], {}
     original_start = mo._start_callback_server
 
     def recording_start(port, handler_cls):
-        servers.append(original_start(port, handler_cls))
+        server = original_start(port, handler_cls)
+        if hold_cleanup is not None:
+            real_shutdown = server.shutdown
+
+            def held_shutdown():
+                hold_cleanup.wait(5)
+                real_shutdown()
+
+            server.shutdown = held_shutdown
+        servers.append(server)
         started.set()
-        return servers[-1]
+        return server
 
     monkeypatch.setattr(mo, "_start_callback_server", recording_start)
 
@@ -124,23 +77,50 @@ def _raw_get(sock: socket.socket, query: str) -> bytes:
     return b"".join(chunks)
 
 
+@pytest.mark.parametrize("preconnect_first", [True, False])
+def test_idle_preconnect_does_not_delay_the_code(monkeypatch, preconnect_first):
+    opened = []  # every socket the test opens, closed whatever fails
+    preconnected = threading.Event()  # cleanup waits for it, so the late preconnect never meets a closed port
+    try:
+        with _running_waiter(monkeypatch, hold_cleanup=preconnected) as (server, out):
+            def preconnect():  # the browser's speculative socket: connects, sends nothing, stays open
+                opened.append(socket.create_connection(server.server_address, timeout=5))
+                preconnected.set()
+
+            if preconnect_first:
+                preconnect()  # the accept queue is FIFO: the server takes this socket ahead of the real request
+            sent_at = time.monotonic()
+            conn = HTTPConnection(*server.server_address, timeout=5)
+            opened.append(conn)
+            conn.request("GET", "/callback?code=abc&state=xyz")
+            assert conn.getresponse().status == 200
+            if not preconnect_first:
+                preconnect()  # accepted right after the callback was served
+        assert out["result"].code == "abc"
+        assert out["returned_at"] - sent_at < 5  # far inside a 60 s code lifetime
+    finally:
+        preconnected.set()
+        for sock in opened:
+            sock.close()
+
+
 def test_queued_idle_preconnects_do_not_delay_the_redirect(monkeypatch):
-    """Two silent sockets accepted ahead of the redirect: each cost the PR's 2 s read timeout in turn."""
-    idle = []
+    """Two silent sockets accepted ahead of the redirect: a per-socket read timeout cost 2 s each in turn."""
+    opened = []  # every socket the test opens, closed whatever fails
     try:
         with _running_waiter(monkeypatch) as (server, out):
-            idle = [socket.create_connection(server.server_address, timeout=5) for _ in range(2)]
+            opened += [socket.create_connection(server.server_address, timeout=5) for _ in range(2)]
             sent_at = time.monotonic()
             conn = HTTPConnection(*server.server_address, timeout=10)
+            opened.append(conn)
             conn.request("GET", "/callback?code=abc&state=xyz")
             assert conn.getresponse().status == 200
             answered = time.monotonic() - sent_at
-            conn.close()
         assert out["result"].code == "abc"
         assert answered < 3.0, f"redirect answered after {answered:.2f}s behind idle preconnects"
         assert out["returned_at"] - sent_at < 3.0  # two idle preconnects cost ~4 s on a serial listener
     finally:
-        for sock in idle:
+        for sock in opened:
             sock.close()
 
 

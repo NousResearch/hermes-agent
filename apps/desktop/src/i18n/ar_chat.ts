@@ -3,6 +3,8 @@ import type { TranslationOverrides } from './define-locale'
 export const arChat = {
   composer: {
     message: 'الرسالة',
+    predictionHint: '→ قبول · Tab التالي · Esc إخفاء',
+    predictionAnnouncement: (index, total, text) => `الاقتراح ${index} من ${total}: ${text}`,
     wakingProfile: profile => `جار إيقاظ ${profile}`,
     placeholderStarting: 'جار بدء Hermes...',
     placeholderReconnecting: 'جار إعادة الاتصال...',

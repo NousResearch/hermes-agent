@@ -3,6 +3,8 @@ import type { TranslationOverrides } from './define-locale'
 export const zhHantChat = {
   composer: {
     message: '訊息',
+    predictionHint: '→ 接受 · Tab 切換 · Esc 隱藏',
+    predictionAnnouncement: (index, total, text) => `第 ${index} 條預測，共 ${total} 條：${text}`,
     wakingProfile: profile => `正在喚醒 ${profile}…`,
     placeholderStarting: '正在啟動 Hermes...',
     placeholderReconnecting: '正在重新連線至 Hermes…',

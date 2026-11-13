@@ -1,14 +1,6 @@
 import { ComposerPrimitive } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import {
-  type ClipboardEvent,
-  type FormEvent,
-  type KeyboardEvent,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef
-} from 'react'
+import { type ClipboardEvent, type FormEvent, type KeyboardEvent, useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { useTourMarker } from '@/app/chat/tour-marker'
 import type { GatewayRequester } from '@/app/contrib/types'
@@ -72,6 +64,7 @@ import { useComposerEscCancel } from './hooks/use-composer-esc-cancel'
 import { useComposerMetrics } from './hooks/use-composer-metrics'
 import { useComposerPlaceholder } from './hooks/use-composer-placeholder'
 import { useComposerPopout } from './hooks/use-composer-popout'
+import { useComposerPredictions } from './hooks/use-composer-predictions'
 import { useComposerQueue } from './hooks/use-composer-queue'
 import { useComposerScreenshot } from './hooks/use-composer-screenshot'
 import { useComposerSubmit } from './hooks/use-composer-submit'
@@ -88,6 +81,7 @@ import { useSessionStatusPresence } from './hooks/use-status-presence'
 import { shouldConvertPasteToAttachment } from './large-paste'
 import { ActionBadges } from './micro-actions'
 import { chipTypedPathOnSpace, pathifyRefs } from './path-refs'
+import { ComposerPredictionPreview } from './prediction-preview'
 import { PreparedImageRecovery } from './prepared-image-recovery'
 import { renderComposerQueueSlot, useComposerQueueScopeKey } from './queue-slot'
 import { RestoredDraftNotice } from './restored-draft-notice'
@@ -483,6 +477,25 @@ export function ChatBar({
     triggerLoading
   } = useComposerTrigger({ at, draftRef, editorRef, emoji, recordUndoPoint, requestMainFocus, setComposerText, slash })
 
+  const predictions = useComposerPredictions({
+    busy,
+    composingRef,
+    draftRef,
+    editingQueue: !!queueEdit,
+    editorRef,
+    hasAttachments: attachments.length > 0,
+    hasText,
+    hasTrigger: !!trigger,
+    inputDisabled: inputDisabled || disabled || awaitingInput || compacting,
+    insertText: text => {
+      recordUndoPoint()
+      insertText(text)
+    },
+    profile,
+    sessionId,
+    target: scope.target
+  })
+
   // Pull the live contentEditable text into draftRef + the AUI composer state
   // (which drives `hasComposerPayload` → the send button). Shared by the input
   // and compositionend paths so committed IME text reaches state through either.
@@ -529,6 +542,8 @@ export function ChatBar({
   )
 
   const handleEditorInput = (event: FormEvent<HTMLDivElement>) => {
+    predictions.invalidate()
+
     // During IME composition the DOM contains uncommitted preedit text
     // mixed with real content.  Skip state writes — compositionend flushes
     // the finalized text (see onCompositionEnd).
@@ -545,6 +560,7 @@ export function ChatBar({
   // text. Consecutive keystrokes coalesce into one entry, so ⌘Z steps back by a
   // burst rather than a character.
   const handleEditorBeforeInput = (event: FormEvent<HTMLDivElement>) => {
+    predictions.invalidate()
     const inputType = (event.nativeEvent as InputEvent).inputType
 
     // Undo/redo are ours (handled in useComposerUndo + keydown), and IME preedit
@@ -566,6 +582,7 @@ export function ChatBar({
   }
 
   const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
+    predictions.invalidate()
     const imageBlobs = extractClipboardImageBlobs(event.clipboardData)
 
     if (imageBlobs.length > 0 && onAttachImageBlob) {
@@ -666,6 +683,14 @@ export function ChatBar({
   }
 
   const handleEditorKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    // Preview keys belong only to this focused, empty editor. The hook leaves
+    // modified keys, IME, slash/@/: menus and all other navigation untouched.
+    if (predictions.handleKeyDown(event)) {
+      triggerKeyConsumedRef.current = true
+
+      return
+    }
+
     // Self-heal a stale composition flag before the guard below reads it.
     // compositionend can be missed (focus jumps, input-source switches, or a
     // programmatic DOM swap mid-preedit abort the composition without the
@@ -1163,7 +1188,7 @@ export function ChatBar({
   const inputWidthClass = composerInputWidthClass(stacked)
 
   const input = (
-    <div className={cn('relative', inputWidthClass)}>
+    <div className={cn('relative', predictions.preview && 'grid grid-cols-[minmax(0,1fr)]', inputWidthClass)}>
       <div
         aria-disabled={inputDisabled ? true : undefined}
         aria-label={t.composer.message}
@@ -1172,6 +1197,7 @@ export function ChatBar({
         className={cn(
           'min-h-[1.625rem] min-h-(--composer-input-min-height) max-h-(--composer-input-max-height) cursor-text overflow-y-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] bg-transparent pb-1 pr-1 pt-1 leading-normal text-foreground outline-none disabled:cursor-not-allowed',
           '**:data-ref-text:cursor-default',
+          '[grid-area:1/1]',
           stacked && 'pl-3',
           inputWidthClass,
           // Inside the native Wayland HUD drag region: a drag region swallows
@@ -1180,7 +1206,7 @@ export function ChatBar({
           hudNativeDrag && '[-webkit-app-region:no-drag]'
         )}
         contentEditable={!inputDisabled}
-        data-placeholder={placeholder}
+        data-placeholder={predictions.preview ? '' : placeholder}
         data-slot={RICH_INPUT_SLOT}
         dir={textDirection}
         onBeforeInput={handleEditorBeforeInput}
@@ -1214,6 +1240,7 @@ export function ChatBar({
           flushEditorToDraft(event.currentTarget)
         }}
         onCompositionStart={event => {
+          predictions.invalidate()
           composingRef.current = true
 
           // Input events are skipped for the rest of the composition, so
@@ -1223,7 +1250,10 @@ export function ChatBar({
         }}
         onCut={handleCut}
         onDragOver={handleInputDragOver}
-        onDrop={handleInputDrop}
+        onDrop={event => {
+          predictions.invalidate()
+          handleInputDrop(event)
+        }}
         onFocus={() => markActiveComposer(scope.target)}
         onInput={handleEditorInput}
         onKeyDown={handleEditorKeyDown}
@@ -1234,6 +1264,7 @@ export function ChatBar({
         role="textbox"
         suppressContentEditableWarning
       />
+      {predictions.preview && <ComposerPredictionPreview prediction={predictions.preview} stacked={stacked} />}
       <ComposerDirectiveActions editorRef={editorRef} />
       {/* assistant-ui requires ComposerPrimitive.Input somewhere in the tree
         so the composer-state binding (text + IME + paste + form-submit hookup)
@@ -1454,7 +1485,8 @@ export function ChatBar({
                   // track past the surface — and every `w-full` child (the fade,
                   // the input/controls row) laid out against that phantom width
                   // and got clipped by overflow-hidden, send button first.
-                  'group/composer-surface relative z-4 isolate grid grid-cols-[minmax(0,1fr)] grid-rows-[auto_1fr] overflow-hidden rounded-[inherit]', composerSurfaceRing,
+                  'group/composer-surface relative z-4 isolate grid grid-cols-[minmax(0,1fr)] grid-rows-[auto_1fr] overflow-hidden rounded-[inherit]',
+                  composerSurfaceRing,
                   COMPOSER_DROP_FADE_CLASS,
                   dragActive && COMPOSER_DROP_ACTIVE_CLASS
                 )}
@@ -1555,7 +1587,12 @@ export function ChatBarFallback() {
       )}
       data-slot="composer-root"
     >
-      <div className={cn('composer-fallback-surface relative isolate h-(--composer-fallback-height) w-full rounded-[inherit]', composerSurfaceRing)}>
+      <div
+        className={cn(
+          'composer-fallback-surface relative isolate h-(--composer-fallback-height) w-full rounded-[inherit]',
+          composerSurfaceRing
+        )}
+      >
         <div aria-hidden className={composerInputBacking} />
       </div>
     </div>

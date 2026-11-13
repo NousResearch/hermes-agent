@@ -7,6 +7,13 @@ import {
   requestComposerSetDraft,
   requestComposerSubmit
 } from '@/app/chat/composer/focus'
+import {
+  clearComposerPredictions,
+  type ComposerPredictionHandle,
+  type ComposerPredictionsPayload,
+  isComposerPredictionScope,
+  setComposerPredictions
+} from '@/app/chat/composer/predictions'
 import { freshDraftScope, takeSessionDraft } from '@/store/composer'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
@@ -63,6 +70,35 @@ const resolveComposerAddress = (
  *  resolves to no live surface returns `null`/`false` (or is dropped, for
  *  `focus`) — it never broadcasts and never throws. */
 export const composerHost = {
+  /** Offer complete messages to the empty, idle, visible PRIMARY composer.
+   * Capture sessionId (durable or runtime), profile and connectionId before
+   * async work; discard superseded requests before publishing. Tiles, new
+   * drafts and unregistered connections fail closed. No draft/focus/send
+   * mutation occurs. Returns an exact-owner cleanup receipt, or null when
+   * rejected (including malformed or oversized payloads). */
+  setPredictions: (payload: ComposerPredictionsPayload): ComposerPredictionHandle | null => {
+    if (!isComposerPredictionScope(payload)) {
+      return null
+    }
+
+    const { ids, target } = resolveComposerAddress(payload.sessionId)
+    const active = $activeSessionId.get()
+    const selected = $selectedStoredSessionId.get()
+    const activeStored = active ? ($sessionStates.get()[active]?.storedSessionId ?? active) : null
+
+    // Navigation can publish the selected durable id before its runtime is
+    // adopted. Never translate the NEW session into the OLD editor's id.
+    if (target !== 'main' || !active || !selected || activeStored !== selected || !ids.includes(selected)) {
+      return null
+    }
+
+    return setComposerPredictions({ ...payload, sessionId: active })
+  },
+
+  /** Clear ONLY the publication represented by this exact receipt. Stale
+   * cleanup, including cleanup from an older plugin instance, returns false. */
+  clearPredictions: (handle: ComposerPredictionHandle): boolean => clearComposerPredictions(handle),
+
   /** The live draft text of one composer, or null when nothing holds it.
    *  Mounted surfaces answer with their in-DOM text (current, incl.
    *  unsaved keystrokes); an unmounted session falls back to its debounced

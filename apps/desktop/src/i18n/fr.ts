@@ -3769,6 +3769,8 @@ export const frOverrides = {
   },
   composer: {
     message: 'Message',
+    predictionHint: '→ Accepter · Tab Suivant · Esc Masquer',
+    predictionAnnouncement: (index, total, text) => `Suggestion ${index} sur ${total} : ${text}`,
     wakingProfile: profile => `Réveil de ${profile}…`,
     placeholderStarting: 'Démarrage de Hermes…',
     placeholderReconnecting: 'Reconnexion à Hermes…',

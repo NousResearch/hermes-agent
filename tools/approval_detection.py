@@ -805,6 +805,7 @@ def _rewrite_resolved_shell_rc_paths(command: str) -> str:
                     canonical = "~/.bashrc"
                 paths.setdefault(path, canonical)
     except Exception:
+        logger.debug("Could not resolve relocated shell startup paths", exc_info=True)
         return command
 
     for path in sorted(paths, key=lambda value: len(value), reverse=True):

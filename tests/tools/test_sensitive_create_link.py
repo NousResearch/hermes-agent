@@ -22,7 +22,7 @@ class TestSensitiveCreateLinkPattern:
             "touch $ZDOTDIR/.zshrc",
             "touch $XDG_CONFIG_HOME/fish/config.fish",
         ):
-            dangerous, key, desc = detect_dangerous_command(command)
+            dangerous, key, _description = detect_dangerous_command(command)
             assert dangerous is True, command
             assert key is not None, command
 
@@ -46,7 +46,7 @@ class TestSensitiveCreateLinkPattern:
             "touch ~/.hermes/config.yaml.bak",
             "touch ~/.ssh-notes.txt",
         ):
-            dangerous, key, desc = detect_dangerous_command(cmd)
+            dangerous, _key, _description = detect_dangerous_command(cmd)
             assert dangerous is False, cmd
 
     def test_relocated_shell_rc_absolute_paths_are_flagged(self, tmp_path, monkeypatch):
@@ -59,6 +59,6 @@ class TestSensitiveCreateLinkPattern:
             f"touch {zsh_dir}/.zshrc",
             f"touch {xdg_dir}/fish/config.fish",
         ):
-            dangerous, key, desc = detect_dangerous_command(command)
+            dangerous, key, _description = detect_dangerous_command(command)
             assert dangerous is True, command
             assert key is not None, command

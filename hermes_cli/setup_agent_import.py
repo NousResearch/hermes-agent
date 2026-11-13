@@ -138,8 +138,16 @@ def _run_import(source: ImportSource, hermes_home: Path, from_setup: bool = True
     """The offer's import: :func:`_import_child` for *source*; True when the run changed config.yaml
     or .env, which the setup sections after it read. Bare ``hermes migrate`` runs it as its own
     command (``from_setup`` False: no setup-only flags such as OpenClaw's ``--migrate-secrets``)."""
+    from hermes_cli.setup_import_results import import_job_snapshot, remember_import_jobs
     before = _snapshot(hermes_home)
+    jobs_before = import_job_snapshot(hermes_home) if from_setup else None
     _import_child(source, hermes_home, from_setup=from_setup)
+    if from_setup:
+        from hermes_cli.setup import is_noninteractive, prompt
+        remember_import_jobs(hermes_home, jobs_before)
+        if not is_noninteractive():
+            # The next curses picker clears the import's report, even when it changed no config.
+            prompt("Press Enter to continue setup")
     return _snapshot(hermes_home) != before
 
 

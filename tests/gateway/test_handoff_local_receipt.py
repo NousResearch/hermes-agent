@@ -673,3 +673,31 @@ async def test_a_named_profiles_handed_off_bot_chat_opens_on_its_lane_after_a_re
     finally:
         for home in (root, bot):
             process_ownership.release(home)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('label', [None, 'heartbeat'])
+async def test_a_handed_off_cli_run_no_longer_registers_compute_delegations(tmp_path, label):
+    """``/handoff`` rewrites the row's ``source`` to the lane and keeps ``created_source``: the row is a
+    messaging session now, so the delegation producer gate refuses it, labelled (#142895) or not."""
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_contract import SessionActor
+    from gateway.session_local import create_local_session
+    from gateway.session_worker_delegation import _dispatch
+    from hermes_state_runtime import RuntimeStoreError
+    runner = _Runner(tmp_path)
+    warm = await initialize_session_authority(runner, profile_id='fixture', instance_id='warm')
+    owner = SessionActor('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control'}), 'socket')
+    request = {'request_id': 'run', 'source': 'oneshot', 'cwd': str(tmp_path), 'model': 'frozen', 'toolsets': []}
+    ref = create_local_session(warm, owner, {**request, **({'source_label': label} if label else {})})
+    await _handoff(runner, warm, ref.session_id, _source())
+    row = warm.db.get_session(ref.session_id)
+    assert (row['source'], row['created_source']) == ('telegram', 'oneshot')
+    payload = {'delegation_id': 'd', 'task': {}, 'dispatched_at': 0, 'parent_session_id': ref.session_id,
+               'session_key': row['session_key'], 'origin_ui_session_id': '', 'origin_session_id': ''}
+
+    def write(conn):
+        with pytest.raises(RuntimeStoreError) as refused:
+            _dispatch(warm.db, conn, ref.session_id, payload, execution_id='e', worker_pid=0, worker_birth=0)
+        return refused.value.args[0]
+    assert warm.db._execute_write(write) == 'unsupported_producer'

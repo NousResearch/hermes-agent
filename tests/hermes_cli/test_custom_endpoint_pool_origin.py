@@ -95,6 +95,30 @@ def test_dashboard_added_key_stays_on_its_origin_after_a_desktop_move(client):
     assert _bare_key_at_new() != POOLED
 
 
+@pytest.mark.parametrize("name", ["openrouter", "deepseek"])
+def test_key_added_for_a_builtin_named_proxy_entry_records_the_proxy(client, name):
+    """The migration note's remedy: a key added while ``providers.<built-in>`` points at a proxy is
+    the proxy's, for OpenRouter too."""
+    _entry(name)
+    assert client.post("/api/credentials/pool", json={"provider": name, "api_key": POOLED}).status_code == 200
+    assert [r.get("base_url") for r in _stored_rows(name) if r.get("source") == "manual"] == [OLD]
+    assert _main_key(f"custom:{name}") == POOLED
+
+
+def test_openrouter_pkce_key_is_bound_to_openrouter_even_with_a_proxy_entry(_isolate_hermes_home, monkeypatch):
+    """The browser login mints the key at openrouter.ai: it is never the proxy's key."""
+    from types import SimpleNamespace
+
+    from hermes_cli.auth_commands import auth_add_command
+    from hermes_constants import OPENROUTER_BASE_URL
+    _entry("openrouter")
+    monkeypatch.setattr("hermes_cli.auth._openrouter_pkce_login", lambda **_kw: {"api_key": POOLED})
+    auth_add_command(SimpleNamespace(provider="openrouter", auth_type="oauth", api_key=None,
+                                     label="browser", timeout=None, no_browser=True))
+    assert [r.get("base_url") for r in _stored_rows("openrouter")
+            if r.get("source") == "manual:openrouter_pkce"] == [OPENROUTER_BASE_URL]
+
+
 def test_cli_added_key_reaches_no_aux_delegate_or_restore_path_after_a_move(client):
     from agent.credential_pool import AUTH_TYPE_API_KEY, SOURCE_MANUAL, PooledCredential, load_pool
     _entry()
@@ -196,18 +220,42 @@ def test_bare_slug_fallback_switch_and_cron_pools_drop_the_old_origin_row(client
     _add_row()
     # Positive control: on its own origin the slug still rotates through the pooled key.
     assert POOLED in {e.access_token for e in load_route_pool("myep", OLD).entries()}
+    from cron.scheduler import _load_credential_pool
+    assert POOLED in {e.access_token for e in _load_credential_pool({"provider": "myep", "base_url": OLD}, "job").entries()}
     assert _move(client, api_key="").status_code == 200
 
     agent = SimpleNamespace(_credential_pool=None, _credential_pool_entry_id=None, base_url=NEW, provider="myep")
     _rebind_fallback_credential_pool(agent, "myep", "m")
     assert agent._credential_pool is None
     assert load_route_pool("myep", NEW) is None
+    assert _load_credential_pool({"provider": "myep", "base_url": NEW, "requested_provider": "myep"}, "job") is None
     assert pool_for_aux_provider("myep", "myep", load_pool) is None
     # A delegated child on ``delegation.provider: myep`` (provider id kept as the bare slug).
     from tools.delegate_tool_config import _resolve_child_credential_pool
     parent = SimpleNamespace(provider="openrouter", requested_provider="openrouter", base_url="", _credential_pool=None)
     child = _resolve_child_credential_pool("myep", parent, NEW, "myep")
     assert child is None or POOLED not in {e.access_token for e in child.entries()}
+
+
+def test_switch_model_onto_a_moved_bare_slug_reloads_no_old_origin_row(client, monkeypatch):
+    """``/model`` mid-session reloads the pool for the new route: a bare slug is the entry's identity."""
+    from types import SimpleNamespace
+
+    from agent import agent_runtime_helpers as arh
+    monkeypatch.setattr(arh, "_build_switched_client", lambda *_a, **_k: None)
+    monkeypatch.setattr(arh, "sync_credential_pool_entry_id", lambda *_a, **_k: None)
+    _entry()
+    _add_row()
+
+    def _switched_pool(base_url):
+        agent = SimpleNamespace(_credential_pool=None, _credential_pool_entry_id=None,
+                                _read_reasoning_echo_from_config=lambda: False)
+        arh._swap_switch_runtime(agent, "m", "myep", "", base_url, "chat_completions", "openrouter", "openrouter", "myep")
+        return {e.access_token for e in agent._credential_pool.entries()} if agent._credential_pool else set()
+
+    assert POOLED in _switched_pool(OLD)
+    assert _move(client, api_key="").status_code == 200
+    assert POOLED not in _switched_pool(NEW)
 
 
 @pytest.mark.parametrize("provider", ["custom:myep", "myep"])

@@ -182,6 +182,7 @@ async def test_handle_401_dedup_survives_even_if_task_reference_dropped(tmp_path
 
 import asyncio
 from types import SimpleNamespace
+from datetime import UTC
 
 
 def _fake_response(status, url, body):
@@ -762,7 +763,7 @@ async def test_transient_refresh_preserves_grant_and_defers_post(
     client_before = provider.context.client_info.model_dump()
     clock = [100.0]
     monkeypatch.setattr(mcp_oauth_provider, "monotonic", lambda: clock[0], raising=False)
-    fixed_now = datetime(2026, 10, 4, tzinfo=timezone.utc)
+    fixed_now = datetime(2026, 10, 4, tzinfo=UTC)
 
     class FixedDateTime(datetime):
         @classmethod

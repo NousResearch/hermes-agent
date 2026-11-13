@@ -82,6 +82,14 @@ SKILL_EXCERPT_JOINT = "\x1e"
 
 
 
+def _skills_off() -> bool:
+    """Skills read this host's profile skill files: off for a safe worker and in a hosted scope
+    (where they are not the agent's), so nothing below discovers, reads or renders one."""
+    from agent.safe_worker_policy import safe_worker_enabled
+    from tools.hosted_tool_policy import host_feature_enabled
+    return safe_worker_enabled() or not host_feature_enabled("skills")
+
+
 def slugify_skill_name(name: str) -> str:
     """Normalize a skill/bundle name to a ``/command`` slug (``Foo Bar`` -> ``foo-bar``);
     strips chars (``+``, ``/``) that would make invalid Telegram command names."""
@@ -252,9 +260,7 @@ def _resolve_skill_commands_project() -> Optional[str]:
 
 def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:
     """Load a skill by name/path and return (loaded_payload, skill_dir, display_name)."""
-    from agent.safe_worker_policy import safe_worker_enabled
-
-    if safe_worker_enabled():
+    if _skills_off():
         return None
     raw_identifier = (skill_identifier or "").strip()
     if not raw_identifier:
@@ -518,9 +524,7 @@ def scan_skill_commands() -> dict[str, dict[str, Any]]:
     Builds a local map and publishes once at the end: writing straight into the
     global exposed partial results to overlapping scans, which then logged
     bogus "already claimed" collisions against their own incumbents."""
-    from agent.safe_worker_policy import safe_worker_enabled
-
-    if safe_worker_enabled():
+    if _skills_off():
         return {}
     key = (_resolve_skill_commands_platform(), _resolve_skill_commands_home(), _resolve_skill_commands_project())
     # Build into a local map and publish once, at the end. Writing straight into the global made a scan's
@@ -553,13 +557,35 @@ def scan_skill_commands() -> dict[str, dict[str, Any]]:
         # Publishing under the lock keeps the (key, map) pair consistent for any
         # reader between the lookup and this store (#14536, #74574); the scan above
         # (file I/O, deferred imports) stays outside it.
-        _skill_commands_by_key[key] = commands
         _skill_commands_sig_by_key[key] = signature
+        _publish_scope(_skill_commands_by_key, key, commands)
     return commands
 
 
 # The most scopes the change watcher signs per pass (each is one ~1 ms stat walk).
 _MAX_WATCHED_SCOPES = 32
+# Scopes kept resident (LRU). Each distinct (platform, profile, project) keeps a whole command map; a
+# long-lived gateway visiting many repos would otherwise keep one per repo forever. An evicted scope
+# rescans on its next lookup, exactly as after /reload-skills.
+_MAX_CACHED_SCOPES = 2 * _MAX_WATCHED_SCOPES
+
+
+# One recency order for every per-scope table: separate orders let a scope used recently in one table be
+# the oldest in another, so evicting by either dropped a live scope's /reload-skills baseline.
+_scope_recency: dict[tuple, None] = {}
+
+
+def _publish_scope(table: Optional[dict], key: tuple, value: Any = None) -> None:
+    """Mark ``key`` most recently used (storing ``value`` in ``table`` unless it is None); past the cap,
+    the least recently used scope leaves every per-scope table together. Caller holds ``_publish_lock``."""
+    if table is not None:
+        table[key] = value
+    _scope_recency.pop(key, None)
+    _scope_recency[key] = None
+    while len(_scope_recency) > _MAX_CACHED_SCOPES:
+        stale = next(iter(_scope_recency))
+        for scoped in (_scope_recency, _skill_commands_by_key, _skill_commands_sig_by_key, _last_interactive_skill_commands_by_key):
+            scoped.pop(stale, None)
 
 
 def published_scopes_signature() -> tuple:
@@ -612,14 +638,14 @@ def get_skill_commands() -> dict[str, dict[str, Any]]:
 
     See #14536, #88023, #114359, #104849.
     """
-    from agent.safe_worker_policy import safe_worker_enabled
-
-    if safe_worker_enabled():
+    if _skills_off():
         return {}
     key = (_resolve_skill_commands_platform(), _resolve_skill_commands_home(), _resolve_skill_commands_project())
     with _publish_lock:
         cached = _skill_commands_by_key.get(key)
         scanned_at = _skill_commands_sig_by_key.get(key)
+        if cached is not None:
+            _publish_scope(None, key)
     if cached is not None:
         # A skill installed or removed from another terminal moves the dir signature: rescan, so the
         # long-lived gateway's palette and dispatch see it without /reload-skills (CFG-8).
@@ -656,6 +682,7 @@ def get_plugin_skill_commands() -> dict[str, dict[str, Any]]:
     """
     from agent.skill_utils import get_disabled_skill_names
     from hermes_cli.plugins import discover_plugins, get_plugin_manager
+    from hermes_cli.plugins_content import plugin_skill_owners
     from hermes_cli.plugins_discovery import _get_disabled_plugins
     from hermes_constants import get_hermes_home
 
@@ -674,7 +701,7 @@ def get_plugin_skill_commands() -> dict[str, dict[str, Any]]:
     return {
         key: info for key, info in cached.items()
         if not (info["name"] in disabled or info["name"].split(":", 1)[1] in disabled
-                or info["name"].split(":", 1)[0] in disabled_plugins)
+                or plugin_skill_owners(manager, info["name"]) & disabled_plugins)
     }
 
 
@@ -732,10 +759,12 @@ def _merge_interactive_skill_commands(
 def get_interactive_skill_commands() -> dict[str, dict[str, Any]]:
     """Filesystem skills plus profile-scoped plugin skills; never use for
     messaging/native command menus (plugin skills are CLI/TUI/desktop only)."""
+    if _skills_off():
+        return {}
     identity = (_resolve_skill_commands_platform(), _resolve_skill_commands_home(), _resolve_skill_commands_project())
     commands = _merge_interactive_skill_commands(get_skill_commands(), get_plugin_skill_commands())
     with _publish_lock:
-        _last_interactive_skill_commands_by_key[identity] = dict(commands)
+        _publish_scope(_last_interactive_skill_commands_by_key, identity, dict(commands))
     return commands
 
 
@@ -765,6 +794,7 @@ def reload_skills() -> dict[str, Any]:
     key = (_resolve_skill_commands_platform(), _resolve_skill_commands_home(), _resolve_skill_commands_project())
     with _publish_lock:
         before_commands = _last_interactive_skill_commands_by_key.get(key)
+        _publish_scope(None, key)
     if before_commands is None:
         # Preserve only a previously published view. A first-ever reload has
         # no before-state, so discoveries correctly appear as additions.
@@ -779,6 +809,7 @@ def reload_skills() -> dict[str, Any]:
         # Clear the entire multi-slot cache: a skill edit could affect any
         # platform/profile combination, so every cached identity must rescan.
         _skill_commands_by_key.clear()
+        _skill_commands_sig_by_key.clear()
     from tools.skills_tool import clear_skills_cache
     clear_skills_cache()  # the scan reads the shared catalog; an explicit reload must not hit its TTL
     invalidate_plugin_skill_commands()
@@ -787,7 +818,7 @@ def reload_skills() -> dict[str, Any]:
     after = command_snapshot(effective_commands)
     result = diff_command_snapshots(before, after)
     with _publish_lock:
-        _last_interactive_skill_commands_by_key[key] = effective_commands
+        _publish_scope(_last_interactive_skill_commands_by_key, key, effective_commands)
     result["commands"] = len(effective_commands)
     return result
 
@@ -937,9 +968,7 @@ def build_preloaded_skills_prompt(
     ``_load_skill_payload``, bypassing ``get_skill_commands()``'s scan-time disabled filter — mirrors the
     bundle-invocation gate (#59156).
     """
-    from agent.safe_worker_policy import safe_worker_enabled
-
-    if safe_worker_enabled():
+    if _skills_off():
         return "", [], list(skill_identifiers)
     loaded_names, missing, _disabled, prompt_parts = _load_skill_blocks(
         [(raw or "").strip() for raw in skill_identifiers],
@@ -982,6 +1011,8 @@ def build_auto_load_prompt(
     that lost the HERMES_HOME ContextVar cannot pin the launch profile's skills into another profile's prompt.
     """
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    if _skills_off():
+        return "", [], []
     home_token = set_hermes_home_override(str(home_override)) if home_override is not None else None
     try:
         auto_skills = resolve_auto_load_skills(user_config)

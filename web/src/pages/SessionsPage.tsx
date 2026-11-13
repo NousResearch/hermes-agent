@@ -932,7 +932,7 @@ export default function SessionsPage() {
     };
   }, [loading, setAfterTitle, total]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setEnd(
       <Button
         outlined

@@ -12,7 +12,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from agent.reasoning_effort import (
-    GEMINI4_THINKING_LEVELS, KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, OPENAI_COMPAT_WIRE_EFFORTS, clamp_effort,
+    GEMINI4_THINKING_LEVELS, KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, chat_endpoint_efforts, clamp_effort,
     clamp_reasoning_config, kimi_supported_efforts, requested_effort, tokenhub_effort,
 )
 from agent.message_metadata import DATA_USE, MESSAGE_UID, data_use_requirement
@@ -96,8 +96,8 @@ def _add_prompt_cache_key(
     # Responses calls stay cache-cold while the main Responses transport is warm (issue #53735). The key is
     # content-addressed from the static prefix (instructions + tool schemas) so it stays warm across
     # turns/fires. Guard the top-level field the same way the main transport does: xAI Responses takes the
-    # key in extra_body (not top-level) and GitHub/Copilot Responses opts out of cache-key routing entirely
-    # — for those hosts, skip it here.
+    # key in extra_body (not top-level) and endpoints declaring ``responses_prompt_cache_key=False`` opt out
+    # of cache-key routing entirely — for those hosts, skip it here.
     from agent.transports.codex import (
         _bound_prompt_cache_key_field, _cache_scope_from_session_id, _content_cache_key
     )
@@ -155,16 +155,17 @@ def is_router_timeout_shim(response: Any) -> bool:
     return not _has_positive_completion_tokens(getattr(response, "usage", None))
 
 
-def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> dict | None:
+def _reasoning_config_for_model(model: str, reasoning_config: dict | None, base_url: str | None = None) -> dict | None:
     """Clamp Hermes' extended effort set (``ultra``) to the OpenAI-compat wire vocabulary.
 
     Hermes' internal effort set extends the wire vocabulary with ``ultra`` (the /reasoning command documents
     none..xhigh|max|ultra). OpenAI- compatible wires — OpenRouter chief among them — accept exactly
     max|xhigh|high|medium|low|minimal|none and reject the extension with HTTP 400 (#89503). Clamp against
     the declared wire vocabulary via the shared policy in ``agent.reasoning_effort``; provider profiles with
-    narrower sets clamp again downstream.
+    narrower sets clamp again downstream. A model on the managed local server is clamped onto the levels
+    its chat template accepts: the template raises on any other level and llama-server answers HTTP 500.
     """
-    return clamp_reasoning_config(reasoning_config, OPENAI_COMPAT_WIRE_EFFORTS)
+    return clamp_reasoning_config(reasoning_config, chat_endpoint_efforts(model, base_url))
 
 
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
@@ -265,7 +266,18 @@ def _is_openai_api_base_url(base_url: Any) -> bool:
 
 
 _GEMINI_SIGNATURE_HOSTS = ("generativelanguage.googleapis.com", "aiplatform.googleapis.com")
-_GEMINI_SIGNATURE_PROVIDERS = frozenset({"gemini", "vertex", "copilot"})
+_GEMINI_SIGNATURE_PROVIDERS = frozenset({"gemini", "vertex"})
+
+
+def _profile_replays_tool_call_signatures(provider: Any) -> bool:
+    """``ProviderProfile.replays_tool_call_signatures`` for the provider named exactly (canonical name only)."""
+    name = (provider or "").strip().lower()
+    if not name:
+        return False
+    from providers import get_provider_profile
+
+    profile = get_provider_profile(name)
+    return profile is not None and profile.name == name and profile.replays_tool_call_signatures
 
 
 def _model_consumes_thought_signature(model: Any, base_url: Any = None, provider: Any = None) -> bool:
@@ -280,6 +292,7 @@ def _model_consumes_thought_signature(model: Any, base_url: Any = None, provider
     return (
         "gemini" in m or "gemma" in m
         or (provider or "").strip().lower() in _GEMINI_SIGNATURE_PROVIDERS
+        or _profile_replays_tool_call_signatures(provider)
         or any(base_url_host_matches(base_url, host) for host in _GEMINI_SIGNATURE_HOSTS)
     )
 
@@ -573,7 +586,7 @@ class ChatCompletionsTransport(ProviderTransport):
 
         is_kimi = params.get("is_kimi", False)
         supports_reasoning = params.get("supports_reasoning", False)
-        reasoning_config = _reasoning_config_for_model(model, params.get("reasoning_config"))
+        reasoning_config = _reasoning_config_for_model(model, params.get("reasoning_config"), params.get("base_url"))
         _apply_max_tokens(api_kwargs, model, reasoning_config, params)
 
         # Kimi / TokenHub by host (agents with no registered profile): top-level reasoning_effort (unless thinking disabled).
@@ -604,9 +617,10 @@ class ChatCompletionsTransport(ProviderTransport):
             extra_body["thinking"] = {"type": "disabled" if thinking_off else "enabled"}
 
         if supports_reasoning:
-            if params.get("is_github_models", False):
-                if params.get("github_reasoning_extra") is not None:
-                    extra_body["reasoning"] = params["github_reasoning_extra"]
+            # An endpoint claimed by a profile (providers.profile_for_host) takes its verbatim payload.
+            if params.get("profile_endpoint", False):
+                if params.get("endpoint_reasoning") is not None:
+                    extra_body["reasoning"] = params["endpoint_reasoning"]
             else:
                 _effort = (reasoning_config.get("effort", "medium") or "medium") if reasoning_config and isinstance(reasoning_config, dict) else "medium"
                 # Honor explicit "thinking off" like the profile path — never re-enable it.
@@ -640,7 +654,7 @@ class ChatCompletionsTransport(ProviderTransport):
         sanitized = _swap_developer_role(profile.prepare_messages(sanitized), (model or "").lower())
         api_kwargs = _base_kwargs(model, sanitized, tools, params, profile=profile)
 
-        reasoning_config = _reasoning_config_for_model(model, params.get("reasoning_config"))
+        reasoning_config = _reasoning_config_for_model(model, params.get("reasoning_config"), params.get("base_url"))
         # Profiles fronting several backends override get_max_tokens() per model.
         _apply_max_tokens(api_kwargs, model, reasoning_config, params, profile_max=profile.get_max_tokens(model))
 
@@ -714,8 +728,12 @@ class ChatCompletionsTransport(ProviderTransport):
             provider_data["reasoning_content"] = reasoning_content
         if getattr(msg, "reasoning_details", None):
             provider_data["reasoning_details"] = msg.reasoning_details
-        # Message-level carriers (Gemini text-turn signature, Copilot reasoning): agent/reasoning_carriers.py.
-        for key in ("extra_content", "reasoning_opaque", "reasoning_text"):
+        # Message-level carriers (Gemini text-turn signature, profile-declared reasoning keys):
+        # agent/reasoning_carriers.py.
+        from agent.reasoning_carriers import declared_carrier_keys
+
+        opaque_keys, text_keys = declared_carrier_keys()
+        for key in dict.fromkeys(("extra_content", *opaque_keys, *text_keys)):
             if (value := _attr_or_model_extra(msg, key)) is not None:
                 provider_data[key] = _dump_extra_content(value)
 
@@ -733,8 +751,9 @@ class ChatCompletionsTransport(ProviderTransport):
 
         return NormalizedResponse(
             content=content, tool_calls=tool_calls, finish_reason=finish_reason,
-            # Copilot /chat/completions names its readable reasoning ``reasoning_text``.
-            reasoning=getattr(msg, "reasoning", None) or provider_data.get("reasoning_text"), usage=usage,
+            # A profile-declared text carrier doubles as the readable reasoning (first declared wins).
+            reasoning=getattr(msg, "reasoning", None) or next(
+                (provider_data[k] for k in text_keys if provider_data.get(k)), None), usage=usage,
             provider_data=provider_data or None,
         )
 
@@ -752,7 +771,7 @@ class ChatCompletionsTransport(ProviderTransport):
             name = alias_map.get(name, name)
         arguments = getattr(tc_function, "arguments", None)
         extra = _attr_or_model_extra(tc, "extra_content")
-        fn_sig = _attr_or_model_extra(tc_function, "thought_signature")  # Copilot's Gemini 3 variant
+        fn_sig = _attr_or_model_extra(tc_function, "thought_signature")  # gateway-signed Gemini 3 calls
         provider_data = {k: v for k, v in (("extra_content", None if extra is None else _dump_extra_content(extra)),
                                             ("thought_signature", fn_sig)) if v is not None}
         call = ToolCall(

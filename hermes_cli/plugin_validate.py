@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
+from functools import cached_property
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -219,6 +220,9 @@ options = json.loads(sys.argv[3])
 # Public method names of the real PluginContext, computed by the parent so the
 # stub's attribute surface cannot drift from the class plugins run against.
 context_methods = set(options["context_methods"])
+# Service properties (``ctx.llm``, ``ctx.state``, ...): plugins capture them in register() and
+# use them later, so the probe hands back an inert service whose methods are no-ops.
+context_properties = set(options.get("context_properties", ()))
 provider_kind = options["kind"] == "model-provider"
 
 recorded = {"tools": [], "hooks": [], "middleware": [], "commands": [], "providers": [], "trusted_inbound": []}
@@ -232,7 +236,7 @@ class RecordingContext:
     def register_tool(self, name, *args, **kwargs):
         recorded["tools"].append(str(name))
 
-    def register_hook(self, hook_name, callback):
+    def register_hook(self, hook_name, callback, *, hold_stream=False):
         recorded["hooks"].append(str(hook_name))
 
     def register_middleware(self, kind, callback):
@@ -265,7 +269,41 @@ class RecordingContext:
                 return None
 
             return _noop
+        if name == "state":
+            return _ProbeState()
+        if name in context_properties:
+            return _InertService()
         raise AttributeError(name)
+
+
+class _ProbeState:
+    # Same shape as PluginState (real Path values, get() returns the default) over an empty store
+    # in the probe's scratch HERMES_HOME, which the parent deletes after the run.
+    def __init__(self):
+        import os
+        from pathlib import Path
+        self.data_dir = Path(os.environ["HERMES_HOME"]) / "plugin-data" / "probe"
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.path = self.data_dir / "state.json"
+        self.quota_bytes = 1024 * 1024
+        self._data = {}
+
+    def get(self, key, default=None):
+        return self._data.get(key, default)
+
+    def set(self, key, value):
+        self._data[key] = value
+
+
+class _InertService:
+    def __getattr__(self, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+
+        def _noop(*args, **kwargs):
+            return None
+
+        return _noop
 
 
 def emit(payload):
@@ -330,11 +368,12 @@ emit(recorded)
 def _probe_options(manifest: dict) -> dict:
     from hermes_cli.plugins import PluginContext
 
+    public = [n for n in dir(PluginContext) if not n.startswith("_")]
     return {
         "kind": str(manifest.get("kind") or ""),
-        "context_methods": sorted(
-            n for n in dir(PluginContext)
-            if not n.startswith("_") and callable(getattr(PluginContext, n))
+        "context_methods": sorted(n for n in public if callable(getattr(PluginContext, n))),
+        "context_properties": sorted(
+            n for n in public if isinstance(getattr(PluginContext, n), (property, cached_property))
         ),
     }
 
@@ -354,10 +393,15 @@ def _run_capability_probe(
     with tempfile.TemporaryDirectory(prefix="hermes-validate-") as scratch:
         env = dict(probe[1] if probe else os.environ)
         env["HERMES_HOME"] = scratch
+        # The probe imports this tree's ``providers``; name the tree instead of relying on the cwd.
+        repo_root = str(Path(__file__).resolve().parents[1])
+        env["PYTHONPATH"] = os.pathsep.join(p for p in (repo_root, env.get("PYTHONPATH", "")) if p)
+        python, *options = probe[0] if probe else [sys.executable]
         try:
             result = subprocess.run(
                 [
-                    *(probe[0] if probe else [sys.executable]),
+                    # -P: ``-c`` would put the user's cwd ahead of Hermes and the plugin's imports.
+                    python, "-P", *options,
                     "-c",
                     _PROBE_SCRIPT,
                     str(plugin_dir),

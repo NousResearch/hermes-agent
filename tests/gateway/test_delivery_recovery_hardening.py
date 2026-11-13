@@ -64,7 +64,9 @@ def claim_reply():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fails", [True, False])
-async def test_cancelling_a_settlement_keeps_the_write_outcome(gateway, monkeypatch, fails):
+async def test_cancelling_a_settlement_keeps_the_write_outcome(
+    gateway, monkeypatch, fails
+):
     from gateway.run_delivery_settlement import settle_claim
 
     runner, adapter = gateway
@@ -96,7 +98,12 @@ async def test_cancelling_a_settlement_keeps_the_write_outcome(gateway, monkeypa
 async def test_cancelling_replay_refunds_only_undispatched_claims(gateway, monkeypatch):
     runner, adapter = gateway
     for chat in ("CA", "CB", "CC"):
-        _record(chat, f"agent:main:slack:channel:{chat}", chat_id=chat, adapter_profile="default")
+        _record(
+            chat,
+            f"agent:main:slack:channel:{chat}",
+            chat_id=chat,
+            adapter_profile="default",
+        )
         ledger.mark_failed(chat, "send_path_degraded")
     entered, blocked = asyncio.Event(), asyncio.Event()
 
@@ -110,14 +117,19 @@ async def test_cancelling_replay_refunds_only_undispatched_claims(gateway, monke
     adapter.send.side_effect = send
     fail_once(monkeypatch, "mark_failed")
     runner._running = False  # keep the retry worker out of the cancellation window
-    task = asyncio.create_task(runner._redeliver_failed_obligations_for_platform(Platform.SLACK))
+    task = asyncio.create_task(
+        runner._redeliver_failed_obligations_for_platform(Platform.SLACK)
+    )
     try:
         await asyncio.wait_for(entered.wait(), 10)
     finally:
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-    assert {chat: (_row(chat)["state"], _row(chat)["attempts"]) for chat in ("CA", "CB", "CC")} == {
+    assert {
+        chat: (_row(chat)["state"], _row(chat)["attempts"])
+        for chat in ("CA", "CB", "CC")
+    } == {
         "CA": ("failed", 1),
         "CB": ("failed", 1),
         "CC": ("failed", 0),
@@ -126,7 +138,9 @@ async def test_cancelling_replay_refunds_only_undispatched_claims(gateway, monke
 
 
 @pytest.mark.asyncio
-async def test_partial_claim_refund_is_retried_after_correlated_store_fault(gateway, monkeypatch):
+async def test_partial_claim_refund_is_retried_after_correlated_store_fault(
+    gateway, monkeypatch
+):
     runner, adapter = gateway
     _record(adapter_profile="default")
     _orphan("ob-1")
@@ -147,8 +161,12 @@ async def test_partial_claim_arms_the_adopted_flood_timer(gateway, monkeypatch, 
     ledger.mark_failed("ob-1", "flood_control:30")
     _orphan("ob-1")
     runner._schedule_flood_redelivery = Mock()
-    entered, release, _ = hold_first(monkeypatch, "sweep_failed_for_runtime", fails=True)
-    task = asyncio.create_task(runner._redeliver_failed_obligations_for_platform(Platform.SLACK))
+    entered, release, _ = hold_first(
+        monkeypatch, "sweep_failed_for_runtime", fails=True
+    )
+    task = asyncio.create_task(
+        runner._redeliver_failed_obligations_for_platform(Platform.SLACK)
+    )
     try:
         assert await asyncio.to_thread(entered.wait, 10)
         if cancel:
@@ -160,7 +178,9 @@ async def test_partial_claim_arms_the_adopted_flood_timer(gateway, monkeypatch, 
             await task
     else:
         assert await task is None
-    runner._schedule_flood_redelivery.assert_called_once_with(Platform.SLACK, profile="default")
+    runner._schedule_flood_redelivery.assert_called_once_with(
+        Platform.SLACK, profile="default"
+    )
     adapter.send.assert_not_awaited()
     assert (_row("ob-1")["state"], _row("ob-1")["attempts"]) == ("failed", 0)
 
@@ -168,10 +188,14 @@ async def test_partial_claim_arms_the_adopted_flood_timer(gateway, monkeypatch, 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("relay", [False, True])
 @pytest.mark.parametrize("stop", [False, True])
-async def test_drain_counts_and_retries_an_inflight_receipt(tmp_path, monkeypatch, relay, stop):
+async def test_drain_counts_and_retries_an_inflight_receipt(
+    tmp_path, monkeypatch, relay, stop
+):
     from gateway.run_delivery_settlement import settle_claim
 
-    runner, adapter, connector, _ = continuation_runner(tmp_path, monkeypatch, relay=relay)
+    runner, adapter, connector, _ = continuation_runner(
+        tmp_path, monkeypatch, relay=relay
+    )
     row = claim_reply()
     entered, release, calls = hold_first(monkeypatch, "mark_delivered", fails=True)
     task = asyncio.create_task(settle_claim(runner, row, "delivered"))
@@ -197,7 +221,9 @@ async def test_drain_counts_and_retries_an_inflight_receipt(tmp_path, monkeypatc
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fault", ["sweep", "clear"])
-async def test_boot_wiring_defers_resume_until_recovery_finishes(gateway, monkeypatch, fault):
+async def test_boot_wiring_defers_resume_until_recovery_finishes(
+    gateway, monkeypatch, fault
+):
     runner, adapter = gateway
     _record(adapter_profile="default")
     _orphan("ob-1")
@@ -214,9 +240,13 @@ async def test_boot_wiring_defers_resume_until_recovery_finishes(gateway, monkey
         clear.side_effect = clear_once
     monkeypatch.setattr("gateway.shutdown_flush.recover_gateway_pending", Mock())
     monkeypatch.setattr("gateway.run._restart_notification_pending", lambda: False)
-    monkeypatch.setattr("gateway.run._planned_restart_notification_pending", lambda: False)
+    monkeypatch.setattr(
+        "gateway.run._planned_restart_notification_pending", lambda: False
+    )
     monkeypatch.setattr("gateway.run._startup_restore_drain_timeout_secs", lambda: 0)
-    monkeypatch.setattr("gateway.run_runtime.recover_gateway_native_sessions", AsyncMock())
+    monkeypatch.setattr(
+        "gateway.run_runtime.recover_gateway_native_sessions", AsyncMock()
+    )
     monkeypatch.setattr("gateway.cron_store_notices.install_cron_store_notices", Mock())
     runner._start_post_connect_services = AsyncMock()
     runner._send_restart_notification = AsyncMock()

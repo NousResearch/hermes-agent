@@ -4,7 +4,6 @@ Every git call goes through ``_git``/``_git_out``/``_git_quiet`` (UTF-8 text, ca
 bounded timeout). Classification helpers fail SAFE toward "preserve". ``cli`` re-exports
 these names; ``_cprint`` is imported lazily from ``cli`` to avoid a cycle.
 """
-import atexit
 import concurrent.futures
 import json
 import logging
@@ -19,7 +18,14 @@ import uuid
 from pathlib import Path
 from typing import Dict, Optional
 
-from hermes_cli._subprocess_compat import kill_process_tree, noninteractive_git_env
+from hermes_cli._subprocess_compat import noninteractive_git_env
+from hermes_cli.git_commit_graph import (
+    claim_commit_graph_refresh,
+    claim_maintenance_slot,
+    common_git_dir,
+    refresh_commit_graph,
+    run_bounded_git,
+)
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 
@@ -126,85 +132,38 @@ _REPACK_LOCK = "hermes-repack.lock"
 
 
 def _claim_repack_slot(git_dir: Path) -> bool:
-    """Exactly one process per clone gets to repack per ``_REPACK_MIN_INTERVAL``.
-
-    The lock file's mtime is the stamp: younger than the interval means another launch is
-    repacking (or just tried and timed out) — skip. A stale lock is taken over by ``replace``,
-    which only one of N racing processes can win; the O_EXCL create then serializes against a
-    process that found no lock at all.
-    """
-    lock = git_dir / _REPACK_LOCK
-    try:
-        st = lock.stat()
-    except FileNotFoundError:
-        pass
-    else:
-        if time.time() - st.st_mtime < _REPACK_MIN_INTERVAL:
-            return False
-        try:
-            lock.replace(lock.with_suffix(".stale"))
-        except OSError:
-            return False
-    try:
-        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        return False
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(f"{os.getpid()}\n")
-    lock.with_suffix(".stale").unlink(missing_ok=True)
-    return True
+    """Exactly one process per clone gets to repack per ``_REPACK_MIN_INTERVAL``."""
+    return claim_maintenance_slot(git_dir, _REPACK_LOCK, _REPACK_MIN_INTERVAL)
 
 
 def _run_bounded_repack(repo_root: str) -> None:
-    """Incremental geometric repack whose whole process tree dies with the timeout or with us.
-
-    ``repack`` forks ``pack-objects``; ``subprocess.run(timeout=)`` killed only the parent and
-    left the grandchild packing for days, and a daemon thread's child outlived the CLI the same
-    way. A new session/process group + ``atexit`` reaps both cases.
-    """
-    cmd = ["git", "repack", "-d", "--geometric=2", "--write-midx", "--quiet"]
-    if os.name == "posix":
-        cmd = ["nice", "-n", "19", *cmd]
-        group_kw: dict = {"process_group": 0}
-    else:
-        group_kw = {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
-    proc = subprocess.Popen(cmd, cwd=repo_root, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL, **group_kw)
-
-    def _reap() -> None:
-        if proc.poll() is None:
-            kill_process_tree(proc)
-
-    atexit.register(_reap)
-    try:
-        proc.wait(timeout=_REPACK_TIMEOUT)
-    except subprocess.TimeoutExpired:
-        _reap()
-        logger.info("git repack exceeded %ds; killed (next attempt in %dh)", _REPACK_TIMEOUT, _REPACK_MIN_INTERVAL // 3600)
+    """Incremental geometric repack whose whole process tree dies with the timeout or with us."""
+    run_bounded_git(repo_root, ["repack", "-d", "--geometric=2", "--write-midx", "--quiet"], _REPACK_TIMEOUT)
 
 
 def _maintain_pack_health(repo_root: str) -> None:
-    """Repack the object store when pack files sprawl (background thread, fail-soft).
+    """Repack on pack sprawl and keep the commit-graph fresh (background thread, fail-soft).
 
     ``gc --auto`` only fires at 50 packs; past a few dozen, every object lookup scans every
     pack index and worktree creation can blow its timeout under concurrent load.
     """
     try:
-        pack_dir = Path(repo_root) / ".git" / "objects" / "pack"
-        if not pack_dir.is_dir():
+        # A linked worktree's or submodule's ``.git`` is a file; its objects live in the common dir.
+        git_dir = common_git_dir(repo_root)
+        pack_dir = git_dir / "objects" / "pack" if git_dir else None
+        if pack_dir is None or not pack_dir.is_dir():
             return
         packs = len(list(pack_dir.glob("*.pack")))
-        if packs < _PACK_SPRAWL_THRESHOLD:
-            return
-        if not _claim_repack_slot(pack_dir.parent.parent):
-            return
-        from hermes_cli.gitlock import clear_stale_tmp_packs
-        clear_stale_tmp_packs(Path(repo_root))
-        logger.info("git pack sprawl (%d packs) — repacking in background", packs)
-        _run_bounded_repack(repo_root)
-        # Repacking can strand now-duplicated admin files; prune on the same pass.
-        _git(["worktree", "prune"], repo_root, timeout=60, check=False,
-             stdin=subprocess.DEVNULL, env=noninteractive_git_env())
+        if packs >= _PACK_SPRAWL_THRESHOLD and _claim_repack_slot(git_dir):
+            from hermes_cli.gitlock import clear_stale_tmp_packs
+            clear_stale_tmp_packs(git_dir)
+            logger.info("git pack sprawl (%d packs) — repacking in background", packs)
+            _run_bounded_repack(repo_root)
+            # Repacking can strand now-duplicated admin files; prune on the same pass.
+            _git(["worktree", "prune"], repo_root, timeout=60, check=False,
+                 stdin=subprocess.DEVNULL, env=noninteractive_git_env())
+        if claim_commit_graph_refresh(git_dir):
+            refresh_commit_graph(repo_root, git_dir)
     except Exception as e:
         logger.debug("pack maintenance skipped: %s", e)
 
@@ -858,11 +817,13 @@ def _tree_still_served(db_path: str, worktree_path: str) -> Optional[str]:
     import sqlite3
     from urllib.parse import quote
 
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
     path = Path(db_path)
     chats: set = set()
     if path.is_file():
         try:
-            conn = sqlite3.connect(f"file:{quote(str(path))}?mode=ro", uri=True, timeout=2)
+            conn = connect_tracked(f"file:{quote(str(path))}?mode=ro", uri=True, timeout=2, tracking_path=path)
             try:
                 conn.create_function("hermes_inside_tree", 1, _inside_tree(worktree_path), deterministic=True)
                 if conn.execute(_SERVED_TREE_SQL).fetchone():
@@ -910,12 +871,14 @@ def _retained_tree_is_live(db_path: str, worktree_path: str, *, pending_only: bo
     import sqlite3
     from urllib.parse import quote
 
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
     path = Path(db_path)
     if not path.is_file():
         return False
     inside = _inside_tree(worktree_path)
     try:
-        conn = sqlite3.connect(f"file:{quote(str(path))}?mode=ro", uri=True, timeout=2)
+        conn = connect_tracked(f"file:{quote(str(path))}?mode=ro", uri=True, timeout=2, tracking_path=path)
         try:
             conn.create_function("hermes_inside_tree", 1, inside, deterministic=True)
             row = conn.execute(
@@ -1003,16 +966,33 @@ def prune_tier_hours(name: str, max_age_hours: float) -> float:
     return max_age_hours if name.startswith(_AUTO_TREE_PREFIXES) else max_age_hours * 3
 
 
-def _prune_candidates(worktrees_dir: Path, max_age_hours: int, now: float) -> list:
+def resumable_pins() -> dict:
+    """``{realpath: reason}`` for trees a resumable subagent still owns (``tools.delegate_tool_resumable``);
+    empty when the records cannot be read (the sweep then behaves as before)."""
+    try:
+        from tools.delegate_tool_resumable import pinned_worktrees
+        return pinned_worktrees()
+    except Exception:
+        logger.debug("resumable subagent pins unreadable", exc_info=True)
+        return {}
+
+
+def _prune_candidates(worktrees_dir: Path, max_age_hours: int, now: float, pins: Optional[dict] = None) -> list:
     """Phase 1, stat-only age filter -> ``[(entry, mtime, force)]`` for trees past their soft cutoff.
 
     Kanban trees (``t_<hex>``) belong to the kanban gc. Hermes-made trees age on *max_age_hours*,
-    deliberately named trees at 3x (``prune_tier_hours``); *force* marks the hard (3x) tier.
+    deliberately named trees at 3x (``prune_tier_hours``); *force* marks the hard (3x) tier. A tree a
+    resumable subagent pins (*pins*, default ``resumable_pins()``) is never a candidate while the pin lasts.
     """
+    from tools.delegate_tool_resumable import pin_reason
     kanban_re = re.compile(r"^t_[0-9a-f]+$")
+    pins = resumable_pins() if pins is None else pins
     candidates: list = []
     for entry in sorted(worktrees_dir.iterdir()):
         if not entry.is_dir() or kanban_re.match(entry.name):
+            continue
+        if pins and (why := pin_reason(str(entry), pins)):
+            logger.info("Keeping worktree %s: %s", entry.name, why)
             continue
         tier_hours = prune_tier_hours(entry.name, max_age_hours)
         try:
@@ -1126,6 +1106,10 @@ def _reap_prune_verdicts(repo_root: str, verdicts: list, stale_work_cutoff: floa
         if blocked:
             preserved_stale.append(f"{entry.name} ({blocked[1]})")
             continue
+        from hermes_cli.worktree_sweep import pinned_now
+        if pinned := pinned_now(str(entry)):  # a continue pinned it after the plan was made
+            logger.info("Keeping worktree %s: %s", entry.name, pinned)
+            continue
 
         if lock_state == "dead":
             _git_quiet(["worktree", "unlock", str(entry)], repo_root,
@@ -1223,10 +1207,10 @@ def _warn_worktree_footprint(repo_root: str) -> None:
     try:
         from hermes_cli.worktree_gc import worktrees_summary
 
-        count, size_mb = worktrees_summary(repo_root)
+        count, size_mb = worktrees_summary(repo_root, size_below_count=10)
         if count >= 10 or (size_mb or 0) >= 5120:
-            size_txt = f"{size_mb / 1024:.1f}GB" if size_mb else "unknown size"
-            logger.warning(".worktrees/ holds %d tree(s) (%s) — run `hermes worktree list` "
+            size_txt = f" ({size_mb / 1024:.1f}GB)" if size_mb else ""
+            logger.warning(".worktrees/ holds %d tree(s)%s — run `hermes worktree list` "
                            "to audit and `hermes worktree prune` to reclaim safely.", count, size_txt)
     except Exception:
         logger.debug("worktree summary failed", exc_info=True)

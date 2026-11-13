@@ -21,7 +21,9 @@ def _resolve_model() -> str:
     with contextlib.suppress(Exception):
         from hermes_cli.models import get_preferred_silent_default_model
         return get_preferred_silent_default_model()
-    return "z-ai/glm-5.2"
+    # Data-only module (no heavy imports), so this holds when the lookup above fails.
+    from hermes_cli.models_catalog_static import PREFERRED_SILENT_DEFAULT_MODEL
+    return PREFERRED_SILENT_DEFAULT_MODEL
 
 
 def _resolve_session_platform() -> str:
@@ -519,12 +521,8 @@ def _resolve_runtime_with_fallback(resolve_kwargs: dict | None = None) -> _Runti
             if not fb_provider or not fb_model:
                 continue
             try:
-                from hermes_cli.fallback_config import effective_runtime_provider, resolve_entry_api_key
-                fb_kwargs: dict = {"requested": fb_provider, "target_model": fb_model,
-                                   **({"explicit_base_url": entry["base_url"]} if entry.get("base_url") else {})}
-                if fb_api_key := resolve_entry_api_key(entry):
-                    fb_kwargs["explicit_api_key"] = fb_api_key
-                runtime = resolve_runtime_provider(**fb_kwargs)
+                from hermes_cli.fallback_config import effective_runtime_provider, fallback_entry_runtime_kwargs
+                runtime = resolve_runtime_provider(**fallback_entry_runtime_kwargs(entry))
                 # Named custom entries resolve to the bare "custom" billing class; keep the configured
                 # identity so the session/UI shows the provider name, matching the manual-switch path (#98739).
                 runtime["provider"] = effective_runtime_provider(entry, runtime)
@@ -548,15 +546,23 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
         requested_provider = model_override.get("provider") or provider_override or None
         override_base_url = model_override.get("base_url")
         resolve_kwargs = {}
-        if str(requested_provider or "").strip().lower() == "custom":
+        provider_norm = str(requested_provider or "").strip().lower()
+        # An empty provider names no route either; once the main slot targets another model it 404s (#132648).
+        if provider_norm == "custom":
             from hermes_cli.runtime_provider import canonical_custom_identity
             if recovered := canonical_custom_identity(base_url=override_base_url or None, model=model or None):
                 requested_provider = recovered
-            if override_base_url:
-                # Failing identity recovery, still hand base_url to the direct-alias branch so pool/env credentials resolve.
-                resolve_kwargs["explicit_base_url"] = override_base_url
+        elif not provider_norm and _config_model_target()[0] != model:
+            from hermes_cli.runtime_provider_custom import empty_provider_identity
+            requested_provider = empty_provider_identity(override_base_url, model) or requested_provider
+        if provider_norm == "custom" and override_base_url:
+            # Failing identity recovery, still hand base_url to the direct-alias branch so pool/env credentials resolve.
+            resolve_kwargs["explicit_base_url"] = override_base_url
         resolve_kwargs.update(requested=requested_provider, target_model=model or None)
         overrides = {k: model_override.get(k) for k in ("base_url", "api_key", "api_mode")}
+        if not provider_norm and requested_provider:
+            # The healed entry supplies its own endpoint and wire; the row's may be stamps from misrouted turns.
+            overrides["base_url"] = overrides["api_mode"] = None
     else:
         model, requested_provider = _resolve_startup_runtime()
         if isinstance(model_override, str) and model_override:
@@ -590,7 +596,7 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
 
 def _rederive_per_model_route(model: str, runtime: dict) -> None:
     """A row's persisted api_mode/base_url were written for whichever model the session last ran. Providers
-    that pick the wire per model (OpenCode Zen/Go, Copilot, Nous) must re-derive both from the target model,
+    that pick the wire per model (OpenCode Zen/Go, Nous, profiles with api_mode_for_model) must re-derive both from the target model,
     or a resumed opencode-go session keeps a MiniMax-era anthropic_messages route (and its /v1-stripped or
     other-family relay URL) for a chat_completions model like deepseek-v4-flash-vision-exp (#96066)."""
     from hermes_cli.model_switch import model_derived_api_mode
@@ -654,7 +660,7 @@ def _make_agent(
     with _sessions_lock:
         session = _sessions.get(sid)
     agent = AIAgent(
-        model=model, max_iterations=_cfg_max_turns(cfg, 500), provider=runtime.get("provider"),
+        model=model, max_iterations=_cfg_max_turns(cfg), provider=runtime.get("provider"),
         requested_provider=runtime.get("requested_provider"),
         base_url=runtime.get("base_url"), api_key=runtime.get("api_key"), api_mode=runtime.get("api_mode"),
         acp_command=runtime.get("command"), acp_args=runtime.get("args"),

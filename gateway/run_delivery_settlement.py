@@ -51,7 +51,7 @@ async def _apply_settlement(runner, pending, oid):
         return True
     write = asyncio.create_task(asyncio.to_thread(_write_settlement, oid, *settlement[1:]))
     runner.__dict__.setdefault("_delivery_settlement_writes", {})[oid] = (
-        write, asyncio.current_task(), settlement[0]
+        write, asyncio.current_task()
     )
     write.add_done_callback(
         lambda done: _record_write_result(runner, pending, oid, settlement, done)
@@ -92,8 +92,9 @@ async def flush_settlements(runner, platform, profile):
     """Retry only DB updates, before the next claim pass for this credential owner."""
     pending = runner.__dict__.get("_delivery_settlements", {})
     bot = (platform.value, profile or "default")
-    writes = runner.__dict__.get("_delivery_settlement_writes", {})
-    complete = not any(_bot(row) == bot for _, _, row in writes.values())
+    # In-flight writes still own their ledger claims. A reconnect may recover
+    # other rows while those writes complete.
+    complete = True
     for oid, (row, _, _) in list(pending.items()):
         if _bot(row) == bot:
             if not await _apply_settlement(runner, pending, oid):

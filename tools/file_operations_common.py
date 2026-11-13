@@ -116,6 +116,11 @@ class SearchResult:
     limit_reason: Optional[str] = None
     warning: Optional[str] = None
     error: Optional[str] = None
+    # Unreadable paths behind the "Skipped N unreadable path(s)" sentence in ``warning``,
+    # plus the diagnostics dropped past the runner's cap: a multi-root merge recomposes
+    # one sentence from this data instead of parsing the text. Never serialized.
+    skipped_paths: list[str] = field(default_factory=list)
+    skipped_omitted: int = 0
 
     # Below this many matches the verbose array is already compact enough that
     # a path-grouping header would cost more tokens than it saves.
@@ -227,6 +232,19 @@ def _strip_terminal_fence_leaks(text: str) -> str:
             continue
         cleaned_lines.append(cleaned)
     return "".join(cleaned_lines)
+
+
+_CONFUSABLE_QUOTES = str.maketrans({"\u2019": "'", "\u2018": "'"})  # Finder's curly apostrophes
+
+
+def filename_match_key(name: str) -> str:
+    """Spelling of a file name with its invisible variants collapsed: NFC, every Unicode space
+    (``Zs``: macOS puts U+202F before AM/PM in screenshot names) as U+0020, curly single quotes
+    as ``'``. Two names with the same key render identically, so a model retyping one can never
+    see that it typed the other; read_file and the media resolver both retry on it."""
+    import unicodedata
+    out = unicodedata.normalize("NFC", name).translate(_CONFUSABLE_QUOTES)
+    return "".join(" " if unicodedata.category(ch) == "Zs" else ch for ch in out)
 
 
 def _detect_line_ending(sample: str) -> Optional[str]:

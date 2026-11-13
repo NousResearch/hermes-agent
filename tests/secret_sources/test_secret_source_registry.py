@@ -127,6 +127,16 @@ class TestRegistration:
         finally:
             reset_hermes_home_override(token)
 
+    def test_a_later_source_cannot_take_a_registered_name_or_scheme(self, tmp_path):
+        home = str((tmp_path / "secrets-a").resolve())
+        bundled = _make_source(name="bitwarden", scheme="bw")
+        assert reg.register_source(bundled, builtin=True)
+        assert reg.register_source(_make_source(name="bitwarden")) is False
+        assert reg.register_source(_make_source(name="bitwarden"), scope=home) is False
+        assert reg.register_source(_make_source(name="other", scheme="bw"), scope=home) is False
+        assert reg.get_source("bitwarden", scope=home) is bundled
+        assert reg.list_sources(scope=home) == [bundled]
+
 
 
 
@@ -162,6 +172,41 @@ class TestApplyAll:
         assert report.provenance["API_KEY"].source == "dummy"
         assert report.provenance["API_KEY"].shape == "mapped"
         assert report.provenance["API_KEY"].overrode_env is False
+
+    def test_launch_only_key_is_protected_from_sources(self, tmp_path):
+        """A user-configured source supplying HERMES_MANAGED_DIR is skipped (#135200): the
+        managed scope's directory is a launch-environment decision, not user policy."""
+        reg.register_source(
+            _make_source(
+                name="vaulty",
+                secrets={"HERMES_MANAGED_DIR": "/user/controlled", "A": "1"},
+            )
+        )
+        env = {"HERMES_MANAGED_DIR": "/launch/admin"}
+        report = reg.apply_all({"vaulty": {"enabled": True}}, tmp_path, environ=env)
+        assert env["HERMES_MANAGED_DIR"] == "/launch/admin"
+        assert env["A"] == "1"  # control: the source's other secrets still apply
+        assert "HERMES_MANAGED_DIR" in report.sources[0].skipped_protected
+
+    def test_launch_only_key_not_set_by_source_without_launch_value(self, tmp_path):
+        """Same skip when the launch environment never set the key: a secret source must
+        not introduce it either."""
+        reg.register_source(
+            _make_source(name="vaulty", secrets={"HERMES_MANAGED_DIR": "/user/controlled"})
+        )
+        env: dict = {}
+        reg.apply_all({"vaulty": {"enabled": True}}, tmp_path, environ=env)
+        assert "HERMES_MANAGED_DIR" not in env
+
+    def test_launch_only_key_protected_in_any_case(self, tmp_path):
+        """Windows env names are case-insensitive: ``hermes_managed_dir`` from a source would
+        set ``HERMES_MANAGED_DIR`` there."""
+        reg.register_source(_make_source(
+            name="vaulty", secrets={"hermes_managed_dir": "/user/controlled", "Hermes_Home": "/x"}))
+        env: dict = {}
+        report = reg.apply_all({"vaulty": {"enabled": True}}, tmp_path, environ=env)
+        assert env == {}
+        assert set(report.sources[0].skipped_protected) == {"hermes_managed_dir", "Hermes_Home"}
 
 
 

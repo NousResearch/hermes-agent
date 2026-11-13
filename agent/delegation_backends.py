@@ -35,13 +35,26 @@ class BackendInfo:
     description: str
     available: bool
     reason: str = ""
+    #: The backend's own route-entry keys settings editors may write (``DelegationProvider.route_keys``).
+    route_keys: tuple[str, ...] = ()
+
+
+def _route_keys(provider: Any) -> tuple[str, ...]:
+    # A plugin's answer (possibly a list over the plugin host's wire); anything malformed declares nothing.
+    try:
+        raw = provider.route_keys
+    except Exception:  # health: allow BLE001 -- a broken plugin property must not hide its backend
+        return ()
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    return tuple(dict.fromkeys(k.strip() for k in raw if isinstance(k, str) and k.strip()))
 
 
 def _info(name: str) -> BackendInfo:
     provider, reason = backend_status(name)
     if provider is None:
         return BackendInfo(name, name, "", False, reason)
-    return BackendInfo(name, provider.display_name, provider.summary, not reason, reason)
+    return BackendInfo(name, provider.display_name, provider.summary, not reason, reason, _route_keys(provider))
 
 
 def list_backends() -> list[BackendInfo]:

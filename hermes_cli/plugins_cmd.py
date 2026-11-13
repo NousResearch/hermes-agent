@@ -60,10 +60,12 @@ _MAX_CLONE_TIMEOUT_SECONDS = 3600
 _CLONE_TIMEOUT_HINT = "On a slow connection, raise plugins.clone_timeout_seconds in config.yaml."
 
 
-@functools.lru_cache(maxsize=1)
 def _resolve_git_executable() -> Optional[str]:
-    """Resolve a git binary for subprocess use when ``PATH`` may be minimal."""
-    found = shutil.which("git")
+    """The git plugin operations run: PM's pinned git, then PATH, then the usual install dirs
+    (``PATH`` may be minimal)."""
+    from hermes_cli.boot_bootstrap import _git_binary
+
+    found = _git_binary()
     if found:
         return found
     if os.name == "nt":
@@ -93,6 +95,13 @@ class PluginOperationError(Exception):
         super().__init__(*args)
         if failure_class is not None:
             self.failure_class = failure_class
+
+
+class PluginSourceMoved(PluginOperationError):
+    """The source is no longer at the commit the install dialog reviewed. Clients answer it by reading
+    the source again (``plugins.manage`` error ``data.reason == "source_moved"``), never by resending."""
+
+    failure_class = "clone_failed"
 
 
 class PluginScanBlocked(PluginOperationError):
@@ -490,7 +499,7 @@ def _plugin_selection_version() -> str:
 
 def _admit_and_save_plugin_sets(
     enabled: set, disabled: set, *, extra_dirs=(), console=None, action: str = "enable", expected_config=None,
-    plugin: Optional[str] = None,
+    plugin: Optional[str] = None, settled=(),
 ) -> None:
     """ONE admission authority for proposed enabled/disabled sets (C13):
     the candidate union is resolved against the ACTIVE environment and
@@ -506,7 +515,7 @@ def _admit_and_save_plugin_sets(
     try:
         admit_plugin_set_change(
             enabled, disabled, active_plugins_dir=_plugins_dir(), extra_dirs=extra_dirs, expected_config=expected_config,
-            plugin=plugin,
+            plugin=plugin, settled=settled,
         )
     except DependencyConflict as exc:
         # `hermes pm install` cannot fix a conflict, so the retry hint below would mislead here.
@@ -570,10 +579,20 @@ def _activate_key(key: str, *, enable: bool, console=None) -> bool:
     enabled, disabled = _get_enabled_set(), _get_disabled_set()
     aliases = _plugin_aliases(key)
     target, other = (enabled, disabled) if enable else (disabled, enabled)
-    if key in target and not (aliases & other):
+    # A plugin an update disabled is retried by later updates; disabling it yourself stops that.
+    if key in target and not (aliases & other) and not (not enable and _disabled_by_update(key, aliases)):
         return False
     _set_plugin_enabled(key, enable=enable, aliases=aliases, console=console)
     return True
+
+
+def _disabled_by_update(key: str, aliases) -> bool:
+    """Whether an update disabled this plugin and will retry it (``pm.plugin_eviction`` records it)."""
+    from pm.plugins_state import RECORD
+    from pm.plugins_state import read_home_selection
+
+    record = ((read_home_selection(get_hermes_home()) or {}).get("plugins") or {}).get(RECORD)
+    return isinstance(record, dict) and bool({key, *aliases} & set(record))
 
 
 def _forget_plugin_config(aliases: set) -> dict[str, Any]:
@@ -621,9 +640,12 @@ def _selection_lock() -> threading.Lock:
 
 
 def _set_plugin_enabled(name: str, *, enable: bool, aliases=(), console=None) -> None:
-    """Submit the command's delta with the version of the selection it read."""
+    """Submit the command's delta with the version of the selection it read. Enabling a non-bundled plugin
+    on the kill list raises :class:`PluginOperationError`; the `hermes plugins` picker checks it itself."""
     from pm.plugins_state import read_home_selection
 
+    if enable:
+        _refuse_recalled_entry(_find_plugin_entry(name))
     with _selection_lock():
         expected_config = _plugin_selection_version()
         config = read_home_selection(get_hermes_home()) or {}
@@ -633,7 +655,18 @@ def _set_plugin_enabled(name: str, *, enable: bool, aliases=(), console=None) ->
         _apply_activation(enabled, disabled, name, aliases, enable=enable)
         _admit_and_save_plugin_sets(enabled, disabled, console=console,
                                    action=f"{'Enable' if enable else 'Disable'} '{name}'",
-                                   expected_config=expected_config, plugin=name if enable else None)
+                                   expected_config=expected_config, plugin=name if enable else None,
+                                   settled=(name, *aliases))
+
+
+def _refuse_recalled_entry(entry: Optional[tuple]) -> None:
+    """``PluginOperationError`` when the kill list recalls the non-bundled plugin *entry* (a
+    :func:`_find_plugin_entry` tuple). Judged on the load-time gate's inputs, its manifest name and its own
+    directory: re-resolving the bare leaf could read another plugin's install record (a nested
+    ``obs/x`` beside a top-level ``x``)."""
+    if entry is not None and entry[3] != "bundled":
+        from hermes_cli.plugins_cmd_catalog import refuse_if_installed_removed
+        refuse_if_installed_removed(entry[0], entry[4])
 
 
 def _apply_activation(enabled: set, disabled: set, key: str, aliases, *, enable: bool) -> None:
@@ -717,9 +750,8 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     _refuse_legacy_relay(key)
     if source != "bundled":
         # Activating recalled code is the same act as installing it (`plugins/AGENTS.md`: kill list).
-        from hermes_cli import plugins_cmd_catalog as catalog
         try:
-            catalog.refuse_if_installed_removed(key, _user_installed_plugin_dir(key.rsplit("/", 1)[-1]))
+            _refuse_recalled_entry(_find_plugin_entry(key))
         except PluginOperationError as exc:
             _fail(console, f"[red]Error:[/red] {exc}")
 
@@ -871,11 +903,11 @@ def _discover_all_plugins() -> list:
     in ``PluginManager.discover_and_load`` order: bundled, user, then entry points — which never
     displace a directory plugin of the same key (see ``PluginManager._discover_and_load_inner``)."""
     seen: dict = {}
-    # memory/, context_engine/, computer_use/ and model-providers/ load through dedicated registries, not the
-    # PluginManager opt-in surface, so listing them as toggleable plugins would mislead.
+    # memory/, context_engine/, computer_use/, model-providers/ and config_backends/ load through dedicated
+    # paths, not the PluginManager opt-in surface, so listing them as toggleable plugins would mislead.
     from hermes_cli.plugins import discover_entrypoint_manifests, get_bundled_plugins_dir
     for base, source, skip in (
-        (get_bundled_plugins_dir(), "bundled", {"memory", "context_engine", "computer_use", "model-providers"}),
+        (get_bundled_plugins_dir(), "bundled", {"memory", "context_engine", "computer_use", "model-providers", "config_backends"}),
         (_plugins_dir(), "user", set()),
     ):
         _scan_level(base, source, skip, "", 0, seen)
@@ -1003,7 +1035,7 @@ def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str,
     toolset_key = None if enabled else _saved_list_toolset_key(key)
     try:
         changed = _activate_key(key, enable=enabled)
-    except AdmissionRefused as exc:
+    except (AdmissionRefused, PluginOperationError) as exc:
         return {
             "ok": False,
             "error": str(exc),
@@ -1075,6 +1107,20 @@ def _action_update(args):
     cmd_update_all(yes=getattr(args, "yes", False))
 
 
+def _action_auto_update(args):
+    from hermes_cli.plugins_auto_update import auto_update_state, set_auto_update
+    console = _console()
+    state = getattr(args, "state", None)
+    try:
+        current = auto_update_state() if state is None else set_auto_update(state == "on")
+    except PluginOperationError as exc:
+        _fail(console, f"[red]Error:[/red] {exc}")
+    word = "[green]on[/green]" if current["auto_apply"] else "[dim]off[/dim]"
+    cadence = (f"checked every {current['check_hours']:g}h by the gateway" if current["check_hours"] > 0
+               else "the gateway's check is off: plugins.auto_update_check_hours is 0")
+    console.print(f"Plugin auto-update: {word} ({cadence}; updates load in new sessions)")
+
+
 def _action_pack(args):
     from hermes_cli.plugin_packs import pack_command
     pack_command(args)
@@ -1096,6 +1142,8 @@ _PLUGIN_ACTIONS = {
     "validate": lambda args: _catalog().cmd_validate(
         args.path, as_json=getattr(args, "json", False), install_deps=getattr(args, "install_deps", False)),
     "update": _action_update,
+    "auto-update": _action_auto_update,
+    "autoupdate": _action_auto_update,
     "adopt": lambda args: cmd_adopt(args.name),
     "trust-update-url": lambda args: cmd_trust_update_url(args.name),
     "check-updates": lambda args: cmd_check_updates(args),

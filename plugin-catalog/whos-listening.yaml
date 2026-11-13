@@ -1,0 +1,28 @@
+name: whos-listening
+title: "Who's Listening?"
+repo: https://github.com/Web3B-eth/whos-listening
+sha: a498dd769c4196d0e911b713d4ad7363c8154ba1
+subdir: ""
+version: "0.1.0"
+description: "Memory that knows who's listening. Each memory is Private or Shared. Private memories go into a request only when the machine running Hermes (the gateway), the app you chat in (the platform) and the model provider are all trusted. By default, the gateway you install it on is trusted unless it's a hosted Hermes such as Hermes Cloud; the trusted platforms are the terminal and Hermes Desktop, including its Webapp; and the trusted model routes are Venice's private models and models on your own machine or local network. Everything else gets Shared memories only. You can configure all of these options in the plugin's settings: trusting either more or fewer gateways, platforms or model providers. Disclosure — memories stay in $HERMES_HOME/whos-listening/. Once a day it fetches Venice's public model list from api.venice.ai (nothing about you is sent). With a Venice key in Hermes, a duplicate check (on by default) sends each new memory, each memory arriving by sync and each memory in a /memories review scan, together with up to 20 others, Private ones included, to Venice's private Clef model (duplicate_judge off keeps it local). Shared memories sync to your GitHub repository only if you set that up."
+maintainer: Web3B-eth
+tier: community
+category: memory
+docs_url: https://github.com/Web3B-eth/whos-listening/blob/a498dd769c4196d0e911b713d4ad7363c8154ba1/README.md
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - post_tool_call
+  provides_middleware:
+    - llm_request
+  requires_env: []
+known_issues:
+  - Hermes runs plugin middleware only on main chat requests. Compression, the tool-limit summary, mixture-of-agents and side calls skip the guard; see README Limits.
+  - The first turn after a gateway starts carries Shared memories only, and Venice models count as Shared until Venice's model list has loaded on a new gateway.
+  - Subagents and scheduled jobs count as Shared, so they never see Private memories.
+  - Auto-review needs the default in-process plugin mode; under plugins.isolation host, held saves wait for the user.
+  - For /memories to work from the first message, also run `hermes plugins enable whos-listening` (for a memory provider, install --enable only sets memory.provider).
+  - If a model calls a memory tool through tool_call, Hermes answers that it's not a known tool name; the plugin tells models to call its tools directly.
+requires_hermes: ">=0.23.0"

@@ -221,7 +221,8 @@ async def test_waiting_reply_does_not_block_requested_restart_and_recovers_at_bo
     assert not connector.sent
     monkeypatch.setattr(ledger, "_owner_stamp", lambda: (424243, 1235.5))
     monkeypatch.setattr(ledger, "_owner_alive", lambda pid, started: False)
-    assert await restart._redeliver_pending_obligations() == 1
+    # The stopping runner cannot initiate another send. A new runner owns boot replay.
+    assert await runner._redeliver_pending_obligations() == 1
     assert len(connector.sent) == 1
     with ledger._transaction() as db:
         assert db.execute(

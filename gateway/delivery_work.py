@@ -78,7 +78,7 @@ def messaging_work_count(runner):
         + len(state.get("_delivery_settlements", {}))
         + sum(
             caller not in counted
-            for _, caller, _ in state.get("_delivery_settlement_writes", {}).values()
+            for _, caller in state.get("_delivery_settlement_writes", {}).values()
         )
     )
 

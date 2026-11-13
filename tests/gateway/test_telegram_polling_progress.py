@@ -9,6 +9,7 @@ import pytest
 from gateway.config import PlatformConfig
 from plugins.platforms.telegram import adapter as tg_adapter
 from plugins.platforms.telegram.adapter import TelegramAdapter
+from plugins.platforms.telegram.telegram_network import TelegramFallbackTransport
 
 
 class _ControlledRequest:
@@ -271,7 +272,7 @@ async def test_fallback_discovery_timeout_uses_seed_ipv4(monkeypatch):
     assert await adapter.connect() is True
     httpx_kwargs = builders[0].polling_request.kwargs.get("httpx_kwargs") or {}
     transport = httpx_kwargs.get("transport")
-    assert isinstance(transport, tg_adapter.TelegramFallbackTransport)
+    assert isinstance(transport, TelegramFallbackTransport)
     assert transport._fallback_ips == list(tg_adapter.SEED_FALLBACK_IPS)
     await adapter.disconnect()
 
@@ -309,7 +310,7 @@ async def test_non_finite_fallback_discovery_timeout_uses_finite_default(monkeyp
     assert await adapter.connect() is True
     httpx_kwargs = builders[0].polling_request.kwargs.get("httpx_kwargs") or {}
     transport = httpx_kwargs.get("transport")
-    assert isinstance(transport, tg_adapter.TelegramFallbackTransport)
+    assert isinstance(transport, TelegramFallbackTransport)
     assert transport._fallback_ips == list(tg_adapter.SEED_FALLBACK_IPS)
     await adapter.disconnect()
 

@@ -952,6 +952,26 @@ class TestCollectShareBundle:
         assert "export.csv?token=***&page=2" in bundle
         assert "***:***@10.0.0.5:3128" in bundle
 
+    def test_redaction_masks_credentials_pasted_into_a_chat(self, hermes_home):
+        """#64351: the gateway logs an inbound preview; a pasted OAuth client secret or access
+        token has no secret-named key beside it once the preview cuts the JSON."""
+        from hermes_cli.debug import collect_share_bundle
+
+        client_secret = "GOCSPX-" + "k1fQ7zP2mX9vLk4nRt8wYb1cDf6"
+        access_token = "ya29." + "a0AfH6SMBq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0"
+        (hermes_home / "logs" / "gateway.log").write_text(
+            "2026-07-14 11:00:00 INFO gateway.run: inbound message: platform=telegram user=u chat=1 "
+            f"msg='client_secret\":\"{client_secret}\",\"redirect_uris\":[' reply_to_id=None\n"
+            "2026-07-14 11:00:01 INFO gateway.run: inbound message: platform=telegram user=u chat=1 "
+            f"msg='my token is {access_token}' reply_to_id=None\n"
+        )
+        with patch("hermes_cli.dump.run_dump"):
+            bundle = "\n".join(collect_share_bundle(log_lines=50, redact=True).values())
+
+        assert "inbound message: platform=telegram" in bundle
+        assert client_secret not in bundle
+        assert access_token not in bundle
+
 
 
 
@@ -1070,17 +1090,60 @@ class TestDebugSlashCommand:
             self._handler()(cmd_original)
         return captured
 
-    def test_bare_debug_defaults_to_paste(self):
-        c = self._captured("/debug")
+    @pytest.mark.parametrize("cmd", ["/debug", "/debug nous", "/debug NOUS please",
+                                     "/debug do not upload", "/debug nous no upload"])
+    def test_without_upload_word_prints_notice_and_uploads_nothing(self, cmd, capsys):
+        """The privacy notice must precede any upload: no ``upload`` word, no network (#94876)."""
+        with patch("hermes_cli.debug.upload_to_pastebin") as paste, \
+             patch("hermes_cli.diagnostics_upload.share_to_nous") as nous, \
+             patch("hermes_cli.debug.collect_share_bundle") as collect:
+            self._handler()(cmd)
+        paste.assert_not_called()
+        nous.assert_not_called()
+        collect.assert_not_called()
+        out = capsys.readouterr().out
+        assert "⚠️" in out and "upload" in out
+
+    def test_debug_upload_is_the_consent(self):
+        c = self._captured("/debug upload")
         assert c["nous"] is False and c["local"] is False
-        # The slash command IS the consent action → skip the [y/N] prompt
+        # The explicit `upload` word IS the consent → skip the [y/N] prompt
         # (input() would hang inside prompt_toolkit's event loop).
         assert c["yes"] is True
 
+    def test_debug_upload_dpaste_fallback_matches_one_day_consent(self, capsys):
+        """A classic slash upload must not outlive the 1-day fallback disclosed before consent."""
+        from hermes_cli.debug import run_debug_slash
+
+        expiry_days = []
+
+        def _fake_dpaste(_content, expiry_days=1):
+            requested_days.append(expiry_days)
+            return "https://dpaste.com/TEST"
+
+        requested_days = expiry_days
+        with patch("hermes_cli.debug._best_effort_sweep_expired_pastes"), \
+             patch("hermes_cli.debug.collect_share_bundle",
+                   return_value={"report": "redacted summary"}), \
+             patch("hermes_cli.debug._upload_paste_rs",
+                   side_effect=OSError("paste.rs offline")), \
+             patch("hermes_cli.debug._upload_dpaste_com",
+                   side_effect=_fake_dpaste), \
+             patch("hermes_cli.debug._schedule_auto_delete"):
+            run_debug_slash("/debug upload")
+
+        output = capsys.readouterr().out
+        assert "default: 1 day" in output
+        assert expiry_days == [1]
+        assert "stay public for 1 day(s)" in output
 
     def test_word_parsing_is_case_insensitive(self):
-        c = self._captured("/debug NOUS")
-        assert c["nous"] is True
+        c = self._captured("/debug NOUS Upload")
+        assert c["nous"] is True and c["yes"] is True
+
+    def test_local_needs_no_upload_word(self):
+        c = self._captured("/debug local")
+        assert c["local"] is True and c["nous"] is False
 
 
 

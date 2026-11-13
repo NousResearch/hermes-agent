@@ -1,0 +1,28 @@
+name: demand-radar
+repo: https://github.com/LeonardIrimia/hermes-demand-radar
+sha: bd9537ff67d2e463cf9cc0c1d91f1676e7fd93db
+description: >-
+  Prove someone wants it before you build it. Searches Stack Exchange, Hacker News and GitHub
+  issues for people asking for an idea, keeps only on-topic requests (a noise gate, not a
+  model's opinion), and returns a GO / NARROW / KILL / NO SIGNAL verdict with the rule that
+  fired, quotes with links, who already builds it, and how demand moved since the last check.
+  Tools demand_radar_check and demand_radar_history, the /radar slash command and the
+  validate-idea skill. No API key needed. Disclosure — each check sends the idea text and its
+  phrasings as search queries to api.stackexchange.com, hn.algolia.com and api.github.com;
+  check history and HTML reports stay in the plugin's own data folder; an optional read-only
+  GitHub token is read through Hermes's secret route; no shell commands, background processes,
+  telemetry or Python dependencies.
+maintainer: LeonardIrimia
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/LeonardIrimia/hermes-demand-radar#readme
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - demand_radar_check
+    - demand_radar_history
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -172,3 +172,25 @@ def test_detail_view_paints_the_cached_tail_and_only_the_tick_asks_the_gateway(g
     assert view.subagent_tail("sa-0-1", fetch=True) is None
     assert view.subagent_tail("sa-0-1", fetch=True) is None  # the failure is cached for the poll interval
     assert tails() == 2
+
+
+def test_a_failing_tick_keeps_the_spinner_thread_alive(gateway, monkeypatch):
+    """The spinner thread runs ``tick`` in a bare loop: one raise would end it, and with it the
+    spinner and the dock, for the rest of the session. A failed poll skips a beat instead."""
+    from hermes_cli.cli_subagent_monitor import SubagentMonitor
+    agent, _client = gateway
+    repaints = []
+    monitor = SubagentMonitor(SimpleNamespace(agent=agent, _agent_running=True,
+                                              _invalidate=lambda: repaints.append(1)))
+    view = gateway_tools.process_view()
+    real_rows = view.subagent_rows
+
+    def dead(**_kw):
+        raise OSError("socket gone")
+    monkeypatch.setattr(view, "subagent_rows", dead)
+    monitor.tick()  # must not raise
+    assert repaints == []
+    monkeypatch.setattr(view, "subagent_rows", real_rows)
+    monitor._last_poll = 0
+    monitor.tick()
+    assert [r["subagent_id"] for r in monitor.entries] == ["sa-0-1"] and repaints == [1]

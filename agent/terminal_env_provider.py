@@ -49,6 +49,11 @@ class TerminalEnvironmentProvider(ProviderBase):
       ``computer_use`` and the browser then follow the terminal into this backend, as they do for
       docker/ssh, instead of refusing.
 
+    * ``probe_at_prompt_build`` — whether the system-prompt builder may create a throwaway
+      environment to read the backend's OS (``uname``). Billable cloud sandboxes set False: the
+      prompt then falls back to ``env_description`` instead of provisioning a sandbox per profile
+      just to describe it.
+
     * ``serves_hosted_scopes`` — the backend runs a hosted tenant's agent: every tool of a hosted scope
       (terminal, code execution, background processes, file tools) runs in its environment, and a
       hosted scope refuses any backend without it (built-ins included). See below.
@@ -87,6 +92,7 @@ class TerminalEnvironmentProvider(ProviderBase):
     session_isolated_when_nonpersistent: bool = False
     supports_streams: bool = False
     serves_hosted_scopes: bool = False
+    probe_at_prompt_build: bool = True
 
     @property
     def description(self) -> str:

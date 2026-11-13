@@ -887,6 +887,10 @@ def _probe_remote_backend(env_type: str) -> str | None:
     from tools.hosted_tool_policy import host_feature_enabled
     if not host_feature_enabled("backend_probe"):
         return None
+    # A plugin backend may opt out: for a billable cloud sandbox the probe provisions a real
+    # sandbox just to read `uname`, and the static ``env_description`` fallback is enough.
+    if not _plugin_backend_attr(env_type, "probe_at_prompt_build", True):
+        return None
     cache_key = (hermes_home_key(), env_type, _tenv_read("TERMINAL_CWD", ""))
     formatted = _BACKEND_PROBE_CACHE.get(cache_key)
     if formatted is None:
@@ -995,7 +999,7 @@ def _remote_backend_hint(backend: str) -> str:
         or f"a {backend} environment (likely Linux)"
     )
     return lead + (
-        f"{description} — NOT on the machine where Hermes itself runs. The backend probe didn't respond at "
+        f"{description} — NOT on the machine where Hermes itself runs. No backend probe result was available at "
         f"prompt-build time, so the sandbox's OS, current user, $HOME, and working directory are unknown from here. "
         f"If you need them, probe directly with a terminal call like `uname -a && whoami && pwd`."
     )

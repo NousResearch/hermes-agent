@@ -810,6 +810,75 @@ class TestEnvironmentHints:
         # force_remove=True: persist mode would otherwise leave it running.
         assert cleaned == {"force_remove": True}
 
+    def _register_plugin_backend(self, monkeypatch, *, probe_at_prompt_build):
+        from agent import terminal_env_registry as reg
+        from agent.terminal_env_provider import TerminalEnvironmentProvider
+
+        class _CloudBox(TerminalEnvironmentProvider):
+            name = "cloudbox"
+            display_name = "CloudBox"
+            env_description = "a CloudBox sandbox (Linux)"
+
+            def is_available(self):
+                return True
+
+            def create_environment(self, **kwargs):  # pragma: no cover - never reached here
+                raise AssertionError("dispatch goes through _create_environment")
+
+        _CloudBox.probe_at_prompt_build = probe_at_prompt_build
+        reg._reset_for_tests()
+        reg.register_provider(_CloudBox())
+        return reg
+
+    def test_plugin_backend_can_opt_out_of_the_prompt_build_probe(self, monkeypatch):
+        """A billable cloud backend declaring ``probe_at_prompt_build = False``
+        must not get a sandbox created just to read ``uname``; the prompt falls
+        back to the provider's static ``env_description``."""
+        import agent.prompt_builder as _pb
+        import tools.terminal_tool_backends as _tt
+
+        reg = self._register_plugin_backend(monkeypatch, probe_at_prompt_build=False)
+        try:
+            monkeypatch.setenv("TERMINAL_ENV", "cloudbox")
+            _pb._clear_backend_probe_cache()
+            created = []
+            monkeypatch.setattr(_tt, "_create_environment", lambda **kw: created.append(kw))
+
+            assert _pb._probe_remote_backend("cloudbox") is None
+            assert created == []
+            hint = _pb._remote_backend_hint("cloudbox")
+            assert "a CloudBox sandbox (Linux)" in hint
+            assert created == []
+        finally:
+            reg._reset_for_tests()
+            _pb._clear_backend_probe_cache()
+
+    def test_plugin_backend_probes_at_prompt_build_by_default(self, monkeypatch):
+        import agent.prompt_builder as _pb
+        import tools.terminal_tool_backends as _tt
+
+        reg = self._register_plugin_backend(monkeypatch, probe_at_prompt_build=True)
+        try:
+            monkeypatch.setenv("TERMINAL_ENV", "cloudbox")
+            _pb._clear_backend_probe_cache()
+
+            class _FakeEnv:
+                def execute(self, cmd, timeout=None):
+                    return {"returncode": 0, "output": "os=Linux\nkernel=6.8.0\n"}
+
+                def cleanup(self, *, force_remove=False):
+                    pass
+
+            created = []
+            monkeypatch.setattr(_tt, "_create_environment",
+                                lambda **kw: created.append(kw) or _FakeEnv())
+
+            assert _pb._probe_remote_backend("cloudbox") == "  OS: Linux 6.8.0"
+            assert len(created) == 1
+        finally:
+            reg._reset_for_tests()
+            _pb._clear_backend_probe_cache()
+
     def test_probe_remote_backend_tears_down_sandbox_on_failure(self, monkeypatch):
         """Teardown must also run when the probe command blows up — a flaky
         backend would otherwise leak the container the probe just created."""

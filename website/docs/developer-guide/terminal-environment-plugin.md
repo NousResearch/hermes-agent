@@ -22,7 +22,7 @@ A registered backend automatically participates in every core surface:
 | `hermes setup` backend picker | `display_name`, `description`, `setup_instructions()`, `post_setup()` |
 | Dashboard terminal-backend picker (probe status) | `probe()` |
 | `hermes status` / `hermes doctor` | `doctor_checks()` |
-| System-prompt environment hints | `is_remote`, `env_description` |
+| System-prompt environment hints | `is_remote`, `env_description`, `probe_at_prompt_build` |
 | Dangerous-command approval skipping | `skip_container_guards` |
 | Container path/cwd handling | `is_container` |
 | Where commands start when `terminal.cwd` is unset or unusable | `default_cwd` |

@@ -202,3 +202,8 @@ def test_registry_generation_bumps():
     reg.register_provider(_Provider())
     g1 = reg.registry_generation()
     assert g1 != g0
+
+
+def test_probe_at_prompt_build_defaults_on():
+    reg.register_provider(_Provider())
+    assert reg.provider_flag("testbox", "probe_at_prompt_build", None) is True

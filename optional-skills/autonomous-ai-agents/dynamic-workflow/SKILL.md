@@ -1,7 +1,7 @@
 ---
 name: dynamic-workflow
 description: Plan-in-code fan-outs, adversarial verification, waves.
-version: 2.1.0
+version: 2.1.1
 author: Teknium + Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -196,6 +196,16 @@ The one-shot recipe does not scale to a whole-codebase pass. What did:
   worktrees and another worker will pop your edits. Compare via a temp worktree.
 - Reporting a hit target when the honest number is lower. Say "16% so far, here
   is the path to 30%" and run the next round.
+- Run-dir path in child goals: Layer A's Python variables do not reach children.
+  Resolve the run directory to a literal absolute path in Layer A and paste that
+  path into every child's goal/context. Never pass `<run>` or a variable name,
+  and never ask a child to rebuild the path.
+- Stale cwd inside `execute_code`: `terminal()` runs in the session's persistent
+  shell and inherits its current directory. If that directory was deleted, every
+  call's output starts with a `cd: ... No such file or directory` line that
+  silently corrupts any path or list built from stdout. Pass `workdir=` (an
+  existing absolute directory) to every `terminal(command, timeout=None,
+  workdir=None)` call whose output becomes a path or list.
 
 ## Verification
 

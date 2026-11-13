@@ -48,6 +48,7 @@ $ProcessName = $oldProcess.ProcessName
 
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+. (Join-Path $PSScriptRoot 'windows-uia-buttons.ps1')
 
 New-Item -ItemType Directory -Path $ProofDir -Force | Out-Null
 if (-not $ResultPath) { $ResultPath = Join-Path $ProofDir "drive-update-result.json" }
@@ -84,24 +85,6 @@ function Find-AppWindow {
         if ($w.Current.NativeWindowHandle -ne 0) { return $w }
     }
     if ($wins.Count -gt 0) { return $wins[0] }
-    return $null
-}
-
-function Find-InvokableButton {
-    # Depth-first walk for a button whose Name matches one of the regexes.
-    param($Root, [string[]]$Patterns)
-    $cond = New-Object System.Windows.Automation.PropertyCondition(
-        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-        [System.Windows.Automation.ControlType]::Button)
-    $buttons = $Root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
-    foreach ($b in $buttons) {
-        $name = ""
-        try { $name = $b.Current.Name } catch {}
-        if (-not $name) { continue }
-        foreach ($pat in $Patterns) {
-            if ($name -match $pat) { return @{ Element = $b; Name = $name } }
-        }
-    }
     return $null
 }
 
@@ -142,7 +125,7 @@ while ((Get-Date) -lt $deadline -and -not $clicked) {
             if (Invoke-Button $hit.Element) { $clicked = $hit } else { Write-Host "  [uia] invoke pattern unavailable; retrying" }
         } else {
             # Use the visible settings flow; never call the updater bridge.
-            $navigation = Find-InvokableButton -Root $win -Patterns @('^Open settings$', '^About$', '^Check now$', 'choose a provider later')
+            $navigation = Find-InvokableButton -Root $win -Patterns @('^Check now$', '^Open settings$', '^About$', 'choose a provider later')
             if ($navigation) { [void](Invoke-Button $navigation.Element) }
         }
     }

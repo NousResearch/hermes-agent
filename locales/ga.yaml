@@ -3830,7 +3830,7 @@ tips:
   t246: "Socraíonn athróg timpeallachta HERMES_HOME_MODE (ochtnártha, m.sh. 0701) ceadanna eolaire saincheaptha le haghaidh trasnaithe freastalaí gréasáin."
   t247: "Mód coimeádáin: cuir .container-mode in HERMES_HOME agus déanann CLI an óstaigh uath-exec isteach sa choimeádán."
   t248: "Tá 5 shraith tosaíochta ag Ctrl+C: cealaigh taifeadadh → cealaigh leideanna → cealaigh roghnóir → cuir isteach ar an ngníomhaire → scoir."
-  t249: "Logáiltear gach idirbhriseadh le linn rith gníomhaire chuig ~/.hermes/interrupt_debug.log le stampaí ama."
+  t249: "Logáiltear idirbhristeacha le linn rith gníomhaire chuig agent.log (féach orthu le `hermes logs`); socraigh HERMES_DEBUG_INTERRUPT=1 le haghaidh rianú mionsonraithe."
   t250: "Ceanglaíonn BROWSER_CDP_URL uirlisí brabhsálaí le brabhsálaí ar bith de chlann Chromium atá ag rith — glacann sé le WebSocket, HTTP, nó host:port."
   t251: "Cumasaíonn BROWSERBASE_ADVANCED_STEALTH=true frith-bhrath ardleibhéil le Chromium saincheaptha (Scale Plan)."
   t252: "Athraíonn an CLI go mód dlúth go huathoibríoch i dteirminéil atá níos cúinge ná 80 colún."

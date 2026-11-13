@@ -3830,7 +3830,7 @@ tips:
   t246: "環境変数 HERMES_HOME_MODE（8 進数、例: 0701）で、Web サーバーがたどれるようにディレクトリのパーミッションを指定できます。"
   t247: "コンテナモード: HERMES_HOME に .container-mode を置くと、ホストの CLI が自動的にコンテナ内で実行されます。"
   t248: "Ctrl+C には 5 段階の優先順位があります。録音のキャンセル → プロンプトのキャンセル → ピッカーのキャンセル → エージェントの中断 → 終了。"
-  t249: "エージェント実行中のすべての中断は、タイムスタンプ付きで ~/.hermes/interrupt_debug.log に記録されます。"
+  t249: "エージェント実行中の中断は agent.log に記録されます（`hermes logs` で確認）。詳細なトレースには HERMES_DEBUG_INTERRUPT=1 を設定してください。"
   t250: "BROWSER_CDP_URL はブラウザツールを実行中の任意の Chromium 系ブラウザに接続します。WebSocket、HTTP、host:port を受け付けます。"
   t251: "BROWSERBASE_ADVANCED_STEALTH=true は、カスタム Chromium による高度な検出回避を有効にします（Scale プラン）。"
   t252: "CLI は幅が 80 桁未満のターミナルでは自動的にコンパクトモードに切り替わります。"

@@ -3830,7 +3830,7 @@ tips:
   t246: "HERMES_HOME_MODE ortam değişkeni (sekizlik, örn. 0701), web sunucusu erişimi için özel dizin izinleri belirler."
   t247: "Container modu: HERMES_HOME içine .container-mode koyun; ana makine CLI'sı otomatik olarak container içine geçer."
   t248: "Ctrl+C'nin 5 öncelik kademesi vardır: kaydı iptal et → istemleri iptal et → seçiciyi iptal et → ajanı kes → çık."
-  t249: "Ajan çalışması sırasındaki her kesme, zaman damgasıyla ~/.hermes/interrupt_debug.log dosyasına kaydedilir."
+  t249: "Ajan çalışması sırasındaki kesmeler agent.log dosyasına kaydedilir (`hermes logs` ile görüntüleyin); ayrıntılı izleme için HERMES_DEBUG_INTERRUPT=1 ayarlayın."
   t250: "BROWSER_CDP_URL, tarayıcı araçlarını çalışan herhangi bir Chromium ailesi tarayıcıya bağlar — WebSocket, HTTP veya host:port kabul eder."
   t251: "BROWSERBASE_ADVANCED_STEALTH=true, özel Chromium ile gelişmiş tespit önlemeyi etkinleştirir (Scale Plan)."
   t252: "CLI, 80 sütundan dar terminallerde otomatik olarak kompakt moda geçer."

@@ -92,7 +92,7 @@ class _NativePickerModelList(list[str]):
 def _fetch_picker_live_models(
     api_key: Any, api_url: str, native_catalog_provider: str, preserve_native_models: bool,
     headers: dict[str, str] | None = None, timeout: float = 5.0,
-    api_mode: str | None = None, *, cache: bool = True) -> list[str] | None:
+    api_mode: str | None = None, *, cache: bool = True, force_native_refresh: bool = False) -> list[str] | None:
     """Fetch picker models with native Ollama and cached generic discovery."""
     from hermes_cli.models import _get_ollama_native_headers, cached_fetch_api_models, fetch_api_models
     from hermes_cli.models_local import (
@@ -134,7 +134,9 @@ def _fetch_picker_live_models(
             return None
 
         def _probe_native_catalog() -> _NativePickerModelList | None:
-            models = fetch_ollama_local_models(api_url, timeout=timeout, headers=resolved_headers)
+            models = (fetch_ollama_local_models(api_url, timeout=timeout, headers=resolved_headers, force_refresh=True)
+                      if force_native_refresh else fetch_ollama_local_models(
+                          api_url, timeout=timeout, headers=resolved_headers))
             return None if models is None else _NativePickerModelList(models)
 
         # Admit the native catalog to the SHARED disk cache: a no-probe picker open (every endpoint

@@ -1,0 +1,55 @@
+name: handoff-slice-port
+
+# Focused lane for the restart-handoff slice port (branch-only; does not gate main):
+# the ported handoff tests plus the closely-related upstream gateway seams they
+# touch (restart drain, external drain control, shutdown watchdog, runtime
+# ownership, session delete guards, admission-on-drain).
+
+on:
+  push:
+    branches:
+      - 'upstream/handoff-slice'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: handoff-slice-port-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  port-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up locked Python and test dependencies
+        uses: ./.github/actions/setup-pm
+        with:
+          extras: '["all", "anthropic", "bedrock", "mistral", "fal", "modal", "daytona", "parallel-web", "keychain"]'
+          test-environment: 'true'
+
+      - name: Run ported handoff-slice tests and closely-related upstream gateway tests
+        run: |
+          scripts/run_tests.sh \
+            tests/gateway/test_handoff_deadline.py \
+            tests/gateway/test_session_handoff_notice.py \
+            tests/gateway/test_external_drain_admission.py \
+            tests/gateway/test_handoff_single_owner.py \
+            tests/gateway/test_restart_drain.py \
+            tests/gateway/test_restart_ack_before_teardown.py \
+            tests/gateway/test_external_drain_control.py \
+            tests/gateway/test_shutdown_watchdog.py \
+            tests/gateway/test_runtime_ownership.py \
+            tests/gateway/test_api_admission_queued_on_drain.py \
+            tests/gateway/test_api_server_active_work_drain.py \
+            tests/gateway/test_cron_fire_startup_gate.py \
+            tests/hermes_state/test_delete_session_write_guards.py \
+            -q
+        env:
+          OPENROUTER_API_KEY: ''
+          OPENAI_API_KEY: ''
+          NOUS_API_KEY: ''

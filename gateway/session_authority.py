@@ -240,22 +240,30 @@ class SessionAuthority:
         from gateway.session_retirement import touch_restored
         touch_restored(self, ref.session_id)  # a rename or a read brought a retired one back
 
-    def _require_admission_open(self, *, queue_only=False):
+    def _require_admission_open(self, *, queue_only=False, existing_work=False):
         """``queue_only``: the caller only COMMITS a queued row (never claims or runs it). A restart's
         after-turn wait accepts those (#139041): the row is durable FIFO input the next owner runs
-        exactly once, while this owner's claim path stays refused."""
+        exactly once, while this owner's claim path stays refused.
+        ``existing_work``: the caller settles work a previous admission already accepted (claim a
+        queued row, steer/redirect it). An external maintenance drain allows that settlement but
+        still refuses every new admission and never commits fresh queue rows; a restart drain
+        refuses even settlement because the claim would run on a departing owner."""
         if self.retiring:
+            raise RuntimeStoreError('runtime_draining')
+        if getattr(self.runner, '_external_drain_active', False):
+            if existing_work and not self.runner._draining:
+                return
             raise RuntimeStoreError('runtime_draining')
         if self.runner._draining:
             from gateway.drain_control import restart_wait_open
             if not (queue_only and restart_wait_open(self.runner)):
                 raise RuntimeStoreError('runtime_draining')
 
-    def _admission_gate(self, authorize=None, *, queue_only=False):
+    def _admission_gate(self, authorize=None, *, queue_only=False, existing_work=False):
         """The admission gate re-checked inside an off-loop write transaction (with the caller's
         own guard), so a drain that began while the write waited on the writer still refuses it."""
         def guard(conn):
-            self._require_admission_open(queue_only=queue_only)
+            self._require_admission_open(queue_only=queue_only, existing_work=existing_work)
             if authorize is not None:
                 authorize(conn)
         return guard
@@ -1153,13 +1161,13 @@ class SessionAuthority:
                 # a claim now would hand this row to its busy path and settle it unrun. The head
                 # waits queued, as main's pending slot did; /stop and /new still cancel it.
                 return 'classic_busy', first
-            self._require_admission_open()
+            self._require_admission_open(existing_work=True)
             from gateway.session_runtime_workers import tracked_write
             live.rescan = False  # a _schedule from here on may not be visible to this claim's read
             # The row these checks validated, never whichever is first when the write runs: a
             # cancellation commits from a worker thread and can advance the FIFO at any point.
             row = await tracked_write(self, partial(claim_session_input, self.db, epoch=self.epoch,
-                                                    session_id=ref.session_id, _guard=self._admission_gate(),
+                                                    session_id=ref.session_id, _guard=self._admission_gate(existing_work=True),
                                                     head=first['admission_id'] if first is not None else None),
                                       then=partial(self._stamp_claim, ref, live))
             # Input scheduled while this claim's transaction ran may postdate its read: re-read

@@ -75,3 +75,22 @@ def test_failed_typed_construction_publishes_no_env_grant(home):
     assert adapter._is_callback_user_authorized("222", chat_id="222", chat_type="private") is False
     assert os.environ.get("TELEGRAM_ALLOWED_USERS") == "111"
     assert adapter.config.extra.get("allow_from") == ["111"]
+
+
+def test_a_non_strict_load_that_fails_mid_bridge_restores_the_last_good_env(home, monkeypatch):
+    """The non-strict fallback swallows the YAML failure and continues on env/gateway.json, so the outer
+    transaction never unwinds: only the abort may undo the partial write, and it must retract nothing."""
+    from gateway.platforms._shared import bridged_env_marker
+
+    for var in ("DISCORD_ALLOWED_ROLES", "HERMES_BRIDGED_DISCORD_ALLOWED_ROLES"):  # teardown removes bridged writes
+        monkeypatch.setenv(var, "")
+        monkeypatch.delenv(var)
+    _write(home, {"discord": {"allow_from": ["111"], "allowed_roles": ["2"]}})
+    load_gateway_config()
+    good = {name: (os.environ.get(name), os.environ.get(bridged_env_marker(name)))
+            for name in ("DISCORD_ALLOWED_USERS", "DISCORD_ALLOWED_ROLES")}
+    assert good["DISCORD_ALLOWED_USERS"][0] == "111" and good["DISCORD_ALLOWED_ROLES"][0] == "2"
+    # The Discord list bridges, then the boolean ``telegram:`` block raises later in the same YAML stage.
+    _write(home, {"discord": {"allow_from": ["222"]}, "require_mention": True, "telegram": True})
+    load_gateway_config()
+    assert {name: (os.environ.get(name), os.environ.get(bridged_env_marker(name))) for name in good} == good

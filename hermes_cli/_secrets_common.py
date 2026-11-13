@@ -54,6 +54,12 @@ def register_subcommands(parent: argparse.ArgumentParser, dest: str, commands: I
             parser.add_argument(arg_name, **kwargs)
         parser.set_defaults(func=func)
 
+    def _print_help(args):
+        parent.print_help()
+        return 0
+
+    parent.set_defaults(func=_print_help)
+
 
 def require_enabled(console: Console, cfg: dict, product: str, command: str) -> bool:
     """Print the "integration is disabled" hint and return False unless ``cfg["enabled"]``."""

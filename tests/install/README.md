@@ -105,6 +105,10 @@ bytes through the public archive and installs the actual artifact before chat:
 | macOS arm64 and x64 | DMG, ZIP |
 | Windows arm64 and x64 | MSIX, universal MSIXBUNDLE |
 
+The macOS smoke verifies the app's code signature again after the chat: a file
+the running app writes into its own bundle (a pyc) breaks the seal, and
+Gatekeeper then holds the next update behind a prompt.
+
 The universal envelope runs on both Windows architectures, verifying native
 slice selection. Windows assembly/staging is separate from feed publication;
 both Windows smoke matrices must pass before publishing its canary feed.

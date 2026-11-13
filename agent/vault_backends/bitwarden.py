@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -21,6 +22,15 @@ from agent.secret_sources.base import run_cli, scrub_ansi
 from agent.vault_backends import unlock as _unlock
 from agent.vault_backends.base import LoginBackend, UnlockRequired, run_with_secret_env
 from agent.vault_store import VaultItemMeta, normalize_origin
+
+# Chat-style wrapper pasted into a Bitwarden URI field, e.g. @url:`https://example.com`.
+# Only this exact wrapper is unwrapped; the value must still pass normalize_origin.
+_WRAPPED_URI = re.compile(r"^\s*@url:\s*`([^`]+)`\s*$")
+
+
+def _unwrap_uri(raw: str) -> str:
+    m = _WRAPPED_URI.match(raw or "")
+    return m.group(1).strip() if m else (raw or "")
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +109,7 @@ class BitwardenLoginBackend(LoginBackend):
                 if uri.get("match") == 5:  # Bitwarden URI match "Never": not a fill target
                     continue
                 try:
-                    origin = normalize_origin(str(uri.get("uri") or ""))
+                    origin = normalize_origin(_unwrap_uri(str(uri.get("uri") or "")))
                 except Exception:
                     continue
                 if origin and origin not in origins:

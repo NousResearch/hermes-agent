@@ -636,24 +636,31 @@ def _content_dual_emits_structured(result, structured) -> bool:
     order and ``ensure_ascii`` escaping do not matter; checked per block because the spec puts the
     copy in *a* block and a server may add a status line next to it. Deterministic equality, not a
     richness heuristic: a prose summary or a reorganised rendering fails it and keeps its
-    ``structuredContent`` (#115430).
+    ``structuredContent`` (#115430)."""
+    return any(_text_is_value(text, structured) for text in _text_blocks(result))
 
-    The Python SDK (``MCPServer``, FastMCP) must return an object, so a ``str``/``int``/``list``
-    result travels as ``{"result": value}`` while ``content`` carries the bare value — one block,
-    or one block per list item. That is the same dual-emit with a wrapper, and the same equality
-    test (applied to the unwrapped value) recognises it."""
-    texts = [text for text in (getattr(block, "text", None) for block in (result.content or [])) if text]
-    if any(_text_is_value(text, structured) for text in texts):
-        return True
+
+def _text_blocks(result) -> list[str]:
+    return [text for text in (getattr(block, "text", None) for block in (result.content or [])) if text]
+
+
+def _collapse_sdk_wrapped_copy(result, text_result: str, structured, usable_parts: int):
+    """Model view only: ``(text, structured)`` with the Python SDK's wrapper copy collapsed.
+
+    The SDK (``MCPServer``, FastMCP) must return an object, so a ``str``/``int``/``list`` result
+    travels as ``{"result": value}`` while ``content`` carries the bare value — one block, or one
+    block per list item. The model needs it once. Per-item blocks rejoin as ambiguous newline text
+    (``[1, "1"]`` -> ``"1\n1"``), so a list arrives as ONE JSON copy of the value instead. Plugins
+    (``ctx.call_mcp``) never come here: their ``structuredContent`` is the typed value they parse."""
     if not (isinstance(structured, dict) and structured.keys() == {"result"}):
-        return False
-    value = structured["result"]
+        return text_result, structured
+    value, texts = structured["result"], _text_blocks(result)
     if any(_text_is_value(text, value) for text in texts):
-        return True
-    # Blocks are rejoined with "\n", so a string item holding one would lose its boundary once the list is dropped.
-    return (isinstance(value, list) and len(texts) == len(value)
-            and not any(isinstance(item, str) and "\n" in item for item in value)
-            and all(map(_text_is_value, texts, value)))
+        return text_result, None
+    if (isinstance(value, list) and len(texts) == len(value) == usable_parts
+            and all(map(_text_is_value, texts, value))):
+        return _truncate_mcp_text_result(json.dumps(value, ensure_ascii=False)), None
+    return text_result, structured
 
 
 def _text_is_value(text: str, value) -> bool:
@@ -678,7 +685,8 @@ def _json_type_stable_equal(left, right) -> bool:
     return type(left) is type(right) and left == right
 
 
-def _render_call_tool_result(result, server_name: str, image_paths: Optional[list[str]] = None) -> str:
+def _render_call_tool_result(result, server_name: str, image_paths: Optional[list[str]] = None, *,
+                             for_model: bool = False) -> str:
     """Pure: ``CallToolResult`` -> handler JSON (``image_paths``, when given, receives the files this
     call's image blocks were cached to). ``content`` and ``structuredContent`` are both
     forwarded, except that a ``structuredContent`` whose JSON also sits verbatim in a text block
@@ -699,8 +707,11 @@ def _render_call_tool_result(result, server_name: str, image_paths: Optional[lis
     meta = _strip_reserved_meta_keys(mcp_field(result, "meta", "meta"))
     # A str here is the over-cap truncation stand-in (wire structuredContent is always an object): next to
     # usable text it would be a second multi-MB copy — the flood #56059 caps — so it only fills an empty result.
-    if structured is not None and usable_parts > 0 and (isinstance(structured, str) or _content_dual_emits_structured(result, structured)):
-        structured = None
+    if structured is not None and usable_parts > 0:
+        if isinstance(structured, str) or _content_dual_emits_structured(result, structured):
+            structured = None
+        elif for_model:
+            text_result, structured = _collapse_sdk_wrapped_copy(result, text_result, structured, usable_parts)
     if structured is None and meta is None:
         return json.dumps({"result": text_result}, ensure_ascii=False)
     # Key order is part of the output: "result" leads when there is text, otherwise "_meta" precedes it.
@@ -723,7 +734,8 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
     """Sync handler (``handler(args_dict, **kwargs)``) calling an MCP tool via the background loop. Always a JSON
     string, except with ``native_images`` (the registry handler the agent loop dispatches): a result carrying
     images then becomes the ``_multimodal`` envelope when the active route takes images in tool results.
-    Direct callers (plugins' ``ctx.call_mcp``) keep the string contract and the ``MEDIA:`` paths."""
+    Direct callers (plugins' ``ctx.call_mcp``) keep the string contract, the ``MEDIA:`` paths and the SDK's
+    ``structuredContent`` wrapper, which only the model view collapses."""
     op = f"tools/call {tool_name}"
 
     def _handler(args: dict, **kwargs) -> Any:
@@ -762,7 +774,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
             if getattr(server, "_mark_session_proven", None) is not None:  # round-trip done: transport healthy
                 server._mark_session_proven()
             image_paths.clear()
-            return _render_call_tool_result(result, server_name, image_paths)
+            return _render_call_tool_result(result, server_name, image_paths, for_model=native_images)
 
         def _on_failure(exc):
             _core._bump_server_error(server_name)

@@ -284,9 +284,10 @@ class TestContentStructuredArbitration:
     def test_sdk_wrapped_result_forwards_one_copy(self, _patch_mcp_server):
         """The Python SDK wraps a non-object return as ``{"result": value}`` and puts the bare
         value in ``content`` (one block per list item). Taken from a real ``MCPServer`` so the
-        contract follows the SDK: the model gets the value once. A wrapper whose value is NOT
-        what the text says is distinct data and keeps its ``structuredContent``, and so does a
-        list whose item boundaries the newline-joined text cannot show."""
+        contract follows the SDK: the model gets the value once, and a per-item list arrives as
+        one JSON copy so item types and boundaries survive (``[1, "1"]`` is not ``"1\\n1"``). A
+        wrapper whose value is NOT what the text says is distinct data and keeps its
+        ``structuredContent``."""
         from mcp.server import MCPServer
 
         sdk = MCPServer("wrap")
@@ -296,12 +297,8 @@ class TestContentStructuredArbitration:
             return "x" * 5000
 
         @sdk.tool()
-        def names() -> list[str]:
-            return ["ann", "bob"]
-
-        @sdk.tool()
-        def blobs() -> list[bytes]:
-            return [b"a", b"b"]
+        def mixed() -> list[int | str]:
+            return [1, "1"]
 
         @sdk.tool()
         def rows() -> list[dict]:
@@ -312,23 +309,38 @@ class TestContentStructuredArbitration:
             return ["ann\nbob", "carol"]
 
         session = _patch_mcp_server
-        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
-        for tool in ("text", "names", "blobs", "rows"):
+        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0, native_images=True)
+        session.call_tool = AsyncMock(return_value=asyncio.run(sdk.call_tool("text", {})))
+        assert json.loads(handler({})) == {"result": "x" * 5000}
+        for tool, value in (("mixed", [1, "1"]), ("rows", [{"id": 1}, {"id": 2}]), ("lines", ["ann\nbob", "carol"])):
             session.call_tool = AsyncMock(return_value=asyncio.run(sdk.call_tool(tool, {})))
             data = json.loads(handler({}))
-            assert set(data) == {"result"}, (tool, data)
-        assert data["result"].count('"id"') == 2
-        session.call_tool = AsyncMock(return_value=asyncio.run(sdk.call_tool("lines", {})))
-        assert json.loads(handler({}))["structuredContent"] == {"result": ["ann\nbob", "carol"]}
+            assert set(data) == {"result"} and json.loads(data["result"]) == value, (tool, data)
         session.call_tool = AsyncMock(return_value=_FakeCallToolResult(
             content=[_FakeContentBlock("2 names")], structuredContent={"result": ["ann", "bob"]}))
         assert json.loads(handler({}))["structuredContent"] == {"result": ["ann", "bob"]}
+
+    def test_plugin_call_mcp_keeps_sdk_structured_content(self, _patch_mcp_server):
+        """Only the model view collapses the SDK wrapper: ``ctx.call_mcp`` (the handler without
+        ``native_images``) still hands plugins the typed ``structuredContent``."""
+        from hermes_cli.plugins_context import PluginContext
+        from mcp.server import MCPServer
+
+        sdk = MCPServer("wrap")
+
+        @sdk.tool()
+        def rows() -> list[dict]:
+            return [{"id": 1}, {"id": 2}]
+
+        _patch_mcp_server.call_tool = AsyncMock(return_value=asyncio.run(sdk.call_tool("rows", {})))
+        envelope = PluginContext._mcp_envelope(_mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)({}))
+        assert envelope["structuredContent"] == {"result": [{"id": 1}, {"id": 2}]}
 
     def test_dedup_never_equates_bool_and_number(self, _patch_mcp_server):
         """Python's ``1 == True`` must not make a text block look like a copy of a
         ``structuredContent`` it differs from; that copy would be dropped, and its data lost."""
         session = _patch_mcp_server
-        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
+        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0, native_images=True)
         for text, structured in (('{"enabled": 1}', {"enabled": True}), ("0", {"result": False})):
             session.call_tool = AsyncMock(return_value=_FakeCallToolResult(
                 content=[_FakeContentBlock(text)], structuredContent=structured))
@@ -344,20 +356,20 @@ class TestContentStructuredArbitration:
         the model gets the text once (operator repro)."""
         _patch_mcp_server.call_tool = AsyncMock(return_value=CallToolResult(
             content=[TextContent(type="text", text=text)], structured_content=structured))
-        assert json.loads(_mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)({})) == {"result": text}
+        assert json.loads(_mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0, native_images=True)({})) == {"result": text}
 
     @pytest.mark.parametrize("structured", [{"result": "a different rendering"}, {"result": "| a |", "extra": 1}])
     def test_wrapped_result_that_differs_from_text_is_kept(self, _patch_mcp_server, structured):
         _patch_mcp_server.call_tool = AsyncMock(return_value=CallToolResult(
             content=[TextContent(type="text", text="| a |")], structured_content=structured))
-        data = json.loads(_mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)({}))
+        data = json.loads(_mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0, native_images=True)({}))
         assert data["structuredContent"] == structured
 
     def test_wrap_marker_does_not_replace_the_equality_check(self, _patch_mcp_server):
         """FastMCP >= 3.2 also flags the wrapper in ``_meta`` (``fastmcp.wrap_result``). The flag says
         the shape is a wrapper, not that the text is a copy: a matching text block drops the
         wrapper, a different one (a status line) keeps it."""
-        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
+        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0, native_images=True)
         marker = {"fastmcp": {"wrap_result": True}}
         for text, kept in (("the table", False), ("Retrieved 1 table", True)):
             _patch_mcp_server.call_tool = AsyncMock(return_value=CallToolResult(
@@ -370,7 +382,7 @@ class TestContentStructuredArbitration:
     def test_wrapped_copy_in_one_of_several_blocks(self, _patch_mcp_server):
         """Per block, like the unwrapped dual-emit: a copy next to a status line or a resource link
         is still one copy; a non-text block alone never counts as the copy."""
-        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
+        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0, native_images=True)
         link = ResourceLink(type="resource_link", uri="file:///report.md", name="report")
         for content in ([TextContent(type="text", text="done"), TextContent(type="text", text="the table")],
                         [link, TextContent(type="text", text="the table")]):
@@ -391,7 +403,7 @@ class TestContentStructuredArbitration:
         from tools.budget_config import DEFAULT_BUDGET, DEFAULT_MCP_RESULT_SIZE_CHARS
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         monkeypatch.setattr(trs, "_spillover_pruned_homes", set())
-        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
+        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0, native_images=True)
         row = "| FY2027E | Revenue | 630.7 |\n"
 
         def _call(size):

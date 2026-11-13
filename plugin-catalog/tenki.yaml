@@ -1,0 +1,16 @@
+name: tenki
+repo: https://github.com/hashbender/hermes-tenki
+sha: f4a0e20a30a2bd67b4b0b77832066ecd6bb717ac
+description: Terminal backend that runs agent commands, code execution and file tools in on-demand Tenki cloud sandboxes, terminated at session end unless persistence is enabled. Disclosure — runs agent commands in billable Tenki cloud sandboxes via api.tenki.cloud using TENKI_API_KEY; uploads Hermes skills, cache and skill-registered credential files into the sandbox; rewrites sudo commands for the sandbox's passwordless sudo; keeps its own state in HERMES_HOME/tenki_snapshots.json and HERMES_HOME/locks/tenki; when Tenki is the backend and config.yaml sets no container_persistent, sets TERMINAL_CONTAINER_PERSISTENT=false in the Hermes process; reads no credential files and adds no telemetry.
+maintainer: hashbender
+tier: community
+category: platform
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/hashbender/hermes-tenki#readme
+version: "1.1.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - TENKI_API_KEY

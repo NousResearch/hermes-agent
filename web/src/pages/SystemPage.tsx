@@ -219,13 +219,11 @@ const MEMORY_STATUS_TONE: Record<
  *  nothing leaves the machine until the user confirms what the public paste contains. */
 interface DebugShareButtonProps {
   sharing: boolean;
-  redact: boolean;
   onConfirm: () => void;
 }
 
 function DebugShareButton({
   sharing,
-  redact,
   onConfirm,
 }: DebugShareButtonProps) {
   const [open, setOpen] = useState(false);
@@ -248,11 +246,7 @@ function DebugShareButton({
       <ConfirmDialog
         open={open}
         title="Upload debug report to a public paste?"
-        description={`Uploads system info + full logs to a public paste service.${
-          redact
-            ? " Secrets are redacted, but your"
-            : " Redaction is OFF: secrets and your"
-        } recent messages, tool output, file paths and names stay in the logs and are readable by anyone with the link. Pastes auto-delete after 6 hours; if paste.rs is unreachable, the dpaste.com fallback keeps them public for 1 day and they cannot be deleted early.`}
+        description="Uploads a summary to a public paste service: Hermes, Python and OS versions, connected platform and toolset names, config key names (no values) and warning/error counts. It contains no log lines or message text. Pastes auto-delete after 6 hours; if paste.rs is unreachable, the dpaste.com fallback keeps them public for 1 day and they cannot be deleted early."
         destructive
         confirmLabel="Upload"
         cancelLabel="Cancel"
@@ -1470,7 +1464,6 @@ export default function SystemPage() {
               </div>
               <DebugShareButton
                 sharing={sharing}
-                redact={shareRedact}
                 onConfirm={() => void runDebugShare()}
               />
             </div>

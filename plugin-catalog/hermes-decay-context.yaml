@@ -1,0 +1,21 @@
+name: hermes-decay-context
+repo: https://github.com/nimbus7772017/hermes-decay-context
+sha: 4ce34d74d775133b1e300cd66fa1e265f54627c3
+subdir: ""
+description: Decay context engine (clean eviction + rolling digest) plus operator Pins that survive compaction, via public plugin APIs only.
+maintainer: Nimbus Solutions
+tier: community
+category: memory
+requires_hermes: ">=0.10.0"
+docs_url: ""
+version: "0.1.0"
+readme: true
+platforms: []
+title: "Decay + Pins"
+capabilities:
+  provides_tools:
+    - operator_directive_done
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

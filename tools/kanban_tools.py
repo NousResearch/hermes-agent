@@ -165,6 +165,7 @@ def _kanban_handler(tool_name: str) -> Callable:
                 _check(not unknown,
                        f"{tool_name}: unknown parameter(s): {', '.join(unknown)}. "
                        f"Valid parameters: {', '.join(sorted(properties))}. Nothing changed.")
+                _fire_board_access_hook(tool_name, args)
                 return fn(args, **kw)
             except _Reject as e:
                 return e.args[0]
@@ -174,6 +175,49 @@ def _kanban_handler(tool_name: str) -> Callable:
                 return tool_error(f"{tool_name}: {e}")
         return wrapper
     return deco
+
+
+def _fire_board_access_hook(tool_name: str, args: dict) -> None:
+    """Directive hook: VETO board access before any kanban board operation runs.
+
+    The single chokepoint — every kanban tool funnels through ``_kanban_handler`` — so a
+    plugin gates one place and covers create/dispatch/write (and read) alike. A plugin returns
+    ``{"action": "block", "message"}`` to refuse the operation (the message becomes the
+    structured tool error); ``None`` / ``{"action": "allow"}`` (or any other return) passes.
+    Block precedence is first-valid-wins, matching ``pre_tool_call``. Short-circuits on
+    ``has_hook`` so the hot path pays nothing when no plugin subscribes, and every failure
+    (import, hook raise) degrades to allow — a broken plugin must never wedge the board.
+
+    ``board`` is the tool's explicit slug, or ``None`` for the default board; ``profile_name``
+    is the persisted runtime identity (never taken from tool args, so a caller cannot forge
+    coordinator standing). ``args`` is passed through so a gate can inspect e.g. the assignee.
+    """
+    try:
+        from hermes_cli.lifecycle import has_hook, invoke_hook
+    except Exception:
+        return
+    if not has_hook("pre_kanban_board_access"):
+        return
+    try:
+        board = args.get("board") if isinstance(args, dict) else None
+        results = invoke_hook(
+            "pre_kanban_board_access",
+            tool_name=tool_name,
+            board=board,
+            profile_name=_persisted_identity(),
+            args=dict(args) if isinstance(args, dict) else {},
+        )
+    except Exception:
+        logger.warning("pre_kanban_board_access hook failed", exc_info=True)
+        return
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        if result.get("action") != "block":
+            continue
+        message = result.get("message")
+        if isinstance(message, str) and message.strip():
+            raise _Reject(message)
 
 
 def _reject_delegated_child_mutation(tool_name: str) -> None:

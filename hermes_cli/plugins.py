@@ -192,6 +192,14 @@ VALID_HOOKS: set[str] = {
     #   (privacy: task ids, assignees, workspace paths).
     "on_kanban_worker_spawned", "on_kanban_worker_exited", "on_kanban_worker_stale_claim",
     "on_kanban_task_updated", "on_kanban_dispatch_tick",
+    # pre_kanban_board_access: BEFORE a kanban board operation (create/dispatch/write) reaches
+    # the DB, after worker/orchestrator gating — the single chokepoint where every kanban tool
+    # funnels (tools/kanban_tools.py::_kanban_handler). DIRECTIVE hook: a plugin may VETO access
+    # (e.g. a coordinator-only board gate). Return None/{"action": "allow"} to pass, or
+    # {"action": "block", "message"} to refuse the operation before any row is written (the
+    # message becomes the structured tool error). Kwargs: tool_name, board (slug or None for the
+    # default board), profile_name, args. Fire site short-circuits on has_hook().
+    "pre_kanban_board_access",
     # gateway_platform_event: normalized envelopes only, never raw SDK objects or adapter handles.
     # Kwargs: platform, event_type, payload (event_type-local; see hooks.md). New event types land
     # only together with real fire-sites.

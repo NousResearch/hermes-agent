@@ -10,6 +10,8 @@ description: "Delegate coding to Claude Code CLI (features, PRs)"
 
 Delegate coding to Claude Code CLI (features, PRs).
 
+Want the full side-by-side? Read [Hermes Agent vs Claude Code](https://hermes-agent.nousresearch.com/compare/claude-code).
+
 ## Skill metadata
 
 | | |

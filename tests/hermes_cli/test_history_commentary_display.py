@@ -514,3 +514,17 @@ def test_overlapping_public_items_do_not_leave_partial_text_in_final_or_thinking
     for projected in (_project_for_display([row])[0], _history_to_messages([row])[0]):
         assert projected["display_content"] == row["content"]
         assert projected["display_commentary"] == []
+
+
+def test_history_commentary_keeps_whitespace_part_before_memory_fence():
+    """Replayed commentary is assembled like live commentary: a newline-only part keeps an
+    echoed <memory-context> block on its own line, so the fence drops it (#81312)."""
+    row = _row()
+    row["codex_message_items"][0]["content"] = [
+        {"type": "output_text", "text": "Checking the inbox."},
+        {"type": "output_text", "text": "\n"},
+        {"type": "output_text", "text": "<memory-context>\nSENTINEL_note\n</memory-context>"},
+    ]
+    projected = _project_for_display([row])[0]
+
+    assert projected["display_commentary"] == ["Checking the inbox."]

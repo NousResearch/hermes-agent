@@ -484,3 +484,27 @@ describe('the redesigned band on a compact window', () => {
     ).toBeNull()
   })
 })
+
+describe('Back and Forward in the redesigned band', () => {
+  afterEach(() => {
+    cleanup()
+    delete document.documentElement.dataset.hermesDesktopHost
+  })
+
+  it('leads the native app’s band at desktop width', () => {
+    renderControls('/')
+    const left = screen.getByLabelText('Window controls')
+
+    expect(within(left).getByRole('button', { name: 'Back' })).toBeTruthy()
+    expect(within(left).getByRole('button', { name: 'Forward' })).toBeTruthy()
+  })
+
+  it('is left to the browser when the app is hosted in one, at any width', () => {
+    document.documentElement.dataset.hermesDesktopHost = 'browser'
+    renderControls('/')
+    const left = screen.getByLabelText('Window controls')
+
+    expect(within(left).queryByRole('button', { name: 'Back' })).toBeNull()
+    expect(within(left).queryByRole('button', { name: 'Forward' })).toBeNull()
+  })
+})

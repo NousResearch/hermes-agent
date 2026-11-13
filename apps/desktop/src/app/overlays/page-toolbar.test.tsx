@@ -136,3 +136,16 @@ describe('below wide', () => {
     expect(seen.at(-1)).toBe(true)
   })
 })
+
+it('leaves Back and Forward to the browser when the app is hosted in one', () => {
+  document.documentElement.dataset.hermesDesktopHost = 'browser'
+
+  try {
+    render(<PageToolbar onBack={vi.fn()} />)
+
+    expect(screen.queryByRole('button', { name: 'Back' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Forward' })).toBeNull()
+  } finally {
+    delete document.documentElement.dataset.hermesDesktopHost
+  }
+})

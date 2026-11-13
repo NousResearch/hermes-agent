@@ -52,6 +52,7 @@ import {
 
 import {
   $historyPosition,
+  bandOffersHistory,
   canGoBack,
   canGoForward,
   historyBack,
@@ -291,7 +292,8 @@ function useBandMenuTool(
 /** The redesigned band leads with Back and Forward on every screen (Figma 906:19467, 856:2713):
  *  the window's own router history. A workspace page (Capabilities, Library, …) reached with nothing
  *  behind it (a deep link, a fresh window) still has a way back: the chat the Chats destination
- *  would open. A compact window drops them: the browser carries its own, and the band needs the room. */
+ *  would open. A compact window drops them for room, and so does the browser-hosted app at any
+ *  width: the browser's own Back and Forward walk the same history. */
 function usePortalHistoryTools(portal: boolean): TitlebarTool[] {
   const { t } = useI18n()
   const navigate = useNavigate()
@@ -301,11 +303,12 @@ function usePortalHistoryTools(portal: boolean): TitlebarTool[] {
   const compact = useStore($widthClass) === 'compact'
   const back = canGoBack(position)
   const fallback = workspacePage && !back ? (sessionId ? sessionRoute(sessionId) : NEW_CHAT_ROUTE) : null
+  const hidden = !portal || !bandOffersHistory(compact)
 
   return [
     {
       disabled: !back && !fallback,
-      hidden: !portal || compact,
+      hidden,
       icon: <TitlebarIcon name="arrow-left" />,
       id: 'history-back',
       label: t.common.back,
@@ -313,7 +316,7 @@ function usePortalHistoryTools(portal: boolean): TitlebarTool[] {
     },
     {
       disabled: !canGoForward(position),
-      hidden: !portal || compact,
+      hidden,
       icon: <TitlebarIcon name="arrow-right" />,
       id: 'history-forward',
       label: t.preview.web.goForward,

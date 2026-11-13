@@ -2,7 +2,14 @@ import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
 
 import { $widthClass } from '@/app/redesign/breakpoints'
-import { $historyPosition, canGoBack, canGoForward, historyBack, historyForward } from '@/app/shell/history-position'
+import {
+  $historyPosition,
+  bandOffersHistory,
+  canGoBack,
+  canGoForward,
+  historyBack,
+  historyForward
+} from '@/app/shell/history-position'
 import { PanelRevealButton } from '@/app/shell/panel-reveal'
 import { $openSheet, toggleShellSheet } from '@/app/shell/shell-sheet'
 import { ShellSheetScrim } from '@/app/shell/shell-sheet-view'
@@ -23,7 +30,7 @@ import { $pageHasSidebar } from './page-sidebar'
  *
  *  Below wide (DESIGN.md › Responsive) the band's sidebar button is the page's menu: it opens the
  *  page's panel as a sheet, and on a compact window with no panel, the rail. A compact band drops Back
- *  and Forward: the browser carries its own. */
+ *  and Forward, and so does the browser-hosted app at any width (`bandOffersHistory`). */
 
 export function PageToolbar({
   actions,
@@ -51,7 +58,7 @@ export function PageToolbar({
 
   return (
     <header className="flex h-full min-h-0 shrink-0 items-center gap-(--titlebar-control-gap) ps-[calc(var(--portal-band-start)-var(--global-nav-width))] pe-5 rtl:ps-5">
-      {!compact && (
+      {bandOffersHistory(compact) && (
         <>
           <Tip label={t.common.back} placement="toolbar">
             <Button

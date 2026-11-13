@@ -3,6 +3,7 @@ import { useEffect } from 'react'
 import { type NavigationType, useLocation, useNavigationType } from 'react-router'
 
 import { hostHas } from '@/lib/host-capabilities'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 
 /** Where this window stands in its own router history: the entry it shows and the newest entry a
  *  Forward can reach. The browser keeps the stack; this keeps only what the band's Back/Forward need
@@ -24,6 +25,10 @@ export function nextHistoryPosition(
 }
 
 export const canGoBack = (position: HistoryPosition) => position.index > 0
+
+/** Whether a band draws its own Back and Forward. A compact band has no room, and the browser-hosted
+ *  app leaves them to the browser at any width: its buttons walk the same history. */
+export const bandOffersHistory = (compact: boolean) => !compact && !isBrowserHostedDesktop()
 export const canGoForward = (position: HistoryPosition) => position.index < position.last
 
 /** The router's own entry number (react-router keeps `idx` in `history.state`). */

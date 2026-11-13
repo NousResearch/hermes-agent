@@ -65,7 +65,9 @@ const beta: RosterRow = { name: 'beta', connectionId: 'local' }
 
 beforeEach(() => {
   request.mockReset().mockImplementation(async (_route, method) => {
-    if (method === 'groups.capabilities') {return { driver: true, persistent_process: true, seatable_profiles: ['alpha', 'beta'] }}
+    if (method === 'groups.capabilities') {
+      return { driver: true, persistent_process: true, seatable_profiles: ['alpha', 'beta'] }
+    }
     throw new Error(`Unexpected RPC: ${method}`)
   })
   Element.prototype.scrollIntoView = vi.fn()
@@ -79,7 +81,9 @@ afterEach(() => {
 
 it('Manage members offers the seatable rows plus the current members, never a route-disagreeing row', async () => {
   $lastRoster.set([alpha, beta, remote('scout'), spoofed])
-  const { baseElement } = render(<GroupMemberPicker group="Core" members={[alpha, remote('scout')]} onClose={vi.fn()} open />)
+  const { baseElement } = render(
+    <GroupMemberPicker group="Core" members={[alpha, remote('scout')]} onClose={vi.fn()} open />
+  )
 
   await waitFor(() => expect(request.mock.calls.map(call => call[1])).toContain('groups.capabilities'))
   await act(async () => {})
@@ -97,7 +101,9 @@ it('Manage members offers the seatable rows plus the current members, never a ro
 it('Manage members will not uncheck a member whose machine is offline, and says why', async () => {
   const homelab: RosterRow = { ...remote('scout'), connectionLabel: 'Homelab', sourceReachable: false }
   $lastRoster.set([alpha, beta, homelab])
-  const { baseElement } = render(<GroupMemberPicker group="Core" members={[alpha, beta, homelab]} onClose={vi.fn()} open />)
+  const { baseElement } = render(
+    <GroupMemberPicker group="Core" members={[alpha, beta, homelab]} onClose={vi.fn()} open />
+  )
 
   await waitFor(() => expect(request.mock.calls.map(call => call[1])).toContain('groups.capabilities'))
   await act(async () => {})
@@ -118,7 +124,9 @@ it('Manage groups disables every change for a bot whose machine is offline, and 
   $botMeta.set({ alpha: { groups: ['Core'] } })
   render(<GroupDialog bot={homelab} onClose={vi.fn()} />)
 
-  expect(screen.getByTestId('group-dialog-locked').textContent).toBe(botsText().crossGateway.groupsOffline('Homelab', 'Scout'))
+  expect(screen.getByTestId('group-dialog-locked').textContent).toBe(
+    botsText().crossGateway.groupsOffline('Homelab', 'Scout')
+  )
   expect(screen.getByRole('checkbox').hasAttribute('disabled')).toBe(true)
   expect(screen.getByRole('textbox').hasAttribute('disabled')).toBe(true)
 })
@@ -157,7 +165,11 @@ function renderToolbar(roster: RosterRow[]) {
 
 it('New Group Chat is disabled, with the reason, when every seatable bot is on one other connection', async () => {
   // This connection's only bot is one the authority will not seat.
-  const setGroupCreateOpen = renderToolbar([{ name: 'parked', connectionId: 'local' }, remote('scout'), remote('scribe')])
+  const setGroupCreateOpen = renderToolbar([
+    { name: 'parked', connectionId: 'local' },
+    remote('scout'),
+    remote('scribe')
+  ])
   const note = botsText().crossGateway.selectionElsewhere('Other box')
 
   const item = await screen.findByRole('menuitem', { name: new RegExp(botsText().group.newTitle) })

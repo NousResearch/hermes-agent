@@ -68,6 +68,14 @@ CASES = {
         "    rec.add(run_agent, print)\n"
         "    ctx.add(run_agent, print)\n"
     ), {}, ["rec.add(run_agent, ...) (__init__.py:10)", "ctx.add(run_agent, ...) (__init__.py:11)"]),
+    "walrus_rebinds_a_container_name_to_a_helper": (_RECORDER + (
+        "def factory():\n"
+        "    return Recorder()\n"
+        "def register(ctx):\n"
+        "    rec = {}\n"
+        "    if (rec := factory()):\n"
+        "        rec.add(run_agent, print)\n"
+    ), {}, ["rec.add(run_agent, ...) (__init__.py:10)"]),
     "staticmethod_helper": ((
         "import run_agent\n"
         "class Recorder:\n"

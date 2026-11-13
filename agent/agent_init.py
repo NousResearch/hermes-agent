@@ -803,6 +803,15 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
         agent.provider = agent.requested_provider = _fb["provider"]
         agent.model = _fb_model or _fb["model"]
         recompute_init_fallback_api_mode(agent, _fb_client)
+        if getattr(agent, "api_mode", None) == "anthropic_messages":
+            # The fallback speaks the Anthropic wire (#141486, #150445): build the native client,
+            # as the per-turn fallback does, instead of an OpenAI client for the dead primary.
+            _key_provider = vars(_fb_client).get("_api_key_provider")
+            _init_anthropic_client(
+                agent, _key_provider if callable(_key_provider) else _fb_client.api_key,
+                str(_fb_client.base_url), _provider_timeout,
+            )
+            return None
         return _client_kwargs_from_routed(_fb_client, _provider_timeout)
     # A burned credential pool (#119533) is otherwise indistinguishable from missing config,
     # so name it even when no fallback entries are configured.
@@ -893,8 +902,8 @@ def _init_openai_client(agent, api_key, base_url, fallback_model, _provider_time
         client_kwargs = _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout)
     else:
         client_kwargs = _routed_client_kwargs(agent, fallback_model, _provider_timeout)
-        if client_kwargs is None:  # init-time fallback bound the MoA facade
-            if not agent.quiet_mode:
+        if client_kwargs is None:  # init-time fallback bound the MoA facade or the Anthropic client
+            if not agent.quiet_mode and agent._anthropic_client is None:
                 print(f"🤖 AI Agent initialized with MoA preset: {agent.model}")
             return
     from hermes_cli.providers import is_actual_route

@@ -29,23 +29,37 @@ _FALSY = frozenset({"0", "false", "no", "off", ""})
 # strict is opt-in (off unless a known truthy value turns it on); trust_recent_files is
 # opt-out (on unless a known falsy value turns it off). Both defaults match the env readers.
 _FLAG_DEFAULTS = {"strict": False, "trust_recent_files": True}
+# An unreadable config.yaml value takes the restrictive reading: before the shared parser,
+# ``bool()`` read every non-empty string as True, so ``strict: "enabled"`` was on; falling back
+# to the opt-in default would switch strict OFF on upgrade without a word.
+_FLAG_FAIL_SAFE = {"strict": True, "trust_recent_files": False}
 
 
 def _flag_value(value: Any, *, default: bool) -> bool:
     """One reading per flag, shared by the config path, the env readers and the bridge: a known
-    truthy value is on, a known falsy one is off, anything else keeps the knob's default. A
+    truthy value is on, a known falsy one is off, anything else returns ``default``. A
     hand-edited config.yaml spells flags as strings (``strict: "false"``), where ``bool()``
-    would read the quoted "false" as True."""
+    would read the quoted "false" as True. Quotes inside the string are dropped: before the CLI
+    coerced them, ``hermes config set gateway.strict '"true"'`` stored ``'"true"'``."""
     if value is None:
         return default
     if isinstance(value, bool):
         return value
-    text = str(value).strip().lower()
+    text = str(value).strip().strip("\"'").strip().lower()
     if text in _TRUTHY:
         return True
     if text in _FALSY:
         return False
     return default
+
+
+def _config_flag(cfg: dict[str, Any], key: str) -> bool:
+    """``key`` as read from a config.yaml ``gateway`` section: unset keeps the knob default, an
+    unknown value takes the fail-safe reading (strict on, recency trust off)."""
+    value = cfg.get(key)
+    if value is None:
+        return _FLAG_DEFAULTS[key]
+    return _flag_value(value, default=_FLAG_FAIL_SAFE[key])
 
 
 def _routed_gateway_cfg() -> Optional[dict[str, Any]]:
@@ -68,7 +82,7 @@ def _routed_gateway_cfg() -> Optional[dict[str, Any]]:
 def media_delivery_strict() -> bool:
     cfg = _routed_gateway_cfg()
     if cfg is not None:
-        return _flag_value(cfg.get("strict"), default=_FLAG_DEFAULTS["strict"])
+        return _config_flag(cfg, "strict")
     return _flag_value(
         os.environ.get(_FLAG_ENVS[0][1]), default=_FLAG_DEFAULTS["strict"]
     )
@@ -85,9 +99,7 @@ def media_delivery_allow_dirs() -> str:
 def media_delivery_trust_recent() -> bool:
     cfg = _routed_gateway_cfg()
     if cfg is not None:
-        return _flag_value(
-            cfg.get("trust_recent_files"), default=_FLAG_DEFAULTS["trust_recent_files"]
-        )
+        return _config_flag(cfg, "trust_recent_files")
     return _flag_value(
         os.environ.get(_FLAG_ENVS[1][1]), default=_FLAG_DEFAULTS["trust_recent_files"]
     )
@@ -142,11 +154,8 @@ def apply_media_policy_env(config: Optional[dict[str, Any]] = None) -> None:
         if not gateway_cfg:
             return
         for key, env in _FLAG_ENVS:
-            flag = gateway_cfg.get(key)
-            if flag is not None:
-                _set_env_default(
-                    env, "1" if _flag_value(flag, default=_FLAG_DEFAULTS[key]) else "0"
-                )
+            if gateway_cfg.get(key) is not None:
+                _set_env_default(env, "1" if _config_flag(gateway_cfg, key) else "0")
         allow_dirs = gateway_cfg.get("media_delivery_allow_dirs")
         if allow_dirs:
             _set_env_default(_ALLOW_DIRS_ENV, _allow_dirs_str(allow_dirs))

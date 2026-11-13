@@ -83,15 +83,40 @@ def test_config_path_agrees_with_the_env_path_for_every_spelling(
     )
 
 
-def test_unknown_value_keeps_the_knob_default(homes):
-    """An unreadable value is not a silent flip: strict stays opt-in off, trust stays opt-out on
-    (the env readers' existing rule for unknown values)."""
-    _, routed = homes
+@pytest.mark.parametrize("stored", ["maybe", "enabled", "2"])
+def test_unknown_config_value_takes_the_restrictive_reading(homes, stored):
+    """An unreadable config value never silently relaxes the policy: the old ``bool()`` reading
+    had strict ON for any non-empty string, so strict stays on and recency trust turns off, on
+    the routed path and through the bridge."""
+    launch, routed = homes
     from gateway import media_policy
+    from hermes_cli.config import load_config
 
-    _write_gateway(routed, {"strict": "maybe", "trust_recent_files": "maybe"})
-    assert _under(routed, media_policy.media_delivery_strict) is False
-    assert _under(routed, media_policy.media_delivery_trust_recent) is True
+    _write_gateway(routed, {"strict": stored, "trust_recent_files": stored})
+    assert _under(routed, media_policy.media_delivery_strict) is True
+    assert _under(routed, media_policy.media_delivery_trust_recent) is False
+    _write_gateway(launch, {"strict": stored, "trust_recent_files": stored})
+    media_policy.apply_media_policy_env(load_config())
+    assert media_policy.media_delivery_strict() is True
+    assert media_policy.media_delivery_trust_recent() is False
+
+
+@pytest.mark.parametrize("stored,expected", [('"true"', True), ('"false"', False), ("'off'", False)])
+def test_value_an_older_config_set_stored_keeps_its_meaning(homes, stored, expected):
+    """Before the CLI coerced shell-quoted booleans, ``hermes config set gateway.strict '"true"'``
+    stored the quotes in the string, and the old bool() reading turned strict ON. After the upgrade
+    the stored word must still decide both flags, on the routed path and through the bridge."""
+    launch, routed = homes
+    from gateway import media_policy
+    from hermes_cli.config import load_config
+
+    _write_gateway(routed, {"strict": stored, "trust_recent_files": stored})
+    assert _under(routed, media_policy.media_delivery_strict) is expected
+    assert _under(routed, media_policy.media_delivery_trust_recent) is expected
+    _write_gateway(launch, {"strict": stored, "trust_recent_files": stored})
+    media_policy.apply_media_policy_env(load_config())
+    assert media_policy.media_delivery_strict() is expected
+    assert media_policy.media_delivery_trust_recent() is expected
 
 
 def test_unset_config_keeps_the_knob_default(homes):

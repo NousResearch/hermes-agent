@@ -452,7 +452,7 @@ class _MarkRuns:
         line_end = self.newlines[j] if j < len(self.newlines) else self.size
         out = ''
         tail = self.text[start:end]
-        tail = tail[len(tail.rstrip(_URL_PATH_MARKS + '.,;:!?)')):]  # marks this URL could release
+        tail = tail[len(tail.rstrip(_URL_TAIL_CHARS + ')')):]  # what _url_end may trim, marks included
         for ch, runs in self.runs.items():
             if ch not in tail:  # ``https://a.example/x``: no mark of its own to release, nothing closes
                 continue

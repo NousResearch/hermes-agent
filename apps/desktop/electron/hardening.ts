@@ -19,6 +19,11 @@ const DEFAULT_FETCH_TIMEOUT_MS = 30_000
 // after base64 + framing. Preview stays on the Settings-configurable path.
 const ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES = 256 * 1024 * 1024
 const TEXT_PREVIEW_SOURCE_MAX_BYTES = 64 * 1024 * 1024
+// Renderer-supplied composer writes (pasted/dropped images, large text pastes)
+// land on disk under userData/HERMES_HOME; cap them like the attach reader so
+// one IPC call can't allocate or write unbounded bytes in the main process.
+const COMPOSER_IMAGE_MAX_BYTES = ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES
+const COMPOSER_PASTE_MAX_BYTES = TEXT_PREVIEW_SOURCE_MAX_BYTES
 
 function dataUrlReadMaxBytesFromMb(maxMb) {
   return clampDataUrlReadMaxMb(maxMb) * 1024 * 1024
@@ -341,6 +346,44 @@ function ipcPathError(code: any, message: string): Error & { code: any } {
   return error
 }
 
+/** Validate saveImageBuffer's payload: raw bytes only, non-empty, size-capped. */
+function composerImageBufferFromIpc(data: unknown, maxBytes = COMPOSER_IMAGE_MAX_BYTES): Buffer {
+  let buffer: Buffer | null = null
+
+  if (Buffer.isBuffer(data)) {
+    buffer = data
+  } else if (ArrayBuffer.isView(data)) {
+    buffer = Buffer.from(data.buffer, data.byteOffset, data.byteLength)
+  } else if (data instanceof ArrayBuffer) {
+    buffer = Buffer.from(data)
+  }
+
+  if (!buffer || buffer.byteLength === 0) {
+    throw ipcPathError('invalid-image-data', 'saveImageBuffer: missing data')
+  }
+
+  if (buffer.byteLength > maxBytes) {
+    throw ipcPathError('EFBIG', `saveImageBuffer: image is too large (${buffer.byteLength} bytes; limit ${maxBytes}).`)
+  }
+
+  return buffer
+}
+
+/** Validate savePastedText's payload: a non-empty string under the paste cap. */
+function composerPasteTextFromIpc(text: unknown, maxBytes = COMPOSER_PASTE_MAX_BYTES): string {
+  if (typeof text !== 'string' || !text) {
+    throw ipcPathError('invalid-text', 'savePastedText: missing text')
+  }
+
+  const size = Buffer.byteLength(text, 'utf8')
+
+  if (size > maxBytes) {
+    throw ipcPathError('EFBIG', `savePastedText: text is too large (${size} bytes; limit ${maxBytes}).`)
+  }
+
+  return text
+}
+
 function rejectUnsafePathSyntax(filePath, purpose = 'File read') {
   if (typeof filePath !== 'string') {
     throw ipcPathError('invalid-path', `${purpose} failed: file path is required.`)
@@ -630,6 +673,10 @@ export {
   assertExistingPathForOpen,
   ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
   clampDataUrlReadMaxMb,
+  COMPOSER_IMAGE_MAX_BYTES,
+  COMPOSER_PASTE_MAX_BYTES,
+  composerImageBufferFromIpc,
+  composerPasteTextFromIpc,
   DATA_URL_READ_DEFAULT_MAX_MB,
   DATA_URL_READ_MAX_MAX_MB,
   DATA_URL_READ_MIN_MAX_MB,

@@ -9,6 +9,7 @@ publish (#154579).
 import json
 import os
 import stat
+import time
 from pathlib import Path
 
 import pytest
@@ -107,3 +108,21 @@ def test_a_publish_that_fails_on_a_read_only_tree_leaves_no_staging_folder(tmp_p
     with pytest.raises(OSError):
         publish_desktop_tree(source, app_root / "media", {"package": "media"})
     assert list(app_root.iterdir()) == []
+
+
+def test_reconcile_removes_abandoned_read_only_staging_without_touching_recent_or_user_folders(tmp_path, read_only):
+    root, app_root = tmp_path / "hermes", tmp_path / "hermes" / "desktop-plugins"
+    abandoned = app_root / ".media.staging-abcdefgh"
+    recent = app_root / ".media.staging-ijklmnop"
+    for staging in (abandoned, recent):
+        (staging / "media").mkdir(parents=True)
+        (staging / "media" / "plugin.js").write_text("export default {}", encoding="utf-8")
+    (app_root / "notes").mkdir()
+    read_only(abandoned)
+    old = time.time() - 2 * 60 * 60  # Older than the real one-hour cleanup threshold.
+    os.utime(abandoned, (old, old))
+
+    assert reconcile_desktop_halves_report(root, app_root) == {"touched": [], "refused": []}
+    assert not abandoned.exists()
+    assert (recent / "media" / "plugin.js").exists()
+    assert (app_root / "notes").is_dir()

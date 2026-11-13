@@ -24,6 +24,7 @@ import shutil
 import stat
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 from pm.filesystem import is_junction
@@ -43,6 +44,10 @@ _GIT_ORIGIN = re.compile(r'\[remote "origin"\][^[]*?url\s*=\s*(\S+)')
 #: Public: ``desktop_plugin_install`` takes it too, so a clone-publish never interleaves with a
 #: reconcile pass copying the same package's folder.
 ROOT_WRITER = threading.Lock()
+# mkdtemp's eight-character suffix; the hidden prefix is reserved for temporary publishes.
+_STAGING_NAME = re.compile(r"^\..+\.staging-[a-z0-9_]{8}$")
+# Electron publishes into this root too, outside ROOT_WRITER; allow ample time for in-flight copies.
+_ABANDONED_STAGING_AGE_S = 60 * 60
 
 
 def _is_link(path: Path) -> bool:
@@ -294,6 +299,26 @@ def _source_gone(name: str, entry: Path) -> bool:
     return False
 
 
+def _prune_abandoned_staging(app_root: Path) -> None:
+    """Reclaim old hidden staging copies from failed reconciles, without touching active publishers."""
+    cutoff = time.time() - _ABANDONED_STAGING_AGE_S
+    try:
+        with os.scandir(app_root) as entries:
+            candidates = [entry for entry in entries if _STAGING_NAME.fullmatch(entry.name)]
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        logger.warning("desktop-plugins: cannot list staging folders in %s: %s", app_root, exc)
+        return
+
+    for entry in candidates:
+        try:
+            if entry.is_dir(follow_symlinks=False) and entry.stat(follow_symlinks=False).st_mtime <= cutoff:
+                rmtree_readonly(entry.path)
+        except OSError as exc:
+            logger.warning("desktop-plugins: cannot remove abandoned staging %s: %s", entry.path, exc)
+
+
 def reconcile_desktop_halves(hermes_root: Path, app_root: Path) -> list[str]:
     """Materialize every local home's desktop halves into *app_root* (first home wins for a name in
     several profiles, the default home first) and drop copies whose package is gone. Returns the
@@ -338,4 +363,5 @@ def reconcile_desktop_halves_report(hermes_root: Path, app_root: Path) -> dict:
                 else:
                     shutil.rmtree(folder, ignore_errors=True)
                 touched.append(str(folder))
+        _prune_abandoned_staging(app_root)
         return {"touched": touched, "refused": [entry for entry in refused if entry["name"] not in seen]}

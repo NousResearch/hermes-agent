@@ -167,6 +167,42 @@ platforms:
 
 When enabled, attachment and inline parts are skipped before payload decoding. The email body text is still processed normally.
 
+### Folder Lifecycle (Working / Done / Failed / Rejected)
+
+By default, processed mail is left in the INBOX marked `\Seen`. You can instead have Hermes move mail through dedicated IMAP folders so the inbox reflects only un-handled mail and in-flight work is visible. Configure it in your `config.yaml`:
+
+```yaml
+platforms:
+  email:
+    working_folder: "Hermes_Working"   # mail is parked here while being processed
+    done_folder: "Hermes_Done"         # mail is moved here once handled
+    failed_folder: "Hermes_Failed"     # turn failed, or the mail could not be processed
+    rejected_folder: "Hermes_Rejected" # sender refused by the adapter's checks
+```
+
+The flow is **INBOX → Working → Done / Failed**, with rejected senders going **INBOX → Rejected**:
+
+1. When the agent picks up a message it is moved to `working_folder`, so anything left there after a crash is visibly "interrupted mid-processing."
+2. When the agent turn for the message has finished successfully the mail is moved to `done_folder`. If the turn ran but failed (the sender gets an error reply) it goes to `failed_folder`. A turn cut short by an interrupt or gateway shutdown leaves the mail in `working_folder`. Follow-ups merged into a queued turn move together with that turn. Commands handled inline go to `done_folder`.
+3. Mail that could not be processed because of an error (dispatch exception, no gateway handler, unresolved identity or route, attachments gone on a retry) goes to `failed_folder` immediately.
+4. Mail from senders the adapter refuses (allow-list, self, automated or bulk senders, unauthenticated `From:`) goes to `rejected_folder` immediately.
+5. Mail the gateway refused because the sender's session was busy or its queue was full (including the "send this again" notice, which email suppresses) stays in `working_folder` and is re-dispatched once the session is idle, up to 5 attempts or 2 hours; after that it moves to `failed_folder` (or stays in `working_folder` when `failed_folder` is empty, never in `done_folder`).
+6. As a backstop, mail whose turn never reported completion is moved to `done_folder` after five minutes once the sender's session is idle, with a warning in the log.
+
+All folders are created automatically if they don't exist. The settings can be tuned independently:
+
+| Setting                  | Effect                                                                                                              |
+|--------------------------|---------------------------------------------------------------------------------------------------------------------|
+| all set (default)        | INBOX → Working → Done / Failed; rejected senders → Rejected                                                        |
+| `working_folder: ""`     | skip the Working stage — INBOX → Done / Failed directly                                                             |
+| `failed_folder: ""`      | failed and unprocessed mail goes to `done_folder` instead (a retry that hit its bound stays in `working_folder`)    |
+| `rejected_folder: ""`    | rejected mail goes to `done_folder` instead                                                                         |
+| `done_folder: ""`        | **disable all moves** — mail stays in INBOX with `\Seen` (upstream behaviour); the Working stage is skipped too     |
+
+Mail without a `Message-ID` header is never moved into Working (it cannot be re-located there for the final move), so it stays in the INBOX.
+
+**Server requirements.** Moves use IMAP `UID MOVE` (RFC 6851), falling back to `UID COPY` + `UID EXPUNGE` (RFC 4315 UIDPLUS) on servers that lack it. A server offering neither is left untouched: the only remaining option would be a folder-wide `EXPUNGE`, which would permanently delete every message any client has flagged `\Deleted`, so Hermes logs a warning and leaves the mail where it is instead. If the account may not create folders, the `CREATE` failure is warned about once at connect time — create every configured folder by hand in that case.
+
 ---
 
 ## Access Control
@@ -234,3 +270,5 @@ Hermes acts on a message only when the `Authentication-Results` header stamped b
 | `EMAIL_AUTHSERV_ID` | Yes, unless sender authentication is off | — | Exact authserv-id on your receiving server's topmost `Authentication-Results` header; without it every message needing an authenticated `From:` is dropped |
 | `EMAIL_HOME_ADDRESS` | No | — | Default delivery target for cron jobs |
 | `EMAIL_ALLOW_ALL_USERS` | No | `false` | Allow all senders (not recommended) |
+
+Behavioral settings are configured in `config.yaml` under `platforms.email` (not via environment variables): [`skip_attachments`](#skipping-attachments) and the [folder lifecycle](#folder-lifecycle-working--done--failed--rejected) (`working_folder`, `done_folder`, `failed_folder`, `rejected_folder`).

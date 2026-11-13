@@ -735,3 +735,65 @@ def test_discovery_wait_does_not_return_retired_manager(profile_env, monkeypatch
     else:
         assert plugins.get_portable_mcp_server_names_nowait() == {"new-server"}
     assert old._retired
+
+
+@pytest.mark.parametrize("operation", ["delete", "rename"])
+def test_recreated_profile_does_not_revive_old_consumers(profile_env, monkeypatch, operation):
+    from gateway.run_plugin_rewire import GatewayPluginRewireMixin
+    from tui_gateway import methods_tools
+
+    class Loop:
+        def is_closed(self): return False
+        def call_soon_threadsafe(self, callback): callback()
+
+    class Runner(GatewayPluginRewireMixin):
+        def __init__(self): self.calls = []
+        def _rewire_plugin_handlers(self, name, home): self.calls.append(name)
+
+    create_profile("reused", no_alias=True, no_skills=True)
+    home = get_profile_dir("reused")
+    token = set_hermes_home_override(home)
+    runner, loop = Runner(), Loop()
+    try:
+        old = plugins.get_plugin_manager()
+        runner._subscribe_plugin_rewire(old, loop=loop)
+        methods_tools._ensure_plugin_activation_listener()
+        stale_callbacks = list(old._plugin_loaded_listeners)
+    finally:
+        reset_hermes_home_override(token)
+    for name, value in {
+        "_cleanup_gateway_service": lambda *a: False,
+        "_maybe_unregister_gateway_service": lambda *a: None,
+        "_check_gateway_running": lambda *a: False,
+        "_stop_profile_backends": lambda *a: None,
+        "_stop_bot_desktop": lambda *a: None,
+        "_live_default_multiplexer": lambda: False,
+        "_notify_multiplexer": lambda *a: None,
+        "_purge_identity": lambda *a: True,
+        "check_alias_collision": lambda *a: "skip",
+    }.items():
+        monkeypatch.setattr("hermes_cli.profiles." + name, value)
+    monkeypatch.setattr("tools.mcp_tool_lifecycle.shutdown_mcp_servers", lambda **kw: None)
+    if operation == "delete":
+        delete_profile("reused", yes=True)
+    else:
+        rename_profile("reused", "renamed")
+    create_profile("reused", no_alias=True, no_skills=True)
+    token = set_hermes_home_override(home)
+    try:
+        new = plugins.get_plugin_manager()
+        event = [{"name": "same", "key": "same", "source": "new"}]
+        assert not new._plugin_loaded_listeners
+        for callback in stale_callbacks: callback(event)
+        assert not runner.calls
+        assert "activation" not in methods_tools._with_activation({}, "same")
+        runner._subscribe_plugin_rewire(new, loop=loop)
+        methods_tools._ensure_plugin_activation_listener()
+        for callback in list(new._plugin_loaded_listeners): callback(event)
+        assert runner.calls == [None]
+        assert methods_tools._with_activation({}, "same")["activation"]["source"] == "new"
+        runner._plugin_rewire_unsubscribe[new.scope_key]()
+        methods_tools._plugin_activation_subscribed.pop(new.scope_key)()
+        methods_tools._plugin_activations.pop(new.scope_key, None)
+    finally:
+        reset_hermes_home_override(token)

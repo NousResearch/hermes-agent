@@ -182,6 +182,31 @@ class TestMultiSelectCallbacks:
         assert "expired" in query.edit_message_text.call_args.kwargs["text"]
 
     @pytest.mark.asyncio
+    async def test_session_reset_during_toggle_edit_retires_prompt(self):
+        """A reset while Telegram is editing must not report a stale checkbox selection."""
+        from tools import clarify_gateway as cm
+        adapter = _make_adapter()
+        msg = _prompt(adapter, "cidRace")
+        cm.register("cidRace", "sk-multi", "Pick", ["red", "green"], multi_select=True)
+
+        async def reset_while_editing(**_kwargs):
+            assert cm.clear_session("sk-multi") == 1
+
+        query = AsyncMock()
+        query.data, query.message = "cl:cidRace:t0", msg
+        query.from_user = MagicMock(id="777", first_name="Tester")
+        query.edit_message_reply_markup = AsyncMock(side_effect=reset_while_editing)
+        update = MagicMock(callback_query=query)
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            await adapter._handle_callback_query(update, MagicMock())
+
+        assert "cidRace" not in adapter._clarify_state
+        assert "cidRace" not in adapter._clarify_multi
+        assert query.edit_message_text.call_args.kwargs["reply_markup"] is None
+        assert "expired" in query.edit_message_text.call_args.kwargs["text"]
+        query.answer.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_toggle_off_before_send(self):
         from tools import clarify_gateway as cm
         adapter = _make_adapter()

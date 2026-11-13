@@ -543,19 +543,10 @@ def test_multiplexing_off_rebind_refusal_leaves_the_first_agents_store_intact(ho
     # The end-to-end damage the issue reports: beta's build must not redirect alpha's writes.
     alpha_home, beta_home = homes
     shared = _InstanceScopedProvider()
-
-    class _Recording(_InstanceScopedProvider):
-        writes: list = []
-
-        def handle_tool_call(self, tool_name, args, **kwargs):
-            type(self).writes.append(kwargs["hermes_home"])
-            return super().handle_tool_call(tool_name, args, **kwargs)
-
     alpha = _manager(alpha_home, shared)
     _manager(beta_home, shared)  # refused now, where the bug re-pointed `shared` to beta
     with _Scope(alpha_home):
         assert json.loads(alpha.handle_tool_call(_HOOK_TOOL, {"content": "alpha private note"})) == {"ok": True}
-    assert _Recording.writes == []
     assert [e[1] for e in _InstanceScopedProvider.events] == [str(alpha_home)]
 
 
@@ -610,3 +601,10 @@ def test_multiplexing_off_nonweakref_shared_provider_keeps_first_home(homes, cap
             "store_home": str(alpha_home), "caller_home": str(alpha_home)}
     logged = "\n".join(r.getMessage() for r in caplog.records if r.name == "agent.memory_caller_scope")
     assert "memory_provider_instance_shared" in logged and str(beta_home) in logged, logged
+
+    # The claim is held by alpha's live managers, not by the provider: once they are gone, beta may bind it.
+    import gc
+    del first, second_same_home
+    gc.collect()
+    rebound = _manager(beta_home, shared)
+    assert rebound.providers == [shared] and shared.bound_home == str(beta_home)

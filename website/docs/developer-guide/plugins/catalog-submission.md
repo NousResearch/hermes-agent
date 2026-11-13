@@ -234,6 +234,14 @@ the gallery. There is no separate listing to maintain.
    however clean its code. A general-purpose tool such as a browser, downloader
    or media player is fine; one that ships with those sources built in, or whose
    description points users at them, is not.
+20. **No coin or token promotion.** A plugin built around one coin, token or
+   NFT collection that is not a broadly adopted asset (its price, trading,
+   launch, airdrop, holder rewards or promotion), and a plugin used to promote
+   its maker's own token, is declined. Memecoin boards, coin launchpads and
+   airdrop or free-mint farming tools fall under this rule. Fine: stablecoins
+   such as USDC, payments (x402 and similar), multi-coin wallets, exchanges and
+   markets, price tickers, safety and scam checks, and broadly adopted assets
+   such as Bitcoin, Ethereum and Solana.
 <!-- admission-rules:end -->
 
 ## Updating your entry

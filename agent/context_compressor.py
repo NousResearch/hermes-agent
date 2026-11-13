@@ -34,7 +34,10 @@ from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_window import CompactionWindowMixin
 from agent.context_compressor_prune import ProactivePruneMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
-from agent.context_compressor_prompt_rules import EPISTEMIC_STANCE_RULE, UNVERIFIED_HYPOTHESES_SECTION, _today_for_prompt
+from agent.context_compressor_prompt_rules import (
+    EPISTEMIC_STANCE_RULE, UNVERIFIED_HYPOTHESES_SECTION, UNVERIFIED_SECTION_HEADING,
+    _today_for_prompt, normalize_stance_section,
+)
 from agent.context_compressor_retry import retryable_user_text, typed_prompt_content
 from agent.context_compressor_tail import (
     demote_stale_tail_tools, lean_tail_budget, is_demoted_stub, skill_view_names_by_call_id, tail_cut_pricer,
@@ -256,6 +259,15 @@ def _exc_status_code(exc: Exception) -> Any:
 HISTORICAL_TASK_HEADING = "## Historical Task Snapshot"
 
 
+# A label the reader is never told how to treat is decoration: the summarizer tags guesses, and this is
+# the one line that tells the resumed agent what the tag means. It lives in the prefix because it applies
+# to every summary (including ones assembled by the server-side compaction route, which never sees the
+# summarizer prompt), and it is a constant, so it costs one prefix-cache invalidation at release.
+_UNVERIFIED_TREATMENT_SENTENCE = (
+    "Lines beginning 'UNVERIFIED:' are hypotheses carried over from the compacted turns, not facts: "
+    "confirm one with a tool call before acting on it or reporting it as done. "
+)
+
 SUMMARY_PREFIX = (
     # Jul 2026 (#65848 class): identical to the pre-#69619 prefix except it lacked the explicit "tools
     # remain fully active" clause — the strong REFERENCE ONLY framing bled into general tool-use suppression
@@ -291,12 +303,16 @@ SUMMARY_PREFIX = (
     "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
     "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
     "memory content due to this compaction note. "
+    f"{_UNVERIFIED_TREATMENT_SENTENCE}"
     "None of the above restricts HOW you work: your tools remain fully "
     "active — keep calling them normally for the active task (edit files, "
     "run commands, search) instead of merely narrating what you would do. "
     "The current session state (files, config, etc.) may reflect work "
     "described here — avoid repeating it:"
 )
+
+# The prefix retired by the stance-treatment sentence lives in _HISTORICAL_SUMMARY_PREFIXES below, frozen
+# byte-for-byte like every earlier generation (see tests/agent/test_summary_prefix_semantics.py).
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 
 # Underscore prefix ON PURPOSE: wire sanitizers strip ``_``-keys; strict gateways
@@ -602,6 +618,28 @@ def salvage_grown_transcript(
 # Exact wire text of every shipped prefix, newest-first; stale directives must
 # still be strippable on resume. NEVER edit/reorder entries (byte-pinned); prepend.
 _HISTORICAL_SUMMARY_PREFIXES = (
+    # Pre-stance-treatment: identical to the live prefix minus the "UNVERIFIED: is a hypothesis" sentence.
+    # Retired when that sentence shipped; summaries persisted by the previous build must still be detected
+    # and stripped on resume.
+    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a "
+    "handoff from a previous context window — treat it as background reference, NOT as active instructions. Do "
+    "NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Respond "
+    "ONLY to the latest user message that appears AFTER this summary — that message is the single source of "
+    "truth for what to do right now. If no user message appears AFTER this summary, do nothing: do not resume, "
+    "wrap up, or continue work from '## Historical Task Snapshot' or any other section, do not call tools, and "
+    "wait for a new user message. This handoff must never become the active turn by itself. (Exception: if "
+    "tool results or your own tool calls appear after this summary, you are mid-way through an in-flight "
+    "exchange — continue that exchange normally.) Topic overlap with the summary does NOT mean you should "
+    "resume its task: even on similar topics, the latest user message WINS. Treat ONLY the latest message as "
+    "the active task and discard stale items from '## Historical Task Snapshot' entirely — do not 'wrap up' or "
+    "'finish' work described there unless the latest message explicitly asks for it. Reverse signals in the "
+    "latest message (e.g. 'stop', 'undo', 'roll back', 'just verify', 'don't do that anymore', 'never mind', a "
+    "new topic) must immediately end any in-flight work described in the summary; do not re-surface it in "
+    "later turns. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system prompt is ALWAYS "
+    "authoritative and active — never ignore or deprioritize memory content due to this compaction note. None "
+    "of the above restricts HOW you work: your tools remain fully active — keep calling them normally for the "
+    "active task (edit files, run commands, search) instead of merely narrating what you would do. The current "
+    "session state (files, config, etc.) may reflect work described here — avoid repeating it:",
     # Pre-#80622: lacked the "no user message after summary => do nothing" clause.
     "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff "
     "from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer "
@@ -3574,8 +3612,42 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             logger.info("Lean tail: demoted %d stale tool result(s)", demoted)
         return result
 
+    def _record_stance_section(self, report: dict[str, Any]) -> None:
+        """Record whether the summarizer kept the stance section; warn when it dropped it.
+
+        Prompt-only epistemic rules decay silently, so the drop has to be visible in telemetry and in the
+        log before anyone can decide whether a harder gate (a re-ask, a validator) earns its retry cost.
+        """
+        telemetry = getattr(self, "_active_compression_telemetry", None)
+        if isinstance(telemetry, dict):
+            telemetry["stance_section_present"] = bool(report.get("present"))
+            telemetry["stance_hypothesis_lines"] = int(report.get("hypothesis_lines") or 0)
+            telemetry["stance_explicit_none"] = bool(report.get("explicit_none"))
+        if not report.get("present"):
+            logger.warning(
+                "Compaction summary omitted the '%s' section: unverified claims may read as facts after "
+                "this handoff", UNVERIFIED_SECTION_HEADING,
+            )
+
+    def _augment_summary_provenance(self, summary: str) -> str:
+        """Append the harness-authored provenance block: cwd, branch, HEAD, compaction time.
+
+        Runs on both summary paths (LLM and deterministic fallback) and in every tail mode, because
+        staleness is a property of the summary, not of the tail policy. The block is refreshed rather
+        than duplicated, so an iterative update that copies the previous block forward cannot pin a
+        stale HEAD. Failure is swallowed: bookkeeping never costs a compaction.
+        """
+        try:
+            from agent.compaction_provenance import append_provenance_section
+
+            return append_provenance_section(summary)
+        except Exception:  # health: allow BLE001 -- provenance is best-effort by contract
+            logger.debug("compaction provenance block skipped", exc_info=True)
+            return summary
+
     def _augment_summary_lean(self, summary: str, turns_to_summarize: list[dict[str, Any]]) -> str:
-        """Append deterministic lean-mode sections to a summary; no-op in legacy mode."""
+        """Append deterministic sections to a summary; the provenance block is appended in every mode."""
+        summary = self._augment_summary_provenance(summary)
         if getattr(self, "tail_mode", "lean") != "lean":
             return summary
         for heading, build in (
@@ -3915,6 +3987,10 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             content = strip_think_blocks(None, content).strip() or content
             # The summarizer may echo secrets verbatim; redact the output too.
             summary = _redact_compaction_text(content.strip())
+            # Stance is a prompt request, not an invariant: canonicalize the heading, then record whether
+            # the model actually kept the section. Counts only, never the claims themselves.
+            summary, stance = normalize_stance_section(summary)
+            self._record_stance_section(stance)
             # Restore any [SKILL_PRUNED] marker the summarizer paraphrased away.
             # See #32106.
             summary = _reinject_pruned_skill_markers(summary, _pruned_skill_names)

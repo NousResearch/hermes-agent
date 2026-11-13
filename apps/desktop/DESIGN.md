@@ -255,8 +255,10 @@ remain outside the drag region.
 The redesigned shell is a window canvas with panels laid on it
 (`app/redesign/portal-shell.css`; every colour, radius and size comes from the tokens in
 "Portal design language" below). The titlebar band and the 60px rails show the canvas; zones
-touching the window top become panels starting below the band, and only the row's outer top
-corners round. Behind it all lies the launch's artwork (see "Artwork" below), which the canvas
+touching the window top become panels starting below the band, together one workspace frame:
+a card inset from the window's end and floor (`--portal-workspace-inset-end`/`-bottom`) with 15px
+outer corners (`--portal-radius-frame`) and a soft shadow (`--portal-shadow-workspace`), its panels
+meeting square inside it (Content `16292:14463`; a phone keeps the full window). Behind it all lies the launch's artwork (see "Artwork" below), which the canvas
 shows at full strength and every panel veils. Window Glass (macOS default) never switches the redesign off: its
 rules are unlayered and beat the `@layer base` Glass rules, and only the canvas (rails, band) takes
 the native material, tinted with the portal canvas at the user's Glass intensity. Titlebar, rail and
@@ -277,8 +279,8 @@ scroll, draft and focus intact. Toasts of every kind stack at the stage's end co
 docked composer, clear of page headers. Page content columns start at Figma's left insets
 (`--portal-frame-inset` past a sidebar panel, `--portal-stage-inset` without one), and Routines lists every
 agent's routines in the shared page sidebar panel like Agents (see Routines below).
-Workspace pages (Capabilities, Library, …) share the overlay pages' square,
-full-bleed frame. Without an explicit skin pick, the redesign paints the
+Workspace pages (Capabilities, Library, …) and the overlay pages lie in the same
+workspace frame as the chat. Without an explicit skin pick, the redesign paints the
 Hermes Portal skin and classic paints Nous (`defaultSkinName`); flipping the
 shell never writes a pick.
 
@@ -588,6 +590,7 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-raw-shadow-20` | `rgb(0 0 0 / 0.2)` | ″ |  |
 | `--portal-raw-shadow-25` | `rgb(0 0 0 / 0.25)` | ″ |  |
 | `--portal-raw-shadow-50` | `rgb(0 0 0 / 0.5)` | ″ |  |
+| `--portal-raw-shadow-navy-10` | `rgb(18 20 38 / 0.1)` | ″ | Light's workspace frame shadow ink (16292:23801): a navy at .1. |
 | `--portal-raw-ink-2` | `color-mix(in srgb, var(--ui-base) 2%, transparent)` | ″ | The ink ladder (LANGUAGE §1.1): Figma's light/2, 5, 10, 40 plus the page steps 3, 4, 8, 14, 22, 28. No other neutral alpha belongs to the language; the off-ladder steps still in use are listed in color.css and the "Still to unify" table. |
 | `--portal-raw-ink-3` | `color-mix(in srgb, var(--ui-base) 3%, transparent)` | ″ |  |
 | `--portal-raw-ink-4` | `color-mix(in srgb, var(--ui-base) 4%, transparent)` | ″ |  |
@@ -747,6 +750,8 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-panel-width` | `var(--portal-sidebar-width, var(--sessions-pane-width))` | ″ | ONE sidebar column for every rail destination: page panels (Agents, Routines, Settings) take the chat sidebar's width — the user's sash width once they size it (published by the pane tree as --portal-sidebar-width), else its default — so switching destinations never moves the panel edge, its divider or the stage's content edge. |
 | `--portal-frame-inset` | `1rem` | ″ | The page-frame contract: where a page's content column starts, from the stage edge it shares with the page's sidebar panel (the freshest frames, 1036:7189 / 895:*: 20px after the divider, one value for Agents, Settings and Routines alike), and from the stage's own edge on a page with no panel (919:9281: x 90 in the stage). Left insets, never centring, at every window width, so switching pages never moves the column sideways. |
 | `--portal-stage-inset` | `1rem` | ″ |  |
+| `--portal-workspace-inset-end` | `0.625rem` | ″ | The workspace frame's gap to the window edge, where the artwork shows (Prod - Desktop: the 10px "inset" column 18521:22266 at the end, the 15px "Spacer" 18521:17513 at the floor). It starts at the rail and under the band. 0 for both puts the panels back on the window's edges. |
+| `--portal-workspace-inset-bottom` | `0.9375rem` | ″ |  |
 | `--portal-column-form` | `52.5rem` | ″ | The column's one max width per page kind: forms and details (1036:7189 General: 840), catalogs and tables (919:9281: 980), and the conversation shared by the transcript and the docked composer. |
 | `--portal-column-catalog` | `61.25rem` | ″ |  |
 | `--portal-column-conversation` | `40rem` | ″ |  |
@@ -782,6 +787,7 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-radius-surface` | `6px` | ″ | Chat content (bubble, tool row, code card) and chat-sidebar rows (491:40655, 147:7470). |
 | `--portal-radius-floating` | `8px` | ″ | Popovers, dialogs, choice tiles (616:1685). |
 | `--portal-radius-panel` | `9px` | ″ | The outer top corner of panels, the stage and the composer (906:19804). |
+| `--portal-radius-frame` | `15px` | ″ | The workspace frame: the one card the chat sidebar and the stage (or a page's nav and body) sit in, inset from the window (Content 16292:14463). |
 | `--portal-radius-round` | `999px` | ″ | Switch tracks, swatches, dots. |
 | `--portal-focus-ring-width` | `2px` | ″ | The one focus ring: 2px of brand ink as an outline, so it never replaces a control's own stroke shadow. Outset by default; a context whose scroller or overflow would clip an outset ring (sidebar, page nav) sets --portal-focus-ring-offset to the inset value on its container and every control inside follows. |
 | `--portal-focus-ring-outset` | `1px` | ″ |  |
@@ -789,9 +795,10 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-focus-ring-offset` | `var(--portal-focus-ring-outset)` | ″ |  |
 | `--portal-shadow-floating` | `0 8px 24px var(--portal-raw-shadow-50)` | `0 1px 2px var(--portal-raw-shadow-4), 0 8px 24px var(--portal-raw-shadow-8)` | Menus, popovers, dialogs (878:6044): one soft drop shadow. |
 | `--portal-shadow-composer` | `0 4px 4px var(--portal-raw-shadow-25)` | ″ | The composer card on dark (906:19844); light draws none. |
+| `--portal-shadow-workspace` | `0 -4px 30px var(--portal-raw-shadow-20)` | `0 8px 12px var(--portal-raw-shadow-navy-10)` | The workspace frame lifted off the artwork (16292:14463): a soft shadow up and around it. |
 | `--portal-control-radius` | `var(--portal-radius-control)` | ″ | Names in use before the role names; Phase B moves their readers to the role and deletes them. |
 | `--portal-menu-radius` | `var(--portal-radius-card)` | ″ |  |
-| `--portal-panel-radius` | `var(--portal-radius-panel)` | ″ |  |
+| `--portal-panel-radius` | `var(--portal-radius-frame)` | ″ | The panel row's outer corners are the workspace frame's. |
 | `--portal-floating-shadow` | `var(--portal-shadow-floating)` | ″ |  |
 
 #### Motion (`motion.css`)

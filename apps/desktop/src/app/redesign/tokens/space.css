@@ -71,6 +71,11 @@
      pages never moves the column sideways. */
   --portal-frame-inset: 1.25rem;
   --portal-stage-inset: 5.625rem;
+  /* The workspace frame's gap to the window edge, where the artwork shows (Prod - Desktop: the 10px
+     "inset" column 18521:22266 at the end, the 15px "Spacer" 18521:17513 at the floor). It starts at
+     the rail and under the band. 0 for both puts the panels back on the window's edges. */
+  --portal-workspace-inset-end: 0.625rem;
+  --portal-workspace-inset-bottom: 0.9375rem;
   /* The column's one max width per page kind: forms and details (1036:7189 General: 840), catalogs and
      tables (919:9281: 980), and the conversation shared by the transcript and the docked composer. */
   --portal-column-form: 52.5rem;

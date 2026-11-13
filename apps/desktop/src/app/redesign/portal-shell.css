@@ -28,7 +28,6 @@
   height: 100dvh;
   border-block-start: 1px solid var(--portal-panel-divider);
   border-inline-start: 1px solid var(--portal-panel-divider);
-  border-start-start-radius: var(--portal-panel-radius);
   background-color: var(--ui-editor-surface-background);
   pointer-events: none;
 }
@@ -53,22 +52,26 @@
   border-inline-start-width: 0;
 }
 
-/* A workspace page is framed like every other page instead: square and full bleed (919:9263). */
+/* A workspace page lies on the frame like the chat does (06 · Settings/Account 16292:19723), with no
+   edge of its own at the top. */
 :root[data-shell='portal'] [data-tree-group][data-window-top][data-zone-page] > [data-panel-header]::before {
   border-block-start-width: 0;
-  border-start-start-radius: 0;
 }
 
-:root[data-shell='portal']
-  [data-tree-group][data-window-top][data-window-end]:not([data-zone-page])
-  > [data-panel-header]::before {
+/* Only the row's outer corners round: the panels inside the workspace frame meet square
+   (Content 16292:14463). */
+:root[data-shell='portal'] [data-tree-group][data-window-top][data-window-start] > [data-panel-header]::before {
+  border-start-start-radius: var(--portal-panel-radius);
+}
+
+:root[data-shell='portal'] [data-tree-group][data-window-top][data-window-end] > [data-panel-header]::before {
   border-start-end-radius: var(--portal-panel-radius);
 }
 
 /* The body clips its pane layers (overflow: hidden), so they take the panel's corners. The
    conversation header between them overlays the stage out of flow (app/chat/stage.css). */
 :root[data-shell='portal']
-  [data-tree-group][data-window-top]:not([data-zone-page])
+  [data-tree-group][data-window-top][data-window-start]
   > [data-panel-header]
   ~ [data-zone-body]
   > * {
@@ -76,11 +79,50 @@
 }
 
 :root[data-shell='portal']
-  [data-tree-group][data-window-top][data-window-end]:not([data-zone-page])
+  [data-tree-group][data-window-top][data-window-end]
   > [data-panel-header]
   ~ [data-zone-body]
   > * {
   border-start-end-radius: var(--portal-panel-radius);
+}
+
+/* ── Workspace frame ── the chat sidebar and the stage (or a page's nav and body) sit in one card
+   inset from the window, the artwork around it (Content 16292:14463: 15px corners, a soft shadow).
+   A phone (compact, breakpoints.ts: min-width 640px) keeps every pixel. */
+@media (min-width: 640px) {
+  :root[data-shell='portal'] [data-slot='layout-cover'] {
+    position: relative;
+    isolation: isolate;
+    margin-inline-end: var(--portal-workspace-inset-end);
+    margin-block-end: var(--portal-workspace-inset-bottom);
+  }
+
+  /* The shadow lies under the frame, which starts under the band. */
+  :root[data-shell='portal'] [data-slot='layout-cover']::before {
+    content: '';
+    position: absolute;
+    z-index: -1;
+    inset: var(--titlebar-band-height) 0 0;
+    border-radius: var(--portal-panel-radius);
+    box-shadow: var(--portal-shadow-workspace);
+    pointer-events: none;
+  }
+
+  :root[data-shell='portal'] [data-slot='layout-tree'] {
+    overflow: clip;
+    border-end-start-radius: var(--portal-panel-radius);
+    border-end-end-radius: var(--portal-panel-radius);
+  }
+
+  :root[data-shell='portal'] [data-overlay-surface][data-page-surface] {
+    padding-inline-end: var(--portal-workspace-inset-end);
+    padding-block-end: var(--portal-workspace-inset-bottom);
+  }
+
+  :root[data-shell='portal'] [data-overlay-surface][data-page-surface] [data-glass-raised] {
+    border-radius: var(--portal-panel-radius);
+    box-shadow: var(--portal-shadow-workspace);
+  }
 }
 
 /* ── Chrome buttons ───────────────────────────────────────────────────────────────────────── */

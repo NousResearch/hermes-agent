@@ -57,12 +57,13 @@ interface CoveredRegionProps {
   /** The box it takes: exactly the one its content had without it. */
   className: string
   covered: boolean
+  slot?: string
 }
 
 /** A region that something else paints over: skipped by style, layout and paint while covered
  *  (`content-visibility: hidden` keeps its rendering state, so uncovering is a flip, not a rebuild),
  *  inert and hidden from assistive tech. */
-function CoveredRegion({ children, className, covered }: CoveredRegionProps) {
+function CoveredRegion({ children, className, covered, slot }: CoveredRegionProps) {
   const ref = useFocusReturn(covered)
 
   return (
@@ -70,6 +71,7 @@ function CoveredRegion({ children, className, covered }: CoveredRegionProps) {
       aria-hidden={covered || undefined}
       className={className}
       data-route-covered={covered || undefined}
+      data-slot={slot}
       inert={covered || undefined}
       ref={ref}
     >
@@ -85,7 +87,7 @@ export function LayoutTreeCover({ children }: { children: ReactNode }) {
   const covered = usePortalShell() && isOverlayView(appViewForPath(pathname))
 
   return (
-    <CoveredRegion className="flex min-h-0 min-w-0 flex-1" covered={covered}>
+    <CoveredRegion className="flex min-h-0 min-w-0 flex-1" covered={covered} slot="layout-cover">
       {children}
     </CoveredRegion>
   )

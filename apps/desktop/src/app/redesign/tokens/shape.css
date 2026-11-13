@@ -14,6 +14,9 @@
   --portal-radius-floating: 8px;
   /* The outer top corner of panels, the stage and the composer (906:19804). */
   --portal-radius-panel: 9px;
+  /* The workspace frame: the one card the chat sidebar and the stage (or a page's nav and body) sit
+     in, inset from the window (Content 16292:14463). */
+  --portal-radius-frame: 15px;
   /* Switch tracks, swatches, dots. */
   --portal-radius-round: 999px;
 
@@ -30,15 +33,20 @@
   --portal-shadow-floating: 0 8px 24px var(--portal-raw-shadow-50);
   /* The composer card on dark (906:19844); light draws none. */
   --portal-shadow-composer: 0 4px 4px var(--portal-raw-shadow-25);
+  /* The workspace frame lifted off the artwork (16292:14463): a soft shadow up and around it. */
+  --portal-shadow-workspace: 0 -4px 30px var(--portal-raw-shadow-20);
 
   /* Names in use before the role names; Phase B moves their readers to the role and deletes them. */
   --portal-control-radius: var(--portal-radius-control);
   --portal-menu-radius: var(--portal-radius-card);
-  --portal-panel-radius: var(--portal-radius-panel);
+  /* The panel row's outer corners are the workspace frame's. */
+  --portal-panel-radius: var(--portal-radius-frame);
   --portal-floating-shadow: var(--portal-shadow-floating);
 }
 
 /* Light has no Figma frame: a lighter, two-step shadow keeps floating surfaces off #f2f2f2 pages. */
 :root[data-shell='portal']:not(.dark) {
   --portal-shadow-floating: 0 1px 2px var(--portal-raw-shadow-4), 0 8px 24px var(--portal-raw-shadow-8);
+  /* Light's frame shadow falls below it (16292:23801). */
+  --portal-shadow-workspace: 0 8px 12px var(--portal-raw-shadow-navy-10);
 }

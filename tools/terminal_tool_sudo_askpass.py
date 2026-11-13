@@ -49,11 +49,13 @@ _PROLOGUE_TEMPLATE = (
     # and every counted sudo keeps ``-S -p ''``, which is the stdin form.
     'if \\builtin test -n "$__hermes_sudo_dir" && \\command mkfifo "$__hermes_sudo_dir/p" "$__hermes_sudo_dir/l"'
     " 2>/dev/null &&\n"
-    # The helper takes a lock directory for its whole exchange, so helpers of sudos that ask at
-    # the same time are served one after another instead of sharing one line.
+    # The helper takes a lock file for its whole exchange, so helpers of sudos that ask at the same
+    # time are served one after another instead of sharing one line. The lock is an O_EXCL create
+    # (``set -C``), not ``mkdir``: uutils' mkdir (Ubuntu 25.10+) lets two racing callers both
+    # succeed, so two helpers read one serving and a sudo gets an empty password.
     "  \\builtin printf '#!/bin/sh\\nd=\"%s\"\\n"
-    'until /bin/mkdir "$d/k" 2>/dev/null; do [ -d "$d" ] || exit 1; /bin/sleep 0.1 2>/dev/null || /bin/sleep 1; done\\n'
-    '/bin/cat -- "$d/p" 2>/dev/null; r=$?\\n/bin/rmdir "$d/k" 2>/dev/null\\nexit $r\\n\' "$__hermes_sudo_dir"'
+    'until (set -C; : > "$d/k") 2>/dev/null; do [ -d "$d" ] || exit 1; /bin/sleep 0.1 2>/dev/null || /bin/sleep 1; done\\n'
+    '/bin/cat -- "$d/p" 2>/dev/null; r=$?\\n/bin/rm -f "$d/k"\\nexit $r\\n\' "$__hermes_sudo_dir"'
     ' > "$__hermes_sudo_dir/a" 2>/dev/null && \\command chmod 700 "$__hermes_sudo_dir/a" 2>/dev/null &&\n'
     '  \\exec 19<>"$__hermes_sudo_dir/l"; then\n'
     # One password line per counted sudo is on stdin; the helper form needs the first only.
@@ -262,7 +264,7 @@ def has_background_sudo(command: str | None) -> bool:
 # ``mktemp -d`` under ${TMPDIR:-/tmp} runs, next to a FIFO the shell can open read+write.
 CAPABILITY_PROBE = (
     "SUDO_ASKPASS=/bin/false sudo -A -V >/dev/null 2>&1 || exit 1\n"
-    'for t in /bin/cat /bin/mkdir /bin/rmdir /bin/sleep; do [ -x "$t" ] || exit 1; done\n'
+    'for t in /bin/cat /bin/rm /bin/sleep; do [ -x "$t" ] || exit 1; done\n'
     'd=$(umask 077 && mktemp -d "${TMPDIR:-/tmp}/hermes-sudo.XXXXXXXXXX" 2>/dev/null) || exit 1\n'
     'case $d in *[\\"\\\\\\$\\`]*) rm -rf -- "$d"; exit 1 ;; esac\n'
     "r=1\n"

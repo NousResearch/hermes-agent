@@ -1,3 +1,4 @@
+import type { ReadableAtom } from 'nanostores'
 import type { ReactNode } from 'react'
 
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
@@ -72,7 +73,8 @@ export type VoiceStatus = 'idle' | 'recording' | 'transcribing'
 
 export interface VoiceActivityState {
   elapsedSeconds: number
-  level: number
+  /** Read by the meter component only; see useMicRecorder. */
+  levelStore: ReadableAtom<number>
   /** Live STT text so far (stt.streaming); '' when none. */
   partial?: string
   status: VoiceStatus

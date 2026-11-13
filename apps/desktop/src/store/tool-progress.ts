@@ -37,9 +37,21 @@ export function $toolProgressFor(sessionId: string, toolCallId: string): Readabl
 }
 
 export function setToolProgress(sessionId: string, toolCallId: string, progress: ToolProgress): void {
-  if (sessionId && toolCallId) {
-    $toolProgress.set({ ...$toolProgress.get(), [progressKey(sessionId, toolCallId)]: progress })
+  if (!sessionId || !toolCallId) {
+    return
   }
+
+  const key = progressKey(sessionId, toolCallId)
+  const rows = $toolProgress.get()
+  const previous = rows[key]
+
+  // MCP progress notifications can repeat the same reading; publishing a fresh
+  // record for it churns every per-call computed for no visible change.
+  if (previous && previous.message === progress.message && previous.percent === progress.percent) {
+    return
+  }
+
+  $toolProgress.set({ ...rows, [key]: progress })
 }
 
 export function clearToolProgress(sessionId: string, toolCallId: string): void {

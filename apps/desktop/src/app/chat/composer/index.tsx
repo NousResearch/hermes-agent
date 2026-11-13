@@ -780,18 +780,17 @@ export function ChatBar({
     }
 
     // A typed link finished with a space chips like a pasted one — the space
-    // itself rides along inside the insert.
-    if (withUndoPoint(() => chipTypedUrlOnSpace(event))) {
-      event.preventDefault()
-      flushEditorToDraft(event.currentTarget)
-
-      return
-    }
-
-    // Same for a bare `@path` — a hand-typed or Tab-descended path chips into
-    // the `@file:`/`@folder:` ref it means, instead of submitting as plain text
-    // the backend never resolves.
-    if (withUndoPoint(() => chipTypedPathOnSpace(event))) {
+    // itself rides along inside the insert. Same for a bare `@path` — a
+    // hand-typed or Tab-descended path chips into the `@file:`/`@folder:` ref it
+    // means, instead of submitting as plain text the backend never resolves.
+    //
+    // Both conversions only ever run on Space, and both bail before mutating
+    // otherwise. Taking an undo snapshot for every other key (the old shape)
+    // meant cloning the draft's whole snapshot twice per keystroke for edits
+    // that immediately returned false. One snapshot now covers the pair: the
+    // URL attempt does not mutate on its false path, so the same pre-edit state
+    // is still valid when the path attempt runs.
+    if (event.key === ' ' && withUndoPoint(() => chipTypedUrlOnSpace(event) || chipTypedPathOnSpace(event))) {
       event.preventDefault()
       flushEditorToDraft(event.currentTarget)
 
@@ -1159,7 +1158,7 @@ export function ChatBar({
       compactModelPill={poppedOut || compactPill}
       conversation={{
         active: voiceConversationActive,
-        level: conversation.level,
+        levelStore: conversation.levelStore,
         muted: conversation.muted,
         onEnd: endConversation,
         onStart: startConversation,

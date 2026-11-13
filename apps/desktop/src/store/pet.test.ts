@@ -152,3 +152,20 @@ describe('$petState reads the active runtime slice, not the $busy mirror (#84434
     expect($petAtRest.get()).toBe(true)
   })
 })
+
+describe('setPetActivity publishing', () => {
+  afterEach(() => $petActivity.set({}))
+
+  it('does not notify subscribers when the requested flags are already set', () => {
+    $petActivity.set({})
+    let notifications = 0
+    const stop = $petActivity.listen(() => (notifications += 1))
+
+    setPetActivity({ reasoning: true })
+    setPetActivity({ reasoning: true })
+    setPetActivity({ reasoning: true, toolRunning: false })
+
+    stop()
+    expect(notifications).toBe(2)
+  })
+})

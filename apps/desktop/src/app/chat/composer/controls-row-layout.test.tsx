@@ -1,4 +1,5 @@
 import { cleanup, render } from '@testing-library/react'
+import { atom } from 'nanostores'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import type { ChatBarState } from '@/app/chat/composer/types'
@@ -24,7 +25,7 @@ function controlsRow() {
         canSubmit={true}
         conversation={{
           active: false,
-          level: 0,
+          levelStore: atom(0),
           muted: false,
           onEnd: vi.fn(),
           onStart: vi.fn(),

@@ -107,6 +107,8 @@ try {
         ('"' + (Join-Path $Assets 'drive-update.cjs') + '"'), ('"' + $old.exe + '"'),
         ('"' + $Proof + '"'), $m.old.commit, '--native-handoff'
     ) -PassThru -RedirectStandardOutput (Join-Path $Proof 'old-chat-driver.log') -RedirectStandardError (Join-Path $Proof 'old-chat-driver-error.log')
+    # Start-Process returns a process with no open handle; once it exits, ExitCode reads as $null.
+    $null = $oldDriver.Handle
     $deadline = (Get-Date).AddMinutes(6)
     while (-not (Test-Path -LiteralPath $oldChatReady)) {
         if ($oldDriver.HasExited -or (Get-Date) -ge $deadline) { throw 'Mandatory OLD desktop chat failed before the update trigger' }

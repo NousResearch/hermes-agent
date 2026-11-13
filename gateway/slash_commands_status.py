@@ -140,17 +140,40 @@ def _status_model_route(
     return model_name, provider_name, context_used, context_total, {"provider": provider_name, **route}
 
 
+def _routes_for_default(default_route: tuple[str, str], persisted_route: dict, session_row: dict):
+    """``(persisted_route, session_row)`` with any recorded route that disagrees with the chat's
+    default ``(model, provider)`` replaced by that default (#130572). A recorded route agrees when
+    the model matches and so does the provider (when the default names one)."""
+    model, provider = default_route
+    if not model:
+        return persisted_route, session_row
+
+    def _agrees(row_model, row_provider) -> bool:
+        return _clean_str(row_model) == model and (not provider or _clean_str(row_provider) == provider)
+
+    if not _agrees(persisted_route.get("model"), persisted_route.get("billing_provider")):
+        persisted_route = {}
+    if not _agrees(session_row.get("model"), session_row.get("billing_provider")):
+        session_row = {**session_row, "model": model, "billing_provider": provider}
+    return persisted_route, session_row
+
+
 def _fallback_suffix(agent, shown_model: str) -> str:
-    """`` — fallback for `primary` `` when *agent* runs *shown_model* on a fallback route (#133993).
+    """`` — fallback for `primary` `` when *agent* runs *shown_model* on a provider fallback (#133993).
 
     ``/model`` reports the configured/session route, so without the label a turn-scoped fallback
-    makes /status and /usage name a model the user never picked."""
-    if getattr(agent, "_fallback_activated", False) is not True:
+    makes /status and /usage name a model the user never picked. ``_provider_fallback_active``, not
+    ``_fallback_activated``: a planned route change (a voice-note turn) sets the latter too. A
+    same-model fallback on another provider names the primary's provider."""
+    if getattr(agent, "_provider_fallback_active", False) is not True:
         return ""
-    primary = _clean_str((getattr(agent, "_primary_runtime", None) or {}).get("model"))
-    if not primary or primary == shown_model or _clean_str(getattr(agent, "model", "")) != shown_model:
+    if _clean_str(getattr(agent, "model", "")) != shown_model:
         return ""
-    return t("gateway.shared.fallback_model_suffix", primary=primary)
+    rt = getattr(agent, "_primary_runtime", None) or {}
+    primary, primary_provider = _clean_str(rt.get("model")), _clean_str(rt.get("provider"))
+    if primary == shown_model and primary_provider:
+        primary = f"{primary} ({primary_provider})"
+    return t("gateway.shared.fallback_model_suffix", primary=primary) if primary else ""
 
 
 def _context_compressor_lines(agent, ctx, used: int) -> list[str]:
@@ -277,12 +300,9 @@ class GatewayStatusCommandsMixin:
         active_override = self._session_model_override(session_key) or {}
         if (status_agent is None or status_agent is _AGENT_PENDING_SENTINEL) and not active_override.get("model"):
             # Nothing resident and no /model pin: the next turn runs the channel/config default, so a
-            # SessionDB route recorded under an older config.yaml model is history, not the current model.
-            default_model, _ = await asyncio.to_thread(self._channel_default_route, source, None)
-            if default_model:
-                persisted_route = persisted_route if _clean_str(persisted_route.get("model")) == default_model else {}
-                session_row = session_row if _clean_str(session_row.get("model")) == default_model else {
-                    k: v for k, v in session_row.items() if k not in ("model", "billing_provider")}
+            # SessionDB route recorded under an older default is history, not the current model.
+            default_route = await asyncio.to_thread(self._channel_default_route, source, None)
+            persisted_route, session_row = _routes_for_default(default_route, persisted_route, session_row)
         model_name, provider_name, context_used, context_total, route = _status_model_route(
             status_agent, active_override, persisted_route, session_row, session_entry
         )

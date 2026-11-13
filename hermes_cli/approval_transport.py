@@ -51,12 +51,15 @@ class ApprovalRequest:
     surface: str
     timeout_seconds: float
     allowed_choices: tuple[ApprovalChoice, ...]
+    # One plain-English line saying what the command does (``tools/approval_explain``), already
+    # redacted. Display-only and often empty: a transport that ignores it loses nothing.
+    explanation: str = ""
 
     @classmethod
     def create(
         cls, *, command: str, description: str, pattern_key: str, pattern_keys: tuple[str, ...],
         session_key: str, surface: str, allow_session: bool, allow_permanent: bool,
-        timeout_seconds: float = 300,
+        timeout_seconds: float = 300, explanation: str = "",
     ) -> ApprovalRequest:
         choices: list[ApprovalChoice] = ["once"]
         if allow_session:
@@ -68,6 +71,7 @@ class ApprovalRequest:
             schema_version=1, request_id=uuid.uuid4().hex, command=command,
             description=description, pattern_key=pattern_key, pattern_keys=list(pattern_keys),
             surface=surface, timeout_seconds=timeout_seconds, allowed_choices=choices,
+            explanation=explanation or "",
         )
         canonical = json.dumps({**fields, "session_key": session_key}, sort_keys=True, separators=(",", ":"))
         digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()

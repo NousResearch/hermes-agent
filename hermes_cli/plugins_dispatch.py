@@ -49,6 +49,9 @@ _HOOK_TIMEOUT_BOUNDED_HOOKS: set[str] = {
     "pre_command",
     # Fires inside the compression commit window (lease held): a hung plugin must not wedge the session.
     "post_compaction",
+    # Sits on the approval path just before a human is prompted, where nothing else bounds it: a hung
+    # explainer must be abandoned (no explanation) rather than freeze the approval.
+    "approval_explanation",
 }
 # Hooks whose calls are told apart by another payload field: one session's commands are one
 # sequence, so a still-running callback skips that session's next command, not another session's.

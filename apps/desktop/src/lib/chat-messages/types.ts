@@ -178,6 +178,8 @@ export type GatewayEventPayload = {
   // approval server request (dangerous command / execute_code) — session-keyed
   command?: string
   description?: string
+  /** Plain-English "what this does" line, when the backend's `approvals.explain` supplied one. */
+  explanation?: string
   // False when the backend forbids a permanent allow.
   allow_permanent?: boolean
   smart_denied?: boolean

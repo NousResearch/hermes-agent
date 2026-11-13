@@ -6,6 +6,7 @@ import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { createContext, type FC, useCallback, useContext, useMemo, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
+import { ApprovalExplanation } from '@/components/assistant-ui/tool/approval-explanation'
 import { SCAFFOLD_LABEL_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
 import { Button } from '@/components/ui/button'
 import { CardStack, type CardStackAction } from '@/components/ui/card-stack'
@@ -343,6 +344,7 @@ const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }
           </span>
         )}
       </div>
+      <ApprovalExplanation text={request.explanation} />
       {details.length > 0 && (
         <pre className="m-0 max-h-40 overflow-auto whitespace-pre-wrap break-words px-2.5 py-2 font-mono text-xs leading-relaxed text-(--ui-text-primary)">
           {details}

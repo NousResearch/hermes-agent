@@ -116,7 +116,7 @@ def test_full_trust_asks_only_past_the_limit_and_unattended_refuses_without_disp
 def test_over_limit_untrusted_prompt_shows_notice_then_arguments_on_the_text_fallback(session):
     """A surface without approval buttons gets the gateway's plain-text prompt: it carries the spend-limit
     notice and cost first, then the call's arguments."""
-    from gateway.run import _format_exec_approval_fallback
+    from gateway.run_turn_runner_approval_text import _format_exec_approval_fallback
     _register(dict(COSTED, spend_limit=30, trust="untrusted"))
     asked = []
     token = set_current_session_key("chat-a")

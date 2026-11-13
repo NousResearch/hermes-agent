@@ -15,15 +15,46 @@ from typing import Any
 from agent.i18n import t
 
 
+def _format_exec_approval_fallback(
+    command: str, description: str, command_prefix: str, *, allow_permanent: bool = True,
+    allow_session: bool = True, smart_denied: bool = False, explanation: str = "") -> str:
+    """Render the text fallback from approval capabilities, not platform names. Same words as
+    the button card (``BasePlatformAdapter._format_exec_approval``), plus the typed ``/approve``
+    steps a surface without buttons needs. The command is never cut: ``/approve`` must only ever
+    answer a command the user could read in full (#62359). ``explanation`` is the plain-English
+    "what it does" line (``tools/approval_explain``); these adapters split long messages, so it
+    never competes with the command for a character budget."""
+    from gateway.platforms.base_exec_approval import (
+        approval_timeout_seconds, ea_header_text, ea_reason_label_text, format_approval_deadline_line)
+    heading = (t("gateway.exec_approval.smart_deny_heading") if smart_denied
+               else f"⚠️ **{ea_header_text()}**")
+
+    choices = [t("gateway.exec_approval.text_choice_once", prefix=command_prefix)]
+    if not smart_denied and allow_session:
+        choices.append(t("gateway.exec_approval.text_choice_session", prefix=command_prefix))
+        if allow_permanent:
+            choices.append(t("gateway.exec_approval.text_choice_always", prefix=command_prefix))
+    choices.append(t("gateway.exec_approval.text_choice_deny", prefix=command_prefix))
+    return (
+        t("gateway.exec_approval.text_body", heading=heading, command=command,  # whole: send() splits it
+          reason_label=ea_reason_label_text(), reason=description)
+        + (f"{t('gateway.exec_approval.explain_label')}: {explanation}\n\n" if explanation else "")
+        + t("gateway.exec_approval.text_choice_joiner").join(choices[:-1])
+        + t("gateway.exec_approval.text_choice_last", choice=choices[-1])
+        + format_approval_deadline_line(approval_timeout_seconds()))
+
 def approval_text_prompt(adapter: Any, chat_id: str, session_key: str, request_id: str | None, command: str,
-                         description: str, prefix: str, **flags: bool) -> str:
+                         description: str, prefix: str, explanation: str = "", **flags: bool) -> str:
     """The plain-text approval prompt for ``adapter``. An adapter that splits long messages gets the
     default layout; one whose send cuts text gets ``_cutting_text_prompt``, and when even that cannot
-    show the whole command the request is marked Deny-only like a card that could not."""
+    show the whole command the request is marked Deny-only like a card that could not.
+
+    ``explanation`` (the plain-English "what it does" line) rides the splitting layout, which is
+    never at risk of a cut. The cutting layout is already fitting instructions + command + deadline
+    into one fixed message; it shows the command in full instead, which is the stricter contract."""
     from gateway.platforms.base_exec_approval import send_cannot_prove_whole
-    from gateway.run import _format_exec_approval_fallback
     if getattr(adapter, "splits_long_messages", True):
-        text = _format_exec_approval_fallback(command, description, prefix, **flags)
+        text = _format_exec_approval_fallback(command, description, prefix, explanation=explanation, **flags)
         if not send_cannot_prove_whole(adapter, chat_id, text):  # a capped split drops the instructions too
             return text
     text, deny_only = _cutting_text_prompt(adapter, chat_id, command, description, prefix, **flags)

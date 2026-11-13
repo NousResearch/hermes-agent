@@ -179,6 +179,8 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         "pattern_keys": list(approval_data.get("pattern_keys", [primary_key])),
         "session_key": session_key, "surface": surface,
     }
+    if approval_data.get("explanation"):
+        payload["explanation"] = approval_data["explanation"]
     from tools.approval_notify_lease import current
     owner = current(session_key)
     keys = list(approval_data.get("pattern_keys") or [])

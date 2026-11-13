@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- approvals.explain / explain_timeout: DEFAULT_CONFIG is a pure-data leaf module with no sibling to move code into; the growth is the two registry keys and their pointer comment documented in the configuration guide
 """Default configuration data for Hermes Agent: DEFAULT_CONFIG and OPTIONAL_ENV_VARS.
 
 Pure-data leaf module — must not import from hermes_cli.config. Comments are the user-facing
@@ -1659,6 +1660,10 @@ DEFAULT_CONFIG = {
         "cron_mode": "deny",
         "single_query_mode": "deny",
         "unattended_mode": "deny",
+        # Plain-English "what does this do" line on approval prompts: off | static (built-in
+        # families) | aux (the auxiliary.approval model, thinking off, falling back to static).
+        # Display-only; see docs § Approvals → Plain-English explanations.
+        "explain": "static", "explain_timeout": 5,  # aux: seconds the explainer may take (1..30)
         # Extra rules appended to the smart-approval guardian's SYSTEM prompt, e.g. "Always ESCALATE
         # commands touching /etc".
         "smart_policy": "",

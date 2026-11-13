@@ -28,6 +28,10 @@ class PendingControls:
                       'execution_generation': generation,
                       'command': _redact_approval_command(data.get('command', '')),
                       'description': _redact_approval_command(data.get('description', '')),
+                      # The plain-English "what it does" line (tools/approval_explain). This dict is
+                      # the ONE payload a local viewer's card renders, so a field missing here is a
+                      # field the Desktop/TUI never shows — whatever the gateway notification carries.
+                      'explanation': _redact_approval_command(data.get('explanation', '')),
                       'choices': choices}
             if 'edit' in data:
                 prompt['edit'] = deepcopy(data['edit'])

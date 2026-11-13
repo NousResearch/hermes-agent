@@ -45,7 +45,10 @@ export function canonicalPromptParams(kind: unknown, sessionId: string, prompt: 
     ? { session_id: sessionId, answers: prompt.answers,
         questions: Array.isArray(prompt.questions) ? prompt.questions : [{ qid: prompt.prompt_id, question: prompt.question, choices, multi_select: prompt.multi_select }] }
     : { session_id: sessionId, request_id: prompt.prompt_id, command: prompt.command, description: prompt.description, choices,
-        allow_permanent: choices.includes('always'), edit: prompt.edit }
+        allow_permanent: choices.includes('always'), edit: prompt.edit,
+        // Plain-English "what does this do" line (``approvals.explain``). Live events and retained
+        // snapshots both pass through here, so a field dropped here is a field no card shows.
+        explanation: prompt.explanation }
 }
 
 // Only the authenticated adapter can establish this renderer-side provenance;

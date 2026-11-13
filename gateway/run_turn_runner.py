@@ -793,6 +793,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # Redact credentials before display: the raw command string can carry secrets. Both the button and plain-text paths use this value.
         cmd = _redact_approval_command(approval_data.get("command", ""))
         desc = _redact_approval_command(approval_data.get("description")) or ea_default_reason_text()
+        explain = _redact_approval_command(approval_data.get("explanation") or "")
         flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
         # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
         if _renders_exec_approval_buttons(type(adapter)):
@@ -801,7 +802,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                     adapter.send_exec_approval(
                         chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
                         description=desc, metadata=ctx._status_thread_metadata,
-                        request_id=approval_data.get("request_id"), **flags,
+                        request_id=approval_data.get("request_id"), explanation=explain, **flags,
                     ),
                     "send_exec_approval scheduling error",
                 )
@@ -866,7 +867,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # Plain-text prompt with the adapter's typed prefix (e.g. `!approve`): typed "/" is blocked
         # in Slack threads and reserved by Matrix clients.
         msg = approval_text_prompt(adapter, ctx._status_chat_id, ctx.session_key or "", approval_data.get("request_id"),
-                                   cmd, desc, getattr(adapter, "typed_command_prefix", "/"), **flags)
+                                   cmd, desc, getattr(adapter, "typed_command_prefix", "/"),
+                                   explanation=explain, **flags)
         try:
             # Mark as approval prompt: WeCom routes it through the control lane and Telegram pushes it
             # in "important" mode (#132516). Never ``notify`` — A2A reads that as the turn-final reply.

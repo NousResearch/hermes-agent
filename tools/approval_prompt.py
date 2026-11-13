@@ -20,7 +20,7 @@ logger = logging.getLogger("tools.approval")
 def prompt_dangerous_approval(command: str, description: str, timeout_seconds: int | None = None,
                               allow_permanent: bool = True, approval_callback=None,
                               *, allow_session: bool = True, smart_denied: bool = False,
-                              title: str | None = None) -> str:
+                              title: str | None = None, explanation: str | None = None) -> str:
     """Prompt the user to approve a dangerous command (CLI only).
 
     allow_permanent=False hides [a]lways. allow_session=False hides
@@ -30,6 +30,8 @@ def prompt_dangerous_approval(command: str, description: str, timeout_seconds: i
     smart_denied: owner override of a Smart DENY, offer only once/deny.
     title: header for the plain-input prompt when the question is not a dangerous command
     ("Save to memory?", "<server> is asking"); the default header stays the dangerous-command one.
+    explanation: one plain-English line describing what the command does, shown under the header
+    (``tools/approval_explain``). Display-only: it never changes the question or the scopes.
     approval_callback: CLI prompt_toolkit callback ``(command, description, *,
     allow_permanent=True, allow_session=True, smart_denied=False) -> str``; legacy
     signatures keep working while both keywords hold their defaults.
@@ -50,7 +52,8 @@ def prompt_dangerous_approval(command: str, description: str, timeout_seconds: i
     # See #79719.
     with human_input_request("approval", prompt=command) as human, human_wait_window():
         human.outcome = choice = _ask_human(command, description, timeout_seconds, allow_permanent,
-                                            approval_callback, allow_session, smart_denied, title=title)
+                                            approval_callback, allow_session, smart_denied, title=title,
+                                            explanation=explanation)
         return choice
 
 
@@ -108,12 +111,14 @@ def callback_accepts(callback, keyword: str) -> bool:
 
 
 def _ask_human(command: str, description: str, timeout_seconds: int, allow_permanent: bool,
-               approval_callback, allow_session: bool, smart_denied: bool, title: str | None = None) -> str:
+               approval_callback, allow_session: bool, smart_denied: bool, title: str | None = None,
+               explanation: str | None = None) -> str:
     # Redact before any user-visible rendering; the original `command` still executes after approval. Same redactor as
     # memory/log sanitization so tokens mask consistently across surfaces.
     from agent.redact import redact_approval_display
     display_command = redact_approval_display(command)
     display_description = redact_approval_display(description)
+    display_explanation = redact_approval_display(explanation) if explanation else ""
     # Smart DENY and a session-less gate both reduce the menu to once/deny.
     once_only = smart_denied or not allow_session
 
@@ -123,7 +128,9 @@ def _ask_human(command: str, description: str, timeout_seconds: int, allow_perma
             callback_kwargs = {"allow_permanent": allow_permanent,
                                **({"allow_session": False} if not allow_session else {}),
                                **({"smart_denied": True} if smart_denied else {}),
-                               **({"title": title} if title and callback_accepts(approval_callback, "title") else {})}
+                               **({"title": title} if title and callback_accepts(approval_callback, "title") else {}),
+                               **({"explanation": display_explanation}
+                                  if display_explanation and callback_accepts(approval_callback, "explanation") else {})}
             return approval_callback(display_command, display_description, **callback_kwargs)
         except Exception as e:
             logger.error("Approval callback failed: %s", e, exc_info=True)
@@ -156,7 +163,9 @@ def _ask_human(command: str, description: str, timeout_seconds: int, allow_perma
         shape = "smart_deny" if once_only else "long" if allow_permanent else "short"
         prompt_key, menu_key = f"approval.prompt_{shape}", f"approval.choose_{shape}"
         header = title or t('approval.dangerous_header', description=display_description)
-        print(f"\n  {header}"
+        explain = (f"\n      {t('approval.explanation_line', text=display_explanation)}"
+                   if display_explanation else "")
+        print(f"\n  {header}{explain}"
               f"\n      {display_command}\n\n{t(menu_key)}\n")
         sys.stdout.flush()
         choice = _read_choice(t(prompt_key), timeout_seconds)
@@ -198,7 +207,8 @@ def _attempt(name: str, choice, failure, fallback) -> dict:
 
 def _present_with_selected_transport(*, command: str, description: str, pattern_key: str,
                                      pattern_keys: list[str], session_key: str, surface: str,
-                                     allow_session: bool, allow_permanent: bool) -> dict:
+                                     allow_session: bool, allow_permanent: bool,
+                                     explanation: str | None = None) -> dict:
     """Present through an explicitly selected plugin transport, if any. A selected
     transport replaces every built-in prompt surface; detection, allowed scopes,
     persistence, timeout, and final authorization stay host-owned. A failed
@@ -228,6 +238,7 @@ def _present_with_selected_transport(*, command: str, description: str, pattern_
             description=redact_approval_display(description, force=True), pattern_key=pattern_key,
             pattern_keys=tuple(pattern_keys), session_key=session_key, surface=surface, allow_session=allow_session,
             allow_permanent=allow_permanent, timeout_seconds=timeout_seconds,
+            explanation=redact_approval_display(explanation, force=True) if explanation else "",
         )
     except Exception:
         # Never fall back to raw text if redaction or request construction fails:

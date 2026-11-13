@@ -269,7 +269,19 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
 
         return cancel_own_delivery(str(cancel).strip(), str(target or ""), sender)
 
-    if not str(message or "").strip():
+    message = str(message or "").strip()
+    # [SILENT] is a delivery-control token, not message content: a trailing bare marker line
+    # (a habit from reply-suppression rules) would render verbatim in the recipient's Bot Chat
+    # GUI. Strip trailing bare-marker lines only; a token inside prose is left alone.
+    try:
+        from gateway.response_filters import is_intentional_silence_response
+        lines = message.splitlines()
+        while lines and is_intentional_silence_response(lines[-1]):
+            lines.pop()
+        message = "\n".join(lines).strip()
+    except Exception:
+        pass
+    if not message:
         return _err("message is required — compose what you want to say to that agent.")
     body = _envelope(message, constraints, expecting)
     if len(body) > MESSAGE_MAX_CHARS:

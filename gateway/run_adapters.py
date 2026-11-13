@@ -944,21 +944,13 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         else:
             logger.info("✓ %s reconnected successfully", platform.value)
         self._schedule_planned_restart_replay()
-        # Responses rejected while down are owned by this live process (startup recovery cannot claim them).
-        with _log_suppressed(
-            logging.DEBUG, "failed-obligation redelivery after %s reconnect failed",
-            platform.value, exc_info=True,
-        ):
-            await self._redeliver_failed_obligations_for_platform(platform)
+        # Recover old and current owners before resuming any interrupted model work.
+        from gateway.run_reconnect_recovery import recover_reconnected_sessions
+        await recover_reconnected_sessions(self, platform)
         # Rebuild channel directory with the new adapter
         with suppress(Exception):
             from gateway.channel_directory import build_channel_directory
             await build_channel_directory(self.adapters)
-        # A platform offline at startup skipped its restart-interrupted sessions; resume them now.
-        try:
-            self._schedule_resume_pending_sessions(platform=platform)
-        except Exception:
-            logger.debug("resume-pending reschedule after %s reconnect failed", platform.value, exc_info=True)
 
     async def _cancel_secondary_profile_reconnect_tasks(self) -> None:
         """Cancel profile-scoped reconnects before tearing down their registry, so a reconnect

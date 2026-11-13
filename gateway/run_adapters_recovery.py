@@ -350,17 +350,12 @@ class GatewaySecondaryReconnectMixin:
                             hand_over_held_inbound(predecessor, adapter)
                             self._sync_voice_mode_state_to_adapter(adapter)
                             logger.info("✓ %s reconnected (profile: %s)", platform.value, profile_name)
-                            await self._redeliver_failed_obligations_for_platform(
-                                platform, profile=profile_name
-                            )
+                            from gateway.run_reconnect_recovery import recover_reconnected_sessions
+
+                            await recover_reconnected_sessions(self, platform, profile_name)
                             # What a primary reconnect replays too: the owed notice spans served profiles' home
                             # channels, and sessions boot skipped for this offline adapter wait for this call.
                             self._schedule_planned_restart_replay()
-                            try:
-                                self._schedule_resume_pending_sessions(platform=platform)
-                            except Exception:
-                                logger.debug("resume-pending reschedule after %s reconnect failed (profile: %s)",
-                                             platform.value, profile_name, exc_info=True)
                             return
                     if adapter is not None:
                         # Not installed (newer reconnect won the slot, shutdown began, or connect failed):

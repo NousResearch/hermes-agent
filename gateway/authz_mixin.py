@@ -385,14 +385,34 @@ class GatewayAuthorizationMixin:
         from gateway.session_identity import identity_of
         identity = identity_of(source)
         if self._names_receiving_bot(source, identity):
-            return None
+            # Intake intentionally requires live relay provenance. Restored replies
+            # can use the named bot's advertised relay delivery without granting intake.
+            from gateway.run_delivery_recovery import _transport
+
+            platform = getattr(source, "platform", None)
+            transport = _transport(self, platform, identity.transport_profile) if platform else None
+            return transport.adapter if transport is not None and transport.is_relay else None
         # No identity, or one whose transport was only guessed (hand-built source, pre-column row, a
         # primary guess an older release saved):
         # the unique owner of ``(platform, runtime_profile)`` delivers.
         # ``getattr``: test fixtures build bare SimpleNamespace sources without ``profile``.
         # A satellite with no bot on the platform borrows the primary only for its routed chats.
-        return (self._authorization_adapter(getattr(source, "platform", None), getattr(source, "profile", None))
-                or self._routed_primary_adapter(source))
+        platform = getattr(source, "platform", None)
+        profile = getattr(source, "profile", None)
+        adapter = self._authorization_adapter(platform, profile) or self._routed_primary_adapter(source)
+        if adapter is not None or platform is None:
+            return adapter
+        # In standalone mode the primary is the sole credential owner.
+        if (
+            Platform.RELAY in self._primary_adapters()
+            and not getattr(getattr(self, "config", None), "multiplex_profiles", False)
+        ):
+            from gateway.run_delivery_recovery import _transport
+
+            transport = _transport(self, platform, profile)
+            if transport is not None and transport.is_relay:
+                return transport.adapter
+        return None
 
     def _owning_profile(self, adapter, platform):
         """Return (registered, profile) for a live adapter: profile is None for primary."""

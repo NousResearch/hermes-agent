@@ -79,30 +79,7 @@ async def record_final_obligation(adapter: Any, event: Any, session_key: str, te
 
 async def finalize_final_obligation(adapter: Any, obligation_id: str, result: Any, event: Any,
                               delivery_adapter: Any) -> None:
-    """Mark the ledger row delivered/failed (best-effort). On ``send_path_degraded`` with a
-    replacement adapter live, trigger another redelivery sweep (the watcher's may have run
-    before this failure landed; atomic claiming keeps it idempotent). On any other rejection arm
-    the runner's timed redelivery, so the reply goes out once the flood penalty or the retry
-    backoff has passed instead of waiting for the next restart (#91653)."""
-    try:
-        from gateway.dead_targets import classify_dead_error
-        from gateway.delivery_ledger import is_reconnect_only, mark_delivered, mark_failed
-        if getattr(result, "success", False):
-            await asyncio.to_thread(mark_delivered, obligation_id)
-            return
-        error = str(getattr(result, "error", "") or "")
-        await asyncio.to_thread(mark_failed, obligation_id, error)
-        if is_reconnect_only(error):
-            redeliver = getattr(
-                adapter.gateway_runner, "_redeliver_failed_obligations_for_platform", None)
-            live = adapter._final_delivery_adapter(event.source)
-            if live is not delivery_adapter and callable(redeliver):
-                await redeliver(event.source.platform,
-                                profile=getattr(delivery_adapter, "_owner_profile", None))
-        elif classify_dead_error(error) is None:  # a dead chat is never retried: no timer to wake
-            schedule = getattr(adapter.gateway_runner, "_schedule_flood_redelivery", None)
-            if callable(schedule):
-                schedule(event.source.platform,
-                         profile=getattr(delivery_adapter, "_owner_profile", None))
-    except Exception:
-        logger.debug("delivery ledger update failed", exc_info=True)
+    """Settle a final send and retain failed ledger writes for recovery."""
+    from gateway.run_delivery_settlement import finalize_delivery
+
+    await finalize_delivery(adapter, obligation_id, result, event, delivery_adapter)

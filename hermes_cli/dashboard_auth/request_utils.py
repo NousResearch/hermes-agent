@@ -103,7 +103,7 @@ def is_same_origin_path(path: str) -> bool:
 
 def is_safe_next_path(path: str) -> bool:
     """Same-origin post-login target: rejects non-relative and protocol-relative (``//evil``)
-    values, the backslash/control/space forms browsers normalise into them, the auth routes
+    values, the backslash/control forms browsers normalise into them, the auth routes
     themselves, and every ``/api`` path.
 
     Browsers parse ``/\\evil`` as ``//evil`` (WHATWG URL collapses ``\\`` to ``/`` in

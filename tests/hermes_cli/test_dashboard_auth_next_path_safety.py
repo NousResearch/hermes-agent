@@ -162,3 +162,12 @@ class TestPasswordLoginNextTainted:
         )
         assert response.status_code == 200
         assert response.json() == {"ok": True, "next": "/sessions"}
+
+    def test_backslash_forwarded_prefix_never_reaches_the_login_form(
+        self, authed_client: TestClient
+    ):
+        """The password form's script POSTs to ``data-prefix + '/auth/password-login'``, so a
+        backslash prefix must be dropped at ``normalise_prefix``, not only at the landing join."""
+        page = authed_client.get("/login", headers={"x-forwarded-prefix": "/\\evil.example"})
+        assert page.status_code == 200
+        assert "evil.example" not in page.text
